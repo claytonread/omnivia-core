@@ -62,6 +62,13 @@ from omnivia_memory.knowledge import (
     validate_knowledge_space,
     validate_source_ref,
 )
+from omnivia_memory.memory_graph import (
+    EvidenceGraphResponse,
+    GraphPreviewResponse,
+    MemoryGraphFixture,
+    RetrievalTrace,
+    build_memory_graph_fixture,
+)
 
 __version__ = "0.1.0"
 
@@ -72,8 +79,10 @@ __all__ = [
     "BUILTIN_OBJECT_KINDS",
     "ContractVersion",
     "EXTENSION_MANIFEST_CONTRACT_VERSION",
+    "EvidenceGraphResponse",
     "GRAPH_CONTRACT_VERSION",
     "GraphConfidence",
+    "GraphPreviewResponse",
     "GraphEdge",
     "GraphEvidenceStrength",
     "GraphFragment",
@@ -91,9 +100,12 @@ __all__ = [
     "KnowledgeObject",
     "KnowledgeSource",
     "KnowledgeSpace",
+    "MemoryGraphFixture",
+    "RetrievalTrace",
     "SourceRef",
     "ValidationResult",
     "__version__",
+    "build_memory_graph_fixture",
     "check_contract_version_compatibility",
     "normalize_graph_edge_id",
     "normalize_graph_node_id",
