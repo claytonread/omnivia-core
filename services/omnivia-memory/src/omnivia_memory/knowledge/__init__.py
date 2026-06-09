@@ -1,12 +1,6 @@
-"""Stable contract-level OmniVia Core exports.
+"""Public portable knowledge contracts and helpers for OmniVia Core."""
 
-The package root is intentionally small. It exposes only portable knowledge
-contracts, validators, and normalization helpers. Runtime scanners, caches,
-providers, search services, persistence layers, MCP surfaces, and installers
-remain outside the root public API.
-"""
-
-from omnivia_memory.knowledge import (
+from omnivia_memory.knowledge.models import (
     BUILTIN_GRAPH_NODE_KINDS,
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_OBJECT_KINDS,
@@ -33,8 +27,8 @@ from omnivia_memory.knowledge import (
     KnowledgeSource,
     KnowledgeSpace,
     SourceRef,
-    ValidationResult,
-    check_contract_version_compatibility,
+)
+from omnivia_memory.knowledge.normalize import (
     normalize_graph_edge_id,
     normalize_graph_node_id,
     normalize_graph_node_kind,
@@ -46,6 +40,10 @@ from omnivia_memory.knowledge import (
     normalize_source_path,
     normalize_space_id,
     normalize_tags,
+)
+from omnivia_memory.knowledge.validation import (
+    ValidationResult,
+    check_contract_version_compatibility,
     summarize_confidence,
     summarize_review_status,
     summarize_sensitivity,
@@ -62,8 +60,6 @@ from omnivia_memory.knowledge import (
     validate_knowledge_space,
     validate_source_ref,
 )
-
-__version__ = "0.1.0"
 
 __all__ = [
     "AgentGraphContext",
@@ -93,7 +89,6 @@ __all__ = [
     "KnowledgeSpace",
     "SourceRef",
     "ValidationResult",
-    "__version__",
     "check_contract_version_compatibility",
     "normalize_graph_edge_id",
     "normalize_graph_node_id",

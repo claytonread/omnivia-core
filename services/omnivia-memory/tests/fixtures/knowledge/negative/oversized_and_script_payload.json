@@ -1,0 +1,50 @@
+{
+  "id": "oversized-script-payload",
+  "title": "Oversized Script Payload",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-script",
+      "space_id": "oversized-script-payload",
+      "source_type": "note",
+      "title": "Unsafe Note",
+      "relative_path": "notes/unsafe.md"
+    }
+  ],
+  "objects": [
+    {
+      "id": "unsafe-note",
+      "space_id": "oversized-script-payload",
+      "kind": "note",
+      "title": "This title is intentionally very long to exceed the safe public label length limit for portable fixtures and should fail validation immediately because it keeps going well past one hundred and sixty characters in total length.",
+      "summary": "<script>alert('unsafe')</script>",
+      "tags": ["unsafe-note"],
+      "source_refs": [
+        {
+          "source_id": "source-script",
+          "source_type": "note",
+          "path": "notes/unsafe.md",
+          "quote_preview": "<script>alert('unsafe')</script>",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "metadata": {
+        "api_key": "redacted"
+      }
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": [
+    "objects[0].title exceeds max length",
+    "objects[0].summary contains script-like content",
+    "objects[0].source_refs[0].quote_preview contains script-like content",
+    "objects[0].metadata.api_key must not expose sensitive fields"
+  ]
+}

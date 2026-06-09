@@ -1,0 +1,24 @@
+{
+  "id": "absolute-paths",
+  "title": "Absolute Paths",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-absolute",
+      "space_id": "absolute-paths",
+      "source_type": "file",
+      "title": "config.json",
+      "relative_path": "/etc/config.json"
+    }
+  ],
+  "objects": [],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": ["sources[0].relative_path source path must be relative"]
+}

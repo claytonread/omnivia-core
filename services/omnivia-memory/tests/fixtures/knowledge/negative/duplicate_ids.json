@@ -1,0 +1,55 @@
+{
+  "id": "duplicate-ids",
+  "title": "Duplicate IDs",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-one",
+      "space_id": "duplicate-ids",
+      "source_type": "document",
+      "title": "Source One",
+      "relative_path": "docs/source-one.md"
+    }
+  ],
+  "objects": [
+    {
+      "id": "dup-object",
+      "space_id": "duplicate-ids",
+      "kind": "note",
+      "title": "First Object",
+      "tags": ["note"],
+      "source_refs": [
+        {
+          "source_id": "source-one",
+          "source_type": "document",
+          "path": "docs/source-one.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    },
+    {
+      "id": "dup-object",
+      "space_id": "duplicate-ids",
+      "kind": "note",
+      "title": "Second Object",
+      "tags": ["note"],
+      "source_refs": [
+        {
+          "source_id": "source-one",
+          "source_type": "document",
+          "path": "docs/source-one.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": ["duplicate object id: dup-object"]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "path-traversal",
+  "title": "Path Traversal",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-traversal",
+      "space_id": "path-traversal",
+      "source_type": "document",
+      "title": "Traversal",
+      "relative_path": "../secret.md"
+    }
+  ],
+  "objects": [],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": ["sources[0].relative_path source path must not traverse upward"]
+}

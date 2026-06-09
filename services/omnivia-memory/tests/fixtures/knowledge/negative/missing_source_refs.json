@@ -1,0 +1,56 @@
+{
+  "id": "missing-source-refs",
+  "title": "Missing Source Refs",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-claim",
+      "space_id": "missing-source-refs",
+      "source_type": "document",
+      "title": "Claim Source",
+      "relative_path": "docs/claim.md"
+    }
+  ],
+  "objects": [
+    {
+      "id": "claim-subject",
+      "space_id": "missing-source-refs",
+      "kind": "concept",
+      "title": "Claim Subject",
+      "tags": ["claim-subject"],
+      "source_refs": [
+        {
+          "source_id": "source-claim",
+          "source_type": "document",
+          "path": "docs/claim.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [
+    {
+      "id": "claim-no-proof",
+      "space_id": "missing-source-refs",
+      "subject_object_id": "claim-subject",
+      "predicate": "supports_claim",
+      "object_value": "This should have evidence",
+      "source_refs": [],
+      "confidence": "INFERRED",
+      "review_status": "UNREVIEWED",
+      "evidence_strength": "WEAK",
+      "influences_decision": true,
+      "missing_evidence": false
+    }
+  ],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": [
+    "claims[0].knowledge_claim must include source_refs or set missing_evidence when it influences decisions"
+  ]
+}

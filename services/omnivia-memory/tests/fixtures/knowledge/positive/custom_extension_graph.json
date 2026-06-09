@@ -1,0 +1,83 @@
+{
+  "id": "lab-knowledge-space",
+  "title": "Lab Knowledge Space",
+  "space_type": "custom domain",
+  "contract_version": "1.0",
+  "summary": "Custom namespaced extensions remain portable and validated.",
+  "tags": ["custom-domain", "extension"],
+  "sources": [
+    {
+      "id": "source-lab-handbook",
+      "space_id": "lab-knowledge-space",
+      "source_type": "document",
+      "title": "Lab Handbook",
+      "relative_path": "handbook/lab.md",
+      "origin": "manual"
+    }
+  ],
+  "objects": [
+    {
+      "id": "lab-protocol-7",
+      "space_id": "lab-knowledge-space",
+      "kind": "lab:protocol",
+      "title": "Protocol 7",
+      "tags": ["protocol"],
+      "source_refs": [
+        {
+          "source_id": "source-lab-handbook",
+          "source_type": "document",
+          "path": "handbook/lab.md",
+          "locator": "#protocol-7",
+          "quote_preview": "Protocol 7 governs sample intake.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [
+    {
+      "id": "lab-fragment",
+      "space_id": "lab-knowledge-space",
+      "contract_version": "1.0",
+      "nodes": [
+        {
+          "id": "lab-protocol-7",
+          "space_id": "lab-knowledge-space",
+          "label": "Protocol 7",
+          "kind": "lab:protocol",
+          "object_id": "lab-protocol-7",
+          "source_refs": [
+            {
+              "source_id": "source-lab-handbook",
+              "source_type": "document",
+              "path": "handbook/lab.md",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "edges": [],
+      "origin": "third_party",
+      "owner": "portable"
+    }
+  ],
+  "extension_manifests": [
+    {
+      "id": "lab-extension-manifest",
+      "contract_version": "1.0",
+      "namespace": "lab",
+      "title": "Lab Extensions",
+      "version": "1.0",
+      "object_kinds": ["lab:protocol"],
+      "node_kinds": ["lab:protocol"],
+      "relations": ["lab:references_protocol"]
+    }
+  ],
+  "agent_contexts": []
+}

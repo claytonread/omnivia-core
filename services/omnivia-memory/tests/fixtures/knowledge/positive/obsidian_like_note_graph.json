@@ -1,0 +1,145 @@
+{
+  "id": "obsidian-vault",
+  "title": "Obsidian-like Vault",
+  "space_type": "personal vault",
+  "contract_version": "1.0",
+  "summary": "Static compatibility fixture for notes, wikilinks, tags, and canvas cards.",
+  "tags": ["obsidian-like", "representation-only"],
+  "sources": [
+    {
+      "id": "source-obsidian-note",
+      "space_id": "obsidian-vault",
+      "source_type": "note",
+      "title": "Project Note",
+      "relative_path": "vault/project-note.md",
+      "origin": "import"
+    },
+    {
+      "id": "source-obsidian-canvas",
+      "space_id": "obsidian-vault",
+      "source_type": "document",
+      "title": "Project Canvas",
+      "relative_path": "vault/project.canvas",
+      "origin": "import"
+    }
+  ],
+  "objects": [
+    {
+      "id": "project-note",
+      "space_id": "obsidian-vault",
+      "kind": "note",
+      "title": "Project Note",
+      "summary": "Frontmatter-derived note object.",
+      "tags": ["project", "research"],
+      "source_refs": [
+        {
+          "source_id": "source-obsidian-note",
+          "source_type": "note",
+          "path": "vault/project-note.md",
+          "locator": "#project-note",
+          "quote_preview": "[[architecture-note]] and #research",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    },
+    {
+      "id": "architecture-note",
+      "space_id": "obsidian-vault",
+      "kind": "note",
+      "title": "Architecture Note",
+      "tags": ["architecture"],
+      "source_refs": [
+        {
+          "source_id": "source-obsidian-note",
+          "source_type": "note",
+          "path": "vault/project-note.md",
+          "locator": "L2",
+          "quote_preview": "[[architecture-note]]",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    },
+    {
+      "id": "canvas-card-project",
+      "space_id": "obsidian-vault",
+      "kind": "obsidian:canvas_card",
+      "title": "Project Card",
+      "summary": "Canvas/card-like object linked to the note graph.",
+      "tags": ["canvas-card"],
+      "source_refs": [
+        {
+          "source_id": "source-obsidian-canvas",
+          "source_type": "document",
+          "path": "vault/project.canvas",
+          "locator": "card-1",
+          "quote_preview": "Project card referencing [[project-note]]",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    }
+  ],
+  "collections": [],
+  "links": [
+    {
+      "id": "project-note-links-architecture",
+      "space_id": "obsidian-vault",
+      "source_object_id": "project-note",
+      "target_object_id": "architecture-note",
+      "relation": "links_to",
+      "source_refs": [
+        {
+          "source_id": "source-obsidian-note",
+          "source_type": "note",
+          "path": "vault/project-note.md",
+          "locator": "L2",
+          "quote_preview": "[[architecture-note]]",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "evidence_strength": "PRIMARY"
+    },
+    {
+      "id": "architecture-derived-backlink",
+      "space_id": "obsidian-vault",
+      "source_object_id": "architecture-note",
+      "target_object_id": "project-note",
+      "relation": "derived_backlink",
+      "source_refs": [
+        {
+          "source_id": "source-obsidian-note",
+          "source_type": "note",
+          "path": "vault/project-note.md",
+          "locator": "L2",
+          "quote_preview": "Derived backlink from wikilink",
+          "confidence": "INFERRED"
+        }
+      ],
+      "confidence": "INFERRED",
+      "review_status": "UNREVIEWED",
+      "evidence_strength": "SUPPORTING"
+    }
+  ],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [
+    {
+      "id": "obsidian-extension-manifest",
+      "contract_version": "1.0",
+      "namespace": "obsidian",
+      "title": "Obsidian-like Extensions",
+      "version": "1.0",
+      "object_kinds": ["obsidian:canvas_card"],
+      "node_kinds": ["obsidian:canvas_card"],
+      "relations": ["obsidian:embedded_file"]
+    }
+  ],
+  "agent_contexts": []
+}

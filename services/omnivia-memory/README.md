@@ -1,26 +1,29 @@
-# OmniVia Core Memory Primitives
+# OmniVia Portable Knowledge Contracts
 
-This package contains public OmniVia Core primitives for local-first knowledge
-memory, persistence, provenance, workspace modeling, ingestion, graph
-relationships, and basic search.
+This package now exposes a contract-level public API for portable knowledge
+spaces, graph fragments, source refs, extension manifests, validation helpers,
+and normalization helpers.
 
-It intentionally does not include OmniVia Dev Module interfaces such as MCP, Dev
-CLI workflows, repo indexing, code graph features, or agent context packs. Those
-belong in the private `omnivia-dev` repository.
-
-It also does not include the desktop runtime, app shell, local HTTP runtime
-adapter, UI bridge, entitlement client, or distribution logic. Those belong in
-the private `omnivia-platform` repository.
+The package root intentionally stays narrow. Runtime scanners, caches,
+persistence layers, search services, MCP surfaces, CLI runtimes, provider
+clients, and installers must not be exported from `omnivia_memory.__all__`.
+Those concerns belong in later Platform or Dev work, not in the Core root API.
 
 ## Included Areas
 
-- memory models and service logic
-- lifecycle and provenance primitives
-- workspace models and persistence
-- local ingestion primitives
-- graph entity and relationship primitives
-- basic graph/search services
-- focused public core tests
+- knowledge spaces, objects, collections, links, and claims
+- graph nodes, edges, fragments, and source refs
+- confidence, review, evidence, visibility, and sensitivity concepts
+- schema version helpers and namespace-safe extension manifests
+- public-safe validation helpers and normalization helpers
+- static fixtures and portable compatibility examples
+
+## Out Of Scope
+
+- scanners, watchers, parsers, or import runtimes
+- caches, sync, persistence lifecycle, or hosted behavior
+- graph query runtime, UI runtime, or desktop runtime
+- CLI, MCP, provider/model, or assistant-install surfaces
 
 ## Development Install
 
@@ -33,24 +36,44 @@ python3 -m pip install -e services/omnivia-memory[dev]
 ## Public Import Example
 
 ```python
-from omnivia_memory import CreatedBy, MemoryCreate, Source, SourceType
+from omnivia_memory import (
+    GraphConfidence,
+    GraphSourceType,
+    KNOWLEDGE_CONTRACT_VERSION,
+    KnowledgeObject,
+    KnowledgeSource,
+    KnowledgeSpace,
+    SourceRef,
+)
 
-source = Source(type=SourceType.FILE, reference="notes.md")
-memory = MemoryCreate(
-    content="A public core memory primitive.",
-    source=source,
-    created_by=CreatedBy.HUMAN,
-).to_memory()
+source = KnowledgeSource(
+    id="source-01",
+    space_id="example-space",
+    source_type=GraphSourceType.NOTE,
+    title="Example Note",
+    relative_path="notes/example.md",
+)
+note = KnowledgeObject(
+    id="note-01",
+    space_id="example-space",
+    kind="note",
+    title="Example Note",
+    tags=["example-note"],
+    source_refs=[
+        SourceRef(
+            source_id="source-01",
+            source_type=GraphSourceType.NOTE,
+            path="notes/example.md",
+            confidence=GraphConfidence.EXTRACTED,
+        )
+    ],
+)
+space = KnowledgeSpace(
+    id="example-space",
+    title="Example Space",
+    space_type="personal vault",
+    contract_version=KNOWLEDGE_CONTRACT_VERSION,
+    sources=[source],
+    objects=[note],
+)
 ```
-
-## Repository Boundary
-
-Keep this package public-safe. Do not add:
-
-- MCP server code
-- Dev CLI code
-- agent context pack generation
-- repo indexing or code graph features
-- Electron, Tauri, preload, renderer, or runtime adapter code
-- licensing, entitlement, billing, account, or cloud implementation
-- private planning, operating, prompt, or strategy material

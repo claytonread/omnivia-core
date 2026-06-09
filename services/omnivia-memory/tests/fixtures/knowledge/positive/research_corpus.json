@@ -1,0 +1,94 @@
+{
+  "id": "research-corpus",
+  "title": "Research Corpus",
+  "space_type": "research corpus",
+  "contract_version": "1.0",
+  "summary": "Claims, citations, and evidence strength for research work.",
+  "tags": ["research-corpus", "citations"],
+  "sources": [
+    {
+      "id": "source-paper",
+      "space_id": "research-corpus",
+      "source_type": "document",
+      "title": "Paper A",
+      "relative_path": "papers/paper-a.pdf",
+      "origin": "manual"
+    },
+    {
+      "id": "source-notes",
+      "space_id": "research-corpus",
+      "source_type": "note",
+      "title": "Reading Notes",
+      "relative_path": "notes/paper-a.md",
+      "origin": "manual"
+    }
+  ],
+  "objects": [
+    {
+      "id": "paper-a",
+      "space_id": "research-corpus",
+      "kind": "document",
+      "title": "Paper A",
+      "tags": ["paper"],
+      "source_refs": [
+        {
+          "source_id": "source-paper",
+          "source_type": "document",
+          "path": "papers/paper-a.pdf",
+          "locator": "p.3",
+          "quote_preview": "Portable knowledge improves auditability.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    },
+    {
+      "id": "claim-portability",
+      "space_id": "research-corpus",
+      "kind": "concept",
+      "title": "Portability improves auditability",
+      "tags": ["claim"],
+      "source_refs": [
+        {
+          "source_id": "source-notes",
+          "source_type": "note",
+          "path": "notes/paper-a.md",
+          "locator": "#claim-1",
+          "quote_preview": "Portable knowledge improves auditability.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [
+    {
+      "id": "paper-supports-portability",
+      "space_id": "research-corpus",
+      "subject_object_id": "paper-a",
+      "predicate": "supports_claim",
+      "object_object_id": "claim-portability",
+      "source_refs": [
+        {
+          "source_id": "source-paper",
+          "source_type": "document",
+          "path": "papers/paper-a.pdf",
+          "locator": "p.3",
+          "quote_preview": "Portable knowledge improves auditability.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "APPROVED",
+      "evidence_strength": "PRIMARY",
+      "influences_decision": true
+    }
+  ],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": []
+}
