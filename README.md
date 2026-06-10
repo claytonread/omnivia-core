@@ -52,11 +52,16 @@ Core alone is not designed for:
 - extension manifests and namespace rules
 - static examples, fixtures, adapter docs, and public-safe documentation
 
+`omnivia-core` also still ships a small set of repo-local reference
+implementations for memory, persistence, ingestion, search, and graph assembly.
+Treat those as transitional code that currently lives here, not as a claim that
+Core is the long-term runtime owner for those surfaces.
+
 `omnivia-core` does not own:
 
-- ingestion, indexing, parsing, scanning, or watcher lifecycle
-- persistence lifecycle, caches, sync, or background jobs
-- query runtime, UI runtime, desktop runtime, or hosted runtime
+- long-term ownership of ingestion, indexing, parsing, scanning, or watcher lifecycle
+- long-term ownership of persistence lifecycle, caches, sync, or background jobs
+- long-term ownership of query runtime, UI runtime, desktop runtime, or hosted runtime
 - provider/model calls or assistant installation
 - MCP serving, CLI runtime, or repo-specific tool workflows
 

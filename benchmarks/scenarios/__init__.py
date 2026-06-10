@@ -19,17 +19,11 @@ from typing import Any
 from benchmarks.dataset import generate_memory_items
 from benchmarks.registry import scenario
 
-from omnivia_memory import (
-    Database,
-    MemoryCreate,
-    MemoryService,
-    MemoryUpdate,
-    Source,
-    SourceType,
-)
-from omnivia_memory.memory.service import MemoryServiceError
-from omnivia_memory.persistence.database import DatabaseConfig
+from omnivia_memory.memory.models import MemoryCreate, MemoryUpdate
+from omnivia_memory.memory.service import MemoryService, MemoryServiceError
+from omnivia_memory.persistence.database import Database, DatabaseConfig
 from omnivia_memory.persistence.repositories import MemoryRepository
+from omnivia_memory.provenance.models import Source, SourceType
 
 
 def _create_temp_db() -> tuple[str, Database]:

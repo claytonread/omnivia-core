@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
-
+from omnivia_memory._shared.validation import (
+    ValidationResult,
+    scan_sensitive_fields as _validate_no_sensitive_fields,
+    validate_iso_timestamp as _validate_iso,
+    validate_optional_iso_timestamp as _validate_optional_iso,
+)
 from omnivia_memory.memory_graph.models import (
     Confidence,
     EvidenceGraphResponse,
@@ -20,28 +22,6 @@ from omnivia_memory.memory_graph.models import (
 )
 
 CONFIDENCE_BUCKETS = frozenset({"extracted", "inferred", "ambiguous"})
-SENSITIVE_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "authorization",
-        "credential",
-        "credentials",
-        "password",
-        "refresh_token",
-        "secret",
-        "token",
-    }
-)
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    """Validation result for public-safe contract checks."""
-
-    valid: bool
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
 
 
 def validate_memory_source(source: MemorySource) -> ValidationResult:
@@ -196,34 +176,3 @@ def _validate_preview_edge(
     _validate_optional_iso(f"{prefix}.valid_to", edge.valid_to, errors)
     if not edge.source_refs and edge.state.value != "missing_evidence":
         warnings.append(f"{prefix} has no source_refs")
-
-
-def _validate_iso(field_name: str, value: str, errors: list[str]) -> None:
-    _require(field_name, value, errors)
-    if value:
-        _validate_optional_iso(field_name, value, errors)
-
-
-def _validate_optional_iso(field_name: str, value: str | None, errors: list[str]) -> None:
-    if value is None:
-        return
-    try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        errors.append(f"{field_name} must be an ISO timestamp")
-
-
-def _validate_no_sensitive_fields(
-    data: dict[str, Any] | list[Any] | Any,
-    errors: list[str],
-    prefix: str = "",
-) -> None:
-    if isinstance(data, dict):
-        for key, value in data.items():
-            path = f"{prefix}.{key}" if prefix else key
-            if key.lower() in SENSITIVE_KEYS:
-                errors.append(f"{path} must not expose sensitive fields")
-            _validate_no_sensitive_fields(value, errors, path)
-    elif isinstance(data, list):
-        for index, value in enumerate(data):
-            _validate_no_sensitive_fields(value, errors, f"{prefix}[{index}]")

@@ -146,7 +146,7 @@ def test_sensitive_fields_are_rejected_recursively() -> None:
     source_ref = SourceRef(
         source_id="source-001",
         segment_id="segment-001",
-        span={"token": "not allowed"},
+        span={"token": "not allowed", "cookie": "session=123"},
         confidence="extracted",
     )
     unsafe_fact = MemoryFact(
@@ -162,6 +162,7 @@ def test_sensitive_fields_are_rejected_recursively() -> None:
         updated_at=fixture["facts"][0].updated_at,
     )
 
-    assert "source_refs[0].span.token must not expose sensitive fields" in validate_memory_fact(
-        unsafe_fact
-    ).errors
+    errors = validate_memory_fact(unsafe_fact).errors
+
+    assert "source_refs[0].span.token must not expose sensitive fields" in errors
+    assert "source_refs[0].span.cookie must not expose sensitive fields" in errors

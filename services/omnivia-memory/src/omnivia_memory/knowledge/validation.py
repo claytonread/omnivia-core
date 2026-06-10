@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
+from omnivia_memory._shared.validation import (
+    SENSITIVE_KEYS,
+    ValidationResult,
+    scan_sensitive_fields,
+    validate_optional_iso_timestamp as _validate_optional_iso,
+)
 from omnivia_memory.knowledge.models import (
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_GRAPH_NODE_KINDS,
@@ -46,33 +50,9 @@ from omnivia_memory.knowledge.normalize import (
     normalize_tags,
 )
 
-
-SENSITIVE_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "authorization",
-        "cookie",
-        "credential",
-        "credentials",
-        "password",
-        "refresh_token",
-        "secret",
-        "token",
-    }
-)
 SCRIPT_LIKE_MARKERS = ("<script", "javascript:", "data:text/html", "vbscript:")
 MAX_LABEL_LENGTH = 160
 MAX_QUOTE_PREVIEW_LENGTH = 280
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    """Validation output for public portable knowledge helpers."""
-
-    valid: bool
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
 
 
 def check_contract_version_compatibility(
@@ -704,15 +684,6 @@ def _validate_confidence(
         errors.append(f"{field_name} must be a known confidence value or numeric score")
 
 
-def _validate_optional_iso(field_name: str, value: str | None, errors: list[str]) -> None:
-    if value is None:
-        return
-    try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        errors.append(f"{field_name} must be an ISO timestamp")
-
-
 def _validate_decision_provenance(
     field_name: str,
     influences_decision: bool,
@@ -774,15 +745,22 @@ def _validate_public_safe_payload(
     errors: list[str],
     prefix: str,
 ) -> None:
+    scan_sensitive_fields(data, errors, prefix)
+    _validate_public_safe_strings(data, errors, prefix)
+
+
+def _validate_public_safe_strings(
+    data: dict[str, Any] | list[Any] | Any,
+    errors: list[str],
+    prefix: str,
+) -> None:
     if isinstance(data, dict):
         for key, value in data.items():
             key_prefix = f"{prefix}.{key}" if prefix else key
-            if key.lower() in SENSITIVE_KEYS:
-                errors.append(f"{key_prefix} must not expose sensitive fields")
-            _validate_public_safe_payload(value, errors, key_prefix)
+            _validate_public_safe_strings(value, errors, key_prefix)
     elif isinstance(data, list):
         for index, value in enumerate(data):
-            _validate_public_safe_payload(value, errors, f"{prefix}[{index}]")
+            _validate_public_safe_strings(value, errors, f"{prefix}[{index}]")
     elif isinstance(data, str):
         if len(data) > MAX_QUOTE_PREVIEW_LENGTH and prefix.endswith(("label", "quote_preview", "summary")):
             errors.append(f"{prefix} exceeds max length")
