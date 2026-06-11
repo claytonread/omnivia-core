@@ -6,6 +6,7 @@ from omnivia_memory.module_manifest.models import (
     ModuleKind,
     ModuleManifest,
     Permission,
+    PublishedTarget,
 )
 from omnivia_memory.module_manifest.validation import (
     ModuleManifestValidationError,
@@ -19,5 +20,6 @@ __all__ = [
     "ModuleManifest",
     "ModuleManifestValidationError",
     "Permission",
+    "PublishedTarget",
     "validate_module_manifest",
 ]

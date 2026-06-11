@@ -31,6 +31,19 @@ class Permission:
 
 
 @dataclass(frozen=True)
+class PublishedTarget:
+    """A launch-target contract published by a Module.
+
+    Carries only the identifier and the relative path to the published
+    contract. This is inert metadata: it records where a published target
+    contract lives, not how to activate it.
+    """
+
+    target_id: str
+    contract_path: str
+
+
+@dataclass(frozen=True)
 class Integrity:
     """Integrity metadata for signature/hash verification."""
 
@@ -54,6 +67,8 @@ class ModuleManifest:
         entrypoint: Entrypoint metadata for the Harness.
         permissions: List of permissions requested by the Module.
         integrity: Integrity metadata for verification.
+        published_targets: Optional launch-target contracts published by the
+            Module. Preserved as inert metadata for later typed consumption.
     """
 
     manifest_version: str
@@ -66,3 +81,4 @@ class ModuleManifest:
     entrypoint: Entrypoint = field(default_factory=lambda: Entrypoint(module=""))
     permissions: List[Permission] = field(default_factory=list)
     integrity: Integrity = field(default_factory=lambda: Integrity(algorithm="sha256", digest=""))
+    published_targets: List[PublishedTarget] = field(default_factory=list)

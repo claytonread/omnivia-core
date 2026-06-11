@@ -8,6 +8,7 @@ from omnivia_memory.module_manifest.models import (
     ModuleKind,
     ModuleManifest,
     Permission,
+    PublishedTarget,
 )
 
 
@@ -129,6 +130,34 @@ def validate_module_manifest(data: Dict[str, Any]) -> ModuleManifest:
                     errors.append(f"permissions[{i}].description must be a string")
                 permissions.append(Permission(name=name or "", description=perm_desc))
 
+    # Published targets validation (optional, inert metadata)
+    published_targets_data = data.get("published_targets")
+    published_targets: list[PublishedTarget] = []
+    if published_targets_data is not None:
+        if not isinstance(published_targets_data, list):
+            errors.append("published_targets must be a list")
+        else:
+            for i, target in enumerate(published_targets_data):
+                if not isinstance(target, dict):
+                    errors.append(f"published_targets[{i}] must be an object")
+                    continue
+                target_id = target.get("target_id")
+                if not isinstance(target_id, str) or not target_id.strip():
+                    errors.append(
+                        f"published_targets[{i}].target_id must be a non-empty string"
+                    )
+                contract_path = target.get("contract_path")
+                if not isinstance(contract_path, str) or not contract_path.strip():
+                    errors.append(
+                        f"published_targets[{i}].contract_path must be a non-empty string"
+                    )
+                published_targets.append(
+                    PublishedTarget(
+                        target_id=target_id if isinstance(target_id, str) else "",
+                        contract_path=contract_path if isinstance(contract_path, str) else "",
+                    )
+                )
+
     # Raise if errors found
     if errors:
         raise ModuleManifestValidationError("; ".join(errors))
@@ -161,4 +190,5 @@ def validate_module_manifest(data: Dict[str, Any]) -> ModuleManifest:
         entrypoint=entrypoint_obj,  # type: ignore
         permissions=permissions,
         integrity=integrity_obj,  # type: ignore
+        published_targets=published_targets,
     )
