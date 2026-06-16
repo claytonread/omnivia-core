@@ -145,11 +145,8 @@ def _collect_citations(
 ) -> list[SourceRef]:
     citations: list[SourceRef] = []
     seen: set[tuple[str, str | None]] = set()
-    for ref in (
-        ref
-        for record in (*entities, *facts)
-        for ref in record.source_refs
-    ):
+    records: list[MemoryEntity | MemoryFact] = [*entities, *facts]
+    for ref in (ref for record in records for ref in record.source_refs):
         key = (ref.source_id, ref.segment_id)
         if key in seen:
             continue

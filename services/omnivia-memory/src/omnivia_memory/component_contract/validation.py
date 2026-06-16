@@ -1,5 +1,6 @@
 """Component Contract validation."""
 
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ class ComponentContractValidationError(Exception):
 
 
 def _append_enum_error(
-    errors: List[str], field_name: str, enum_type: type, raw_value: object
+    errors: List[str], field_name: str, enum_type: type[Enum], raw_value: object
 ) -> None:
     valid = ", ".join(item.value for item in enum_type)
     errors.append(f"'{field_name}' must be one of: {valid}, got {raw_value!r}")

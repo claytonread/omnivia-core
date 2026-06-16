@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import cast
 
 from omnivia_memory.knowledge.models import ContractVersion
 
@@ -112,6 +114,15 @@ class RunLedgerEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> RunLedgerEntry:
+        evidence_file_refs_data = data.get("evidence_file_refs", [])
+        if not isinstance(evidence_file_refs_data, list):
+            raise TypeError("evidence_file_refs must be a list")
+        for item in evidence_file_refs_data:
+            if not isinstance(item, dict):
+                raise TypeError("evidence_file_refs entries must be objects")
+        provenance_data = data.get("provenance", {})
+        if not isinstance(provenance_data, Mapping):
+            raise TypeError("provenance must be an object")
         return cls(
             run_id=str(data["run_id"]),
             task_id=str(data["task_id"]),
@@ -127,10 +138,11 @@ class RunLedgerEntry:
             ),
             contract_version=ContractVersion.parse(str(data["contract_version"])),
             evidence_file_refs=[
-                EvidenceFileRef.from_dict(item)
-                for item in list(data.get("evidence_file_refs", []))
+                EvidenceFileRef.from_dict(cast(dict[str, str | None], item))
+                for item in evidence_file_refs_data
+                if isinstance(item, dict)
             ],
             provenance=RunLedgerProvenance.from_dict(
-                dict(data.get("provenance", {}))
+                cast(dict[str, str | None], dict(provenance_data))
             ),
         )
