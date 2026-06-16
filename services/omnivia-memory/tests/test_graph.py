@@ -529,6 +529,150 @@ class TestGraphService:
 
 
 # =============================================================================
+# Backlinks and Path-Finding Tests
+# =============================================================================
+
+
+class TestBacklinksAndPaths:
+    """Tests for first-class backlinks and graph path-finding."""
+
+    @pytest.fixture
+    def linked_graph(self, graph_service):
+        """A uses B, B depends_on C, D relates_to C, plus an isolated E."""
+        a = graph_service.create_entity(name="A", entity_type=EntityType.CONCEPT)
+        b = graph_service.create_entity(name="B", entity_type=EntityType.CONCEPT)
+        c = graph_service.create_entity(name="C", entity_type=EntityType.CONCEPT)
+        d = graph_service.create_entity(name="D", entity_type=EntityType.CONCEPT)
+        e = graph_service.create_entity(name="E", entity_type=EntityType.CONCEPT)
+
+        graph_service.create_relationship(
+            source_entity_id=a.id,
+            target_entity_id=b.id,
+            relationship_type=RelationshipType.USES,
+        )
+        graph_service.create_relationship(
+            source_entity_id=b.id,
+            target_entity_id=c.id,
+            relationship_type=RelationshipType.DEPENDS_ON,
+        )
+        graph_service.create_relationship(
+            source_entity_id=d.id,
+            target_entity_id=c.id,
+            relationship_type=RelationshipType.RELATES_TO,
+        )
+        return {"a": a, "b": b, "c": c, "d": d, "e": e}
+
+    def test_get_backlinks_returns_entities_that_link_here(
+        self, graph_service, linked_graph
+    ):
+        """Backlinks surface every entity pointing at the target."""
+        backlinks = graph_service.get_backlinks(linked_graph["c"].id)
+
+        assert {entity.id for entity, _rel in backlinks} == {
+            linked_graph["b"].id,
+            linked_graph["d"].id,
+        }
+
+    def test_get_backlinks_pairs_source_entity_with_relationship(
+        self, graph_service, linked_graph
+    ):
+        """Each backlink carries the linking entity and the relationship."""
+        backlinks = graph_service.get_backlinks(linked_graph["b"].id)
+
+        assert len(backlinks) == 1
+        entity, rel = backlinks[0]
+        assert entity.id == linked_graph["a"].id
+        assert rel.relationship_type == RelationshipType.USES
+
+    def test_get_backlinks_filters_by_relationship_type(
+        self, graph_service, linked_graph
+    ):
+        """Backlinks can be restricted to a relationship type."""
+        backlinks = graph_service.get_backlinks(
+            linked_graph["c"].id,
+            relationship_type=RelationshipType.RELATES_TO,
+        )
+
+        assert {entity.id for entity, _rel in backlinks} == {linked_graph["d"].id}
+
+    def test_get_backlinks_accepts_string_relationship_type(
+        self, graph_service, linked_graph
+    ):
+        """String relationship-type filters are coerced to the enum."""
+        backlinks = graph_service.get_backlinks(
+            linked_graph["c"].id, relationship_type="depends_on"
+        )
+
+        assert {entity.id for entity, _rel in backlinks} == {linked_graph["b"].id}
+
+    def test_get_backlinks_empty_for_unlinked_entity(
+        self, graph_service, linked_graph
+    ):
+        """An entity nothing points at has no backlinks."""
+        assert graph_service.get_backlinks(linked_graph["a"].id) == []
+
+    def test_get_backlinks_requires_repository(self):
+        """Backlinks fail clearly when repositories are not configured."""
+        with pytest.raises(GraphServiceError):
+            GraphService().get_backlinks("x")
+
+    def test_find_path_returns_shortest_path(self, graph_service, linked_graph):
+        """The shortest hop sequence between two entities is returned."""
+        path = graph_service.find_path(linked_graph["a"].id, linked_graph["c"].id)
+
+        assert [entity.id for entity in path] == [
+            linked_graph["a"].id,
+            linked_graph["b"].id,
+            linked_graph["c"].id,
+        ]
+
+    def test_find_path_traverses_undirected(self, graph_service, linked_graph):
+        """Relationships can be followed from either end."""
+        path = graph_service.find_path(linked_graph["c"].id, linked_graph["a"].id)
+
+        assert [entity.id for entity in path] == [
+            linked_graph["c"].id,
+            linked_graph["b"].id,
+            linked_graph["a"].id,
+        ]
+
+    def test_find_path_to_self_returns_single_node(self, graph_service, linked_graph):
+        """A path from an entity to itself is just that entity."""
+        path = graph_service.find_path(linked_graph["a"].id, linked_graph["a"].id)
+
+        assert [entity.id for entity in path] == [linked_graph["a"].id]
+
+    def test_find_path_returns_none_when_unreachable(
+        self, graph_service, linked_graph
+    ):
+        """No path to a disconnected entity yields None."""
+        assert (
+            graph_service.find_path(linked_graph["a"].id, linked_graph["e"].id) is None
+        )
+
+    def test_find_path_respects_max_depth(self, graph_service, linked_graph):
+        """A target beyond the hop limit is reported as unreachable."""
+        assert (
+            graph_service.find_path(
+                linked_graph["a"].id, linked_graph["c"].id, max_depth=1
+            )
+            is None
+        )
+
+    def test_find_path_unknown_endpoint_raises(self, graph_service, linked_graph):
+        """Missing endpoints fail clearly."""
+        with pytest.raises(EntityNotFoundError):
+            graph_service.find_path("missing", linked_graph["c"].id)
+        with pytest.raises(EntityNotFoundError):
+            graph_service.find_path(linked_graph["a"].id, "missing")
+
+    def test_find_path_requires_repository(self):
+        """Path-finding fails clearly when repositories are not configured."""
+        with pytest.raises(GraphServiceError):
+            GraphService().find_path("a", "b")
+
+
+# =============================================================================
 # Governance Tests
 # =============================================================================
 
