@@ -111,7 +111,7 @@ from .component_contract import (
     validate_agent_run_record,
     validate_component_contract,
 )
-from .memory import MemoryCreate, MemoryService, MemoryUpdate
+from .memory import MemoryCreate, MemoryService, MemoryUpdate  # noqa: F401
 from .module_manifest import (
     Entrypoint,
     Integrity,
@@ -122,7 +122,7 @@ from .module_manifest import (
     PublishedTarget,
     validate_module_manifest,
 )
-from .persistence import Database
+from .persistence import Database  # noqa: F401
 from .provenance import Source, SourceType
 from .run_ledger import (
     RUN_LEDGER_CONTRACT_VERSION,

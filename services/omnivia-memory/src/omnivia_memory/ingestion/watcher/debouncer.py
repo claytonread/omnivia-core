@@ -7,7 +7,6 @@ before triggering batch processing.
 from __future__ import annotations
 
 import threading
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable

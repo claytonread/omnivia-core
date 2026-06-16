@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from omnivia_memory._shared.validation import (
-    SENSITIVE_KEYS,
     ValidationResult,
     scan_sensitive_fields,
     validate_optional_iso_timestamp as _validate_optional_iso,
@@ -39,12 +38,9 @@ from omnivia_memory.knowledge.normalize import (
     normalize_extension_value,
     normalize_graph_edge_id,
     normalize_graph_node_id,
-    normalize_graph_node_kind,
-    normalize_graph_relation,
     normalize_identifier,
     normalize_label,
     normalize_object_id,
-    normalize_object_kind,
     normalize_source_path,
     normalize_space_id,
     normalize_tags,

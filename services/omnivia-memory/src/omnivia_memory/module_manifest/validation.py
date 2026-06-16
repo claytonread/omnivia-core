@@ -68,10 +68,8 @@ def validate_module_manifest(data: Dict[str, Any]) -> ModuleManifest:
     entrypoint_data = data.get("entrypoint")
     if entrypoint_data is None:
         errors.append("entrypoint is required")
-        entrypoint = None
     elif not isinstance(entrypoint_data, dict):
         errors.append("entrypoint must be an object")
-        entrypoint = None
     else:
         module = entrypoint_data.get("module")
         if not isinstance(module, str) or not module.strip():
@@ -88,16 +86,12 @@ def validate_module_manifest(data: Dict[str, Any]) -> ModuleManifest:
         if config_key is not None and not isinstance(config_key, str):
             errors.append("entrypoint.config_key must be a string")
 
-        entrypoint = None  # Will be constructed if no errors
-
     # Integrity validation
     integrity_data = data.get("integrity")
     if integrity_data is None:
         errors.append("integrity is required")
-        integrity = None
     elif not isinstance(integrity_data, dict):
         errors.append("integrity must be an object")
-        integrity = None
     else:
         algorithm = integrity_data.get("algorithm")
         digest = integrity_data.get("digest")
@@ -109,7 +103,6 @@ def validate_module_manifest(data: Dict[str, Any]) -> ModuleManifest:
             errors.append("integrity.digest must be a non-empty string")
         if not isinstance(signature, str):
             errors.append("integrity.signature must be a string")
-        integrity = None  # Will be constructed if no errors
 
     # Permissions validation
     permissions_data = data.get("permissions")

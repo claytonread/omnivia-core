@@ -1,6 +1,9 @@
 """App Shell bridge contract validation."""
 
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
+
+if TYPE_CHECKING:
+    from .models import AppShellBodyDescriptor, AppShellHostContext
 
 
 class AppShellBridgeValidationError(Exception):
