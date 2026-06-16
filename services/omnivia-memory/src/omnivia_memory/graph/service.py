@@ -298,7 +298,8 @@ class GraphService:
 
         Returns:
             List of (source_entity, relationship) tuples, one per incoming
-            relationship, in the order returned by the repository
+            relationship whose source entity still exists, in the order returned
+            by the repository
 
         Raises:
             GraphServiceError: If repositories are not configured
@@ -342,7 +343,8 @@ class GraphService:
         Args:
             source_entity_id: ID of the entity to start from
             target_entity_id: ID of the entity to reach
-            max_depth: Maximum number of hops to explore (default 5)
+            max_depth: Maximum number of hops to explore (default 5). A value
+                of 0 only allows a source-to-self path.
 
         Returns:
             The shortest path as an ordered list of entities from source to
@@ -352,11 +354,15 @@ class GraphService:
         Raises:
             GraphServiceError: If repositories are not configured
             EntityNotFoundError: If either endpoint entity does not exist
+            ValueError: If max_depth is negative
         """
         if not self.relationship_repository:
             raise GraphServiceError("Relationship repository not configured")
         if not self.entity_repository:
             raise GraphServiceError("Entity repository not configured")
+
+        if max_depth < 0:
+            raise ValueError("max_depth must be non-negative")
 
         source_entity = self.entity_repository.get(source_entity_id)
         if source_entity is None:
@@ -367,8 +373,6 @@ class GraphService:
 
         if source_entity_id == target_entity_id:
             return [source_entity]
-
-        max_depth = max(1, max_depth)
 
         # Breadth-first search returns the first path found to the target, which
         # is guaranteed to be a shortest path. Entities are marked visited when

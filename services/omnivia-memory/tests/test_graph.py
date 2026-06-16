@@ -611,6 +611,19 @@ class TestBacklinksAndPaths:
         """An entity nothing points at has no backlinks."""
         assert graph_service.get_backlinks(linked_graph["a"].id) == []
 
+    def test_get_backlinks_skips_dangling_source_relationship(
+        self, graph_service, linked_graph
+    ):
+        """Dangling incoming rows do not produce fake backlink entities."""
+        graph_service.create_relationship(
+            source_entity_id="missing-source",
+            target_entity_id=linked_graph["a"].id,
+            relationship_type=RelationshipType.RELATES_TO,
+            validate_entities=False,
+        )
+
+        assert graph_service.get_backlinks(linked_graph["a"].id) == []
+
     def test_get_backlinks_requires_repository(self):
         """Backlinks fail clearly when repositories are not configured."""
         with pytest.raises(GraphServiceError):
@@ -658,6 +671,29 @@ class TestBacklinksAndPaths:
             )
             is None
         )
+
+    def test_find_path_zero_depth_only_matches_self(
+        self, graph_service, linked_graph
+    ):
+        """A zero-hop limit does not silently widen to direct neighbors."""
+        assert (
+            graph_service.find_path(
+                linked_graph["a"].id, linked_graph["b"].id, max_depth=0
+            )
+            is None
+        )
+        assert graph_service.find_path(
+            linked_graph["a"].id, linked_graph["a"].id, max_depth=0
+        ) == [linked_graph["a"]]
+
+    def test_find_path_rejects_negative_depth(self, graph_service, linked_graph):
+        """Negative hop limits fail clearly instead of being coerced."""
+        with pytest.raises(ValueError, match="max_depth must be non-negative"):
+            graph_service.find_path(
+                linked_graph["a"].id, linked_graph["b"].id, max_depth=-1
+            )
+        with pytest.raises(ValueError, match="max_depth must be non-negative"):
+            graph_service.find_path("missing", "missing", max_depth=-1)
 
     def test_find_path_unknown_endpoint_raises(self, graph_service, linked_graph):
         """Missing endpoints fail clearly."""

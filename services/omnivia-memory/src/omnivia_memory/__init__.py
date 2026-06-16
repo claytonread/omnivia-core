@@ -119,6 +119,7 @@ from .module_manifest import (
     ModuleManifest,
     ModuleManifestValidationError,
     Permission,
+    PublishedTarget,
     validate_module_manifest,
 )
 from .persistence import Database
@@ -199,6 +200,7 @@ __all__ = [
     "ModuleManifestValidationError",
     "Permission",
     "PermissionPolicy",
+    "PublishedTarget",
     "ProvenanceBehavior",
     "ProvenanceRequirement",
     "RUN_LEDGER_CONTRACT_VERSION",
