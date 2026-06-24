@@ -129,6 +129,36 @@ class TestDatabase:
 
         db.close()
 
+    def test_immediate_transaction_commits_rolls_back_and_restores_auto_commit(
+        self, database
+    ):
+        """Immediate transactions are explicit and restore database settings."""
+        assert database.config.auto_commit is True
+        database.execute("CREATE TABLE immediate_txn_test (id TEXT PRIMARY KEY)")
+
+        with database.immediate_transaction():
+            database.execute(
+                "INSERT INTO immediate_txn_test (id) VALUES (?)",
+                ("committed",),
+            )
+            assert database.config.auto_commit is False
+
+        assert database.config.auto_commit is True
+        rows = database.execute("SELECT id FROM immediate_txn_test").fetchall()
+        assert [row["id"] for row in rows] == ["committed"]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with database.immediate_transaction():
+                database.execute(
+                    "INSERT INTO immediate_txn_test (id) VALUES (?)",
+                    ("rolled-back",),
+                )
+                raise RuntimeError("boom")
+
+        assert database.config.auto_commit is True
+        rows = database.execute("SELECT id FROM immediate_txn_test").fetchall()
+        assert [row["id"] for row in rows] == ["committed"]
+
 
 class TestMemoryRepository:
     """Tests for MemoryRepository class."""

@@ -370,6 +370,59 @@ class Database:
             ON pattern_relationships(source_pattern_id)
         """)
 
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_manifests (
+                workspace_id TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_resources (
+                workspace_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                lifecycle TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, resource_type, resource_id)
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_workspace
+            ON control_plane_resources(workspace_id)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_type
+            ON control_plane_resources(resource_type)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_lifecycle
+            ON control_plane_resources(lifecycle)
+        """)
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_events_workspace
+            ON control_plane_events(workspace_id)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_events_type
+            ON control_plane_events(event_type)
+        """)
+
         if self.config.auto_commit:
             self.connection.commit()
 
@@ -470,6 +523,61 @@ class Database:
         except Exception:
             self.connection.rollback()
             raise
+
+    @contextmanager
+    def immediate_transaction(self) -> Generator[None, None, None]:
+        """Context manager that holds a SQLite ``BEGIN IMMEDIATE`` write lock.
+
+        This acquires SQLite's reserved write lock for the duration of the
+        block, so a single local worker process holds it while it selects and
+        conditionally writes a row. A second process that tries to start its own
+        immediate transaction against the same database file blocks until this
+        one commits/rolls back, or fails with ``sqlite3.OperationalError``
+        ("database is locked") once the busy timeout elapses. Callers that want
+        to fail closed on contention should catch that error.
+
+        ``auto_commit`` is suspended for the block so :meth:`execute` does not
+        commit (and end the transaction) between statements; the whole block
+        commits on success and rolls back on any exception. The previous
+        ``auto_commit`` setting and connection ``isolation_level`` are always
+        restored.
+
+        Scope/limitation: this is a local single-file SQLite write lock for a
+        local worker fleet. It is NOT a distributed lock; a Cloud worker fleet
+        spanning hosts/processes against a shared service still needs real
+        distributed locking. It complements (does not replace) the payload
+        compare-and-set guard used by the control-plane claim path.
+
+        Only SQLite connections support ``BEGIN IMMEDIATE``; this wrapper assumes
+        the connection is SQLite (the only backend this Database manages).
+        """
+
+        connection = self.connection
+        # Flush any implicit pending transaction so BEGIN IMMEDIATE starts clean.
+        if connection.in_transaction:
+            connection.commit()
+
+        previous_auto_commit = self.config.auto_commit
+        previous_isolation = connection.isolation_level
+        # Take manual control of transaction boundaries so the explicit
+        # BEGIN IMMEDIATE/COMMIT/ROLLBACK statements are issued verbatim.
+        connection.isolation_level = None
+        self.config.auto_commit = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield
+            connection.execute("COMMIT")
+        except Exception:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                # No active transaction to roll back (e.g. BEGIN IMMEDIATE itself
+                # failed on lock contention); nothing to undo.
+                pass
+            raise
+        finally:
+            self.config.auto_commit = previous_auto_commit
+            connection.isolation_level = previous_isolation
 
 
 # Global database instance for convenience
