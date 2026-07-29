@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
 [project]
 name = "omnivia-core"
 version = "0.1.0"
@@ -5,5 +9,8 @@ description = "Public OmniVia core primitives for local-first knowledge modeling
 readme = "README.md"
 requires-python = ">=3.11"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/omnivia_core"]
+
 [tool.pytest.ini_options]
-testpaths = ["services"]
+testpaths = ["services", "tests"]
