@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: Active development plan  
 Architecture authority: accepted ADR-036, ADR-037, ADR-038 and OmniVia Core architecture specification v0.6  
 Current implementation branch: `codex/ui-residual-risk-closure`  
-Current reviewed committed checkpoint: `55f2489`
+Current reviewed committed checkpoint: `4bbed05`
 
 Primary repository: `/Users/claytonread/Projects/omnivia-core`
 
@@ -19,7 +19,9 @@ The remaining development programme is divided into two coordinated streams.
 
 Codex will take **Stream A**.
 
-The handoff agent should take **Stream B** and also perform an independent review of the completed work before relying on it.
+**Stream B is already in progress under a separate agent.** This document is
+the coordination and review baseline for that stream; Codex will not assign,
+restart or implement Stream B work from the Stream A checkout.
 
 The two streams must use separate branches and, while they are active concurrently in the same repository, separate worktrees. Shared files are integration-controller owned and must not be edited independently by both streams.
 
@@ -49,18 +51,18 @@ This is an engineering estimate, not a simple count of architecture phases. The 
 | Area | Estimated status | Position |
 |---|---:|---|
 | Phase 0 baseline freeze | 100% | Complete and reproducible |
-| Phase 1 package and contract foundation | 90–95% | Contract and behavior foundations are complete; compatibility-facade preparation, merge-blocking CI and closeout evidence remain |
-| Phase 2 workspace, migrations and fencing | 0% operationally | Planned in detail; accepted runtime implementation has not started |
+| Phase 1 package and contract foundation | 95% | Contract, behavior and compatibility-facade preparation are complete; merge-blocking CI and closeout evidence remain |
+| Phase 2 workspace, migrations and fencing | Separate stream active | Stream B is already in progress; no Stream B implementation checkpoint has yet been reviewed or integrated into this Stream A branch |
 | Phase 3 provider-neutral service | Foundation only | Wire foundations exist; operation-level service behavior is not implemented |
 | Phase 4 CLI and MCP | Skeleton only | Distributions exist; operational adapters are not implemented |
 | Phases 5–7 | Mostly not started | Consumer cutover, full knowledge workflow and production hardening remain |
 
 ### 3.2 Repository state
 
-- `55f2489` is the latest reviewed and committed implementation checkpoint.
-- This development and handoff plan is committed at `5679e3c`; the control-plane behavior proof is committed after it at `55f2489`.
-- The branch is 16 commits ahead of `origin/codex/ui-residual-risk-closure`.
-- Apart from this requested handoff-document refresh, the current working tree contains the bounded, unaccepted Stream A compatibility-facade foundation slice. Those facade changes are **in progress**, have not been integrated, and are not part of the reviewed `55f2489` checkpoint.
+- `4bbed05` is the latest independently reviewed and committed implementation checkpoint.
+- The initial development and handoff plan is committed at `5679e3c`; the control-plane behavior proof is at `55f2489`; the plan status refresh is at `ae8e2f1`; and the accepted compatibility-facade foundation is at `4bbed05`.
+- The branch is 18 commits ahead of `origin/codex/ui-residual-risk-closure`.
+- The working tree was clean immediately after the `4bbed05` acceptance checkpoint; this document refresh is the only subsequent local change.
 - The work is locally accepted and verified but is not yet merged or released.
 - The accepted PM copies of ADR-036, ADR-037, ADR-038 and specification v0.6 are authoritative. Copies previously supplied from Downloads must not override the accepted PM versions.
 
@@ -76,11 +78,12 @@ This is an engineering estimate, not a simple count of architecture phases. The 
 | Control plane | `d866854`–`a7cd551` | Canonical models, imports, validation and exact public barrel |
 | Remaining-development plan | `5679e3c` | Stream A/Stream B ownership, authorization boundaries, ordered roadmap and Stream B handoff |
 | Control-plane behavior proof | `55f2489` | 54 legacy-equivalent validation cases plus 31 pure policy-compiler cases running against canonical Core |
+| Compatibility-facade foundation | `4bbed05` | Five legacy leaves converted to exact canonical re-exports; fail-closed frozen-baseline normalization; exact package dependency; deterministic offline wheel metadata/artifact-install proof |
 
 The canonical migration now covers:
 
 - 31 registered canonical leaf modules;
-- 29 exact legacy contract ports plus the documented shared barrel/search-model exception;
+- 24 source-parity legacy contract ports, five accepted exact-identity facade leaves, plus the documented shared barrel/search-model exception;
 - exact public barrels for knowledge, App Manifest, Component and Module contracts, graph, memory, workspace, ingestion, provenance, memory graph, run ledger and control plane;
 - an exact 74-name control-plane public surface, routed to 55 model exports, 14 import exports and 5 validation exports;
 - import-order, isolated-module closure, namespace, object-identity and static export tests;
@@ -90,12 +93,13 @@ The canonical migration now covers:
 
 The latest independent audit and host rerun report:
 
-- 2,104 tests passing in the complete repository suite (`PYTHONPATH=. .venv/bin/pytest -q`);
+- 2,154 tests passing in the complete repository suite (`PYTHONPATH=.:src:services/omnivia-memory/src .venv/bin/pytest -q`);
 - 5 pre-existing SWIG deprecation warnings in the PDF ingestion tests;
 - 587 application-contract tests passing;
-- 541 canonical-migration tests passing;
+- 531 canonical-migration tests passing after the five converted leaves moved from source-parity coverage to stricter facade-identity coverage;
+- 60 compatibility-facade tests passing with no skips;
 - all 85 focused control-plane behavior tests passing;
-- all 6 Phase 0 drift checks and 163 Phase 0 tests passing;
+- all 6 Phase 0 drift checks and 182 Phase 0 tests passing;
 - all four wheels built and installed independently from a clean temporary wheelhouse;
 - the Core wheel containing the expected 5 schemas and 14 application-contract fixtures, without runtime dependencies;
 - Ruff clean over the applicable new source and tests;
@@ -169,7 +173,16 @@ The safe facade migration order is:
 6. verify service-package dependencies, wheel contents and deprecation metadata;
 7. move runtime behavior only through later Stream B or consumer-cutover tasks.
 
-The first foundation slice—`_shared`, lifecycle, provenance and `memory.models`, plus the split copied-leaf/facade test oracle—is currently being implemented. It is not yet reviewed, accepted or committed.
+The first foundation slice—`_shared.validation`, `lifecycle.models`, `lifecycle.rules`, `provenance.models` and `memory.models`, plus the split copied-leaf/facade test oracle—is independently reviewed, accepted and committed at `4bbed05`.
+
+That checkpoint also:
+
+- preserves the full historical non-private leaf namespaces, including incidental bindings;
+- requires every routed symbol to be the exact canonical object;
+- keeps the frozen Phase 0 JSON unchanged and applies only verified, fail-closed in-memory ownership normalization;
+- declares `omnivia-core>=0.1.0,<0.2.0` as an exact compatibility-distribution dependency;
+- builds and installs both local wheel artifacts deterministically with no network or skip path, then verifies the installed metadata;
+- deliberately defers a true dependency-resolver and full installed-root import smoke to the release wheelhouse/staging-index gate.
 
 ### 3.6 T-0628 closeout boundary
 
@@ -213,7 +226,7 @@ Status: acceptance-CI work remains; publication is not yet authorized.
 
 Work:
 
-1. Push or open a pull request for the reviewed 16-commit lineage through `55f2489` when publication is authorized.
+1. Push or open a pull request for the reviewed 18-commit lineage through `4bbed05` when publication is authorized.
 2. Add merge-blocking CI for:
    - package dependency boundaries and package tests;
    - all four wheel builds and isolated installs;
@@ -237,7 +250,7 @@ Exit:
 
 ### A1 — Close T-0628 compatibility and behavior
 
-Status: active. Control-plane behavior proof is complete at `55f2489`; the compatibility-facade foundation is in progress and closeout CI remains to be implemented.
+Status: active. Control-plane behavior proof is complete at `55f2489`; compatibility-facade preparation is accepted at `4bbed05`; closeout CI remains to be implemented.
 
 Work:
 
@@ -248,11 +261,11 @@ Work:
    - 183 ordered root exports: 182 portable names plus `__version__`;
    - 21 runtime-only legacy paths;
    - hidden root compatibility bindings `Database` and `MemoryService` remain runtime owned.
-4. **In progress, not accepted:** convert the facade foundation (`_shared`, lifecycle, provenance and `memory.models`) and split copied-leaf parity from facade-identity testing.
-5. Convert the remaining direct wrappers, six hybrid barrels and the package root in the audited order.
+4. **Complete:** convert the facade foundation (`_shared.validation`, lifecycle, provenance and `memory.models`) and split copied-leaf parity from facade-identity testing.
+5. Track conversion of the remaining direct wrappers, six hybrid barrels and the package root as final facade-cutover work after T-0628 compatibility-preparation closeout.
 6. Keep `src/omnivia_core/__init__.py` version-only and route legacy root collisions to their frozen canonical owners.
 7. Route runtime-only exports deliberately; do not duplicate their models in Core.
-8. Add exact object-identity, import, export-drift, wheel/dependency and deprecation-metadata tests.
+8. **Complete for the foundation slice:** add exact object-identity, import, export-drift and deterministic wheel/dependency-metadata tests. Extend the same invariants to every later facade route and add deprecation metadata before publication.
 9. Add the merge-blocking `Core acceptance` workflow and required branch rule.
 10. Re-run the complete T-0628 acceptance suite and record a formal accepted checkpoint.
 
@@ -344,16 +357,19 @@ Exit:
 
 ### B0 — Independent review and Phase 1 gate
 
-The Stream B agent must first review rather than assume the foundation.
+Status: already in progress under the separately assigned Stream B agent.
+Codex does not manage or duplicate that implementation from Stream A.
+
+The Stream B agent reviews rather than assumes the foundation.
 
 Work:
 
-1. Confirm `55f2489` is the intended reviewed starting checkpoint and inspect all 16 commits from `117cf83` through `55f2489`.
+1. Confirm `4bbed05` is the intended reviewed starting checkpoint and inspect all 18 commits from `117cf83` through `4bbed05`.
 2. Reproduce package builds and isolated installs.
 3. Reproduce dependency, schema, fixture, generated-artifact, canonical-migration and Phase 0 gates.
-4. Reproduce the 85 focused control-plane behavior tests, 541-test canonical-migration suite and 2,104-test full suite.
-5. Review the control-plane barrel, T-0628 compatibility inventory and merge-gate audit.
-6. Treat the current uncommitted facade foundation as Stream A work in progress, not accepted foundation.
+4. Reproduce the 85 focused control-plane behavior tests, 531-test canonical-migration suite, 60-test compatibility-facade suite and 2,154-test full suite.
+5. Review the control-plane barrel, the accepted five-leaf facade foundation, T-0628 compatibility inventory and merge-gate audit.
+6. Reproduce the facade identity, namespace, frozen-baseline and deterministic wheel metadata/artifact-install proofs.
 7. Report any discrepancy before writing Phase 2 code.
 8. Do not start T-0629 operational implementation until Stream A records the T-0628 closeout checkpoint.
 
@@ -634,7 +650,7 @@ The following must not run as competing write lanes:
 
 The receiving agent should produce a short review report answering:
 
-1. Do the 16 commits from `117cf83` through `55f2489` match ADR-036, ADR-038 and the Phase 0/1 task packets?
+1. Do the 18 commits from `117cf83` through `4bbed05` match ADR-036, ADR-038 and the Phase 0/1 task packets?
 2. Do the 85 control-plane behavior cases accurately preserve the 54 validation and 31 pure policy-compiler cases from their frozen legacy sources?
 3. Does the 47-route compatibility inventory make exact identity, collision routing, hybrid/runtime ownership and the version-only canonical root enforceable without proxies or duplicate models?
 4. Do all four packages build and install independently?
@@ -654,11 +670,11 @@ Use the following as the receiving agent's task:
 
 > You own Stream B — Workspace Authority and Standalone Runtime — for OmniVia Core. Codex owns Stream A — Contracts, Compatibility and Integration. The architecture authority is the accepted PM copies of ADR-036, ADR-037, ADR-038 and architecture specification v0.6. The owner approved Phases 0–2 only. Do not implement broad Phase 3 service operations, the full CLI/MCP, consumer cutover or production distribution without their later approved task packets.
 >
-> First perform an independent, read-only review of the 16 committed checkpoints from `117cf83` through `55f2489` on branch `codex/ui-residual-risk-closure`. `55f2489` is the current reviewed committed checkpoint. The plan itself is committed at `5679e3c`. The canonical working tree may contain a bounded, unaccepted Stream A facade-foundation diff; do not treat that diff as accepted, modify it, include it in a review commit or use it as the Stream B base.
+> First perform an independent, read-only review of the 18 committed checkpoints from `117cf83` through `4bbed05` on branch `codex/ui-residual-risk-closure`. `4bbed05` is the current reviewed committed checkpoint. The plan itself is committed at `5679e3c` and refreshed at `ae8e2f1`; the control-plane behavior proof is at `55f2489`; the accepted facade foundation is at `4bbed05`.
 >
-> Reproduce the package-boundary tests, all four wheel builds and isolated installs, application schema/fixture/codec/generated-artifact gates, strict TypeScript compilation, Phase 0 drift/baseline gates, Ruff, strict mypy and diff checks. Reproduce the 85 focused control-plane behavior cases (54 validation and 31 policy-compiler), the 541-test canonical-migration suite and the 2,104-test full suite; the known full-suite result includes five pre-existing SWIG deprecation warnings. Report discrepancies with exact files, commands and outputs.
+> Reproduce the package-boundary tests, all four wheel builds and isolated installs, application schema/fixture/codec/generated-artifact gates, strict TypeScript compilation, Phase 0 drift/baseline gates, Ruff, strict mypy and diff checks. Reproduce the 85 focused control-plane behavior cases (54 validation and 31 policy-compiler), the 531-test canonical-migration suite, the 60-test compatibility-facade suite and the 2,154-test full suite; the known full-suite result includes five pre-existing SWIG deprecation warnings and no skipped tests. Report discrepancies with exact files, commands and outputs.
 >
-> Review the completed audits as evidence, not assumptions. There are 47 supported legacy-to-canonical route pairs: 40 direct, six hybrid barrels and the package root. The legacy root advertises 183 ordered exports: 182 portable names plus `__version__`. Twenty-one legacy paths remain runtime only. Exact facade identity forbids copies, subclasses, proxies, wrapper functions, dynamic `__getattr__` routing and `sys.modules` aliases. `src/omnivia_core/__init__.py` remains version-only. The frozen collision routes are `LifecycleState` → control plane, `ValidationResult` → shared validation, `SourceRef` → knowledge, `ProvenanceRequirement` → Component Contract, and `Source`/`SourceType` → provenance. Verify the recorded migration order. Do not claim final facade cutover: its foundation slice is still in progress.
+> Review the completed audits as evidence, not assumptions. There are 47 supported legacy-to-canonical route pairs: 40 direct, six hybrid barrels and the package root. The legacy root advertises 183 ordered exports: 182 portable names plus `__version__`. Twenty-one legacy paths remain runtime only. Exact facade identity forbids copies, subclasses, proxies, wrapper functions, dynamic `__getattr__` routing and `sys.modules` aliases. `src/omnivia_core/__init__.py` remains version-only. The frozen collision routes are `LifecycleState` → control plane, `ValidationResult` → shared validation, `SourceRef` → knowledge, `ProvenanceRequirement` → Component Contract, and `Source`/`SourceType` → provenance. Verify the recorded migration order and the accepted five-leaf facade foundation at `4bbed05`. Do not claim final facade cutover: the remaining direct, hybrid and root routes are still tracked work.
 >
 > Also review the acceptance-CI finding. The only current workflow is the informational performance report. The required merge-blocking `Core acceptance` gate must cover package tests, four-wheel isolated installs, application schema/fixture/codec/generated drift, strict TypeScript, canonical migration, Phase 0 drift/baseline, full suite, benchmarks, Ruff, strict mypy and pull-request-range diff checking. A repository branch rule or ruleset must separately require the stable check.
 >
@@ -721,9 +737,9 @@ OmniVia Core development is complete for specification v0.6 only when:
 
 ## 14. Immediate next actions
 
-1. **Stream A / Codex:** review and either accept or repair the in-progress facade-foundation slice.
+1. **Complete — Stream A / Codex:** independently review, repair, accept and commit the five-leaf facade foundation at `4bbed05`.
 2. **Stream A / Codex:** add the merge-blocking `Core acceptance` workflow, configure the required branch rule, run the complete acceptance matrix and record the T-0628 closeout checkpoint.
-3. **Handoff agent:** independently review the 16 committed checkpoints through `55f2489` and prepare B0 evidence plus the T-0629 implementation/test plan without touching the unaccepted facade diff.
+3. **In progress — separate Stream B agent:** independently review the 18 committed checkpoints through `4bbed05` and prepare B0 evidence plus the T-0629 implementation/test plan. Stream A does not duplicate or redirect this work.
 4. **After T-0628 closeout:** create the temporary Stream B worktree from the accepted checkpoint and begin T-0629A while Stream A continues non-overlapping facade conversion.
 5. **Integration controller:** review and integrate each Stream B slice in order.
 6. **Architecture owner:** review and authorize the Phase 3 task packet before A2/B9 operational implementation.
