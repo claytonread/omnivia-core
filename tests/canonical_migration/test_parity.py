@@ -76,14 +76,13 @@ CANONICAL_PACKAGE = "omnivia_core"
 #: Sanctioned, exact, per-leaf import rewrites applied to a leaf's legacy
 #: source -- before the generic ``omnivia_memory`` -> ``omnivia_core`` rename
 #: below -- so the AST comparison stays an equality check rather than a
-#: fuzzy one. Keyed by the exact legacy module name; each rule is an
-#: (old, new) source-fragment pair. ``omnivia_memory.run_ledger.validation``
-#: merges ``ValidationResult`` and ``check_contract_version_compatibility``
-#: into one ``omnivia_memory.knowledge`` import; the canonical port is
-#: required to route each name to its exact canonical owner leaf instead
-#: (``omnivia_core._shared.validation`` and
-#: ``omnivia_core.knowledge.validation`` respectively), so that split -- and
-#: nothing else -- is rewritten here before comparison.
+#: fuzzy one. Keyed by the exact ``(canonical, legacy)`` module pair; each
+#: rule is an (old, new) source-fragment pair. Run ledger splits a combined
+#: legacy knowledge-barrel import across the canonical shared-validation and
+#: knowledge-validation owner leaves. Control-plane validation reroutes its
+#: compatibility helper from the legacy knowledge barrel directly to the
+#: canonical knowledge-validation owner leaf. Those exact changes -- and
+#: nothing else -- are rewritten here before comparison.
 SANCTIONED_IMPORT_REWRITES: dict[
     tuple[str, str], tuple[tuple[str, str], ...]
 ] = {
@@ -100,6 +99,18 @@ SANCTIONED_IMPORT_REWRITES: dict[
             ),
             (
                 "from omnivia_core._shared.validation import ValidationResult\n"
+                "from omnivia_core.knowledge.validation import "
+                "check_contract_version_compatibility"
+            ),
+        ),
+    ),
+    (
+        "omnivia_core.control_plane.validation",
+        "omnivia_memory.control_plane.validation",
+    ): (
+        (
+            "from omnivia_memory.knowledge import check_contract_version_compatibility",
+            (
                 "from omnivia_core.knowledge.validation import "
                 "check_contract_version_compatibility"
             ),
