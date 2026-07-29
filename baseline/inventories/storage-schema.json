@@ -1,0 +1,1294 @@
+{
+  "format_version": "1",
+  "note": "Captured from a throwaway probe database. SQLite-internal tables are excluded; auto-created indexes are kept because they encode UNIQUE and PRIMARY KEY constraints.",
+  "source": "omnivia_memory.persistence.database.Database._init_schema",
+  "tables": {
+    "chunks": {
+      "columns": [
+        {
+          "default": null,
+          "name": "chunk_index",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "content",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "content_hash",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "end_offset",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "0",
+          "name": "start_offset",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "source_id",
+          "on_delete": "NO ACTION",
+          "on_update": "NO ACTION",
+          "references_column": "id",
+          "references_table": "sources"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "content_hash"
+          ],
+          "name": "idx_chunks_hash",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "source_id"
+          ],
+          "name": "idx_chunks_source",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_chunks_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "context_packs": {
+      "columns": [
+        {
+          "default": null,
+          "name": "content",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'markdown'",
+          "name": "format",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": "'[]'",
+          "name": "memory_ids_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "name",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "purpose",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "query",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'[]'",
+          "name": "source_references_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "workspace_id",
+          "on_delete": "NO ACTION",
+          "on_update": "NO ACTION",
+          "references_column": "id",
+          "references_table": "workspaces"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "purpose"
+          ],
+          "name": "idx_context_packs_purpose",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "idx_context_packs_workspace",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_context_packs_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "control_plane_events": {
+      "columns": [
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "event_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": "'{}'",
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "resource_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "resource_type",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "event_type"
+          ],
+          "name": "idx_control_plane_events_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "idx_control_plane_events_workspace",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_control_plane_events_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "control_plane_manifests": {
+      "columns": [
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "schema_version",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "sqlite_autoindex_control_plane_manifests_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "control_plane_resources": {
+      "columns": [
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "lifecycle",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "payload_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "resource_id",
+          "not_null": true,
+          "primary_key": 3,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "resource_type",
+          "not_null": true,
+          "primary_key": 2,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": true,
+          "primary_key": 1,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "lifecycle"
+          ],
+          "name": "idx_control_plane_resources_lifecycle",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "resource_type"
+          ],
+          "name": "idx_control_plane_resources_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "idx_control_plane_resources_workspace",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id",
+            "resource_type",
+            "resource_id"
+          ],
+          "name": "sqlite_autoindex_control_plane_resources_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "entity_memory_links": {
+      "columns": [
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "entity_id",
+          "not_null": true,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "memory_id",
+          "not_null": true,
+          "primary_key": 2,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "entity_id",
+            "memory_id"
+          ],
+          "name": "sqlite_autoindex_entity_memory_links_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "graph_entities": {
+      "columns": [
+        {
+          "default": "'proposed'",
+          "name": "approval_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "entity_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "name",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "source_id"
+          ],
+          "name": "idx_graph_entities_source",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "approval_status"
+          ],
+          "name": "idx_graph_entities_status",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "entity_type"
+          ],
+          "name": "idx_graph_entities_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_graph_entities_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "graph_relationships": {
+      "columns": [
+        {
+          "default": "'proposed'",
+          "name": "approval_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "relationship_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_entity_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "target_entity_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "source_entity_id"
+          ],
+          "name": "idx_graph_relationships_source",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "target_entity_id"
+          ],
+          "name": "idx_graph_relationships_target",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "relationship_type"
+          ],
+          "name": "idx_graph_relationships_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_graph_relationships_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "memories": {
+      "columns": [
+        {
+          "default": null,
+          "name": "content",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_by",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": "'proposed'",
+          "name": "lifecycle_state",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'general'",
+          "name": "memory_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_description",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_reference",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "created_at"
+          ],
+          "name": "idx_memories_created_at",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "lifecycle_state"
+          ],
+          "name": "idx_memories_lifecycle",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "memory_type"
+          ],
+          "name": "idx_memories_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "idx_memories_workspace",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_memories_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "pattern_occurrences": {
+      "columns": [
+        {
+          "default": null,
+          "name": "detected_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "evidence",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "memory_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "pattern_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "pattern_id",
+          "on_delete": "NO ACTION",
+          "on_update": "NO ACTION",
+          "references_column": "id",
+          "references_table": "patterns"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "memory_id"
+          ],
+          "name": "idx_pattern_occurrences_memory",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "pattern_id"
+          ],
+          "name": "idx_pattern_occurrences_pattern",
+          "origin": "c",
+          "unique": false
+        }
+      ]
+    },
+    "pattern_relationships": {
+      "columns": [
+        {
+          "default": "'proposed'",
+          "name": "approval_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "related_memory_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'exemplifies'",
+          "name": "relationship_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_pattern_id",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "target_pattern_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [
+        {
+          "column": "source_pattern_id",
+          "on_delete": "NO ACTION",
+          "on_update": "NO ACTION",
+          "references_column": "id",
+          "references_table": "patterns"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "source_pattern_id"
+          ],
+          "name": "idx_pattern_relationships_source",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_pattern_relationships_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "patterns": {
+      "columns": [
+        {
+          "default": "'proposed'",
+          "name": "approval_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "confidence",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "REAL"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "description",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "name",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "occurrence_count",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "pattern_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "source_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "confidence"
+          ],
+          "name": "idx_patterns_confidence",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "source_id"
+          ],
+          "name": "idx_patterns_source",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "approval_status"
+          ],
+          "name": "idx_patterns_status",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "pattern_type"
+          ],
+          "name": "idx_patterns_type",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_patterns_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "sources": {
+      "columns": [
+        {
+          "default": null,
+          "name": "content_hash",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "error_message",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "extension",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "file_path",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "file_type",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "modified_time",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'pending'",
+          "name": "parse_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "size_bytes",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "INTEGER"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "workspace_id",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "content_hash"
+          ],
+          "name": "idx_sources_hash",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "file_path"
+          ],
+          "name": "idx_sources_path",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "parse_status"
+          ],
+          "name": "idx_sources_status",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id"
+          ],
+          "name": "idx_sources_workspace",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "workspace_id",
+            "file_path"
+          ],
+          "name": "idx_sources_workspace_path",
+          "origin": "c",
+          "unique": true
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_sources_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    },
+    "workspaces": {
+      "columns": [
+        {
+          "default": null,
+          "name": "created_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "description",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "id",
+          "not_null": false,
+          "primary_key": 1,
+          "type": "TEXT"
+        },
+        {
+          "default": "'unindexed'",
+          "name": "index_status",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "last_indexed_at",
+          "not_null": false,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "name",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "root_path",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": "'{}'",
+          "name": "settings_json",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "storage_path",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        },
+        {
+          "default": null,
+          "name": "updated_at",
+          "not_null": true,
+          "primary_key": 0,
+          "type": "TEXT"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "columns": [
+            "root_path"
+          ],
+          "name": "idx_workspaces_root_path",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "index_status"
+          ],
+          "name": "idx_workspaces_status",
+          "origin": "c",
+          "unique": false
+        },
+        {
+          "columns": [
+            "id"
+          ],
+          "name": "sqlite_autoindex_workspaces_1",
+          "origin": "pk",
+          "unique": true
+        }
+      ]
+    }
+  },
+  "task": "T-0627"
+}

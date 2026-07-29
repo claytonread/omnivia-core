@@ -1,10 +1,12 @@
 """Tests for the package-level public API."""
 
+import ast
 from pathlib import Path
 
 import omnivia_memory
 from omnivia_memory import (
     GRAPH_CONTRACT_VERSION,
+    KNOWLEDGE_CONTRACT_VERSION,
     GraphConfidence,
     GraphEdge,
     GraphEvidenceStrength,
@@ -15,7 +17,6 @@ from omnivia_memory import (
     GraphSensitivity,
     GraphSourceType,
     GraphVisibility,
-    KNOWLEDGE_CONTRACT_VERSION,
     KnowledgeObject,
     KnowledgeSource,
     KnowledgeSpace,
@@ -135,25 +136,51 @@ def test_all_declares_contract_only_root_api() -> None:
     assert forbidden.isdisjoint(set(omnivia_memory.__all__))
 
 
+FORBIDDEN_IMPORT_PREFIXES = (
+    "omnivia_memory.ingestion",
+    "omnivia_memory.persistence",
+    "omnivia_memory.search",
+    "omnivia_memory.workspace",
+    "omnivia_memory.app_shell_bridge",
+    "omnivia_memory.graph.service",
+    "omnivia_memory.graph.repository",
+    "omnivia_memory.memory.service",
+    "omnivia_memory.ingestion.watcher",
+    "mcp",
+    "cli",
+)
+
+
+def _absolute_imported_modules(path: Path) -> set[str]:
+    """Return the absolute module paths a file imports, taken from its AST.
+
+    ``from x import y`` contributes both ``x`` and ``x.y`` because ``y`` may name
+    a submodule. Relative imports are skipped: they resolve inside the package,
+    and what the root may re-export from them is constrained by
+    ``test_all_declares_contract_only_root_api``.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return modules
+
+
 def test_contract_surface_has_no_runtime_import_creep() -> None:
     """Knowledge surface files stay isolated from runtime-oriented modules."""
     source_root = Path(__file__).parents[1] / "src" / "omnivia_memory"
-    files_to_check = list((source_root / "knowledge").glob("*.py")) + [source_root / "__init__.py"]
-    forbidden_import_markers = {
-        "omnivia_memory.ingestion",
-        "omnivia_memory.persistence",
-        "omnivia_memory.search",
-        "omnivia_memory.workspace",
-        "omnivia_memory.app_shell_bridge",
-        "omnivia_memory.graph.service",
-        "omnivia_memory.graph.repository",
-        "omnivia_memory.memory.service",
-        "omnivia_memory.ingestion.watcher",
-        "mcp",
-        "cli",
-    }
+    knowledge_files = sorted((source_root / "knowledge").glob("*.py"))
+    files_to_check = knowledge_files + [source_root / "__init__.py"]
 
     for path in files_to_check:
-        content = path.read_text(encoding="utf-8")
-        for marker in forbidden_import_markers:
-            assert marker not in content, (path.name, marker)
+        for module in sorted(_absolute_imported_modules(path)):
+            for prefix in FORBIDDEN_IMPORT_PREFIXES:
+                assert module != prefix and not module.startswith(f"{prefix}."), (
+                    path.name,
+                    module,
+                    prefix,
+                )

@@ -1,0 +1,23 @@
+{
+  "baseline_slice": "mcp.read",
+  "capture_kind": "not_captured",
+  "entrypoints": [],
+  "evidence_gap": "GAP-008",
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [],
+    "redactions": []
+  },
+  "notes": [
+    "The Core behaviour behind an MCP read is frozen by memory.get and memory.search; only the memory_get response envelope is missing.",
+    "No request or response is recorded here. This slice belongs to a surface Core does not own; its operation descriptor, where one has been reviewed, lives in the surface inventory rather than in this fixture."
+  ],
+  "ordering": null,
+  "request": null,
+  "response": null,
+  "scenario": "mcp.read",
+  "status": "pending_external_capture",
+  "surface": "mcp_tools",
+  "task": "T-0627",
+  "title": "One MCP read operation"
+}

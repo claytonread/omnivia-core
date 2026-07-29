@@ -1,0 +1,5629 @@
+{
+  "format_version": "1",
+  "modules": {
+    "omnivia_memory": {
+      "all": [
+        "Agent",
+        "AgentAction",
+        "AgentBackedComponentContract",
+        "AgentBehavior",
+        "AgentGraphContext",
+        "AgentRunRecord",
+        "AgentRunStatus",
+        "AppManifest",
+        "AppManifestValidationError",
+        "AppState",
+        "Approval",
+        "ApprovalPolicy",
+        "AuditEvent",
+        "AuditRequirement",
+        "Automation",
+        "BUILTIN_GRAPH_NODE_KINDS",
+        "BUILTIN_GRAPH_RELATIONS",
+        "BUILTIN_OBJECT_KINDS",
+        "CONTROL_PLANE_CONTRACT_VERSION",
+        "CONTROL_PLANE_SCHEMA_VERSION",
+        "Capability",
+        "CapabilityType",
+        "CatalogueArtifactVerification",
+        "ComponentAIMode",
+        "ComponentConnectorScope",
+        "ComponentContract",
+        "ComponentContractValidationError",
+        "ComponentDataSource",
+        "ComponentFamily",
+        "ComponentGraphScope",
+        "ComponentInput",
+        "ComponentOutput",
+        "ComponentOutputType",
+        "ComponentPermission",
+        "ComponentRunMode",
+        "ComponentSafetyLevel",
+        "Connection",
+        "ConnectionKind",
+        "ConsultantAccessGrant",
+        "ConsultantGrantStatus",
+        "ContractVersion",
+        "ControlPlaneManifest",
+        "ControlPlaneRunStatus",
+        "ControlPlaneValidationError",
+        "DANGEROUS_SIDE_EFFECTS",
+        "DataSource",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION",
+        "Entrypoint",
+        "EvidenceFileRef",
+        "EvidenceGraphResponse",
+        "ExecutionMode",
+        "ExecutionResult",
+        "GRAPH_CONTRACT_VERSION",
+        "GraphConfidence",
+        "GraphEdge",
+        "GraphEvidenceStrength",
+        "GraphFragment",
+        "GraphNode",
+        "GraphOrigin",
+        "GraphPreviewResponse",
+        "GraphReviewStatus",
+        "GraphSensitivity",
+        "GraphSourceType",
+        "GraphVisibility",
+        "ImportRecord",
+        "ImportSourceChange",
+        "ImportSourceProtocol",
+        "ImportSpecValidation",
+        "ImportedCandidateSet",
+        "Integrity",
+        "KNOWLEDGE_CONTRACT_VERSION",
+        "KnowledgeClaim",
+        "KnowledgeCollection",
+        "KnowledgeExtensionManifest",
+        "KnowledgeLink",
+        "KnowledgeObject",
+        "KnowledgeSource",
+        "KnowledgeSpace",
+        "LifecycleState",
+        "LocalApprovalNotification",
+        "LocalApprovalNotificationChannel",
+        "LocalApprovalNotificationEvent",
+        "LocalApprovalNotificationStatus",
+        "LocalModelInvocationRecord",
+        "LocalObservabilityLogRecord",
+        "LocalUsageLedgerEntry",
+        "MemoryGraphFixture",
+        "ModuleKind",
+        "ModuleManifest",
+        "ModuleManifestValidationError",
+        "Permission",
+        "PermissionPolicy",
+        "Policy",
+        "PolicyAttributeCondition",
+        "PolicyAttributeExpression",
+        "PolicyDecision",
+        "PolicyDecisionReason",
+        "PolicyDecisionRecord",
+        "PolicyRulePack",
+        "PolicyTemplate",
+        "ProvenanceBehavior",
+        "ProvenanceRequirement",
+        "PublishedTarget",
+        "RUN_LEDGER_CONTRACT_VERSION",
+        "RUN_LEDGER_PATH_ENV",
+        "RetrievalTrace",
+        "RunLedgerEntry",
+        "RunLedgerProvenance",
+        "RunLedgerStatus",
+        "RunMode",
+        "RunObservabilityMetrics",
+        "RunRecord",
+        "RunStepRecord",
+        "RunStepStatus",
+        "RunStepType",
+        "SecretMetadata",
+        "SecretReference",
+        "SecretResolutionResult",
+        "SecretStorageScope",
+        "SideEffect",
+        "Source",
+        "SourceRef",
+        "SourceType",
+        "SyncConflictStrategy",
+        "SyncDirection",
+        "SyncRule",
+        "TERMINAL_RUN_STATUSES",
+        "TenantIsolationRule",
+        "Trigger",
+        "TriggerEventEnvelope",
+        "TriggerIngestionResult",
+        "TriggerKind",
+        "ValidationResult",
+        "WorkspaceRef",
+        "__version__",
+        "build_memory_graph_fixture",
+        "check_contract_version_compatibility",
+        "compile_policy_expression",
+        "detect_import_source_change",
+        "import_asyncapi_candidates",
+        "import_catalogue_candidates",
+        "import_catalogue_generated_candidates",
+        "import_mcp_candidates",
+        "import_openapi_candidates",
+        "manifest_from_dict",
+        "normalize_graph_edge_id",
+        "normalize_graph_node_id",
+        "normalize_graph_node_kind",
+        "normalize_graph_relation",
+        "normalize_identifier",
+        "normalize_label",
+        "normalize_object_id",
+        "normalize_object_kind",
+        "normalize_source_path",
+        "normalize_space_id",
+        "normalize_tags",
+        "summarize_confidence",
+        "summarize_review_status",
+        "summarize_sensitivity",
+        "validate_agent_graph_context",
+        "validate_agent_run_record",
+        "validate_app_manifest",
+        "validate_asyncapi_import_spec",
+        "validate_component_contract",
+        "validate_control_plane_manifest",
+        "validate_evidence_file_ref",
+        "validate_graph_edge",
+        "validate_graph_fragment",
+        "validate_graph_node",
+        "validate_knowledge_claim",
+        "validate_knowledge_collection",
+        "validate_knowledge_extension_manifest",
+        "validate_knowledge_link",
+        "validate_knowledge_object",
+        "validate_knowledge_source",
+        "validate_knowledge_space",
+        "validate_mcp_import_spec",
+        "validate_module_manifest",
+        "validate_openapi_import_spec",
+        "validate_run_ledger_entry",
+        "validate_run_ledger_provenance",
+        "validate_source_ref",
+        "verify_catalogue_artifacts"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory._shared": {
+      "all": [
+        "SENSITIVE_KEYS",
+        "ValidationResult",
+        "scan_sensitive_fields",
+        "validate_iso_timestamp",
+        "validate_optional_iso_timestamp"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory._shared.validation": {
+      "all": null,
+      "defines": {
+        "ValidationResult": {
+          "fields": [
+            "valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "scan_sensitive_fields": {
+          "kind": "function",
+          "signature": "(data: 'dict[str, Any] | list[Any] | Any', errors: 'list[str]', prefix: 'str' = '') -> 'None'"
+        },
+        "validate_iso_timestamp": {
+          "kind": "function",
+          "signature": "(field_name: 'str', value: 'str', errors: 'list[str]') -> 'None'"
+        },
+        "validate_optional_iso_timestamp": {
+          "kind": "function",
+          "signature": "(field_name: 'str', value: 'str | None', errors: 'list[str]') -> 'None'"
+        }
+      }
+    },
+    "omnivia_memory.app_manifest": {
+      "all": [
+        "AppManifest",
+        "AppManifestValidationError",
+        "AppState",
+        "DataSource",
+        "ProvenanceRequirement",
+        "ValidationResult",
+        "validate_app_manifest"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.app_manifest.models": {
+      "all": null,
+      "defines": {
+        "AppManifest": {
+          "fields": [
+            "manifest_version",
+            "app_id",
+            "display_name",
+            "app_version",
+            "required_module_id",
+            "compatible_harness_versions",
+            "compatible_api_versions",
+            "required_components",
+            "required_data_sources",
+            "requested_permissions",
+            "provenance",
+            "state",
+            "validation"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AppState": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "DRAFT='draft'",
+            "ACTIVE='active'",
+            "SUSPENDED='suspended'",
+            "DEPRECATED='deprecated'"
+          ]
+        },
+        "DataSource": {
+          "fields": [
+            "source_id",
+            "display_name",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ProvenanceRequirement": {
+          "fields": [
+            "require_signed",
+            "require_audit_log",
+            "allowed_source_types"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ValidationResult": {
+          "fields": [
+            "is_valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.app_manifest.validation": {
+      "all": null,
+      "defines": {
+        "AppManifestValidationError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "validate_app_manifest": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> omnivia_memory.app_manifest.models.AppManifest"
+        }
+      }
+    },
+    "omnivia_memory.app_shell_bridge": {
+      "all": [
+        "AppShellBodyDescriptor",
+        "AppShellBridgeValidationError",
+        "AppShellHostContext",
+        "AppShellRuntimeState",
+        "AppShellSource",
+        "ValidationResult",
+        "validate_app_shell_body_descriptor",
+        "validate_app_shell_host_context"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.app_shell_bridge.models": {
+      "all": null,
+      "defines": {
+        "AppShellBodyDescriptor": {
+          "fields": [
+            "app_id",
+            "body_id",
+            "source_count",
+            "sources",
+            "components",
+            "citations",
+            "degraded_component_ids",
+            "validation"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AppShellHostContext": {
+          "fields": [
+            "app_id",
+            "app_name",
+            "entity_label",
+            "runtime_state",
+            "permissions_summary",
+            "sources",
+            "last_updated",
+            "host_command_ids",
+            "validation"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AppShellRuntimeState": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "LOADING='loading'",
+            "EMPTY='empty'",
+            "ERROR='error'",
+            "MISSING_CONNECTOR='missing-connector'",
+            "MISSING_PERMISSION='missing-permission'",
+            "AI_RUNNING='ai-running'",
+            "READY='ready'"
+          ]
+        },
+        "AppShellSource": {
+          "fields": [
+            "name",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ValidationResult": {
+          "fields": [
+            "is_valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.app_shell_bridge.validation": {
+      "all": null,
+      "defines": {
+        "AppShellBridgeValidationError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "validate_app_shell_body_descriptor": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> 'AppShellBodyDescriptor'"
+        },
+        "validate_app_shell_host_context": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> 'AppShellHostContext'"
+        }
+      }
+    },
+    "omnivia_memory.component_contract": {
+      "all": [
+        "AgentAction",
+        "AgentBackedComponentContract",
+        "AgentBehavior",
+        "AgentRunRecord",
+        "AgentRunStatus",
+        "ApprovalPolicy",
+        "AuditRequirement",
+        "ComponentAIMode",
+        "ComponentConnectorScope",
+        "ComponentContract",
+        "ComponentContractValidationError",
+        "ComponentDataSource",
+        "ComponentFamily",
+        "ComponentGraphScope",
+        "ComponentInput",
+        "ComponentOutput",
+        "ComponentOutputType",
+        "ComponentPermission",
+        "ComponentRunMode",
+        "ComponentSafetyLevel",
+        "PermissionPolicy",
+        "ProvenanceBehavior",
+        "ProvenanceRequirement",
+        "ValidationResult",
+        "validate_agent_run_record",
+        "validate_component_contract"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.component_contract.models": {
+      "all": null,
+      "defines": {
+        "AgentAction": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "READ='read'",
+            "SUGGEST='suggest'",
+            "DRAFT='draft'",
+            "LOCAL_WRITE='local_write'",
+            "GRAPH_MUTATION='graph_mutation'",
+            "EXTERNAL_ACTION='external_action'",
+            "SEND='send'",
+            "PUBLISH='publish'"
+          ]
+        },
+        "AgentBackedComponentContract": {
+          "fields": [
+            "app_compatibility",
+            "data_sources",
+            "ai_mode",
+            "run_mode",
+            "agent_behavior",
+            "output_type",
+            "safety_level",
+            "graph_scope",
+            "connector_scope",
+            "permission_policy",
+            "approval_policy",
+            "provenance_requirements",
+            "audit_requirements",
+            "error_states"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AgentBehavior": {
+          "fields": [
+            "objective",
+            "allowed_actions",
+            "max_safety_level"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AgentRunRecord": {
+          "fields": [
+            "run_id",
+            "component_id",
+            "status",
+            "objective",
+            "approval_required",
+            "blocked_reason",
+            "output_summary",
+            "error_message",
+            "audit_event_ids"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AgentRunStatus": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "PENDING='pending'",
+            "BLOCKED='blocked'",
+            "APPROVAL_REQUIRED='approval_required'",
+            "COMPLETED='completed'",
+            "FAILED='failed'"
+          ]
+        },
+        "ApprovalPolicy": {
+          "fields": [
+            "human_required",
+            "approval_reason",
+            "approver_role"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AuditRequirement": {
+          "fields": [
+            "required",
+            "event_types"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentAIMode": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "LOCAL_FIRST='local_first'",
+            "CONFIGURED_ROUTE='configured_route'",
+            "EXTERNAL_APPROVED='external_approved'"
+          ]
+        },
+        "ComponentConnectorScope": {
+          "fields": [
+            "connector_ids",
+            "allow_external_action"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentContract": {
+          "fields": [
+            "contract_version",
+            "component_id",
+            "display_name",
+            "family",
+            "version",
+            "inputs",
+            "outputs",
+            "permission_requirements",
+            "provenance_behavior",
+            "validation",
+            "agent_backed"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentDataSource": {
+          "fields": [
+            "source_id",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentFamily": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "UI='ui'",
+            "DATA='data'",
+            "LOGIC='logic'",
+            "INTEGRATION='integration'",
+            "UTILITY='utility'"
+          ]
+        },
+        "ComponentGraphScope": {
+          "fields": [
+            "node_types",
+            "edge_types",
+            "allow_write"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentInput": {
+          "fields": [
+            "name",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentOutput": {
+          "fields": [
+            "name",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentOutputType": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "BRIEF='brief'",
+            "SUGGESTIONS='suggestions'",
+            "DRAFT='draft'",
+            "EVIDENCE='evidence'",
+            "REPORT='report'"
+          ]
+        },
+        "ComponentPermission": {
+          "fields": [
+            "name",
+            "description"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ComponentRunMode": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "MANUAL='manual'",
+            "APPROVAL_GATED='approval_gated'"
+          ]
+        },
+        "ComponentSafetyLevel": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "LEVEL_0='level_0'",
+            "LEVEL_1='level_1'",
+            "LEVEL_2='level_2'",
+            "LEVEL_3='level_3'",
+            "LEVEL_4='level_4'",
+            "LEVEL_5='level_5'"
+          ]
+        },
+        "PermissionPolicy": {
+          "fields": [
+            "required_permissions",
+            "allowed_actions"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ProvenanceBehavior": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "PASSTHROUGH='passthrough'",
+            "TRACK='track'",
+            "SIGN='sign'",
+            "VERIFY='verify'"
+          ]
+        },
+        "ProvenanceRequirement": {
+          "fields": [
+            "require_sources",
+            "require_citations",
+            "require_audit_log"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ValidationResult": {
+          "fields": [
+            "is_valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.component_contract.validation": {
+      "all": null,
+      "defines": {
+        "ComponentContractValidationError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "validate_agent_run_record": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> 'AgentRunRecord'"
+        },
+        "validate_component_contract": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> 'ComponentContract'"
+        }
+      }
+    },
+    "omnivia_memory.control_plane": {
+      "all": [
+        "Agent",
+        "Approval",
+        "AuditEvent",
+        "Automation",
+        "CONTROL_PLANE_CONTRACT_VERSION",
+        "CONTROL_PLANE_SCHEMA_VERSION",
+        "Capability",
+        "CapabilityType",
+        "CatalogueArtifactVerification",
+        "Connection",
+        "ConnectionKind",
+        "ConsultantAccessGrant",
+        "ConsultantGrantStatus",
+        "ControlPlaneManifest",
+        "ControlPlaneRunStatus",
+        "ControlPlaneValidationError",
+        "DANGEROUS_SIDE_EFFECTS",
+        "ExecutionMode",
+        "ExecutionResult",
+        "ImportRecord",
+        "ImportSourceChange",
+        "ImportSourceProtocol",
+        "ImportSpecValidation",
+        "ImportedCandidateSet",
+        "LifecycleState",
+        "LocalApprovalNotification",
+        "LocalApprovalNotificationChannel",
+        "LocalApprovalNotificationEvent",
+        "LocalApprovalNotificationStatus",
+        "LocalModelInvocationRecord",
+        "LocalObservabilityLogRecord",
+        "LocalUsageLedgerEntry",
+        "Policy",
+        "PolicyAttributeCondition",
+        "PolicyAttributeExpression",
+        "PolicyDecision",
+        "PolicyDecisionReason",
+        "PolicyDecisionRecord",
+        "PolicyRulePack",
+        "PolicyTemplate",
+        "RunMode",
+        "RunObservabilityMetrics",
+        "RunRecord",
+        "RunStepRecord",
+        "RunStepStatus",
+        "RunStepType",
+        "SecretMetadata",
+        "SecretReference",
+        "SecretResolutionResult",
+        "SecretStorageScope",
+        "SideEffect",
+        "SyncConflictStrategy",
+        "SyncDirection",
+        "SyncRule",
+        "TenantIsolationRule",
+        "Trigger",
+        "TriggerEventEnvelope",
+        "TriggerIngestionResult",
+        "TriggerKind",
+        "ValidationResult",
+        "WorkspaceRef",
+        "compile_policy_expression",
+        "detect_import_source_change",
+        "import_asyncapi_candidates",
+        "import_catalogue_candidates",
+        "import_catalogue_generated_candidates",
+        "import_mcp_candidates",
+        "import_openapi_candidates",
+        "manifest_from_dict",
+        "validate_asyncapi_import_spec",
+        "validate_control_plane_manifest",
+        "validate_mcp_import_spec",
+        "validate_openapi_import_spec",
+        "verify_catalogue_artifacts"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.control_plane.imports": {
+      "all": null,
+      "defines": {
+        "CatalogueArtifactVerification": {
+          "fields": [
+            "valid",
+            "errors"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ImportSourceChange": {
+          "fields": [
+            "import_record_id",
+            "source_ref",
+            "previous_source_hash",
+            "current_source_hash",
+            "changed",
+            "reason"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ImportSpecValidation": {
+          "fields": [
+            "valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ImportedCandidateSet": {
+          "fields": [
+            "import_record",
+            "connections",
+            "capabilities",
+            "triggers"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "detect_import_source_change": {
+          "kind": "function",
+          "signature": "(previous: 'ImportRecord', current: 'ImportedCandidateSet') -> 'ImportSourceChange'"
+        },
+        "import_asyncapi_candidates": {
+          "kind": "function",
+          "signature": "(source_ref: 'str', spec: 'dict[str, Any]', *, connection_id: 'str | None' = None) -> 'ImportedCandidateSet'"
+        },
+        "import_catalogue_candidates": {
+          "kind": "function",
+          "signature": "(source_ref: 'str', entry: 'dict[str, Any]') -> 'ImportedCandidateSet'"
+        },
+        "import_catalogue_generated_candidates": {
+          "kind": "function",
+          "signature": "(source_ref: 'str', catalog: 'dict[str, Any]', search_index: 'dict[str, Any]', manifest: 'dict[str, Any]') -> 'list[ImportedCandidateSet]'"
+        },
+        "import_mcp_candidates": {
+          "kind": "function",
+          "signature": "(source_ref: 'str', spec: 'dict[str, Any]', *, connection_id: 'str | None' = None) -> 'ImportedCandidateSet'"
+        },
+        "import_openapi_candidates": {
+          "kind": "function",
+          "signature": "(source_ref: 'str', spec: 'dict[str, Any]', *, connection_id: 'str | None' = None) -> 'ImportedCandidateSet'"
+        },
+        "validate_asyncapi_import_spec": {
+          "kind": "function",
+          "signature": "(spec: 'dict[str, Any]') -> 'ImportSpecValidation'"
+        },
+        "validate_mcp_import_spec": {
+          "kind": "function",
+          "signature": "(spec: 'dict[str, Any]') -> 'ImportSpecValidation'"
+        },
+        "validate_openapi_import_spec": {
+          "kind": "function",
+          "signature": "(spec: 'dict[str, Any]') -> 'ImportSpecValidation'"
+        },
+        "verify_catalogue_artifacts": {
+          "kind": "function",
+          "signature": "(catalog: 'dict[str, Any]', search_index: 'dict[str, Any]', manifest: 'dict[str, Any]') -> 'CatalogueArtifactVerification'"
+        }
+      }
+    },
+    "omnivia_memory.control_plane.models": {
+      "all": null,
+      "defines": {
+        "Agent": {
+          "fields": [
+            "id",
+            "display_name",
+            "allowed_capabilities",
+            "run_mode"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Approval": {
+          "fields": [
+            "id",
+            "capability_ids",
+            "automation_ids",
+            "approved",
+            "approver_role",
+            "actor_id",
+            "comment",
+            "timeout_seconds",
+            "escalation_state",
+            "run_id",
+            "resource_type",
+            "resource_id",
+            "requested_at",
+            "decided_at",
+            "expires_at",
+            "assigned_actor_id",
+            "assigned_role",
+            "assigned_at",
+            "escalated_at",
+            "escalation_reason"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "AuditEvent": {
+          "fields": [
+            "id",
+            "event_type",
+            "resource_id",
+            "run_id"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Automation": {
+          "fields": [
+            "id",
+            "agent_id",
+            "capability_id",
+            "trigger_id",
+            "policy_ids",
+            "approval_ids",
+            "run_mode",
+            "lifecycle",
+            "max_steps",
+            "max_cost_units",
+            "max_token_usage",
+            "max_retries"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Capability": {
+          "fields": [
+            "id",
+            "capability_type",
+            "connection_id",
+            "side_effect",
+            "lifecycle",
+            "display_name",
+            "import_record_id",
+            "input_schema",
+            "output_schema",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "CapabilityType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "ACTION='action'",
+            "QUERY='query'",
+            "RESOURCE='resource'",
+            "PROMPT='prompt'",
+            "EVENT_SOURCE='event_source'"
+          ]
+        },
+        "Connection": {
+          "fields": [
+            "id",
+            "kind",
+            "display_name",
+            "lifecycle",
+            "secret_refs",
+            "catalogue_entry_id"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ConnectionKind": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "APP='app'",
+            "API='api'",
+            "MCP='mcp'",
+            "WEBHOOK='webhook'",
+            "INTERNAL='internal'"
+          ]
+        },
+        "ConsultantAccessGrant": {
+          "fields": [
+            "id",
+            "consultant_id",
+            "client_workspace_id",
+            "role",
+            "policy_ids",
+            "status",
+            "granted_by",
+            "granted_at",
+            "revoked_at",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ConsultantGrantStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "ACTIVE='active'",
+            "REVOKED='revoked'",
+            "EXPIRED='expired'"
+          ]
+        },
+        "ControlPlaneManifest": {
+          "fields": [
+            "workspace",
+            "schema_version",
+            "connections",
+            "capabilities",
+            "agents",
+            "triggers",
+            "automations",
+            "policies",
+            "policy_templates",
+            "policy_rule_packs",
+            "approvals",
+            "run_records",
+            "audit_events",
+            "import_records",
+            "secret_metadata",
+            "sync_rules",
+            "tenant_isolation_rules",
+            "consultant_access_grants",
+            "local_approval_notifications",
+            "contract_version"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ControlPlaneRunStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PENDING='pending'",
+            "QUEUED='queued'",
+            "RUNNING='running'",
+            "WAITING_FOR_APPROVAL='waiting_for_approval'",
+            "APPROVAL_REQUIRED='approval_required'",
+            "COMPLETED='completed'",
+            "SUCCEEDED='succeeded'",
+            "FAILED='failed'",
+            "BLOCKED='blocked'",
+            "CANCELLED='cancelled'",
+            "REJECTED='rejected'",
+            "TIMED_OUT='timed_out'",
+            "PARTIALLY_COMPLETED='partially_completed'"
+          ]
+        },
+        "ExecutionMode": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "DRY_RUN='dry_run'",
+            "SUPERVISED='supervised'"
+          ]
+        },
+        "ExecutionResult": {
+          "fields": [
+            "run_record",
+            "steps",
+            "policy_decision",
+            "model_invocation",
+            "paused",
+            "error"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ImportRecord": {
+          "fields": [
+            "id",
+            "source_protocol",
+            "source_ref",
+            "candidate_capability_ids",
+            "released_capability_ids",
+            "source_hash",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ImportSourceProtocol": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "MCP='mcp'",
+            "OPENAPI='openapi'",
+            "ASYNCAPI='asyncapi'",
+            "CLOUDEVENTS='cloudevents'",
+            "CATALOGUE='catalogue'"
+          ]
+        },
+        "LifecycleState": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "DRAFT='draft'",
+            "CANDIDATE='candidate'",
+            "VALIDATED='validated'",
+            "REVIEWED='reviewed'",
+            "ACTIVE='active'",
+            "DISABLED='disabled'",
+            "SUSPENDED='suspended'",
+            "DEPRECATED='deprecated'",
+            "ARCHIVED='archived'",
+            "REJECTED='rejected'"
+          ]
+        },
+        "LocalApprovalNotification": {
+          "fields": [
+            "id",
+            "run_id",
+            "workspace_id",
+            "channel",
+            "event_type",
+            "status",
+            "approval_id",
+            "capability_id",
+            "automation_id",
+            "recipient_actor_id",
+            "recipient_role",
+            "reason",
+            "comment",
+            "attempt_count",
+            "last_error",
+            "audit_event_id",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "LocalApprovalNotificationChannel": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "LOCAL_INBOX='local_inbox'",
+            "IN_APP='in_app'",
+            "LOG='log'",
+            "EMAIL='email'",
+            "WEBHOOK='webhook'"
+          ]
+        },
+        "LocalApprovalNotificationEvent": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "APPROVAL_REQUESTED='approval_requested'",
+            "APPROVAL_ASSIGNED='approval_assigned'",
+            "APPROVAL_ESCALATED='approval_escalated'",
+            "APPROVAL_TIMEOUT_PENDING='approval_timeout_pending'",
+            "APPROVAL_EXPIRED='approval_expired'"
+          ]
+        },
+        "LocalApprovalNotificationStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "QUEUED='queued'",
+            "SENT='sent'",
+            "FAILED='failed'",
+            "SUPPRESSED='suppressed'"
+          ]
+        },
+        "LocalModelInvocationRecord": {
+          "fields": [
+            "id",
+            "run_id",
+            "step_id",
+            "agent_id",
+            "trace_id",
+            "span_id",
+            "model_provider",
+            "model_name",
+            "invocation_type",
+            "prompt_redacted",
+            "output_redacted",
+            "token_usage",
+            "cost_units",
+            "audit_event_id",
+            "created_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "LocalObservabilityLogRecord": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "run_id",
+            "trace_id",
+            "event_type",
+            "message",
+            "metadata",
+            "retention_expires_at",
+            "audit_event_id",
+            "created_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "LocalUsageLedgerEntry": {
+          "fields": [
+            "workspace_id",
+            "subject_type",
+            "subject_id",
+            "run_count",
+            "token_usage",
+            "cost_units",
+            "generated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Policy": {
+          "fields": [
+            "id",
+            "decision",
+            "capability_ids",
+            "automation_ids",
+            "allowed_actor_roles",
+            "required_actor_attributes",
+            "required_workspace_attributes",
+            "attribute_conditions",
+            "attribute_expression",
+            "max_cost_units",
+            "max_token_usage",
+            "timeout_seconds",
+            "retention_days",
+            "safety_classification",
+            "compliance_blocked",
+            "reason"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PolicyAttributeCondition": {
+          "fields": [
+            "scope",
+            "key",
+            "operator",
+            "value",
+            "values"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PolicyAttributeExpression": {
+          "fields": [
+            "op",
+            "children",
+            "condition"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PolicyDecision": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "ALLOW='allow'",
+            "REQUIRE_APPROVAL='require_approval'",
+            "DENY='deny'"
+          ]
+        },
+        "PolicyDecisionReason": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "ALLOW_READ_SAFE='allow_read_safe'",
+            "ALLOW_APPROVED='allow_approved'",
+            "DENY_UNKNOWN_WORKSPACE='deny_unknown_workspace'",
+            "DENY_UNKNOWN_CAPABILITY='deny_unknown_capability'",
+            "DENY_UNKNOWN_AUTOMATION='deny_unknown_automation'",
+            "DENY_AGENT_CAPABILITY_SCOPE='deny_agent_capability_scope'",
+            "DENY_INACTIVE_CAPABILITY='deny_inactive_capability'",
+            "DENY_INACTIVE_AUTOMATION='deny_inactive_automation'",
+            "DENY_EXPLICIT_POLICY='deny_explicit_policy'",
+            "DENY_ACTOR_ROLE='deny_actor_role'",
+            "DENY_POLICY_ATTRIBUTE='deny_policy_attribute'",
+            "DENY_POLICY_BUDGET='deny_policy_budget'",
+            "DENY_WORKSPACE_BUDGET='deny_workspace_budget'",
+            "DENY_SAFETY_COMPLIANCE='deny_safety_compliance'",
+            "DENY_MISSING_POLICY='deny_missing_policy'",
+            "REQUIRE_APPROVAL_POLICY='require_approval_policy'",
+            "REQUIRE_APPROVAL_DANGEROUS='require_approval_dangerous'"
+          ]
+        },
+        "PolicyDecisionRecord": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "decision",
+            "reason_code",
+            "capability_id",
+            "automation_id",
+            "agent_id",
+            "actor_id",
+            "actor_role",
+            "policy_ids",
+            "approval_ids",
+            "audit_event_id",
+            "created_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PolicyRulePack": {
+          "fields": [
+            "id",
+            "display_name",
+            "template_ids",
+            "lifecycle",
+            "reason"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PolicyTemplate": {
+          "fields": [
+            "id",
+            "display_name",
+            "decision",
+            "allowed_actor_roles",
+            "required_actor_attributes",
+            "required_workspace_attributes",
+            "attribute_conditions",
+            "attribute_expression",
+            "max_cost_units",
+            "max_token_usage",
+            "timeout_seconds",
+            "retention_days",
+            "safety_classification",
+            "compliance_blocked",
+            "reason",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "RunMode": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "MANUAL='manual'",
+            "AUTOMATIC='automatic'",
+            "APPROVAL_GATED='approval_gated'",
+            "DRY_RUN='dry_run'"
+          ]
+        },
+        "RunObservabilityMetrics": {
+          "fields": [
+            "workspace_id",
+            "run_count",
+            "completed_count",
+            "failed_count",
+            "waiting_for_approval_count",
+            "success_rate",
+            "retry_count",
+            "token_usage",
+            "cost_units",
+            "connector_health",
+            "generated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "RunRecord": {
+          "fields": [
+            "id",
+            "automation_id",
+            "status",
+            "run_ledger_ref",
+            "run_ledger_entry_id",
+            "trace_id",
+            "retention_expires_at",
+            "started_at",
+            "updated_at",
+            "resume_token",
+            "resume_after",
+            "resume_reason",
+            "retry_count"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "RunStepRecord": {
+          "fields": [
+            "id",
+            "run_id",
+            "step_type",
+            "status",
+            "capability_id",
+            "agent_id",
+            "policy_decision_id",
+            "trace_id",
+            "span_id",
+            "audit_event_id",
+            "attempt",
+            "error",
+            "cost_units",
+            "token_usage",
+            "created_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "RunStepStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PLANNED='planned'",
+            "SIMULATED='simulated'",
+            "WAITING_FOR_APPROVAL='waiting_for_approval'",
+            "COMPLETED='completed'",
+            "FAILED='failed'",
+            "CANCELLED='cancelled'"
+          ]
+        },
+        "RunStepType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "AGENT='agent'",
+            "CAPABILITY='capability'",
+            "APPROVAL_WAIT='approval_wait'"
+          ]
+        },
+        "SecretMetadata": {
+          "fields": [
+            "id",
+            "secret_ref",
+            "owner_workspace_id",
+            "storage_scope",
+            "provider",
+            "client_owned",
+            "syncable",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "SecretReference": {
+          "fields": [
+            "secret_ref",
+            "provider",
+            "scope"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "SecretResolutionResult": {
+          "fields": [
+            "secret_ref",
+            "resolved",
+            "provider",
+            "storage_scope",
+            "client_owned",
+            "audit_event_id",
+            "error"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "SecretStorageScope": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "LOCAL_ONLY='local_only'",
+            "CLOUD='cloud'",
+            "CLIENT_OWNED='client_owned'"
+          ]
+        },
+        "SideEffect": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "NONE='none'",
+            "READ='read'",
+            "LOCAL_WRITE='local_write'",
+            "EXTERNAL_WRITE='external_write'",
+            "SEND='send'",
+            "PUBLISH='publish'",
+            "DESTRUCTIVE='destructive'",
+            "FINANCIAL='financial'",
+            "ADMIN='admin'"
+          ]
+        },
+        "SyncConflictStrategy": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "LOCAL_WINS='local_wins'",
+            "CLOUD_WINS='cloud_wins'",
+            "NEWEST_VERSION_WINS='newest_version_wins'",
+            "MANUAL_REVIEW='manual_review'"
+          ]
+        },
+        "SyncDirection": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "NONE='none'",
+            "LOCAL_TO_CLOUD='local_to_cloud'",
+            "CLOUD_TO_LOCAL='cloud_to_local'",
+            "BIDIRECTIONAL='bidirectional'"
+          ]
+        },
+        "SyncRule": {
+          "fields": [
+            "id",
+            "resource_type",
+            "direction",
+            "conflict_strategy",
+            "include_lifecycle_states",
+            "audit_required",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "TenantIsolationRule": {
+          "fields": [
+            "id",
+            "tenant_id",
+            "workspace_id",
+            "client_workspace_id",
+            "data_boundary",
+            "cross_client_sharing_allowed",
+            "lifecycle"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Trigger": {
+          "fields": [
+            "id",
+            "kind",
+            "capability_id",
+            "event_type",
+            "lifecycle",
+            "schedule_rrule",
+            "schedule_start_at",
+            "cooldown_seconds",
+            "debounce_seconds"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "TriggerEventEnvelope": {
+          "fields": [
+            "id",
+            "trigger_id",
+            "event_type",
+            "source",
+            "subject",
+            "occurred_at",
+            "idempotency_key",
+            "actor_id",
+            "data_ref"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "TriggerIngestionResult": {
+          "fields": [
+            "accepted",
+            "run_record",
+            "duplicate_of_run_id",
+            "dead_letter_reason",
+            "audit_event_id"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "TriggerKind": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "MANUAL='manual'",
+            "SCHEDULE='schedule'",
+            "WEBHOOK='webhook'",
+            "CLOUDEVENT='cloudevent'",
+            "CATALOGUE_EVENT='catalogue_event'"
+          ]
+        },
+        "ValidationResult": {
+          "fields": [
+            "valid",
+            "errors",
+            "warnings"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "WorkspaceRef": {
+          "fields": [
+            "id",
+            "name",
+            "max_cost_units",
+            "max_token_usage"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.control_plane.registry": {
+      "all": null,
+      "defines": {
+        "CapabilityExecutionContext": {
+          "fields": [
+            "workspace_id",
+            "run_id",
+            "capability_id",
+            "side_effect",
+            "input_schema",
+            "output_schema",
+            "trace_id",
+            "span_id",
+            "policy_decision_id",
+            "connection_id",
+            "connection_kind",
+            "input_payload"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "CapabilityExecutionOutput": {
+          "fields": [
+            "output",
+            "diagnostics"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ControlPlaneRegistry": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "activate_resource(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str') -> 'None'",
+            "add_capability_policy_coverage(self, workspace_id: 'str', capability_id: 'str', *, decision: 'PolicyDecision' = <PolicyDecision.REQUIRE_APPROVAL: 'require_approval'>, policy_id: 'str | None' = None, reason: 'str' = 'Policy coverage required before promotion.', actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "apply_policy_rule_pack(self, workspace_id: 'str', rule_pack_id: 'str', *, capability_ids: 'list[str] | None' = None, automation_ids: 'list[str] | None' = None, policy_id_prefix: 'str | None' = None, actor_id: 'str | None' = None, comment: 'str' = '') -> 'list[Policy]'",
+            "apply_policy_template(self, workspace_id: 'str', template_id: 'str', *, capability_ids: 'list[str] | None' = None, automation_ids: 'list[str] | None' = None, policy_id: 'str | None' = None, actor_id: 'str | None' = None, comment: 'str' = '') -> 'Policy'",
+            "archive_resource(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str') -> 'None'",
+            "assign_approval_request(self, workspace_id: 'str', run_id: 'str', *, assigned_role: 'str | None' = None, assigned_actor_id: 'str | None' = None, actor_id: 'str | None' = None, approval_id: 'str | None' = None, timeout_seconds: 'int | None' = None, comment: 'str' = '') -> 'Approval'",
+            "author_policy(self, workspace_id: 'str', policy: 'Policy', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "author_policy_rule_pack(self, workspace_id: 'str', rule_pack: 'PolicyRulePack', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "author_policy_template(self, workspace_id: 'str', template: 'PolicyTemplate', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "bind_connection_secret_reference(self, workspace_id: 'str', connection_id: 'str', *, secret_ref: 'str', provider: 'str' = 'local-keychain', actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "cancel_run(self, workspace_id: 'str', run_id: 'str', *, actor_id: 'str | None' = None, reason: 'str' = '') -> 'RunRecord'",
+            "claim_due_run(self, workspace_id: 'str', *, worker_id: 'str', now: 'str | None' = None, resume_reasons: 'frozenset[str] | None' = None) -> 'RunRecord | None'",
+            "create_manifest(self, manifest: 'ControlPlaneManifest | dict[str, Any]') -> 'ControlPlaneManifest'",
+            "deprecate_resource(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str') -> 'None'",
+            "disable_resource(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str') -> 'None'",
+            "enqueue_approval_notification(self, workspace_id: 'str', run_id: 'str', *, event_type: 'LocalApprovalNotificationEvent | str', channel: 'LocalApprovalNotificationChannel | str' = <LocalApprovalNotificationChannel.LOCAL_INBOX: 'local_inbox'>, approval_id: 'str | None' = None, recipient_actor_id: 'str | None' = None, recipient_role: 'str | None' = None, reason: 'str' = '', comment: 'str' = '', notification_id: 'str | None' = None, actor_id: 'str | None' = None) -> 'LocalApprovalNotification'",
+            "escalate_approval_request(self, workspace_id: 'str', run_id: 'str', *, approval_id: 'str | None' = None, actor_id: 'str | None' = None, escalation_reason: 'str' = '') -> 'Approval'",
+            "evaluate_capability_access(self, workspace_id: 'str', capability_id: 'str', *, automation_id: 'str | None' = None, agent_id: 'str | None' = None, actor_id: 'str | None' = None, actor_role: 'str | None' = None, actor_attributes: 'Mapping[str, str] | None' = None, workspace_attributes: 'Mapping[str, str] | None' = None, estimated_cost_units: 'int' = 0, estimated_token_usage: 'int' = 0) -> 'PolicyDecisionRecord'",
+            "execute_run(self, workspace_id: 'str', run_id: 'str', *, mode: 'ExecutionMode | str' = <ExecutionMode.DRY_RUN: 'dry_run'>, actor_id: 'str | None' = None, cost_center: 'str | None' = None, actor_role: 'str | None' = None, actor_attributes: 'Mapping[str, str] | None' = None, workspace_attributes: 'Mapping[str, str] | None' = None, max_steps: 'int' = 4, input_payload: 'Mapping[str, Any] | None' = None, output_payload: 'Mapping[str, Any] | None' = None, estimated_cost_units: 'int' = 0, estimated_token_usage: 'int' = 0, model_provider: 'str | None' = None, model_name: 'str | None' = None, model_token_usage: 'int' = 0, model_cost_units: 'int' = 0, invocation_type: 'str | None' = None, capability_executor: 'CapabilityExecutor | None' = None) -> 'ExecutionResult'",
+            "get_manifest(self, workspace_id: 'str') -> 'ControlPlaneManifest | None'",
+            "get_run_observability_events(self, workspace_id: 'str', run_id: 'str') -> 'list[dict[str, Any]]'",
+            "ingest_trigger_event(self, workspace_id: 'str', event: 'TriggerEventEnvelope | dict[str, Any]') -> 'TriggerIngestionResult'",
+            "list_display_records(self, workspace_id: 'str', resource_type: 'str | None' = None, lifecycle: 'LifecycleState | None' = None) -> 'list[ControlPlaneResourceRecord]'",
+            "list_due_runs(self, workspace_id: 'str', *, now: 'str | None' = None, limit: 'int | None' = None, resume_reasons: 'frozenset[str] | None' = None) -> 'list[RunRecord]'",
+            "list_pending_approval_notifications(self, workspace_id: 'str') -> 'list[LocalApprovalNotification]'",
+            "materialize_due_schedule_triggers_once(self, workspace_id: 'str', *, now: 'str | None' = None, limit: 'int' = 20) -> 'list[TriggerIngestionResult]'",
+            "materialize_run_ledger_entry(self, workspace_id: 'str', run_id: 'str', *, task_id: 'str' = 'control-plane-automation', target_repo: 'str' = 'omnivia-core', lane_id: 'str' = 'control-plane', evidence_file_refs: 'list[EvidenceFileRef] | None' = None) -> 'RunLedgerEntry'",
+            "process_approval_timeouts(self, workspace_id: 'str', *, now: 'str | None' = None, actor_id: 'str | None' = None, reason: 'str' = 'approval_timeout') -> 'list[RunRecord]'",
+            "process_approved_runs_once(self, workspace_id: 'str', *, worker_id: 'str', now: 'str | None' = None, limit: 'int' = 1, mode: 'ExecutionMode | str' = <ExecutionMode.DRY_RUN: 'dry_run'>, actor_id: 'str | None' = None, cost_center: 'str | None' = None, actor_role: 'str | None' = None, actor_attributes: 'Mapping[str, str] | None' = None, workspace_attributes: 'Mapping[str, str] | None' = None, max_steps: 'int' = 4, input_payload: 'Mapping[str, Any] | None' = None, output_payload: 'Mapping[str, Any] | None' = None, estimated_cost_units: 'int' = 0, estimated_token_usage: 'int' = 0, model_provider: 'str | None' = None, model_name: 'str | None' = None, model_token_usage: 'int' = 0, model_cost_units: 'int' = 0, invocation_type: 'str | None' = None, capability_executor: 'CapabilityExecutor | None' = None) -> 'list[ExecutionResult]'",
+            "process_due_runs_once(self, workspace_id: 'str', *, worker_id: 'str', now: 'str | None' = None, limit: 'int' = 1, mode: 'ExecutionMode | str' = <ExecutionMode.DRY_RUN: 'dry_run'>, actor_id: 'str | None' = None, cost_center: 'str | None' = None, actor_role: 'str | None' = None, actor_attributes: 'Mapping[str, str] | None' = None, workspace_attributes: 'Mapping[str, str] | None' = None, max_steps: 'int' = 4, input_payload: 'Mapping[str, Any] | None' = None, output_payload: 'Mapping[str, Any] | None' = None, estimated_cost_units: 'int' = 0, estimated_token_usage: 'int' = 0, model_provider: 'str | None' = None, model_name: 'str | None' = None, model_token_usage: 'int' = 0, model_cost_units: 'int' = 0, invocation_type: 'str | None' = None, resume_reasons: 'frozenset[str] | None' = None, capability_executor: 'CapabilityExecutor | None' = None) -> 'list[ExecutionResult]'",
+            "promote_reviewed_candidate(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "record_approval_decision(self, workspace_id: 'str', run_id: 'str', *, approved: 'bool', approver_role: 'str', actor_id: 'str | None' = None, comment: 'str' = '', approval_id: 'str | None' = None, reason: 'str' = '') -> 'RunRecord'",
+            "record_consultant_action(self, workspace_id: 'str', *, consultant_id: 'str', grant_id: 'str', action: 'str', policy_id: 'str', actor_role: 'str' = 'consultant') -> 'PolicyDecisionRecord'",
+            "record_local_observability_log(self, workspace_id: 'str', *, run_id: 'str | None' = None, trace_id: 'str | None' = None, event_type: 'str' = 'local.log', message: 'str' = '', metadata: 'dict[str, Any] | None' = None, retention_days: 'int' = 30) -> 'LocalObservabilityLogRecord'",
+            "reject_candidate(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "remove_policy(self, workspace_id: 'str', policy_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "remove_policy_rule_pack(self, workspace_id: 'str', rule_pack_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "remove_policy_template(self, workspace_id: 'str', template_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "resolve_local_secret_reference(self, workspace_id: 'str', secret_ref: 'str', local_vault: 'Mapping[str, str]', *, actor_id: 'str | None' = None) -> 'SecretResolutionResult'",
+            "resume_run(self, workspace_id: 'str', run_id: 'str', *, resume_token: 'str | None' = None, actor_id: 'str | None' = None, reason: 'str' = '') -> 'RunRecord'",
+            "retry_run(self, workspace_id: 'str', run_id: 'str', *, actor_id: 'str | None' = None, reason: 'str' = '', base_delay_seconds: 'int' = 30, max_delay_seconds: 'int' = 3600, now: 'str | None' = None) -> 'RunRecord'",
+            "review_candidate(self, workspace_id: 'str', resource_type: 'str', resource_id: 'str', *, actor_id: 'str | None' = None, comment: 'str' = '') -> 'None'",
+            "revoke_consultant_access(self, workspace_id: 'str', grant_id: 'str', *, actor_id: 'str', reason: 'str' = '', revoked_at: 'str | None' = None) -> 'ConsultantAccessGrant'",
+            "store_manifest(self, manifest: 'ControlPlaneManifest | dict[str, Any]') -> 'ControlPlaneManifest'",
+            "summarize_observability_metrics(self, workspace_id: 'str') -> 'RunObservabilityMetrics'",
+            "summarize_usage_by_actor(self, workspace_id: 'str') -> 'list[LocalUsageLedgerEntry]'",
+            "summarize_usage_by_cost_center(self, workspace_id: 'str') -> 'list[LocalUsageLedgerEntry]'",
+            "update_approval_notification(self, workspace_id: 'str', notification_id: 'str', *, status: 'LocalApprovalNotificationStatus | str', last_error: 'str | None' = None, comment: 'str | None' = None, actor_id: 'str | None' = None) -> 'LocalApprovalNotification'",
+            "update_manifest(self, manifest: 'ControlPlaneManifest | dict[str, Any]') -> 'ControlPlaneManifest'",
+            "validate_manifest(self, manifest: 'ControlPlaneManifest | dict[str, Any]')"
+          ]
+        },
+        "ControlPlaneRegistryError": {
+          "bases": [
+            "builtins.ValueError"
+          ],
+          "kind": "exception"
+        },
+        "ControlPlaneResourceRecord": {
+          "fields": [
+            "workspace_id",
+            "resource_type",
+            "resource_id",
+            "lifecycle",
+            "display_name",
+            "updated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.control_plane.validation": {
+      "all": null,
+      "defines": {
+        "ControlPlaneValidationError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "T": {
+          "kind": "constant",
+          "type": "TypeVar",
+          "value": "<TypeVar>"
+        },
+        "compile_policy_expression": {
+          "kind": "function",
+          "signature": "(source: 'str') -> 'PolicyAttributeExpression'"
+        },
+        "manifest_from_dict": {
+          "kind": "function",
+          "signature": "(data: 'Mapping[str, Any]') -> 'ControlPlaneManifest'"
+        },
+        "validate_control_plane_manifest": {
+          "kind": "function",
+          "signature": "(manifest: 'ControlPlaneManifest | Mapping[str, Any]') -> 'ValidationResult'"
+        }
+      }
+    },
+    "omnivia_memory.graph": {
+      "all": [
+        "ApprovalStatus",
+        "Entity",
+        "EntityType",
+        "GraphSearchError",
+        "GraphSearchQuery",
+        "GraphSearchResult",
+        "GraphSearchResultSet",
+        "GraphSearchService",
+        "Relationship",
+        "RelationshipType"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.graph.models": {
+      "all": null,
+      "defines": {
+        "ApprovalStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PROPOSED='proposed'",
+            "APPROVED='approved'",
+            "REJECTED='rejected'",
+            "SUPERSEDED='superseded'"
+          ]
+        },
+        "Entity": {
+          "fields": [
+            "name",
+            "entity_type",
+            "source_id",
+            "id",
+            "approval_status",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "approve(self) -> 'None'",
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Entity'",
+            "reject(self) -> 'None'",
+            "supersede(self) -> 'None'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'"
+          ]
+        },
+        "EntityCreate": {
+          "fields": [
+            "name",
+            "entity_type",
+            "provenance_source_id",
+            "properties"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "EntityMemoryLink": {
+          "fields": [
+            "entity_id",
+            "memory_id",
+            "source_id",
+            "created_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "EntityType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PERSON='person'",
+            "ORGANIZATION='organization'",
+            "CONCEPT='concept'",
+            "DOCUMENT='document'",
+            "PROJECT='project'",
+            "SYSTEM='system'",
+            "PRODUCT='product'",
+            "LOCATION='location'",
+            "TECHNOLOGY='technology'",
+            "EVENT='event'",
+            "CUSTOM='custom'"
+          ]
+        },
+        "Relationship": {
+          "fields": [
+            "source_entity_id",
+            "target_entity_id",
+            "relationship_type",
+            "source_id",
+            "id",
+            "approval_status",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "approve(self) -> 'None'",
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Relationship'",
+            "reject(self) -> 'None'",
+            "supersede(self) -> 'None'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'"
+          ]
+        },
+        "RelationshipCreate": {
+          "fields": [
+            "source_entity_id",
+            "target_entity_id",
+            "relationship_type",
+            "provenance_source_id",
+            "properties"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "RelationshipType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "RELATES_TO='relates_to'",
+            "DEPENDS_ON='depends_on'",
+            "PART_OF='part_of'",
+            "USES='uses'",
+            "IMPLEMENTS='implements'",
+            "CREATED_BY='created_by'",
+            "MAINTAINS='maintains'",
+            "KNOWS='knows'",
+            "LEADS='leads'",
+            "OCCURS_IN='occurs_in'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.graph.repository": {
+      "all": null,
+      "defines": {
+        "EntityRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "count(self) -> 'int'",
+            "create(self, entity: 'Entity') -> 'Entity'",
+            "delete(self, entity_id: 'str') -> 'bool'",
+            "get(self, entity_id: 'str') -> 'Entity | None'",
+            "list_all(self, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Entity]'",
+            "list_by_approval_status(self, status: 'ApprovalStatus') -> 'list[Entity]'",
+            "list_by_source(self, source_id: 'str') -> 'list[Entity]'",
+            "list_by_type(self, entity_type: 'EntityType') -> 'list[Entity]'",
+            "update(self, entity: 'Entity') -> 'Entity'"
+          ]
+        },
+        "RelationshipRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "count(self) -> 'int'",
+            "create(self, relationship: 'Relationship') -> 'Relationship'",
+            "delete(self, relationship_id: 'str') -> 'bool'",
+            "get(self, relationship_id: 'str') -> 'Relationship | None'",
+            "get_by_entity(self, entity_id: 'str') -> 'list[Relationship]'",
+            "get_by_type(self, entity_id: 'str', relationship_type: 'RelationshipType') -> 'list[Relationship]'",
+            "get_incoming(self, entity_id: 'str') -> 'list[Relationship]'",
+            "get_neighbors(self, entity_id: 'str') -> 'list[tuple[Entity, Relationship]]'",
+            "get_outgoing(self, entity_id: 'str') -> 'list[Relationship]'",
+            "link_to_memory(self, entity_id: 'str', memory_id: 'str', source_id: 'str') -> 'bool'",
+            "list_all(self, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Relationship]'",
+            "update(self, relationship: 'Relationship') -> 'Relationship'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.graph.search_models": {
+      "all": null,
+      "defines": {
+        "GraphSearchQuery": {
+          "fields": [
+            "query",
+            "entity_types",
+            "relationship_types",
+            "depth",
+            "limit"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphSearchQuery'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphSearchResult": {
+          "fields": [
+            "entity",
+            "score",
+            "matched_on",
+            "context_entities"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphSearchResult'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphSearchResultSet": {
+          "fields": [
+            "results",
+            "total_count",
+            "query"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphSearchResultSet'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "compute_relevance_score": {
+          "kind": "function",
+          "signature": "(query: 'str', entity_name: 'str', outgoing_relationships: 'int' = 0, incoming_relationships: 'int' = 0, neighbor_names: 'list[str] | None' = None, name_weight: 'float' = 0.5, relationship_weight: 'float' = 0.25, neighbor_weight: 'float' = 0.25) -> 'float'"
+        },
+        "score_name_match": {
+          "kind": "function",
+          "signature": "(query: 'str', entity_name: 'str') -> 'float'"
+        },
+        "score_neighbor_overlap": {
+          "kind": "function",
+          "signature": "(neighbors: 'list[str]', query_keywords: 'list[str]') -> 'float'"
+        },
+        "score_relationship_count": {
+          "kind": "function",
+          "signature": "(outgoing: 'int', incoming: 'int') -> 'float'"
+        }
+      }
+    },
+    "omnivia_memory.graph.search_service": {
+      "all": null,
+      "defines": {
+        "GraphSearchError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "GraphSearchService": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "get_entity_context(self, entity_id: 'str', depth: 'int' = 1) -> 'list[tuple[Entity, list[Entity]]]'",
+            "search_entities(self, query: 'str', entity_types: 'list[str | EntityType] | None' = None, limit: 'int' = 10) -> 'list[Entity]'",
+            "search_with_context(self, query: 'str', depth: 'int' = 1, limit: 'int' = 10) -> 'GraphSearchResultSet'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.graph.service": {
+      "all": null,
+      "defines": {
+        "EntityNotFoundError": {
+          "bases": [
+            "omnivia_memory.graph.service.GraphServiceError"
+          ],
+          "kind": "exception"
+        },
+        "EntityValidationError": {
+          "bases": [
+            "omnivia_memory.graph.service.GraphServiceError"
+          ],
+          "kind": "exception"
+        },
+        "GraphService": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "approve_entity(self, entity_id: 'str') -> 'Entity'",
+            "approve_relationship(self, relationship_id: 'str') -> 'Relationship'",
+            "create_entity(self, name: 'str', entity_type: 'str | EntityType', source_id: 'str | None' = None, created_by: 'str' = 'agent') -> 'Entity'",
+            "create_relationship(self, source_entity_id: 'str', target_entity_id: 'str', relationship_type: 'str | RelationshipType', source_id: 'str | None' = None, created_by: 'str' = 'agent', validate_entities: 'bool' = True) -> 'Relationship'",
+            "delete_entity(self, entity_id: 'str') -> 'bool'",
+            "delete_relationship(self, relationship_id: 'str') -> 'bool'",
+            "find_path(self, source_entity_id: 'str', target_entity_id: 'str', max_depth: 'int' = 5) -> 'list[Entity] | None'",
+            "get_backlinks(self, entity_id: 'str', relationship_type: 'str | RelationshipType | None' = None) -> 'list[tuple[Entity, Relationship]]'",
+            "get_entity(self, entity_id: 'str') -> 'Entity'",
+            "get_entity_relationships(self, entity_id: 'str') -> 'list[Relationship]'",
+            "get_neighbors(self, entity_id: 'str', relationship_type: 'str | RelationshipType | None' = None) -> 'list[tuple[Entity, Relationship]]'",
+            "get_relationship(self, relationship_id: 'str') -> 'Relationship'",
+            "get_stats(self) -> 'dict[str, Any]'",
+            "link_to_memory(self, entity_id: 'str', memory_id: 'str', source_id: 'str') -> 'bool'",
+            "list_entities(self, entity_type: 'str | EntityType | None' = None, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Entity]'",
+            "reject_entity(self, entity_id: 'str') -> 'Entity'",
+            "reject_relationship(self, relationship_id: 'str') -> 'Relationship'"
+          ]
+        },
+        "GraphServiceError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "RelationshipNotFoundError": {
+          "bases": [
+            "omnivia_memory.graph.service.GraphServiceError"
+          ],
+          "kind": "exception"
+        }
+      }
+    },
+    "omnivia_memory.ingestion": {
+      "all": [
+        "BaseChunker",
+        "BaseExtractor",
+        "CharacterChunker",
+        "Chunk",
+        "ChunkConfig",
+        "ChunkRepository",
+        "DOCXExtractor",
+        "ExtractionResult",
+        "FileInfo",
+        "FileScanner",
+        "FileType",
+        "IngestResult",
+        "IngestionPipeline",
+        "MarkdownExtractor",
+        "PDFExtractor",
+        "ParagraphChunker",
+        "ParseStatus",
+        "ScanOptions",
+        "Source"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.ingestion.chunker": {
+      "all": null,
+      "defines": {
+        "BaseChunker": {
+          "bases": [
+            "abc.ABC"
+          ],
+          "kind": "class",
+          "methods": [
+            "chunk(self, content: 'str', source_id: 'str' = 'default') -> 'list[Chunk]'"
+          ]
+        },
+        "CharacterChunker": {
+          "bases": [
+            "omnivia_memory.ingestion.chunker.BaseChunker"
+          ],
+          "kind": "class",
+          "methods": [
+            "chunk(self, content: 'str', source_id: 'str' = 'default') -> 'list[Chunk]'"
+          ]
+        },
+        "ChunkConfig": {
+          "fields": [
+            "source_id",
+            "chunk_size",
+            "overlap",
+            "max_chunks"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ParagraphChunker": {
+          "bases": [
+            "omnivia_memory.ingestion.chunker.BaseChunker"
+          ],
+          "kind": "class",
+          "methods": [
+            "chunk(self, content: 'str', source_id: 'str' = 'default') -> 'list[Chunk]'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.extractors": {
+      "all": null,
+      "defines": {
+        "BaseExtractor": {
+          "bases": [
+            "abc.ABC"
+          ],
+          "kind": "class",
+          "methods": [
+            "extract(self, file_path: 'Path') -> 'ExtractionResult'"
+          ]
+        },
+        "DOCXExtractor": {
+          "bases": [
+            "omnivia_memory.ingestion.extractors.BaseExtractor"
+          ],
+          "kind": "class",
+          "methods": [
+            "extract(self, file_path: 'Path') -> 'ExtractionResult'"
+          ]
+        },
+        "MarkdownExtractor": {
+          "bases": [
+            "omnivia_memory.ingestion.extractors.BaseExtractor"
+          ],
+          "kind": "class",
+          "methods": [
+            "extract(self, file_path: 'Path') -> 'ExtractionResult'"
+          ]
+        },
+        "PDFExtractor": {
+          "bases": [
+            "omnivia_memory.ingestion.extractors.BaseExtractor"
+          ],
+          "kind": "class",
+          "methods": [
+            "extract(self, file_path: 'Path') -> 'ExtractionResult'"
+          ]
+        },
+        "TextExtractor": {
+          "bases": [
+            "omnivia_memory.ingestion.extractors.BaseExtractor"
+          ],
+          "kind": "class",
+          "methods": [
+            "extract(self, file_path: 'Path') -> 'ExtractionResult'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.models": {
+      "all": null,
+      "defines": {
+        "Chunk": {
+          "fields": [
+            "source_id",
+            "chunk_index",
+            "content",
+            "start_offset",
+            "end_offset",
+            "content_hash",
+            "id"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Chunk'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "ExtractionResult": {
+          "fields": [
+            "content",
+            "status",
+            "error",
+            "hash"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "failure(cls, error: 'str') -> 'ExtractionResult'",
+            "success(cls, content: 'str') -> 'ExtractionResult'"
+          ]
+        },
+        "FileInventory": {
+          "fields": [
+            "path",
+            "extension",
+            "size",
+            "modified_time",
+            "file_type",
+            "parse_status",
+            "error_message"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_path(cls, file_path: 'Path') -> 'FileInventory'",
+            "mark_error(self, message: 'str') -> 'None'",
+            "mark_success(self) -> 'None'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "FileType": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "MARKDOWN='markdown'",
+            "TEXT='text'",
+            "PDF='pdf'",
+            "DOCX='docx'",
+            "UNKNOWN='unknown'"
+          ]
+        },
+        "IngestSource": {
+          "fields": [
+            "path",
+            "file_type",
+            "workspace_id",
+            "size",
+            "hash",
+            "status",
+            "modified_time",
+            "error",
+            "id",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Source'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'"
+          ]
+        },
+        "ParseStatus": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "PENDING='pending'",
+            "SUCCESS='success'",
+            "FAILED='failed'",
+            "PARSED='parsed'"
+          ]
+        },
+        "Source": {
+          "fields": [
+            "path",
+            "file_type",
+            "workspace_id",
+            "size",
+            "hash",
+            "status",
+            "modified_time",
+            "error",
+            "id",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Source'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.pipeline": {
+      "all": null,
+      "defines": {
+        "IngestResult": {
+          "fields": [
+            "source",
+            "chunks",
+            "error"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "IngestionPipeline": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "ingest_directory(self, root_path: 'Path', workspace_id: 'str | None' = None) -> 'list[IngestResult]'",
+            "ingest_file(self, file_path: 'Path', workspace_id: 'str | None' = None) -> 'IngestResult'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.repositories": {
+      "all": null,
+      "defines": {
+        "ChunkRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "create(self, chunk: 'Chunk') -> 'Chunk'",
+            "delete_by_source_id(self, source_id: 'str') -> 'int'",
+            "get_by_content_hash(self, content_hash: 'str') -> 'Chunk | None'",
+            "get_by_id(self, chunk_id: 'str') -> 'Chunk | None'",
+            "get_by_source_id(self, source_id: 'str') -> 'list[Chunk]'"
+          ]
+        },
+        "SourceRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "create(self, source: 'Source') -> 'Source'",
+            "delete(self, source_id: 'str') -> 'bool'",
+            "get_by_hash(self, content_hash: 'str') -> 'Source | None'",
+            "get_by_id(self, source_id: 'str') -> 'Source | None'",
+            "get_by_path(self, path: 'str', workspace_id: 'str | None' = None) -> 'Source | None'",
+            "list_all(self, limit: 'int' = 100, offset: 'int' = 0, file_type: 'FileType | None' = None, status: 'ParseStatus | None' = None, workspace_id: 'str | None' = None) -> 'list[Source]'",
+            "list_by_workspace(self, workspace_id: 'str') -> 'list[Source]'",
+            "update(self, source: 'Source') -> 'Source'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.scanner": {
+      "all": null,
+      "defines": {
+        "FileInfo": {
+          "fields": [
+            "path",
+            "file_type",
+            "size",
+            "modified_time"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "FileScanner": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "scan(self, options: 'ScanOptions') -> 'list[FileInfo]'"
+          ]
+        },
+        "ScanOptions": {
+          "fields": [
+            "root_path",
+            "ignore_patterns",
+            "max_depth",
+            "follow_symlinks"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.ingestion.watcher": {
+      "all": [
+        "DebounceConfig",
+        "Debouncer",
+        "FileChange",
+        "FileChangeBatch",
+        "FileChangeType",
+        "IndexerScheduler",
+        "IndexerState",
+        "IndexerStatus",
+        "ScheduledJob",
+        "SourceReference",
+        "SourceTracker",
+        "WatchedPath"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.ingestion.watcher.debouncer": {
+      "all": null,
+      "defines": {
+        "Debouncer": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "clear(self, key: 'str | None' = None) -> 'None'",
+            "flush_all(self) -> 'list[FileChangeBatch]'",
+            "pending_count(self, key: 'str | None' = None) -> 'int'",
+            "push(self, change: 'FileChange') -> 'None'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.watcher.models": {
+      "all": null,
+      "defines": {
+        "DebounceConfig": {
+          "fields": [
+            "initial_delay_ms",
+            "max_delay_ms",
+            "min_events"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "to_dict(self) -> 'dict'"
+          ]
+        },
+        "FileChange": {
+          "fields": [
+            "path",
+            "event_type",
+            "old_path",
+            "timestamp"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict') -> 'FileChange'",
+            "to_dict(self) -> 'dict'"
+          ]
+        },
+        "FileChangeBatch": {
+          "fields": [
+            "changes",
+            "debounce_key",
+            "generated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "FileChangeType": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "CREATED='created'",
+            "MODIFIED='modified'",
+            "DELETED='deleted'",
+            "MOVED='moved'"
+          ]
+        },
+        "IndexerScheduler": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "cancel(self, job_id: 'str') -> 'bool'",
+            "list_pending(self) -> 'list[ScheduledJob]'",
+            "schedule_full_scan(self, workspace_id: 'str', at_timestamp: 'str | None' = None) -> 'str'",
+            "schedule_reindex(self, workspace_id: 'str', delay_seconds: 'float' = 0) -> 'str'"
+          ]
+        },
+        "IndexerState": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "IDLE='idle'",
+            "SCANNING='scanning'",
+            "WATCHING='watching'",
+            "DEBOUNCING='debouncing'",
+            "INDEXING='indexing'",
+            "ERROR='error'"
+          ]
+        },
+        "IndexerStatus": {
+          "fields": [
+            "state",
+            "workspace_id",
+            "active_watched_paths",
+            "pending_changes",
+            "last_index_at",
+            "last_error",
+            "indexed_count",
+            "deleted_count"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "to_dict(self) -> 'dict'"
+          ]
+        },
+        "ScheduledJob": {
+          "fields": [
+            "job_id",
+            "job_type",
+            "workspace_id",
+            "scheduled_at",
+            "delay_seconds"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "create(cls, job_type: 'str', workspace_id: 'str', delay_seconds: 'float' = 0) -> 'ScheduledJob'"
+          ]
+        },
+        "SourceReference": {
+          "fields": [
+            "watched_path",
+            "source_path",
+            "source_id",
+            "workspace_id",
+            "last_known_hash",
+            "indexed_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict') -> 'SourceReference'",
+            "is_stale(self, current_hash: 'str | None') -> 'bool'",
+            "to_dict(self) -> 'dict'"
+          ]
+        },
+        "WatchedPath": {
+          "fields": [
+            "path",
+            "workspace_id",
+            "recursive",
+            "ignore_patterns",
+            "created_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict') -> 'WatchedPath'",
+            "to_dict(self) -> 'dict'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.ingestion.watcher.tracker": {
+      "all": null,
+      "defines": {
+        "SourceReference": {
+          "fields": [
+            "watched_path",
+            "source_path",
+            "source_id",
+            "workspace_id",
+            "last_known_hash",
+            "indexed_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "is_stale(self, current_hash: 'str | None') -> 'bool'"
+          ]
+        },
+        "SourceTracker": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "clear(self, workspace_id: 'str | None' = None) -> 'None'",
+            "count(self, workspace_id: 'str | None' = None) -> 'int'",
+            "get_reference(self, source_path: 'str', workspace_id: 'str') -> 'SourceReference | None'",
+            "get_stale_references(self, workspace_id: 'str', before_timestamp: 'str | None' = None) -> 'list[SourceReference]'",
+            "list_by_watched_path(self, watched_path: 'str') -> 'list[SourceReference]'",
+            "list_by_workspace(self, workspace_id: 'str') -> 'list[SourceReference]'",
+            "register(self, watched_path: 'str', source_reference: 'SourceReference') -> 'None'",
+            "unregister(self, source_path: 'str', workspace_id: 'str') -> 'bool'",
+            "update_hash(self, source_path: 'str', workspace_id: 'str', new_hash: 'str') -> 'bool'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.knowledge": {
+      "all": [
+        "AgentGraphContext",
+        "BUILTIN_GRAPH_NODE_KINDS",
+        "BUILTIN_GRAPH_RELATIONS",
+        "BUILTIN_OBJECT_KINDS",
+        "ContractVersion",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION",
+        "GRAPH_CONTRACT_VERSION",
+        "GraphConfidence",
+        "GraphEdge",
+        "GraphEvidenceStrength",
+        "GraphFragment",
+        "GraphNode",
+        "GraphOrigin",
+        "GraphReviewStatus",
+        "GraphSensitivity",
+        "GraphSourceType",
+        "GraphVisibility",
+        "KNOWLEDGE_CONTRACT_VERSION",
+        "KnowledgeClaim",
+        "KnowledgeCollection",
+        "KnowledgeExtensionManifest",
+        "KnowledgeLink",
+        "KnowledgeObject",
+        "KnowledgeSource",
+        "KnowledgeSpace",
+        "SourceRef",
+        "ValidationResult",
+        "check_contract_version_compatibility",
+        "normalize_graph_edge_id",
+        "normalize_graph_node_id",
+        "normalize_graph_node_kind",
+        "normalize_graph_relation",
+        "normalize_identifier",
+        "normalize_label",
+        "normalize_object_id",
+        "normalize_object_kind",
+        "normalize_source_path",
+        "normalize_space_id",
+        "normalize_tags",
+        "summarize_confidence",
+        "summarize_review_status",
+        "summarize_sensitivity",
+        "validate_agent_graph_context",
+        "validate_graph_edge",
+        "validate_graph_fragment",
+        "validate_graph_node",
+        "validate_knowledge_claim",
+        "validate_knowledge_collection",
+        "validate_knowledge_extension_manifest",
+        "validate_knowledge_link",
+        "validate_knowledge_object",
+        "validate_knowledge_source",
+        "validate_knowledge_space",
+        "validate_source_ref"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.knowledge.models": {
+      "all": null,
+      "defines": {
+        "AgentGraphContext": {
+          "fields": [
+            "id",
+            "space_id",
+            "summary",
+            "object_ids",
+            "link_ids",
+            "claim_ids",
+            "confidence_summary",
+            "review_summary",
+            "sensitivity_summary",
+            "warnings",
+            "source_refs",
+            "visibility",
+            "sensitivity",
+            "missing_evidence",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'AgentGraphContext'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "ContractVersion": {
+          "fields": [
+            "major",
+            "minor"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "parse(cls, value: 'str | ContractVersion') -> 'ContractVersion'"
+          ]
+        },
+        "EXTENSION_MANIFEST_CONTRACT_VERSION": {
+          "kind": "constant",
+          "type": "ContractVersion",
+          "value": "<ContractVersion>"
+        },
+        "GRAPH_CONTRACT_VERSION": {
+          "kind": "constant",
+          "type": "ContractVersion",
+          "value": "<ContractVersion>"
+        },
+        "GraphConfidence": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "EXTRACTED='EXTRACTED'",
+            "INFERRED='INFERRED'",
+            "AMBIGUOUS='AMBIGUOUS'"
+          ]
+        },
+        "GraphEdge": {
+          "fields": [
+            "id",
+            "space_id",
+            "source",
+            "target",
+            "relation",
+            "source_refs",
+            "confidence",
+            "review_status",
+            "evidence_strength",
+            "visibility",
+            "sensitivity",
+            "influences_decision",
+            "missing_evidence",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphEdge'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphEvidenceStrength": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PRIMARY='PRIMARY'",
+            "SUPPORTING='SUPPORTING'",
+            "WEAK='WEAK'",
+            "MISSING='MISSING'"
+          ]
+        },
+        "GraphFragment": {
+          "fields": [
+            "id",
+            "space_id",
+            "contract_version",
+            "nodes",
+            "edges",
+            "origin",
+            "owner",
+            "producer",
+            "source_refs",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphFragment'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphNode": {
+          "fields": [
+            "id",
+            "space_id",
+            "label",
+            "kind",
+            "object_id",
+            "source_refs",
+            "confidence",
+            "review_status",
+            "visibility",
+            "sensitivity",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphNode'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphOrigin": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "OMNIVIA='omnivia'",
+            "MANUAL='manual'",
+            "IMPORT='import'",
+            "CONNECTOR='connector'",
+            "AGENT='agent'",
+            "THIRD_PARTY='third_party'"
+          ]
+        },
+        "GraphReviewStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "UNREVIEWED='UNREVIEWED'",
+            "REVIEWED='REVIEWED'",
+            "APPROVED='APPROVED'",
+            "REJECTED='REJECTED'",
+            "SUPERSEDED='SUPERSEDED'"
+          ]
+        },
+        "GraphSensitivity": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PUBLIC='public'",
+            "INTERNAL='internal'",
+            "CONFIDENTIAL='confidential'",
+            "RESTRICTED='restricted'"
+          ]
+        },
+        "GraphSourceType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "NOTE='note'",
+            "FILE='file'",
+            "DOCUMENT='document'",
+            "CODE='code'",
+            "CONVERSATION='conversation'",
+            "CONNECTOR='connector'",
+            "MEMORY='memory'",
+            "API='api'",
+            "DATABASE='database'",
+            "IMPORT='import'",
+            "MANUAL_ENTRY='manual_entry'"
+          ]
+        },
+        "GraphVisibility": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PRIVATE='private'",
+            "TEAM='team'",
+            "PUBLIC='public'"
+          ]
+        },
+        "KNOWLEDGE_CONTRACT_VERSION": {
+          "kind": "constant",
+          "type": "ContractVersion",
+          "value": "<ContractVersion>"
+        },
+        "KnowledgeClaim": {
+          "fields": [
+            "id",
+            "space_id",
+            "subject_object_id",
+            "predicate",
+            "object_object_id",
+            "object_value",
+            "source_refs",
+            "confidence",
+            "review_status",
+            "evidence_strength",
+            "visibility",
+            "sensitivity",
+            "influences_decision",
+            "missing_evidence",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeClaim'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeCollection": {
+          "fields": [
+            "id",
+            "space_id",
+            "title",
+            "member_ids",
+            "tags",
+            "source_refs",
+            "review_status",
+            "visibility",
+            "sensitivity",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeCollection'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeExtensionManifest": {
+          "fields": [
+            "id",
+            "contract_version",
+            "namespace",
+            "title",
+            "version",
+            "object_kinds",
+            "node_kinds",
+            "relations",
+            "official",
+            "description",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeExtensionManifest'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeLink": {
+          "fields": [
+            "id",
+            "space_id",
+            "source_object_id",
+            "target_object_id",
+            "relation",
+            "source_refs",
+            "confidence",
+            "review_status",
+            "evidence_strength",
+            "visibility",
+            "sensitivity",
+            "influences_decision",
+            "missing_evidence",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeLink'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeObject": {
+          "fields": [
+            "id",
+            "space_id",
+            "kind",
+            "title",
+            "summary",
+            "tags",
+            "source_refs",
+            "confidence",
+            "review_status",
+            "visibility",
+            "sensitivity",
+            "supersedes_object_id",
+            "created_at",
+            "updated_at",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeObject'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeSource": {
+          "fields": [
+            "id",
+            "space_id",
+            "source_type",
+            "title",
+            "uri",
+            "relative_path",
+            "origin",
+            "visibility",
+            "sensitivity",
+            "created_at",
+            "updated_at",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeSource'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "KnowledgeSpace": {
+          "fields": [
+            "id",
+            "title",
+            "space_type",
+            "contract_version",
+            "summary",
+            "tags",
+            "sources",
+            "objects",
+            "collections",
+            "links",
+            "claims",
+            "graph_fragments",
+            "extension_manifests",
+            "agent_contexts",
+            "visibility",
+            "sensitivity",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'KnowledgeSpace'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "SourceRef": {
+          "fields": [
+            "source_id",
+            "source_type",
+            "path",
+            "locator",
+            "quote_preview",
+            "confidence",
+            "missing_evidence",
+            "metadata"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'SourceRef'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.knowledge.normalize": {
+      "all": null,
+      "defines": {
+        "normalize_extension_value": {
+          "kind": "function",
+          "signature": "(value: 'str', *, builtins: 'frozenset[str]') -> 'str'"
+        },
+        "normalize_graph_edge_id": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_graph_node_id": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_graph_node_kind": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_graph_relation": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_identifier": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_label": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_object_id": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_object_kind": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_source_path": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_space_id": {
+          "kind": "function",
+          "signature": "(value: 'str') -> 'str'"
+        },
+        "normalize_tags": {
+          "kind": "function",
+          "signature": "(tags: 'list[str]') -> 'list[str]'"
+        }
+      }
+    },
+    "omnivia_memory.knowledge.validation": {
+      "all": null,
+      "defines": {
+        "check_contract_version_compatibility": {
+          "kind": "function",
+          "signature": "(candidate: 'ContractVersion', current: 'ContractVersion') -> 'ValidationResult'"
+        },
+        "summarize_confidence": {
+          "kind": "function",
+          "signature": "(values: 'list[GraphConfidence | float | None]') -> 'dict[str, int]'"
+        },
+        "summarize_review_status": {
+          "kind": "function",
+          "signature": "(values: 'list[GraphReviewStatus]') -> 'dict[str, int]'"
+        },
+        "summarize_sensitivity": {
+          "kind": "function",
+          "signature": "(values: 'list[GraphSensitivity]') -> 'dict[str, int]'"
+        },
+        "validate_agent_graph_context": {
+          "kind": "function",
+          "signature": "(context: 'AgentGraphContext') -> 'ValidationResult'"
+        },
+        "validate_graph_edge": {
+          "kind": "function",
+          "signature": "(edge: 'GraphEdge') -> 'ValidationResult'"
+        },
+        "validate_graph_fragment": {
+          "kind": "function",
+          "signature": "(fragment: 'GraphFragment') -> 'ValidationResult'"
+        },
+        "validate_graph_node": {
+          "kind": "function",
+          "signature": "(node: 'GraphNode') -> 'ValidationResult'"
+        },
+        "validate_knowledge_claim": {
+          "kind": "function",
+          "signature": "(claim: 'KnowledgeClaim') -> 'ValidationResult'"
+        },
+        "validate_knowledge_collection": {
+          "kind": "function",
+          "signature": "(collection: 'KnowledgeCollection') -> 'ValidationResult'"
+        },
+        "validate_knowledge_extension_manifest": {
+          "kind": "function",
+          "signature": "(manifest: 'KnowledgeExtensionManifest') -> 'ValidationResult'"
+        },
+        "validate_knowledge_link": {
+          "kind": "function",
+          "signature": "(link: 'KnowledgeLink') -> 'ValidationResult'"
+        },
+        "validate_knowledge_object": {
+          "kind": "function",
+          "signature": "(obj: 'KnowledgeObject') -> 'ValidationResult'"
+        },
+        "validate_knowledge_source": {
+          "kind": "function",
+          "signature": "(source: 'KnowledgeSource') -> 'ValidationResult'"
+        },
+        "validate_knowledge_space": {
+          "kind": "function",
+          "signature": "(space: 'KnowledgeSpace') -> 'ValidationResult'"
+        },
+        "validate_source_ref": {
+          "kind": "function",
+          "signature": "(source_ref: 'SourceRef') -> 'ValidationResult'"
+        }
+      }
+    },
+    "omnivia_memory.lifecycle": {
+      "all": [
+        "CreatedBy",
+        "LifecycleRules",
+        "LifecycleState"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.lifecycle.models": {
+      "all": null,
+      "defines": {
+        "LifecycleState": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PROPOSED='proposed'",
+            "OBSERVED='observed'",
+            "APPROVED='approved'",
+            "REJECTED='rejected'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.lifecycle.rules": {
+      "all": null,
+      "defines": {
+        "CreatedBy": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "HUMAN='human'",
+            "AGENT='agent'"
+          ]
+        },
+        "LifecycleRules": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "can_transition(current_state: 'LifecycleState', target_state: 'LifecycleState') -> 'bool'",
+            "get_initial_state(created_by: 'CreatedBy') -> 'LifecycleState'",
+            "is_approved_state(state: 'LifecycleState') -> 'bool'",
+            "is_terminal_state(state: 'LifecycleState') -> 'bool'",
+            "requires_human_approval(current_state: 'LifecycleState') -> 'bool'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.memory": {
+      "all": [
+        "InvalidTransitionError",
+        "Memory",
+        "MemoryCreate",
+        "MemoryNotFoundError",
+        "MemoryService",
+        "MemoryServiceError",
+        "MemoryUpdate"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.memory.models": {
+      "all": null,
+      "defines": {
+        "Memory": {
+          "fields": [
+            "content",
+            "source",
+            "created_by",
+            "id",
+            "workspace_id",
+            "lifecycle_state",
+            "memory_type",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Memory'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'",
+            "transition_to(self, new_state: 'LifecycleState') -> 'None'",
+            "update_content(self, new_content: 'str') -> 'None'"
+          ]
+        },
+        "MemoryCreate": {
+          "fields": [
+            "content",
+            "source",
+            "memory_type",
+            "created_by",
+            "workspace_id"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "to_memory(self) -> 'Memory'"
+          ]
+        },
+        "MemoryUpdate": {
+          "fields": [
+            "content",
+            "memory_type",
+            "lifecycle_state"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "apply_to(self, memory: 'Memory') -> 'bool'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.memory.service": {
+      "all": null,
+      "defines": {
+        "InvalidTransitionError": {
+          "bases": [
+            "omnivia_memory.memory.service.MemoryServiceError"
+          ],
+          "kind": "exception"
+        },
+        "MemoryNotFoundError": {
+          "bases": [
+            "omnivia_memory.memory.service.MemoryServiceError"
+          ],
+          "kind": "exception"
+        },
+        "MemoryService": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "approve(self, memory_id: 'str') -> 'Memory'",
+            "create(self, input_data: 'MemoryCreate') -> 'Memory'",
+            "delete(self, memory_id: 'str') -> 'bool'",
+            "get(self, memory_id: 'str') -> 'Memory'",
+            "get_stats(self) -> 'dict[str, Any]'",
+            "list(self, limit: 'int' = 100, offset: 'int' = 0, lifecycle_state: 'LifecycleState | None' = None, workspace_id: 'str | None' = None) -> 'List[Memory]'",
+            "list_by_workspace(self, workspace_id: 'str') -> 'List[Memory]'",
+            "observe(self, memory_id: 'str') -> 'Memory'",
+            "reject(self, memory_id: 'str') -> 'Memory'",
+            "search(self, query: 'str', limit: 'int' = 20, workspace_id: 'str | None' = None) -> 'List[Memory]'",
+            "update(self, memory_id: 'str', input_data: 'MemoryUpdate') -> 'Memory'"
+          ]
+        },
+        "MemoryServiceError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        }
+      }
+    },
+    "omnivia_memory.memory_graph": {
+      "all": [
+        "Confidence",
+        "EvidenceGraphResponse",
+        "FIXTURE_TIME",
+        "GraphPreviewEdge",
+        "GraphPreviewKind",
+        "GraphPreviewNode",
+        "GraphPreviewResponse",
+        "GraphPreviewState",
+        "IngestionGraphAdapterError",
+        "IngestionGraphWriteResult",
+        "MemoryEntity",
+        "MemoryFact",
+        "MemoryFactStatus",
+        "MemoryGraphFixture",
+        "MemoryGraphStore",
+        "MemoryGraphStoreError",
+        "MemorySegment",
+        "MemorySegmentKind",
+        "MemorySource",
+        "MemorySourceFreshness",
+        "MemorySourceStatus",
+        "MemorySourceType",
+        "RetrievalTrace",
+        "SourceRef",
+        "ValidationResult",
+        "assemble_evidence_graph",
+        "assemble_graph_preview",
+        "build_memory_graph_fixture",
+        "chunk_to_memory_segment",
+        "redact_segment_preview",
+        "source_to_memory_source",
+        "validate_evidence_graph_response",
+        "validate_graph_preview_response",
+        "validate_memory_entity",
+        "validate_memory_fact",
+        "validate_memory_segment",
+        "validate_memory_source",
+        "write_ingestion_records_to_graph"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.memory_graph.assembly": {
+      "all": null,
+      "defines": {
+        "assemble_evidence_graph": {
+          "kind": "function",
+          "signature": "(*, workspace_id: 'str', answer_id: 'str | None', query: 'str', source: 'MemorySource | None', entities: 'list[MemoryEntity]', facts: 'list[MemoryFact]', generated_at: 'str') -> 'EvidenceGraphResponse'"
+        },
+        "assemble_graph_preview": {
+          "kind": "function",
+          "signature": "(*, workspace_id: 'str', query: 'str', source: 'MemorySource | None', entities: 'list[MemoryEntity]', facts: 'list[MemoryFact]', generated_at: 'str', node_limit: 'int', edge_limit: 'int') -> 'GraphPreviewResponse'"
+        },
+        "redact_segment_preview": {
+          "kind": "function",
+          "signature": "(segment: 'MemorySegment', *, max_chars: 'int' = 500) -> 'dict[str, object]'"
+        }
+      }
+    },
+    "omnivia_memory.memory_graph.fixtures": {
+      "all": null,
+      "defines": {
+        "MemoryGraphFixture": {
+          "fields": [
+            "entities",
+            "evidence_graph",
+            "facts",
+            "graph_preview",
+            "segments",
+            "source"
+          ],
+          "kind": "typed_dict"
+        },
+        "build_memory_graph_fixture": {
+          "kind": "function",
+          "signature": "() -> 'MemoryGraphFixture'"
+        }
+      }
+    },
+    "omnivia_memory.memory_graph.ingestion_adapter": {
+      "all": null,
+      "defines": {
+        "IngestionGraphAdapterError": {
+          "bases": [
+            "builtins.ValueError"
+          ],
+          "kind": "exception"
+        },
+        "IngestionGraphWriteResult": {
+          "fields": [
+            "source_id",
+            "segments_created"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "chunk_to_memory_segment": {
+          "kind": "function",
+          "signature": "(chunk: 'Chunk', *, source: 'Source', workspace_root: 'Path | str') -> 'MemorySegment'"
+        },
+        "source_to_memory_source": {
+          "kind": "function",
+          "signature": "(source: 'Source', *, workspace_root: 'Path | str') -> 'MemorySource'"
+        },
+        "write_ingestion_records_to_graph": {
+          "kind": "function",
+          "signature": "(*, store: 'MemoryGraphStore', source: 'Source', chunks: 'list[Chunk]', workspace_root: 'Path | str') -> 'IngestionGraphWriteResult'"
+        }
+      }
+    },
+    "omnivia_memory.memory_graph.models": {
+      "all": null,
+      "defines": {
+        "EvidenceGraphResponse": {
+          "fields": [
+            "workspace_id",
+            "query",
+            "nodes",
+            "edges",
+            "citations",
+            "warnings",
+            "generated_at",
+            "answer_id"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'EvidenceGraphResponse'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphPreviewEdge": {
+          "fields": [
+            "id",
+            "source",
+            "target",
+            "label",
+            "type",
+            "state",
+            "source_refs",
+            "confidence",
+            "valid_from",
+            "valid_to",
+            "display"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphPreviewEdge'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphPreviewKind": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "SOURCE='source'",
+            "SEGMENT='segment'",
+            "ENTITY='entity'",
+            "FACT='fact'",
+            "RUN='run'",
+            "WARNING='warning'"
+          ]
+        },
+        "GraphPreviewNode": {
+          "fields": [
+            "id",
+            "label",
+            "type",
+            "kind",
+            "state",
+            "source_refs",
+            "entity_ref",
+            "source_ref",
+            "segment_ref",
+            "confidence",
+            "display"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphPreviewNode'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphPreviewResponse": {
+          "fields": [
+            "workspace_id",
+            "query",
+            "nodes",
+            "edges",
+            "warnings",
+            "limits",
+            "generated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'GraphPreviewResponse'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "GraphPreviewState": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "READY='ready'",
+            "PROPOSED='proposed'",
+            "STALE='stale'",
+            "FAILED='failed'",
+            "MISSING_EVIDENCE='missing_evidence'",
+            "SELECTED='selected'"
+          ]
+        },
+        "MemoryEntity": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "type",
+            "canonical_name",
+            "aliases",
+            "confidence",
+            "source_refs",
+            "created_at",
+            "updated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'MemoryEntity'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "MemoryFact": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "subject_id",
+            "predicate",
+            "confidence",
+            "source_refs",
+            "status",
+            "created_at",
+            "updated_at",
+            "object_id",
+            "object_value",
+            "valid_from",
+            "valid_to",
+            "supersedes"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'MemoryFact'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "MemoryFactStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PROPOSED='proposed'",
+            "APPROVED='approved'",
+            "REJECTED='rejected'",
+            "SUPERSEDED='superseded'",
+            "UNKNOWN='unknown'"
+          ]
+        },
+        "MemorySegment": {
+          "fields": [
+            "id",
+            "source_id",
+            "workspace_id",
+            "kind",
+            "label",
+            "parser",
+            "parser_settings_ref",
+            "created_at",
+            "span",
+            "text_preview",
+            "checksum"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'MemorySegment'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "MemorySegmentKind": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "TEXT='text'",
+            "TABLE='table'",
+            "CODE='code'",
+            "METADATA='metadata'",
+            "UNKNOWN='unknown'"
+          ]
+        },
+        "MemorySource": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "type",
+            "uri",
+            "title",
+            "freshness",
+            "status",
+            "created_at",
+            "updated_at",
+            "owner_ref",
+            "connector_ref",
+            "checksum"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'MemorySource'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "MemorySourceFreshness": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "FRESH='fresh'",
+            "STALE='stale'",
+            "DELETED='deleted'",
+            "UNKNOWN='unknown'"
+          ]
+        },
+        "MemorySourceStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "PENDING='pending'",
+            "PROCESSING='processing'",
+            "READY='ready'",
+            "FAILED='failed'",
+            "DELETED='deleted'"
+          ]
+        },
+        "MemorySourceType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "FILE='file'",
+            "URL='url'",
+            "CONNECTOR='connector'",
+            "NOTE='note'",
+            "APP_RECORD='app_record'",
+            "UNKNOWN='unknown'"
+          ]
+        },
+        "RetrievalTrace": {
+          "fields": [
+            "id",
+            "workspace_id",
+            "query",
+            "mode",
+            "matched_fact_ids",
+            "matched_segment_ids",
+            "rank_scores",
+            "timing",
+            "resource_indicators",
+            "warnings",
+            "generated_at"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'RetrievalTrace'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "SourceRef": {
+          "fields": [
+            "source_id",
+            "segment_id",
+            "span",
+            "quote_preview",
+            "confidence"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'SourceRef'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.memory_graph.store": {
+      "all": null,
+      "defines": {
+        "MemoryGraphStore": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "get_source(self, workspace_id: 'str', source_id: 'str') -> 'MemorySource | None'",
+            "has_workspace(self, workspace_id: 'str') -> 'bool'",
+            "list_entities(self, workspace_id: 'str') -> 'list[MemoryEntity]'",
+            "list_facts(self, workspace_id: 'str', *, source_id: 'str | None' = None) -> 'list[MemoryFact]'",
+            "list_segments(self, workspace_id: 'str', *, source_id: 'str | None' = None) -> 'list[MemorySegment]'",
+            "list_sources(self, workspace_id: 'str') -> 'list[MemorySource]'",
+            "save_entity(self, entity: 'MemoryEntity') -> 'None'",
+            "save_fact(self, fact: 'MemoryFact') -> 'None'",
+            "save_segment(self, segment: 'MemorySegment') -> 'None'",
+            "save_source(self, source: 'MemorySource') -> 'None'"
+          ]
+        },
+        "MemoryGraphStoreError": {
+          "bases": [
+            "builtins.ValueError"
+          ],
+          "kind": "exception"
+        },
+        "T": {
+          "kind": "constant",
+          "type": "TypeVar",
+          "value": "<TypeVar>"
+        }
+      }
+    },
+    "omnivia_memory.memory_graph.validation": {
+      "all": null,
+      "defines": {
+        "validate_evidence_graph_response": {
+          "kind": "function",
+          "signature": "(response: 'EvidenceGraphResponse') -> 'ValidationResult'"
+        },
+        "validate_graph_preview_response": {
+          "kind": "function",
+          "signature": "(response: 'GraphPreviewResponse') -> 'ValidationResult'"
+        },
+        "validate_memory_entity": {
+          "kind": "function",
+          "signature": "(entity: 'MemoryEntity') -> 'ValidationResult'"
+        },
+        "validate_memory_fact": {
+          "kind": "function",
+          "signature": "(fact: 'MemoryFact') -> 'ValidationResult'"
+        },
+        "validate_memory_segment": {
+          "kind": "function",
+          "signature": "(segment: 'MemorySegment') -> 'ValidationResult'"
+        },
+        "validate_memory_source": {
+          "kind": "function",
+          "signature": "(source: 'MemorySource') -> 'ValidationResult'"
+        }
+      }
+    },
+    "omnivia_memory.module_manifest": {
+      "all": [
+        "Entrypoint",
+        "Integrity",
+        "ModuleKind",
+        "ModuleManifest",
+        "ModuleManifestValidationError",
+        "Permission",
+        "PublishedTarget",
+        "validate_module_manifest"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.module_manifest.models": {
+      "all": null,
+      "defines": {
+        "Entrypoint": {
+          "fields": [
+            "module",
+            "class_name",
+            "config_key"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Integrity": {
+          "fields": [
+            "algorithm",
+            "digest",
+            "signature"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "ModuleKind": {
+          "base": "Enum",
+          "kind": "enum",
+          "members": [
+            "APPS='apps'",
+            "DEV='dev'",
+            "PRO='pro'"
+          ]
+        },
+        "ModuleManifest": {
+          "fields": [
+            "manifest_version",
+            "module_id",
+            "display_name",
+            "kind",
+            "version",
+            "compatible_core_versions",
+            "compatible_platform_versions",
+            "entrypoint",
+            "permissions",
+            "integrity",
+            "published_targets"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Permission": {
+          "fields": [
+            "name",
+            "description"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "PublishedTarget": {
+          "fields": [
+            "target_id",
+            "contract_path"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": []
+        }
+      }
+    },
+    "omnivia_memory.module_manifest.validation": {
+      "all": null,
+      "defines": {
+        "ModuleManifestValidationError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        },
+        "validate_module_manifest": {
+          "kind": "function",
+          "signature": "(data: Dict[str, Any]) -> omnivia_memory.module_manifest.models.ModuleManifest"
+        }
+      }
+    },
+    "omnivia_memory.persistence": {
+      "all": [
+        "Database",
+        "get_database"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.persistence.database": {
+      "all": null,
+      "defines": {
+        "Database": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "close(self) -> 'None'",
+            "commit(self) -> 'None'",
+            "connect(self) -> 'None'",
+            "connection(self) -> 'sqlite3.Connection'",
+            "execute(self, query: 'str', params: 'tuple[Any, ...] | dict[str, Any] | None' = None) -> 'sqlite3.Cursor'",
+            "executemany(self, query: 'str', params: 'list[tuple[Any, ...]]') -> 'sqlite3.Cursor'",
+            "immediate_transaction(self) -> 'Generator[None, None, None]'",
+            "rollback(self) -> 'None'",
+            "transaction(self) -> 'Generator[None, None, None]'"
+          ]
+        },
+        "DatabaseConfig": {
+          "fields": [
+            "db_path",
+            "auto_commit"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "get_database": {
+          "kind": "function",
+          "signature": "(db_path: 'Path | str | None' = None) -> 'Database'"
+        },
+        "reset_database": {
+          "kind": "function",
+          "signature": "() -> 'None'"
+        }
+      }
+    },
+    "omnivia_memory.persistence.repositories": {
+      "all": null,
+      "defines": {
+        "MemoryRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "count(self, lifecycle_state: 'LifecycleState | None' = None) -> 'int'",
+            "create(self, memory: 'Memory') -> 'Memory'",
+            "delete(self, memory_id: 'str') -> 'bool'",
+            "get_by_id(self, memory_id: 'str') -> 'Memory | None'",
+            "get_by_source_reference(self, source_reference: 'str') -> 'list[Memory]'",
+            "get_by_source_type(self, source_type: 'SourceType') -> 'list[Memory]'",
+            "get_by_workspace(self, workspace_id: 'str') -> 'list[Memory]'",
+            "list_all(self, limit: 'int' = 100, offset: 'int' = 0, lifecycle_state: 'LifecycleState | None' = None, workspace_id: 'str | None' = None) -> 'list[Memory]'",
+            "search(self, query: 'str', limit: 'int' = 20, workspace_id: 'str | None' = None) -> 'list[Memory]'",
+            "update(self, memory: 'Memory') -> 'Memory'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.provenance": {
+      "all": [
+        "Source",
+        "SourceType"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.provenance.models": {
+      "all": null,
+      "defines": {
+        "Source": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Source'",
+            "to_dict(self) -> 'dict[str, Any]'"
+          ]
+        },
+        "SourceType": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "FILE='file'",
+            "URL='url'",
+            "ADR='adr'",
+            "HUMAN='human'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.run_ledger": {
+      "all": [
+        "EvidenceFileRef",
+        "RUN_LEDGER_CONTRACT_VERSION",
+        "RUN_LEDGER_PATH_ENV",
+        "RunLedgerEntry",
+        "RunLedgerProvenance",
+        "RunLedgerStatus",
+        "TERMINAL_RUN_STATUSES",
+        "validate_evidence_file_ref",
+        "validate_run_ledger_entry",
+        "validate_run_ledger_provenance"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.run_ledger.models": {
+      "all": null,
+      "defines": {
+        "EvidenceFileRef": {
+          "fields": [
+            "path",
+            "kind",
+            "description",
+            "checksum"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, str | None]') -> 'EvidenceFileRef'",
+            "to_dict(self) -> 'dict[str, str | None]'"
+          ]
+        },
+        "RunLedgerEntry": {
+          "fields": [
+            "run_id",
+            "task_id",
+            "target_repo",
+            "lane_id",
+            "status",
+            "started_at",
+            "updated_at",
+            "evidence_file_refs",
+            "provenance",
+            "completed_at",
+            "contract_version"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, object]') -> 'RunLedgerEntry'",
+            "to_dict(self) -> 'dict[str, object]'"
+          ]
+        },
+        "RunLedgerProvenance": {
+          "fields": [
+            "producer",
+            "source_ref",
+            "producer_version"
+          ],
+          "frozen": true,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, str | None]') -> 'RunLedgerProvenance'",
+            "to_dict(self) -> 'dict[str, str | None]'"
+          ]
+        },
+        "RunLedgerStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "QUEUED='queued'",
+            "RUNNING='running'",
+            "SUCCEEDED='succeeded'",
+            "FAILED='failed'",
+            "BLOCKED='blocked'",
+            "CANCELLED='cancelled'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.run_ledger.validation": {
+      "all": null,
+      "defines": {
+        "validate_evidence_file_ref": {
+          "kind": "function",
+          "signature": "(evidence_file_ref: 'EvidenceFileRef') -> 'ValidationResult'"
+        },
+        "validate_run_ledger_entry": {
+          "kind": "function",
+          "signature": "(entry: 'RunLedgerEntry') -> 'ValidationResult'"
+        },
+        "validate_run_ledger_provenance": {
+          "kind": "function",
+          "signature": "(provenance: 'RunLedgerProvenance') -> 'ValidationResult'"
+        }
+      }
+    },
+    "omnivia_memory.search": {
+      "all": [
+        "SearchService"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.search.service": {
+      "all": null,
+      "defines": {
+        "SearchService": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "highlight_matches(self, memory: 'Memory', query: 'str') -> 'str'",
+            "rank_results(self, memories: 'list[Memory]', query: 'str') -> 'list[Memory]'",
+            "search(self, query: 'str', repository: 'MemoryRepository | None' = None, limit: 'int' = 20) -> 'list[Memory]'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.workspace": {
+      "all": [
+        "ImportSummary",
+        "Workspace",
+        "WorkspaceCreate",
+        "WorkspaceIndexStatus",
+        "WorkspaceRepository",
+        "WorkspaceService",
+        "WorkspaceUpdate"
+      ],
+      "defines": {}
+    },
+    "omnivia_memory.workspace.models": {
+      "all": null,
+      "defines": {
+        "ImportSummary": {
+          "fields": [
+            "workspace_id",
+            "files_seen",
+            "sources_created",
+            "memories_created",
+            "errors"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": []
+        },
+        "Workspace": {
+          "fields": [
+            "name",
+            "root_path",
+            "storage_path",
+            "id",
+            "description",
+            "index_status",
+            "settings",
+            "created_at",
+            "updated_at",
+            "last_indexed_at"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "from_dict(cls, data: 'dict[str, Any]') -> 'Workspace'",
+            "mark_error(self) -> 'None'",
+            "mark_indexed(self) -> 'None'",
+            "to_dict(self) -> 'dict[str, Any]'",
+            "touch(self) -> 'None'"
+          ]
+        },
+        "WorkspaceCreate": {
+          "fields": [
+            "name",
+            "root_path",
+            "storage_path",
+            "description",
+            "settings"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "to_workspace(self) -> 'Workspace'"
+          ]
+        },
+        "WorkspaceIndexStatus": {
+          "base": "str",
+          "kind": "enum",
+          "members": [
+            "UNINDEXED='unindexed'",
+            "INDEXING='indexing'",
+            "INDEXED='indexed'",
+            "ERROR='error'",
+            "STALE='stale'"
+          ]
+        },
+        "WorkspaceUpdate": {
+          "fields": [
+            "name",
+            "root_path",
+            "storage_path",
+            "description",
+            "index_status",
+            "settings"
+          ],
+          "frozen": false,
+          "kind": "dataclass",
+          "methods": [
+            "apply_to(self, workspace: 'Workspace') -> 'bool'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.workspace.repository": {
+      "all": null,
+      "defines": {
+        "WorkspaceRepository": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "create(self, workspace: 'Workspace') -> 'Workspace'",
+            "delete(self, workspace_id: 'str') -> 'bool'",
+            "get_by_id(self, workspace_id: 'str') -> 'Workspace | None'",
+            "list_all(self, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Workspace]'",
+            "update(self, workspace: 'Workspace') -> 'Workspace'"
+          ]
+        }
+      }
+    },
+    "omnivia_memory.workspace.service": {
+      "all": null,
+      "defines": {
+        "WorkspaceNotFoundError": {
+          "bases": [
+            "omnivia_memory.workspace.service.WorkspaceServiceError"
+          ],
+          "kind": "exception"
+        },
+        "WorkspaceService": {
+          "bases": [
+            "builtins.object"
+          ],
+          "kind": "class",
+          "methods": [
+            "create(self, input_data: 'WorkspaceCreate') -> 'Workspace'",
+            "delete(self, workspace_id: 'str') -> 'bool'",
+            "get(self, workspace_id: 'str') -> 'Workspace'",
+            "import_path(self, workspace_id: 'str', path: 'Path | None' = None) -> 'ImportSummary'",
+            "list(self, limit: 'int' = 100, offset: 'int' = 0) -> 'list[Workspace]'",
+            "update(self, workspace_id: 'str', input_data: 'WorkspaceUpdate') -> 'Workspace'"
+          ]
+        },
+        "WorkspaceServiceError": {
+          "bases": [
+            "builtins.Exception"
+          ],
+          "kind": "exception"
+        }
+      }
+    }
+  },
+  "package": "omnivia_memory",
+  "package_source": "services/omnivia-memory/src/omnivia_memory/__init__.py",
+  "package_version": "0.1.0",
+  "root": {
+    "all": [
+      "Agent",
+      "AgentAction",
+      "AgentBackedComponentContract",
+      "AgentBehavior",
+      "AgentGraphContext",
+      "AgentRunRecord",
+      "AgentRunStatus",
+      "AppManifest",
+      "AppManifestValidationError",
+      "AppState",
+      "Approval",
+      "ApprovalPolicy",
+      "AuditEvent",
+      "AuditRequirement",
+      "Automation",
+      "BUILTIN_GRAPH_NODE_KINDS",
+      "BUILTIN_GRAPH_RELATIONS",
+      "BUILTIN_OBJECT_KINDS",
+      "CONTROL_PLANE_CONTRACT_VERSION",
+      "CONTROL_PLANE_SCHEMA_VERSION",
+      "Capability",
+      "CapabilityType",
+      "CatalogueArtifactVerification",
+      "ComponentAIMode",
+      "ComponentConnectorScope",
+      "ComponentContract",
+      "ComponentContractValidationError",
+      "ComponentDataSource",
+      "ComponentFamily",
+      "ComponentGraphScope",
+      "ComponentInput",
+      "ComponentOutput",
+      "ComponentOutputType",
+      "ComponentPermission",
+      "ComponentRunMode",
+      "ComponentSafetyLevel",
+      "Connection",
+      "ConnectionKind",
+      "ConsultantAccessGrant",
+      "ConsultantGrantStatus",
+      "ContractVersion",
+      "ControlPlaneManifest",
+      "ControlPlaneRunStatus",
+      "ControlPlaneValidationError",
+      "DANGEROUS_SIDE_EFFECTS",
+      "DataSource",
+      "EXTENSION_MANIFEST_CONTRACT_VERSION",
+      "Entrypoint",
+      "EvidenceFileRef",
+      "EvidenceGraphResponse",
+      "ExecutionMode",
+      "ExecutionResult",
+      "GRAPH_CONTRACT_VERSION",
+      "GraphConfidence",
+      "GraphEdge",
+      "GraphEvidenceStrength",
+      "GraphFragment",
+      "GraphNode",
+      "GraphOrigin",
+      "GraphPreviewResponse",
+      "GraphReviewStatus",
+      "GraphSensitivity",
+      "GraphSourceType",
+      "GraphVisibility",
+      "ImportRecord",
+      "ImportSourceChange",
+      "ImportSourceProtocol",
+      "ImportSpecValidation",
+      "ImportedCandidateSet",
+      "Integrity",
+      "KNOWLEDGE_CONTRACT_VERSION",
+      "KnowledgeClaim",
+      "KnowledgeCollection",
+      "KnowledgeExtensionManifest",
+      "KnowledgeLink",
+      "KnowledgeObject",
+      "KnowledgeSource",
+      "KnowledgeSpace",
+      "LifecycleState",
+      "LocalApprovalNotification",
+      "LocalApprovalNotificationChannel",
+      "LocalApprovalNotificationEvent",
+      "LocalApprovalNotificationStatus",
+      "LocalModelInvocationRecord",
+      "LocalObservabilityLogRecord",
+      "LocalUsageLedgerEntry",
+      "MemoryGraphFixture",
+      "ModuleKind",
+      "ModuleManifest",
+      "ModuleManifestValidationError",
+      "Permission",
+      "PermissionPolicy",
+      "Policy",
+      "PolicyAttributeCondition",
+      "PolicyAttributeExpression",
+      "PolicyDecision",
+      "PolicyDecisionReason",
+      "PolicyDecisionRecord",
+      "PolicyRulePack",
+      "PolicyTemplate",
+      "ProvenanceBehavior",
+      "ProvenanceRequirement",
+      "PublishedTarget",
+      "RUN_LEDGER_CONTRACT_VERSION",
+      "RUN_LEDGER_PATH_ENV",
+      "RetrievalTrace",
+      "RunLedgerEntry",
+      "RunLedgerProvenance",
+      "RunLedgerStatus",
+      "RunMode",
+      "RunObservabilityMetrics",
+      "RunRecord",
+      "RunStepRecord",
+      "RunStepStatus",
+      "RunStepType",
+      "SecretMetadata",
+      "SecretReference",
+      "SecretResolutionResult",
+      "SecretStorageScope",
+      "SideEffect",
+      "Source",
+      "SourceRef",
+      "SourceType",
+      "SyncConflictStrategy",
+      "SyncDirection",
+      "SyncRule",
+      "TERMINAL_RUN_STATUSES",
+      "TenantIsolationRule",
+      "Trigger",
+      "TriggerEventEnvelope",
+      "TriggerIngestionResult",
+      "TriggerKind",
+      "ValidationResult",
+      "WorkspaceRef",
+      "__version__",
+      "build_memory_graph_fixture",
+      "check_contract_version_compatibility",
+      "compile_policy_expression",
+      "detect_import_source_change",
+      "import_asyncapi_candidates",
+      "import_catalogue_candidates",
+      "import_catalogue_generated_candidates",
+      "import_mcp_candidates",
+      "import_openapi_candidates",
+      "manifest_from_dict",
+      "normalize_graph_edge_id",
+      "normalize_graph_node_id",
+      "normalize_graph_node_kind",
+      "normalize_graph_relation",
+      "normalize_identifier",
+      "normalize_label",
+      "normalize_object_id",
+      "normalize_object_kind",
+      "normalize_source_path",
+      "normalize_space_id",
+      "normalize_tags",
+      "summarize_confidence",
+      "summarize_review_status",
+      "summarize_sensitivity",
+      "validate_agent_graph_context",
+      "validate_agent_run_record",
+      "validate_app_manifest",
+      "validate_asyncapi_import_spec",
+      "validate_component_contract",
+      "validate_control_plane_manifest",
+      "validate_evidence_file_ref",
+      "validate_graph_edge",
+      "validate_graph_fragment",
+      "validate_graph_node",
+      "validate_knowledge_claim",
+      "validate_knowledge_collection",
+      "validate_knowledge_extension_manifest",
+      "validate_knowledge_link",
+      "validate_knowledge_object",
+      "validate_knowledge_source",
+      "validate_knowledge_space",
+      "validate_mcp_import_spec",
+      "validate_module_manifest",
+      "validate_openapi_import_spec",
+      "validate_run_ledger_entry",
+      "validate_run_ledger_provenance",
+      "validate_source_ref",
+      "verify_catalogue_artifacts"
+    ],
+    "bindings": {
+      "Agent": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "AgentAction": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AgentBackedComponentContract": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AgentBehavior": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AgentGraphContext": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "AgentRunRecord": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AgentRunStatus": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AppManifest": {
+        "defined_in": "omnivia_memory.app_manifest.models",
+        "exported_by": [
+          "omnivia_memory.app_manifest"
+        ]
+      },
+      "AppManifestValidationError": {
+        "defined_in": "omnivia_memory.app_manifest.validation",
+        "exported_by": [
+          "omnivia_memory.app_manifest"
+        ]
+      },
+      "AppState": {
+        "defined_in": "omnivia_memory.app_manifest.models",
+        "exported_by": [
+          "omnivia_memory.app_manifest"
+        ]
+      },
+      "Approval": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ApprovalPolicy": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "AuditEvent": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "AuditRequirement": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "Automation": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "BUILTIN_GRAPH_NODE_KINDS": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "BUILTIN_GRAPH_RELATIONS": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "BUILTIN_OBJECT_KINDS": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "CONTROL_PLANE_CONTRACT_VERSION": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "CONTROL_PLANE_SCHEMA_VERSION": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "Capability": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "CapabilityType": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "CatalogueArtifactVerification": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ComponentAIMode": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentConnectorScope": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentContract": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentContractValidationError": {
+        "defined_in": "omnivia_memory.component_contract.validation",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentDataSource": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentFamily": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentGraphScope": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentInput": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentOutput": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentOutputType": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentPermission": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentRunMode": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ComponentSafetyLevel": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "Connection": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ConnectionKind": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ConsultantAccessGrant": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ConsultantGrantStatus": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ContractVersion": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "ControlPlaneManifest": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ControlPlaneRunStatus": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ControlPlaneValidationError": {
+        "defined_in": "omnivia_memory.control_plane.validation",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "DANGEROUS_SIDE_EFFECTS": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "DataSource": {
+        "defined_in": "omnivia_memory.app_manifest.models",
+        "exported_by": [
+          "omnivia_memory.app_manifest"
+        ]
+      },
+      "Database": {
+        "defined_in": "omnivia_memory.persistence.database",
+        "exported_by": [
+          "omnivia_memory.persistence"
+        ]
+      },
+      "EXTENSION_MANIFEST_CONTRACT_VERSION": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "Entrypoint": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "EvidenceFileRef": {
+        "defined_in": "omnivia_memory.run_ledger.models",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "EvidenceGraphResponse": {
+        "defined_in": "omnivia_memory.memory_graph.models",
+        "exported_by": [
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "ExecutionMode": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ExecutionResult": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "GRAPH_CONTRACT_VERSION": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphConfidence": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphEdge": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphEvidenceStrength": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphFragment": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphNode": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphOrigin": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphPreviewResponse": {
+        "defined_in": "omnivia_memory.memory_graph.models",
+        "exported_by": [
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "GraphReviewStatus": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphSensitivity": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphSourceType": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "GraphVisibility": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "ImportRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ImportSourceChange": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ImportSourceProtocol": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ImportSpecValidation": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ImportedCandidateSet": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "Integrity": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "KNOWLEDGE_CONTRACT_VERSION": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeClaim": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeCollection": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeExtensionManifest": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeLink": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeObject": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeSource": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "KnowledgeSpace": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "LifecycleState": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalApprovalNotification": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalApprovalNotificationChannel": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalApprovalNotificationEvent": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalApprovalNotificationStatus": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalModelInvocationRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalObservabilityLogRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "LocalUsageLedgerEntry": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "MemoryCreate": {
+        "defined_in": "omnivia_memory.memory.models",
+        "exported_by": [
+          "omnivia_memory.memory"
+        ]
+      },
+      "MemoryGraphFixture": {
+        "defined_in": "omnivia_memory.memory_graph.fixtures",
+        "exported_by": [
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "MemoryService": {
+        "defined_in": "omnivia_memory.memory.service",
+        "exported_by": [
+          "omnivia_memory.memory"
+        ]
+      },
+      "MemoryUpdate": {
+        "defined_in": "omnivia_memory.memory.models",
+        "exported_by": [
+          "omnivia_memory.memory"
+        ]
+      },
+      "ModuleKind": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "ModuleManifest": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "ModuleManifestValidationError": {
+        "defined_in": "omnivia_memory.module_manifest.validation",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "Permission": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "PermissionPolicy": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "Policy": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyAttributeCondition": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyAttributeExpression": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyDecision": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyDecisionReason": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyDecisionRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyRulePack": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "PolicyTemplate": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ProvenanceBehavior": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "ProvenanceRequirement": {
+        "defined_in": "omnivia_memory.component_contract.models",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "PublishedTarget": {
+        "defined_in": "omnivia_memory.module_manifest.models",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "RUN_LEDGER_CONTRACT_VERSION": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "RUN_LEDGER_PATH_ENV": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "RetrievalTrace": {
+        "defined_in": "omnivia_memory.memory_graph.models",
+        "exported_by": [
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "RunLedgerEntry": {
+        "defined_in": "omnivia_memory.run_ledger.models",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "RunLedgerProvenance": {
+        "defined_in": "omnivia_memory.run_ledger.models",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "RunLedgerStatus": {
+        "defined_in": "omnivia_memory.run_ledger.models",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "RunMode": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "RunObservabilityMetrics": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "RunRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "RunStepRecord": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "RunStepStatus": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "RunStepType": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SecretMetadata": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SecretReference": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SecretResolutionResult": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SecretStorageScope": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SideEffect": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "Source": {
+        "defined_in": "omnivia_memory.provenance.models",
+        "exported_by": [
+          "omnivia_memory.provenance"
+        ]
+      },
+      "SourceRef": {
+        "defined_in": "omnivia_memory.knowledge.models",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "SourceType": {
+        "defined_in": "omnivia_memory.provenance.models",
+        "exported_by": [
+          "omnivia_memory.provenance"
+        ]
+      },
+      "SyncConflictStrategy": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SyncDirection": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "SyncRule": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "TERMINAL_RUN_STATUSES": {
+        "defined_in": null,
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "TenantIsolationRule": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "Trigger": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "TriggerEventEnvelope": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "TriggerIngestionResult": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "TriggerKind": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "ValidationResult": {
+        "defined_in": "omnivia_memory._shared.validation",
+        "exported_by": [
+          "omnivia_memory._shared",
+          "omnivia_memory.knowledge",
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "WorkspaceRef": {
+        "defined_in": "omnivia_memory.control_plane.models",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "build_memory_graph_fixture": {
+        "defined_in": "omnivia_memory.memory_graph.fixtures",
+        "exported_by": [
+          "omnivia_memory.memory_graph"
+        ]
+      },
+      "check_contract_version_compatibility": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "compile_policy_expression": {
+        "defined_in": "omnivia_memory.control_plane.validation",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "detect_import_source_change": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "import_asyncapi_candidates": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "import_catalogue_candidates": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "import_catalogue_generated_candidates": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "import_mcp_candidates": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "import_openapi_candidates": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "manifest_from_dict": {
+        "defined_in": "omnivia_memory.control_plane.validation",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "normalize_graph_edge_id": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_graph_node_id": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_graph_node_kind": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_graph_relation": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_identifier": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_label": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_object_id": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_object_kind": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_source_path": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_space_id": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "normalize_tags": {
+        "defined_in": "omnivia_memory.knowledge.normalize",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "summarize_confidence": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "summarize_review_status": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "summarize_sensitivity": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_agent_graph_context": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_agent_run_record": {
+        "defined_in": "omnivia_memory.component_contract.validation",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "validate_app_manifest": {
+        "defined_in": "omnivia_memory.app_manifest.validation",
+        "exported_by": [
+          "omnivia_memory.app_manifest"
+        ]
+      },
+      "validate_asyncapi_import_spec": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "validate_component_contract": {
+        "defined_in": "omnivia_memory.component_contract.validation",
+        "exported_by": [
+          "omnivia_memory.component_contract"
+        ]
+      },
+      "validate_control_plane_manifest": {
+        "defined_in": "omnivia_memory.control_plane.validation",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "validate_evidence_file_ref": {
+        "defined_in": "omnivia_memory.run_ledger.validation",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "validate_graph_edge": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_graph_fragment": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_graph_node": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_claim": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_collection": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_extension_manifest": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_link": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_object": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_source": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_knowledge_space": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "validate_mcp_import_spec": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "validate_module_manifest": {
+        "defined_in": "omnivia_memory.module_manifest.validation",
+        "exported_by": [
+          "omnivia_memory.module_manifest"
+        ]
+      },
+      "validate_openapi_import_spec": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      },
+      "validate_run_ledger_entry": {
+        "defined_in": "omnivia_memory.run_ledger.validation",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "validate_run_ledger_provenance": {
+        "defined_in": "omnivia_memory.run_ledger.validation",
+        "exported_by": [
+          "omnivia_memory.run_ledger"
+        ]
+      },
+      "validate_source_ref": {
+        "defined_in": "omnivia_memory.knowledge.validation",
+        "exported_by": [
+          "omnivia_memory.knowledge"
+        ]
+      },
+      "verify_catalogue_artifacts": {
+        "defined_in": "omnivia_memory.control_plane.imports",
+        "exported_by": [
+          "omnivia_memory.control_plane"
+        ]
+      }
+    },
+    "compatibility_exports": [
+      "Database",
+      "MemoryCreate",
+      "MemoryService",
+      "MemoryUpdate"
+    ]
+  },
+  "task": "T-0627"
+}

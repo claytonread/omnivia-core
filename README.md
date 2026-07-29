@@ -114,6 +114,8 @@ Core dependencies:
 - [Graphify-like Compatibility](docs/compatibility/graphify-like.md)
 - [Portable Knowledge Launch Packet](docs/launch/portable-knowledge-launch-packet.md)
 - [Examples](docs/examples/README.md)
+- [Phase 0 Baseline Freeze](docs/baseline/phase-0-baseline-freeze.md)
+- [Legacy memories.db Migration Criteria](docs/baseline/legacy-memories-db-migration.md)
 
 ## Checks
 
@@ -136,6 +138,18 @@ Run the full package suite:
 ```bash
 PYTHONPATH=services/omnivia-memory/src python3 -m pytest services/omnivia-memory/tests
 ```
+
+Verify the Phase 0 baseline freeze (public exports, storage schema, dependency
+drift, and golden fixtures):
+
+```bash
+scripts/check-core-baseline.sh
+```
+
+The PDF and DOCX ingestion tests need optional extractor dependencies that the
+`dev` extra does not install. See the
+[Phase 0 baseline freeze](docs/baseline/phase-0-baseline-freeze.md) for the
+clean environment recipe.
 
 ## Public Import Example
 

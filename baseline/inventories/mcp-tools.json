@@ -1,0 +1,271 @@
+{
+  "descriptor_fields": [
+    "tool_name",
+    "operation"
+  ],
+  "evidence_source": {
+    "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py",
+    "kind": "reviewed_static_source",
+    "live_response_captured": false,
+    "note": "Base tool list read from the owning repository by a read-only review pass and applied here. No live MCP tool result was captured, so the mcp.* golden fixtures stay empty rather than claiming a Dev response.",
+    "path": "services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py",
+    "references": [
+      "mcp/server.py lines 234-1061"
+    ],
+    "repo": "omnivia-dev"
+  },
+  "format_version": "1",
+  "inventory": {
+    "entries": [
+      {
+        "kind": "protocol_method",
+        "tool_name": "tools/list"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "context_pack_generate"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "context_pack_get"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "context_pack_list"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "context_search"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_create_entity"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_create_relationship"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_get_context"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_get_entity"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_get_neighbors"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_list_entities"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "graph_search"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_approve"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_delete"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_get"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_list"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_reject"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_search"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_store"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "memory_update"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "platform_context_pack"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_create"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_delete"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_get"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_import"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_list"
+      },
+      {
+        "kind": "operation",
+        "tool_name": "workspace_update"
+      }
+    ],
+    "exclusions": [
+      {
+        "kind": "prefix",
+        "reason": "Dev pattern tools are Dev Module surface, not base Core-relevant tools.",
+        "value": "pattern_"
+      },
+      {
+        "kind": "prefix",
+        "reason": "Dev codebase-intelligence tools are Dev Module surface, not base Core-relevant tools.",
+        "value": "codebase_intelligence_"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "consolidate_knowledge"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "get_knowledge_unit"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "list_knowledge_units"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "detect_conflicts"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "get_consolidated_view"
+      },
+      {
+        "kind": "exact",
+        "reason": "Dev knowledge-consolidation tools. They are Dev Module surface and are excluded from the base tool inventory Core is baselined against.",
+        "value": "resolve_conflict"
+      }
+    ],
+    "identity_field": "tool_name",
+    "kind": "base_mcp_tools",
+    "match_fields": [
+      "tool_name"
+    ],
+    "notes": [
+      "The full base tool list, plus the tools/list protocol method discovery uses.",
+      "Dev-only extensions — pattern tools, the knowledge-consolidation tools, and the codebase-intelligence tools — are excluded by rule."
+    ]
+  },
+  "operations": [
+    {
+      "baseline_slice": "mcp.tools_discovery",
+      "core_contracts": [],
+      "descriptor": {
+        "operation": "discovery",
+        "tool_name": "tools/list"
+      },
+      "descriptor_fields": [
+        "tool_name",
+        "operation"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py",
+        "gap_id": "GAP-002",
+        "live_response_captured": false
+      },
+      "notes": "Tool discovery is a Dev MCP server concern; Core exposes no MCP surface. tools/list is the MCP protocol method rather than one of the base tools, and the inventory records it as such.",
+      "operation_id": "mcp.tools_discovery",
+      "owner_repo": "omnivia-dev",
+      "title": "MCP tool discovery"
+    },
+    {
+      "baseline_slice": "mcp.read",
+      "core_contracts": [
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "operation": "read",
+        "tool_name": "memory_get"
+      },
+      "descriptor_fields": [
+        "tool_name",
+        "operation"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py",
+        "gap_id": "GAP-002",
+        "live_response_captured": false
+      },
+      "notes": "The underlying Core read behaviour is frozen by the memory.get and memory.search golden fixtures. memory_get is the required baseline mapping for the read slice.",
+      "operation_id": "mcp.read",
+      "owner_repo": "omnivia-dev",
+      "title": "One MCP read operation over Core memory"
+    },
+    {
+      "baseline_slice": "mcp.write",
+      "core_contracts": [
+        "omnivia_memory.memory.models.MemoryCreate",
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "operation": "write",
+        "tool_name": "memory_store"
+      },
+      "descriptor_fields": [
+        "tool_name",
+        "operation"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py",
+        "gap_id": "GAP-002",
+        "live_response_captured": false
+      },
+      "notes": "The underlying Core write behaviour is frozen by the memory.create golden fixture. memory_store is the required baseline mapping for the write slice.",
+      "operation_id": "mcp.write",
+      "owner_repo": "omnivia-dev",
+      "title": "One MCP write operation over Core memory"
+    }
+  ],
+  "owner_repo": "omnivia-dev",
+  "required_slices": [
+    "mcp.read",
+    "mcp.tools_discovery",
+    "mcp.write"
+  ],
+  "response_envelope": null,
+  "status": "reviewed_static_evidence",
+  "status_note": "Descriptors come from a read-only review of the owning repository, recorded with evidence.capture_kind='reviewed_static_source'. No live response body was captured, so live_response_captured stays false. An operation with no reviewed descriptor keeps a null descriptor and an open gap.",
+  "surface": "mcp_tools",
+  "task": "T-0627",
+  "title": "Base MCP tools relevant to Core"
+}

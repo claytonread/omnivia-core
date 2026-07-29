@@ -1,0 +1,156 @@
+{
+  "baseline_slice": "graph.preview",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.memory_graph.assembly.assemble_graph_preview"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": []
+  },
+  "notes": [
+    "Assembled from the in-code memory graph fixture. Its FIXTURE_TIME constant is already deterministic, so temporal fields are recorded literally rather than tokenised.",
+    "The third fact in the bundle has no source evidence and is expected to surface as a warning rather than a silently dropped edge.",
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": null,
+  "request": {
+    "edge_limit": 150,
+    "node_limit": 100,
+    "query": "source:source-001",
+    "record_counts": {
+      "entities": 2,
+      "facts": 3,
+      "segments": 2
+    },
+    "workspace_id": "workspace-001"
+  },
+  "response": {
+    "edges": [
+      {
+        "confidence": "extracted",
+        "display": {},
+        "id": "edge-fact-001",
+        "label": "owns",
+        "source": "node-entity-entity-core",
+        "source_refs": [
+          {
+            "confidence": "extracted",
+            "quote_preview": "Memory facts must cite source evidence.",
+            "segment_id": "segment-001",
+            "source_id": "source-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            }
+          }
+        ],
+        "state": "ready",
+        "target": "node-entity-entity-memory-graph",
+        "type": "owns",
+        "valid_from": "2026-06-07T00:00:00+00:00",
+        "valid_to": null
+      }
+    ],
+    "generated_at": "2026-06-07T00:00:00+00:00",
+    "limits": {
+      "edges": 150,
+      "nodes": 100
+    },
+    "nodes": [
+      {
+        "confidence": null,
+        "display": {},
+        "entity_ref": null,
+        "id": "node-source-source-001",
+        "kind": "source",
+        "label": "Memory ADR",
+        "segment_ref": null,
+        "source_ref": "source-001",
+        "source_refs": [
+          {
+            "confidence": null,
+            "quote_preview": null,
+            "segment_id": null,
+            "source_id": "source-001",
+            "span": null
+          }
+        ],
+        "state": "ready",
+        "type": "file"
+      },
+      {
+        "confidence": "extracted",
+        "display": {},
+        "entity_ref": "entity-core",
+        "id": "node-entity-entity-core",
+        "kind": "entity",
+        "label": "Core",
+        "segment_ref": null,
+        "source_ref": null,
+        "source_refs": [
+          {
+            "confidence": "extracted",
+            "quote_preview": "Memory facts must cite source evidence.",
+            "segment_id": "segment-001",
+            "source_id": "source-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            }
+          }
+        ],
+        "state": "ready",
+        "type": "module"
+      },
+      {
+        "confidence": 0.96,
+        "display": {},
+        "entity_ref": "entity-memory-graph",
+        "id": "node-entity-entity-memory-graph",
+        "kind": "entity",
+        "label": "Memory Graph Contract",
+        "segment_ref": null,
+        "source_ref": null,
+        "source_refs": [
+          {
+            "confidence": "extracted",
+            "quote_preview": "Memory facts must cite source evidence.",
+            "segment_id": "segment-001",
+            "source_id": "source-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            }
+          }
+        ],
+        "state": "ready",
+        "type": "contract"
+      }
+    ],
+    "query": "source:source-001",
+    "warnings": [
+      "fact fact-003 has no source evidence; shown as missing-evidence warning"
+    ],
+    "workspace_id": "workspace-001"
+  },
+  "scenario": "graph.preview",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Bounded graph preview response"
+}

@@ -1,0 +1,529 @@
+{
+  "descriptor_fields": [
+    "method",
+    "path"
+  ],
+  "evidence_source": {
+    "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+    "kind": "reviewed_static_source",
+    "live_response_captured": false,
+    "note": "Route table and response envelope read from the owning repository by a read-only review pass and applied here. No live HTTP response body was captured, so the golden fixtures for these slices remain Core-side equivalents rather than Platform responses.",
+    "path": "services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+    "references": [
+      "http/server.py lines 52-73",
+      "http/server.py lines 83-180",
+      "http/server.py lines 203-279",
+      "http/app.py lines 214-220",
+      "http/app.py lines 1370-1396",
+      "http/app.py lines 2218-2550",
+      "http/app.py lines 2428-2494",
+      "http/app.py lines 2626-2784",
+      "http/app.py lines 2786-2835"
+    ],
+    "repo": "omnivia-platform"
+  },
+  "format_version": "1",
+  "inventory": {
+    "entries": [
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/health"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/workspaces"
+      },
+      {
+        "kind": "operation",
+        "method": "POST",
+        "path": "/workspaces"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/workspaces/{id}"
+      },
+      {
+        "kind": "operation",
+        "method": "POST",
+        "path": "/workspaces/{id}/index"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/workspaces/{id}/ingestion/queue"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/ingestion/runs"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memories"
+      },
+      {
+        "kind": "operation",
+        "method": "POST",
+        "path": "/memories"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memories/{id}"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memories/search"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memory/search"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memory/source"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memory/graph/preview"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memory/evidence/graph"
+      },
+      {
+        "kind": "operation",
+        "method": "GET",
+        "path": "/memory/evidence/explain"
+      },
+      {
+        "kind": "operation",
+        "method": "POST",
+        "note": "A GET variant of this operation exists in Platform but is deprecated; the baseline freezes the POST form.",
+        "path": "/agent/context/search"
+      },
+      {
+        "kind": "operation",
+        "method": "POST",
+        "note": "A GET variant of this operation exists in Platform but is deprecated; the baseline freezes the POST form.",
+        "path": "/agent/context/pack"
+      }
+    ],
+    "exclusions": [
+      {
+        "kind": "prefix",
+        "reason": "Local-only Platform routes are Module surface, not the neutral surface Core is baselined against. They are excluded from this inventory by rule.",
+        "value": "/local/"
+      },
+      {
+        "kind": "prefix",
+        "reason": "Dev-only Platform routes belong to the Dev Module, not the neutral surface Core is baselined against.",
+        "value": "/dev/"
+      }
+    ],
+    "identity_field": "path",
+    "kind": "neutral_http_routes",
+    "match_fields": [
+      "method",
+      "path"
+    ],
+    "notes": [
+      "The full neutral route table, not only the routes this slice requires.",
+      "Every /local/** and /dev/** route is excluded by rule. They are Module surface and are not part of the neutral surface Core is baselined against."
+    ]
+  },
+  "operations": [
+    {
+      "baseline_slice": "health.health",
+      "core_contracts": [],
+      "descriptor": {
+        "method": "GET",
+        "path": "/health"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-004",
+        "live_response_captured": false
+      },
+      "notes": "Health is a Platform runtime concern. Core has no health primitive, so no Core-side fixture exists for it. This route is the one neutral operation that does not use the {ok, data} envelope.",
+      "operation_id": "health.health",
+      "owner_repo": "omnivia-platform",
+      "title": "Service health probe"
+    },
+    {
+      "baseline_slice": "health.readiness",
+      "core_contracts": [],
+      "descriptor": null,
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_command": "In omnivia-platform, export the neutral route table for this slice as JSON with descriptor {method, path}, evidence.captured=true and a live response body, then run `python -m baseline verify-external --surface platform_http --artifact <file>` from omnivia-core.",
+        "captured": false,
+        "gap_id": "GAP-004"
+      },
+      "notes": "Readiness depends on Platform storage and lifecycle wiring that Core does not own. The reviewed neutral route table exposes GET /health only and has no separate readiness route, so the descriptor stays null rather than being guessed from the health route.",
+      "operation_id": "health.readiness",
+      "owner_repo": "omnivia-platform",
+      "title": "Service readiness probe"
+    },
+    {
+      "baseline_slice": "workspace.create",
+      "core_contracts": [
+        "omnivia_memory.workspace.models.WorkspaceCreate",
+        "omnivia_memory.workspace.models.Workspace",
+        "omnivia_memory.workspace.service.WorkspaceService"
+      ],
+      "descriptor": {
+        "method": "POST",
+        "path": "/workspaces"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the workspace.create golden fixture.",
+      "operation_id": "workspace.create",
+      "owner_repo": "omnivia-platform",
+      "title": "Create a workspace"
+    },
+    {
+      "baseline_slice": "workspace.list",
+      "core_contracts": [
+        "omnivia_memory.workspace.models.Workspace",
+        "omnivia_memory.workspace.service.WorkspaceService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/workspaces"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the workspace.list golden fixture.",
+      "operation_id": "workspace.list",
+      "owner_repo": "omnivia-platform",
+      "title": "List workspaces"
+    },
+    {
+      "baseline_slice": "workspace.get",
+      "core_contracts": [
+        "omnivia_memory.workspace.models.Workspace",
+        "omnivia_memory.workspace.service.WorkspaceService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/workspaces/{id}"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the workspace.get golden fixture.",
+      "operation_id": "workspace.get",
+      "owner_repo": "omnivia-platform",
+      "title": "Get a workspace by id"
+    },
+    {
+      "baseline_slice": "memory.create",
+      "core_contracts": [
+        "omnivia_memory.memory.models.MemoryCreate",
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "method": "POST",
+        "path": "/memories"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the memory.create golden fixture.",
+      "operation_id": "memory.create",
+      "owner_repo": "omnivia-platform",
+      "title": "Create a memory"
+    },
+    {
+      "baseline_slice": "memory.list",
+      "core_contracts": [
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/memories"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the memory.list golden fixture.",
+      "operation_id": "memory.list",
+      "owner_repo": "omnivia-platform",
+      "title": "List memories"
+    },
+    {
+      "baseline_slice": "memory.get",
+      "core_contracts": [
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/memories/{id}"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the memory.get golden fixture.",
+      "operation_id": "memory.get",
+      "owner_repo": "omnivia-platform",
+      "title": "Get a memory by id"
+    },
+    {
+      "baseline_slice": "memory.search",
+      "core_contracts": [
+        "omnivia_memory.search.service.SearchService",
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/memories/search"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the memory.search golden fixture. The neutral table also carries GET /memory/search as an agent-facing variant; this slice is mapped to the collection route.",
+      "operation_id": "memory.search",
+      "owner_repo": "omnivia-platform",
+      "title": "Keyword-search memories"
+    },
+    {
+      "baseline_slice": "ingestion.import_directory",
+      "core_contracts": [
+        "omnivia_memory.ingestion.pipeline.IngestionPipeline",
+        "omnivia_memory.workspace.models.ImportSummary"
+      ],
+      "descriptor": {
+        "method": "POST",
+        "path": "/workspaces/{id}/index"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the ingestion.import_directory fixture. Platform runs the import through its indexing route; the queue and run routes in the inventory are Platform-side scheduling that Core has no equivalent for.",
+      "operation_id": "ingestion.import_directory",
+      "owner_repo": "omnivia-platform",
+      "title": "Import a directory into a workspace"
+    },
+    {
+      "baseline_slice": "graph.preview",
+      "core_contracts": [
+        "omnivia_memory.memory_graph.assembly.assemble_graph_preview",
+        "omnivia_memory.memory_graph.models.GraphPreviewResponse"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/memory/graph/preview"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the graph.preview golden fixture.",
+      "operation_id": "graph.preview",
+      "owner_repo": "omnivia-platform",
+      "title": "Bounded graph preview response"
+    },
+    {
+      "baseline_slice": "graph.traversal",
+      "core_contracts": [
+        "omnivia_memory.graph.service.GraphService"
+      ],
+      "descriptor": {
+        "method": "GET",
+        "path": "/memory/evidence/graph"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the graph.traversal golden fixture. The reviewed neutral table has no dedicated neighbours, backlinks, or path-finding route; GET /memory/evidence/graph is the neutral operation that exposes traversal, so the slice is mapped to it. Treat the mapping, not the route, as the reviewable claim here.",
+      "operation_id": "graph.traversal",
+      "owner_repo": "omnivia-platform",
+      "title": "Graph neighbours, backlinks, and path finding"
+    },
+    {
+      "baseline_slice": "context.search",
+      "core_contracts": [
+        "omnivia_memory.persistence.repositories.MemoryRepository",
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "method": "POST",
+        "path": "/agent/context/search"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-001",
+        "live_response_captured": false
+      },
+      "notes": "Core-side behaviour is frozen by the context.search golden fixture. The POST form is frozen because the GET variant is deprecated in Platform.",
+      "operation_id": "context.search",
+      "owner_repo": "omnivia-platform",
+      "title": "Workspace-scoped context retrieval"
+    },
+    {
+      "baseline_slice": "context.pack",
+      "core_contracts": [
+        "omnivia_memory.persistence.database.Database"
+      ],
+      "descriptor": {
+        "method": "POST",
+        "path": "/agent/context/pack"
+      },
+      "descriptor_fields": [
+        "method",
+        "path"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-platform:services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py",
+        "gap_id": "GAP-005",
+        "live_response_captured": false
+      },
+      "notes": "The route is recorded from reviewed source, but Core owns the context_packs storage schema and implements no pack assembly, so only the storage-schema half is frozen here. The POST form is frozen because the GET variant is deprecated in Platform.",
+      "operation_id": "context.pack",
+      "owner_repo": "omnivia-platform",
+      "title": "Context pack assembly and storage"
+    }
+  ],
+  "owner_repo": "omnivia-platform",
+  "required_slices": [
+    "context.pack",
+    "context.search",
+    "graph.preview",
+    "graph.traversal",
+    "health.health",
+    "health.readiness",
+    "ingestion.import_directory",
+    "memory.create",
+    "memory.get",
+    "memory.list",
+    "memory.search",
+    "workspace.create",
+    "workspace.get",
+    "workspace.list"
+  ],
+  "response_envelope": {
+    "error": "Errors are an HTTP status code plus {\"ok\": false, \"error\": <string>}.",
+    "health": "GET /health responds {\"ok\": <bool>, \"service\": <string>, \"message\": <string>}.",
+    "success": "Most success responses are {\"ok\": true, \"data\": <payload>}.",
+    "unexpected_error": "Unexpected errors use the fixed message \"Internal server error\" rather than leaking detail."
+  },
+  "status": "reviewed_static_evidence",
+  "status_note": "Descriptors come from a read-only review of the owning repository, recorded with evidence.capture_kind='reviewed_static_source'. No live response body was captured, so live_response_captured stays false. An operation with no reviewed descriptor keeps a null descriptor and an open gap.",
+  "surface": "platform_http",
+  "task": "T-0627",
+  "title": "Neutral Platform HTTP routes relevant to Core"
+}

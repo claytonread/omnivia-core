@@ -1,0 +1,57 @@
+{
+  "baseline_slice": "memory.search",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.memory.service.MemoryService.search"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "absolute-path",
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "MemoryRepository.search uses SQLite LIKE with % and _ escaped; there is no relevance ranking in this baseline.",
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": "repository returns created_at DESC; baseline sorts by content",
+  "request": {
+    "limit": 20,
+    "query": "provenance"
+  },
+  "response": {
+    "count": 1,
+    "memories": [
+      {
+        "content": "Each memory keeps a provenance reference back to the source file.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0017>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0011>",
+          "reference": "<workspace-root>/notes/inbox.txt",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      }
+    ]
+  },
+  "scenario": "memory.search",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Keyword-search memories"
+}

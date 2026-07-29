@@ -1,0 +1,144 @@
+{
+  "baseline_slice": "context.pack",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.persistence.database.Database._init_schema"
+  ],
+  "evidence_gap": "GAP-005",
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": []
+  },
+  "notes": [
+    "Core creates the context_packs table but implements no pack assembly, so only the storage half of this slice can be frozen here. The behavioural half is recorded as an evidence gap.",
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": null,
+  "request": null,
+  "response": {
+    "row_count": 0,
+    "storage_schema": {
+      "context_packs": {
+        "columns": [
+          {
+            "default": null,
+            "name": "content",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "created_at",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": "'markdown'",
+            "name": "format",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "id",
+            "not_null": false,
+            "primary_key": 1,
+            "type": "TEXT"
+          },
+          {
+            "default": "'[]'",
+            "name": "memory_ids_json",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "name",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "purpose",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "query",
+            "not_null": false,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": "'[]'",
+            "name": "source_references_json",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          },
+          {
+            "default": null,
+            "name": "workspace_id",
+            "not_null": true,
+            "primary_key": 0,
+            "type": "TEXT"
+          }
+        ],
+        "foreign_keys": [
+          {
+            "column": "workspace_id",
+            "on_delete": "NO ACTION",
+            "on_update": "NO ACTION",
+            "references_column": "id",
+            "references_table": "workspaces"
+          }
+        ],
+        "indexes": [
+          {
+            "columns": [
+              "purpose"
+            ],
+            "name": "idx_context_packs_purpose",
+            "origin": "c",
+            "unique": false
+          },
+          {
+            "columns": [
+              "workspace_id"
+            ],
+            "name": "idx_context_packs_workspace",
+            "origin": "c",
+            "unique": false
+          },
+          {
+            "columns": [
+              "id"
+            ],
+            "name": "sqlite_autoindex_context_packs_1",
+            "origin": "pk",
+            "unique": true
+          }
+        ]
+      }
+    }
+  },
+  "scenario": "context.pack",
+  "status": "partial",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Context pack storage schema"
+}

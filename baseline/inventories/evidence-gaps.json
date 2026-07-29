@@ -1,0 +1,94 @@
+{
+  "format_version": "1",
+  "gaps": [
+    {
+      "closed_by": "A read-only review of omnivia-platform services/omnivia-memory-platform/src/omnivia_memory_platform/http/server.py (with http/app.py) supplied the neutral route table, the response envelope, and the /local/** and /dev/** exclusions. They are recorded in baseline/inventories/platform-http-routes.json with reviewed-source evidence.",
+      "closes_when": "The neutral Platform route table is recorded in Core from reviewed source, or a Platform-side capture artifact passes `python -m baseline verify-external --surface platform_http --artifact <file>`.",
+      "id": "GAP-001",
+      "owner_repo": "omnivia-platform",
+      "residual_gap_id": "GAP-007",
+      "scope": "surface",
+      "status": "closed",
+      "title": "Platform HTTP route descriptors were not observable from Core",
+      "why_open": "Core ships no HTTP server, so the concrete method and path for each route could not be observed from this repository and the descriptors were left null."
+    },
+    {
+      "closed_by": "A read-only review of omnivia-dev services/omnivia-memory-dev/src/omnivia_memory_dev/mcp/server.py supplied the base tool list, the tools/list discovery method, the memory_get and memory_store baseline mapping, and the Dev-only exclusions. They are recorded in baseline/inventories/mcp-tools.json with reviewed-source evidence.",
+      "closes_when": "The base MCP tool list is recorded in Core from reviewed source, or a Dev-side capture artifact passes `python -m baseline verify-external --surface mcp_tools --artifact <file>`.",
+      "id": "GAP-002",
+      "owner_repo": "omnivia-dev",
+      "residual_gap_id": "GAP-008",
+      "scope": "surface",
+      "status": "closed",
+      "title": "Base MCP tool descriptors were not observable from Core",
+      "why_open": "MCP serving lives in Dev. Core has no MCP module, so tool names could not be observed from this repository and the descriptors were left null."
+    },
+    {
+      "closed_by": "A read-only review of omnivia-dev services/omnivia-memory-dev/src/omnivia_memory_dev/cli/commands.py supplied the base command list, the get and create baseline mapping, and the Dev-only exclusions. They are recorded in baseline/inventories/cli-commands.json with reviewed-source evidence.",
+      "closes_when": "The base CLI command list is recorded in Core from reviewed source, or a Dev-side capture artifact passes `python -m baseline verify-external --surface cli_commands --artifact <file>`.",
+      "id": "GAP-003",
+      "owner_repo": "omnivia-dev",
+      "residual_gap_id": "GAP-008",
+      "scope": "surface",
+      "status": "closed",
+      "title": "Base CLI command descriptors were not observable from Core",
+      "why_open": "The product CLI lives in Dev. The only argparse entry points in Core are the benchmark runners, so the command names could not be observed here."
+    },
+    {
+      "closed_by": null,
+      "closes_when": "Platform names a neutral readiness route and a live response is captured under GAP-007, or Core gains a health primitive in a later phase.",
+      "id": "GAP-004",
+      "owner_repo": "omnivia-platform",
+      "residual_gap_id": null,
+      "scope": "capability",
+      "status": "open",
+      "title": "Readiness has no neutral route and health has no Core implementation",
+      "why_open": "Core exposes no health or readiness primitive, so there is no Core code path to capture a golden fixture from. The reviewed neutral route table also exposes GET /health only, so the health.readiness operation has no descriptor."
+    },
+    {
+      "closed_by": null,
+      "closes_when": "A Platform context pack response is captured under GAP-007, or pack assembly moves into Core in a later phase.",
+      "id": "GAP-005",
+      "owner_repo": "omnivia-platform",
+      "residual_gap_id": null,
+      "scope": "capability",
+      "status": "open",
+      "title": "Context pack assembly behaviour is not implemented in Core",
+      "why_open": "Core owns the context_packs table schema but no pack assembly code. The context.pack fixture therefore freezes the storage schema captured from Database._init_schema, not a pack response body, even though the Platform route POST /agent/context/pack is now recorded."
+    },
+    {
+      "closed_by": "Codex reviewed and applied the accepted T-0627 task, the readiness assessment, and ADR-036, ADR-037 and ADR-038 against these artifacts.",
+      "closes_when": "A reviewer with omnivia-pm access confirms the Phase 0 artifacts match the operating model.",
+      "id": "GAP-006",
+      "owner_repo": "omnivia-pm",
+      "residual_gap_id": null,
+      "scope": "process",
+      "status": "closed",
+      "title": "PM operating-model documents were not read in this lane",
+      "why_open": "AGENTS.md points at omnivia-pm operating-model and task-template documents. This task was scoped to omnivia-core only, so those documents were not opened by the implementation lane."
+    },
+    {
+      "closed_by": null,
+      "closes_when": "A Platform-side capture artifact carrying live response bodies passes `python -m baseline verify-external --surface platform_http --artifact <file>`.",
+      "id": "GAP-007",
+      "owner_repo": "omnivia-platform",
+      "residual_gap_id": null,
+      "scope": "evidence",
+      "status": "open",
+      "title": "Live Platform HTTP responses are not captured in Core",
+      "why_open": "The neutral route table and response envelope are recorded from reviewed source, which fixes the shape of the surface but not its output. No live Platform response body has been captured, so the Platform-facing slices are frozen by Core-side equivalents only."
+    },
+    {
+      "closed_by": null,
+      "closes_when": "Dev-side capture artifacts carrying live tool results and command output pass `python -m baseline verify-external` for the mcp_tools and cli_commands surfaces.",
+      "id": "GAP-008",
+      "owner_repo": "omnivia-dev",
+      "residual_gap_id": null,
+      "scope": "evidence",
+      "status": "open",
+      "title": "Live MCP and CLI responses are not captured in Core",
+      "why_open": "The base MCP tool list and CLI command list are recorded from reviewed source, which fixes the shape of both surfaces but not their output. No live tool result or command output has been captured, so the mcp.* and cli.* fixtures record no response."
+    }
+  ],
+  "task": "T-0627"
+}
