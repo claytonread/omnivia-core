@@ -41,6 +41,17 @@ Four layers of comparison run here, from loosest to strictest:
   (``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once``
   rejects a stale or unused rule).
 
+A subset of once-duplicated leaves (``_shared.validation``, ``lifecycle.models``,
+``lifecycle.rules``, ``provenance.models``, ``memory.models``) has since been
+converted into thin compatibility facades: the legacy leaf now imports its
+supported symbols directly from the canonical owner (``legacy.Foo is
+canonical.Foo``) instead of holding a duplicated, source-parity copy. Those
+leaves are no longer source-identical to their legacy counterpart by design,
+so they are held out of ``CANONICAL_TO_LEGACY`` and the parametrized gates
+below -- listed instead in ``FACADE_CANONICAL_TO_LEGACY`` -- and verified for
+exact symbol identity, not source sameness, by
+``tests/compatibility/test_facade_foundation.py``.
+
 Neither the structural nor the AST layer normalizes annotation spellings
 away: a canonical leaf that "modernizes" a legacy ``typing.List``/
 ``typing.Optional`` annotation, or a legacy ``datetime.now(timezone.utc)``
@@ -65,6 +76,7 @@ import pytest
 from _leaves import (
     CANONICAL_LEAF_MODULES,
     CANONICAL_TO_LEGACY,
+    FACADE_CANONICAL_TO_LEGACY,
     SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL,
 )
 
@@ -308,22 +320,27 @@ def test_canonical_leaf_is_an_exact_ast_port(canonical_name: str, legacy_name: s
 
 def test_ast_gate_covers_every_leaf_but_the_one_documented_exception() -> None:
     """The gates above are parametrized over ``CANONICAL_TO_LEGACY``, so a
-    leaf added to the manifest is covered automatically. Assert here that
-    the manifest itself leaves nothing else uncovered: ``search_models`` is
-    the sole module held out of the generic AST gate, and it is covered by
-    its own stricter test rather than waived -- so the exception cannot
-    quietly grow to a second module.
+    leaf added to that manifest is covered automatically. Assert here that
+    the manifests leave nothing else uncovered: every leaf is either a
+    copied-leaf pair in ``CANONICAL_TO_LEGACY`` (covered by the generic AST
+    gate above) or a facade-leaf pair in ``FACADE_CANONICAL_TO_LEGACY``
+    (covered by tests/compatibility/test_facade_foundation.py instead), with
+    ``search_models`` as the sole documented exception -- held out of both
+    maps and covered by its own stricter test rather than waived -- so the
+    exception cannot quietly grow to a second module.
     """
     # ``omnivia_core._shared`` is a re-export barrel with no definitions of
     # its own; it is covered by test_shared_barrel_matches_legacy_all_and_bindings.
     held_out = {
         name
         for name in CANONICAL_LEAF_MODULES
-        if name != "omnivia_core._shared" and name not in CANONICAL_TO_LEGACY
+        if name != "omnivia_core._shared"
+        and name not in CANONICAL_TO_LEGACY
+        and name not in FACADE_CANONICAL_TO_LEGACY
     }
     assert held_out == {"omnivia_core.graph.search_models"}, (
-        "graph.search_models is the only leaf that may be held out of the generic "
-        f"AST gate; found {sorted(held_out)}"
+        "graph.search_models is the only leaf that may be held out of both the "
+        f"copied-leaf and facade-leaf maps; found {sorted(held_out)}"
     )
 
 
@@ -479,7 +496,13 @@ def test_graph_search_models_canonicalizes_only_query_and_result_records() -> No
 
 def test_shared_barrel_matches_legacy_all_and_bindings() -> None:
     """omnivia_core._shared re-exports the same names as omnivia_memory._shared,
-    bound to the equivalently-described symbols from the canonical validation module."""
+    bound to the exact same canonical objects.
+
+    ``omnivia_memory._shared.validation`` is now a compatibility facade over
+    ``omnivia_core._shared.validation`` (see ``FACADE_CANONICAL_TO_LEGACY``),
+    so both barrels re-export the identical underlying symbols -- this is an
+    object-identity check, not a structural lookalike comparison.
+    """
 
     canonical = importlib.import_module("omnivia_core._shared")
     legacy = importlib.import_module("omnivia_memory._shared")
@@ -488,6 +511,7 @@ def test_shared_barrel_matches_legacy_all_and_bindings() -> None:
     for name in canonical.__all__:
         canonical_value = getattr(canonical, name)
         legacy_value = getattr(legacy, name)
-        assert _strict.describe_symbol(canonical_value) == _strict.describe_symbol(legacy_value), (
-            f"omnivia_core._shared.{name} contract drifted from omnivia_memory._shared.{name}"
+        assert canonical_value is legacy_value, (
+            f"omnivia_core._shared.{name} is not the exact same object as "
+            f"omnivia_memory._shared.{name}"
         )

@@ -10,6 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
+    "omnivia-core>=0.1.0,<0.2.0",
     "sqlalchemy>=2.0.0",
 ]
 

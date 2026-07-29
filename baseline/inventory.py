@@ -18,8 +18,10 @@ introspection.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import enum
+import importlib
 import inspect
 import pkgutil
 import re
@@ -47,6 +49,44 @@ from baseline.determinism import (
 PUBLIC_EXPORTS_PATH = INVENTORY_DIR / "public-exports.json"
 
 _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
+
+#: The five legacy leaves converted into thin compatibility facades over
+#: ``omnivia_core`` (see ``tests/canonical_migration/_leaves.py``'s
+#: ``FACADE_CANONICAL_TO_LEGACY`` and ``tests/compatibility/test_facade_foundation.py``),
+#: and -- for each symbol the frozen inventory once recorded as *defined* by
+#: that leaf -- the canonical module that now owns the exact object it routes
+#: to. Only these exact, narrow routes are ever normalized away before
+#: comparing against the frozen Phase 0 baseline; every other public-export
+#: difference still fails ``verify_public_export_inventory``.
+FACADE_ROUTES: dict[str, dict[str, str]] = {
+    "omnivia_memory._shared.validation": {
+        "SENSITIVE_KEYS": "omnivia_core._shared.validation",
+        "ValidationResult": "omnivia_core._shared.validation",
+        "scan_sensitive_fields": "omnivia_core._shared.validation",
+        "validate_iso_timestamp": "omnivia_core._shared.validation",
+        "validate_optional_iso_timestamp": "omnivia_core._shared.validation",
+    },
+    "omnivia_memory.lifecycle.models": {
+        "LifecycleState": "omnivia_core.lifecycle.models",
+    },
+    "omnivia_memory.lifecycle.rules": {
+        "CreatedBy": "omnivia_core.lifecycle.rules",
+        "LifecycleRules": "omnivia_core.lifecycle.rules",
+        "LifecycleState": "omnivia_core.lifecycle.models",
+    },
+    "omnivia_memory.provenance.models": {
+        "Source": "omnivia_core.provenance.models",
+        "SourceType": "omnivia_core.provenance.models",
+    },
+    "omnivia_memory.memory.models": {
+        "Memory": "omnivia_core.memory.models",
+        "MemoryCreate": "omnivia_core.memory.models",
+        "MemoryUpdate": "omnivia_core.memory.models",
+        "LifecycleState": "omnivia_core.lifecycle.models",
+        "CreatedBy": "omnivia_core.lifecycle.rules",
+        "Source": "omnivia_core.provenance.models",
+    },
+}
 
 
 class InventoryError(RuntimeError):
@@ -132,11 +172,125 @@ def write_public_export_inventory() -> Path:
     return PUBLIC_EXPORTS_PATH
 
 
+def _facade_route_problems(
+    actual: dict[str, Any],
+    *,
+    routes: dict[str, dict[str, str]] = FACADE_ROUTES,
+    frozen: dict[str, Any] | None = None,
+) -> list[str]:
+    """Verify every facade route in ``routes`` before it may be normalized away.
+
+    Each routed symbol must (a) still exist on the legacy leaf, (b) be the
+    *exact* object bound at its declared canonical module (not a lookalike),
+    and (c) -- when the frozen baseline once recorded a historical
+    ``defines`` descriptor for it -- describe identically to that frozen
+    descriptor, so a structural contract change cannot hide behind the
+    ownership move. Symbols the frozen inventory never tracked as a
+    definition (for example a bare constant with no ``__module__``) skip
+    only that third check; identity is still required.
+    """
+    if frozen is None:
+        frozen = load_json(PUBLIC_EXPORTS_PATH)
+    problems: list[str] = []
+    for legacy_module, symbol_routes in routes.items():
+        try:
+            legacy = importlib.import_module(legacy_module)
+        except ImportError as exc:
+            problems.append(f"{legacy_module}: cannot import ({exc})")
+            continue
+        frozen_defines = frozen.get("modules", {}).get(legacy_module, {}).get("defines") or {}
+        actual_defines = actual.get("modules", {}).get(legacy_module, {}).get("defines") or {}
+        for symbol, canonical_module in symbol_routes.items():
+            if not hasattr(legacy, symbol):
+                problems.append(f"{legacy_module}.{symbol}: not found on the legacy module")
+                continue
+            if symbol in actual_defines:
+                problems.append(
+                    f"{legacy_module}.{symbol}: still locally defined in the legacy module; "
+                    "expected a pure import from the canonical owner"
+                )
+                continue
+            live_legacy = getattr(legacy, symbol)
+            try:
+                canonical = importlib.import_module(canonical_module)
+            except ImportError as exc:
+                problems.append(f"{canonical_module}: cannot import ({exc})")
+                continue
+            if not hasattr(canonical, symbol):
+                problems.append(
+                    f"{legacy_module}.{symbol}: routed canonical module {canonical_module!r} "
+                    "has no such symbol"
+                )
+                continue
+            live_canonical = getattr(canonical, symbol)
+            if live_legacy is not live_canonical:
+                problems.append(
+                    f"{legacy_module}.{symbol} is not the exact object bound at "
+                    f"{canonical_module}.{symbol}"
+                )
+                continue
+            if symbol in frozen_defines and describe_symbol(live_legacy) != frozen_defines[symbol]:
+                problems.append(
+                    f"{legacy_module}.{symbol}: contract drifted from the frozen historical "
+                    "definition"
+                )
+    return problems
+
+
+def _normalize_expected_for_facade_routes(
+    expected: dict[str, Any],
+    *,
+    routes: dict[str, dict[str, str]] = FACADE_ROUTES,
+) -> dict[str, Any]:
+    """Return a copy of ``expected`` with only the sanctioned facade deltas applied.
+
+    Two, and only two, kinds of change are made, both caused directly by the
+    routes in ``routes``:
+
+    - a routed leaf's ``defines`` becomes empty once every symbol the frozen
+      baseline recorded there is confirmed routed (the symbol is no longer
+      *defined* by the legacy module -- it is imported);
+    - a root binding's ``defined_in`` moves from the legacy leaf to the
+      routed canonical module, for exactly the routed names.
+
+    The frozen artifact on disk is never touched; this operates on an
+    in-memory copy so every other difference still fails the comparison in
+    ``verify_public_export_inventory``.
+    """
+    normalized = copy.deepcopy(expected)
+    for legacy_module, symbol_routes in routes.items():
+        module_entry = normalized.get("modules", {}).get(legacy_module)
+        if module_entry is None:
+            continue
+        frozen_defines = module_entry.get("defines") or {}
+        if frozen_defines and set(frozen_defines) <= set(symbol_routes):
+            module_entry["defines"] = {}
+        for name, canonical_module in symbol_routes.items():
+            binding = normalized.get("root", {}).get("bindings", {}).get(name)
+            if binding is not None and binding.get("defined_in") == legacy_module:
+                binding["defined_in"] = canonical_module
+    return normalized
+
+
 def verify_public_export_inventory() -> list[str]:
     """Return precise drift messages, or an empty list when the surface matches."""
     expected = load_json(PUBLIC_EXPORTS_PATH)
     actual = build_public_export_inventory()
-    differences = diff_json(expected, actual)
+
+    route_problems = _facade_route_problems(actual, frozen=expected)
+    if route_problems:
+        return [
+            (
+                "Compatibility-facade route verification failed for one or more of the "
+                "five leaves converted in tests/canonical_migration/_leaves.py's "
+                "FACADE_CANONICAL_TO_LEGACY; refusing to normalize the frozen Phase 0 "
+                "baseline for an unverified delta."
+            ),
+            format_differences(route_problems),
+        ]
+
+    normalized_expected = _normalize_expected_for_facade_routes(expected)
+    differences = diff_json(normalized_expected, actual)
     if not differences:
         return []
     return [

@@ -49,7 +49,6 @@ CANONICAL_LEAF_MODULES: tuple[str, ...] = (
 #: canonical module -> matching legacy module, for the modules that are a
 #: direct 1:1 port (compared symbol-for-symbol by test_parity.py).
 CANONICAL_TO_LEGACY: dict[str, str] = {
-    "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
     "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
     "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
     "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
@@ -62,22 +61,34 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.control_plane.imports": "omnivia_memory.control_plane.imports",
     "omnivia_core.control_plane.models": "omnivia_memory.control_plane.models",
     "omnivia_core.control_plane.validation": "omnivia_memory.control_plane.validation",
-    "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
-    "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
     "omnivia_core.memory_graph.assembly": "omnivia_memory.memory_graph.assembly",
     "omnivia_core.memory_graph.fixtures": "omnivia_memory.memory_graph.fixtures",
     "omnivia_core.memory_graph.models": "omnivia_memory.memory_graph.models",
     "omnivia_core.memory_graph.validation": "omnivia_memory.memory_graph.validation",
     "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
     "omnivia_core.module_manifest.validation": "omnivia_memory.module_manifest.validation",
-    "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
     "omnivia_core.ingestion.watcher.models": "omnivia_memory.ingestion.watcher.models",
     "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
-    "omnivia_core.memory.models": "omnivia_memory.memory.models",
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
+}
+
+#: canonical module -> matching legacy module, for the modules where the
+#: legacy leaf has been converted into a thin compatibility facade that
+#: routes its supported symbols to the exact canonical object (``legacy.Foo
+#: is canonical.Foo``) rather than holding a duplicated, source-parity copy.
+#: These leaves deliberately fail the source-parity oracle ``CANONICAL_TO_LEGACY``
+#: exists to enforce -- a facade's source is an import, not a port -- so they
+#: are covered instead by tests/compatibility/test_facade_foundation.py, which
+#: asserts symbol identity rather than source-level sameness.
+FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
+    "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
+    "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
+    "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
+    "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
+    "omnivia_core.memory.models": "omnivia_memory.memory.models",
 }
 
 #: omnivia_core.graph.search_models canonicalizes only the query/result record

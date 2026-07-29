@@ -20,6 +20,7 @@ never executes Core code and cannot be fooled by runtime patching.
 from __future__ import annotations
 
 import ast
+import copy
 import sys
 import tomllib
 from collections.abc import Iterable
@@ -84,6 +85,33 @@ RUNTIME_MODULE_PREFIXES: tuple[str, ...] = (
     f"{CORE_PACKAGE}.persistence",
     f"{CORE_PACKAGE}.search",
     f"{CORE_PACKAGE}.workspace",
+)
+
+#: ``omnivia_core`` is not a generic third-party import: it is the canonical
+#: package the compatibility-facade leaves now route to (see
+#: ``tests/canonical_migration/_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY`` and
+#: ``baseline.inventory.FACADE_ROUTES``). It is verified narrowly and exactly by
+#: ``_facade_dependency_problems`` below rather than added to
+#: ``ALLOWED_THIRD_PARTY``, which is reserved for genuine third-party tolerances.
+FACADE_COMPATIBILITY_PACKAGE = "omnivia_core"
+
+#: The exact dependency range ``services/omnivia-memory/pyproject.toml`` must
+#: declare for the compatibility distribution to depend on Core.
+FACADE_COMPATIBILITY_DEPENDENCY = "omnivia-core>=0.1.0,<0.2.0"
+
+#: The exact, sorted set of legacy leaves that import ``omnivia_core``. A
+#: leaf added to or removed from this set without a matching update here must
+#: fail, not silently pass through a widened importer allowance.
+FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
+    sorted(
+        (
+            f"{CORE_PACKAGE}._shared.validation",
+            f"{CORE_PACKAGE}.lifecycle.models",
+            f"{CORE_PACKAGE}.lifecycle.rules",
+            f"{CORE_PACKAGE}.memory.models",
+            f"{CORE_PACKAGE}.provenance.models",
+        )
+    )
 )
 
 #: Why each contract -> runtime edge is tolerated for now. An observed edge with
@@ -238,6 +266,63 @@ def write_dependency_inventory() -> Path:
     return DEPENDENCIES_PATH
 
 
+def _facade_dependency_problems(
+    actual: dict[str, Any],
+    *,
+    package: str = FACADE_COMPATIBILITY_PACKAGE,
+    dependency: str = FACADE_COMPATIBILITY_DEPENDENCY,
+    importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
+) -> list[str]:
+    """Verify the compatibility-facade dependency on ``package`` exactly.
+
+    Requires: ``package`` is imported by exactly ``importers`` (no fewer, no
+    more), and ``dependency`` is declared in ``services/omnivia-memory/pyproject.toml``.
+    A stale, missing, wrong-range, or wrong-importer state fails here with a
+    named reason rather than only via the generic inventory diff.
+    """
+    problems: list[str] = []
+    matches = [entry for entry in actual["third_party_imports"] if entry["module"] == package]
+    if not matches:
+        problems.append(
+            f"expected {package!r} to be imported by the compatibility-facade leaves "
+            f"({', '.join(importers)}); found no such import"
+        )
+    else:
+        observed_importers = tuple(sorted(matches[0]["imported_by"]))
+        if observed_importers != importers:
+            problems.append(
+                f"{package!r} importer set drifted: expected {list(importers)}, "
+                f"found {list(observed_importers)}"
+            )
+    if dependency not in actual["declared_dependencies"]:
+        problems.append(
+            f"services/omnivia-memory/pyproject.toml must declare {dependency!r} as a "
+            "dependency of the compatibility distribution"
+        )
+    return problems
+
+
+def _normalize_expected_dependencies(
+    expected: dict[str, Any],
+    *,
+    package: str = FACADE_COMPATIBILITY_PACKAGE,
+    dependency: str = FACADE_COMPATIBILITY_DEPENDENCY,
+    importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
+) -> dict[str, Any]:
+    """Return a copy of ``expected`` with only the sanctioned facade dependency delta applied.
+
+    The frozen artifact on disk is never touched; this operates on an
+    in-memory copy so every other dependency difference still fails the
+    comparison in ``verify_dependency_inventory``.
+    """
+    normalized = copy.deepcopy(expected)
+    normalized["declared_dependencies"] = sorted({*normalized["declared_dependencies"], dependency})
+    third_party = [entry for entry in normalized["third_party_imports"] if entry["module"] != package]
+    third_party.append({"module": package, "imported_by": list(importers), "reason": None})
+    normalized["third_party_imports"] = sorted(third_party, key=lambda entry: entry["module"])
+    return normalized
+
+
 def verify_dependency_inventory() -> list[str]:
     """Check the import graph against the frozen inventory and the allowlists."""
     problems: list[str] = []
@@ -245,6 +330,8 @@ def verify_dependency_inventory() -> list[str]:
 
     for entry in actual["third_party_imports"]:
         module = entry["module"]
+        if module == FACADE_COMPATIBILITY_PACKAGE:
+            continue
         if module not in ALLOWED_THIRD_PARTY:
             problems.append(
                 f"third-party import {module!r} is not allowlisted (imported by "
@@ -252,6 +339,8 @@ def verify_dependency_inventory() -> list[str]:
                 "implementation dependencies; add a narrow entry with a reason to "
                 "ALLOWED_THIRD_PARTY only if the dependency is genuinely required."
             )
+
+    problems.extend(_facade_dependency_problems(actual))
 
     for edge in collect_import_edges():
         for prefix, why in sorted(BANNED_IMPORT_PREFIXES.items()):
@@ -274,7 +363,8 @@ def verify_dependency_inventory() -> list[str]:
         )
 
     expected = load_json(DEPENDENCIES_PATH)
-    differences = diff_json(expected, actual)
+    normalized_expected = _normalize_expected_dependencies(expected)
+    differences = diff_json(normalized_expected, actual)
     if differences:
         problems.append(
             "Dependency inventory drifted from the frozen Phase 0 baseline "

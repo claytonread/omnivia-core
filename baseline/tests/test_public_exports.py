@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 from baseline import CORE_PACKAGE, REPO_ROOT
 from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
+    FACADE_ROUTES,
     PUBLIC_EXPORTS_PATH,
+    _facade_route_problems,
+    _normalize_expected_for_facade_routes,
     build_public_export_inventory,
     ensure_core_importable,
     verify_public_export_inventory,
@@ -81,3 +85,150 @@ def test_drift_check_names_the_symbol_that_moved() -> None:
     differences = diff_json(load_json(PUBLIC_EXPORTS_PATH), inventory)
 
     assert any("KnowledgeSpace" in item and "defined_in" in item for item in differences)
+
+
+# --------------------------------------------------------------------------
+# Compatibility-facade route normalization: the frozen Phase 0 baseline never
+# described the five converted leaves as facades, so verify_public_export_inventory
+# only accepts that specific delta after these checks pass, and only exactly as
+# they describe it. Each case below asserts a specific way the delta could be
+# wrong still fails closed.
+# --------------------------------------------------------------------------
+
+
+def test_facade_route_problems_is_empty_for_the_real_checkout() -> None:
+    assert _facade_route_problems(build_public_export_inventory()) == []
+
+
+def test_facade_route_problems_reports_a_wrong_canonical_route() -> None:
+    actual = build_public_export_inventory()
+    bad_routes = copy.deepcopy(FACADE_ROUTES)
+    bad_routes["omnivia_memory.provenance.models"]["Source"] = "omnivia_core.lifecycle.models"
+
+    problems = _facade_route_problems(actual, routes=bad_routes)
+
+    assert any("has no such symbol" in problem for problem in problems)
+
+
+def test_facade_route_problems_reports_a_non_identical_object(monkeypatch) -> None:
+    """A canonical attribute that resolves but is not the exact legacy object (a
+    lookalike rebound after both modules already imported) must fail identity."""
+    import omnivia_core.provenance.models as canonical_provenance
+
+    class _LookalikeSource:
+        pass
+
+    monkeypatch.setattr(canonical_provenance, "Source", _LookalikeSource)
+
+    problems = _facade_route_problems(build_public_export_inventory())
+
+    assert any(
+        "is not the exact object bound at" in problem and "provenance.models.Source" in problem
+        for problem in problems
+    )
+
+
+def test_facade_route_problems_reports_a_still_locally_defined_symbol() -> None:
+    actual = copy.deepcopy(build_public_export_inventory())
+    actual["modules"]["omnivia_memory.provenance.models"]["defines"]["Source"] = {
+        "kind": "class",
+        "bases": ["builtins.object"],
+        "methods": [],
+    }
+
+    problems = _facade_route_problems(actual)
+
+    assert any(
+        "still locally defined" in problem and "provenance.models.Source" in problem
+        for problem in problems
+    )
+
+
+def test_facade_route_problems_reports_contract_descriptor_drift() -> None:
+    actual = build_public_export_inventory()
+    frozen = copy.deepcopy(load_json(PUBLIC_EXPORTS_PATH))
+    frozen["modules"]["omnivia_memory.lifecycle.models"]["defines"]["LifecycleState"]["members"] = [
+        "PROPOSED='proposed'"
+    ]
+
+    problems = _facade_route_problems(actual, frozen=frozen)
+
+    assert any(
+        "contract drifted" in problem and "lifecycle.models.LifecycleState" in problem
+        for problem in problems
+    )
+
+
+def test_normalize_expected_for_facade_routes_does_not_mutate_its_argument() -> None:
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+    before = copy.deepcopy(expected)
+
+    _normalize_expected_for_facade_routes(expected)
+
+    assert expected == before
+
+
+def test_normalize_expected_for_facade_routes_empties_defines_for_routed_leaves() -> None:
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+
+    normalized = _normalize_expected_for_facade_routes(expected)
+
+    for legacy_module in FACADE_ROUTES:
+        assert normalized["modules"][legacy_module]["defines"] == {}
+
+
+def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() -> None:
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+
+    normalized = _normalize_expected_for_facade_routes(expected)
+
+    moved = {
+        name: binding["defined_in"]
+        for name, binding in normalized["root"]["bindings"].items()
+        if binding["defined_in"] != expected["root"]["bindings"][name]["defined_in"]
+    }
+    assert moved == {
+        "MemoryCreate": "omnivia_core.memory.models",
+        "MemoryUpdate": "omnivia_core.memory.models",
+        "Source": "omnivia_core.provenance.models",
+        "SourceType": "omnivia_core.provenance.models",
+        "ValidationResult": "omnivia_core._shared.validation",
+    }
+
+
+def test_verify_public_export_inventory_fails_closed_on_unverified_route(monkeypatch) -> None:
+    """A route that fails verification (here: a symbol that looks locally redefined)
+    must refuse to normalize at all, rather than silently passing the diff."""
+    real_build = build_public_export_inventory
+
+    def _tampered():
+        inventory = copy.deepcopy(real_build())
+        inventory["modules"]["omnivia_memory.provenance.models"]["defines"]["Source"] = {
+            "kind": "class",
+            "bases": ["builtins.object"],
+            "methods": [],
+        }
+        return inventory
+
+    monkeypatch.setattr("baseline.inventory.build_public_export_inventory", _tampered)
+
+    problems = verify_public_export_inventory()
+
+    assert any("still locally defined" in problem for problem in problems)
+
+
+def test_verify_public_export_inventory_fails_closed_on_unrelated_drift(monkeypatch) -> None:
+    """Normalizing the sanctioned facade deltas must not swallow an unrelated difference
+    elsewhere in the inventory."""
+    real_build = build_public_export_inventory
+
+    def _tampered():
+        inventory = copy.deepcopy(real_build())
+        inventory["root"]["bindings"]["KnowledgeSpace"]["defined_in"] = "omnivia.contracts.models"
+        return inventory
+
+    monkeypatch.setattr("baseline.inventory.build_public_export_inventory", _tampered)
+
+    problems = verify_public_export_inventory()
+
+    assert any("KnowledgeSpace" in problem for problem in problems)

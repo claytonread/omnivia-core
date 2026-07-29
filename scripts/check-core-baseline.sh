@@ -12,14 +12,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CORE_SRC="${REPO_ROOT}/services/omnivia-memory/src"
+CANONICAL_CORE_SRC="${REPO_ROOT}/src"
 PYTHON="${PYTHON:-python3}"
 
-# Prepend the in-tree source so the baseline never describes an editable install
-# or a stale worktree shadow.
+# Prepend the in-tree sources -- both the compatibility distribution and the
+# canonical omnivia_core package its facade leaves now import -- so the
+# baseline never describes an editable install or a stale worktree shadow.
 if [[ -n "${PYTHONPATH:-}" ]]; then
-  export PYTHONPATH="${CORE_SRC}:${PYTHONPATH}"
+  export PYTHONPATH="${CORE_SRC}:${CANONICAL_CORE_SRC}:${PYTHONPATH}"
 else
-  export PYTHONPATH="${CORE_SRC}"
+  export PYTHONPATH="${CORE_SRC}:${CANONICAL_CORE_SRC}"
 fi
 
 cd "${REPO_ROOT}"
