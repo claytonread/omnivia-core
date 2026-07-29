@@ -183,17 +183,19 @@ def test_representative_mutable_default_factories_do_not_share_state_between_ins
 #: Python submodule-import semantics), which in turn imports
 #: ``omnivia_core._shared.validation`` and its sibling leaves
 #: ``omnivia_core.knowledge.normalize``/``omnivia_core.knowledge.validation``.
-#: Those four modules are therefore an unavoidable, legitimate part of this
-#: leaf-only closure alongside the five modules the task package names
-#: directly. The later control-plane barrel slice owns its expanded package
-#: closure once ``control_plane.__init__`` exists.
+#: The canonical control-plane barrel is eager by contract, so importing this
+#: leaf through the regular package also loads the sibling imports and
+#: validation leaves. The barrel acceptance suite owns the same final package
+#: closure.
 EXPECTED_CORE_CLOSURE = frozenset(
     {
         "omnivia_core",
         "omnivia_core._shared",
         "omnivia_core._shared.validation",
         "omnivia_core.control_plane",
+        "omnivia_core.control_plane.imports",
         "omnivia_core.control_plane.models",
+        "omnivia_core.control_plane.validation",
         "omnivia_core.knowledge",
         "omnivia_core.knowledge.models",
         "omnivia_core.knowledge.normalize",

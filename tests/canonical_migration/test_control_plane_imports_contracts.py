@@ -495,11 +495,10 @@ def test_public_result_dataclasses_use_independent_default_factories(
 # Fresh `python -I -S` import from `src` alone: exact expected Core closure.
 # ---------------------------------------------------------------------------
 
-#: Nine-module control-plane-model closure plus this leaf itself. At this
-#: intermediate slice ``omnivia_core.control_plane`` is a namespace package;
-#: this leaf imports ``omnivia_core.control_plane.models`` directly and adds
-#: no further canonical submodule. The later barrel slice owns the expanded
-#: package closure once ``control_plane.__init__`` exists.
+#: The canonical control-plane barrel is eager by contract, so importing this
+#: leaf through the regular package also loads the sibling models and
+#: validation leaves. The barrel acceptance suite owns the same final package
+#: closure.
 EXPECTED_CORE_CLOSURE = frozenset(
     {
         "omnivia_core",
@@ -508,6 +507,7 @@ EXPECTED_CORE_CLOSURE = frozenset(
         "omnivia_core.control_plane",
         "omnivia_core.control_plane.models",
         "omnivia_core.control_plane.imports",
+        "omnivia_core.control_plane.validation",
         "omnivia_core.knowledge",
         "omnivia_core.knowledge.models",
         "omnivia_core.knowledge.normalize",
