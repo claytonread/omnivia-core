@@ -210,6 +210,11 @@ EXTRA_MODULE_CONSTANTS: dict[str, tuple[str, ...]] = {
         "BUILTIN_GRAPH_RELATIONS",
     ),
     "omnivia_core.memory_graph.models": ("Confidence",),
+    "omnivia_core.run_ledger.models": (
+        "RUN_LEDGER_CONTRACT_VERSION",
+        "RUN_LEDGER_PATH_ENV",
+    ),
+    "omnivia_core.run_ledger.validation": ("TERMINAL_RUN_STATUSES",),
 }
 
 #: (module, alias_name, target_name): the alias must be the *exact same

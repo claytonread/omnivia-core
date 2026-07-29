@@ -21,14 +21,25 @@ Four layers of comparison run here, from loosest to strictest:
   is not.
 - *Normalized AST* parity -- ``ast.dump`` of the canonical module against
   ``ast.dump`` of the legacy module with only its ``omnivia_memory`` package
-  references rewritten to ``omnivia_core``. Nothing else is normalized, so
-  this pins the whole module: function and method *bodies*, constant values,
-  enum member aliases, ``field(default_factory=...)`` expressions, the
-  delegation each ``to_dict``/``from_dict`` performs, docstring text, and
-  import placement (module-scope vs. function-local). Comments and
-  formatting are the only things it cannot see, which is what makes a
-  ``# type: ignore[...]`` needed by this repo's stricter mypy run the one
-  legitimate way to differ from the legacy source.
+  references rewritten to ``omnivia_core`` (and, for the one leaf listed in
+  ``SANCTIONED_IMPORT_REWRITES``, that leaf's single named, exact import
+  rewrite applied first). Nothing else is normalized, so this pins the whole
+  module: function and method *bodies*, constant values, enum member aliases,
+  ``field(default_factory=...)`` expressions, the delegation each
+  ``to_dict``/``from_dict`` performs, docstring text, and import placement
+  (module-scope vs. function-local). Comments and formatting are the only
+  things it cannot see, which is what makes a ``# type: ignore[...]`` needed
+  by this repo's stricter mypy run the one legitimate way to differ from the
+  legacy source.
+
+  A sanctioned import rewrite is narrower than the package rename: it is an
+  exact, named, per-leaf source substitution (an owner-routed split of one
+  legacy import into its canonical owner leaves), not a fuzzy normalization.
+  ``SANCTIONED_IMPORT_REWRITES`` enumerates each rule by the exact legacy
+  module it applies to and the exact old/new source fragments, and every
+  rule must match its leaf's legacy source exactly once
+  (``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once``
+  rejects a stale or unused rule).
 
 Neither the structural nor the AST layer normalizes annotation spellings
 away: a canonical leaf that "modernizes" a legacy ``typing.List``/
@@ -61,6 +72,40 @@ from baseline.inventory import describe_symbol as loose_describe_symbol
 
 LEGACY_PACKAGE = "omnivia_memory"
 CANONICAL_PACKAGE = "omnivia_core"
+
+#: Sanctioned, exact, per-leaf import rewrites applied to a leaf's legacy
+#: source -- before the generic ``omnivia_memory`` -> ``omnivia_core`` rename
+#: below -- so the AST comparison stays an equality check rather than a
+#: fuzzy one. Keyed by the exact legacy module name; each rule is an
+#: (old, new) source-fragment pair. ``omnivia_memory.run_ledger.validation``
+#: merges ``ValidationResult`` and ``check_contract_version_compatibility``
+#: into one ``omnivia_memory.knowledge`` import; the canonical port is
+#: required to route each name to its exact canonical owner leaf instead
+#: (``omnivia_core._shared.validation`` and
+#: ``omnivia_core.knowledge.validation`` respectively), so that split -- and
+#: nothing else -- is rewritten here before comparison.
+SANCTIONED_IMPORT_REWRITES: dict[
+    tuple[str, str], tuple[tuple[str, str], ...]
+] = {
+    (
+        "omnivia_core.run_ledger.validation",
+        "omnivia_memory.run_ledger.validation",
+    ): (
+        (
+            (
+                "from omnivia_memory.knowledge import (\n"
+                "    ValidationResult,\n"
+                "    check_contract_version_compatibility,\n"
+                ")"
+            ),
+            (
+                "from omnivia_core._shared.validation import ValidationResult\n"
+                "from omnivia_core.knowledge.validation import "
+                "check_contract_version_compatibility"
+            ),
+        ),
+    ),
+}
 
 
 def _public_definitions(module: ModuleType, *, strict: bool) -> dict[str, Any]:
@@ -104,14 +149,30 @@ def _module_source(module: ModuleType) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _canonicalize_legacy_source(source: str) -> str:
-    """Rewrite *only* the legacy package name, leaving everything else alone.
+def _canonicalize_legacy_source(
+    source: str, *, canonical_name: str = "", legacy_name: str = ""
+) -> str:
+    """Rewrite *only* the legacy package name (and, for a leaf with a
+    sanctioned import rewrite, that leaf's single named split), leaving
+    everything else alone.
 
-    Slice A's one sanctioned edit to a ported module is retargeting internal
-    imports from ``omnivia_memory`` to ``omnivia_core``. Rewriting that name
-    (and nothing else) before parsing is what lets the AST comparison below
-    be an equality check rather than a fuzzy one.
+    Slice A's default sanctioned edit to a ported module is retargeting
+    internal imports from ``omnivia_memory`` to ``omnivia_core``. A leaf
+    listed in ``SANCTIONED_IMPORT_REWRITES`` additionally gets its one named,
+    exact, owner-routed import split applied first -- never a fuzzy
+    normalization. Rewriting exactly these things (and nothing else) before
+    parsing is what lets the AST comparison below stay an equality check.
     """
+    for old, new in SANCTIONED_IMPORT_REWRITES.get(
+        (canonical_name, legacy_name), ()
+    ):
+        occurrences = source.count(old)
+        assert occurrences == 1, (
+            f"sanctioned import rewrite for {legacy_name} expects its old "
+            f"fragment to occur exactly once in the legacy source, found "
+            f"{occurrences}; update the rule or investigate the leaf drift"
+        )
+        source = source.replace(old, new, 1)
     return source.replace(LEGACY_PACKAGE, CANONICAL_PACKAGE)
 
 
@@ -130,9 +191,10 @@ def _ast_mismatch_message(canonical_name: str, legacy_name: str, expected: str, 
     )
     return (
         f"{canonical_name} is not an exact port of {legacy_name}.\n"
-        "Only the omnivia_memory -> omnivia_core package rename, comments and "
-        "formatting may differ; every other AST node must match.\n"
-        + "\n".join(list(diff)[:200])
+        "Only the omnivia_memory -> omnivia_core package rename, this leaf's "
+        "sanctioned owner-route import rewrite (if any, see "
+        "SANCTIONED_IMPORT_REWRITES), comments and formatting may differ; "
+        "every other AST node must match.\n" + "\n".join(list(diff)[:200])
     )
 
 
@@ -220,7 +282,9 @@ def test_canonical_leaf_is_an_exact_ast_port(canonical_name: str, legacy_name: s
     """
     canonical_source = _module_source(importlib.import_module(canonical_name))
     legacy_source = _canonicalize_legacy_source(
-        _module_source(importlib.import_module(legacy_name))
+        _module_source(importlib.import_module(legacy_name)),
+        canonical_name=canonical_name,
+        legacy_name=legacy_name,
     )
 
     canonical_tree = _dump(ast.parse(canonical_source, filename=canonical_name))
@@ -250,6 +314,32 @@ def test_ast_gate_covers_every_leaf_but_the_one_documented_exception() -> None:
         "graph.search_models is the only leaf that may be held out of the generic "
         f"AST gate; found {sorted(held_out)}"
     )
+
+
+def test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once() -> None:
+    """Every configured rewrite rule must target a currently-mapped legacy
+    leaf, and its old fragment must occur in that leaf's live source exactly
+    once -- guards against a rule surviving after its leaf is dropped from
+    ``CANONICAL_TO_LEGACY`` or after the leaf's source drifts out from under
+    it (rewritten, reworded, or removed)."""
+    mapped_legacy_names = set(CANONICAL_TO_LEGACY.values())
+    for (canonical_name, legacy_name), rules in SANCTIONED_IMPORT_REWRITES.items():
+        assert legacy_name in mapped_legacy_names, (
+            f"stale sanctioned import rewrite: {legacy_name} is not (or no longer) "
+            "a mapped legacy leaf in CANONICAL_TO_LEGACY"
+        )
+        assert CANONICAL_TO_LEGACY.get(canonical_name) == legacy_name, (
+            f"stale sanctioned import rewrite: {canonical_name} does not map "
+            f"exactly to {legacy_name}"
+        )
+        assert rules, f"sanctioned import rewrite for {legacy_name} has no rules configured"
+        source = _module_source(importlib.import_module(legacy_name))
+        for old, _new in rules:
+            occurrences = source.count(old)
+            assert occurrences == 1, (
+                f"sanctioned import rewrite old fragment for {legacy_name} must occur "
+                f"exactly once in the legacy source, found {occurrences}"
+            )
 
 
 @pytest.mark.parametrize(
