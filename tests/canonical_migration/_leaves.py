@@ -1,20 +1,23 @@
-"""Shared manifest of Slice A canonical leaves and their legacy counterparts.
+"""Shared manifest of canonical leaves and their legacy counterparts.
 
-Slice A ports portable model definitions from ``services/omnivia-memory``
-into ``src/omnivia_core`` leaves, rewriting internal imports to canonical
-targets. This module is the single source of truth the canonical_migration
-tests share for which canonical module maps to which legacy module, and for
-the small set of deliberate, documented divergences between them.
+Phase 1 ports portable models, helpers, and validators from
+``services/omnivia-memory`` into ``src/omnivia_core`` leaves, rewriting
+internal imports to canonical targets. This module is the single source of
+truth the canonical_migration tests share for which canonical module maps to
+which legacy module, and for the small set of deliberate, documented
+divergences between them.
 """
 
 from __future__ import annotations
 
-#: Every canonical leaf module Slice A must be able to import from a fresh
+#: Every canonical leaf module must be able to import from a fresh
 #: process using only ``src`` on the path (no ``omnivia_memory`` present).
 CANONICAL_LEAF_MODULES: tuple[str, ...] = (
     "omnivia_core._shared",
     "omnivia_core._shared.validation",
     "omnivia_core.knowledge.models",
+    "omnivia_core.knowledge.normalize",
+    "omnivia_core.knowledge.validation",
     "omnivia_core.app_manifest.models",
     "omnivia_core.app_shell_bridge.models",
     "omnivia_core.component_contract.models",
@@ -36,6 +39,8 @@ CANONICAL_LEAF_MODULES: tuple[str, ...] = (
 CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
     "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
+    "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
+    "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
     "omnivia_core.app_manifest.models": "omnivia_memory.app_manifest.models",
     "omnivia_core.app_shell_bridge.models": "omnivia_memory.app_shell_bridge.models",
     "omnivia_core.component_contract.models": "omnivia_memory.component_contract.models",
