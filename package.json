@@ -5,6 +5,10 @@
   "description": "Portable knowledge contracts, graph fragments, validators, normalizers, and public examples for OmniVia Core.",
   "scripts": {
     "test": "echo \"Core tests are provided by the Python packages; run package-specific checks.\"",
-    "lint": "echo \"Core linting is package-specific.\""
+    "lint": "echo \"Core linting is package-specific.\"",
+    "check:application-contracts": "scripts/check-application-typescript.sh"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   }
 }

@@ -135,3 +135,36 @@ def test_collect_top_level_imports_detects_forbidden_import(tmp_path: Path) -> N
 
 def test_main_returns_zero_on_clean_tree() -> None:
     assert boundaries.main() == 0
+
+
+# --------------------------------------------------------------------------
+# Source-level counterparts of the isolated-wheel assertions in
+# scripts/check-package-builds.sh, which needs a real build to run.
+# --------------------------------------------------------------------------
+
+
+def test_core_declares_no_runtime_dependencies_at_all() -> None:
+    """Core ships standard-library only, so its wheel METADATA must carry no
+    Requires-Dist. That is decided here, by the manifest declaring no dependencies --
+    ``check-package-builds.sh`` asserts the built wheel actually agrees.
+    """
+    manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
+    assert manifest["project"].get("dependencies", []) == []
+    assert manifest["project"].get("optional-dependencies", {}) == {}
+
+
+def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() -> None:
+    """The wheel's packaged resource set is exact because the force-include maps exactly
+    the two canonical directories (ADR-038) onto the importable resource path.
+    """
+    manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
+    force_include = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert force_include == {
+        "contracts/application/v1/schemas": "omnivia_core/contracts/v1/resources/schemas",
+        "contracts/application/v1/fixtures": "omnivia_core/contracts/v1/resources/fixtures",
+    }
+    for source in force_include:
+        directory = REPO_ROOT / source
+        assert directory.is_dir(), source
+        non_json = sorted(path.name for path in directory.iterdir() if path.suffix != ".json")
+        assert non_json == [], f"{source} holds non-JSON file(s) that would be packaged: {non_json}"

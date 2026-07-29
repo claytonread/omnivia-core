@@ -1,0 +1,118 @@
+{
+  "metadata": {
+    "audit_reference": "audit-ref-1",
+    "authority": {
+      "capabilities": [
+        {
+          "id": "memory.read",
+          "version": "1.0"
+        },
+        {
+          "id": "memory.write",
+          "version": "1.0"
+        }
+      ],
+      "principal_id": "user-42",
+      "roles": [
+        "member"
+      ]
+    },
+    "canonical_resolution_time": "2026-07-30T12:00:01Z",
+    "correlation_id": "corr-0006",
+    "freshness": {
+      "as_of": "2026-07-30T12:00:00Z",
+      "projection_versions": {
+        "memory_index": "pv-42"
+      },
+      "stale": false
+    },
+    "job": {
+      "job_id": "opaque-job-1"
+    },
+    "omissions": [
+      {
+        "code": "redacted_for_policy",
+        "message": "Omitted per data policy.",
+        "path": "/items/3/secret"
+      }
+    ],
+    "page": {
+      "continuation_token": "opaque-cursor-1"
+    },
+    "partial": {
+      "is_partial": true,
+      "reasons": [
+        "projection_lag"
+      ]
+    },
+    "request_id": "req-0006",
+    "version": {
+      "api_version": "1.2",
+      "capabilities": {
+        "effective": [
+          {
+            "id": "memory.read",
+            "version": "1.0"
+          },
+          {
+            "id": "memory.write",
+            "version": "1.0"
+          }
+        ],
+        "granted": [
+          {
+            "id": "memory.read",
+            "version": "1.0"
+          },
+          {
+            "id": "memory.write",
+            "version": "1.0"
+          }
+        ],
+        "supported": [
+          {
+            "id": "memory.read",
+            "version": "1.0"
+          },
+          {
+            "id": "memory.write",
+            "version": "1.0"
+          }
+        ]
+      },
+      "compatibility": {
+        "deprecations": [],
+        "selected_api_version": "1.2",
+        "selected_workspace_version": "1.0",
+        "status": "compatible",
+        "supported_api_versions": {
+          "maximum": "1.3",
+          "minimum": "1.0"
+        },
+        "supported_workspace_versions": {
+          "maximum": "1.0",
+          "minimum": "1.0"
+        },
+        "upgrade_state": {
+          "value": "none"
+        }
+      },
+      "server_version": "1.2.5",
+      "workspace_format_version": "1.0"
+    },
+    "warnings": [
+      {
+        "code": "deprecated_field_used",
+        "message": "Field 'legacy_tag' is deprecated."
+      }
+    ]
+  },
+  "result": {
+    "count": 1,
+    "items": [
+      {
+        "id": "note-1"
+      }
+    ]
+  }
+}

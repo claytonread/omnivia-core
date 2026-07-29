@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json",
+  "title": "OmniVia Core Application Contract v1 - request and response envelopes",
+  "description": "The transport-neutral request and response shape. Authentication credentials are deliberately absent: they stay transport-owned. A `PrincipalClaim` on a request never becomes a `GrantedAuthority` on a response without server-side validation.",
+  "$defs": {
+    "OperationName": {
+      "title": "OperationName",
+      "description": "Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue is out of scope for v1 foundations; only the name is contractual here.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
+    },
+    "RequestMetadata": {
+      "title": "RequestMetadata",
+      "description": "Everything the server needs to route, scope, bound, and audit a request, independent of the operation payload.",
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/RequestId",
+          "description": "Identifies this request attempt."
+        },
+        "correlation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CorrelationId",
+          "description": "Groups retries and related requests into one logical operation."
+        },
+        "trace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/TraceId",
+          "description": "Distributed-trace identifier. Diagnostic only."
+        },
+        "api_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "API contract version the caller is written against."
+        },
+        "client": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ClientIdentity",
+          "description": "Self-declared calling client. Not an authorization input."
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace the request is scoped to."
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Scopes the caller is exercising. Scopes narrow authority; they never widen it.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Scope"
+          },
+          "maxItems": 64
+        },
+        "purpose": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Purpose",
+          "description": "Why the caller is making this request. A rejected purpose is `invalid_purpose`."
+        },
+        "deadline_ms": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/DurationMs",
+          "description": "Relative time budget for the request. Expressed as a budget, not an absolute instant, so no clock synchronization is assumed."
+        },
+        "idempotency_key": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/IdempotencyKey",
+          "description": "Makes a mutation safe to retry."
+        },
+        "mutation_precondition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/MutationPrecondition",
+          "description": "Optimistic-concurrency precondition for a mutation."
+        },
+        "required_capabilities": {
+          "type": "array",
+          "description": "Capabilities this request depends on, with the minimum version the caller can work with.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRequirement"
+          },
+          "maxItems": 64
+        },
+        "principal_claim": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PrincipalClaim",
+          "description": "UNTRUSTED caller claim about the acting principal. The server must validate it before it becomes authority."
+        }
+      },
+      "required": [
+        "request_id",
+        "correlation_id",
+        "trace_id",
+        "api_version",
+        "client",
+        "workspace_id",
+        "scopes",
+        "purpose",
+        "required_capabilities"
+      ],
+      "unevaluatedProperties": false
+    },
+    "RequestEnvelope": {
+      "title": "RequestEnvelope",
+      "description": "A single application request: what to do, under what conditions, with what payload.",
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/OperationName",
+          "description": "Operation to invoke."
+        },
+        "metadata": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/RequestMetadata",
+          "description": "Operation-independent request metadata."
+        },
+        "input": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque operation payload."
+        }
+      },
+      "required": ["operation", "metadata", "input"],
+      "unevaluatedProperties": false
+    },
+    "ResponseMetadata": {
+      "title": "ResponseMetadata",
+      "description": "Operation-independent response metadata. Present on both success and error responses so a caller can always negotiate versions and read its own authority, even when the operation failed.",
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/RequestId",
+          "description": "Echoes the request attempt this response answers."
+        },
+        "correlation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CorrelationId",
+          "description": "Echoes the logical operation this response belongs to."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionCapabilityEnvelope",
+          "description": "Negotiated versions and capabilities."
+        },
+        "authority": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/GrantedAuthority",
+          "description": "Server-validated authority actually applied. The only authority statement a caller may trust."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Pagination position, for paginated reads."
+        },
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JobReference",
+          "description": "Reference to asynchronous work this operation started."
+        },
+        "freshness": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness",
+          "description": "Staleness statement, for reads served from a projection."
+        },
+        "canonical_resolution_time": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "The instant the server treated as 'now' when resolving this operation, so results are reproducible."
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Non-fatal advisories.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Warning"
+          },
+          "maxItems": 64
+        },
+        "omissions": {
+          "type": "array",
+          "description": "Things the caller asked for that were deliberately not returned.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Omission"
+          },
+          "maxItems": 64
+        },
+        "partial": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PartialResult",
+          "description": "Marks the result as incomplete."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Reference to the audit record for this operation."
+        }
+      },
+      "required": ["request_id", "correlation_id", "version", "authority"],
+      "unevaluatedProperties": false
+    },
+    "SuccessResponseEnvelope": {
+      "title": "SuccessResponseEnvelope",
+      "description": "A successful response. Carries `result` and never `error`.",
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ResponseMetadata",
+          "description": "Operation-independent response metadata."
+        },
+        "result": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque operation result."
+        }
+      },
+      "required": ["metadata", "result"],
+      "unevaluatedProperties": false
+    },
+    "ErrorResponseEnvelope": {
+      "title": "ErrorResponseEnvelope",
+      "description": "A failed response. Carries `error` and never `result`.",
+      "type": "object",
+      "properties": {
+        "metadata": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ResponseMetadata",
+          "description": "Operation-independent response metadata."
+        },
+        "error": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ApiError",
+          "description": "The typed failure."
+        }
+      },
+      "required": ["metadata", "error"],
+      "unevaluatedProperties": false
+    },
+    "ResponseEnvelope": {
+      "title": "ResponseEnvelope",
+      "description": "Exactly one of a success or an error response, never both. Both branches close their property set, so a document carrying `result` and `error` together matches neither branch and is invalid.",
+      "oneOf": [
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/SuccessResponseEnvelope"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ErrorResponseEnvelope"
+        }
+      ]
+    }
+  }
+}

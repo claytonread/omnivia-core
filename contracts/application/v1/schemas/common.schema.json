@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/common.schema.json",
+  "title": "OmniVia Core Application Contract v1 - common types",
+  "description": "Provider-neutral scalar and value types shared by the compatibility, error, and envelope schemas. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "ContractVersion": {
+      "title": "ContractVersion",
+      "description": "A `major.minor` contract version. Major changes are breaking; minor changes are additive and forward compatible.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "maxLength": 32
+    },
+    "ReleaseVersion": {
+      "title": "ReleaseVersion",
+      "description": "A SemVer 2.0.0 release string identifying a concrete build, not a contract.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$",
+      "maxLength": 128
+    },
+    "RequestId": {
+      "title": "RequestId",
+      "description": "Bounded, non-empty caller-assigned identifier for a single request attempt.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "CorrelationId": {
+      "title": "CorrelationId",
+      "description": "Bounded, non-empty identifier grouping related requests into one logical operation.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "TraceId": {
+      "title": "TraceId",
+      "description": "Bounded, non-empty distributed-trace identifier. Diagnostic only; never an authorization input.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "WorkspaceId": {
+      "title": "WorkspaceId",
+      "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "AuditReference": {
+      "title": "AuditReference",
+      "description": "Bounded, non-empty server-issued reference to the audit record for a completed operation.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "Identifier": {
+      "title": "Identifier",
+      "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "CapabilityId": {
+      "title": "CapabilityId",
+      "description": "Stable namespaced capability identifier such as `memory.read`. At least one dot is required so capability names always carry a namespace.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*)+$"
+    },
+    "OpenCode": {
+      "title": "OpenCode",
+      "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "Scope": {
+      "title": "Scope",
+      "description": "An open scope token such as `memory:read` requested by the caller. Scopes narrow a request; they never widen granted authority.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$"
+    },
+    "Purpose": {
+      "title": "Purpose",
+      "description": "An open purpose-limitation token stating why the caller is making this request.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "OpaqueToken": {
+      "title": "OpaqueToken",
+      "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[!-~]+$"
+    },
+    "IdempotencyKey": {
+      "title": "IdempotencyKey",
+      "description": "Caller-assigned key making a mutation safe to retry. Equal keys with different inputs are an `idempotency_conflict`.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "Timestamp": {
+      "title": "Timestamp",
+      "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$",
+      "maxLength": 40
+    },
+    "DurationMs": {
+      "title": "DurationMs",
+      "description": "A bounded non-negative duration in milliseconds.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400000
+    },
+    "ProjectionVersion": {
+      "title": "ProjectionVersion",
+      "description": "An opaque per-projection version marker used to reason about read staleness.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[!-~]+$"
+    },
+    "JsonObject": {
+      "title": "JsonObject",
+      "description": "An opaque JSON object. The application contract carries domain payloads without inspecting them; per-operation payload schemas are out of scope for v1 foundations.",
+      "type": "object"
+    },
+    "ClientIdentity": {
+      "title": "ClientIdentity",
+      "description": "Self-declared identity of the calling client. Diagnostic and compatibility input only; never an authorization input.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable client identifier such as `omnivia.desktop`."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Client build version."
+        }
+      },
+      "required": ["id", "version"],
+      "unevaluatedProperties": false
+    },
+    "PrincipalClaim": {
+      "title": "PrincipalClaim",
+      "description": "UNTRUSTED. A claim made by the caller about who it is acting as. Authentication credentials stay transport-owned; a principal claim never becomes a GrantedAuthority without server-side validation.",
+      "type": "object",
+      "properties": {
+        "claimed_principal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Principal the caller claims to act as. Unvalidated."
+        },
+        "claimed_roles": {
+          "type": "array",
+          "description": "Roles the caller claims to hold. Unvalidated.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "GrantedAuthority": {
+      "title": "GrantedAuthority",
+      "description": "Server-produced, validated authority actually applied to a request. This is the only authority statement a client may trust.",
+      "type": "object",
+      "properties": {
+        "principal_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Validated principal the operation executed as."
+        },
+        "roles": {
+          "type": "array",
+          "description": "Validated roles held by the principal.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "maxItems": 64
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Capability references actually granted for this request.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRef"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": ["principal_id", "roles", "capabilities"],
+      "unevaluatedProperties": false
+    },
+    "MutationPrecondition": {
+      "title": "MutationPrecondition",
+      "description": "Optimistic-concurrency precondition for a mutation. A mismatch is a `mutation_precondition_failed` error.",
+      "type": "object",
+      "properties": {
+        "record_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque version of the record the caller intends to modify."
+        }
+      },
+      "required": ["record_version"],
+      "unevaluatedProperties": false
+    },
+    "Warning": {
+      "title": "Warning",
+      "description": "A non-fatal advisory attached to a successful or failed response.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open warning code. Unknown codes must be preserved and surfaced, not dropped."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable warning text. Not a stable interface.",
+          "maxLength": 2048
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional structured detail."
+        }
+      },
+      "required": ["code", "message"],
+      "unevaluatedProperties": false
+    },
+    "Omission": {
+      "title": "Omission",
+      "description": "A statement that something the caller asked for was deliberately not returned.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open omission code."
+        },
+        "path": {
+          "type": "string",
+          "description": "Optional JSON Pointer into the result identifying what was omitted.",
+          "maxLength": 1024
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation. Not a stable interface.",
+          "maxLength": 2048
+        }
+      },
+      "required": ["code"],
+      "unevaluatedProperties": false
+    },
+    "PartialResult": {
+      "title": "PartialResult",
+      "description": "Marks a result as incomplete. A partial result is still a success; callers must not treat it as a full answer.",
+      "type": "object",
+      "properties": {
+        "is_partial": {
+          "type": "boolean",
+          "description": "True when the result is known to be incomplete."
+        },
+        "reasons": {
+          "type": "array",
+          "description": "Open codes explaining why the result is partial.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": ["is_partial", "reasons"],
+      "unevaluatedProperties": false
+    },
+    "ProjectionFreshness": {
+      "title": "ProjectionFreshness",
+      "description": "Staleness statement for reads served from a projection rather than the write model.",
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Point in time the projection reflects."
+        },
+        "projection_versions": {
+          "type": "object",
+          "description": "Open map of projection name to opaque projection version. New projections may appear in compatible minor releases.",
+          "additionalProperties": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion"
+          }
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "True when the server knows the projection lags the write model."
+        }
+      },
+      "required": ["as_of", "projection_versions", "stale"],
+      "unevaluatedProperties": false
+    },
+    "PageMetadata": {
+      "title": "PageMetadata",
+      "description": "Pagination position. Token issuance semantics are deliberately out of scope for v1 foundations.",
+      "type": "object",
+      "properties": {
+        "continuation_token": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque cursor for the next page. Absent means the last page."
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "JobReference": {
+      "title": "JobReference",
+      "description": "Reference to asynchronous work started by an operation. Job lifecycle, polling, and cancellation are later phases; v1 carries the identifier only.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque job identifier."
+        }
+      },
+      "required": ["job_id"],
+      "unevaluatedProperties": false
+    }
+  }
+}

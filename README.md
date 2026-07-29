@@ -151,6 +151,131 @@ temporary virtual environment; it writes nothing under the repository tree:
 PYTHON=.venv/bin/python scripts/check-package-builds.sh
 ```
 
+## Application Contract v1
+
+`omnivia_core.contracts.v1` is a provider-neutral wire contract for
+application-layer request/response negotiation: version and capability
+negotiation, request/response envelopes, and typed, retry-classified errors.
+It is a foundation only — there is no per-operation payload catalogue, HTTP
+binding, or transport implementation yet.
+
+Canonical source and generated artifacts:
+
+- `contracts/application/v1/schemas/*.schema.json` — five JSON Schema
+  Draft 2020-12 documents (`common`, `compatibility`, `errors`, `envelopes`,
+  and the reference-only `application-v1` registry). These are the single
+  source of truth; everything else is derived from them.
+- `contracts/application/v1/fixtures/` — thirteen canonical example wire
+  documents plus `manifest.json`, covering compatible negotiation, capability
+  denial, an incompatible major version, a minimal request, a retryable
+  mutation, a rich success response, a plain error response, tolerant decoding
+  of an additive unknown field, an unrecognized open vocabulary value, a
+  duplicate capability id, a response carrying both `result` and `error`, a
+  response carrying neither, and a pattern-compatible but calendar-invalid
+  RFC 3339 timestamp.
+- `src/omnivia_core/contracts/v1/generated.py` — generated frozen dataclasses,
+  type aliases, and frozen vocabulary constants. Standard library only.
+- `src/omnivia_core/contracts/v1/codec.py` — tolerant production wire codec
+  (canonical JSON, response-branch dispatch, retry semantics). Standard
+  library only.
+- `src/omnivia_core/contracts/v1/compatibility.py` — pure version-window and
+  capability-negotiation semantics (version comparison, effective-capability
+  intersection, duplicate-id detection, requirement resolution) plus the
+  whole-envelope invariants `decode_response` enforces: every declared version
+  parses, the versions in force (`api_version`, `workspace_format_version`)
+  equal the ones negotiation selected, and each selected version falls inside
+  the window the same envelope publishes as supported. The open
+  `CompatibilityStatus` vocabulary is deliberately left unconstrained, so a
+  newer peer's unseen status still decodes. Standard library only.
+- `src/omnivia_core/contracts/v1/resources.py` — standard-library-only
+  accessors for the packaged schemas and fixtures (see below).
+- `generated/typescript/application/v1/index.ts` — the same contract surface
+  as a declaration-only TypeScript module.
+
+`contracts/application/v1/{schemas,fixtures}` stay the only checked-in
+canonical copy. The built wheel force-includes them under
+`omnivia_core/contracts/v1/resources/{schemas,fixtures}` (see
+`[tool.hatch.build.targets.wheel.force-include]` in `pyproject.toml`), and
+`omnivia_core.contracts.v1` exposes `list_schema_names`, `read_schema`,
+`read_schema_text`, `list_fixture_files`, `read_fixture`, `read_fixture_text`,
+and `read_fixture_manifest` as the only supported way to read that packaged
+copy through `importlib.resources`.
+
+Regenerate and verify:
+
+```bash
+.venv/bin/python scripts/generate-application-contracts.py         # regenerate
+.venv/bin/python scripts/generate-application-contracts.py --check # verify no drift
+.venv/bin/python scripts/check-application-contracts.py            # conformance gate
+```
+
+The conformance gate checks the canonical schema directory holds exactly the
+five frozen schema documents (an extra one would be read by no check yet
+packaged by the wheel, and a missing one is reported in the same place),
+validates every schema against the Draft 2020-12
+metaschema and its exact `$schema`/`$id`, resolves every `$ref` offline,
+checks the registry publishes exactly the source schemas' definitions and
+lists their exact URIs, validates every fixture against its declared
+schema-validity (RFC 3339 `format` included, via `jsonschema.FormatChecker`)
+and declared `tolerant_decode` outcome by actually running the production
+codec, validates the manifest itself (unique nonempty ids, unique existing
+files, explicit boolean flags, known semantic keys, and an exact match
+against a frozen id/file/semantic mapping so deleting, renaming, or swapping
+a fixture's assertion cannot stay green), runs every fixture's semantic
+assertion, and checks that `src/omnivia_core/contracts` has no import outside
+the standard library or its own package — including relative imports that
+resolve elsewhere, and constant-string `__import__`/`importlib.import_module`
+escapes under any alias (`import importlib as il`, `from importlib import
+import_module as load`), with a non-literal argument failing closed.
+
+The schema-set check complements, rather than replaces, the exact wheel
+resource-set assertion in `scripts/check-package-builds.sh`: that one proves
+the built wheel packages exactly what the canonical directory holds, which is
+only worth having once this one has established that the directory holds
+exactly the frozen set.
+
+Run the contract test suite:
+
+```bash
+.venv/bin/python -m pytest tests/contracts -q
+```
+
+`jsonschema[format]` (plus its `types-jsonschema` stubs) is a
+development-only dependency declared under `[dependency-groups]` in
+`pyproject.toml`, used only by `scripts/check-application-contracts.py` and
+its tests — the `format` extra provides the RFC 3339 calendar validation
+`jsonschema.FormatChecker` needs. The contract package itself (`generated.py`,
+`codec.py`, `compatibility.py`, `resources.py`) has zero runtime
+dependencies, including on `jsonschema`.
+
+The generated TypeScript module is regenerated and checked for drift the same
+way as the Python module, and is strict-compiled (`--strict --noEmit
+--skipLibCheck`, target `ES2022`, module `ESNext`, module resolution
+`Bundler`) by `scripts/check-application-typescript.sh`.
+
+The compiler is a repository-local, version-pinned dev dependency: TypeScript
+is declared at the exact version `5.9.3` in `package.json` and locked in
+`package-lock.json`, so `npm ci` reproduces the same compiler every time. The
+check needs no sibling repository and no global install, and adds no runtime
+JavaScript dependency — `typescript` is the only entry, and it is a
+`devDependencies` one:
+
+```bash
+npm ci                                 # install the pinned compiler (once)
+npm run check:application-contracts    # strict, no-emit contract compile
+```
+
+The npm script runs the shell gate, so the two are never separate copies of
+the compiler flags. The shell gate can also be run directly, and resolves a
+`tsc` binary in order: the `TSC` environment variable (explicit override), the
+repository-local `node_modules/.bin/tsc` (the reproducible default), then
+`tsc` on PATH:
+
+```bash
+scripts/check-application-typescript.sh
+TSC=/path/to/tsc scripts/check-application-typescript.sh   # explicit override
+```
+
 ## Repository Split
 
 | Repository | Visibility | Purpose |

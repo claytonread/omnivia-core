@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/application-v1.schema.json",
+  "title": "OmniVia Core Application Contract v1 - registry",
+  "description": "Reference-only registry of every type in the v1 application contract. This document validates nothing on its own and declares no root type: it exists so one stable URI enumerates the whole contract surface, and so tooling can detect a definition that was added to a source schema but never published. The four sibling documents remain canonical.",
+  "x-omnivia-contract-version": "1.0",
+  "x-omnivia-schema-sources": [
+    "https://contracts.omnivia.dev/application/v1/common.schema.json",
+    "https://contracts.omnivia.dev/application/v1/compatibility.schema.json",
+    "https://contracts.omnivia.dev/application/v1/errors.schema.json",
+    "https://contracts.omnivia.dev/application/v1/envelopes.schema.json"
+  ],
+  "$defs": {
+    "ContractVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion"
+    },
+    "ReleaseVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion"
+    },
+    "RequestId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/RequestId"
+    },
+    "CorrelationId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CorrelationId"
+    },
+    "TraceId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/TraceId"
+    },
+    "WorkspaceId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId"
+    },
+    "AuditReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference"
+    },
+    "Identifier": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+    },
+    "CapabilityId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CapabilityId"
+    },
+    "OpenCode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+    },
+    "Scope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Scope"
+    },
+    "Purpose": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Purpose"
+    },
+    "OpaqueToken": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken"
+    },
+    "IdempotencyKey": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/IdempotencyKey"
+    },
+    "Timestamp": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp"
+    },
+    "DurationMs": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/DurationMs"
+    },
+    "ProjectionVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion"
+    },
+    "JsonObject": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject"
+    },
+    "ClientIdentity": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ClientIdentity"
+    },
+    "PrincipalClaim": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PrincipalClaim"
+    },
+    "GrantedAuthority": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/GrantedAuthority"
+    },
+    "MutationPrecondition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/MutationPrecondition"
+    },
+    "Warning": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Warning"
+    },
+    "Omission": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Omission"
+    },
+    "PartialResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PartialResult"
+    },
+    "ProjectionFreshness": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness"
+    },
+    "PageMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata"
+    },
+    "JobReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JobReference"
+    },
+    "VersionWindow": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow"
+    },
+    "Deprecation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/Deprecation"
+    },
+    "UpgradeState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/UpgradeState"
+    },
+    "CompatibilityMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CompatibilityMetadata"
+    },
+    "CapabilityRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRef"
+    },
+    "CapabilityRequirement": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRequirement"
+    },
+    "CapabilitySet": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilitySet"
+    },
+    "VersionCapabilityEnvelope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionCapabilityEnvelope"
+    },
+    "ErrorCode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ErrorCode"
+    },
+    "RetryClass": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/RetryClass"
+    },
+    "ApiError": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ApiError"
+    },
+    "OperationName": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/OperationName"
+    },
+    "RequestMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/RequestMetadata"
+    },
+    "RequestEnvelope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/RequestEnvelope"
+    },
+    "ResponseMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ResponseMetadata"
+    },
+    "SuccessResponseEnvelope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/SuccessResponseEnvelope"
+    },
+    "ErrorResponseEnvelope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ErrorResponseEnvelope"
+    },
+    "ResponseEnvelope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ResponseEnvelope"
+    }
+  }
+}

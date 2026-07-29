@@ -5,10 +5,11 @@ dependency graph. Sibling distributions (``omnivia-core-runtime``,
 ``omnivia-core-mcp``, ``omnivia-core-cli``) depend on this package; this
 package must never depend on or import any of them.
 
-This module currently exposes only package identity metadata. Public domain
-contracts have not been migrated into this distribution yet; the existing
-reference implementation continues to live in ``services/omnivia-memory``
-during this transitional phase.
+This module itself exposes only package identity metadata. The public wire
+contract lives under ``omnivia_core.contracts`` (``omnivia_core.contracts.v1``
+per ADR-038); the runtime-oriented reference implementation for memory,
+persistence, ingestion, search, and graph assembly continues to live in
+``services/omnivia-memory`` during this transitional phase.
 """
 
 from __future__ import annotations
