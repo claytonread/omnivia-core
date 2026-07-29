@@ -209,6 +209,10 @@ EXTRA_MODULE_CONSTANTS: dict[str, tuple[str, ...]] = {
         "BUILTIN_GRAPH_NODE_KINDS",
         "BUILTIN_GRAPH_RELATIONS",
     ),
+    "omnivia_core.control_plane.models": (
+        "CONTROL_PLANE_CONTRACT_VERSION",
+        "CONTROL_PLANE_SCHEMA_VERSION",
+    ),
     "omnivia_core.memory_graph.models": ("Confidence",),
     "omnivia_core.run_ledger.models": (
         "RUN_LEDGER_CONTRACT_VERSION",
