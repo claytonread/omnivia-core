@@ -49,10 +49,6 @@ CANONICAL_LEAF_MODULES: tuple[str, ...] = (
 #: canonical module -> matching legacy module, for the modules that are a
 #: direct 1:1 port (compared symbol-for-symbol by test_parity.py).
 CANONICAL_TO_LEGACY: dict[str, str] = {
-    "omnivia_core.memory_graph.assembly": "omnivia_memory.memory_graph.assembly",
-    "omnivia_core.memory_graph.fixtures": "omnivia_memory.memory_graph.fixtures",
-    "omnivia_core.memory_graph.models": "omnivia_memory.memory_graph.models",
-    "omnivia_core.memory_graph.validation": "omnivia_memory.memory_graph.validation",
     "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
     "omnivia_core.ingestion.watcher.models": "omnivia_memory.ingestion.watcher.models",
@@ -67,6 +63,11 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
 #: exists to enforce -- a facade's source is an import, not a port -- so they
 #: are covered instead by tests/compatibility/test_facade_foundation.py, which
 #: asserts symbol identity rather than source-level sameness.
+#:
+#: A converted leaf's *barrel* is not necessarily converted with it: the four
+#: ``memory_graph`` leaves are facades while ``omnivia_memory.memory_graph``
+#: stays a hybrid barrel, because seven of its exports are owned by the
+#: runtime-only ``ingestion_adapter``/``store`` leaves that never enter Core.
 FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
     "omnivia_core.app_manifest.models": "omnivia_memory.app_manifest.models",
@@ -87,6 +88,10 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.module_manifest.validation": "omnivia_memory.module_manifest.validation",
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
+    "omnivia_core.memory_graph.assembly": "omnivia_memory.memory_graph.assembly",
+    "omnivia_core.memory_graph.fixtures": "omnivia_memory.memory_graph.fixtures",
+    "omnivia_core.memory_graph.models": "omnivia_memory.memory_graph.models",
+    "omnivia_core.memory_graph.validation": "omnivia_memory.memory_graph.validation",
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }

@@ -142,6 +142,10 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
             services/omnivia-memory/src/omnivia_memory/memory/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/assembly.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/fixtures.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/validation.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
             services/omnivia-memory/src/omnivia_memory/provenance/models.py \
@@ -173,6 +177,10 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
             services/omnivia-memory/src/omnivia_memory/memory/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/assembly.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/fixtures.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/validation.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
             services/omnivia-memory/src/omnivia_memory/provenance/models.py \

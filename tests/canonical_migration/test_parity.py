@@ -50,6 +50,8 @@ A subset of once-duplicated leaves (``_shared.validation``,
 ``control_plane.imports``, ``control_plane.models``,
 ``control_plane.validation``, ``knowledge.models``, ``knowledge.normalize``,
 ``knowledge.validation``, ``lifecycle.models``, ``lifecycle.rules``,
+``memory_graph.assembly``, ``memory_graph.fixtures``, ``memory_graph.models``,
+``memory_graph.validation``,
 ``module_manifest.models``, ``module_manifest.validation``,
 ``provenance.models``, ``memory.models``, ``run_ledger.models``, and
 ``run_ledger.validation``) has since been converted

@@ -14,6 +14,14 @@ re-exported objects are now canonical too as a result -- the ``app_manifest``,
 transitively, through their converted leaves (two each, except ``control_plane``'s
 and ``knowledge``'s three).
 
+``memory_graph`` is the first converted leaf set whose barrel is *not* one of
+those: it is a **hybrid**. Thirty-one of its thirty-eight exports now hop through
+its four converted children to canonical objects, while the other seven are owned
+by the runtime-only ``ingestion_adapter``/``store`` leaves that never enter Core.
+Its legacy and canonical ``__all__`` are therefore different sizes, so it is
+deliberately excluded from ``BARREL_ALL_ORDER`` and every gate built on it, and
+gets its own section at the end of this module instead.
+
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
 converted leaf via ``FACADE_CANONICAL_TO_LEGACY`` -- see
@@ -645,6 +653,125 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "timezone": "omnivia_core.memory.models",
         "uuid": "omnivia_core.memory.models",
     },
+    "omnivia_memory.memory_graph.assembly": {
+        # The thirteen contract names below are owned by this leaf's sibling
+        # ``models``, which the canonical assembler imports them from; they were
+        # bound at this leaf's module scope historically too.
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewEdge": "omnivia_core.memory_graph.models",
+        "GraphPreviewKind": "omnivia_core.memory_graph.models",
+        "GraphPreviewNode": "omnivia_core.memory_graph.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewState": "omnivia_core.memory_graph.models",
+        "MemoryEntity": "omnivia_core.memory_graph.models",
+        "MemoryFact": "omnivia_core.memory_graph.models",
+        "MemoryFactStatus": "omnivia_core.memory_graph.models",
+        "MemorySegment": "omnivia_core.memory_graph.models",
+        "MemorySource": "omnivia_core.memory_graph.models",
+        "MemorySourceStatus": "omnivia_core.memory_graph.models",
+        # The memory graph's own evidence reference, not the knowledge domain's
+        # same-named class. See
+        # ``test_memory_graph_source_ref_keeps_its_historical_collision_owner``.
+        "SourceRef": "omnivia_core.memory_graph.models",
+        "annotations": "omnivia_core.memory_graph.assembly",
+        "assemble_evidence_graph": "omnivia_core.memory_graph.assembly",
+        "assemble_graph_preview": "omnivia_core.memory_graph.assembly",
+        "redact_segment_preview": "omnivia_core.memory_graph.assembly",
+    },
+    "omnivia_memory.memory_graph.fixtures": {
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
+        # A bare ``str`` constant, so the frozen inventory's ``defines``
+        # provenance omits it; its owner is pinned here and routed explicitly in
+        # ``baseline.inventory``'s ``FACADE_ROUTES``.
+        "FIXTURE_TIME": "omnivia_core.memory_graph.fixtures",
+        "GraphPreviewEdge": "omnivia_core.memory_graph.models",
+        "GraphPreviewKind": "omnivia_core.memory_graph.models",
+        "GraphPreviewNode": "omnivia_core.memory_graph.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewState": "omnivia_core.memory_graph.models",
+        "MemoryEntity": "omnivia_core.memory_graph.models",
+        "MemoryFact": "omnivia_core.memory_graph.models",
+        "MemoryFactStatus": "omnivia_core.memory_graph.models",
+        "MemoryGraphFixture": "omnivia_core.memory_graph.fixtures",
+        "MemorySegment": "omnivia_core.memory_graph.models",
+        "MemorySegmentKind": "omnivia_core.memory_graph.models",
+        "MemorySource": "omnivia_core.memory_graph.models",
+        "MemorySourceFreshness": "omnivia_core.memory_graph.models",
+        "MemorySourceStatus": "omnivia_core.memory_graph.models",
+        "MemorySourceType": "omnivia_core.memory_graph.models",
+        "SourceRef": "omnivia_core.memory_graph.models",
+        "TypedDict": "omnivia_core.memory_graph.fixtures",
+        "annotations": "omnivia_core.memory_graph.fixtures",
+        "build_memory_graph_fixture": "omnivia_core.memory_graph.fixtures",
+    },
+    # Every name in this leaf's historical namespace resolves from its canonical
+    # counterpart, incidental bindings included: the memory graph models leaf
+    # imports nothing from another Core leaf.
+    "omnivia_memory.memory_graph.models": {
+        "Any": "omnivia_core.memory_graph.models",
+        # A ``types.UnionType`` alias (``float | str``), so its runtime
+        # ``__module__`` is not this leaf and the frozen inventory's ``defines``
+        # provenance omits it. It is a public type alias downstream code
+        # annotates with, so it is routed explicitly and pinned here.
+        "Confidence": "omnivia_core.memory_graph.models",
+        "Enum": "omnivia_core.memory_graph.models",
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewEdge": "omnivia_core.memory_graph.models",
+        "GraphPreviewKind": "omnivia_core.memory_graph.models",
+        "GraphPreviewNode": "omnivia_core.memory_graph.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewState": "omnivia_core.memory_graph.models",
+        "MemoryEntity": "omnivia_core.memory_graph.models",
+        "MemoryFact": "omnivia_core.memory_graph.models",
+        "MemoryFactStatus": "omnivia_core.memory_graph.models",
+        "MemorySegment": "omnivia_core.memory_graph.models",
+        "MemorySegmentKind": "omnivia_core.memory_graph.models",
+        "MemorySource": "omnivia_core.memory_graph.models",
+        "MemorySourceFreshness": "omnivia_core.memory_graph.models",
+        "MemorySourceStatus": "omnivia_core.memory_graph.models",
+        "MemorySourceType": "omnivia_core.memory_graph.models",
+        "RetrievalTrace": "omnivia_core.memory_graph.models",
+        # The memory graph's own evidence reference, not the knowledge domain's
+        # same-named class -- and the legacy root binds the knowledge one, so this
+        # leaf's route moves no root binding for it.
+        "SourceRef": "omnivia_core.memory_graph.models",
+        "TypeAlias": "omnivia_core.memory_graph.models",
+        "annotations": "omnivia_core.memory_graph.models",
+        "dataclass": "omnivia_core.memory_graph.models",
+        "field": "omnivia_core.memory_graph.models",
+    },
+    "omnivia_memory.memory_graph.validation": {
+        # A builtin ``frozenset`` instance, so ordinary ``__module__`` definition
+        # detection cannot see it; routed explicitly and pinned here.
+        "CONFIDENCE_BUCKETS": "omnivia_core.memory_graph.validation",
+        # The ``Confidence`` alias and the ten contract names below are owned by
+        # this leaf's sibling ``models``, which the canonical validator imports
+        # them from; they were bound at this leaf's module scope historically too.
+        "Confidence": "omnivia_core.memory_graph.models",
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewEdge": "omnivia_core.memory_graph.models",
+        "GraphPreviewNode": "omnivia_core.memory_graph.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
+        "MemoryEntity": "omnivia_core.memory_graph.models",
+        "MemoryFact": "omnivia_core.memory_graph.models",
+        "MemorySegment": "omnivia_core.memory_graph.models",
+        "MemorySource": "omnivia_core.memory_graph.models",
+        "SourceRef": "omnivia_core.memory_graph.models",
+        # This leaf never had a ``ValidationResult`` of its own: it historically
+        # imported the shared primitive, so it must keep routing to that one and
+        # not to any of the four domain classes of the same name. Both the
+        # runtime-only ``memory_graph.store`` leaf and the hybrid ``memory_graph``
+        # barrel take their ``ValidationResult`` from here. See
+        # ``test_memory_graph_validation_result_keeps_its_historical_collision_owner``.
+        "ValidationResult": "omnivia_core._shared.validation",
+        "annotations": "omnivia_core.memory_graph.validation",
+        "validate_evidence_graph_response": "omnivia_core.memory_graph.validation",
+        "validate_graph_preview_response": "omnivia_core.memory_graph.validation",
+        "validate_memory_entity": "omnivia_core.memory_graph.validation",
+        "validate_memory_fact": "omnivia_core.memory_graph.validation",
+        "validate_memory_segment": "omnivia_core.memory_graph.validation",
+        "validate_memory_source": "omnivia_core.memory_graph.validation",
+    },
 }
 
 #: Each leaf's entire body must be exactly one ``from <module> import (...)``
@@ -681,6 +808,12 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     ),
     "omnivia_memory.provenance.models": "omnivia_core.provenance.models",
     "omnivia_memory.memory.models": "omnivia_core.memory.models",
+    "omnivia_memory.memory_graph.assembly": "omnivia_core.memory_graph.assembly",
+    "omnivia_memory.memory_graph.fixtures": "omnivia_core.memory_graph.fixtures",
+    "omnivia_memory.memory_graph.models": "omnivia_core.memory_graph.models",
+    "omnivia_memory.memory_graph.validation": (
+        "omnivia_core.memory_graph.validation"
+    ),
     "omnivia_memory.run_ledger.models": "omnivia_core.run_ledger.models",
     "omnivia_memory.run_ledger.validation": "omnivia_core.run_ledger.validation",
 }
@@ -1306,6 +1439,12 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     ),
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
+    "omnivia_core.memory_graph.assembly": "omnivia_memory.memory_graph.assembly",
+    "omnivia_core.memory_graph.fixtures": "omnivia_memory.memory_graph.fixtures",
+    "omnivia_core.memory_graph.models": "omnivia_memory.memory_graph.models",
+    "omnivia_core.memory_graph.validation": (
+        "omnivia_memory.memory_graph.validation"
+    ),
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
@@ -1336,6 +1475,15 @@ COLLIDING_OWNERS: dict[str, tuple[str, ...]] = {
         "omnivia_core.lifecycle.models",
         "omnivia_core.control_plane.models",
     ),
+    # The knowledge domain's evidence reference and the memory graph's are
+    # independent contracts with different fields that happen to share a name.
+    # Four converted leaves route this name to the knowledge owner and four to the
+    # memory-graph owner; the legacy root binds the knowledge one, so the
+    # separation decides both a leaf contract and a root binding.
+    "SourceRef": (
+        "omnivia_core.knowledge.models",
+        "omnivia_core.memory_graph.models",
+    ),
 }
 
 #: For each colliding name, the single owner the *legacy package root* has always
@@ -1352,6 +1500,40 @@ ROOT_OWNERS: dict[str, str] = {
     # ``baseline.inventory.FACADE_ROUTES``) while the three lifecycle-domain
     # routes for the same name move nothing at the root.
     "LifecycleState": "omnivia_core.control_plane.models",
+    # The root's ``SourceRef`` has always been the knowledge domain's, reached
+    # through the knowledge barrel -- not the memory graph's, even though the
+    # ``memory_graph`` barrel re-exports one under that name too and the root
+    # imports from that barrel as well. Which of the two the root lands on is
+    # decided by import order in the root's own unedited source, so pinning it
+    # here is what would catch a memory-graph route silently taking it over.
+    "SourceRef": "omnivia_core.knowledge.models",
+}
+
+#: The full legacy surface of the ``SourceRef`` collision: for each of its two
+#: canonical owners, every legacy module that must expose *that* domain's class.
+#: Two of these consumers are unreachable from ``LEAF_SYMBOL_SOURCES`` -- the
+#: hybrid ``memory_graph`` barrel and the legacy package root -- yet they are the
+#: ones whose owner is decided by import order in unedited legacy source, so they
+#: are the ones an isolated, two-order proof most needs to cover. Declared once
+#: here and consumed by both the fresh-process harness
+#: (``_fresh_process_identity_script``) and the shared-process gate
+#: (``test_memory_graph_source_ref_keeps_its_historical_collision_owner``), so the
+#: two cannot drift apart. Exactly two owners: both consumers unpack the other
+#: one as ``the`` alternative and would fail loudly if a third appeared.
+SOURCE_REF_LEGACY_OWNERS: dict[str, tuple[str, ...]] = {
+    "omnivia_core.memory_graph.models": (
+        "omnivia_memory.memory_graph",
+        "omnivia_memory.memory_graph.assembly",
+        "omnivia_memory.memory_graph.fixtures",
+        "omnivia_memory.memory_graph.models",
+        "omnivia_memory.memory_graph.validation",
+    ),
+    "omnivia_core.knowledge.models": (
+        "omnivia_memory",
+        "omnivia_memory.knowledge",
+        "omnivia_memory.knowledge.models",
+        "omnivia_memory.knowledge.validation",
+    ),
 }
 
 
@@ -2123,7 +2305,19 @@ def test_canonical_core_imports_independently_of_omnivia_memory() -> None:
 
 def _fresh_process_identity_script(*, canonical_first: bool) -> str:
     canonical_modules = sorted(EXPECTED_FACADE_CANONICAL_TO_LEGACY)
-    legacy_modules = sorted(LEAF_SYMBOL_SOURCES)
+    # The legacy side is more than the converted leaves: the hybrid
+    # ``memory_graph`` barrel and the legacy package root resolve their
+    # ``SourceRef`` through unedited legacy import order, so they must be imported
+    # on the legacy side of whichever of the two orders is under test -- not pulled
+    # in incidentally as a parent package of some leaf.
+    legacy_modules = sorted(
+        set(LEAF_SYMBOL_SOURCES)
+        | {
+            module
+            for modules in SOURCE_REF_LEGACY_OWNERS.values()
+            for module in modules
+        }
+    )
     first, second = (
         (canonical_modules, legacy_modules) if canonical_first else (legacy_modules, canonical_modules)
     )
@@ -2157,6 +2351,26 @@ def _fresh_process_identity_script(*, canonical_first: bool) -> str:
             f"'{owner}.{name} and {other}.{name} collapsed into one object "
             f"(canonical_first={canonical_first})'"
         )
+    # ``SourceRef`` is the one collision whose routes decide a hybrid barrel's and
+    # the legacy root's binding as well as four leaves', and neither of those two
+    # consumers appears in ``LEAF_SYMBOL_SOURCES``. Pin both owners' whole legacy
+    # surface here so the isolated two-order proof reaches them too, rather than
+    # leaving them to the shared-process gate at the end of this module -- where a
+    # collision could already have been settled by an earlier test's imports.
+    for canonical_module, legacy_owned in SOURCE_REF_LEGACY_OWNERS.items():
+        (other_canonical,) = set(SOURCE_REF_LEGACY_OWNERS) - {canonical_module}
+        for legacy_module in legacy_owned:
+            lines.append(
+                f"assert {legacy_module}.SourceRef is {canonical_module}.SourceRef, "
+                f"'{legacy_module}.SourceRef is not {canonical_module}.SourceRef "
+                f"(canonical_first={canonical_first})'"
+            )
+            lines.append(
+                f"assert {legacy_module}.SourceRef is not "
+                f"{other_canonical}.SourceRef, "
+                f"'{legacy_module}.SourceRef was taken over by "
+                f"{other_canonical}.SourceRef (canonical_first={canonical_first})'"
+            )
     return "\n".join(lines)
 
 
@@ -2165,3 +2379,466 @@ def _fresh_process_identity_script(*, canonical_first: bool) -> str:
 )
 def test_fresh_process_import_order_preserves_identity(canonical_first: bool) -> None:
     _run_isolated(_fresh_process_identity_script(canonical_first=canonical_first))
+
+
+# ---------------------------------------------------------------------------
+# The ``memory_graph`` hybrid barrel.
+#
+# Every other converted leaf set in this module sits under a barrel whose whole
+# advertised surface became canonical. ``memory_graph`` is the first that does
+# not: seven of its thirty-eight exports are owned by the runtime-only
+# ``ingestion_adapter``/``store`` leaves, which never enter Core, so the barrel
+# cannot become a pure re-export of the canonical package and stays
+# ``pending_hybrid`` in ``compatibility/facade-routes.v1.json``. Its legacy and
+# canonical ``__all__`` are different sizes as a result, which is exactly why it
+# must stay out of ``BARREL_ALL_ORDER`` and the equal-``__all__`` gates above.
+#
+# What has to hold instead is split cleanly in two: the portable half is
+# identity-preserving *through the child facades*, and the runtime half is still
+# legacy-owned and still absent from the canonical barrel.
+# ---------------------------------------------------------------------------
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy
+#: ``memory_graph`` barrel must still have: ``(absolute module, imported names in
+#: source order)``. Six blocks, in the barrel's own historical order -- which is
+#: neither alphabetical nor portable-first: the two runtime-only leaves sit
+#: between ``fixtures`` and ``models``. Restated here rather than read off the
+#: barrel, because this is the file whose edits it exists to reject.
+MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.memory_graph.assembly",
+        (
+            "assemble_evidence_graph",
+            "assemble_graph_preview",
+            "redact_segment_preview",
+        ),
+    ),
+    (
+        "omnivia_memory.memory_graph.fixtures",
+        (
+            "FIXTURE_TIME",
+            "MemoryGraphFixture",
+            "build_memory_graph_fixture",
+        ),
+    ),
+    (
+        "omnivia_memory.memory_graph.ingestion_adapter",
+        (
+            "IngestionGraphAdapterError",
+            "IngestionGraphWriteResult",
+            "chunk_to_memory_segment",
+            "source_to_memory_source",
+            "write_ingestion_records_to_graph",
+        ),
+    ),
+    (
+        "omnivia_memory.memory_graph.store",
+        (
+            "MemoryGraphStore",
+            "MemoryGraphStoreError",
+        ),
+    ),
+    (
+        "omnivia_memory.memory_graph.models",
+        (
+            "Confidence",
+            "EvidenceGraphResponse",
+            "GraphPreviewEdge",
+            "GraphPreviewKind",
+            "GraphPreviewNode",
+            "GraphPreviewResponse",
+            "GraphPreviewState",
+            "MemoryEntity",
+            "MemoryFact",
+            "MemoryFactStatus",
+            "MemorySegment",
+            "MemorySegmentKind",
+            "MemorySource",
+            "MemorySourceFreshness",
+            "MemorySourceStatus",
+            "MemorySourceType",
+            "RetrievalTrace",
+            "SourceRef",
+        ),
+    ),
+    (
+        "omnivia_memory.memory_graph.validation",
+        (
+            "ValidationResult",
+            "validate_evidence_graph_response",
+            "validate_graph_preview_response",
+            "validate_memory_entity",
+            "validate_memory_fact",
+            "validate_memory_segment",
+            "validate_memory_source",
+        ),
+    ),
+)
+
+#: The barrel's exact ordered 38-name ``__all__`` literal, restated rather than
+#: derived: it is sorted, so it interleaves all six blocks' names and matches none
+#: of them.
+MEMORY_GRAPH_BARREL_ALL: tuple[str, ...] = (
+    "Confidence",
+    "EvidenceGraphResponse",
+    "FIXTURE_TIME",
+    "GraphPreviewEdge",
+    "GraphPreviewKind",
+    "GraphPreviewNode",
+    "GraphPreviewResponse",
+    "GraphPreviewState",
+    "IngestionGraphAdapterError",
+    "IngestionGraphWriteResult",
+    "MemoryEntity",
+    "MemoryFact",
+    "MemoryFactStatus",
+    "MemoryGraphFixture",
+    "MemoryGraphStore",
+    "MemoryGraphStoreError",
+    "MemorySegment",
+    "MemorySegmentKind",
+    "MemorySource",
+    "MemorySourceFreshness",
+    "MemorySourceStatus",
+    "MemorySourceType",
+    "RetrievalTrace",
+    "SourceRef",
+    "ValidationResult",
+    "assemble_evidence_graph",
+    "assemble_graph_preview",
+    "build_memory_graph_fixture",
+    "chunk_to_memory_segment",
+    "redact_segment_preview",
+    "source_to_memory_source",
+    "validate_evidence_graph_response",
+    "validate_graph_preview_response",
+    "validate_memory_entity",
+    "validate_memory_fact",
+    "validate_memory_segment",
+    "validate_memory_source",
+    "write_ingestion_records_to_graph",
+)
+
+#: The barrel's two runtime-only children, which are declared runtime-only in the
+#: frozen route registry and are deliberately *not* facades.
+MEMORY_GRAPH_RUNTIME_ONLY_LEAVES: tuple[str, ...] = (
+    "omnivia_memory.memory_graph.ingestion_adapter",
+    "omnivia_memory.memory_graph.store",
+)
+
+#: The barrel's exact seven runtime-only exports: they must stay legacy-owned and
+#: must never appear on the canonical barrel.
+MEMORY_GRAPH_RUNTIME_EXPORTS: frozenset[str] = frozenset(
+    {
+        "IngestionGraphAdapterError",
+        "IngestionGraphWriteResult",
+        "MemoryGraphStore",
+        "MemoryGraphStoreError",
+        "chunk_to_memory_segment",
+        "source_to_memory_source",
+        "write_ingestion_records_to_graph",
+    }
+)
+
+
+def _memory_graph_block(module: str) -> tuple[str, ...]:
+    (names,) = [
+        names for name, names in MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS if name == module
+    ]
+    return names
+
+
+def test_memory_graph_hybrid_barrel_is_held_out_of_the_equal_all_gates() -> None:
+    """The barrel's two trees advertise *different* surfaces, so every gate keyed
+    on ``BARREL_ALL_ORDER`` (which asserts ``legacy.__all__ == canonical.__all__``)
+    would be wrong for it. Pin that it is absent from those gates, and pin the
+    inequality that is the reason -- so a future edit that "helpfully" added
+    ``memory_graph`` to ``BARREL_ALL_ORDER`` fails here with the reason rather
+    than as a confusing list mismatch.
+    """
+    assert "memory_graph" not in BARREL_ALL_ORDER
+    assert "memory_graph" not in ABSOLUTE_IMPORT_BARRELS
+    assert "memory_graph" not in ABSOLUTE_IMPORT_BARREL_IMPORTS
+    assert "memory_graph" not in RELATIVE_IMPORT_BARREL_IMPORTS
+
+    legacy = importlib.import_module("omnivia_memory.memory_graph")
+    canonical = importlib.import_module("omnivia_core.memory_graph")
+    assert tuple(legacy.__all__) == MEMORY_GRAPH_BARREL_ALL
+    assert len(legacy.__all__) == 38
+    assert len(canonical.__all__) == 31
+    assert set(canonical.__all__) == set(MEMORY_GRAPH_BARREL_ALL) - (
+        MEMORY_GRAPH_RUNTIME_EXPORTS
+    )
+
+
+def test_memory_graph_hybrid_barrel_source_is_unchanged_reexport() -> None:
+    """The hybrid barrel is *source-unchanged* by this slice: its portable half
+    becomes identity-preserving transitively, through its four converted leaves,
+    and its runtime half keeps resolving locally. Pin its exact historical shape --
+    six absolute ``from omnivia_memory.memory_graph.<leaf> import (...)``
+    statements in source order with their exact ordered name lists, then the
+    ``__all__`` literal -- so an edit that reroutes it at ``omnivia_core``, drops
+    the runtime blocks, adds a ``__getattr__``, or reorders its re-exports fails
+    here.
+    """
+    module_name = "omnivia_memory.memory_graph"
+    body = _module_body_after_docstring(module_name)
+    assert len(body) == len(MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS) + 1, (
+        f"{module_name}: expected exactly "
+        f"{len(MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS)} absolute imports plus "
+        f"__all__, found {[ast.dump(node) for node in body]}"
+    )
+    for node, (module, names) in zip(
+        body, MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS, strict=False
+    ):
+        assert isinstance(node, ast.ImportFrom), f"expected an import, found {node!r}"
+        assert node.level == 0, f"{module_name}: the {module} import must stay absolute"
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        for alias in node.names:
+            assert alias.name != "*", "star import is not allowed"
+            assert alias.asname is None, f"{alias.name!r} uses a rename/dynamic alias"
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign), f"expected __all__, found {all_node!r}"
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert tuple(
+        elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
+    ) == MEMORY_GRAPH_BARREL_ALL
+
+    # Every name the six imports bind is exactly what ``__all__`` advertises: the
+    # barrel adds nothing of its own and hides nothing it imported.
+    imported = sorted(
+        name for _, names in MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS for name in names
+    )
+    assert imported == sorted(MEMORY_GRAPH_BARREL_ALL)
+    assert "__getattr__" not in vars(importlib.import_module(module_name))
+
+
+def test_memory_graph_hybrid_barrel_portable_exports_hop_through_their_facades() -> None:
+    """The barrel's 31 portable exports must each be the exact object bound at the
+    *legacy child facade* it re-exports from, and that object must in turn be the
+    canonical one. A barrel that started sourcing a name from somewhere else would
+    still pass the canonical-identity check alone; requiring the leaf hop too is
+    what pins the transitive route through all four converted children.
+    """
+    barrel = importlib.import_module("omnivia_memory.memory_graph")
+    portable = 0
+    for legacy_leaf_name, names in MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS:
+        if legacy_leaf_name in MEMORY_GRAPH_RUNTIME_ONLY_LEAVES:
+            continue
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        owners = LEAF_SYMBOL_SOURCES[legacy_leaf_name]
+        for name in names:
+            canonical_owner = importlib.import_module(owners[name])
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.memory_graph.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            assert getattr(barrel, name) is getattr(canonical_owner, name), (
+                f"omnivia_memory.memory_graph.{name} is not the exact object bound "
+                f"at {owners[name]}.{name}"
+            )
+            portable += 1
+    assert portable == 31
+
+
+def test_memory_graph_hybrid_barrel_runtime_exports_stay_legacy_owned() -> None:
+    """The other seven exports are the whole reason this barrel is a hybrid, so
+    their *non*-conversion is as much a contract as the portable half's
+    conversion. Each must still be the exact object bound at its legacy
+    ``ingestion_adapter``/``store`` owner, and each of those owners must still be
+    a real legacy module backed by a file in the compatibility tree -- not a
+    facade that quietly acquired a canonical counterpart.
+    """
+    barrel = importlib.import_module("omnivia_memory.memory_graph")
+    covered: set[str] = set()
+    for legacy_leaf_name in MEMORY_GRAPH_RUNTIME_ONLY_LEAVES:
+        assert legacy_leaf_name not in LEAF_SYMBOL_SOURCES, (
+            f"{legacy_leaf_name} is runtime-owned and must not become a facade"
+        )
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        leaf_path = Path(legacy_leaf.__file__ or "").resolve()
+        assert leaf_path.is_relative_to(MEMORY_SRC), (
+            f"{legacy_leaf_name} resolved to {leaf_path}, outside the legacy tree"
+        )
+        for name in _memory_graph_block(legacy_leaf_name):
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.memory_graph.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            covered.add(name)
+    assert covered == set(MEMORY_GRAPH_RUNTIME_EXPORTS)
+
+
+def test_memory_graph_runtime_exports_are_absent_from_the_canonical_barrel() -> None:
+    """None of the seven may leak into Core -- not into its ``__all__`` and not as
+    an attribute. This is what keeps the runtime-owned half out of the canonical
+    package rather than merely un-advertised there.
+    """
+    canonical = importlib.import_module("omnivia_core.memory_graph")
+    for name in sorted(MEMORY_GRAPH_RUNTIME_EXPORTS):
+        assert name not in canonical.__all__, (
+            f"{name} is runtime-owned and must not be in "
+            "omnivia_core.memory_graph.__all__"
+        )
+        assert not hasattr(canonical, name), (
+            f"{name} is runtime-owned and must not be an attribute of "
+            "omnivia_core.memory_graph"
+        )
+
+
+def test_memory_graph_source_ref_keeps_its_historical_collision_owner() -> None:
+    """``SourceRef`` is a name collision between two independent domains. The
+    memory graph's own evidence reference is the one these four leaves and the
+    hybrid barrel historically exposed, while the legacy package *root* has always
+    taken its ``SourceRef`` from the knowledge domain -- even though it imports
+    from both barrels. Routing either side to the other's class would be a silent
+    contract swap that every "is the exact canonical object" check above would
+    still pass.
+
+    The module lists live in ``SOURCE_REF_LEGACY_OWNERS`` rather than inline,
+    because ``_fresh_process_identity_script`` asserts the same pairs in two
+    isolated import orders and the two must not drift apart.
+    """
+    assert set(SOURCE_REF_LEGACY_OWNERS) == set(COLLIDING_OWNERS["SourceRef"])
+    canonical_leaf = importlib.import_module("omnivia_core.memory_graph.models")
+    knowledge_leaf = importlib.import_module("omnivia_core.knowledge.models")
+    assert canonical_leaf.SourceRef is not knowledge_leaf.SourceRef
+
+    for canonical_module, legacy_owned in SOURCE_REF_LEGACY_OWNERS.items():
+        (other_name,) = set(SOURCE_REF_LEGACY_OWNERS) - {canonical_module}
+        canonical = importlib.import_module(canonical_module)
+        other = importlib.import_module(other_name)
+        for legacy_module in legacy_owned:
+            module = importlib.import_module(legacy_module)
+            assert module.SourceRef is canonical.SourceRef, (
+                f"{legacy_module}.SourceRef is not {canonical_module}'s own class"
+            )
+            assert module.SourceRef is not other.SourceRef, (
+                f"{legacy_module}.SourceRef was taken over by "
+                f"{other_name}.SourceRef"
+            )
+
+
+def test_memory_graph_validation_result_keeps_its_historical_collision_owner() -> None:
+    """The memory graph validation leaf owns *none* of the five same-named
+    ``ValidationResult`` classes: it has always imported the shared primitive.
+    Routing it to any domain's dataclass would be a silent contract swap -- and it
+    would change what the hybrid barrel publishes, because the barrel takes its
+    ``ValidationResult`` from this leaf.
+    """
+    legacy_leaf = importlib.import_module("omnivia_memory.memory_graph.validation")
+    legacy_barrel = importlib.import_module("omnivia_memory.memory_graph")
+    canonical_barrel = importlib.import_module("omnivia_core.memory_graph")
+    shared = importlib.import_module("omnivia_core._shared.validation")
+
+    assert legacy_leaf.ValidationResult is shared.ValidationResult
+    assert legacy_barrel.ValidationResult is shared.ValidationResult
+    assert canonical_barrel.ValidationResult is shared.ValidationResult
+
+    for other_module in (
+        "omnivia_core.app_manifest.models",
+        "omnivia_memory.app_manifest.models",
+        "omnivia_core.app_shell_bridge.models",
+        "omnivia_memory.app_shell_bridge.models",
+        "omnivia_core.component_contract.models",
+        "omnivia_memory.component_contract.models",
+        "omnivia_core.control_plane.models",
+        "omnivia_memory.control_plane.models",
+    ):
+        other = importlib.import_module(other_module)
+        assert legacy_leaf.ValidationResult is not other.ValidationResult, (
+            "omnivia_memory.memory_graph.validation.ValidationResult must stay the "
+            f"shared primitive, not {other_module}.ValidationResult"
+        )
+
+
+def test_memory_graph_pinned_values_survive_the_route() -> None:
+    """Three routed symbols carry a *value*, not just a type, so identity alone
+    would not catch a canonical owner that rebuilt them differently.
+    """
+    legacy_fixtures = importlib.import_module("omnivia_memory.memory_graph.fixtures")
+    legacy_models = importlib.import_module("omnivia_memory.memory_graph.models")
+    legacy_validation = importlib.import_module(
+        "omnivia_memory.memory_graph.validation"
+    )
+    canonical_models = importlib.import_module("omnivia_core.memory_graph.models")
+
+    assert legacy_fixtures.FIXTURE_TIME == "2026-06-07T00:00:00+00:00"
+    assert isinstance(legacy_validation.CONFIDENCE_BUCKETS, frozenset)
+    assert legacy_validation.CONFIDENCE_BUCKETS == frozenset(
+        {"extracted", "inferred", "ambiguous"}
+    )
+    assert all(isinstance(item, str) for item in legacy_validation.CONFIDENCE_BUCKETS)
+    # ``Confidence`` is a ``types.UnionType`` alias; a rebuilt one would compare
+    # equal, so identity against the canonical object is the assertion that
+    # matters -- and it is the same alias the models leaf annotates with.
+    assert legacy_models.Confidence is canonical_models.Confidence
+    assert legacy_models.Confidence == (float | str)
+
+
+def test_memory_graph_runtime_consumers_hold_the_canonical_objects() -> None:
+    """``memory_graph.store`` and ``memory_graph.ingestion_adapter`` are
+    unconverted runtime leaves that import their contracts *from the converted
+    facades*, so they are now the first in-repo consumers holding canonical model
+    and validation objects while staying legacy-owned themselves. Pin that hop:
+    the runtime half of the hybrid barrel has to keep working against exactly the
+    objects Core owns.
+    """
+    store = importlib.import_module("omnivia_memory.memory_graph.store")
+    adapter = importlib.import_module("omnivia_memory.memory_graph.ingestion_adapter")
+    canonical_models = importlib.import_module("omnivia_core.memory_graph.models")
+    canonical_validation = importlib.import_module(
+        "omnivia_core.memory_graph.validation"
+    )
+    shared = importlib.import_module("omnivia_core._shared.validation")
+
+    for name in ("MemoryEntity", "MemoryFact", "MemorySegment", "MemorySource"):
+        assert getattr(store, name) is getattr(canonical_models, name)
+    for name in (
+        "validate_memory_entity",
+        "validate_memory_fact",
+        "validate_memory_segment",
+        "validate_memory_source",
+    ):
+        assert getattr(store, name) is getattr(canonical_validation, name)
+    assert store.ValidationResult is shared.ValidationResult
+
+    for name in (
+        "MemorySegment",
+        "MemorySegmentKind",
+        "MemorySource",
+        "MemorySourceFreshness",
+        "MemorySourceStatus",
+        "MemorySourceType",
+    ):
+        assert getattr(adapter, name) is getattr(canonical_models, name)
+
+
+def test_canonical_memory_graph_does_not_load_the_runtime_only_leaves() -> None:
+    """A canonical-only import must not reach ``omnivia_memory`` at all -- and in
+    particular not the two runtime-only leaves this barrel's other seven exports
+    come from, which pull in the ingestion runtime and a filesystem-writing store.
+    Only ``src`` goes on the path, so any such reach is a hard failure here.
+    """
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            "import omnivia_core.memory_graph",
+            "import omnivia_core.memory_graph.assembly",
+            "import omnivia_core.memory_graph.fixtures",
+            "import omnivia_core.memory_graph.models",
+            "import omnivia_core.memory_graph.validation",
+            "assert 'omnivia_memory' not in sys.modules",
+            "leaked = sorted(",
+            "    name for name in sys.modules",
+            "    if name.endswith(('.store', '.ingestion_adapter'))",
+            ")",
+            "assert not leaked, leaked",
+        ]
+    )
+    _run_isolated(script)

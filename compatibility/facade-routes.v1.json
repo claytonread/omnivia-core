@@ -249,28 +249,28 @@
       "canonical_module": "omnivia_core.memory_graph.assembly",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.memory_graph.fixtures",
       "canonical_module": "omnivia_core.memory_graph.fixtures",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.memory_graph.models",
       "canonical_module": "omnivia_core.memory_graph.models",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.memory_graph.validation",
       "canonical_module": "omnivia_core.memory_graph.validation",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.module_manifest",

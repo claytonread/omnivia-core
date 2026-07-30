@@ -15,10 +15,16 @@ It imports every domain/API symbol those leaves route -- exactly the
 surface and are covered by direct strict checking of the wrappers themselves.
 
 Names that legitimately collide across leaves (``ValidationResult``,
-``ProvenanceRequirement``, ``LifecycleState``, ``CreatedBy``, ``Source``) are
-imported under distinct aliases so each leaf's own historically-owned object is
-exercised separately -- aliasing the binding here does not weaken the check,
-because implicit re-export is decided by the *source* module either way.
+``ProvenanceRequirement``, ``LifecycleState``, ``CreatedBy``, ``Source``,
+``MemorySource``) are imported under distinct aliases so each leaf's own
+historically-owned object is exercised separately -- aliasing the binding here
+does not weaken the check, because implicit re-export is decided by the *source*
+module either way. ``MemorySource`` is the sharpest of those: this module already
+binds that name for the provenance ``Source`` the memory contracts re-export, so
+the memory graph's own ingested-source contract is imported as
+``MemoryGraphSource``. The memory graph's ``SourceRef`` collides with the
+knowledge domain's same-named class too, but that one lives in the dedicated
+knowledge fixture, so no alias is needed for it here.
 
 It exists to be checked, not run: it is a mypy target in the acceptance
 workflow's ``Run strict mypy`` step (see
@@ -219,6 +225,45 @@ from omnivia_memory.memory.models import (
     MemoryUpdate,
 )
 from omnivia_memory.memory.models import Source as MemorySource
+from omnivia_memory.memory_graph.assembly import (
+    assemble_evidence_graph,
+    assemble_graph_preview,
+    redact_segment_preview,
+)
+from omnivia_memory.memory_graph.fixtures import (
+    FIXTURE_TIME,
+    MemoryGraphFixture,
+    build_memory_graph_fixture,
+)
+from omnivia_memory.memory_graph.models import (
+    Confidence,
+    EvidenceGraphResponse,
+    GraphPreviewEdge,
+    GraphPreviewKind,
+    GraphPreviewNode,
+    GraphPreviewResponse,
+    GraphPreviewState,
+    MemoryEntity,
+    MemoryFact,
+    MemoryFactStatus,
+    MemorySegment,
+    MemorySegmentKind,
+    MemorySourceFreshness,
+    MemorySourceStatus,
+    MemorySourceType,
+    RetrievalTrace,
+    SourceRef,
+)
+from omnivia_memory.memory_graph.models import MemorySource as MemoryGraphSource
+from omnivia_memory.memory_graph.validation import (
+    CONFIDENCE_BUCKETS,
+    validate_evidence_graph_response,
+    validate_graph_preview_response,
+    validate_memory_entity,
+    validate_memory_fact,
+    validate_memory_segment,
+    validate_memory_source,
+)
 from omnivia_memory.provenance.models import Source, SourceType
 from omnivia_memory.run_ledger.models import (
     RUN_LEDGER_CONTRACT_VERSION,
@@ -508,6 +553,242 @@ def memory_write_shapes() -> tuple[MemoryCreate, MemoryUpdate]:
     assert_type(create.created_by, CreatedBy)
     assert_type(update.lifecycle_state, LifecycleState | None)
     return create, update
+
+
+# ---------------------------------------------------------------------------
+# omnivia_memory.memory_graph.{models,validation,assembly,fixtures}
+# ---------------------------------------------------------------------------
+
+
+def build_memory_graph_records() -> tuple[
+    MemoryGraphSource, MemorySegment, MemoryEntity, MemoryFact
+]:
+    """Typed construction across the four durable memory graph records.
+
+    ``Confidence`` is the routed public type alias (``float | str``), so the
+    entity's score and the fact's bucket string must both be accepted by the same
+    declared field type -- a degraded ``Any`` would accept them without proving
+    anything.
+    """
+    source = MemoryGraphSource(
+        id="source-001",
+        workspace_id="workspace-001",
+        type=MemorySourceType.FILE,
+        uri="docs/adr/001-memory.md",
+        title="Memory ADR",
+        freshness=MemorySourceFreshness.FRESH,
+        status=MemorySourceStatus.READY,
+        created_at=FIXTURE_TIME,
+        updated_at=FIXTURE_TIME,
+        checksum="sha256:source",
+    )
+    segment = MemorySegment(
+        id="segment-001",
+        source_id=source.id,
+        workspace_id=source.workspace_id,
+        kind=MemorySegmentKind.TEXT,
+        label="Decision",
+        parser="markdown",
+        parser_settings_ref="parsers/markdown@1",
+        created_at=FIXTURE_TIME,
+        span={"start": 0, "end": 42},
+        text_preview="Core owns the public contracts.",
+    )
+    reference = SourceRef(
+        source_id=source.id,
+        segment_id=segment.id,
+        span=segment.span,
+        quote_preview="Core owns the public contracts.",
+        confidence="extracted",
+    )
+    score: Confidence = 0.94
+    bucket: Confidence = "inferred"
+    entity = MemoryEntity(
+        id="entity-001",
+        workspace_id=source.workspace_id,
+        type="Decision",
+        canonical_name="Core owns the public contracts",
+        aliases=["contract ownership"],
+        confidence=score,
+        source_refs=[reference],
+        created_at=FIXTURE_TIME,
+        updated_at=FIXTURE_TIME,
+    )
+    fact = MemoryFact(
+        id="fact-001",
+        workspace_id=source.workspace_id,
+        subject_id=entity.id,
+        predicate="documented_by",
+        confidence=bucket,
+        source_refs=[reference],
+        status=MemoryFactStatus.APPROVED,
+        created_at=FIXTURE_TIME,
+        updated_at=FIXTURE_TIME,
+        object_value="ADR-001",
+        valid_from=FIXTURE_TIME,
+    )
+
+    assert_type(FIXTURE_TIME, str)
+    assert_type(source.type, MemorySourceType)
+    assert_type(source.freshness, MemorySourceFreshness)
+    assert_type(source.status, MemorySourceStatus)
+    assert_type(source.owner_ref, str | None)
+    assert_type(segment.kind, MemorySegmentKind)
+    assert_type(segment.span, dict[str, Any] | None)
+    assert_type(segment.text_preview, str | None)
+    assert_type(reference.confidence, Confidence | None)
+    assert_type(reference.segment_id, str | None)
+    assert_type(entity.aliases, list[str])
+    assert_type(entity.confidence, Confidence)
+    assert_type(entity.source_refs, list[SourceRef])
+    assert_type(fact.status, MemoryFactStatus)
+    assert_type(fact.object_value, str | int | float | bool | None)
+    assert_type(fact.valid_to, str | None)
+    assert_type(fact.source_refs, list[SourceRef])
+    return source, segment, entity, fact
+
+
+def consume_memory_graph_fixture() -> MemoryGraphFixture:
+    """The routed ``TypedDict`` must keep its precise per-key value types.
+
+    A degraded ``Any`` bundle would let every subscript below through unchecked,
+    so each one is pinned to the record type its key declares.
+    """
+    fixture = build_memory_graph_fixture()
+
+    assert_type(fixture, MemoryGraphFixture)
+    assert_type(fixture["source"], MemoryGraphSource)
+    assert_type(fixture["segments"], list[MemorySegment])
+    assert_type(fixture["entities"], list[MemoryEntity])
+    assert_type(fixture["facts"], list[MemoryFact])
+    assert_type(fixture["graph_preview"], GraphPreviewResponse)
+    assert_type(fixture["evidence_graph"], EvidenceGraphResponse)
+
+    preview = fixture["graph_preview"]
+    assert_type(preview.nodes, list[GraphPreviewNode])
+    assert_type(preview.edges, list[GraphPreviewEdge])
+    assert_type(preview.limits, dict[str, int])
+    assert_type(preview.warnings, list[str])
+    assert_type(fixture["evidence_graph"].citations, list[SourceRef])
+    assert_type(fixture["evidence_graph"].answer_id, str | None)
+    return fixture
+
+
+def assemble_memory_graph_displays() -> tuple[
+    GraphPreviewResponse, EvidenceGraphResponse, dict[str, object]
+]:
+    """All three assembly helpers, composed from the records built above."""
+    source, segment, entity, fact = build_memory_graph_records()
+
+    preview = assemble_graph_preview(
+        workspace_id=source.workspace_id,
+        query="memory graph",
+        source=source,
+        entities=[entity],
+        facts=[fact],
+        generated_at=FIXTURE_TIME,
+        node_limit=100,
+        edge_limit=150,
+    )
+    evidence = assemble_evidence_graph(
+        workspace_id=source.workspace_id,
+        answer_id="answer-001",
+        query="memory graph",
+        source=source,
+        entities=[entity],
+        facts=[fact],
+        generated_at=FIXTURE_TIME,
+    )
+    redacted = redact_segment_preview(segment, max_chars=5)
+
+    assert_type(preview, GraphPreviewResponse)
+    assert_type(evidence, EvidenceGraphResponse)
+    assert_type(redacted, dict[str, object])
+    for node in preview.nodes:
+        assert_type(node.kind, GraphPreviewKind)
+        assert_type(node.state, GraphPreviewState)
+        assert_type(node.confidence, Confidence | None)
+        assert_type(node.display, dict[str, Any])
+    for edge in preview.edges:
+        assert_type(edge.state, GraphPreviewState)
+        assert_type(edge.valid_from, str | None)
+        assert_type(edge.source_refs, list[SourceRef])
+    # ``source=None`` is part of both helpers' declared signature, so passing it
+    # must stay a type-checked call rather than an ``Any`` pass-through.
+    assert_type(
+        assemble_graph_preview(
+            workspace_id=source.workspace_id,
+            query="empty",
+            source=None,
+            entities=[],
+            facts=[],
+            generated_at=FIXTURE_TIME,
+            node_limit=1,
+            edge_limit=1,
+        ),
+        GraphPreviewResponse,
+    )
+    return preview, evidence, redacted
+
+
+def consume_memory_graph_validators() -> SharedValidationResult:
+    """All six validators return the *shared* ``ValidationResult`` primitive.
+
+    Not one of the four domain classes of the same name, so pinning it here is
+    what would catch this leaf being rerouted to a same-named lookalike. The
+    bindings this fixture reuses are the shared leaf's own routed ones, so no
+    unrouted incidental name is imported for it.
+    """
+    source, segment, entity, fact = build_memory_graph_records()
+    preview, evidence, _redacted = assemble_memory_graph_displays()
+
+    assert_type(CONFIDENCE_BUCKETS, frozenset[str])
+    bucketed: bool = "extracted" in CONFIDENCE_BUCKETS
+
+    results = (
+        validate_memory_source(source),
+        validate_memory_segment(segment),
+        validate_memory_entity(entity),
+        validate_memory_fact(fact),
+        validate_graph_preview_response(preview),
+        validate_evidence_graph_response(evidence),
+    )
+    for result in results:
+        assert_type(result, SharedValidationResult)
+        assert_type(result.valid, bool)
+        assert_type(result.errors, list[str])
+        assert_type(result.warnings, list[str])
+
+    payload = preview.to_dict()
+    assert_type(payload, dict[str, Any])
+    assert_type(GraphPreviewResponse.from_dict(payload), GraphPreviewResponse)
+    assert_type(
+        EvidenceGraphResponse.from_dict(evidence.to_dict()), EvidenceGraphResponse
+    )
+    assert_type(MemoryFact.from_dict(fact.to_dict()), MemoryFact)
+    assert_type(SourceRef.from_dict(entity.source_refs[0].to_dict()), SourceRef)
+
+    trace = RetrievalTrace(
+        id="trace-001",
+        workspace_id=source.workspace_id,
+        query="memory graph",
+        mode="hybrid",
+        matched_fact_ids=[fact.id],
+        matched_segment_ids=[segment.id],
+        rank_scores={fact.id: 0.98},
+        timing={"search_ms": 12},
+        resource_indicators={"segments_examined": 1},
+        warnings=[],
+        generated_at=FIXTURE_TIME,
+    )
+    assert_type(trace.rank_scores, dict[str, float])
+    assert_type(trace.timing, dict[str, int | float])
+    assert_type(trace.resource_indicators, dict[str, Any])
+    assert_type(RetrievalTrace.from_dict(trace.to_dict()), RetrievalTrace)
+
+    if bucketed and not results[0].valid:
+        return results[-1]
+    return results[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1121,5 +1402,8 @@ def roundtrip() -> str:
             consume_control_plane_local_evidence()[4].value,
             str(consume_control_plane_triggers().accepted),
             str(consume_control_plane_imports({}, {}, {}, {}).changed),
+            consume_memory_graph_fixture()["source"].id,
+            assemble_memory_graph_displays()[0].generated_at,
+            str(consume_memory_graph_validators().valid),
         ]
     )

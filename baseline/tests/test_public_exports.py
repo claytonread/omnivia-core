@@ -457,6 +457,15 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
     # ``omnivia_core.knowledge.models`` -- the same destination the knowledge
     # models leaf's own 26 routes move their bindings to -- yet by a different
     # mechanism: neither constant is one of that leaf's routed symbols.
+    #
+    # The memory graph moves exactly five bindings, all by the ordinary route
+    # loop: three classes its models leaf owns
+    # (``EvidenceGraphResponse``, ``GraphPreviewResponse``, ``RetrievalTrace``)
+    # and the ``TypedDict``/builder pair its fixtures leaf owns. It needs no
+    # declared owner move: unlike the two version constants, every one of the five
+    # is a class or a function whose ``defined_in`` already named the routed leaf.
+    # Its ``SourceRef`` route moves nothing at the root -- that binding is the
+    # knowledge domain's same-named class and stays there.
     assert moved == {
         "Agent": "omnivia_core.control_plane.models",
         "AgentAction": "omnivia_core.component_contract.models",
@@ -504,6 +513,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "EXTENSION_MANIFEST_CONTRACT_VERSION": "omnivia_core.knowledge.models",
         "Entrypoint": "omnivia_core.module_manifest.models",
         "EvidenceFileRef": "omnivia_core.run_ledger.models",
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
         "ExecutionMode": "omnivia_core.control_plane.models",
         "ExecutionResult": "omnivia_core.control_plane.models",
         "GRAPH_CONTRACT_VERSION": "omnivia_core.knowledge.models",
@@ -513,6 +523,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "GraphFragment": "omnivia_core.knowledge.models",
         "GraphNode": "omnivia_core.knowledge.models",
         "GraphOrigin": "omnivia_core.knowledge.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
         "GraphReviewStatus": "omnivia_core.knowledge.models",
         "GraphSensitivity": "omnivia_core.knowledge.models",
         "GraphSourceType": "omnivia_core.knowledge.models",
@@ -540,6 +551,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "LocalObservabilityLogRecord": "omnivia_core.control_plane.models",
         "LocalUsageLedgerEntry": "omnivia_core.control_plane.models",
         "MemoryCreate": "omnivia_core.memory.models",
+        "MemoryGraphFixture": "omnivia_core.memory_graph.fixtures",
         "MemoryUpdate": "omnivia_core.memory.models",
         "ModuleKind": "omnivia_core.module_manifest.models",
         "ModuleManifest": "omnivia_core.module_manifest.models",
@@ -558,6 +570,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ProvenanceRequirement": "omnivia_core.component_contract.models",
         "PublishedTarget": "omnivia_core.module_manifest.models",
         "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "RetrievalTrace": "omnivia_core.memory_graph.models",
         "RunLedgerEntry": "omnivia_core.run_ledger.models",
         "RunLedgerProvenance": "omnivia_core.run_ledger.models",
         "RunLedgerStatus": "omnivia_core.run_ledger.models",
@@ -585,6 +598,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "TriggerKind": "omnivia_core.control_plane.models",
         "ValidationResult": "omnivia_core._shared.validation",
         "WorkspaceRef": "omnivia_core.control_plane.models",
+        "build_memory_graph_fixture": "omnivia_core.memory_graph.fixtures",
         "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
         "compile_policy_expression": "omnivia_core.control_plane.validation",
         "detect_import_source_change": "omnivia_core.control_plane.imports",

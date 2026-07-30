@@ -6,11 +6,21 @@ star import exposing exactly what ``__all__`` advertises, no ``__getattr__``
 escape hatch, and a fresh-process import that never touches
 ``omnivia_memory`` or a runtime/store/adapter module.
 
-``test_parity.py`` already proves each owner leaf (``memory_graph.models``,
-``.assembly``, ``.fixtures``, ``.validation``) is an exact port of its legacy
-counterpart. This module is only concerned with the barrel's own re-export
-contract and the generated-fixture/assembly behavior that sits on top of it,
-neither of which any per-leaf gate observes.
+``omnivia_core.memory_graph`` is now the sole implementation of the portable half
+of ``omnivia_memory.memory_graph``. It began as a canonical port of it; all four
+portable owner leaves (``memory_graph.models``, ``.assembly``, ``.fixtures``,
+``.validation``) have since been converted into thin compatibility facades, so
+they are registered in ``_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY`` rather
+than its source-parity map, and identity -- not source sameness -- is what
+``tests/compatibility/test_facade_foundation.py`` proves for that hop.
+
+The legacy barrel itself stays a *hybrid*: its other seven exports are owned by
+the runtime-only ``ingestion_adapter``/``store`` leaves, which never enter Core,
+so it is source-unchanged and stays ``pending_hybrid`` in
+``compatibility/facade-routes.v1.json`` rather than becoming a transitive facade.
+This module is only concerned with the canonical barrel's own re-export contract
+and the generated-fixture/assembly behavior that sits on top of it, neither of
+which any per-leaf gate observes.
 """
 
 from __future__ import annotations
@@ -419,6 +429,14 @@ def test_canonical_and_legacy_assembly_validation_and_redaction_smoke() -> None:
     """One compact smoke covering both assembly functions, redaction, and all
     six validators, comparing normalized canonical output against legacy
     output and proving neither mutates its caller-supplied inputs.
+
+    Since the four portable leaves became facades the two barrels hand back the
+    same callables, so the cross-tree comparisons are no longer the point of this
+    test -- ``test_facade_foundation.py`` owns that identity claim. What it still
+    covers, and nothing else does, is that those exact routed objects behave
+    correctly when reached through the *legacy hybrid barrel*: assembly,
+    redaction and all six validators run end to end and leave their
+    caller-supplied inputs untouched.
     """
     canonical = importlib.import_module("omnivia_core.memory_graph")
     legacy = importlib.import_module("omnivia_memory.memory_graph")

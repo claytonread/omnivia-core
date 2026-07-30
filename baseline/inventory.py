@@ -69,11 +69,12 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: historical one. ``ProvenanceRequirement`` collides the same way between the
 #: App Manifest contract and the Component Contract, and ``LifecycleState``
 #: between the lifecycle domain and the control plane's own registry lifecycle
-#: enum. The legacy *root* binds ``ProvenanceRequirement`` from the Component
-#: Contract, ``ValidationResult`` from the shared primitive, and
-#: ``LifecycleState`` from the control plane, so only those three routes ever
-#: move a root binding for the colliding names -- the other same-named owners are
-#: leaf-local.
+#: enum, and ``SourceRef`` between the knowledge domain and the memory graph. The
+#: legacy *root* binds ``ProvenanceRequirement`` from the Component Contract,
+#: ``ValidationResult`` from the shared primitive, ``LifecycleState`` from the
+#: control plane, and ``SourceRef`` from the knowledge models leaf, so only those
+#: four routes ever move a root binding for the colliding names -- the other
+#: same-named owners are leaf-local.
 #:
 #: A route's value is the module that owns the exact *object*, which is not
 #: always the module that defines its type. ``RUN_LEDGER_CONTRACT_VERSION`` and
@@ -354,6 +355,61 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "LifecycleRules": "omnivia_core.lifecycle.rules",
         "LifecycleState": "omnivia_core.lifecycle.models",
     },
+    # ``FIXTURE_TIME`` (a bare ``str``), ``CONFIDENCE_BUCKETS`` (a builtin
+    # ``frozenset``) and ``Confidence`` (a ``types.UnionType`` alias) are the
+    # three public symbols these leaves own whose runtime ``__module__`` does not
+    # resolve back to the defining module, so they are routed explicitly --
+    # exactly as ``SENSITIVE_KEYS`` and the run-ledger/control-plane/knowledge
+    # constants already are. The ``memory_graph`` barrel above these four leaves
+    # stays a hybrid: seven of its exports are owned by the runtime-only
+    # ``ingestion_adapter``/``store`` leaves, which are deliberately not routed.
+    "omnivia_memory.memory_graph.assembly": {
+        "assemble_evidence_graph": "omnivia_core.memory_graph.assembly",
+        "assemble_graph_preview": "omnivia_core.memory_graph.assembly",
+        "redact_segment_preview": "omnivia_core.memory_graph.assembly",
+    },
+    "omnivia_memory.memory_graph.fixtures": {
+        "FIXTURE_TIME": "omnivia_core.memory_graph.fixtures",
+        "MemoryGraphFixture": "omnivia_core.memory_graph.fixtures",
+        "build_memory_graph_fixture": "omnivia_core.memory_graph.fixtures",
+    },
+    # ``SourceRef`` deliberately collides with the knowledge domain's own class
+    # of that name. This leaf owns the memory graph's one, and the legacy *root*
+    # binds the knowledge one, so this route moves no root binding for it. See
+    # ``tests/compatibility/test_facade_foundation.py``'s ``COLLIDING_OWNERS``.
+    "omnivia_memory.memory_graph.models": {
+        "Confidence": "omnivia_core.memory_graph.models",
+        "EvidenceGraphResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewEdge": "omnivia_core.memory_graph.models",
+        "GraphPreviewKind": "omnivia_core.memory_graph.models",
+        "GraphPreviewNode": "omnivia_core.memory_graph.models",
+        "GraphPreviewResponse": "omnivia_core.memory_graph.models",
+        "GraphPreviewState": "omnivia_core.memory_graph.models",
+        "MemoryEntity": "omnivia_core.memory_graph.models",
+        "MemoryFact": "omnivia_core.memory_graph.models",
+        "MemoryFactStatus": "omnivia_core.memory_graph.models",
+        "MemorySegment": "omnivia_core.memory_graph.models",
+        "MemorySegmentKind": "omnivia_core.memory_graph.models",
+        "MemorySource": "omnivia_core.memory_graph.models",
+        "MemorySourceFreshness": "omnivia_core.memory_graph.models",
+        "MemorySourceStatus": "omnivia_core.memory_graph.models",
+        "MemorySourceType": "omnivia_core.memory_graph.models",
+        "RetrievalTrace": "omnivia_core.memory_graph.models",
+        "SourceRef": "omnivia_core.memory_graph.models",
+    },
+    # This leaf's ``ValidationResult`` is deliberately *not* routed: it never
+    # owned one -- it imports the shared primitive -- so the frozen baseline
+    # recorded no definition to normalize. See ``LEAF_SYMBOL_SOURCES`` for that
+    # binding's pinned owner.
+    "omnivia_memory.memory_graph.validation": {
+        "CONFIDENCE_BUCKETS": "omnivia_core.memory_graph.validation",
+        "validate_evidence_graph_response": "omnivia_core.memory_graph.validation",
+        "validate_graph_preview_response": "omnivia_core.memory_graph.validation",
+        "validate_memory_entity": "omnivia_core.memory_graph.validation",
+        "validate_memory_fact": "omnivia_core.memory_graph.validation",
+        "validate_memory_segment": "omnivia_core.memory_graph.validation",
+        "validate_memory_source": "omnivia_core.memory_graph.validation",
+    },
     "omnivia_memory.module_manifest.models": {
         "Entrypoint": "omnivia_core.module_manifest.models",
         "Integrity": "omnivia_core.module_manifest.models",
@@ -414,6 +470,9 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
 #: ``from __future__ import annotations``, so their frozen signatures spell every
 #: annotation as a string forward reference (``'ValidationResult'``,
 #: ``'ControlPlaneManifest | Mapping[str, Any]'``) and never named a package at
+#: all. The four memory-graph leaves need no entry for that same reason: all four
+#: use ``from __future__ import annotations``, so comparing every frozen
+#: descriptor they recorded against the live canonical object yields no delta at
 #: all.
 FACADE_DESCRIPTOR_REWRITES: dict[
     tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
@@ -481,6 +540,15 @@ FACADE_DESCRIPTOR_REWRITES: dict[
 #: declarations remain the only thing that moves it. Their frozen and new owners
 #: are unchanged by the knowledge conversion -- the type's canonical owner is
 #: still ``omnivia_core.knowledge.models``.
+#:
+#: The memory graph adds no entry, and deliberately so. Its five frozen root
+#: bindings (``EvidenceGraphResponse``, ``GraphPreviewResponse``,
+#: ``RetrievalTrace``, ``MemoryGraphFixture`` and ``build_memory_graph_fixture``)
+#: are each a class or a function the routed leaf itself owns, so ``defined_in``
+#: already names that leaf and the ordinary exact-route loop above moves all five.
+#: Its two constants with no usable ``__module__`` -- ``FIXTURE_TIME`` and
+#: ``CONFIDENCE_BUCKETS`` -- and its ``Confidence`` alias are not root bindings at
+#: all, so nothing about them needs declaring here either.
 #:
 #: The two entries are independent: each is keyed by its own ``(binding, routed
 #: leaf)`` pair and applied by whole-string equality on that binding alone, so

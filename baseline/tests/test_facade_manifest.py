@@ -132,6 +132,13 @@ EXPECTED_STATE_SUFFIXES = {
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
+        # The first converted leaves whose barrel stays a hybrid: ``memory_graph``
+        # is still ``pending_hybrid`` below, because its other two children are
+        # runtime-only.
+        "memory_graph.assembly",
+        "memory_graph.fixtures",
+        "memory_graph.models",
+        "memory_graph.validation",
         "module_manifest.models",
         "module_manifest.validation",
         "provenance.models",
@@ -360,6 +367,14 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("knowledge.models", "source_parity", "move the state forward"),
         ("knowledge.normalize", "source_parity", "move the state forward"),
         ("knowledge.validation", "source_parity", "move the state forward"),
+        # The four memory-graph leaves. Their parent barrel stays a hybrid, so
+        # these are the first converted children whose relabelling is caught only
+        # by their *own* source gate -- no ``transitive_facade`` parent above them
+        # would notice an unconverted child.
+        ("memory_graph.assembly", "source_parity", "move the state forward"),
+        ("memory_graph.fixtures", "source_parity", "move the state forward"),
+        ("memory_graph.models", "source_parity", "move the state forward"),
+        ("memory_graph.validation", "source_parity", "move the state forward"),
         ("module_manifest.models", "source_parity", "move the state forward"),
         ("module_manifest.validation", "source_parity", "move the state forward"),
         ("run_ledger.models", "source_parity", "move the state forward"),
@@ -1199,6 +1214,313 @@ def test_knowledge_barrel_state_cannot_be_walked_back_to_a_pending_barrel() -> N
     assert load_manifest().by_state(MigrationState.PENDING_DIRECT_BARREL) == ()
 
 
+#: The legacy ``memory_graph`` barrel's exact historical export sets, per child,
+#: restated here rather than read off the barrel. This is the repository's first
+#: barrel with *converted children and a hybrid state*: four of its six children
+#: are now ``direct_facade`` leaves, while ``ingestion_adapter`` and ``store`` are
+#: runtime-only and are not routes at all. It therefore cannot become a pure
+#: re-export of the canonical package, and stays ``pending_hybrid``.
+#:
+#: The order below is the barrel's own historical source order -- the two
+#: runtime-only blocks sit *between* ``fixtures`` and ``models``, so it is neither
+#: alphabetical nor portable-first. Its ``__all__`` is fully sorted, so it
+#: interleaves all six blocks and matches none of them.
+_MEMORY_GRAPH_ASSEMBLY_EXPORTS: tuple[str, ...] = (
+    "assemble_evidence_graph",
+    "assemble_graph_preview",
+    "redact_segment_preview",
+)
+_MEMORY_GRAPH_FIXTURES_EXPORTS: tuple[str, ...] = (
+    "FIXTURE_TIME",
+    "MemoryGraphFixture",
+    "build_memory_graph_fixture",
+)
+_MEMORY_GRAPH_INGESTION_ADAPTER_EXPORTS: tuple[str, ...] = (
+    "IngestionGraphAdapterError",
+    "IngestionGraphWriteResult",
+    "chunk_to_memory_segment",
+    "source_to_memory_source",
+    "write_ingestion_records_to_graph",
+)
+_MEMORY_GRAPH_STORE_EXPORTS: tuple[str, ...] = (
+    "MemoryGraphStore",
+    "MemoryGraphStoreError",
+)
+_MEMORY_GRAPH_MODELS_EXPORTS: tuple[str, ...] = (
+    "Confidence",
+    "EvidenceGraphResponse",
+    "GraphPreviewEdge",
+    "GraphPreviewKind",
+    "GraphPreviewNode",
+    "GraphPreviewResponse",
+    "GraphPreviewState",
+    "MemoryEntity",
+    "MemoryFact",
+    "MemoryFactStatus",
+    "MemorySegment",
+    "MemorySegmentKind",
+    "MemorySource",
+    "MemorySourceFreshness",
+    "MemorySourceStatus",
+    "MemorySourceType",
+    "RetrievalTrace",
+    "SourceRef",
+)
+#: ``ValidationResult`` leads this block. The memory graph validation leaf never
+#: owned a class of that name -- it imports the shared primitive -- so this is the
+#: one export in the barrel whose object comes from outside the memory graph
+#: domain entirely.
+_MEMORY_GRAPH_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "ValidationResult",
+    "validate_evidence_graph_response",
+    "validate_graph_preview_response",
+    "validate_memory_entity",
+    "validate_memory_fact",
+    "validate_memory_segment",
+    "validate_memory_source",
+)
+
+#: The barrel's six import blocks, in its own historical source order.
+_MEMORY_GRAPH_HISTORICAL_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("assembly", _MEMORY_GRAPH_ASSEMBLY_EXPORTS),
+    ("fixtures", _MEMORY_GRAPH_FIXTURES_EXPORTS),
+    ("ingestion_adapter", _MEMORY_GRAPH_INGESTION_ADAPTER_EXPORTS),
+    ("store", _MEMORY_GRAPH_STORE_EXPORTS),
+    ("models", _MEMORY_GRAPH_MODELS_EXPORTS),
+    ("validation", _MEMORY_GRAPH_VALIDATION_EXPORTS),
+)
+
+#: The four blocks that reach converted children -- the shape a *hypothetical*
+#: promoted barrel would have. It is defect-free under
+#: ``transitive_facade_defects``, which is what makes it the honest adversary base
+#: below: every rejection then fails on the mutation injected into it rather than
+#: on the two runtime blocks the real barrel also has.
+_MEMORY_GRAPH_PORTABLE_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+    block
+    for block in _MEMORY_GRAPH_HISTORICAL_BLOCKS
+    if block[0] not in {"ingestion_adapter", "store"}
+)
+
+
+def _memory_graph_barrel_source(
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    extra_source: str = "",
+) -> str:
+    source = ""
+    exported: list[str] = []
+    for module, names in blocks:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from omnivia_memory.memory_graph.{module} import (\n{body})\n"
+        exported.extend(names)
+    all_body = "".join(f'    "{name}",\n' for name in sorted(exported))
+    return source + f"__all__ = [\n{all_body}]\n" + extra_source
+
+
+def _memory_graph_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.memory_graph"),
+        [
+            manifest.route_for_legacy("omnivia_memory.memory_graph.assembly"),
+            manifest.route_for_legacy("omnivia_memory.memory_graph.fixtures"),
+            manifest.route_for_legacy("omnivia_memory.memory_graph.models"),
+            manifest.route_for_legacy("omnivia_memory.memory_graph.validation"),
+        ],
+    )
+
+
+def test_memory_graph_barrel_stays_a_pending_hybrid_over_converted_children() -> None:
+    """The registry's own record of the split: a ``hybrid_barrel`` pair whose four
+    portable children are converted and whose two runtime-only children are not
+    routes at all. Pinned exactly, because every other gate in this section is
+    about what may *not* happen to that state."""
+    manifest = load_manifest()
+    route = manifest.route_for_legacy("omnivia_memory.memory_graph")
+    assert route.pair_kind is PairKind.HYBRID_BARREL
+    assert route.shape is Shape.BARREL
+    assert route.migration_state is MigrationState.PENDING_HYBRID
+    assert not route.is_converted
+    assert "memory_graph" in {
+        item.suffix for item in manifest.by_state(MigrationState.PENDING_HYBRID)
+    }
+
+    for suffix in ("assembly", "fixtures", "models", "validation"):
+        child = manifest.route_for_legacy(f"omnivia_memory.memory_graph.{suffix}")
+        assert child.migration_state is MigrationState.DIRECT_FACADE
+        assert child.is_converted
+    for runtime_only in (
+        "omnivia_memory.memory_graph.ingestion_adapter",
+        "omnivia_memory.memory_graph.store",
+    ):
+        assert runtime_only in manifest.runtime_only_modules
+        with pytest.raises(KeyError):
+            manifest.route_for_legacy(runtime_only)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "transitive_facade",
+        "pending_direct_barrel",
+        "direct_facade",
+        "source_parity",
+        "canonical_subset",
+        "pending_root",
+    ],
+)
+def test_memory_graph_barrel_cannot_be_promoted_out_of_pending_hybrid(
+    state: str,
+) -> None:
+    """Now that all four portable children are converted, ``transitive_facade``
+    looks tempting -- and it is exactly wrong: the barrel would stop being
+    source-checked against its two runtime-only children, which are not routes and
+    can never be converted children. ``pending_hybrid`` is the only state a
+    ``hybrid_barrel``/``barrel`` pair may be in, so every other value (including
+    the two leaf-only states and the root's) is rejected at load time by the
+    combination rule rather than needing a state-specific waiver."""
+    document = _document()
+    _route(document, "memory_graph")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="valid combination"):
+        load_manifest(document)
+
+
+def test_memory_graph_barrel_historical_source_is_not_a_transitive_facade() -> None:
+    """The third, independent lock: even with the state gate bypassed, the
+    barrel's own unmodified historical source cannot pass the transitive-facade
+    source check. Its ``ingestion_adapter`` and ``store`` blocks are not converted
+    children, and those are the *only* two defects -- so the failure is
+    attributable to the runtime-owned half specifically, not to the barrel's shape,
+    its six blocks, or its sorted 38-name ``__all__``."""
+    route, children = _memory_graph_barrel_route_and_children()
+    source = _memory_graph_barrel_source(_MEMORY_GRAPH_HISTORICAL_BLOCKS)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert len(defects) == 2, defects
+    for runtime_only in ("ingestion_adapter", "store"):
+        assert any(
+            "unapproved module" in defect
+            and f"omnivia_memory.memory_graph.{runtime_only}" in defect
+            for defect in defects
+        ), (runtime_only, defects)
+
+
+def test_memory_graph_portable_only_shape_is_the_defect_free_adversary_base() -> None:
+    """The hypothetical promoted barrel -- its four portable blocks and their
+    matching 31-name ``__all__`` -- must be defect-free, so each rejection below
+    is proven to fail on what it injects."""
+    route, children = _memory_graph_barrel_route_and_children()
+    source = _memory_graph_barrel_source(_MEMORY_GRAPH_PORTABLE_BLOCKS)
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # A direct reroute at the canonical package: the barrel's identity
+        # preservation would become direct rather than transitive.
+        (
+            "from omnivia_core.memory_graph.models import MemorySource\n",
+            "unapproved module",
+        ),
+        # The barrel's own runtime-only siblings, by absolute path. These are the
+        # two modules the *real* barrel imports, and they are still not approved
+        # children -- which is the whole reason it stays a hybrid.
+        (
+            "from omnivia_memory.memory_graph.store import MemoryGraphStore\n",
+            "unapproved module",
+        ),
+        (
+            (
+                "from omnivia_memory.memory_graph.ingestion_adapter import "
+                "chunk_to_memory_segment\n"
+            ),
+            "unapproved module",
+        ),
+        # The same runtime-only sibling by a *relative* path, which the resolver
+        # has to resolve against the barrel's own package before it can tell it
+        # apart from an approved child.
+        ("from .store import MemoryGraphStore\n", "unapproved module"),
+        # The validation leaf reaches the shared primitive for ``ValidationResult``,
+        # so a ``_shared`` import is the most plausible accidental extra module --
+        # and still not one of the barrel's children, from either tree.
+        (
+            "from omnivia_memory._shared.validation import ValidationResult\n",
+            "unapproved module",
+        ),
+        (
+            "from omnivia_core._shared.validation import ValidationResult\n",
+            "unapproved module",
+        ),
+        # An unrelated runtime-only package, reached relatively.
+        ("from ..persistence import Database\n", "unapproved module"),
+        # A *relative* form of one of its own children. The resolver does approve
+        # this module -- it resolves ``.models`` against the barrel's own package --
+        # so what rejects the mutation is the binding/``__all__`` mismatch it
+        # creates, not the module gate. Pinned so the two branches are not
+        # confused for each other.
+        (
+            "from .models import SourceRef\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        # A second import block for an already-imported child: every module named
+        # is approved, but it is an extra statement the historical source does not
+        # have, and it makes the bound names disagree with ``__all__``.
+        (
+            "from omnivia_memory.memory_graph.models import Confidence\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("Confidence = object()\n", "assignments"),
+        (
+            "def validate_memory_fact(fact):\n    return fact\n",
+            "statements of its own",
+        ),
+        ("class SourceRef:\n    pass\n", "statements of its own"),
+        # A dynamic hook: every export must be a real, statically-visible binding.
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+        (
+            "import sys\nsys.modules[__name__].__dict__['probe'] = 1\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_memory_graph_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """Even the hypothetical promoted shape may not reach past its four converted
+    children, define anything of its own, or install a dynamic hook. Every case
+    here is injected into the defect-free portable-only base above, so the pattern
+    asserted is the one the mutation causes -- not a leftover from the runtime
+    blocks the real barrel also carries."""
+    route, children = _memory_graph_barrel_route_and_children()
+    source = _memory_graph_barrel_source(
+        _MEMORY_GRAPH_PORTABLE_BLOCKS, extra_source=extra_source
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_memory_graph_barrel_transitive_form_requires_all_four_children() -> None:
+    """Dropping any one portable block must fail. With four children a barrel
+    could keep a perfectly valid three-block shape and still have stopped
+    re-exporting a converted leaf."""
+    route, children = _memory_graph_barrel_route_and_children()
+    for dropped, _names in _MEMORY_GRAPH_PORTABLE_BLOCKS:
+        source = _memory_graph_barrel_source(
+            tuple(
+                block for block in _MEMORY_GRAPH_PORTABLE_BLOCKS if block[0] != dropped
+            )
+        )
+        defects = transitive_facade_defects(ast.parse(source), route, children)
+        assert any(
+            "does not import converted children" in defect
+            and f"omnivia_memory.memory_graph.{dropped}" in defect
+            for defect in defects
+        ), (dropped, defects)
+
+
 #: The legacy component-contract barrel's exact historical export sets, per
 #: child, restated here rather than read off the barrel: the fixture below must
 #: not be derived from the very file whose mutations it is proving get rejected.
@@ -1361,14 +1683,14 @@ def test_checker_is_a_successful_executable_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
     assert "canonical_subset: 1" in result.stdout
-    # The per-state counts this batch moved: the three knowledge leaves into
-    # ``direct_facade``, their barrel from ``pending_direct_barrel`` into
-    # ``transitive_facade``. That empties ``pending_direct_barrel``: only the six
-    # hybrid barrels and the package root are still pending.
-    assert "source_parity: 8" in result.stdout
-    assert "direct_facade: 21" in result.stdout
+    # The per-state counts this batch moved: the four memory-graph leaves from
+    # ``source_parity`` into ``direct_facade``, and nothing else. Their barrel is a
+    # hybrid, so -- unlike every previous batch -- no barrel changed state with
+    # them: ``transitive_facade`` and ``pending_hybrid`` both stay where they were.
+    assert "source_parity: 4" in result.stdout
+    assert "direct_facade: 25" in result.stdout
     assert "transitive_facade: 10" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
     assert "pending_hybrid: 6" in result.stdout
     assert "pending_root: 1" in result.stdout
-    assert "remaining: 9 leaves and 6 barrels still to convert" in result.stdout
+    assert "remaining: 5 leaves and 6 barrels still to convert" in result.stdout
