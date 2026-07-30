@@ -1,9 +1,9 @@
 # OmniVia Core Remaining Development Project Plan and Stream B Handoff
 
-Date: 2026-07-30  
-Status: Active development plan  
-Architecture authority: accepted ADR-036, ADR-037, ADR-038 and OmniVia Core architecture specification v0.6  
-Current implementation branch: `codex/ui-residual-risk-closure`  
+Date: 2026-07-30
+Status: Active development plan
+Architecture authority: accepted ADR-036, ADR-037, ADR-038 and OmniVia Core architecture specification v0.6
+Current implementation branch: `codex/ui-residual-risk-closure`
 Current reviewed committed checkpoint: `a1b1466`
 
 Primary repository: `/Users/claytonread/Projects/omnivia-core`
