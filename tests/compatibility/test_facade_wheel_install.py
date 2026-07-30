@@ -24,7 +24,13 @@ built artifacts:
    leaves out of the *installed* artifacts and confirm the split holds there:
    the eleven portable definitions are the exact canonical objects, the four
    relevance-scoring helpers still work and are still owned by the legacy
-   module, and Core has neither those helpers nor the Graph runtime.
+   module, and Core has neither those helpers nor the Graph runtime;
+7. in a third child process, do the same for the two ingestion facade leaves
+   under their hybrid barrels: the seven ingestion and ten watcher routed
+   definitions are the exact canonical objects, the ``IngestSource`` alias is
+   still the same object as ``Source``, the barrels' runtime-owned exports are
+   still legacy-only, and the watcher tracker's same-named ``SourceReference``
+   is still its own distinct class.
 
 Scope limits, stated explicitly so this evidence is not over-read:
 
@@ -34,10 +40,12 @@ Scope limits, stated explicitly so this evidence is not over-read:
   ``omnivia-core`` for a user installing ``omnivia-memory`` from an index.
   The test asserts that SQLAlchemy is absent from the environment to keep
   that boundary visible rather than implied.
-* Step 6 is **not** a full runtime-root import proof either. It imports the
-  Graph compatibility leaves and their canonical counterparts, which is
-  possible precisely because that closure needs no third-party package -- the
-  Graph runtime reaches SQLite through the standard library. Nothing that
+* Steps 6 and 7 are **not** a full runtime-root import proof either. They
+  import the Graph and ingestion compatibility leaves, their barrels, and
+  their canonical counterparts, which is possible precisely because those
+  closures need no third-party package -- the Graph runtime reaches SQLite
+  through the standard library, and the ingestion extractors import PyMuPDF
+  and ``python-docx`` lazily inside the methods that use them. Nothing that
   would need the uninstalled SQLAlchemy dependency is imported. Broader facade
   import behaviour and the rest of the canonical object identities are covered
   by ``tests/compatibility/test_facade_foundation.py``, in the source tree.
@@ -219,6 +227,65 @@ GRAPH_RUNTIME_WHEEL_PATHS = (
     "omnivia_core/graph/service.py",
 )
 
+#: The seven definitions the ``ingestion.models`` facade routes and the ten the
+#: ``ingestion.watcher.models`` facade routes. Restated here rather than imported
+#: from ``baseline.inventory``, for the same reason the Graph sets above are: this
+#: file checks *installed artifacts*, and reading the expectation out of the
+#: source tree it is meant to be independent of would weaken the check.
+INGESTION_MODELS_ROUTED = (
+    "Chunk",
+    "ExtractionResult",
+    "FileInventory",
+    "FileType",
+    "IngestSource",
+    "ParseStatus",
+    "Source",
+)
+WATCHER_MODELS_ROUTED = (
+    "DebounceConfig",
+    "FileChange",
+    "FileChangeBatch",
+    "FileChangeType",
+    "IndexerScheduler",
+    "IndexerState",
+    "IndexerStatus",
+    "ScheduledJob",
+    "SourceReference",
+    "WatchedPath",
+)
+#: The two hybrid barrels' runtime-owned exports, which stay legacy-only and must
+#: never appear on the installed canonical barrels.
+INGESTION_BARREL_RUNTIME_EXPORTS = (
+    "BaseChunker",
+    "BaseExtractor",
+    "CharacterChunker",
+    "ChunkConfig",
+    "ChunkRepository",
+    "DOCXExtractor",
+    "FileInfo",
+    "FileScanner",
+    "IngestResult",
+    "IngestionPipeline",
+    "MarkdownExtractor",
+    "PDFExtractor",
+    "ParagraphChunker",
+    "ScanOptions",
+)
+WATCHER_BARREL_RUNTIME_EXPORTS = ("Debouncer", "SourceTracker")
+#: The two routed names the ``ingestion`` barrel has never re-exported, and must
+#: not acquire in the installed artifacts either.
+INGESTION_LEAF_ONLY = ("FileInventory", "IngestSource")
+#: Ingestion modules that are runtime-owned: legacy-only, never in the Core wheel.
+INGESTION_RUNTIME_WHEEL_PATHS = (
+    "omnivia_core/ingestion/chunker.py",
+    "omnivia_core/ingestion/extractors.py",
+    "omnivia_core/ingestion/pipeline.py",
+    "omnivia_core/ingestion/repositories.py",
+    "omnivia_core/ingestion/scanner.py",
+    "omnivia_core/ingestion/watcher/debouncer.py",
+    "omnivia_core/ingestion/watcher/tracker.py",
+)
+
 #: Run inside the throwaway environment, against the installed wheels only:
 #: ``-I`` strips ``PYTHONPATH``, user site and the cwd, so every import below
 #: resolves out of site-packages. Any failure raises and exits non-zero.
@@ -297,6 +364,125 @@ assert search_service.GraphSearchQuery is canonical_records.GraphSearchQuery
 print("OK")
 """
 
+#: Run inside the throwaway environment, against the installed wheels only. Same
+#: ``-I`` isolation as the Graph script above. The ingestion closure needs no
+#: third-party package either: the PDF/DOCX extractors import PyMuPDF and
+#: ``python-docx`` lazily, inside the methods that use them.
+INSTALLED_INGESTION_FACADE_SCRIPT = f"""
+import sys
+
+import omnivia_core.ingestion
+import omnivia_core.ingestion.models
+import omnivia_core.ingestion.watcher
+import omnivia_core.ingestion.watcher.models
+import omnivia_memory.ingestion
+import omnivia_memory.ingestion.models
+import omnivia_memory.ingestion.watcher
+import omnivia_memory.ingestion.watcher.models
+
+legacy_models = sys.modules["omnivia_memory.ingestion.models"]
+legacy_watcher = sys.modules["omnivia_memory.ingestion.watcher.models"]
+canonical_models = sys.modules["omnivia_core.ingestion.models"]
+canonical_watcher = sys.modules["omnivia_core.ingestion.watcher.models"]
+
+for name in {INGESTION_MODELS_ROUTED!r}:
+    assert getattr(legacy_models, name) is getattr(canonical_models, name), name
+for name in {WATCHER_MODELS_ROUTED!r}:
+    assert getattr(legacy_watcher, name) is getattr(canonical_watcher, name), name
+
+# Every module resolved from the installed distributions, not a source tree.
+for module in (legacy_models, legacy_watcher, canonical_models, canonical_watcher):
+    assert "site-packages" in module.__file__, module.__file__
+
+# ``IngestSource`` is an identity alias, in both trees and across them.
+assert canonical_models.IngestSource is canonical_models.Source
+assert legacy_models.IngestSource is legacy_models.Source
+assert legacy_models.IngestSource is canonical_models.Source
+
+# The hybrid barrels: the portable half is canonical, the runtime half is
+# legacy-only, and the two leaf-only routed names are on neither barrel.
+for name in ("Chunk", "ExtractionResult", "FileType", "ParseStatus", "Source"):
+    assert getattr(omnivia_memory.ingestion, name) is getattr(canonical_models, name)
+    assert getattr(omnivia_core.ingestion, name) is getattr(canonical_models, name)
+for name in {WATCHER_MODELS_ROUTED!r}:
+    assert getattr(omnivia_memory.ingestion.watcher, name) is (
+        getattr(canonical_watcher, name)
+    )
+    assert getattr(omnivia_core.ingestion.watcher, name) is (
+        getattr(canonical_watcher, name)
+    )
+for name in {INGESTION_BARREL_RUNTIME_EXPORTS!r}:
+    assert name in omnivia_memory.ingestion.__all__, name
+    assert not hasattr(omnivia_core.ingestion, name), name
+    assert name not in omnivia_core.ingestion.__all__, name
+for name in {WATCHER_BARREL_RUNTIME_EXPORTS!r}:
+    assert name in omnivia_memory.ingestion.watcher.__all__, name
+    assert not hasattr(omnivia_core.ingestion.watcher, name), name
+    assert name not in omnivia_core.ingestion.watcher.__all__, name
+for name in {INGESTION_LEAF_ONLY!r}:
+    assert hasattr(legacy_models, name), name
+    assert not hasattr(omnivia_memory.ingestion, name), name
+    assert not hasattr(omnivia_core.ingestion, name), name
+
+# The routed records still round-trip through the canonical objects.
+source = legacy_models.Source(path="/w/a.md", file_type=canonical_models.FileType.MARKDOWN)
+assert canonical_models.Source.from_dict(source.to_dict()).to_dict() == source.to_dict()
+chunk = legacy_models.Chunk(source_id=source.id, chunk_index=0, content="hello")
+assert canonical_models.Chunk.from_dict(chunk.to_dict()) == chunk
+assert legacy_models.ExtractionResult.success("hello").status is (
+    canonical_models.ParseStatus.SUCCESS
+)
+change = legacy_watcher.FileChange(
+    path="/w/a.md", event_type=canonical_watcher.FileChangeType.MODIFIED
+)
+assert canonical_watcher.FileChange.from_dict(change.to_dict()).to_dict() == (
+    change.to_dict()
+)
+
+# The ingestion runtime is legacy-only: importable from the compatibility
+# distribution, absent from Core.
+import omnivia_memory.ingestion.chunker
+import omnivia_memory.ingestion.extractors
+import omnivia_memory.ingestion.scanner
+import omnivia_memory.ingestion.watcher.debouncer
+import omnivia_memory.ingestion.watcher.tracker
+
+for name in ("chunker", "extractors", "pipeline", "repositories", "scanner"):
+    assert f"omnivia_core.ingestion.{{name}}" not in sys.modules, name
+    try:
+        __import__(f"omnivia_core.ingestion.{{name}}")
+    except ImportError:
+        pass
+    else:
+        raise AssertionError(f"omnivia_core.ingestion.{{name}} is importable")
+for name in ("debouncer", "tracker"):
+    try:
+        __import__(f"omnivia_core.ingestion.watcher.{{name}}")
+    except ImportError:
+        pass
+    else:
+        raise AssertionError(f"omnivia_core.ingestion.watcher.{{name}} is importable")
+
+chunker = sys.modules["omnivia_memory.ingestion.chunker"]
+extractors = sys.modules["omnivia_memory.ingestion.extractors"]
+scanner = sys.modules["omnivia_memory.ingestion.scanner"]
+debouncer = sys.modules["omnivia_memory.ingestion.watcher.debouncer"]
+tracker = sys.modules["omnivia_memory.ingestion.watcher.tracker"]
+assert chunker.Chunk is canonical_models.Chunk
+assert extractors.ExtractionResult is canonical_models.ExtractionResult
+assert scanner.FileType is canonical_models.FileType
+assert debouncer.FileChange is canonical_watcher.FileChange
+assert debouncer.DebounceConfig is canonical_watcher.DebounceConfig
+
+# The tracker's same-named record stays its own distinct class.
+assert tracker.SourceReference is not canonical_watcher.SourceReference
+assert tracker.SourceReference.__module__ == "omnivia_memory.ingestion.watcher.tracker"
+assert omnivia_memory.ingestion.watcher.SourceReference is (
+    canonical_watcher.SourceReference
+)
+print("OK")
+"""
+
 
 def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_offline() -> None:
     with tempfile.TemporaryDirectory(prefix="omnivia-facade-wheel-") as raw_workdir:
@@ -359,16 +545,26 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
 
         # Explicitly not a resolution proof: --no-deps left the declared
         # SQLAlchemy dependency uninstalled, which is why the import check
-        # below stays inside the Graph closure, which needs no third-party
-        # package at all.
+        # below stays inside the Graph and ingestion closures, which need no
+        # third-party package at all.
         assert installed["sqlalchemy_installed"] is False
 
-        # The runtime-owned Graph modules were never packaged into Core.
+        # The runtime-owned Graph and ingestion modules were never packaged into
+        # Core.
         with zipfile.ZipFile(core_wheel) as core_archive:
             core_names = set(core_archive.namelist())
-            for path in GRAPH_RUNTIME_WHEEL_PATHS:
+            for path in (*GRAPH_RUNTIME_WHEEL_PATHS, *INGESTION_RUNTIME_WHEEL_PATHS):
                 assert path not in core_names, (
                     f"{core_wheel.name} packages the runtime-owned {path}"
+                )
+            # ...and the two ingestion contract leaves really are in it, so the
+            # absences above are a partition rather than a missing subtree.
+            for path in (
+                "omnivia_core/ingestion/models.py",
+                "omnivia_core/ingestion/watcher/models.py",
+            ):
+                assert path in core_names, (
+                    f"{core_wheel.name} is missing the canonical {path}"
                 )
             canonical_records = core_archive.read(
                 "omnivia_core/graph/search_models.py"
@@ -392,3 +588,18 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
         )
         assert graph.returncode == 0, f"{graph.stdout}\n{graph.stderr}"
         assert graph.stdout.strip() == "OK"
+
+        # The same for the ingestion pair: exact routed identities under two
+        # hybrid barrels, an intact ``IngestSource`` alias, a legacy-only runtime,
+        # and the watcher tracker's distinct same-named record.
+        ingestion = subprocess.run(
+            [str(venv_python), "-I", "-c", INSTALLED_INGESTION_FACADE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(workdir),
+            check=False,
+            env=_child_env(),
+        )
+        assert ingestion.returncode == 0, f"{ingestion.stdout}\n{ingestion.stderr}"
+        assert ingestion.stdout.strip() == "OK"

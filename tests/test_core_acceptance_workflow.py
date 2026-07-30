@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACCEPTANCE_WORKFLOW = WORKFLOW_DIR / "core-acceptance.yml"
@@ -87,6 +89,8 @@ REQUIRED_RUFF_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/control_plane/validation.py",
     "services/omnivia-memory/src/omnivia_memory/graph/models.py",
     "services/omnivia-memory/src/omnivia_memory/graph/search_models.py",
+    "services/omnivia-memory/src/omnivia_memory/ingestion/models.py",
+    "services/omnivia-memory/src/omnivia_memory/ingestion/watcher/models.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/models.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/validation.py",
@@ -112,7 +116,7 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-cli/src/omnivia_core_cli",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
-    # Every converted facade wrapper, plus the four strict-mypy consumer
+    # Every converted facade wrapper, plus the six strict-mypy consumer
     # fixtures that import them through their legacy paths: together they pin
     # that `omnivia-memory`'s `py.typed` surface still re-exports these names
     # explicitly and without `Any` leakage.
@@ -128,6 +132,8 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/control_plane/validation.py",
     "services/omnivia-memory/src/omnivia_memory/graph/models.py",
     "services/omnivia-memory/src/omnivia_memory/graph/search_models.py",
+    "services/omnivia-memory/src/omnivia_memory/ingestion/models.py",
+    "services/omnivia-memory/src/omnivia_memory/ingestion/watcher/models.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/models.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py",
     "services/omnivia-memory/src/omnivia_memory/knowledge/validation.py",
@@ -145,8 +151,10 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py",
     "tests/typing/accepted_legacy_facade_consumer.py",
     "tests/typing/graph_facade_consumer.py",
+    "tests/typing/ingestion_models_facade_consumer.py",
     "tests/typing/knowledge_facade_consumer.py",
     "tests/typing/module_manifest_facade_consumer.py",
+    "tests/typing/watcher_models_facade_consumer.py",
 )
 
 # Pinned tooling and test-only dependencies, quoted exactly as the workflow
@@ -428,22 +436,70 @@ def test_required_commands_run_in_their_own_steps_and_in_order() -> None:
     assert positions == sorted(positions), f"gate steps are out of order: {order}"
 
 
+def _audit_targets(command: str, prefix: str, required: tuple[str, ...]) -> None:
+    """Assert `command` is exactly `prefix` followed by `required`, as a set.
+
+    Set equality, not containment: a target list that only has to *contain* the
+    required entries accepts extras -- a tree silently added to the linted scope,
+    or a stray flag -- and an audit built from a set accepts duplicates, which
+    hide a copy/paste that was meant to add a new target and did not. Both are
+    reported by name. Order is deliberately not pinned; the workflow groups its
+    targets for readability and reordering them changes nothing.
+    """
+    assert command.startswith(f"{prefix} "), f"expected the `{prefix}` prefix: {command}"
+    targets = command[len(prefix) :].split()
+
+    duplicates = sorted({target for target in targets if targets.count(target) > 1})
+    assert not duplicates, f"`{prefix}` names these targets more than once: {duplicates}"
+
+    actual = set(targets)
+    expected = set(required)
+    assert len(expected) == len(required), f"REQUIRED targets are not unique: {required}"
+    assert actual == expected, (
+        f"`{prefix}` scope drifted: missing={sorted(expected - actual)}, "
+        f"extra={sorted(actual - expected)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("targets", "pattern"),
+    [
+        (("src", "packages"), "missing="),
+        (("src", "packages", "baseline", "extra"), "extra="),
+        (("src", "packages", "baseline", "src"), "more than once"),
+    ],
+    ids=["missing", "extra", "duplicate"],
+)
+def test_target_audit_rejects_missing_extra_and_duplicate_targets(
+    targets: tuple[str, ...], pattern: str
+) -> None:
+    """The audit itself, against a three-target requirement: dropping one, adding
+    one, and repeating one must each fail, and the duplicate case must fail *as* a
+    duplicate rather than being collapsed into an equal set."""
+    command = "python -m ruff check " + " ".join(targets)
+    with pytest.raises(AssertionError, match=pattern):
+        _audit_targets(command, "python -m ruff check", ("src", "packages", "baseline"))
+
+
+def test_target_audit_accepts_the_exact_required_set() -> None:
+    """The defect-free base for the three rejections above."""
+    _audit_targets(
+        "python -m ruff check src packages baseline",
+        "python -m ruff check",
+        ("src", "packages", "baseline"),
+    )
+
+
 def test_ruff_covers_the_accepted_clean_scope() -> None:
     commands = _commands(_step(_steps(), "Run Ruff"))
     assert len(commands) == 1, f"expected a single Ruff invocation, got: {commands}"
-    assert commands[0].startswith("python -m ruff check ")
-    targets = commands[0].split()
-    for target in REQUIRED_RUFF_TARGETS:
-        assert target in targets, f"Ruff scope is missing: {target}"
+    _audit_targets(commands[0], "python -m ruff check", REQUIRED_RUFF_TARGETS)
 
 
 def test_mypy_runs_strict_over_canonical_and_distribution_sources() -> None:
     commands = _commands(_step(_steps(), "Run strict mypy"))
     assert len(commands) == 1, f"expected a single mypy invocation, got: {commands}"
-    assert commands[0].startswith("python -m mypy --strict ")
-    targets = commands[0].split()
-    for target in REQUIRED_MYPY_TARGETS:
-        assert target in targets, f"strict mypy scope is missing: {target}"
+    _audit_targets(commands[0], "python -m mypy --strict", REQUIRED_MYPY_TARGETS)
 
 
 def test_pull_request_range_diff_check() -> None:

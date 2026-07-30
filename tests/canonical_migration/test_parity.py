@@ -43,12 +43,13 @@ Four layers of comparison run here, from loosest to strictest:
   rejects a stale or unused rule -- which is what emptied the map: every leaf
   that ever needed a rule has since become a facade).
 
-A subset of once-duplicated leaves (``_shared.validation``,
+Almost every once-duplicated leaf (``_shared.validation``,
 ``app_manifest.models``, ``app_manifest.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
 ``control_plane.imports``, ``control_plane.models``,
-``control_plane.validation``, ``graph.models``, ``knowledge.models``,
+``control_plane.validation``, ``graph.models``, ``ingestion.models``,
+``ingestion.watcher.models``, ``knowledge.models``,
 ``knowledge.normalize``,
 ``knowledge.validation``, ``lifecycle.models``, ``lifecycle.rules``,
 ``memory_graph.assembly``, ``memory_graph.fixtures``, ``memory_graph.models``,

@@ -250,6 +250,12 @@ EXTRA_MODULE_CONSTANTS: dict[str, tuple[str, ...]] = {
 #: object* as the target, not merely an equal one -- catches a canonical
 #: port that accidentally redefines the alias as a lookalike class instead
 #: of assigning it.
+#:
+#: ``test_alias_identity`` is parametrized over this tuple directly rather than
+#: over ``CANONICAL_TO_LEGACY``, so it keeps running after a leaf becomes a
+#: compatibility facade -- which ``omnivia_memory.ingestion.models`` now is. It
+#: asserts the alias in *both* trees, so it still covers the facade's namespace
+#: as well as the canonical one it routes to.
 ALIAS_IDENTITY: tuple[tuple[str, str, str], ...] = (
     ("omnivia_core.ingestion.models", "IngestSource", "Source"),
 )

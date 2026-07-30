@@ -75,7 +75,11 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: ``ValidationResult`` from the shared primitive, ``LifecycleState`` from the
 #: control plane, and ``SourceRef`` from the knowledge models leaf, so only those
 #: four routes ever move a root binding for the colliding names -- the other
-#: same-named owners are leaf-local.
+#: same-named owners are leaf-local. ``Source`` collides between the provenance
+#: domain and the ingestion domain, and the root binds the provenance one, so the
+#: ingestion route moves no root binding either. ``SourceReference`` collides
+#: between ``ingestion.watcher.models`` and the runtime-only
+#: ``ingestion.watcher.tracker``, which is not routed at all and keeps its own.
 #:
 #: A route's value is the module that owns the exact *object*, which is not
 #: always the module that defines its type. ``RUN_LEDGER_CONTRACT_VERSION`` and
@@ -304,6 +308,46 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "GraphSearchQuery": "omnivia_core.graph.search_models",
         "GraphSearchResult": "omnivia_core.graph.search_models",
         "GraphSearchResultSet": "omnivia_core.graph.search_models",
+    },
+    # ``IngestSource`` is an identity alias for this leaf's own ``Source``, so it
+    # is a routed symbol in its own right: the frozen baseline recorded it as a
+    # definition of this module, and both names must keep resolving to the one
+    # canonical dataclass (``tests/canonical_migration/_strict.py``'s
+    # ``ALIAS_IDENTITY`` pins that they stay the same object in both trees).
+    # This leaf's ``Source`` deliberately collides with the provenance domain's
+    # same-named record; the legacy *root* binds the provenance one, so this
+    # route moves no root binding for it. See
+    # ``tests/compatibility/test_facade_foundation.py``'s ``COLLIDING_OWNERS``.
+    # The ``ingestion`` barrel above this leaf stays a hybrid: fourteen of its
+    # nineteen exports are owned by the runtime-only ``chunker``/``extractors``/
+    # ``pipeline``/``repositories``/``scanner`` leaves, which are deliberately
+    # not routed. ``FileInventory`` and ``IngestSource`` are leaf-only: the
+    # barrel has never re-exported either.
+    "omnivia_memory.ingestion.models": {
+        "Chunk": "omnivia_core.ingestion.models",
+        "ExtractionResult": "omnivia_core.ingestion.models",
+        "FileInventory": "omnivia_core.ingestion.models",
+        "FileType": "omnivia_core.ingestion.models",
+        "IngestSource": "omnivia_core.ingestion.models",
+        "ParseStatus": "omnivia_core.ingestion.models",
+        "Source": "omnivia_core.ingestion.models",
+    },
+    # ``SourceReference`` deliberately collides with the runtime-only
+    # ``ingestion.watcher.tracker``'s own same-named dataclass. This leaf owns
+    # the models one, the barrel above re-exports *this* one, and the tracker
+    # keeps its own; neither is a root binding. See
+    # ``test_watcher_source_reference_keeps_its_historical_collision_owner``.
+    "omnivia_memory.ingestion.watcher.models": {
+        "DebounceConfig": "omnivia_core.ingestion.watcher.models",
+        "FileChange": "omnivia_core.ingestion.watcher.models",
+        "FileChangeBatch": "omnivia_core.ingestion.watcher.models",
+        "FileChangeType": "omnivia_core.ingestion.watcher.models",
+        "IndexerScheduler": "omnivia_core.ingestion.watcher.models",
+        "IndexerState": "omnivia_core.ingestion.watcher.models",
+        "IndexerStatus": "omnivia_core.ingestion.watcher.models",
+        "ScheduledJob": "omnivia_core.ingestion.watcher.models",
+        "SourceReference": "omnivia_core.ingestion.watcher.models",
+        "WatchedPath": "omnivia_core.ingestion.watcher.models",
     },
     # The three ``BUILTIN_*`` bounded-vocabulary constants are ``frozenset``
     # instances, so ordinary ``__module__`` definition detection cannot see them

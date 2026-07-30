@@ -30,7 +30,18 @@ Core deliberately excludes defined locally, because the unconverted, legacy-owne
 not a *single* import, so it is held out of ``LEAF_SYMBOL_SOURCES`` -- and every
 gate keyed on it -- and declared in ``SPLIT_LEAF_SYMBOL_SOURCES`` /
 ``SPLIT_LEAF_RETAINED_HELPERS`` instead. Both halves get their own gates in the
-final section of this module.
+``graph`` section of this module.
+
+``ingestion`` is the third and fourth hybrid barrel, and the first pair of them
+in one domain: ``ingestion.models`` and ``ingestion.watcher.models`` are plain
+direct facades, but fourteen of the ``ingestion`` barrel's nineteen exports and
+two of the ``ingestion.watcher`` barrel's twelve are owned by runtime-only leaves
+that never enter Core. Both barrels therefore stay out of ``BARREL_ALL_ORDER``
+too, and get their own section at the end of this module -- together with the two
+name collisions that section exists to keep separate: ``Source`` (ingestion vs.
+provenance, where the legacy root binds the provenance one) and
+``SourceReference`` (the watcher models record vs. the distinct dataclass the
+runtime-only ``watcher.tracker`` defines for itself).
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -468,6 +479,57 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "timezone": "omnivia_core.graph.models",
         "uuid": "omnivia_core.graph.models",
     },
+    # Every name in this leaf's historical namespace resolves from its canonical
+    # counterpart, incidental bindings and the plain ``enum``/``hashlib``/``uuid``
+    # module bindings included: the ingestion models leaf imports nothing from
+    # another Core leaf. ``IngestSource`` is its own ``Source`` under a second
+    # name, so both must land on the one canonical dataclass; ``Source`` itself
+    # deliberately collides with the provenance domain's record, and the legacy
+    # root binds *that* one. Its barrel stays a hybrid.
+    "omnivia_memory.ingestion.models": {
+        "Any": "omnivia_core.ingestion.models",
+        "Chunk": "omnivia_core.ingestion.models",
+        "ExtractionResult": "omnivia_core.ingestion.models",
+        "FileInventory": "omnivia_core.ingestion.models",
+        "FileType": "omnivia_core.ingestion.models",
+        "IngestSource": "omnivia_core.ingestion.models",
+        "ParseStatus": "omnivia_core.ingestion.models",
+        "Path": "omnivia_core.ingestion.models",
+        "Source": "omnivia_core.ingestion.models",
+        "TYPE_CHECKING": "omnivia_core.ingestion.models",
+        "annotations": "omnivia_core.ingestion.models",
+        "dataclass": "omnivia_core.ingestion.models",
+        "datetime": "omnivia_core.ingestion.models",
+        "enum": "omnivia_core.ingestion.models",
+        "field": "omnivia_core.ingestion.models",
+        "hashlib": "omnivia_core.ingestion.models",
+        "timezone": "omnivia_core.ingestion.models",
+        "uuid": "omnivia_core.ingestion.models",
+    },
+    # The same, for the watcher models leaf: nothing here comes from another Core
+    # leaf. Its ``SourceReference`` deliberately collides with the runtime-only
+    # ``ingestion.watcher.tracker``'s own dataclass of that name, which is not
+    # routed and stays legacy-owned. Its barrel stays a hybrid too.
+    "omnivia_memory.ingestion.watcher.models": {
+        "DebounceConfig": "omnivia_core.ingestion.watcher.models",
+        "FileChange": "omnivia_core.ingestion.watcher.models",
+        "FileChangeBatch": "omnivia_core.ingestion.watcher.models",
+        "FileChangeType": "omnivia_core.ingestion.watcher.models",
+        "IndexerScheduler": "omnivia_core.ingestion.watcher.models",
+        "IndexerState": "omnivia_core.ingestion.watcher.models",
+        "IndexerStatus": "omnivia_core.ingestion.watcher.models",
+        "ScheduledJob": "omnivia_core.ingestion.watcher.models",
+        "SourceReference": "omnivia_core.ingestion.watcher.models",
+        "TYPE_CHECKING": "omnivia_core.ingestion.watcher.models",
+        "WatchedPath": "omnivia_core.ingestion.watcher.models",
+        "annotations": "omnivia_core.ingestion.watcher.models",
+        "dataclass": "omnivia_core.ingestion.watcher.models",
+        "datetime": "omnivia_core.ingestion.watcher.models",
+        "enum": "omnivia_core.ingestion.watcher.models",
+        "field": "omnivia_core.ingestion.watcher.models",
+        "timezone": "omnivia_core.ingestion.watcher.models",
+        "uuid": "omnivia_core.ingestion.watcher.models",
+    },
     "omnivia_memory.knowledge.models": {
         "AgentGraphContext": "omnivia_core.knowledge.models",
         "Any": "omnivia_core.knowledge.models",
@@ -854,6 +916,10 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
         "omnivia_core.control_plane.validation"
     ),
     "omnivia_memory.graph.models": "omnivia_core.graph.models",
+    "omnivia_memory.ingestion.models": "omnivia_core.ingestion.models",
+    "omnivia_memory.ingestion.watcher.models": (
+        "omnivia_core.ingestion.watcher.models"
+    ),
     "omnivia_memory.knowledge.models": "omnivia_core.knowledge.models",
     "omnivia_memory.knowledge.normalize": "omnivia_core.knowledge.normalize",
     "omnivia_memory.knowledge.validation": "omnivia_core.knowledge.validation",
@@ -1486,6 +1552,10 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
         "omnivia_memory.control_plane.validation"
     ),
     "omnivia_core.graph.models": "omnivia_memory.graph.models",
+    "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
+    "omnivia_core.ingestion.watcher.models": (
+        "omnivia_memory.ingestion.watcher.models"
+    ),
     "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
     "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
     "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
@@ -1677,11 +1747,23 @@ COLLIDING_OWNERS: dict[str, tuple[str, ...]] = {
         "omnivia_core.knowledge.models",
         "omnivia_core.memory_graph.models",
     ),
+    # The provenance domain's source record and the ingestion domain's ingested
+    # file record are independent contracts that happen to share a name. Two
+    # converted leaves route this name to the provenance owner
+    # (``provenance.models`` and ``memory.models``) and one to the ingestion owner;
+    # the legacy root binds the provenance one, so the ingestion route moves no
+    # root binding for it. ``ingestion.models`` additionally publishes the same
+    # object under its ``IngestSource`` alias, which is why the separation has to
+    # be pinned rather than left to the per-symbol identity checks.
+    "Source": (
+        "omnivia_core.provenance.models",
+        "omnivia_core.ingestion.models",
+    ),
 }
 
 #: For each colliding name, the single owner the *legacy package root* has always
 #: re-exported it from. The root itself is deliberately unedited by this slice:
-#: these three bindings move to the canonical objects transitively, through the
+#: these bindings move to the canonical objects transitively, through the
 #: converted leaves, and which owner each lands on must not change. See
 #: ``test_legacy_root_keeps_its_historical_owner_for_each_colliding_name``.
 ROOT_OWNERS: dict[str, str] = {
@@ -1700,6 +1782,11 @@ ROOT_OWNERS: dict[str, str] = {
     # decided by import order in the root's own unedited source, so pinning it
     # here is what would catch a memory-graph route silently taking it over.
     "SourceRef": "omnivia_core.knowledge.models",
+    # The root's ``Source`` has always been the provenance domain's record,
+    # reached through the provenance barrel -- not the ingestion domain's, whose
+    # barrel the root has never imported from at all. Pinning it here is what
+    # would catch the ingestion route silently taking it over.
+    "Source": "omnivia_core.provenance.models",
 }
 
 #: The full legacy surface of the ``SourceRef`` collision: for each of its two
@@ -4101,6 +4188,1203 @@ def test_graph_conversion_declares_no_descriptor_rewrite_or_root_owner_move() ->
     )
     assert not any(
         legacy_module.startswith("omnivia_memory.graph")
+        for _binding, legacy_module in FACADE_ROOT_BINDING_OWNER_MOVES
+    )
+    assert set(FACADE_ROOT_BINDING_OWNER_MOVES) == {
+        ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"),
+        ("CONTROL_PLANE_CONTRACT_VERSION", "omnivia_memory.control_plane.models"),
+    }
+    assert set(FACADE_DESCRIPTOR_REWRITES) == {
+        ("omnivia_memory.app_manifest.validation", "validate_app_manifest"),
+        ("omnivia_memory.module_manifest.validation", "validate_module_manifest"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# The ``ingestion`` pair: two direct facades under two hybrid barrels.
+#
+# ``ingestion.models`` and ``ingestion.watcher.models`` are plain direct facades
+# -- one import each, nothing retained -- but neither barrel above them can
+# follow. Fourteen of the ``ingestion`` barrel's nineteen exports are owned by
+# the runtime-only ``chunker``/``extractors``/``pipeline``/``repositories``/
+# ``scanner`` leaves, and two of the ``ingestion.watcher`` barrel's twelve by the
+# runtime-only ``debouncer``/``tracker``. Both stay ``pending_hybrid`` in
+# ``compatibility/facade-routes.v1.json``, both trees' ``__all__`` are different
+# sizes as a result, and both barrels therefore stay out of ``BARREL_ALL_ORDER``
+# and every gate built on it.
+#
+# Two collisions are load-bearing here and are pinned rather than left implicit:
+# ``Source`` (the ingestion record vs. the provenance one the legacy root binds)
+# and ``SourceReference`` (the watcher models record vs. the *distinct* dataclass
+# the runtime-only ``watcher.tracker`` defines for itself).
+# ---------------------------------------------------------------------------
+
+INGESTION_MODELS_LEAF = "omnivia_memory.ingestion.models"
+INGESTION_MODELS_CANONICAL = "omnivia_core.ingestion.models"
+WATCHER_MODELS_LEAF = "omnivia_memory.ingestion.watcher.models"
+WATCHER_MODELS_CANONICAL = "omnivia_core.ingestion.watcher.models"
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy
+#: ``ingestion`` barrel must still have: ``(absolute module, imported names in
+#: source order)``. Six blocks, in the barrel's own historical order -- which is
+#: alphabetical by module, so the single portable block sits third, between the
+#: two extractor/chunker runtime blocks and the three pipeline/repository/scanner
+#: ones. Restated here rather than read off the barrel, because this is the file
+#: whose edits it exists to reject.
+INGESTION_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.ingestion.chunker",
+        (
+            "BaseChunker",
+            "CharacterChunker",
+            "ChunkConfig",
+            "ParagraphChunker",
+        ),
+    ),
+    (
+        "omnivia_memory.ingestion.extractors",
+        (
+            "BaseExtractor",
+            "DOCXExtractor",
+            "MarkdownExtractor",
+            "PDFExtractor",
+        ),
+    ),
+    (
+        INGESTION_MODELS_LEAF,
+        (
+            "Chunk",
+            "ExtractionResult",
+            "FileType",
+            "ParseStatus",
+            "Source",
+        ),
+    ),
+    (
+        "omnivia_memory.ingestion.pipeline",
+        (
+            "IngestResult",
+            "IngestionPipeline",
+        ),
+    ),
+    (
+        "omnivia_memory.ingestion.repositories",
+        ("ChunkRepository",),
+    ),
+    (
+        "omnivia_memory.ingestion.scanner",
+        (
+            "FileInfo",
+            "FileScanner",
+            "ScanOptions",
+        ),
+    ),
+)
+
+#: The barrel's exact ordered 19-name ``__all__`` literal, restated rather than
+#: derived: it is sorted, so it interleaves all six blocks' names and matches
+#: none of them.
+INGESTION_BARREL_ALL: tuple[str, ...] = (
+    "BaseChunker",
+    "BaseExtractor",
+    "CharacterChunker",
+    "Chunk",
+    "ChunkConfig",
+    "ChunkRepository",
+    "DOCXExtractor",
+    "ExtractionResult",
+    "FileInfo",
+    "FileScanner",
+    "FileType",
+    "IngestResult",
+    "IngestionPipeline",
+    "MarkdownExtractor",
+    "PDFExtractor",
+    "ParagraphChunker",
+    "ParseStatus",
+    "ScanOptions",
+    "Source",
+)
+
+#: The barrel's five runtime-only children, each declared runtime-only in the
+#: frozen route registry and deliberately not a facade.
+INGESTION_RUNTIME_ONLY_LEAVES: tuple[str, ...] = (
+    "omnivia_memory.ingestion.chunker",
+    "omnivia_memory.ingestion.extractors",
+    "omnivia_memory.ingestion.pipeline",
+    "omnivia_memory.ingestion.repositories",
+    "omnivia_memory.ingestion.scanner",
+)
+
+#: The barrel's exact fourteen runtime-only exports: they must stay legacy-owned
+#: and must never appear on the canonical barrel.
+INGESTION_RUNTIME_EXPORTS: frozenset[str] = frozenset(
+    {
+        "BaseChunker",
+        "BaseExtractor",
+        "CharacterChunker",
+        "ChunkConfig",
+        "ChunkRepository",
+        "DOCXExtractor",
+        "FileInfo",
+        "FileScanner",
+        "IngestResult",
+        "IngestionPipeline",
+        "MarkdownExtractor",
+        "PDFExtractor",
+        "ParagraphChunker",
+        "ScanOptions",
+    }
+)
+
+#: The barrel's exact five portable exports: everything else, all of which must
+#: hop through the converted models child to a canonical object.
+INGESTION_PORTABLE_EXPORTS: frozenset[str] = frozenset(INGESTION_BARREL_ALL) - (
+    INGESTION_RUNTIME_EXPORTS
+)
+
+#: Routed symbols of the models leaf that the barrel has never re-exported, and
+#: must not start to. ``FileInventory`` is a scanner-facing record and
+#: ``IngestSource`` is the leaf's own alias for ``Source``; both are importable
+#: from the leaf and absent from both trees' barrels.
+INGESTION_LEAF_ONLY_ROUTES: tuple[str, ...] = ("FileInventory", "IngestSource")
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy
+#: ``ingestion.watcher`` barrel must still have. Three blocks, in the barrel's own
+#: historical order: the runtime ``debouncer``, the portable ``models``, then the
+#: runtime ``tracker``.
+WATCHER_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.ingestion.watcher.debouncer",
+        ("Debouncer",),
+    ),
+    (
+        WATCHER_MODELS_LEAF,
+        (
+            "DebounceConfig",
+            "FileChange",
+            "FileChangeBatch",
+            "FileChangeType",
+            "IndexerScheduler",
+            "IndexerState",
+            "IndexerStatus",
+            "ScheduledJob",
+            "SourceReference",
+            "WatchedPath",
+        ),
+    ),
+    (
+        "omnivia_memory.ingestion.watcher.tracker",
+        ("SourceTracker",),
+    ),
+)
+
+#: The barrel's exact ordered 12-name ``__all__`` literal. Unlike the ``ingestion``
+#: barrel's, this one is *not* sorted -- ``Debouncer`` leads, ahead of
+#: ``DebounceConfig`` -- which is exactly why it is restated rather than derived.
+WATCHER_BARREL_ALL: tuple[str, ...] = (
+    "Debouncer",
+    "DebounceConfig",
+    "FileChange",
+    "FileChangeBatch",
+    "FileChangeType",
+    "IndexerScheduler",
+    "IndexerState",
+    "IndexerStatus",
+    "ScheduledJob",
+    "SourceReference",
+    "SourceTracker",
+    "WatchedPath",
+)
+
+#: The watcher barrel's two runtime-only children and its two runtime-only
+#: exports.
+WATCHER_RUNTIME_ONLY_LEAVES: tuple[str, ...] = (
+    "omnivia_memory.ingestion.watcher.debouncer",
+    "omnivia_memory.ingestion.watcher.tracker",
+)
+WATCHER_RUNTIME_EXPORTS: frozenset[str] = frozenset({"Debouncer", "SourceTracker"})
+WATCHER_PORTABLE_EXPORTS: frozenset[str] = frozenset(WATCHER_BARREL_ALL) - (
+    WATCHER_RUNTIME_EXPORTS
+)
+
+#: The ingestion runtime modules that stay legacy-owned and unedited by this
+#: batch, and the canonical names each must now hold. ``memory_graph``'s
+#: ``ingestion_adapter`` is included: it is a runtime-only leaf of *another*
+#: domain that consumes this one's contracts, so this batch changes what it holds
+#: without changing its source.
+INGESTION_RUNTIME_CONSUMERS: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.ingestion.chunker": ("Chunk",),
+    "omnivia_memory.ingestion.extractors": ("ExtractionResult",),
+    "omnivia_memory.ingestion.pipeline": ("Chunk", "FileType", "ParseStatus", "Source"),
+    "omnivia_memory.ingestion.repositories": (
+        "Chunk",
+        "FileType",
+        "ParseStatus",
+        "Source",
+    ),
+    "omnivia_memory.ingestion.scanner": ("FileType",),
+    "omnivia_memory.memory_graph.ingestion_adapter": (
+        "Chunk",
+        "FileType",
+        "ParseStatus",
+        "Source",
+    ),
+}
+WATCHER_RUNTIME_CONSUMERS: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.ingestion.watcher.debouncer": (
+        "DebounceConfig",
+        "FileChange",
+        "FileChangeBatch",
+    ),
+}
+
+#: The exact canonical closure a canonical-only ingestion import may produce.
+#: Anything else -- a sibling domain, a runtime leaf -- is a leak.
+INGESTION_CANONICAL_MODULE_CLOSURE: frozenset[str] = frozenset(
+    {
+        "omnivia_core",
+        "omnivia_core.ingestion",
+        "omnivia_core.ingestion.models",
+        "omnivia_core.ingestion.watcher",
+        "omnivia_core.ingestion.watcher.models",
+    }
+)
+
+#: Module roots a canonical-only ingestion import must never load. The ingestion
+#: runtime reaches SQLite through ``omnivia_memory.persistence`` and PDF/DOCX
+#: extraction through ``fitz``/``docx``, so their absence is part of what "the
+#: canonical contract layer stands alone" means here.
+INGESTION_FORBIDDEN_MODULE_ROOTS: tuple[str, ...] = (
+    "docx",
+    "fitz",
+    "omnivia_cloud",
+    "omnivia_core_cli",
+    "omnivia_core_mcp",
+    "omnivia_core_runtime",
+    "omnivia_dev",
+    "omnivia_memory",
+    "omnivia_platform",
+    "sqlalchemy",
+    "sqlite3",
+)
+
+
+def test_ingestion_hybrid_barrels_are_held_out_of_the_equal_all_gates() -> None:
+    """Both barrels' two trees advertise *different* surfaces, so every gate keyed
+    on ``BARREL_ALL_ORDER`` (which asserts ``legacy.__all__ == canonical.__all__``)
+    would be wrong for them. Pin that they are absent from those gates, and pin the
+    inequality that is the reason -- so a future edit that "helpfully" added either
+    to ``BARREL_ALL_ORDER`` fails here with the reason rather than as a confusing
+    list mismatch.
+    """
+    for barrel in ("ingestion", "ingestion.watcher"):
+        assert barrel not in BARREL_ALL_ORDER
+        assert barrel not in ABSOLUTE_IMPORT_BARRELS
+        assert barrel not in ABSOLUTE_IMPORT_BARREL_IMPORTS
+        assert barrel not in RELATIVE_IMPORT_BARREL_IMPORTS
+
+    legacy = importlib.import_module("omnivia_memory.ingestion")
+    canonical = importlib.import_module("omnivia_core.ingestion")
+    assert tuple(legacy.__all__) == INGESTION_BARREL_ALL
+    assert len(legacy.__all__) == 19
+    assert len(canonical.__all__) == 5
+    assert set(canonical.__all__) == set(INGESTION_BARREL_ALL) - (
+        INGESTION_RUNTIME_EXPORTS
+    )
+
+    legacy_watcher = importlib.import_module("omnivia_memory.ingestion.watcher")
+    canonical_watcher = importlib.import_module("omnivia_core.ingestion.watcher")
+    assert tuple(legacy_watcher.__all__) == WATCHER_BARREL_ALL
+    assert len(legacy_watcher.__all__) == 12
+    assert len(canonical_watcher.__all__) == 10
+    assert set(canonical_watcher.__all__) == set(WATCHER_BARREL_ALL) - (
+        WATCHER_RUNTIME_EXPORTS
+    )
+
+
+@pytest.mark.parametrize(
+    ("module_name", "blocks", "expected_all"),
+    [
+        (
+            "omnivia_memory.ingestion",
+            INGESTION_BARREL_ABSOLUTE_IMPORTS,
+            INGESTION_BARREL_ALL,
+        ),
+        (
+            "omnivia_memory.ingestion.watcher",
+            WATCHER_BARREL_ABSOLUTE_IMPORTS,
+            WATCHER_BARREL_ALL,
+        ),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_hybrid_barrel_source_is_unchanged_reexport(
+    module_name: str,
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    expected_all: tuple[str, ...],
+) -> None:
+    """Both hybrid barrels are *source-unchanged* by this slice: each one's
+    portable half becomes identity-preserving transitively, through its converted
+    ``models`` child, and its runtime half keeps resolving locally. Pin their exact
+    historical shape -- the absolute ``from omnivia_memory.<pkg>.<leaf> import
+    (...)`` statements in source order with their exact ordered name lists, then
+    the ``__all__`` literal -- so an edit that reroutes either at ``omnivia_core``,
+    drops the runtime blocks, adds a ``__getattr__``, or reorders its re-exports
+    fails here.
+    """
+    body = _module_body_after_docstring(module_name)
+    assert len(body) == len(blocks) + 1, (
+        f"{module_name}: expected exactly {len(blocks)} absolute imports plus "
+        f"__all__, found {[ast.dump(node) for node in body]}"
+    )
+    for node, (module, names) in zip(body, blocks, strict=False):
+        assert isinstance(node, ast.ImportFrom), f"expected an import, found {node!r}"
+        assert node.level == 0, f"{module_name}: the {module} import must stay absolute"
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        for alias in node.names:
+            assert alias.name != "*", "star import is not allowed"
+            assert alias.asname is None, f"{alias.name!r} uses a rename/dynamic alias"
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign), f"expected __all__, found {all_node!r}"
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert tuple(
+        elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
+    ) == expected_all
+
+    # Every name the imports bind is exactly what ``__all__`` advertises: the
+    # barrel adds nothing of its own and hides nothing it imported.
+    imported = sorted(name for _, names in blocks for name in names)
+    assert imported == sorted(expected_all)
+    assert "__getattr__" not in vars(importlib.import_module(module_name))
+
+
+@pytest.mark.parametrize(
+    ("barrel_name", "blocks", "runtime_only", "portable_count"),
+    [
+        (
+            "omnivia_memory.ingestion",
+            INGESTION_BARREL_ABSOLUTE_IMPORTS,
+            INGESTION_RUNTIME_ONLY_LEAVES,
+            5,
+        ),
+        (
+            "omnivia_memory.ingestion.watcher",
+            WATCHER_BARREL_ABSOLUTE_IMPORTS,
+            WATCHER_RUNTIME_ONLY_LEAVES,
+            10,
+        ),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_hybrid_barrel_portable_exports_hop_through_their_facade(
+    barrel_name: str,
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    runtime_only: tuple[str, ...],
+    portable_count: int,
+) -> None:
+    """Each barrel's portable exports must be the exact object bound at the
+    *legacy child facade* it re-exports from, and that object must in turn be the
+    canonical one. A barrel that started sourcing a name from somewhere else would
+    still pass the canonical-identity check alone; requiring the leaf hop too is
+    what pins the transitive route through the converted child.
+    """
+    barrel = importlib.import_module(barrel_name)
+    portable = 0
+    for legacy_leaf_name, names in blocks:
+        if legacy_leaf_name in runtime_only:
+            continue
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        owners = LEAF_SYMBOL_SOURCES[legacy_leaf_name]
+        for name in names:
+            canonical_owner = importlib.import_module(owners[name])
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"{barrel_name}.{name} no longer comes from {legacy_leaf_name}.{name}"
+            )
+            assert getattr(barrel, name) is getattr(canonical_owner, name), (
+                f"{barrel_name}.{name} is not the exact object bound at "
+                f"{owners[name]}.{name}"
+            )
+            portable += 1
+    assert portable == portable_count
+
+
+@pytest.mark.parametrize(
+    ("barrel_name", "blocks", "runtime_only", "runtime_exports"),
+    [
+        (
+            "omnivia_memory.ingestion",
+            INGESTION_BARREL_ABSOLUTE_IMPORTS,
+            INGESTION_RUNTIME_ONLY_LEAVES,
+            INGESTION_RUNTIME_EXPORTS,
+        ),
+        (
+            "omnivia_memory.ingestion.watcher",
+            WATCHER_BARREL_ABSOLUTE_IMPORTS,
+            WATCHER_RUNTIME_ONLY_LEAVES,
+            WATCHER_RUNTIME_EXPORTS,
+        ),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_hybrid_barrel_runtime_exports_stay_legacy_owned(
+    barrel_name: str,
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    runtime_only: tuple[str, ...],
+    runtime_exports: frozenset[str],
+) -> None:
+    """The runtime exports are the whole reason these barrels are hybrids, so
+    their *non*-conversion is as much a contract as the portable half's
+    conversion. Each must still be the exact object bound at its legacy owner, and
+    each of those owners must still be a real legacy module backed by a file in
+    the compatibility tree -- not a facade that quietly acquired a canonical
+    counterpart.
+    """
+    barrel = importlib.import_module(barrel_name)
+    by_module = dict(blocks)
+    covered: set[str] = set()
+    for legacy_leaf_name in runtime_only:
+        assert legacy_leaf_name not in LEAF_SYMBOL_SOURCES, (
+            f"{legacy_leaf_name} is runtime-owned and must not become a facade"
+        )
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        leaf_path = Path(legacy_leaf.__file__ or "").resolve()
+        assert leaf_path.is_relative_to(MEMORY_SRC), (
+            f"{legacy_leaf_name} resolved to {leaf_path}, outside the legacy tree"
+        )
+        for name in by_module[legacy_leaf_name]:
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"{barrel_name}.{name} no longer comes from {legacy_leaf_name}.{name}"
+            )
+            covered.add(name)
+    assert covered == set(runtime_exports)
+
+
+@pytest.mark.parametrize(
+    ("canonical_barrel", "runtime_exports"),
+    [
+        ("omnivia_core.ingestion", INGESTION_RUNTIME_EXPORTS),
+        ("omnivia_core.ingestion.watcher", WATCHER_RUNTIME_EXPORTS),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_runtime_exports_are_absent_from_the_canonical_barrel(
+    canonical_barrel: str, runtime_exports: frozenset[str]
+) -> None:
+    """None of the runtime-owned names may leak into Core -- not into its
+    ``__all__`` and not as an attribute. This is what keeps the runtime-owned half
+    out of the canonical package rather than merely un-advertised there.
+    """
+    canonical = importlib.import_module(canonical_barrel)
+    for name in sorted(runtime_exports):
+        assert name not in canonical.__all__, (
+            f"{name} is runtime-owned and must not be in {canonical_barrel}.__all__"
+        )
+        assert not hasattr(canonical, name), (
+            f"{name} is runtime-owned and must not be an attribute of "
+            f"{canonical_barrel}"
+        )
+
+
+def test_ingestion_barrel_publishes_a_subset_of_its_models_leaf_routed_surface() -> None:
+    """The ingestion barrel is source-unchanged, and its historical source names
+    only five of the seven symbols its models child now routes.
+
+    ``FileInventory`` and ``IngestSource`` are the concrete cases: both are routed
+    symbols of the leaf and importable from it, but the barrel has never
+    re-exported either, so both must stay absent from both trees' ``__all__`` and
+    from both barrel modules. A "helpful" edit that added one would widen the
+    barrel's advertised surface beyond what Phase 0 froze, and every identity
+    check in this module would still pass.
+    """
+    leaf = importlib.import_module(INGESTION_MODELS_LEAF)
+    for name in INGESTION_LEAF_ONLY_ROUTES:
+        assert name in FACADE_ROUTES[INGESTION_MODELS_LEAF]
+        assert hasattr(leaf, name)
+    for barrel_name in ("omnivia_memory.ingestion", "omnivia_core.ingestion"):
+        barrel = importlib.import_module(barrel_name)
+        for name in INGESTION_LEAF_ONLY_ROUTES:
+            assert name not in barrel.__all__
+            assert not hasattr(barrel, name), (
+                f"{barrel_name} must not publish {name}; the barrel's historical "
+                "source never imported it"
+            )
+
+    # And the barrel's surface really is a subset, not a different set: every name
+    # it advertises is bound at the leaf it re-exports from.
+    for legacy_leaf_name, names in INGESTION_BARREL_ABSOLUTE_IMPORTS:
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        for name in names:
+            assert hasattr(legacy_leaf, name)
+
+
+def test_ingestion_routes_cover_exactly_the_owned_definitions() -> None:
+    """The two leaves' route sets are exactly the symbols the frozen baseline
+    recorded them as *defining* -- seven and ten -- and nothing else. The
+    incidental bindings their historical namespaces also keep resolving
+    (``Any``, ``Path``, ``enum``, ``hashlib``, ``uuid`` and the rest) are
+    deliberately absent from ``FACADE_ROUTES``: the baseline never recorded them
+    as definitions, so there is no route delta to normalize. They are covered by
+    ``LEAF_SYMBOL_SOURCES`` instead.
+    """
+    assert FACADE_ROUTES[INGESTION_MODELS_LEAF] == {
+        "Chunk": INGESTION_MODELS_CANONICAL,
+        "ExtractionResult": INGESTION_MODELS_CANONICAL,
+        "FileInventory": INGESTION_MODELS_CANONICAL,
+        "FileType": INGESTION_MODELS_CANONICAL,
+        "IngestSource": INGESTION_MODELS_CANONICAL,
+        "ParseStatus": INGESTION_MODELS_CANONICAL,
+        "Source": INGESTION_MODELS_CANONICAL,
+    }
+    assert FACADE_ROUTES[WATCHER_MODELS_LEAF] == {
+        "DebounceConfig": WATCHER_MODELS_CANONICAL,
+        "FileChange": WATCHER_MODELS_CANONICAL,
+        "FileChangeBatch": WATCHER_MODELS_CANONICAL,
+        "FileChangeType": WATCHER_MODELS_CANONICAL,
+        "IndexerScheduler": WATCHER_MODELS_CANONICAL,
+        "IndexerState": WATCHER_MODELS_CANONICAL,
+        "IndexerStatus": WATCHER_MODELS_CANONICAL,
+        "ScheduledJob": WATCHER_MODELS_CANONICAL,
+        "SourceReference": WATCHER_MODELS_CANONICAL,
+        "WatchedPath": WATCHER_MODELS_CANONICAL,
+    }
+    for leaf_name in (INGESTION_MODELS_LEAF, WATCHER_MODELS_LEAF):
+        routed = set(FACADE_ROUTES[leaf_name])
+        namespace = set(LEAF_SYMBOL_SOURCES[leaf_name])
+        assert routed < namespace
+        assert len(namespace) == 18
+
+
+def test_ingest_source_is_the_same_object_through_every_path() -> None:
+    """``IngestSource`` is an identity *alias* for this leaf's own ``Source``, not
+    a second class. Both trees have to keep it that way, and both names have to
+    land on the one canonical dataclass -- an equal-but-distinct copy would pass
+    every structural comparison and silently break ``isinstance`` for callers that
+    mix the two spellings.
+    """
+    legacy = importlib.import_module(INGESTION_MODELS_LEAF)
+    canonical = importlib.import_module(INGESTION_MODELS_CANONICAL)
+
+    assert canonical.IngestSource is canonical.Source
+    assert legacy.IngestSource is legacy.Source
+    assert legacy.IngestSource is canonical.Source
+    assert legacy.Source is canonical.Source
+
+    # ...and the barrel's ``Source`` is that same object, reached through the leaf.
+    barrel = importlib.import_module("omnivia_memory.ingestion")
+    canonical_barrel = importlib.import_module("omnivia_core.ingestion")
+    assert barrel.Source is canonical.Source
+    assert canonical_barrel.Source is canonical.Source
+
+
+def test_ingestion_source_keeps_its_historical_collision_owner() -> None:
+    """``Source`` is a name collision between two independent domains. The
+    ingestion domain's ingested-file record is the one this leaf and its barrel
+    historically exposed, while the legacy package *root* has always taken its
+    ``Source`` from the provenance domain -- and the root does not import from the
+    ingestion barrel at all. Routing either side to the other's class would be a
+    silent contract swap that every "is the exact canonical object" check above
+    would still pass.
+    """
+    ingestion = importlib.import_module(INGESTION_MODELS_CANONICAL)
+    provenance = importlib.import_module("omnivia_core.provenance.models")
+    assert ingestion.Source is not provenance.Source
+
+    for legacy_module in (
+        INGESTION_MODELS_LEAF,
+        "omnivia_memory.ingestion",
+        *INGESTION_RUNTIME_CONSUMERS,
+    ):
+        module = importlib.import_module(legacy_module)
+        if not hasattr(module, "Source"):
+            continue
+        assert module.Source is ingestion.Source, (
+            f"{legacy_module}.Source is not the ingestion domain's own record"
+        )
+        assert module.Source is not provenance.Source, (
+            f"{legacy_module}.Source was taken over by the provenance record"
+        )
+
+    for legacy_module in (
+        "omnivia_memory",
+        "omnivia_memory.provenance",
+        "omnivia_memory.provenance.models",
+        "omnivia_memory.memory.models",
+    ):
+        module = importlib.import_module(legacy_module)
+        assert module.Source is provenance.Source, (
+            f"{legacy_module}.Source is not the provenance domain's own record"
+        )
+        assert module.Source is not ingestion.Source, (
+            f"{legacy_module}.Source was taken over by the ingestion record"
+        )
+
+
+def test_watcher_source_reference_keeps_its_historical_collision_owner() -> None:
+    """``SourceReference`` collides between the watcher models leaf and the
+    runtime-only ``watcher.tracker``, which defines a *distinct* dataclass of its
+    own with the same fields. The barrel publishes the models one; the tracker
+    keeps using its own for every annotation and container it builds. Neither is a
+    root binding, and the tracker's must never enter Core.
+    """
+    models = importlib.import_module(WATCHER_MODELS_LEAF)
+    canonical = importlib.import_module(WATCHER_MODELS_CANONICAL)
+    tracker = importlib.import_module("omnivia_memory.ingestion.watcher.tracker")
+    barrel = importlib.import_module("omnivia_memory.ingestion.watcher")
+    canonical_barrel = importlib.import_module("omnivia_core.ingestion.watcher")
+
+    assert models.SourceReference is canonical.SourceReference
+    assert barrel.SourceReference is canonical.SourceReference
+    assert canonical_barrel.SourceReference is canonical.SourceReference
+
+    assert tracker.SourceReference is not canonical.SourceReference, (
+        "the tracker's private SourceReference was taken over by the models one"
+    )
+    assert tracker.SourceReference.__module__ == (
+        "omnivia_memory.ingestion.watcher.tracker"
+    )
+    assert not hasattr(
+        importlib.import_module("omnivia_core.ingestion.watcher.models"),
+        "SourceTracker",
+    )
+
+    # The tracker's own instances are its own type, not the routed one: a caller
+    # holding a reference out of ``SourceTracker`` gets the tracker's class.
+    reference = tracker.SourceReference(
+        watched_path="/w",
+        source_path="/w/a.md",
+        source_id="s1",
+        workspace_id="ws1",
+    )
+    store = tracker.SourceTracker()
+    store.register("/w", reference)
+    fetched = store.get_reference("/w/a.md", "ws1")
+    assert fetched is reference
+    assert isinstance(fetched, tracker.SourceReference)
+    assert not isinstance(fetched, canonical.SourceReference)
+
+
+def test_ingestion_models_behave_identically_through_both_import_paths() -> None:
+    """The routed models are the same objects, so this is not a cross-tree
+    comparison: it is proof that those exact objects still construct, round-trip
+    and classify correctly when reached through the legacy leaf and the hybrid
+    barrel -- the two paths no per-symbol identity check exercises.
+    """
+    barrel = importlib.import_module("omnivia_memory.ingestion")
+    leaf = importlib.import_module(INGESTION_MODELS_LEAF)
+
+    assert [member.value for member in barrel.FileType] == [
+        "markdown",
+        "text",
+        "pdf",
+        "docx",
+        "unknown",
+    ]
+    assert [member.value for member in leaf.ParseStatus] == [
+        "pending",
+        "success",
+        "failed",
+        "parsed",
+    ]
+
+    source = barrel.Source(path="/w/a.md", file_type=barrel.FileType.MARKDOWN)
+    assert source.status is leaf.ParseStatus.PENDING
+    assert source.workspace_id is None
+    assert source.size == 0
+    payload = source.to_dict()
+    assert payload["file_type"] == "markdown"
+    assert payload["status"] == "pending"
+    restored = leaf.Source.from_dict(payload)
+    assert restored.to_dict() == payload
+    assert isinstance(restored, barrel.Source)
+    created = restored.updated_at
+    restored.touch()
+    assert restored.updated_at >= created
+
+    chunk = leaf.Chunk(source_id=source.id, chunk_index=0, content="hello")
+    assert barrel.Chunk.from_dict(chunk.to_dict()) == chunk
+    # ``Chunk`` compares and hashes by id only, so two different contents under one
+    # id are the same chunk -- a behaviour identity alone would not prove survived.
+    assert leaf.Chunk(source_id="s", chunk_index=9, content="other", id=chunk.id) == (
+        chunk
+    )
+    assert len({chunk, barrel.Chunk.from_dict(chunk.to_dict())}) == 1
+
+    ok = barrel.ExtractionResult.success("hello")
+    assert ok.status is leaf.ParseStatus.SUCCESS
+    assert ok.error is None
+    assert ok.hash == hashlib.sha256(b"hello").hexdigest()
+    failed = leaf.ExtractionResult.failure("boom")
+    assert failed.status is barrel.ParseStatus.FAILED
+    assert failed.content is None
+    assert failed.hash is None
+    assert failed.error == "boom"
+
+
+def test_ingestion_file_inventory_behaves_through_the_leaf_only_route(
+    tmp_path: Path,
+) -> None:
+    """``FileInventory`` is leaf-only -- no barrel publishes it -- so its behaviour
+    has to be exercised through the facade directly. ``from_path`` reads the real
+    filesystem, detects the type from the extension, and starts out pending.
+    """
+    leaf = importlib.import_module(INGESTION_MODELS_LEAF)
+    canonical = importlib.import_module(INGESTION_MODELS_CANONICAL)
+    assert leaf.FileInventory is canonical.FileInventory
+
+    target = tmp_path / "note.md"
+    target.write_text("hello", encoding="utf-8")
+    inventory = leaf.FileInventory.from_path(target)
+    assert isinstance(inventory, canonical.FileInventory)
+    assert inventory.extension == ".md"
+    assert inventory.size == 5
+    assert inventory.file_type is canonical.FileType.MARKDOWN
+    assert inventory.parse_status is canonical.ParseStatus.PENDING
+    assert inventory.error_message is None
+    assert inventory.to_dict()["file_type"] == "markdown"
+
+    inventory.mark_error("boom")
+    assert inventory.parse_status is canonical.ParseStatus.FAILED
+    assert inventory.error_message == "boom"
+    inventory.mark_success()
+    assert inventory.parse_status is canonical.ParseStatus.SUCCESS
+    assert inventory.error_message is None
+
+    unknown = leaf.FileInventory.from_path(tmp_path)
+    assert unknown.file_type is canonical.FileType.UNKNOWN
+
+
+def test_watcher_models_behave_identically_through_both_import_paths() -> None:
+    """The same, for the ten watcher records: constructed and round-tripped
+    through the legacy leaf and the hybrid barrel, which are the two paths no
+    per-symbol identity check exercises."""
+    barrel = importlib.import_module("omnivia_memory.ingestion.watcher")
+    leaf = importlib.import_module(WATCHER_MODELS_LEAF)
+
+    assert [member.value for member in barrel.FileChangeType] == [
+        "created",
+        "modified",
+        "deleted",
+        "moved",
+    ]
+    assert [member.value for member in leaf.IndexerState] == [
+        "idle",
+        "scanning",
+        "watching",
+        "debouncing",
+        "indexing",
+        "error",
+    ]
+
+    change = barrel.FileChange(path="/w/a.md", event_type=leaf.FileChangeType.MODIFIED)
+    assert change.old_path is None
+    payload = change.to_dict()
+    assert payload["event_type"] == "modified"
+    assert leaf.FileChange.from_dict(payload).to_dict() == payload
+
+    batch = leaf.FileChangeBatch(changes=[change, change], debounce_key="ws1")
+    assert len(batch) == 2
+    assert batch.debounce_key == "ws1"
+
+    config = barrel.DebounceConfig()
+    assert config.to_dict() == {
+        "initial_delay_ms": 500,
+        "max_delay_ms": 2000,
+        "min_events": 3,
+    }
+
+    watched = leaf.WatchedPath(path="/w", workspace_id="ws1")
+    assert watched.recursive is True
+    assert watched.ignore_patterns == []
+    assert barrel.WatchedPath.from_dict(watched.to_dict()).to_dict() == (
+        watched.to_dict()
+    )
+
+    reference = barrel.SourceReference(
+        watched_path="/w",
+        source_path="/w/a.md",
+        source_id="s1",
+        workspace_id="ws1",
+    )
+    assert reference.is_stale(None) is True
+    assert reference.is_stale("h1") is True
+    stamped = leaf.SourceReference.from_dict({**reference.to_dict(), "last_known_hash": "h1"})
+    assert stamped.is_stale("h1") is False
+    assert stamped.is_stale("h2") is True
+    assert stamped.is_stale(None) is True
+
+    status = leaf.IndexerStatus(state=barrel.IndexerState.WATCHING, workspace_id="ws1")
+    assert status.to_dict() == {
+        "state": "watching",
+        "workspace_id": "ws1",
+        "active_watched_paths": [],
+        "pending_changes": 0,
+        "last_index_at": None,
+        "last_error": None,
+        "indexed_count": 0,
+        "deleted_count": 0,
+    }
+
+    job = barrel.ScheduledJob.create("reindex", "ws1", delay_seconds=1.5)
+    assert isinstance(job, leaf.ScheduledJob)
+    assert job.job_type == "reindex"
+    assert job.delay_seconds == 1.5
+    assert job.job_id
+
+    # ``IndexerScheduler`` is an abstract interface: every method must still raise,
+    # so a platform implementation cannot silently inherit a working no-op.
+    scheduler = leaf.IndexerScheduler()
+    assert isinstance(scheduler, barrel.IndexerScheduler)
+    for call in (
+        lambda: scheduler.schedule_reindex("ws1"),
+        lambda: scheduler.schedule_full_scan("ws1"),
+        lambda: scheduler.cancel("job-1"),
+        scheduler.list_pending,
+    ):
+        with pytest.raises(NotImplementedError):
+            call()
+
+
+def test_ingestion_runtime_consumers_hold_the_canonical_objects() -> None:
+    """The ingestion and watcher runtime leaves are unconverted modules that
+    import their contracts *from the converted facades*, so they now hold
+    canonical model objects while staying legacy-owned themselves. Pin that hop --
+    including ``memory_graph.ingestion_adapter``, a runtime leaf of another domain
+    that consumes this one's records -- and pin that none of their sources reaches
+    ``omnivia_core`` directly.
+    """
+    canonical_models = importlib.import_module(INGESTION_MODELS_CANONICAL)
+    canonical_watcher = importlib.import_module(WATCHER_MODELS_CANONICAL)
+
+    for module_name, names in INGESTION_RUNTIME_CONSUMERS.items():
+        module = importlib.import_module(module_name)
+        for name in names:
+            assert getattr(module, name) is getattr(canonical_models, name), (
+                f"{module_name}.{name} is not the exact canonical object"
+            )
+    for module_name, names in WATCHER_RUNTIME_CONSUMERS.items():
+        module = importlib.import_module(module_name)
+        for name in names:
+            assert getattr(module, name) is getattr(canonical_watcher, name), (
+                f"{module_name}.{name} is not the exact canonical object"
+            )
+
+    for module_name in (
+        *INGESTION_RUNTIME_CONSUMERS,
+        *WATCHER_RUNTIME_CONSUMERS,
+        "omnivia_memory.ingestion.watcher.tracker",
+    ):
+        source = Path(importlib.import_module(module_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        assert canonical_imports(ast.parse(source)) == [], (
+            f"{module_name} now imports omnivia_core directly; the runtime must keep "
+            "reaching its contracts through the legacy facades"
+        )
+
+
+#: Fresh-process import orders for the ingestion pair. Each is a full order, not a
+#: prefix: whichever module is named first is the one that gets to define the
+#: shared objects, so an order that only works because something else was imported
+#: earlier fails here.
+INGESTION_IMPORT_ORDERS: dict[str, tuple[str, ...]] = {
+    "canonical-first": (
+        INGESTION_MODELS_CANONICAL,
+        WATCHER_MODELS_CANONICAL,
+        INGESTION_MODELS_LEAF,
+        WATCHER_MODELS_LEAF,
+    ),
+    "facade-first": (
+        INGESTION_MODELS_LEAF,
+        WATCHER_MODELS_LEAF,
+        INGESTION_MODELS_CANONICAL,
+        WATCHER_MODELS_CANONICAL,
+    ),
+    "canonical-barrel-first": (
+        "omnivia_core.ingestion",
+        "omnivia_core.ingestion.watcher",
+        "omnivia_memory.ingestion",
+        "omnivia_memory.ingestion.watcher",
+    ),
+    "legacy-barrel-first": (
+        "omnivia_memory.ingestion",
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_core.ingestion",
+        "omnivia_core.ingestion.watcher",
+    ),
+    "runtime-first": (
+        "omnivia_memory.ingestion.pipeline",
+        "omnivia_memory.ingestion.watcher.debouncer",
+        "omnivia_memory.ingestion.watcher.tracker",
+        "omnivia_core.ingestion",
+        "omnivia_core.ingestion.watcher",
+    ),
+    "reverse": (
+        WATCHER_MODELS_LEAF,
+        INGESTION_MODELS_LEAF,
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_memory.ingestion",
+        "omnivia_core.ingestion.watcher",
+        "omnivia_core.ingestion",
+        WATCHER_MODELS_CANONICAL,
+        INGESTION_MODELS_CANONICAL,
+    ),
+    "repeated": (
+        INGESTION_MODELS_CANONICAL,
+        INGESTION_MODELS_LEAF,
+        INGESTION_MODELS_CANONICAL,
+        INGESTION_MODELS_LEAF,
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_core.ingestion.watcher",
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_core.ingestion.watcher",
+    ),
+}
+
+
+def _ingestion_identity_script(import_order: tuple[str, ...]) -> str:
+    always = (
+        "omnivia_core.ingestion",
+        INGESTION_MODELS_CANONICAL,
+        "omnivia_core.ingestion.watcher",
+        WATCHER_MODELS_CANONICAL,
+        "omnivia_memory.ingestion",
+        INGESTION_MODELS_LEAF,
+        "omnivia_memory.ingestion.watcher",
+        WATCHER_MODELS_LEAF,
+        "omnivia_memory.ingestion.watcher.tracker",
+        "omnivia_core.provenance.models",
+        "omnivia_memory.provenance.models",
+    )
+    lines = [
+        "import importlib",
+        "import sys",
+        f"sys.path.insert(0, {str(MEMORY_SRC)!r})",
+        f"sys.path.insert(0, {str(CORE_SRC)!r})",
+        f"for module_name in {import_order!r}:",
+        "    importlib.import_module(module_name)",
+        # Everything asserted below must be reachable regardless of the order under
+        # test, so pull in whatever that order did not name.
+        f"for module_name in {always!r}:",
+        "    importlib.import_module(module_name)",
+        *(f"import {module}" for module in always),
+    ]
+    for legacy_module in (INGESTION_MODELS_LEAF, WATCHER_MODELS_LEAF):
+        for symbol, canonical_module in LEAF_SYMBOL_SOURCES[legacy_module].items():
+            lines.append(
+                f"assert {legacy_module}.{symbol} is {canonical_module}.{symbol}, "
+                f"'{legacy_module}.{symbol} is not {canonical_module}.{symbol}'"
+            )
+    for barrel, canonical_barrel, portable, runtime in (
+        (
+            "omnivia_memory.ingestion",
+            "omnivia_core.ingestion",
+            INGESTION_PORTABLE_EXPORTS,
+            INGESTION_RUNTIME_EXPORTS,
+        ),
+        (
+            "omnivia_memory.ingestion.watcher",
+            "omnivia_core.ingestion.watcher",
+            WATCHER_PORTABLE_EXPORTS,
+            WATCHER_RUNTIME_EXPORTS,
+        ),
+    ):
+        for name in sorted(portable):
+            lines.append(
+                f"assert {barrel}.{name} is {canonical_barrel}.{name}, "
+                f"'the hybrid barrel stopped publishing the canonical {name}'"
+            )
+        for name in sorted(runtime):
+            lines.append(
+                f"assert not hasattr({canonical_barrel}, {name!r}), "
+                f"'{name} leaked into the canonical barrel'"
+            )
+    # The two collisions, in whichever order this process loaded them.
+    tracker_reference = "omnivia_memory.ingestion.watcher.tracker.SourceReference"
+    provenance_source = "omnivia_core.provenance.models.Source"
+    lines.extend(
+        [
+            (
+                f"assert {INGESTION_MODELS_CANONICAL}.Source is not "
+                f"{provenance_source}, "
+                "'the ingestion and provenance Source records collapsed'"
+            ),
+            (
+                f"assert omnivia_memory.Source is {provenance_source}, "
+                "'the legacy root Source was taken over by the ingestion record'"
+            ),
+            (
+                f"assert {tracker_reference} is not "
+                f"{WATCHER_MODELS_CANONICAL}.SourceReference, "
+                "'the tracker SourceReference collapsed onto the models one'"
+            ),
+            (
+                f"assert {tracker_reference}.__module__ == "
+                "'omnivia_memory.ingestion.watcher.tracker', "
+                "'the tracker SourceReference is no longer legacy-owned'"
+            ),
+            (
+                f"assert {INGESTION_MODELS_LEAF}.IngestSource is "
+                f"{INGESTION_MODELS_CANONICAL}.Source, "
+                "'the IngestSource alias no longer points at the canonical Source'"
+            ),
+        ]
+    )
+    # No duplicate class objects anywhere in the loaded closure: exactly one object
+    # per routed contract name across both trees.
+    #
+    # ``Source`` and its ``IngestSource`` alias are deliberately held out of this
+    # scan: ``Source`` is a live collision, so the provenance domain's own class is
+    # legitimately a *second* object of that name in the closure, and the alias
+    # names the ingestion one twice. Both are asserted explicitly above instead.
+    # ``.tracker`` is skipped for the same reason: its ``SourceReference`` is the
+    # other half of the second collision, and is asserted explicitly above too.
+    routed = sorted(
+        (
+            set(FACADE_ROUTES[INGESTION_MODELS_LEAF])
+            | set(FACADE_ROUTES[WATCHER_MODELS_LEAF])
+        )
+        - {"IngestSource", "Source"}
+    )
+    lines.extend(
+        [
+            "records = {}",
+            "for module_name, module in sorted(sys.modules.items()):",
+            "    if not (module_name == 'omnivia_core' or module_name.startswith('omnivia_')):",
+            "        continue",
+            "    if module_name.endswith('.tracker'):",
+            "        continue",
+            f"    for name in {routed!r}:",
+            "        value = getattr(module, name, None)",
+            "        if value is None or getattr(value, '__module__', '').startswith('omnivia_') is False:",
+            "            continue",
+            "        records.setdefault(name, set()).add(id(value))",
+            "duplicated = sorted(name for name, ids in records.items() if len(ids) != 1)",
+            "assert not duplicated, f'duplicate objects for {duplicated}'",
+            f"assert set(records) == set({routed!r})",
+        ]
+    )
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    "order_name", sorted(INGESTION_IMPORT_ORDERS), ids=sorted(INGESTION_IMPORT_ORDERS)
+)
+def test_ingestion_fresh_process_import_orders_preserve_identity(
+    order_name: str,
+) -> None:
+    """Seven fresh processes, one per order. A shared process would hide an order
+    that only works because an earlier test's imports had already settled which
+    module defines what -- which is exactly the failure mode two facades under two
+    hybrid barrels, with two live name collisions, could introduce.
+    """
+    _run_isolated(_ingestion_identity_script(INGESTION_IMPORT_ORDERS[order_name]))
+
+
+def test_canonical_ingestion_closure_loads_neither_the_runtime_nor_omnivia_memory() -> None:
+    """A canonical-only ingestion import must reach ``omnivia_memory`` not at all
+    -- and in particular not the ingestion/watcher runtime, the Memory Graph, the
+    persistence layer, or any private package. The ingestion runtime reaches
+    SQLite through ``omnivia_memory.persistence`` and PDF/DOCX extraction through
+    third-party readers, so their absence is part of what "the canonical contract
+    layer stands alone" means. The exact canonical closure is pinned too, so a
+    canonical leaf that started importing a sibling domain fails here rather than
+    growing the closure quietly. Only ``src`` goes on the path.
+    """
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            "import omnivia_core.ingestion",
+            "import omnivia_core.ingestion.models",
+            "import omnivia_core.ingestion.watcher",
+            "import omnivia_core.ingestion.watcher.models",
+            "assert 'omnivia_memory' not in sys.modules",
+            "loaded = {",
+            "    name for name in sys.modules",
+            "    if name == 'omnivia_core' or name.startswith('omnivia_core.')",
+            "}",
+            f"expected = set({sorted(INGESTION_CANONICAL_MODULE_CLOSURE)!r})",
+            "assert loaded == expected, sorted(loaded ^ expected)",
+            f"forbidden = set({list(INGESTION_FORBIDDEN_MODULE_ROOTS)!r})",
+            "leaked = sorted(forbidden & {name.split('.')[0] for name in sys.modules})",
+            "assert not leaked, leaked",
+            "runtime = sorted(",
+            "    name for name in sys.modules",
+            "    if name.endswith((",
+            "        '.chunker', '.debouncer', '.extractors', '.ingestion_adapter',",
+            "        '.pipeline', '.repositories', '.scanner', '.store', '.tracker',",
+            "    ))",
+            ")",
+            "assert not runtime, runtime",
+            "private = sorted(",
+            "    name for name in sys.modules",
+            "    if name.startswith('omnivia_core._')",
+            "    or name.startswith('omnivia_core.memory_graph')",
+            "    or name.startswith('omnivia_core.persistence')",
+            ")",
+            "assert not private, private",
+        ]
+    )
+    _run_isolated(script)
+
+
+def test_neither_package_root_exposes_any_ingestion_symbol() -> None:
+    """Both roots are deliberately unedited by this batch. Neither has ever
+    re-exported an ingestion or watcher name -- the legacy root's ``Source`` comes
+    from the provenance barrel, which is why the ingestion ``Source`` route moves
+    no frozen root binding. That is what makes this batch move *no* root binding
+    at all, so it is pinned rather than left implicit: a root that started
+    re-exporting one of these would need a declared root-binding owner move, and
+    there is none.
+    """
+    ingestion_names = sorted(
+        (set(INGESTION_BARREL_ALL) | set(INGESTION_LEAF_ONLY_ROUTES) | set(WATCHER_BARREL_ALL))
+        - {"Source"}
+    )
+    assert len(ingestion_names) == 32
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        root = importlib.import_module(root_name)
+        present = [name for name in ingestion_names if hasattr(root, name)]
+        assert present == [], f"{root_name} now re-exports ingestion symbols {present}"
+        advertised = [
+            name for name in ingestion_names if name in getattr(root, "__all__", ())
+        ]
+        assert advertised == []
+
+    # ...and neither ingestion barrel is a package either root imports from.
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        source = Path(importlib.import_module(root_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        reached = {
+            node.module
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert f"{root_name}.ingestion" not in reached
+        assert f"{root_name}.ingestion.watcher" not in reached
+
+
+def test_ingestion_conversion_declares_no_descriptor_rewrite_or_root_owner_move() -> None:
+    """Both ingestion leaves use ``from __future__ import annotations``, so every
+    frozen signature they recorded is already a string forward reference that never
+    named a package -- there is no descriptor text for the ownership move to
+    change. And neither leaf owns a root binding (see the test above), so no
+    root-binding owner move follows either. Pin that the two declaration maps carry
+    nothing for ingestion, and that the two unrelated entries they do carry are
+    untouched.
+    """
+    assert not any(
+        legacy_module.startswith("omnivia_memory.ingestion")
+        for legacy_module, _symbol in FACADE_DESCRIPTOR_REWRITES
+    )
+    assert not any(
+        legacy_module.startswith("omnivia_memory.ingestion")
         for _binding, legacy_module in FACADE_ROOT_BINDING_OWNER_MOVES
     )
     assert set(FACADE_ROOT_BINDING_OWNER_MOVES) == {

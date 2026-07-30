@@ -58,6 +58,16 @@ def _read_json(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _counted(count: int, singular: str, plural: str) -> str:
+    """``count`` with the English noun form it agrees with.
+
+    Only one is singular: zero and every plural count take ``plural``, so the
+    remaining-work line reads correctly as leaves are converted one at a time
+    down to none.
+    """
+    return f"{count} {singular if count == 1 else plural}"
+
+
 def check_schema() -> list[str]:
     """Meta-validate the schema and validate the committed document against it.
 
@@ -136,8 +146,9 @@ def main() -> int:
     ]
     leaves_left = [route for route in unconverted if route.shape is Shape.LEAF]
     print(
-        f"  remaining: {len(leaves_left)} leaves and "
-        f"{len(unconverted) - len(leaves_left)} barrels still to convert"
+        f"  remaining: {_counted(len(leaves_left), 'leaf', 'leaves')} and "
+        f"{_counted(len(unconverted) - len(leaves_left), 'barrel', 'barrels')} "
+        f"still to convert"
     )
     return 0
 

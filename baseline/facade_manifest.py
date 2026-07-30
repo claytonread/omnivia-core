@@ -902,16 +902,46 @@ def _parse_module(path: Path, where: str, errors: list[str]) -> ast.Module | Non
 def direct_facade_defects(tree: ast.Module, canonical_module: str) -> list[str]:
     """Why ``tree`` is not an exact single-source facade over ``canonical_module``.
 
-    An empty list means it is one: a docstring, and one absolute
-    ``from <canonical_module> import ...`` naming every re-exported symbol
-    unaliased. Anything else -- a second import, a relative import, a star
-    import, an alias, or any statement of its own (including ``__all__``) --
-    means the module does not merely forward identities, so callers of the
+    An empty list means it is one, and that is an exact *sequence* of two
+    top-level statements rather than a bag of permitted kinds:
+
+    1. exactly one module docstring, and it is the first statement. No other
+       standalone string expression appears at module scope;
+    2. exactly one absolute, unaliased, non-star
+       ``from <canonical_module> import ...`` naming every re-exported symbol,
+       and nothing else.
+
+    The docstring rule has to be positional to fail closed. Discarding *every*
+    module-scope string would accept a wrapper with no docstring at all, and a
+    wrapper carrying leading, middle, or trailing stray strings -- each of those
+    is a statement of the wrapper's own, executed at import time, and none of
+    them is the accepted shape.
+
+    Anything else fails too -- a second import, a relative import, a star
+    import, an alias, or any statement of its own (including ``__all__``, a
+    plain ``import x``, a definition, or a module ``__getattr__``/``__dir__``):
+    the module would no longer merely forward identities, so callers of the
     legacy path could be getting different objects than callers of the canonical
     one. Comments are invisible to :mod:`ast` and are therefore free.
     """
     defects: list[str] = []
-    body = [node for node in tree.body if not _is_docstring(node)]
+
+    # Only the *leading* string expression is a docstring; every other one is a
+    # statement of the module's own that a blanket ``_is_docstring`` filter would
+    # otherwise make invisible below.
+    body = list(tree.body)
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    else:
+        defects.append("does not open with a module docstring")
+    strays = [node for node in body if _is_docstring(node)]
+    if strays:
+        defects.append(
+            f"has {len(strays)} standalone string expression(s) besides the module "
+            f"docstring, at line(s) {sorted(node.lineno for node in strays)}"
+        )
+        body = [node for node in body if not _is_docstring(node)]
+
     imports = [node for node in body if isinstance(node, ast.ImportFrom)]
     others = [node for node in body if not isinstance(node, ast.ImportFrom)]
     if others:

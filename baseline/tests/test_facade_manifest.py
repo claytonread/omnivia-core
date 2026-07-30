@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ from baseline.facade_manifest import (
     MigrationState,
     PairKind,
     Shape,
+    direct_facade_defects,
     discover_package_modules,
     load_manifest,
     split_facade_defects,
@@ -137,6 +139,11 @@ EXPECTED_STATE_SUFFIXES = {
         # The models half of the Graph pair. Its sibling ``search_models`` is a
         # ``split_facade`` above, and their barrel stays a hybrid below.
         "graph.models",
+        # The two ingestion leaves. Both barrels above them
+        # (``ingestion`` and ``ingestion.watcher``) stay hybrids below, because
+        # the rest of each barrel's surface is owned by runtime-only leaves.
+        "ingestion.models",
+        "ingestion.watcher.models",
         "knowledge.models",
         "knowledge.normalize",
         "knowledge.validation",
@@ -382,6 +389,11 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("control_plane.imports", "source_parity", "move the state forward"),
         ("control_plane.models", "source_parity", "move the state forward"),
         ("control_plane.validation", "source_parity", "move the state forward"),
+        # The two ingestion leaves. Like the memory-graph four, their parent
+        # barrels stay hybrids, so a relabelling is caught only by their *own*
+        # source gate.
+        ("ingestion.models", "source_parity", "move the state forward"),
+        ("ingestion.watcher.models", "source_parity", "move the state forward"),
         ("knowledge.models", "source_parity", "move the state forward"),
         ("knowledge.normalize", "source_parity", "move the state forward"),
         ("knowledge.validation", "source_parity", "move the state forward"),
@@ -2321,6 +2333,677 @@ def test_graph_barrel_transitive_form_requires_both_children() -> None:
         ), (dropped, defects)
 
 
+#: --------------------------------------------------------------------------
+#: The ``ingestion`` pair: two direct facades under two hybrid barrels.
+#:
+#: ``ingestion.models`` and ``ingestion.watcher.models`` are plain
+#: ``direct_facade`` leaves -- one import each, nothing retained -- but neither
+#: barrel above them can follow: fourteen of the ``ingestion`` barrel's nineteen
+#: exports come from the runtime-only chunker/extractor/pipeline/repository/
+#: scanner leaves, and two of the ``ingestion.watcher`` barrel's twelve come from
+#: the runtime-only ``debouncer``/``tracker``. Both stay ``pending_hybrid``.
+#: --------------------------------------------------------------------------
+
+_INGESTION_MODELS_CANONICAL = "omnivia_core.ingestion.models"
+_WATCHER_MODELS_CANONICAL = "omnivia_core.ingestion.watcher.models"
+
+#: Each leaf's exact 18-name public/star namespace, in the source order its
+#: wrapper uses. Only the owned names are routes -- 7 of these 18 for
+#: ``ingestion.models`` and 10 for ``ingestion.watcher.models``; the rest are the
+#: incidental imports the historical module's own namespace also published.
+#: Restated here rather than read off the wrapper: this fixture is the adversary
+#: base for mutations of that very file.
+_INGESTION_MODELS_NAMESPACE: tuple[str, ...] = (
+    "TYPE_CHECKING",
+    "Any",
+    "Chunk",
+    "ExtractionResult",
+    "FileInventory",
+    "FileType",
+    "IngestSource",
+    "ParseStatus",
+    "Path",
+    "Source",
+    "annotations",
+    "dataclass",
+    "datetime",
+    "enum",
+    "field",
+    "hashlib",
+    "timezone",
+    "uuid",
+)
+_WATCHER_MODELS_NAMESPACE: tuple[str, ...] = (
+    "TYPE_CHECKING",
+    "DebounceConfig",
+    "FileChange",
+    "FileChangeBatch",
+    "FileChangeType",
+    "IndexerScheduler",
+    "IndexerState",
+    "IndexerStatus",
+    "ScheduledJob",
+    "SourceReference",
+    "WatchedPath",
+    "annotations",
+    "dataclass",
+    "datetime",
+    "enum",
+    "field",
+    "timezone",
+    "uuid",
+)
+
+_INGESTION_LEAVES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "ingestion.models",
+        _INGESTION_MODELS_CANONICAL,
+        _INGESTION_MODELS_NAMESPACE,
+    ),
+    (
+        "ingestion.watcher.models",
+        _WATCHER_MODELS_CANONICAL,
+        _WATCHER_MODELS_NAMESPACE,
+    ),
+)
+
+
+def _direct_wrapper_source(
+    canonical_module: str,
+    names: tuple[str, ...],
+    extra_source: str = "",
+    *,
+    docstring: str = '"""Compatibility facade."""\n',
+) -> str:
+    """A synthetic pure ``direct_facade`` wrapper: docstring plus one import."""
+    body = "".join(f"    {name},\n" for name in names)
+    return f"{docstring}from {canonical_module} import (\n{body})\n{extra_source}"
+
+
+def test_ingestion_pair_states_and_shapes_are_exact() -> None:
+    """The registry's own record of this batch: a ``direct``/``leaf`` pair per
+    models module, both ``direct_facade`` and both converted, each under a
+    ``hybrid_barrel`` that is not. Pinned exactly, because every other gate in
+    this section is about what may *not* happen to those states."""
+    manifest = load_manifest()
+
+    for suffix, canonical_module, _names in _INGESTION_LEAVES:
+        leaf = manifest.route_for_legacy(f"omnivia_memory.{suffix}")
+        assert (leaf.pair_kind, leaf.shape, leaf.migration_state) == (
+            PairKind.DIRECT,
+            Shape.LEAF,
+            MigrationState.DIRECT_FACADE,
+        )
+        assert leaf.is_converted
+        assert leaf.canonical_module == canonical_module
+
+    for suffix in ("ingestion", "ingestion.watcher"):
+        barrel = manifest.route_for_legacy(f"omnivia_memory.{suffix}")
+        assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
+            PairKind.HYBRID_BARREL,
+            Shape.BARREL,
+            MigrationState.PENDING_HYBRID,
+        )
+        assert not barrel.is_converted
+
+    for runtime_only in (
+        "omnivia_memory.ingestion.chunker",
+        "omnivia_memory.ingestion.extractors",
+        "omnivia_memory.ingestion.pipeline",
+        "omnivia_memory.ingestion.repositories",
+        "omnivia_memory.ingestion.scanner",
+        "omnivia_memory.ingestion.watcher.debouncer",
+        "omnivia_memory.ingestion.watcher.tracker",
+        "omnivia_memory.memory_graph.ingestion_adapter",
+    ):
+        assert runtime_only in manifest.runtime_only_modules
+        with pytest.raises(KeyError):
+            manifest.route_for_legacy(runtime_only)
+
+
+@pytest.mark.parametrize(
+    "suffix", ["ingestion.models", "ingestion.watcher.models"]
+)
+@pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
+def test_ingestion_leaf_direct_facade_state_cannot_be_walked_back(
+    suffix: str, state: str
+) -> None:
+    """Neither duplicated-source state may be re-declared over a leaf that is now
+    an exact single-import wrapper: the source no longer duplicates the canonical
+    module at all, and relabelling it would silently stop it being checked as
+    converted."""
+    document = _document()
+    _route(document, suffix)["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert f"declared {state!r} but the source is an exact facade" in joined
+
+
+@pytest.mark.parametrize(
+    ("suffix", "state", "pattern"),
+    [
+        ("ingestion.models", "split_facade", "declared 'split_facade'"),
+        ("ingestion.models", "canonical_subset", "move the state forward"),
+        ("ingestion.models", "source_parity", "move the state forward"),
+        ("ingestion.watcher.models", "split_facade", "declared 'split_facade'"),
+        ("ingestion.watcher.models", "canonical_subset", "move the state forward"),
+        ("ingestion.watcher.models", "source_parity", "move the state forward"),
+    ],
+    ids=[
+        "models-as-split",
+        "models-as-canonical-subset",
+        "models-as-source-parity",
+        "watcher-as-split",
+        "watcher-as-canonical-subset",
+        "watcher-as-source-parity",
+    ],
+)
+def test_validate_route_sources_enforces_the_ingestion_states(
+    suffix: str, state: str, pattern: str
+) -> None:
+    """``validate_route_sources`` is the source half of the gate on its own -- no
+    checkout rediscovery, no shape agreement, just each route's declared state
+    against its file. It must reach the same verdicts as ``validate_checkout``:
+    accept the real registry, and reject every mislabelling of either leaf.
+    ``split_facade`` is the specific temptation here: a wrapper with no retained
+    definitions is not a split facade, and declaring it one would swap in a
+    source policy that this wrapper cannot satisfy."""
+    validate_route_sources()
+    document = _document()
+    _route(document, suffix)["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match=pattern):
+        validate_route_sources(manifest=document)
+
+
+@pytest.mark.parametrize("suffix", ["ingestion", "ingestion.watcher"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "transitive_facade",
+        "pending_direct_barrel",
+        "direct_facade",
+        "split_facade",
+        "source_parity",
+        "canonical_subset",
+        "pending_root",
+    ],
+)
+def test_ingestion_barrels_cannot_be_promoted_out_of_pending_hybrid(
+    suffix: str, state: str
+) -> None:
+    """Each barrel's one portable child is converted, so ``transitive_facade``
+    looks tempting -- and it is exactly wrong: both barrels also re-export from
+    runtime-only leaves that are not routes and can never be converted children.
+    ``pending_hybrid`` is the only state a ``hybrid_barrel``/``barrel`` pair may
+    be in, so every other value is rejected at load time by the combination rule
+    rather than needing a state-specific waiver."""
+    document = _document()
+    _route(document, suffix)["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="valid combination"):
+        load_manifest(document)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "canonical_module", "names"),
+    [(suffix, canonical, names) for suffix, canonical, names in _INGESTION_LEAVES],
+    ids=["ingestion.models", "ingestion.watcher.models"],
+)
+def test_ingestion_wrapper_shape_is_the_defect_free_adversary_base(
+    suffix: str, canonical_module: str, names: tuple[str, ...]
+) -> None:
+    """The accepted shape -- a docstring and exactly one absolute, unaliased,
+    non-star import of the paired canonical module -- must be defect-free, so each
+    rejection below is proven to fail on what it injects rather than on the shape
+    itself."""
+    source = _direct_wrapper_source(canonical_module, names)
+    assert direct_facade_defects(ast.parse(source), canonical_module) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # An ``__all__`` of its own: the leaves never declared one, and adding it
+        # would let the wrapper advertise a surface its route does not decide.
+        ('__all__ = ["Chunk"]\n', "statements of its own"),
+        # A local definition, of either kind.
+        ("class Chunk:\n    pass\n", "statements of its own"),
+        ("def helper() -> float:\n    return 0.0\n", "statements of its own"),
+        # A dynamic hook: every name must be decided at import time.
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+        ("import uuid\n", "statements of its own"),
+        (
+            "import sys\nsys.modules[__name__].__dict__['probe'] = 1\n",
+            "statements of its own",
+        ),
+        # A second from-import, whether it reaches a sibling canonical leaf, the
+        # legacy runtime, or ``__future__``.
+        (
+            "from omnivia_core.provenance.models import SourceType\n",
+            "from-imports, expected exactly one",
+        ),
+        (
+            "from omnivia_memory.ingestion.scanner import FileScanner\n",
+            "from-imports, expected exactly one",
+        ),
+        ("from __future__ import annotations\n", "from-imports, expected exactly one"),
+    ],
+)
+def test_ingestion_wrapper_rejects_a_local_definition_or_second_import(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """Injected into the defect-free base above, so the asserted pattern is the
+    one the mutation causes. Parametrized on the ``ingestion.models`` wrapper;
+    its watcher sibling is the same shape and is covered by the reroute cases
+    below."""
+    source = _direct_wrapper_source(
+        _INGESTION_MODELS_CANONICAL, _INGESTION_MODELS_NAMESPACE, extra_source
+    )
+    defects = direct_facade_defects(ast.parse(source), _INGESTION_MODELS_CANONICAL)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("canonical_module", "names", "source", "pattern"),
+    [
+        # The wrong canonical module -- including the *sibling* leaf, which is the
+        # near miss a copy/paste would produce.
+        (
+            _INGESTION_MODELS_CANONICAL,
+            _INGESTION_MODELS_NAMESPACE,
+            "from omnivia_core.ingestion.watcher.models import FileChange\n",
+            "imports from 'omnivia_core.ingestion.watcher.models'",
+        ),
+        (
+            _WATCHER_MODELS_CANONICAL,
+            _WATCHER_MODELS_NAMESPACE,
+            "from omnivia_core.ingestion.models import Chunk\n",
+            "imports from 'omnivia_core.ingestion.models'",
+        ),
+        # The legacy path: a wrapper that re-exported from its own tree would keep
+        # every name resolving and route nothing.
+        (
+            _INGESTION_MODELS_CANONICAL,
+            _INGESTION_MODELS_NAMESPACE,
+            "from omnivia_memory.ingestion.models import Chunk\n",
+            "imports from 'omnivia_memory.ingestion.models'",
+        ),
+        # Relative, star, and aliased forms of the one permitted statement.
+        (
+            _INGESTION_MODELS_CANONICAL,
+            _INGESTION_MODELS_NAMESPACE,
+            "from .models import Chunk\n",
+            "relative import",
+        ),
+        (
+            _INGESTION_MODELS_CANONICAL,
+            _INGESTION_MODELS_NAMESPACE,
+            "from omnivia_core.ingestion.models import *\n",
+            "star import",
+        ),
+        (
+            _INGESTION_MODELS_CANONICAL,
+            _INGESTION_MODELS_NAMESPACE,
+            "from omnivia_core.ingestion.models import Source as IngestSource\n",
+            "aliases 'Source' as 'IngestSource'",
+        ),
+        (
+            _WATCHER_MODELS_CANONICAL,
+            _WATCHER_MODELS_NAMESPACE,
+            (
+                "from omnivia_core.ingestion.watcher.models import "
+                "SourceReference as SourceRef\n"
+            ),
+            "aliases 'SourceReference' as 'SourceRef'",
+        ),
+    ],
+    ids=[
+        "models-imports-watcher-sibling",
+        "watcher-imports-models-sibling",
+        "models-imports-legacy-self",
+        "relative",
+        "star",
+        "models-aliases-the-identity-alias",
+        "watcher-aliases-source-reference",
+    ],
+)
+def test_ingestion_wrapper_rejects_a_reroute_star_or_alias(
+    canonical_module: str,
+    names: tuple[str, ...],
+    source: str,
+    pattern: str,
+) -> None:
+    """Each of these replaces the one permitted statement rather than adding to
+    it, so the wrapper still has exactly one from-import and the defect reported
+    is the reroute/star/alias itself.
+
+    The two alias cases are the sharpest: ``IngestSource`` and ``SourceReference``
+    are real names in these leaves' namespaces, so an aliasing wrapper would
+    publish a namespace that looks right and is built by renaming rather than by
+    routing."""
+    del names  # the mutated source replaces the whole import statement
+    defects = direct_facade_defects(ast.parse(f'"""Doc."""\n{source}'), canonical_module)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("docstring", "extra_source", "pattern"),
+    [
+        # No docstring at all. This is the case a blanket "ignore every module
+        # string expression" filter cannot see: the remaining body is exactly one
+        # from-import of the right module with no statements of its own, so every
+        # other rule is satisfied and only the positional docstring rule rejects
+        # it. A wrapper is a documented boundary, not an anonymous re-export.
+        ("", "", "does not open with a module docstring"),
+        # A stray string after the import: a module-scope expression the wrapper
+        # itself executes, and not the docstring.
+        (
+            '"""Compatibility facade."""\n',
+            '"""Trailing note."""\n',
+            "standalone string expression(s) besides the module docstring",
+        ),
+        # A stray string between the docstring and the import.
+        (
+            '"""Compatibility facade."""\n"""Second string."""\n',
+            "",
+            "standalone string expression(s) besides the module docstring",
+        ),
+        # Both at once, so neither rule can be satisfied by the other's string.
+        (
+            '"""Compatibility facade."""\n"""Second string."""\n',
+            '"""Trailing note."""\n',
+            "standalone string expression(s) besides the module docstring",
+        ),
+    ],
+    ids=["no-docstring", "trailing-string", "middle-string", "middle-and-trailing"],
+)
+def test_ingestion_wrapper_requires_exactly_one_leading_module_docstring(
+    docstring: str, extra_source: str, pattern: str
+) -> None:
+    """The accepted direct-facade shape is a *sequence*: one leading docstring, then
+    one import. Counting kinds is not enough -- a wrapper with no docstring, or with
+    strings bolted on before or after the import, has exactly the permitted kinds in
+    the permitted quantities and is not the accepted shape."""
+    source = _direct_wrapper_source(
+        _INGESTION_MODELS_CANONICAL,
+        _INGESTION_MODELS_NAMESPACE,
+        extra_source,
+        docstring=docstring,
+    )
+    defects = direct_facade_defects(ast.parse(source), _INGESTION_MODELS_CANONICAL)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_ingestion_wrapper_counts_every_stray_string_it_reports() -> None:
+    """Strays are reported by count and line, not silently discarded: a wrapper that
+    accumulated several must not be describable as one incidental string, and the
+    lines say which. The reroute/alias rules still apply to the import underneath,
+    so the stray report is the *only* defect here -- proof the strings alone are
+    what fail."""
+    source = _direct_wrapper_source(
+        _INGESTION_MODELS_CANONICAL,
+        _INGESTION_MODELS_NAMESPACE,
+        extra_source='"""Trailing one."""\n"""Trailing two."""\n',
+        docstring='"""Compatibility facade."""\n"""Stray before the import."""\n',
+    )
+    defects = direct_facade_defects(ast.parse(source), _INGESTION_MODELS_CANONICAL)
+    assert len(defects) == 1, defects
+    assert "has 3 standalone string expression(s)" in defects[0], defects
+
+
+#: The two legacy ingestion barrels' exact historical import blocks, in source
+#: order. Restated rather than read off the barrels, because those are the files
+#: whose edits these gates exist to reject.
+_INGESTION_BARREL_HISTORICAL_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "chunker",
+        ("BaseChunker", "CharacterChunker", "ChunkConfig", "ParagraphChunker"),
+    ),
+    (
+        "extractors",
+        ("BaseExtractor", "DOCXExtractor", "MarkdownExtractor", "PDFExtractor"),
+    ),
+    ("models", ("Chunk", "ExtractionResult", "FileType", "ParseStatus", "Source")),
+    ("pipeline", ("IngestResult", "IngestionPipeline")),
+    ("repositories", ("ChunkRepository",)),
+    ("scanner", ("FileInfo", "FileScanner", "ScanOptions")),
+)
+_WATCHER_BARREL_HISTORICAL_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("debouncer", ("Debouncer",)),
+    (
+        "models",
+        (
+            "DebounceConfig",
+            "FileChange",
+            "FileChangeBatch",
+            "FileChangeType",
+            "IndexerScheduler",
+            "IndexerState",
+            "IndexerStatus",
+            "ScheduledJob",
+            "SourceReference",
+            "WatchedPath",
+        ),
+    ),
+    ("tracker", ("SourceTracker",)),
+)
+
+
+def _ingestion_barrel_source(
+    package: str,
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    extra_source: str = "",
+) -> str:
+    source = ""
+    exported: list[str] = []
+    for module, names in blocks:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from {package}.{module} import (\n{body})\n"
+        exported.extend(names)
+    all_body = "".join(f'    "{name}",\n' for name in sorted(exported))
+    return source + f"__all__ = [\n{all_body}]\n" + extra_source
+
+
+def _ingestion_barrel_route_and_children(suffix: str) -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy(f"omnivia_memory.{suffix}"),
+        [manifest.route_for_legacy(f"omnivia_memory.{suffix}.models")],
+    )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "blocks", "runtime_only"),
+    [
+        (
+            "ingestion",
+            _INGESTION_BARREL_HISTORICAL_BLOCKS,
+            ("chunker", "extractors", "pipeline", "repositories", "scanner"),
+        ),
+        (
+            "ingestion.watcher",
+            _WATCHER_BARREL_HISTORICAL_BLOCKS,
+            ("debouncer", "tracker"),
+        ),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_barrel_historical_source_is_not_a_transitive_facade(
+    suffix: str,
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    runtime_only: tuple[str, ...],
+) -> None:
+    """Even with the state gate bypassed, neither barrel's historical composition
+    can pass the transitive-facade source check: its runtime-only blocks are not
+    converted children, and those are the *only* defects -- so the failure is
+    attributable to the runtime-owned half specifically, not to the barrel's shape
+    or its ``__all__``.
+
+    The input is a synthetic source built from the exact historical import blocks
+    and the exact set of names each barrel advertises, not a byte copy of the file:
+    ``_ingestion_barrel_source`` emits a sorted ``__all__``, which is not the
+    watcher barrel's own order. That is deliberate and harmless here, because this
+    check is order-blind -- it compares the imported bindings against ``__all__``
+    as sets. Exact source order is pinned separately, against the real files, by
+    ``test_ingestion_hybrid_barrel_source_is_unchanged_reexport`` in
+    ``tests/compatibility/test_facade_foundation.py``."""
+    route, children = _ingestion_barrel_route_and_children(suffix)
+    source = _ingestion_barrel_source(f"omnivia_memory.{suffix}", blocks)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert len(defects) == len(runtime_only), defects
+    for module in runtime_only:
+        assert any(
+            "unapproved module" in defect
+            and f"omnivia_memory.{suffix}.{module}" in defect
+            for defect in defects
+        ), (module, defects)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "blocks"),
+    [
+        ("ingestion", _INGESTION_BARREL_HISTORICAL_BLOCKS),
+        ("ingestion.watcher", _WATCHER_BARREL_HISTORICAL_BLOCKS),
+    ],
+    ids=["ingestion", "ingestion.watcher"],
+)
+def test_ingestion_portable_only_shape_is_the_defect_free_adversary_base(
+    suffix: str, blocks: tuple[tuple[str, tuple[str, ...]], ...]
+) -> None:
+    """The hypothetical promoted barrel -- its single ``models`` block and the
+    matching ``__all__`` -- must be defect-free, so each rejection below is proven
+    to fail on what it injects."""
+    route, children = _ingestion_barrel_route_and_children(suffix)
+    portable = tuple(block for block in blocks if block[0] == "models")
+    source = _ingestion_barrel_source(f"omnivia_memory.{suffix}", portable)
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # A direct reroute at the canonical package: the barrel's identity
+        # preservation would become direct rather than transitive.
+        (
+            "from omnivia_core.ingestion.models import Chunk\n",
+            "unapproved module",
+        ),
+        # The runtime-only siblings the *real* barrel imports, absolutely and
+        # relatively. They are still not approved children, which is the whole
+        # reason the barrel stays a hybrid.
+        (
+            "from omnivia_memory.ingestion.scanner import FileScanner\n",
+            "unapproved module",
+        ),
+        ("from .chunker import BaseChunker\n", "unapproved module"),
+        # The watcher subpackage, which this barrel has never re-exported.
+        (
+            "from omnivia_memory.ingestion.watcher import Debouncer\n",
+            "unapproved module",
+        ),
+        ("from ..persistence import Database\n", "unapproved module"),
+        # A *relative* form of its own child. The resolver approves the module, so
+        # what rejects this is the binding/``__all__`` mismatch it creates --
+        # pinned so the two branches are not confused for each other.
+        (
+            "from .models import FileInventory\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        # The two leaf-only names: routed symbols the barrel has never advertised.
+        (
+            "from omnivia_memory.ingestion.models import IngestSource\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("Chunk = object()\n", "assignments"),
+        ("def extract(path):\n    return path\n", "statements of its own"),
+        ("class Source:\n    pass\n", "statements of its own"),
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_ingestion_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    route, children = _ingestion_barrel_route_and_children("ingestion")
+    portable = tuple(
+        block for block in _INGESTION_BARREL_HISTORICAL_BLOCKS if block[0] == "models"
+    )
+    source = _ingestion_barrel_source(
+        "omnivia_memory.ingestion", portable, extra_source=extra_source
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.ingestion.watcher.models import FileChange\n",
+            "unapproved module",
+        ),
+        (
+            "from omnivia_memory.ingestion.watcher.tracker import SourceTracker\n",
+            "unapproved module",
+        ),
+        ("from .debouncer import Debouncer\n", "unapproved module"),
+        # The parent ingestion barrel: an approved-looking neighbour that is not a
+        # child of this one.
+        ("from omnivia_memory.ingestion import Chunk\n", "unapproved module"),
+        (
+            "from .models import SourceReference\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("SourceReference = object()\n", "assignments"),
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_watcher_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The watcher barrel's own set. ``tracker`` is the sharp case: it defines a
+    *distinct* ``SourceReference`` of its own, so a barrel that started importing
+    from it would swap the published contract while every name still resolved."""
+    route, children = _ingestion_barrel_route_and_children("ingestion.watcher")
+    portable = tuple(
+        block for block in _WATCHER_BARREL_HISTORICAL_BLOCKS if block[0] == "models"
+    )
+    source = _ingestion_barrel_source(
+        "omnivia_memory.ingestion.watcher", portable, extra_source=extra_source
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    "suffix", ["ingestion", "ingestion.watcher"]
+)
+def test_ingestion_barrel_transitive_form_requires_its_converted_child(
+    suffix: str,
+) -> None:
+    """Dropping the one portable block must fail: an empty-bodied barrel is a
+    valid shape and has still stopped re-exporting its converted leaf."""
+    route, children = _ingestion_barrel_route_and_children(suffix)
+    source = _ingestion_barrel_source(f"omnivia_memory.{suffix}", ())
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(
+        "does not import converted children" in defect
+        and f"omnivia_memory.{suffix}.models" in defect
+        for defect in defects
+    ), defects
+
+
 def test_validate_checkout_revalidates_public_dataclass_instances() -> None:
     manifest = load_manifest()
     forged = replace(manifest, routes=(manifest.routes[0], manifest.routes[0]))
@@ -2380,18 +3063,40 @@ def test_checker_is_a_successful_executable_gate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
-    # The per-state counts this batch moved: ``graph.models`` from
-    # ``source_parity`` into ``direct_facade``, and ``graph.search_models`` out of
-    # ``canonical_subset`` -- which empties that state -- into the new
-    # ``split_facade``. Their barrel is a hybrid, so no barrel changed state with
-    # them: ``transitive_facade`` and ``pending_hybrid`` both stay where they were.
-    # Both leaves are converted, so two come off the remaining-leaf count.
+    # The per-state counts this batch moved: ``ingestion.models`` and
+    # ``ingestion.watcher.models`` from ``source_parity`` into ``direct_facade``.
+    # Nothing else moved: their two barrels are hybrids, so no barrel changed
+    # state with them (``transitive_facade`` and ``pending_hybrid`` both stay
+    # where they were), and neither ``canonical_subset`` nor ``split_facade`` is
+    # touched. Both leaves are converted, so two come off the remaining-leaf
+    # count, leaving ``workspace.models`` as the only unconverted leaf.
     assert "canonical_subset: 0" in result.stdout
-    assert "source_parity: 3" in result.stdout
-    assert "direct_facade: 26" in result.stdout
+    assert "source_parity: 1" in result.stdout
+    assert "direct_facade: 28" in result.stdout
     assert "split_facade: 1" in result.stdout
     assert "transitive_facade: 10" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
     assert "pending_hybrid: 6" in result.stdout
     assert "pending_root: 1" in result.stdout
-    assert "remaining: 3 leaves and 6 barrels still to convert" in result.stdout
+    assert "remaining: 1 leaf and 6 barrels still to convert" in result.stdout
+
+
+def _checker_module() -> Any:
+    """The checker script, imported by path: its name is not an identifier."""
+    path = REPO_ROOT / "scripts" / "check-facade-routes.py"
+    spec = importlib.util.spec_from_file_location("_check_facade_routes", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [(0, "0 leaves"), (1, "1 leaf"), (2, "2 leaves"), (11, "11 leaves")],
+)
+def test_checker_pluralizes_its_remaining_counts(count: int, expected: str) -> None:
+    """The remaining-work line is read by a human deciding whether the batch landed,
+    and the counts walk down through one to none as leaves are converted. Only one
+    is singular."""
+    assert _checker_module()._counted(count, "leaf", "leaves") == expected
