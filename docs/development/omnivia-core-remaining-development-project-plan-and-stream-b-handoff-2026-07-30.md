@@ -4,7 +4,7 @@ Date: 2026-07-30
 Status: Active development plan  
 Architecture authority: accepted ADR-036, ADR-037, ADR-038 and OmniVia Core architecture specification v0.6  
 Current implementation branch: `codex/ui-residual-risk-closure`  
-Current reviewed committed checkpoint: `4bbed05`
+Current reviewed committed checkpoint: `10fa17b`
 
 Primary repository: `/Users/claytonread/Projects/omnivia-core`
 
@@ -51,7 +51,7 @@ This is an engineering estimate, not a simple count of architecture phases. The 
 | Area | Estimated status | Position |
 |---|---:|---|
 | Phase 0 baseline freeze | 100% | Complete and reproducible |
-| Phase 1 package and contract foundation | 95% | Contract, behavior and compatibility-facade preparation are complete; merge-blocking CI and closeout evidence remain |
+| Phase 1 package and contract foundation | 98% | Local contract, behavior, compatibility-facade and acceptance-CI work is complete; publication, the required GitHub branch rule and formal closeout evidence remain |
 | Phase 2 workspace, migrations and fencing | Separate stream active | Stream B is already in progress; no Stream B implementation checkpoint has yet been reviewed or integrated into this Stream A branch |
 | Phase 3 provider-neutral service | Foundation only | Wire foundations exist; operation-level service behavior is not implemented |
 | Phase 4 CLI and MCP | Skeleton only | Distributions exist; operational adapters are not implemented |
@@ -59,10 +59,12 @@ This is an engineering estimate, not a simple count of architecture phases. The 
 
 ### 3.2 Repository state
 
-- `4bbed05` is the latest independently reviewed and committed implementation checkpoint.
-- The initial development and handoff plan is committed at `5679e3c`; the control-plane behavior proof is at `55f2489`; the plan status refresh is at `ae8e2f1`; and the accepted compatibility-facade foundation is at `4bbed05`.
-- The branch is 18 commits ahead of `origin/codex/ui-residual-risk-closure`.
-- The working tree was clean immediately after the `4bbed05` acceptance checkpoint; this document refresh is the only subsequent local change.
+- `10fa17b` is the latest independently reviewed and committed implementation checkpoint.
+- The initial development and handoff plan is committed at `5679e3c`; the control-plane behavior proof is at `55f2489`; the accepted compatibility-facade foundation is at `4bbed05`; the previous plan refresh is at `a80ef6a`; and the local acceptance workflow is at `10fa17b`.
+- The branch contains the reviewed 20-commit implementation lineage through
+  `10fa17b` plus this status-document update; none of this lineage has been
+  pushed from the current task.
+- The working tree is clean at this handoff checkpoint.
 - The work is locally accepted and verified but is not yet merged or released.
 - The accepted PM copies of ADR-036, ADR-037, ADR-038 and specification v0.6 are authoritative. Copies previously supplied from Downloads must not override the accepted PM versions.
 
@@ -79,6 +81,7 @@ This is an engineering estimate, not a simple count of architecture phases. The 
 | Remaining-development plan | `5679e3c` | Stream A/Stream B ownership, authorization boundaries, ordered roadmap and Stream B handoff |
 | Control-plane behavior proof | `55f2489` | 54 legacy-equivalent validation cases plus 31 pure policy-compiler cases running against canonical Core |
 | Compatibility-facade foundation | `4bbed05` | Five legacy leaves converted to exact canonical re-exports; fail-closed frozen-baseline normalization; exact package dependency; deterministic offline wheel metadata/artifact-install proof |
+| Phase 0/1 acceptance CI | `10fa17b` | One stable, unfiltered `Core acceptance` job covering packages, contracts, TypeScript, migration, baseline, full suite, benchmarks, Ruff, mypy and committed-range diff checks; 17 structural regression tests |
 
 The canonical migration now covers:
 
@@ -93,11 +96,12 @@ The canonical migration now covers:
 
 The latest independent audit and host rerun report:
 
-- 2,154 tests passing in the complete repository suite (`PYTHONPATH=.:src:services/omnivia-memory/src .venv/bin/pytest -q`);
+- 2,171 tests passing in the complete repository suite (`PYTHONPATH=.:src:services/omnivia-memory/src .venv/bin/pytest -q`);
 - 5 pre-existing SWIG deprecation warnings in the PDF ingestion tests;
 - 587 application-contract tests passing;
 - 531 canonical-migration tests passing after the five converted leaves moved from source-parity coverage to stricter facade-identity coverage;
 - 60 compatibility-facade tests passing with no skips;
+- 17 acceptance-workflow regression tests passing;
 - all 85 focused control-plane behavior tests passing;
 - all 6 Phase 0 drift checks and 182 Phase 0 tests passing;
 - all four wheels built and installed independently from a clean temporary wheelhouse;
@@ -112,9 +116,12 @@ The final control-plane review specifically verified exact export order, owner r
 
 #### Merge-blocking acceptance CI
 
-The repository currently has only `.github/workflows/core-performance-report.yml`, an informational performance workflow. It is not a merge gate and does not satisfy the Phase 0/1 acceptance requirement.
+The local repository now contains `.github/workflows/core-acceptance.yml` at
+`10fa17b`, with one stable displayed job/check name: `Core acceptance`. It runs
+for every pull request without path filtering and on manual dispatch. The
+separate `.github/workflows/core-performance-report.yml` remains informational.
 
-The missing merge-blocking `Core acceptance` workflow must run, at minimum:
+The accepted local workflow runs:
 
 1. package dependency-boundary and package tests;
 2. all four wheel builds and clean isolated-install checks;
@@ -127,7 +134,23 @@ The missing merge-blocking `Core acceptance` workflow must run, at minimum:
 9. Ruff and strict mypy;
 10. a pull-request-range `git diff --check`.
 
-The intended workflow is `.github/workflows/core-acceptance.yml`, triggered for pull requests and manual dispatch without path filtering, with `contents: read`, Python 3.11, Node and one stable required-check name: `Core acceptance`. Repository branch protection or a GitHub ruleset must separately require that check; adding the YAML file alone does not make it merge-blocking.
+The workflow uses `contents: read`, Python 3.11, Node 22, full-history checkout,
+fail-fast steps, PR base/head triple-dot diff checking and a committed
+default-branch range for manual runs. Its 17 stdlib-only structural regression
+tests bind required commands and configuration to their actual job and steps,
+and ignore commented-out directives.
+
+Two external/release controls remain:
+
+- the branch must be published and the workflow must pass on a real GitHub
+  runner;
+- repository branch protection or a GitHub ruleset must require the stable
+  `Core acceptance` check. Adding the YAML file alone does not make it
+  merge-blocking.
+
+Python dependency resolution also remains range-based because this repository
+does not yet carry a Python lock or constraints file. The workflow records that
+risk and deliberately does not present pip caching as reproducibility.
 
 #### Compatibility-facade inventory and invariants
 
@@ -222,12 +245,14 @@ The current result must not be described as a complete standalone Core product. 
 
 ### A0 — Land and protect the accepted foundation
 
-Status: acceptance-CI work remains; publication is not yet authorized.
+Status: local acceptance CI is complete at `10fa17b`; publication, a real
+GitHub runner result and the required branch rule remain. Publication is not
+yet authorized.
 
 Work:
 
-1. Push or open a pull request for the reviewed 18-commit lineage through `4bbed05` when publication is authorized.
-2. Add merge-blocking CI for:
+1. Push or open a pull request for the reviewed 20-commit lineage through `10fa17b` when publication is authorized.
+2. **Complete locally:** add acceptance CI for:
    - package dependency boundaries and package tests;
    - all four wheel builds and isolated installs;
    - application schema, fixture, codec and generated-artifact drift;
@@ -238,7 +263,7 @@ Work:
    - benchmark tests;
    - Ruff and strict mypy;
    - pull-request-range diff checking.
-3. Use one stable `Core acceptance` check and configure the repository branch ruleset to require it.
+3. **Workflow complete; external setting pending:** use one stable `Core acceptance` check and configure the repository branch ruleset to require it after publication.
 4. Preserve the informational performance workflow but do not treat it as a replacement for merge gates.
 5. Record the accepted commit and exact commands in PM evidence through a separate PM-owned change.
 
@@ -250,7 +275,10 @@ Exit:
 
 ### A1 — Close T-0628 compatibility and behavior
 
-Status: active. Control-plane behavior proof is complete at `55f2489`; compatibility-facade preparation is accepted at `4bbed05`; closeout CI remains to be implemented.
+Status: ready for publication-backed closeout. Control-plane behavior proof is
+complete at `55f2489`; compatibility-facade preparation is accepted at
+`4bbed05`; and local acceptance CI is accepted at `10fa17b`. A real GitHub run,
+required branch rule and formal PM evidence remain.
 
 Work:
 
@@ -266,7 +294,7 @@ Work:
 6. Keep `src/omnivia_core/__init__.py` version-only and route legacy root collisions to their frozen canonical owners.
 7. Route runtime-only exports deliberately; do not duplicate their models in Core.
 8. **Complete for the foundation slice:** add exact object-identity, import, export-drift and deterministic wheel/dependency-metadata tests. Extend the same invariants to every later facade route and add deprecation metadata before publication.
-9. Add the merge-blocking `Core acceptance` workflow and required branch rule.
+9. **Workflow complete at `10fa17b`; external setting pending:** publish and require the stable `Core acceptance` check through the repository branch rule.
 10. Re-run the complete T-0628 acceptance suite and record a formal accepted checkpoint.
 
 T-0628 exit:
@@ -364,10 +392,10 @@ The Stream B agent reviews rather than assumes the foundation.
 
 Work:
 
-1. Confirm `4bbed05` is the intended reviewed starting checkpoint and inspect all 18 commits from `117cf83` through `4bbed05`.
+1. Confirm `10fa17b` is the current Stream A reviewed checkpoint and inspect all 20 commits from `117cf83` through `10fa17b`.
 2. Reproduce package builds and isolated installs.
 3. Reproduce dependency, schema, fixture, generated-artifact, canonical-migration and Phase 0 gates.
-4. Reproduce the 85 focused control-plane behavior tests, 531-test canonical-migration suite, 60-test compatibility-facade suite and 2,154-test full suite.
+4. Reproduce the 85 focused control-plane behavior tests, 531-test canonical-migration suite, 60-test compatibility-facade suite, 17-test acceptance-workflow suite and 2,171-test full suite.
 5. Review the control-plane barrel, the accepted five-leaf facade foundation, T-0628 compatibility inventory and merge-gate audit.
 6. Reproduce the facade identity, namespace, frozen-baseline and deterministic wheel metadata/artifact-install proofs.
 7. Report any discrepancy before writing Phase 2 code.
@@ -650,7 +678,7 @@ The following must not run as competing write lanes:
 
 The receiving agent should produce a short review report answering:
 
-1. Do the 18 commits from `117cf83` through `4bbed05` match ADR-036, ADR-038 and the Phase 0/1 task packets?
+1. Do the 20 commits from `117cf83` through `10fa17b` match ADR-036, ADR-038 and the Phase 0/1 task packets?
 2. Do the 85 control-plane behavior cases accurately preserve the 54 validation and 31 pure policy-compiler cases from their frozen legacy sources?
 3. Does the 47-route compatibility inventory make exact identity, collision routing, hybrid/runtime ownership and the version-only canonical root enforceable without proxies or duplicate models?
 4. Do all four packages build and install independently?
@@ -670,13 +698,13 @@ Use the following as the receiving agent's task:
 
 > You own Stream B — Workspace Authority and Standalone Runtime — for OmniVia Core. Codex owns Stream A — Contracts, Compatibility and Integration. The architecture authority is the accepted PM copies of ADR-036, ADR-037, ADR-038 and architecture specification v0.6. The owner approved Phases 0–2 only. Do not implement broad Phase 3 service operations, the full CLI/MCP, consumer cutover or production distribution without their later approved task packets.
 >
-> First perform an independent, read-only review of the 18 committed checkpoints from `117cf83` through `4bbed05` on branch `codex/ui-residual-risk-closure`. `4bbed05` is the current reviewed committed checkpoint. The plan itself is committed at `5679e3c` and refreshed at `ae8e2f1`; the control-plane behavior proof is at `55f2489`; the accepted facade foundation is at `4bbed05`.
+> The current Stream A review baseline is the 20 committed checkpoints from `117cf83` through `10fa17b` on branch `codex/ui-residual-risk-closure`. `10fa17b` is the current reviewed committed checkpoint. The plan itself is committed at `5679e3c` and refreshed at `a80ef6a`; the control-plane behavior proof is at `55f2489`; the accepted facade foundation is at `4bbed05`; and the local acceptance workflow is at `10fa17b`. Stream B is already in progress independently; do not restart or redirect it merely because this Stream A baseline advanced.
 >
-> Reproduce the package-boundary tests, all four wheel builds and isolated installs, application schema/fixture/codec/generated-artifact gates, strict TypeScript compilation, Phase 0 drift/baseline gates, Ruff, strict mypy and diff checks. Reproduce the 85 focused control-plane behavior cases (54 validation and 31 policy-compiler), the 531-test canonical-migration suite, the 60-test compatibility-facade suite and the 2,154-test full suite; the known full-suite result includes five pre-existing SWIG deprecation warnings and no skipped tests. Report discrepancies with exact files, commands and outputs.
+> Reproduce the package-boundary tests, all four wheel builds and isolated installs, application schema/fixture/codec/generated-artifact gates, strict TypeScript compilation, Phase 0 drift/baseline gates, Ruff, strict mypy and diff checks. Reproduce the 85 focused control-plane behavior cases (54 validation and 31 policy-compiler), the 531-test canonical-migration suite, the 60-test compatibility-facade suite, the 17-test acceptance-workflow suite and the 2,171-test full suite; the known full-suite result includes five pre-existing SWIG deprecation warnings and no skipped tests. Report discrepancies with exact files, commands and outputs.
 >
 > Review the completed audits as evidence, not assumptions. There are 47 supported legacy-to-canonical route pairs: 40 direct, six hybrid barrels and the package root. The legacy root advertises 183 ordered exports: 182 portable names plus `__version__`. Twenty-one legacy paths remain runtime only. Exact facade identity forbids copies, subclasses, proxies, wrapper functions, dynamic `__getattr__` routing and `sys.modules` aliases. `src/omnivia_core/__init__.py` remains version-only. The frozen collision routes are `LifecycleState` → control plane, `ValidationResult` → shared validation, `SourceRef` → knowledge, `ProvenanceRequirement` → Component Contract, and `Source`/`SourceType` → provenance. Verify the recorded migration order and the accepted five-leaf facade foundation at `4bbed05`. Do not claim final facade cutover: the remaining direct, hybrid and root routes are still tracked work.
 >
-> Also review the acceptance-CI finding. The only current workflow is the informational performance report. The required merge-blocking `Core acceptance` gate must cover package tests, four-wheel isolated installs, application schema/fixture/codec/generated drift, strict TypeScript, canonical migration, Phase 0 drift/baseline, full suite, benchmarks, Ruff, strict mypy and pull-request-range diff checking. A repository branch rule or ruleset must separately require the stable check.
+> Also review the accepted local workflow at `.github/workflows/core-acceptance.yml`. Its stable `Core acceptance` job covers package tests, four-wheel isolated installs, application schema/fixture/codec/generated drift, strict TypeScript, canonical migration, Phase 0 drift/baseline, full suite, benchmarks, Ruff, strict mypy and committed-range diff checking. The separate performance workflow remains informational. The acceptance workflow has not yet run on a published GitHub branch, and a repository branch rule or ruleset must separately require the stable check before T-0628 closes.
 >
 > T-0628 compatibility preparation may close before final facade and consumer cutover. Do not begin operational T-0629 implementation until Codex records that formal closeout checkpoint. While waiting, prepare only read-only Phase 2 evidence: the T-0629 test plan, migration fixture oracle, mutation-call-site inventory, fake process/clock evidence and multi-process adversarial harness design. Do not modify PM-owned files.
 >
@@ -738,8 +766,8 @@ OmniVia Core development is complete for specification v0.6 only when:
 ## 14. Immediate next actions
 
 1. **Complete — Stream A / Codex:** independently review, repair, accept and commit the five-leaf facade foundation at `4bbed05`.
-2. **Stream A / Codex:** add the merge-blocking `Core acceptance` workflow, configure the required branch rule, run the complete acceptance matrix and record the T-0628 closeout checkpoint.
-3. **In progress — separate Stream B agent:** independently review the 18 committed checkpoints through `4bbed05` and prepare B0 evidence plus the T-0629 implementation/test plan. Stream A does not duplicate or redirect this work.
+2. **Local work complete; external action pending — Stream A / Codex:** publish the `10fa17b` lineage when authorized, obtain a real `Core acceptance` runner result, configure the required branch rule and record the formal T-0628 closeout evidence.
+3. **In progress independently — Stream B:** continue under its existing agent and scope. Stream A does not restart, duplicate or redirect that work; `10fa17b` is available as the next reviewed coordination baseline.
 4. **After T-0628 closeout:** create the temporary Stream B worktree from the accepted checkpoint and begin T-0629A while Stream A continues non-overlapping facade conversion.
 5. **Integration controller:** review and integrate each Stream B slice in order.
 6. **Architecture owner:** review and authorize the Phase 3 task packet before A2/B9 operational implementation.
