@@ -69,6 +69,10 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "operations",
     "workspace",
     "memory",
+    "evidence",
+    "knowledge",
+    "graph",
+    "context-pack",
     "compatibility-matrix",
 )
 #: The reference-only registry. It contributes annotations, never definitions.

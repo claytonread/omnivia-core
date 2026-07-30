@@ -64,6 +64,10 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "operations",
     "workspace",
     "memory",
+    "evidence",
+    "knowledge",
+    "graph",
+    "context-pack",
     "compatibility-matrix",
 )
 REGISTRY_SCHEMA = "application-v1"

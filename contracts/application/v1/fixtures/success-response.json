@@ -24,6 +24,9 @@
       "projection_versions": {
         "memory_index": "pv-42"
       },
+      "projection_watermarks": {
+        "memory_index": "wm-41"
+      },
       "stale": false
     },
     "job": {

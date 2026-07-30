@@ -3,7 +3,7 @@
   "$id": "https://contracts.omnivia.dev/application/v1/application-v1.schema.json",
   "title": "OmniVia Core Application Contract v1 - registry",
   "description": "Reference-only registry of every type in the v1 application contract. This document validates nothing on its own and declares no root type: it exists so one stable URI enumerates the whole contract surface, and so tooling can detect a definition that was added to a source schema but never published. The sibling source documents remain canonical.",
-  "x-omnivia-contract-version": "1.1",
+  "x-omnivia-contract-version": "1.2",
   "x-omnivia-schema-sources": [
     "https://contracts.omnivia.dev/application/v1/common.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility.schema.json",
@@ -15,6 +15,10 @@
     "https://contracts.omnivia.dev/application/v1/operations.schema.json",
     "https://contracts.omnivia.dev/application/v1/workspace.schema.json",
     "https://contracts.omnivia.dev/application/v1/memory.schema.json",
+    "https://contracts.omnivia.dev/application/v1/evidence.schema.json",
+    "https://contracts.omnivia.dev/application/v1/knowledge.schema.json",
+    "https://contracts.omnivia.dev/application/v1/graph.schema.json",
+    "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json"
   ],
   "$defs": {
@@ -204,6 +208,12 @@
     "EvidenceReference": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
     },
+    "CandidateAssertion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateAssertion"
+    },
+    "CandidateExtractionMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateExtractionMetadata"
+    },
     "ProvenanceEntry": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/ProvenanceEntry"
     },
@@ -218,6 +228,9 @@
     },
     "RecordProvenance": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordProvenance"
+    },
+    "RecordVersionReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference"
     },
     "JobState": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState"
@@ -339,12 +352,6 @@
     "GovernedRecord": {
       "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
     },
-    "CandidateAssertion": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateAssertion"
-    },
-    "CandidateExtractionMetadata": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateExtractionMetadata"
-    },
     "MemoryQuery": {
       "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryQuery"
     },
@@ -374,6 +381,150 @@
     },
     "MemorySearchResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemorySearchResult"
+    },
+    "EvidenceId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId"
+    },
+    "EvidenceQuery": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceQuery"
+    },
+    "EvidenceChecksum": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum"
+    },
+    "MediaType": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType"
+    },
+    "EvidenceArtifact": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceArtifact"
+    },
+    "EvidenceSearchInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceSearchInput"
+    },
+    "EvidenceSearchResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceSearchResult"
+    },
+    "GovernanceRationale": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale"
+    },
+    "KnowledgeSearchInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeSearchInput"
+    },
+    "KnowledgeSearchResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeSearchResult"
+    },
+    "KnowledgeProposeInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeProposeInput"
+    },
+    "KnowledgeProposeResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/KnowledgeProposeResult"
+    },
+    "CandidateApproveInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateApproveInput"
+    },
+    "CandidateApproveResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateApproveResult"
+    },
+    "CandidateRejectInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateRejectInput"
+    },
+    "CandidateRejectResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/CandidateRejectResult"
+    },
+    "RecordSupersedeInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/RecordSupersedeInput"
+    },
+    "RecordSupersedeResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/RecordSupersedeResult"
+    },
+    "GraphDirection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDirection"
+    },
+    "GraphRelationType": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphRelationType"
+    },
+    "GraphDepthLimit": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphDepthLimit"
+    },
+    "GraphOrderingBasis": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphOrderingBasis"
+    },
+    "GraphBoundaryReason": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphBoundaryReason"
+    },
+    "GraphNode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphNode"
+    },
+    "GraphEdge": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphEdge"
+    },
+    "GraphTraversalInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphTraversalInput"
+    },
+    "GraphTraversalResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/graph.schema.json#/$defs/GraphTraversalResult"
+    },
+    "ContextPackMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackMode"
+    },
+    "ContextPackTokenCount": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenCount"
+    },
+    "ContextPackTokenBudget": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenBudget"
+    },
+    "ContextPackDigest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackDigest"
+    },
+    "ContextPackEvidenceReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackEvidenceReference"
+    },
+    "ContextPackEvidenceCitation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackEvidenceCitation"
+    },
+    "ContextPackRecordCitation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackRecordCitation"
+    },
+    "ContextPackCitation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackCitation"
+    },
+    "ContextPackSection": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackSection"
+    },
+    "ContextPackConflict": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackConflict"
+    },
+    "ContextPackUncertainty": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackUncertainty"
+    },
+    "ContextPackBudget": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBudget"
+    },
+    "ContextPackAuthorizationContext": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizationContext"
+    },
+    "ContextPackAuthorizedEvidenceCandidate": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedEvidenceCandidate"
+    },
+    "ContextPackAuthorizedRecordCandidate": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedRecordCandidate"
+    },
+    "ContextPackAuthorizedCandidate": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedCandidate"
+    },
+    "ContextPackAuthorizedCandidateSetManifest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedCandidateSetManifest"
+    },
+    "ContextPackNormalizedRequest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackNormalizedRequest"
+    },
+    "ContextPackReproducibility": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackReproducibility"
+    },
+    "ContextPackBuildInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildInput"
+    },
+    "ContextPackBuildResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBuildResult"
     },
     "OperationCompatibilityState": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityState"

@@ -1,0 +1,526 @@
+{
+  "format": "omnivia.context-pack.authorized-candidate-set-vectors.v1",
+  "description": "Language-neutral vectors for the authorized-candidate-set checksum (ADR-039). The checksum names the complete post-retrieval, post-request-scope, post-workspace/scope/purpose/capability/policy/ACL/sensitivity-authorization candidate frontier, frozen before the first ranking, reranking, selection, or budget decision -- not the whole workspace, and not merely the items a pack selected. Each accepted vector fixes one manifest and the exact digest any conforming implementation must produce for it; each rejected vector fixes one manifest that must not produce a digest at all. Written so a second implementation in another language can be held to the same bytes without reading the Python.",
+  "manifest_format": "omnivia.context-pack.authorized-candidate-set.v1",
+  "digest_rule": "`sha256:` followed by the lowercase hex SHA-256 of the RFC 8785 canonical UTF-8 bytes of the manifest, after sorting `candidates` by partition and then by the remaining identity members in declaration order, comparing each component by unsigned UTF-16 code unit with no Unicode normalization. RFC 8785 orders object member names but never array elements, so that element sort is part of this definition rather than of the canonicalization. The resulting partition order is context_models, evidence, history, records.",
+  "usage": "For every entry under `accepted`, computing the digest of `manifest` must yield `checksum` exactly. For every entry under `rejected`, the attempt must fail, and `rejected_by` names which layer refuses it: `schema` means strict JSON Schema validation against ContextPackAuthorizedCandidateSetManifest, `semantics` means the checksum computation itself. Two accepted vectors share a digest if and only if they name the same set, which here is only the shuffled pair; every other pair must differ.",
+  "identity_note": "Every identity component is drawn from the exact domain of the item it names -- evidence.EvidenceId and evidence.EvidenceChecksum for an L0 artifact, records.RecordId and records.RecordVersion for a governed version -- and not from any wider string domain. A frontier states which real items were authorized, so an identity no artifact and no record could carry names a membership that cannot exist, and is refused by the schema and by the checksum helper alike rather than hashed. The `rejected` section pins one malformed identity per component for that reason.",
+  "ordering_note": "The ordering rule is unsigned UTF-16 code unit with no Unicode normalization, which is normative because it is the ordering RFC 8785 already imposes on object member names: a preimage sorted by one rule and canonicalized under another would be two rules pretending to be one. It is not a claim that a v1 identity can exercise the difference. All four v1 identity alphabets are ASCII (EvidenceId, RecordId), printable ASCII (RecordVersion), or an ASCII-restricted checksum (EvidenceChecksum), and over ASCII the UTF-16 code-unit order and the code-point order coincide exactly -- so no valid candidate in this file distinguishes them, and none could. Where the two genuinely diverge is object member names under RFC 8785, which the canonicalizer must order for arbitrary Unicode; that divergence is pinned at the canonicalization layer (utf16_sort_key and the JCS vectors) rather than fabricated here out of identities the contract does not admit. What the mixed vectors below do still pin about ordering is that the comparison is over raw code units and not a locale collation or a case-insensitive fold: `ev-B` sorts before `ev-a` because 0x42 precedes 0x61, which is the opposite of what a case-insensitive or locale-aware collation would produce.",
+  "accepted": [
+    {
+      "id": "empty-ws-1",
+      "note": "The empty frontier is valid and has a well-defined digest. Its canonical bytes are {\"candidates\":[],\"format\":\"omnivia.context-pack.authorized-candidate-set.v1\",\"workspace_id\":\"ws-1\"}.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": []
+      },
+      "checksum": "sha256:666dd0b418f32f6fc03a5f87e430efaf6f9a6e5d50569b5fd74eb87e8b864b41"
+    },
+    {
+      "id": "empty-ws-2",
+      "note": "The same empty frontier in another workspace. The workspace is inside the preimage, so this digest differs from empty-ws-1.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-2",
+        "candidates": []
+      },
+      "checksum": "sha256:6dc6e59afc63dfb4ad98d41a436804816705dc5aacb9c774f7870026b85f0afc"
+    },
+    {
+      "id": "canonical-pack-frontier",
+      "note": "One candidate in each of the four partitions, matching the canonical Context Pack fixture's four selections exactly.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          },
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "history",
+            "record_id": "rec-old",
+            "version": "v1"
+          },
+          {
+            "partition": "context_models",
+            "record_id": "ctx-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "checksum": "sha256:46e8f04f9b6771fa4394cd33f11216372f86094c56694991f57f1387a6cb6f33"
+    },
+    {
+      "id": "mixed-four-partitions",
+      "note": "All four partitions at once, with two evidence identifiers differing only in the case of their last character. The sorted preimage order is context_models, then evidence ev-B, then evidence ev-a, then history, then records -- `ev-B` first because the comparison is over raw code units, where 0x42 precedes 0x61, and not a case-insensitive or locale-aware collation.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-a",
+            "content_checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "partition": "context_models",
+            "record_id": "ctx-1",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-B",
+            "content_checksum": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "partition": "history",
+            "record_id": "rec-old",
+            "version": "v1"
+          }
+        ]
+      },
+      "checksum": "sha256:487b434968cf99024e4d29fe8e96ee003163b4a564b19da464f2f472f15c0371"
+    },
+    {
+      "id": "mixed-four-partitions-shuffled",
+      "note": "The same set in reverse wire order. Candidates are a set, so the digest is identical to mixed-four-partitions -- the one pair in this file that shares a checksum.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "history",
+            "record_id": "rec-old",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-B",
+            "content_checksum": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "partition": "context_models",
+            "record_id": "ctx-1",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-a",
+            "content_checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "checksum": "sha256:487b434968cf99024e4d29fe8e96ee003163b4a564b19da464f2f472f15c0371"
+    },
+    {
+      "id": "mixed-four-partitions-other-workspace",
+      "note": "Identical candidates, different workspace. Two workspaces that authorized identical identities must never share a digest.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-2",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-a",
+            "content_checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "partition": "context_models",
+            "record_id": "ctx-1",
+            "version": "v1"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-B",
+            "content_checksum": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "partition": "history",
+            "record_id": "rec-old",
+            "version": "v1"
+          }
+        ]
+      },
+      "checksum": "sha256:a1ac8f6f886d6bad5d3a09ba7a9efa3cb98d17c23366356e9e937652759b4c0e"
+    },
+    {
+      "id": "two-versions-of-one-record",
+      "note": "Different versions of one record are two independent candidates when both were independently eligible, here as a current version and a historical one.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v2"
+          },
+          {
+            "partition": "history",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "checksum": "sha256:1d1210193568aa7d6a01b6d6115276cfbbcad71f09fca6e739a41bfec26751dc"
+    },
+    {
+      "id": "one-evidence-id-one-checksum",
+      "note": "A single evidence candidate, at the content state canonical-pack-frontier uses.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "checksum": "sha256:c306e9cca270872c7f27ed8942aa4e2cb2c7e59159236a0b6617700f782d9b42"
+    },
+    {
+      "id": "one-evidence-id-changed-checksum",
+      "note": "The same evidence identifier at a different content state. The content checksum is part of the identity, so the digest changes.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+          }
+        ]
+      },
+      "checksum": "sha256:93b06e16ff44dd6adfe427d0915b1c0b1f112d46d728dbdfa131d0ca5144efb5"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "duplicate-tuple",
+      "note": "An exactly repeated candidate. The frontier is a set, and a repeated tuple states nothing a single one does not.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "one-evidence-id-two-checksums",
+      "note": "One artifact cannot have been authorized in two content states at one instant. The two tuples differ, so only the semantic rule catches this.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          },
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:0101010101010101010101010101010101010101010101010101010101010101"
+          }
+        ]
+      },
+      "rejected_by": [
+        "semantics"
+      ]
+    },
+    {
+      "id": "governed-version-repeated-within-a-partition",
+      "note": "The same governed version twice in one partition, distinguishable only by array position.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "governed-version-in-two-partitions",
+      "note": "One version is current, historical, or a context model at a given instant, never two of them. The two tuples differ, so only the semantic rule catches this.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "history",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "semantics"
+      ]
+    },
+    {
+      "id": "governed-version-as-record-and-context-model",
+      "note": "The same collision across the other pair of governed partitions.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1"
+          },
+          {
+            "partition": "context_models",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "semantics"
+      ]
+    },
+    {
+      "id": "unknown-partition",
+      "note": "The partition set is closed. An unrecognized partition names a frontier this contract cannot reason about, and fails closed.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "some_future_partition",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "evidence-identity-in-a-governed-partition",
+      "note": "An L0 artifact is only ever authorized in the evidence partition.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "governed-identity-in-the-evidence-partition",
+      "note": "The mirror case: a governed version is authorized in one of the three governed partitions.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "record_id": "rec-1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "candidate-with-an-extra-member",
+      "note": "A candidate carries three members and nothing else, and a ranking score is exactly the kind of member that must never reach the preimage. Strict JSON Schema refuses it. The tolerant DTO decoder drops it instead, by ADR-038 design -- which is why the digest of this manifest equals one-evidence-id-one-checksum rather than differing from it, and why the frozen dataclass declares no such field for one to be set on.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+            "score": "0.91"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema"
+      ]
+    },
+    {
+      "id": "manifest-with-the-wrong-format",
+      "note": "The format name is inside the hashed preimage, so a manifest naming another one is refused rather than hashed.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v2",
+        "workspace_id": "ws-1",
+        "candidates": []
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "candidate-with-an-empty-identity-component",
+      "note": "An identity component is bounded and non-empty; an empty one names nothing.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "evidence-id-outside-the-identity-domain",
+      "note": "`ev-` followed by U+1F600. EvidenceId is ASCII `^[A-Za-z0-9][A-Za-z0-9._:-]*$`, so no L0 artifact can be named this, and a frontier that admitted it would attest to a member no artifact could be. Written as a JSON escape so this file stays byte-stable and the rejection is of the exact code point intended rather than of whatever an editor normalized it to.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-\ud83d\ude00",
+            "content_checksum": "sha256:9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "record-id-with-spaces",
+      "note": "RecordId admits no space anywhere, so `rec 1` names no governed record.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec 1",
+            "version": "v1"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "malformed-evidence-checksum",
+      "note": "EvidenceChecksum is spelled `algorithm:hex-digest` with a lowercase algorithm prefix, so a bare digest with no algorithm is ambiguous about what produced it and is refused rather than hashed as an opaque string.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "evidence",
+            "evidence_id": "ev-1",
+            "content_checksum": "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    },
+    {
+      "id": "record-version-with-a-non-printable-character",
+      "note": "RecordVersion is printable ASCII `^[!-~]+$`. A version carrying U+0001 is outside that domain, so no governed version is named. Written as a JSON escape for the same byte-stability reason as the Unicode evidence identifier above.",
+      "manifest": {
+        "format": "omnivia.context-pack.authorized-candidate-set.v1",
+        "workspace_id": "ws-1",
+        "candidates": [
+          {
+            "partition": "records",
+            "record_id": "rec-1",
+            "version": "v1\u0001"
+          }
+        ]
+      },
+      "rejected_by": [
+        "schema",
+        "semantics"
+      ]
+    }
+  ]
+}

@@ -290,7 +290,7 @@
     },
     "ProjectionFreshness": {
       "title": "ProjectionFreshness",
-      "description": "Staleness statement for reads served from a projection rather than the write model.",
+      "description": "Staleness statement for reads served from a projection rather than the write model. Every projection this read was served from must be named in both `projection_versions` and `projection_watermarks`: the two maps are one statement about the same set of projections, so their key sets are required to be identical and neither may be empty. A read served from no named projection cannot state its own staleness, and a projection that states a version but no watermark (or the reverse) leaves the caller unable to tell how far behind the write model it actually is.",
       "type": "object",
       "properties": {
         "as_of": {
@@ -299,7 +299,22 @@
         },
         "projection_versions": {
           "type": "object",
-          "description": "Open map of projection name to opaque projection version. New projections may appear in compatible minor releases.",
+          "description": "Open map of projection name to the opaque projection version this read was actually served from. Projection names are an open vocabulary, so new projections may appear in compatible minor releases; at least one must be named, and the key set must equal `projection_watermarks`'.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
+          "additionalProperties": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion"
+          }
+        },
+        "projection_watermarks": {
+          "type": "object",
+          "description": "Open map of projection name to the opaque write-model version each projection has consumed up to -- how far the projection has caught up, as opposed to which version served this read. Keyed by exactly the same projection names as `projection_versions`; at least one must be named.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
           "additionalProperties": {
             "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion"
           }
@@ -309,7 +324,7 @@
           "description": "True when the server knows the projection lags the write model."
         }
       },
-      "required": ["as_of", "projection_versions", "stale"],
+      "required": ["as_of", "projection_versions", "projection_watermarks", "stale"],
       "unevaluatedProperties": false
     },
     "PageLimit": {

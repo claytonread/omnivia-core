@@ -80,86 +80,6 @@
       "maxLength": 128,
       "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
     },
-    "CandidateAssertion": {
-      "title": "CandidateAssertion",
-      "description": "Who is asserting a `memory.create` candidate, when, and on what evidence, plus the validity window they propose for it. This is caller-supplied provenance for the proposal, not the server-owned governance decision: it never carries authority level, reviewer/policy identity, or any other field `MemoryCreateInput` itself is forbidden from carrying.",
-      "type": "object",
-      "properties": {
-        "actor_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Principal or system asserting this candidate."
-        },
-        "actor_kind": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
-          "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`."
-        },
-        "actor_role": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
-          "description": "Open code naming the role the actor asserted this candidate under."
-        },
-        "asserted_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When the actor asserted this candidate."
-        },
-        "proposed_valid_from": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "Start of the validity window the caller proposes for this candidate, when known. The server remains the final authority on the validity window actually stored."
-        },
-        "proposed_valid_until": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "End of the validity window the caller proposes for this candidate, when bounded. The server remains the final authority on the validity window actually stored."
-        },
-        "evidence": {
-          "type": "array",
-          "description": "Concrete evidence substantiating this assertion. May be empty only when the enclosing input's `evidence_disposition` explicitly excuses it; enforcing that agreement is a semantic-validation concern, not a wire-shape one.",
-          "items": {
-            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
-          },
-          "maxItems": 256
-        }
-      },
-      "required": ["actor_id", "actor_kind", "actor_role", "asserted_at", "evidence"],
-      "unevaluatedProperties": false
-    },
-    "CandidateExtractionMetadata": {
-      "title": "CandidateExtractionMetadata",
-      "description": "Optional provenance about the automated extractor that produced a `memory.create` candidate, when one did. Absent entirely for a candidate a human asserted directly.",
-      "type": "object",
-      "properties": {
-        "extractor_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Identifier of the extractor that produced this candidate."
-        },
-        "extractor_version": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Version of the extractor that produced this candidate, when known."
-        },
-        "model_version": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Version of the model the extractor used, when known."
-        },
-        "prompt_version": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Version of the prompt the extractor used, when known."
-        },
-        "extracted_at": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
-          "description": "When the extractor produced this candidate."
-        },
-        "confidence": {
-          "type": "number",
-          "description": "The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "reconciliation_state": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
-          "description": "Open code naming this candidate's reconciliation/deduplication state against prior extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined one. Open by design; an unrecognized value must be preserved, not coerced to a known one, and must never widen this candidate's authority."
-        }
-      },
-      "required": ["extractor_id", "extracted_at"],
-      "unevaluatedProperties": false
-    },
     "MemoryCreateInput": {
       "title": "MemoryCreateInput",
       "description": "Input for `memory.create`: the proposed record's type, domain scope, content, evidence/provenance, and assertion. Carries no authority-level, reviewer/policy decision, governance-state, currentness, record id, version, recorded time, or supersession field, so a caller can never assert accepted, current-canonical, superseded, or historical authority through this payload; every `memory.create` result is proposed-only.",
@@ -190,12 +110,12 @@
           "maxItems": 256
         },
         "assertion": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateAssertion",
-          "description": "Who is asserting this candidate, when, on what evidence, and the validity window they propose. Every candidate carries one."
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateAssertion",
+          "description": "Who is asserting this candidate, when, on what evidence, and the validity window they propose. Every candidate carries one. Shared with `RecordProvenance.assertion`, so the lineage a proposal supplies is the lineage the resulting record preserves."
         },
         "extraction": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateExtractionMetadata",
-          "description": "Provenance of the automated extractor that produced this candidate, when one did. Absent for a candidate a human asserted directly."
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateExtractionMetadata",
+          "description": "Provenance of the automated extractor that produced this candidate, when one did. Absent for a candidate a human asserted directly. Shared with `RecordProvenance.extraction`."
         },
         "event_at": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",

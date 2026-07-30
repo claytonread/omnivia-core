@@ -132,9 +132,89 @@
       "required": ["source"],
       "unevaluatedProperties": false
     },
+    "CandidateAssertion": {
+      "title": "CandidateAssertion",
+      "description": "Who is asserting a governed record's claim, when, and on what evidence, plus the validity window they propose for it. This is caller-supplied provenance for the claim -- carried into `memory.create` and `record.supersede` inputs, and preserved on the resulting record's `RecordProvenance` -- not the server-owned governance decision: it never carries authority level, reviewer/policy identity, or any other field a least-authority-escalating mutation input is forbidden from carrying. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+      "type": "object",
+      "properties": {
+        "actor_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Principal or system asserting this candidate."
+        },
+        "actor_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`."
+        },
+        "actor_role": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the role the actor asserted this candidate under."
+        },
+        "asserted_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the actor asserted this candidate."
+        },
+        "proposed_valid_from": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Start of the validity window the caller proposes for this candidate, when known. The server remains the final authority on the validity window actually stored."
+        },
+        "proposed_valid_until": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "End of the validity window the caller proposes for this candidate, when bounded. The server remains the final authority on the validity window actually stored."
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Concrete evidence substantiating this assertion. May be empty only when the enclosing input's `evidence_disposition` explicitly excuses it; enforcing that agreement is a semantic-validation concern, not a wire-shape one.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": ["actor_id", "actor_kind", "actor_role", "asserted_at", "evidence"],
+      "unevaluatedProperties": false
+    },
+    "CandidateExtractionMetadata": {
+      "title": "CandidateExtractionMetadata",
+      "description": "Optional provenance about the automated extractor that produced a governed record's claim, when one did. Absent entirely for a claim a human asserted directly. Defined here rather than in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json` depending on a document that already depends on it.",
+      "type": "object",
+      "properties": {
+        "extractor_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the extractor that produced this candidate."
+        },
+        "extractor_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the extractor that produced this candidate, when known."
+        },
+        "model_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the model the extractor used, when known."
+        },
+        "prompt_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the prompt the extractor used, when known."
+        },
+        "extracted_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the extractor produced this candidate."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reconciliation_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming this candidate's reconciliation/deduplication state against prior extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined one. Open by design; an unrecognized value must be preserved, not coerced to a known one, and must never widen this candidate's authority."
+        }
+      },
+      "required": ["extractor_id", "extracted_at"],
+      "unevaluatedProperties": false
+    },
     "ProvenanceEntry": {
       "title": "ProvenanceEntry",
-      "description": "One step in a record's history: who or what did what, and when.",
+      "description": "One step in a record's history: who or what did what, when, and -- for a governance transition -- the explicit rationale it was taken under.",
       "type": "object",
       "properties": {
         "actor_id": {
@@ -153,13 +233,22 @@
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
           "description": "When this action occurred."
         },
+        "reason_code": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why this action was taken, carried over verbatim from the `GovernanceRationale.reason_code` the transition was requested under. Absent on ordinary non-governance history, which never carries a rationale; a governance-transition event must carry it, and requiring that is a semantic-validation concern, not a wire-shape one."
+        },
+        "reason_comment": {
+          "type": "string",
+          "description": "Bounded human-readable elaboration, carried over verbatim from the requesting `GovernanceRationale.comment`. Absent exactly when that comment was absent. Not a stable interface.",
+          "maxLength": 2048
+        },
         "evidence": {
           "type": "array",
-          "description": "Evidence supporting this action, when applicable.",
+          "description": "Evidence supporting this action, when applicable. Bounded at the same 256 items `CandidateAssertion.evidence` is, and deliberately so: a `record.supersede` transition appends exactly one event whose evidence must equal the replacement claim's complete assertion evidence, so a lower bound here would make an otherwise valid replacement impossible to record.",
           "items": {
             "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
           },
-          "maxItems": 64
+          "maxItems": 256
         }
       },
       "required": ["actor_id", "actor_kind", "action", "occurred_at"],
@@ -223,6 +312,23 @@
       "required": ["record_id"],
       "unevaluatedProperties": false
     },
+    "RecordVersionReference": {
+      "title": "RecordVersionReference",
+      "description": "A precise, non-directional pointer to one exact record version: both `record_id` and `version` are always required. Distinct from `SupersessionReference`, which is direction-bearing (its meaning comes from which `RecordIdentity` field carries it) and whose `version` is optional. Used wherever a payload must name a specific existing record version -- a graph traversal start point or edge endpoint, a context pack citation or source-version list -- without asserting any supersession relationship.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the referenced record."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion",
+          "description": "The exact referenced version."
+        }
+      },
+      "required": ["record_id", "version"],
+      "unevaluatedProperties": false
+    },
     "RecordIdentity": {
       "title": "RecordIdentity",
       "description": "The identity, version, governance layer, governance state, and currentness of one record version.",
@@ -262,7 +368,7 @@
     },
     "RecordProvenance": {
       "title": "RecordProvenance",
-      "description": "The full provenance envelope for one record version: identity, temporal metadata, its authoring history, and the sources it draws on.",
+      "description": "The full provenance envelope for one record version: identity, temporal metadata, its authoring history, the sources it draws on, and the caller-supplied assertion/extraction lineage the claim in this version came from. `assertion`/`extraction` are structurally optional so a record written before they existed still decodes, but a governance transition that replaces or carries forward a claim must bind them; enforcing that is a semantic-validation concern, not a wire-shape one.",
       "type": "object",
       "properties": {
         "identity": {
@@ -275,11 +381,10 @@
         },
         "history": {
           "type": "array",
-          "description": "Ordered history of actions that produced this record version.",
+          "description": "Ordered, append-only history of actions that produced this record version. Deliberately carries no `maxItems`: history is never erased or rewritten, and every governance transition appends exactly one event, so any finite inline cap would eventually make a previously valid record impossible to transition -- and raising the cap only postpones that contradiction. Bounding a response's size is a transport/operation concern, handled outside this inline provenance invariant, never by dropping, compacting, or summarising audit history.",
           "items": {
             "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/ProvenanceEntry"
-          },
-          "maxItems": 1024
+          }
         },
         "evidence_disposition": {
           "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceDisposition",
@@ -292,6 +397,14 @@
             "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference"
           },
           "maxItems": 256
+        },
+        "assertion": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateAssertion",
+          "description": "Who asserted the claim this version carries, when, on what evidence, and the validity window they proposed. Preserved verbatim from the `memory.create` or `record.supersede` input that supplied the claim, so candidate/replacement lineage survives every governance transition."
+        },
+        "extraction": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/CandidateExtractionMetadata",
+          "description": "Provenance of the automated extractor that produced the claim this version carries, when one did. Absent for a claim a human asserted directly."
         }
       },
       "required": ["identity", "temporal", "history", "evidence_disposition", "sources"],

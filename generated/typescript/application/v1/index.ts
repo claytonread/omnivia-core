@@ -11,6 +11,10 @@
 //   contracts/application/v1/schemas/operations.schema.json
 //   contracts/application/v1/schemas/workspace.schema.json
 //   contracts/application/v1/schemas/memory.schema.json
+//   contracts/application/v1/schemas/evidence.schema.json
+//   contracts/application/v1/schemas/knowledge.schema.json
+//   contracts/application/v1/schemas/graph.schema.json
+//   contracts/application/v1/schemas/context-pack.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
@@ -36,7 +40,7 @@ export type JsonValue =
 /**
  * Contract version of this generated module.
  */
-export const CONTRACT_VERSION = "1.1" as const;
+export const CONTRACT_VERSION = "1.2" as const;
 
 /**
  * Base URI every canonical v1 schema `$id` is rooted at.
@@ -198,6 +202,42 @@ export type ComponentKind = string;
 export const COMPONENT_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
+ * Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a
+ * compatible minor release can add vocabulary, but trust-sensitive: v1 recognizes exactly one
+ * value, `deterministic_view` (a regenerated, non-persisted, deterministic view), and semantic
+ * validation fails closed on every other value rather than guessing at it. `immutable_snapshot`
+ * is deliberately not a v1 mode -- persistence is an operation posture this read does not have
+ * -- and `returned_artifact` was never a wire mode at all.
+ */
+export type ContextPackMode = string;
+export const CONTEXT_PACK_MODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * A bounded, non-negative count of tokens actually observed: the tokens one section's model-
+ * facing content occupies, or the total a whole pack consumed. Distinct from
+ * `ContextPackTokenBudget`, which is what a caller asked for: zero is a meaningful observation
+ * (an empty pack consumed nothing) but never a meaningful request.
+ */
+export type ContextPackTokenCount = number;
+
+/**
+ * A bounded, strictly positive token budget a caller asks a pack to be built against. Zero is
+ * excluded rather than merely discouraged: a pack built against no budget at all can carry no
+ * content, so a zero budget states a request no build could usefully answer.
+ */
+export type ContextPackTokenBudget = number;
+
+/**
+ * A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
+ * characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque
+ * server token a client round-trips but a value an independent implementation must be able to
+ * recompute and compare byte for byte, so exactly one algorithm, one length, and one letter case
+ * are admitted.
+ */
+export type ContextPackDigest = string;
+export const CONTEXT_PACK_DIGEST_PATTERN: string = "^sha256:[0-9a-f]{64}$";
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue
  * is out of scope for v1 foundations; only the name is contractual here.
  */
@@ -218,6 +258,77 @@ export const ERROR_CODE_PATTERN: string = "^[a-z][a-z0-9_]*$";
  */
 export type RetryClass = string;
 export const RETRY_CLASS_PATTERN: string = "^[a-z][a-z0-9_]*$";
+
+/**
+ * Stable identifier of one L0 evidence artifact, constant across its append-only provenance
+ * history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.
+ */
+export type EvidenceId = string;
+export const EVIDENCE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+
+/**
+ * A caller-supplied, normalized search query for `evidence.search`. Normalization (case-folding,
+ * whitespace, tokenization) is caller-side; this document defines no normalization algorithm.
+ */
+export type EvidenceQuery = string;
+
+/**
+ * A content checksum, spelled `algorithm:hex-digest` (such as `sha256:9f86d0...`) so the digest
+ * is never ambiguous about which algorithm produced it. Provider-neutral: this contract does not
+ * mandate a specific algorithm.
+ */
+export type EvidenceChecksum = string;
+export const EVIDENCE_CHECKSUM_PATTERN: string = "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$";
+
+/**
+ * An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.
+ */
+export type MediaType = string;
+export const MEDIA_TYPE_PATTERN: string =
+  "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$";
+
+/**
+ * Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
+ * `inbound`, or `both`. Wire-open by shape, but trust-sensitive: only the known values are
+ * accepted by semantic validation, and an unrecognized value fails closed rather than being
+ * guessed at.
+ */
+export type GraphDirection = string;
+export const GRAPH_DIRECTION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming a kind of relation between governed records, such as
+ * `relates_to` or `derived_from`. Open by design so a compatible minor release can add relation
+ * types without breaking existing decoders.
+ */
+export type GraphRelationType = string;
+export const GRAPH_RELATION_TYPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * A bounded traversal depth a caller may request, or the server states it actually applied. Zero
+ * means the seeds themselves with no traversal beyond them; absent on input means the server's
+ * default depth of 1.
+ */
+export type GraphDepthLimit = number;
+
+/**
+ * Open, dot-namespaced code naming the deterministic key a traversal result was ordered by, such
+ * as `record_id_asc`, so identical inputs against an unchanged projection reproduce identical
+ * node/edge ordering.
+ */
+export type GraphOrderingBasis = string;
+export const GRAPH_ORDERING_BASIS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code justifying why one endpoint of an edge is absent from a traversal
+ * result: `page_boundary` when the traversal stopped at the node limit and offers a continuation
+ * token, or `depth_boundary` when the present endpoint sits exactly at the applied depth limit.
+ * Wire-open by shape, but trust-sensitive: an absent endpoint is a claim that the projection
+ * stopped, not that the relation lost an end, so only the recognized values are accepted by
+ * semantic validation and an unrecognized reason fails closed rather than being guessed at.
+ */
+export type GraphBoundaryReason = string;
+export const GRAPH_BOUNDARY_REASON_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
  * Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or
@@ -594,7 +705,13 @@ export interface PartialResult {
 }
 
 /**
- * Staleness statement for reads served from a projection rather than the write model.
+ * Staleness statement for reads served from a projection rather than the write model. Every
+ * projection this read was served from must be named in both `projection_versions` and
+ * `projection_watermarks`: the two maps are one statement about the same set of projections, so
+ * their key sets are required to be identical and neither may be empty. A read served from no
+ * named projection cannot state its own staleness, and a projection that states a version but no
+ * watermark (or the reverse) leaves the caller unable to tell how far behind the write model it
+ * actually is.
  */
 export interface ProjectionFreshness {
   /**
@@ -602,10 +719,19 @@ export interface ProjectionFreshness {
    */
   readonly as_of: Timestamp;
   /**
-   * Open map of projection name to opaque projection version. New projections may appear in
-   * compatible minor releases.
+   * Open map of projection name to the opaque projection version this read was actually served
+   * from. Projection names are an open vocabulary, so new projections may appear in compatible
+   * minor releases; at least one must be named, and the key set must equal
+   * `projection_watermarks`'.
    */
   readonly projection_versions: Readonly<Record<string, ProjectionVersion>>;
+  /**
+   * Open map of projection name to the opaque write-model version each projection has consumed
+   * up to -- how far the projection has caught up, as opposed to which version served this
+   * read. Keyed by exactly the same projection names as `projection_versions`; at least one
+   * must be named.
+   */
+  readonly projection_watermarks: Readonly<Record<string, ProjectionVersion>>;
   /**
    * True when the server knows the projection lags the write model.
    */
@@ -724,6 +850,261 @@ export interface CapabilityRequirement {
    * false, the caller degrades.
    */
   readonly required: boolean;
+}
+
+/**
+ * A precise pointer to one exact L0 evidence artifact: which artifact, and the content checksum
+ * that artifact carried. Both are required, so the pointer names a specific immutable content
+ * state rather than whatever the identifier resolves to later. Distinct from
+ * `records.EvidenceReference`, which points at a source a record drew on rather than at a
+ * captured L0 artifact.
+ */
+export interface ContextPackEvidenceReference {
+  /**
+   * Identifier of the referenced L0 evidence artifact.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * The exact content checksum the referenced artifact carried, so this reference names one
+   * immutable content state rather than an identifier whose content may since have been
+   * recaptured.
+   */
+  readonly content_checksum: EvidenceChecksum;
+}
+
+/**
+ * One model-facing section of a Context Pack: its identity, what kind of section it is, its
+ * content, the citations that content rests on, and the tokens that content occupies. Every
+ * section is substantiated: `citation_ids` is never empty, so no part of a pack's model-facing
+ * content is unattributable.
+ */
+export interface ContextPackSection {
+  /**
+   * Identifier of this section within this pack, unique across `sections`. Section identifiers
+   * and citation identifiers are independent namespaces; the same string may appear in both.
+   */
+  readonly section_id: Identifier;
+  /**
+   * Open code naming what kind of section this is, such as `summary` or `evidence_digest`.
+   * Open by design; an unrecognized kind must be preserved, not coerced.
+   */
+  readonly kind: OpenCode;
+  /**
+   * Optional human-readable heading for this section. Not a stable interface, and not counted
+   * by `token_count`.
+   */
+  readonly title?: string;
+  /**
+   * The exact model-facing content of this section. Never empty: a section that contributes no
+   * content contributes nothing a caller could act on.
+   */
+  readonly content: string;
+  /**
+   * The citations this section's content rests on, by `citation_id`, in deterministic
+   * ascending order and free of duplicates. Never empty, and every identifier must resolve to
+   * a citation this pack actually returned.
+   */
+  readonly citation_ids: readonly Identifier[];
+  /**
+   * Tokens the exact `content` string occupies under the tokenizer named by
+   * `reproducibility.tokenizer_id` at `reproducibility.tokenizer_version`. Covers `content`
+   * and nothing else: `title` and any excerpt carried by a cited citation are deliberately
+   * excluded, so a caller can reconcile this count against the string it actually sends to a
+   * model.
+   */
+  readonly token_count: ContextPackTokenCount;
+}
+
+/**
+ * A stated conflict between two or more citations this pack returned, which the pack surfaces
+ * rather than resolving on the caller's behalf. Stated in citation identifiers rather than
+ * record references so evidence and governed records are addressed by the one reference system
+ * this pack already publishes, instead of a second, competing one that could name something the
+ * pack never cited.
+ */
+export interface ContextPackConflict {
+  /**
+   * Human-readable statement of the conflict. Not a stable interface.
+   */
+  readonly description: string;
+  /**
+   * The citations that conflict with one another, by `citation_id`, in deterministic ascending
+   * order and free of duplicates. At least two, since a conflict needs two sides, and every
+   * identifier must resolve to a citation this pack actually returned.
+   */
+  readonly conflicting_citation_ids: readonly Identifier[];
+}
+
+/**
+ * A stated uncertainty this pack surfaces rather than silently resolving or hiding, anchored to
+ * the citations it concerns.
+ */
+export interface ContextPackUncertainty {
+  /**
+   * Human-readable statement of the uncertainty. Not a stable interface.
+   */
+  readonly description: string;
+  /**
+   * The citations this uncertainty concerns, by `citation_id`, in deterministic ascending
+   * order and free of duplicates. At least one: an uncertainty anchored to nothing this pack
+   * returned cannot be acted on or checked, and every identifier must resolve to a citation
+   * this pack actually returned.
+   */
+  readonly related_citation_ids: readonly Identifier[];
+}
+
+/**
+ * Token budget accounting for one Context Pack: the positive budget it was built against, and
+ * the non-negative amount its sections actually consumed.
+ */
+export interface ContextPackBudget {
+  /**
+   * The token budget this pack was built against, exactly as requested.
+   */
+  readonly token_budget: ContextPackTokenBudget;
+  /**
+   * Tokens actually consumed, exactly the sum of every section's `token_count`.
+   */
+  readonly tokens_used: ContextPackTokenCount;
+}
+
+/**
+ * One L0 evidence artifact on the authorized candidate frontier, named by immutable identity
+ * alone. Exactly three members and nothing else: the partition it was authorized in, the
+ * artifact, and the exact content state that artifact carried. Content, excerpts, provenance,
+ * spans, scores, distances, ranks, tie-breaks, selection flags, citations, sections, query and
+ * normalization state, and every authority, policy, configuration, or projection version are all
+ * deliberately absent -- a candidate-set digest must depend on which authorized material existed
+ * and on nothing a later ranking or selection step could change.
+ */
+export interface ContextPackAuthorizedEvidenceCandidate {
+  /**
+   * Always `evidence`: the L0 partition this candidate was authorized in. Carried explicitly
+   * rather than inferred from the member names so the digest preimage separates the four
+   * partitions itself, and so an unknown partition fails closed instead of being guessed at.
+   */
+  readonly partition: string;
+  /**
+   * Identifier of the authorized L0 evidence artifact. Exactly an `evidence.EvidenceId` -- the
+   * same domain the artifact it names is drawn from, not a widened one. A digest preimage that
+   * admitted identities the items themselves cannot carry would attest to a frontier no
+   * artifact could be a member of, so the domain is shared rather than restated.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * The exact content checksum that artifact carried, so the candidate names one immutable
+   * content state rather than an identifier whose content may since have been recaptured.
+   * Exactly an `evidence.EvidenceChecksum`, for the reason `evidence_id` states.
+   */
+  readonly content_checksum: EvidenceChecksum;
+}
+
+/**
+ * One governed record version on the authorized candidate frontier, named by immutable identity
+ * alone. Exactly three members and nothing else: which governed partition it was authorized in,
+ * the record, and the version. The same exclusions `ContextPackAuthorizedEvidenceCandidate`
+ * states apply here for the same reason. Two different versions of one record are two
+ * independent candidates whenever both were independently eligible; the same version twice, in
+ * one partition or across two, is a contradiction rather than a set.
+ */
+export interface ContextPackAuthorizedRecordCandidate {
+  /**
+   * Which governed partition this candidate was authorized in: `records` for a current
+   * canonical L2 version, `history` for a historical canonical L2 version, `context_models`
+   * for a current canonical L3 context model. Closed to exactly these three; an unknown
+   * partition fails closed.
+   */
+  readonly partition: string;
+  /**
+   * Identifier of the authorized governed record. Exactly a `records.RecordId`, the same
+   * domain the record it names is drawn from, for the reason
+   * `ContextPackAuthorizedEvidenceCandidate.evidence_id` states.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The exact version of that record, so the candidate names one immutable governed version
+   * rather than whatever the record identifier resolves to later. Exactly a
+   * `records.RecordVersion`, for the same reason.
+   */
+  readonly version: RecordVersion;
+}
+
+/**
+ * The exact normalized request one Context Pack was built from: the server-produced normalized
+ * query and the version of the normalization that produced it, the mode, the resolved record
+ * view, the token budget, and any selection filters. The single normalized form of a request --
+ * the original caller query stays on the result's own `query` field, and nothing else restates
+ * it. Query normalization itself is server-owned and versioned: this contract requires the
+ * normalized query to be non-empty and pins which normalization produced it, and deliberately
+ * specifies no normalization algorithm of its own.
+ */
+export interface ContextPackNormalizedRequest {
+  /**
+   * The normalized form of the caller's query that this build actually ran. Never empty: a
+   * build that normalized a query to nothing has no request left to reproduce.
+   */
+  readonly normalized_query: string;
+  /**
+   * The mode this build ran in, bound exactly to the validated request's mode.
+   */
+  readonly mode: ContextPackMode;
+  /**
+   * The governed-record view the build resolved to. In v1 this is always `current_canonical`:
+   * a Context Pack selects current canonical knowledge plus the history and context models
+   * that support it, and the request carries no view selector that could widen that.
+   */
+  readonly view: GovernedRecordView;
+  /**
+   * The token budget this build ran against, bound exactly to the validated request's budget.
+   */
+  readonly token_budget: ContextPackTokenBudget;
+  /**
+   * Version of the query normalization that produced `normalized_query`. Without it the
+   * normalized query is unreproducible, since a later normalization of the same caller query
+   * may differ.
+   */
+  readonly normalization_version: Identifier;
+  /**
+   * The domain-scope filter the build applied, present exactly when the request carried one.
+   */
+  readonly domain_scope?: RecordDomainScope;
+  /**
+   * The record-type filter the build applied, present exactly when the request carried one.
+   */
+  readonly record_type?: GovernedRecordType;
+}
+
+/**
+ * Input for `context_pack.build`. Workspace-scoped: the workspace, principal, scopes, and
+ * purpose are the request envelope's; this payload never carries a second, independent copy of
+ * any of them, and selecting content never grants new authority beyond what the envelope already
+ * carries. Deliberately minimal: no view selector, no point-in-time selector, no pagination, and
+ * no persistence, expiry, retention, snapshot, or job control. The v1 operation resolves the
+ * current canonical view synchronously and persists nothing, so none of those controls has a
+ * meaning here, and a payload that smuggles one in is rejected rather than ignored.
+ */
+export interface ContextPackBuildInput {
+  /**
+   * Original caller query this pack is built for. The server normalizes it; the normalized
+   * form appears only on the result's `reproducibility.normalized_request`.
+   */
+  readonly query: MemoryQuery;
+  /**
+   * How to build the pack. v1 recognizes only `deterministic_view`.
+   */
+  readonly mode: ContextPackMode;
+  /**
+   * Bounded, strictly positive maximum token budget for the built pack.
+   */
+  readonly token_budget: ContextPackTokenBudget;
+  /**
+   * Restrict governed-record selection to this domain scope, when set.
+   */
+  readonly domain_scope?: RecordDomainScope;
+  /**
+   * Restrict governed-record selection to this record type, when set.
+   */
+  readonly record_type?: GovernedRecordType;
 }
 
 /**
@@ -862,41 +1243,20 @@ export interface JobCancellationOutcome {
 }
 
 /**
- * Optional provenance about the automated extractor that produced a `memory.create` candidate,
- * when one did. Absent entirely for a candidate a human asserted directly.
+ * A caller-supplied, auditable reason for a governance decision or transition: an open reason
+ * code plus an optional bounded human-readable comment. Carries no reviewer identity, authority
+ * level, or governance-state field of its own -- those are server-owned and never asserted
+ * through this shape.
  */
-export interface CandidateExtractionMetadata {
+export interface GovernanceRationale {
   /**
-   * Identifier of the extractor that produced this candidate.
+   * Open code naming why this governance decision or transition was made.
    */
-  readonly extractor_id: Identifier;
+  readonly reason_code: OpenCode;
   /**
-   * Version of the extractor that produced this candidate, when known.
+   * Optional bounded human-readable elaboration. Not a stable interface.
    */
-  readonly extractor_version?: Identifier;
-  /**
-   * Version of the model the extractor used, when known.
-   */
-  readonly model_version?: Identifier;
-  /**
-   * Version of the prompt the extractor used, when known.
-   */
-  readonly prompt_version?: Identifier;
-  /**
-   * When the extractor produced this candidate.
-   */
-  readonly extracted_at: Timestamp;
-  /**
-   * The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.
-   */
-  readonly confidence?: number;
-  /**
-   * Open code naming this candidate's reconciliation/deduplication state against prior
-   * extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined
-   * one. Open by design; an unrecognized value must be preserved, not coerced to a known one,
-   * and must never widen this candidate's authority.
-   */
-  readonly reconciliation_state?: OpenCode;
+  readonly comment?: string;
 }
 
 /**
@@ -990,6 +1350,46 @@ export interface SourceReference {
 }
 
 /**
+ * Optional provenance about the automated extractor that produced a governed record's claim,
+ * when one did. Absent entirely for a claim a human asserted directly. Defined here rather than
+ * in `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json`
+ * depending on a document that already depends on it.
+ */
+export interface CandidateExtractionMetadata {
+  /**
+   * Identifier of the extractor that produced this candidate.
+   */
+  readonly extractor_id: Identifier;
+  /**
+   * Version of the extractor that produced this candidate, when known.
+   */
+  readonly extractor_version?: Identifier;
+  /**
+   * Version of the model the extractor used, when known.
+   */
+  readonly model_version?: Identifier;
+  /**
+   * Version of the prompt the extractor used, when known.
+   */
+  readonly prompt_version?: Identifier;
+  /**
+   * When the extractor produced this candidate.
+   */
+  readonly extracted_at: Timestamp;
+  /**
+   * The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.
+   */
+  readonly confidence?: number;
+  /**
+   * Open code naming this candidate's reconciliation/deduplication state against prior
+   * extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined
+   * one. Open by design; an unrecognized value must be preserved, not coerced to a known one,
+   * and must never widen this candidate's authority.
+   */
+  readonly reconciliation_state?: OpenCode;
+}
+
+/**
  * The distinct instants a governed record's lifecycle turns on: when the underlying fact
  * occurred in the world, when it was observed, when the system ingested it, when this version
  * was persisted, the window it is asserted valid for, and when it was superseded.
@@ -1045,6 +1445,25 @@ export interface SupersessionReference {
    * Open code naming why this supersession relationship exists.
    */
   readonly reason?: OpenCode;
+}
+
+/**
+ * A precise, non-directional pointer to one exact record version: both `record_id` and `version`
+ * are always required. Distinct from `SupersessionReference`, which is direction-bearing (its
+ * meaning comes from which `RecordIdentity` field carries it) and whose `version` is optional.
+ * Used wherever a payload must name a specific existing record version -- a graph traversal
+ * start point or edge endpoint, a context pack citation or source-version list -- without
+ * asserting any supersession relationship.
+ */
+export interface RecordVersionReference {
+  /**
+   * Identifier of the referenced record.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The exact referenced version.
+   */
+  readonly version: RecordVersion;
 }
 
 /**
@@ -1257,6 +1676,80 @@ export interface OperationCompatibilityEntry {
 }
 
 /**
+ * One citation binding a pack section to an exact L0 evidence artifact, optionally at a precise
+ * location inside it. Possessing this citation grants no access on its own: following it always
+ * requires fresh authorization against the cited evidence.
+ */
+export interface ContextPackEvidenceCitation {
+  /**
+   * Identifier of this citation within this pack, unique across `citations` and referenced by
+   * section, conflict, and uncertainty citation-id lists.
+   */
+  readonly citation_id: Identifier;
+  /**
+   * The exact evidence artifact and content checksum this citation points at.
+   */
+  readonly evidence_reference: ContextPackEvidenceReference;
+  /**
+   * Optional bounded, opaque locator within the cited artifact's content, such as a JSON
+   * Pointer. v1 states its length bound and nothing about its syntax: resolving a locator is
+   * target-specific and is not guessed at by this provider-neutral layer.
+   */
+  readonly content_pointer?: string;
+  /**
+   * Optional addressable position within the cited artifact, reusing the same structural and
+   * semantic rules `records.SourceSpan` already carries rather than restating them as an
+   * unvalidated string.
+   */
+  readonly source_span?: SourceSpan;
+  /**
+   * Optional short excerpt substantiating what this citation supports. Not a stable interface.
+   */
+  readonly excerpt?: string;
+}
+
+/**
+ * One citation binding a pack section to an exact governed record version, optionally at a
+ * precise location inside it. Possessing this citation grants no access on its own: following it
+ * always requires fresh authorization against the cited record.
+ */
+export interface ContextPackRecordCitation {
+  /**
+   * Identifier of this citation within this pack, unique across `citations` and referenced by
+   * section, conflict, and uncertainty citation-id lists.
+   */
+  readonly citation_id: Identifier;
+  /**
+   * The exact governed record version this citation points at.
+   */
+  readonly record_reference: RecordVersionReference;
+  /**
+   * Optional bounded, opaque locator within the cited record's opaque content, such as a JSON
+   * Pointer. v1 states its length bound and nothing about its syntax: resolving a locator is
+   * target-specific and is not guessed at by this provider-neutral layer.
+   */
+  readonly content_pointer?: string;
+  /**
+   * Optional addressable position within the cited record, reusing the same structural and
+   * semantic rules `records.SourceSpan` already carries rather than restating them as an
+   * unvalidated string.
+   */
+  readonly source_span?: SourceSpan;
+  /**
+   * Optional short excerpt substantiating what this citation supports. Not a stable interface.
+   */
+  readonly excerpt?: string;
+}
+
+/**
+ * One member of the authorized candidate frontier: either an L0 evidence candidate or a governed
+ * record candidate, never both and never neither. Two distinct object shapes rather than one
+ * shape with optional pointers, so what a candidate names is settled structurally by the
+ * document instead of by a later agreement check.
+ */
+export type ContextPackAuthorizedCandidate = ContextPackAuthorizedEvidenceCandidate | ContextPackAuthorizedRecordCandidate;
+
+/**
  * Everything the server needs to route, scope, bound, and audit a request, independent of the
  * operation payload.
  */
@@ -1321,6 +1814,95 @@ export interface RequestMetadata {
 }
 
 /**
+ * Input for `evidence.search`. Workspace-scoped: the workspace is the request envelope's
+ * selected workspace; this payload never carries a second, independent workspace identifier.
+ */
+export interface EvidenceSearchInput {
+  /**
+   * Normalized search query.
+   */
+  readonly query: EvidenceQuery;
+  /**
+   * Restrict results to this sensitivity classification, when set.
+   */
+  readonly sensitivity?: OpenCode;
+  /**
+   * Whether tombstoned evidence artifacts may be included. Absent means the server's default
+   * (excluded).
+   */
+  readonly include_tombstoned?: boolean;
+  /**
+   * Bounded maximum number of evidence artifacts to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Input for `graph.traverse`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier. Absent
+ * `view` defaults to `current_canonical`; only an explicit `view` selector may request
+ * `candidates` or `history`. Absent `direction` defaults to `outbound`.
+ */
+export interface GraphTraversalInput {
+  /**
+   * One or more starting record versions to traverse from. Every one of them is returned at
+   * depth 0 on a first page, and depth 0 is exactly this set: no other node ever carries it.
+   */
+  readonly start: readonly RecordVersionReference[];
+  /**
+   * Which direction to follow relations in. Absent means `outbound`.
+   */
+  readonly direction?: GraphDirection;
+  /**
+   * Restrict traversal to these relation types, when set. Absent means every relation type;
+   * present means a bounded, non-empty set of distinct types, since an empty filter would ask
+   * for nothing and a repeated type states the same restriction twice.
+   */
+  readonly relation_types?: readonly GraphRelationType[];
+  /**
+   * Restrict traversal to this domain scope, when set.
+   */
+  readonly domain_scope?: RecordDomainScope;
+  /**
+   * Which slice of records' versions to consider. Absent defaults to `current_canonical`;
+   * requesting `candidates` or `history` requires this field to be set explicitly.
+   */
+  readonly view?: GovernedRecordView;
+  /**
+   * Caller-requested point in time for a reproducible historical traversal, when set. Distinct
+   * from the response's own `canonical_resolution_time`: this is what the caller asked for,
+   * not what the server actually used.
+   */
+  readonly as_of?: Timestamp;
+  /**
+   * Bounded maximum traversal depth requested. Absent means the server's default depth.
+   */
+  readonly depth_limit?: GraphDepthLimit;
+  /**
+   * Bounded maximum number of nodes requested. Absent means the server's default node limit.
+   * When set it must be at least the number of `start` seeds: a first page owes every seed at
+   * depth 0 and may return no more nodes than the limit, so a smaller one asks for a result no
+   * traversal could return.
+   */
+  readonly node_limit?: PageLimit;
+  /**
+   * Bounded maximum number of edges requested. Absent means the server's default edge limit.
+   */
+  readonly edge_limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging a traversal whose ordering can be
+   * deterministically continued. Present states that this is a continuation page: its seeds
+   * were already returned by an earlier page, so they are not returned again at any depth and
+   * every node it carries sits at depth 1 or deeper.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
  * One execution attempt of a job. A job that is retried has more than one attempt.
  */
 export interface JobAttempt {
@@ -1344,6 +1926,100 @@ export interface JobAttempt {
    * The failure this attempt ended with, when it failed.
    */
   readonly error?: ApiError;
+}
+
+/**
+ * Input for `knowledge.search`. Workspace-scoped: the workspace is the request envelope's
+ * selected workspace; this payload never carries a second, independent workspace identifier.
+ * Absent `view` defaults to `current_canonical`; only an explicit `view` selector may request
+ * `candidates` or `history`, so a caller can never receive candidate, rejected, superseded, or
+ * otherwise non-canonical governed knowledge by omission.
+ */
+export interface KnowledgeSearchInput {
+  /**
+   * Normalized search query.
+   */
+  readonly query: MemoryQuery;
+  /**
+   * Requested result order. Absent means the server's default order.
+   */
+  readonly order?: MemorySearchOrder;
+  /**
+   * Which slice of records' versions to consider. Absent defaults to `current_canonical`;
+   * requesting `candidates` or `history` requires this field to be set explicitly.
+   */
+  readonly view?: GovernedRecordView;
+  /**
+   * Restrict results to this record type, when set.
+   */
+  readonly record_type?: GovernedRecordType;
+  /**
+   * Restrict results to this domain scope, when set.
+   */
+  readonly domain_scope?: RecordDomainScope;
+  /**
+   * Bounded maximum number of records to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Input for `knowledge.propose`: transitions an existing proposed (`l1`/`proposed`) record into
+ * a candidate (`l1`/`candidate`) awaiting a governance decision. Never duplicates
+ * `memory.create`: it identifies an already-existing record by `record_id` rather than proposing
+ * new content, and never carries content, evidence, or assertion fields. The target version is
+ * the envelope's `MutationPrecondition.record_version`, not duplicated here. Like every other
+ * governance transition, the rationale is required: no governance decision on this contract is
+ * ever recorded without an explicit, auditable reason.
+ */
+export interface KnowledgeProposeInput {
+  /**
+   * Identifier of the existing proposed record to transition into a candidate.
+   */
+  readonly record_id: RecordId;
+  /**
+   * Reason this record is being put forward as a candidate.
+   */
+  readonly rationale: GovernanceRationale;
+}
+
+/**
+ * Input for `candidate.approve`: creates a new accepted (`l2`/`accepted`) governed version of an
+ * existing candidate record, with reviewer authority attributed server-side. The target version
+ * is the envelope's `MutationPrecondition.record_version`, not duplicated here. Carries no
+ * authority-level, reviewer identity, or governance-state field of its own -- only the explicit,
+ * auditable rationale for the decision.
+ */
+export interface CandidateApproveInput {
+  /**
+   * Identifier of the candidate record to approve.
+   */
+  readonly record_id: RecordId;
+  /**
+   * Reason this candidate was approved.
+   */
+  readonly rationale: GovernanceRationale;
+}
+
+/**
+ * Input for `candidate.reject`: creates a new rejected (`l1`/`rejected`) governed version of an
+ * existing candidate record, with reviewer authority attributed server-side. The target version
+ * is the envelope's `MutationPrecondition.record_version`, not duplicated here. `rejected` is
+ * never treated as a favourable or accepted authority decision.
+ */
+export interface CandidateRejectInput {
+  /**
+   * Identifier of the candidate record to reject.
+   */
+  readonly record_id: RecordId;
+  /**
+   * Reason this candidate was rejected.
+   */
+  readonly rationale: GovernanceRationale;
 }
 
 /**
@@ -1646,6 +2322,119 @@ export interface CompatibilityMatrix {
 }
 
 /**
+ * One exact citation in a pack: either an evidence citation or a governed-record citation, never
+ * both and never neither. The two branches are distinct object shapes rather than one shape with
+ * two optional pointers, so what a citation points at is settled structurally by the wire
+ * document instead of being left to a semantic agreement check.
+ */
+export type ContextPackCitation = ContextPackEvidenceCitation | ContextPackRecordCitation;
+
+/**
+ * The complete authority context one Context Pack was produced under, recorded so the build can
+ * be reproduced and audited. Historical reproducibility context only, and never a live grant:
+ * possessing it authorizes nothing, and following any citation still requires fresh
+ * authorization against the cited evidence or record. Recorded structurally rather than as an
+ * opaque fingerprint so a reviewer can actually check which principal, roles, capabilities,
+ * scopes, purpose, and policy versions were in force, instead of comparing two hashes and
+ * learning only that they differ.
+ */
+export interface ContextPackAuthorizationContext {
+  /**
+   * The workspace this pack was produced for.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * The validated principal, roles, and capabilities the build actually executed under. A
+   * historical record of that authority, not a restatement of it that a later reader may act
+   * on.
+   */
+  readonly authority: GrantedAuthority;
+  /**
+   * The scopes in force for the build, in deterministic ascending order and free of
+   * duplicates. Never empty: a build that names no scope states nothing checkable about what
+   * narrowed it. Scopes narrow a request; recording them never widens what this artifact
+   * permits.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The purpose-limitation token the build was performed under.
+   */
+  readonly purpose: Purpose;
+  /**
+   * Open map of policy or ACL name to the opaque policy version applied while producing this
+   * pack. At least one policy must be named: a pack that states no policy version states
+   * nothing checkable about what filtered it.
+   */
+  readonly policy_versions: Readonly<Record<string, OpaqueToken>>;
+  /**
+   * Always true: ACL and sensitivity authorization were applied to the candidate set before
+   * ranking and selection, not merely afterwards. An attestation about how the build ran,
+   * never itself a grant, and never an implication that filtering after ranking would have
+   * sufficed.
+   */
+  readonly pre_ranking_authorization_enforced: boolean;
+  /**
+   * Digest of the authorized candidate set that ranking and selection actually ran over, so a
+   * reproduction can prove it started from the same authorized material rather than a wider
+   * one. Independently recomputable rather than merely stated: it is exactly the digest
+   * `ContextPackAuthorizedCandidateSetManifest` defines, over the complete authorized frontier
+   * frozen before the first ranking, reranking, selection, or budget decision. A verifier
+   * checks it by recomputing that digest from a manifest supplied out of band and comparing;
+   * reading this value back out of the pack and comparing it with itself verifies nothing.
+   */
+  readonly authorized_candidate_set_checksum: ContextPackDigest;
+}
+
+/**
+ * The exact preimage `ContextPackAuthorizationContext.authorized_candidate_set_checksum` is a
+ * digest of. It names the complete post-retrieval, post-request-scope, post-
+ * workspace/scope/purpose/capability/policy/ACL/sensitivity-authorization candidate frontier,
+ * frozen before the first ranking, reranking, selection, or budget decision: not the whole
+ * workspace, and not merely the items a pack ended up selecting. Unauthorized, request-filtered,
+ * tombstoned, and invalid-at-resolution material is absent; nothing may be introduced into a
+ * pack after this frontier is frozen, so every selected item is a member of it under its own
+ * exact partition. This is trusted in-process input to a verifier, never a response field and
+ * never logged: it is the independent statement a checksum copied out of the pack itself could
+ * never be. The digest is `sha256:` followed by the lowercase hex SHA-256 of the RFC 8785
+ * canonical UTF-8 bytes of this document, with `candidates` sorted by partition and then by the
+ * remaining identity members in the order they are declared, comparing each component by
+ * unsigned UTF-16 code unit with no Unicode normalization. That sort makes the digest order-
+ * insensitive; a duplicate is refused outright rather than collapsed, so sorting never has to
+ * decide what a repeated identity meant. RFC 8785 orders object member names but never array
+ * elements, so that element sort is part of this definition rather than of the canonicalization.
+ * UTF-16 code-unit comparison is normative because it is the ordering RFC 8785 already imposes
+ * on member names, and a preimage ordered by one rule and canonicalized under another would be
+ * two rules pretending to be one; note that every v1 identity alphabet here is ASCII
+ * (`EvidenceId`, `RecordId`), printable ASCII (`RecordVersion`), or an ASCII-restricted checksum
+ * (`EvidenceChecksum`), so no valid v1 candidate can distinguish UTF-16 order from code-point
+ * order -- the rule is stated for the canonicalizer it must agree with, not because a v1
+ * identity could exercise the difference. The empty candidate set is valid and has a well-
+ * defined digest.
+ */
+export interface ContextPackAuthorizedCandidateSetManifest {
+  /**
+   * Always `omnivia.context-pack.authorized-candidate-set.v1`, and part of the hashed preimage
+   * rather than a header around it: a digest that did not cover the name of the thing it
+   * digests could be replayed against a differently shaped set of the same members.
+   */
+  readonly format: string;
+  /**
+   * The workspace this frontier was authorized in, and the only domain separation the preimage
+   * carries. Two workspaces that authorized identical identities must not share a digest.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * The complete authorized frontier, as a set: element order carries no meaning on the wire
+   * and is normalized before hashing, so a shuffled manifest digests identically while a
+   * changed, added, or removed identity never does. Free of duplicates -- an exactly repeated
+   * tuple, one evidence identifier paired with two content checksums, or one governed
+   * `(record_id, version)` repeated within a partition or across two governed partitions is a
+   * contradiction rather than a set, and is refused. May be empty.
+   */
+  readonly candidates: readonly ContextPackAuthorizedCandidate[];
+}
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -1779,10 +2568,14 @@ export interface JobTerminalCancellation {
 }
 
 /**
- * Who is asserting a `memory.create` candidate, when, and on what evidence, plus the validity
- * window they propose for it. This is caller-supplied provenance for the proposal, not the
- * server-owned governance decision: it never carries authority level, reviewer/policy identity,
- * or any other field `MemoryCreateInput` itself is forbidden from carrying.
+ * Who is asserting a governed record's claim, when, and on what evidence, plus the validity
+ * window they propose for it. This is caller-supplied provenance for the claim -- carried into
+ * `memory.create` and `record.supersede` inputs, and preserved on the resulting record's
+ * `RecordProvenance` -- not the server-owned governance decision: it never carries authority
+ * level, reviewer/policy identity, or any other field a least-authority-escalating mutation
+ * input is forbidden from carrying. Defined here rather than in `memory.schema.json` so
+ * `RecordProvenance` can preserve it without `records.schema.json` depending on a document that
+ * already depends on it.
  */
 export interface CandidateAssertion {
   /**
@@ -1820,7 +2613,8 @@ export interface CandidateAssertion {
 }
 
 /**
- * One step in a record's history: who or what did what, and when.
+ * One step in a record's history: who or what did what, when, and -- for a governance transition
+ * -- the explicit rationale it was taken under.
  */
 export interface ProvenanceEntry {
   /**
@@ -1840,7 +2634,24 @@ export interface ProvenanceEntry {
    */
   readonly occurred_at: Timestamp;
   /**
-   * Evidence supporting this action, when applicable.
+   * Open code naming why this action was taken, carried over verbatim from the
+   * `GovernanceRationale.reason_code` the transition was requested under. Absent on ordinary
+   * non-governance history, which never carries a rationale; a governance-transition event
+   * must carry it, and requiring that is a semantic-validation concern, not a wire-shape one.
+   */
+  readonly reason_code?: OpenCode;
+  /**
+   * Bounded human-readable elaboration, carried over verbatim from the requesting
+   * `GovernanceRationale.comment`. Absent exactly when that comment was absent. Not a stable
+   * interface.
+   */
+  readonly reason_comment?: string;
+  /**
+   * Evidence supporting this action, when applicable. Bounded at the same 256 items
+   * `CandidateAssertion.evidence` is, and deliberately so: a `record.supersede` transition
+   * appends exactly one event whose evidence must equal the replacement claim's complete
+   * assertion evidence, so a lower bound here would make an otherwise valid replacement
+   * impossible to record.
    */
   readonly evidence?: readonly EvidenceReference[];
 }
@@ -1874,6 +2685,165 @@ export interface WorkspaceDescriptor {
    * When this workspace's descriptor was last updated, when known.
    */
   readonly updated_at?: Timestamp;
+}
+
+/**
+ * Everything a second build needs to reproduce one Context Pack byte for byte: the pack format
+ * version, the builder, the normalized request, the authority context the build ran under, the
+ * exact evidence and record versions selected, the projection the read was served from, the
+ * retrieval/ranking/reranking/selection/tokenizer/summarizer/model versions applied, the instant
+ * the canonical knowledge was resolved at, and the canonicalization and checksum that make the
+ * result content-addressed. With every one of these unchanged, rebuilding must reproduce the
+ * identical pack. Carries no audit reference: the response envelope owns audit linkage, and
+ * folding a per-request audit identifier into a content-addressed artifact would make two
+ * identical builds hash differently.
+ */
+export interface ContextPackReproducibility {
+  /**
+   * The Context Pack artifact format this pack is written in. Frozen at `1.0` for v1: the
+   * checksum rule below is defined against exactly this format, so a reader must know which
+   * format it is verifying before it verifies anything. Format `1.0` also pins the numeric
+   * admission profile the canonicalization runs under -- lossless binary64. Every number in an
+   * admitted pack must be a finite IEEE 754 binary64 value, and an integer is admitted only
+   * when it converts to binary64 without loss, so `2**53 + 1` is refused rather than silently
+   * signed under the name of `2**53`; non-finite values (NaN, the infinities) have no JSON
+   * form and are refused outright. This belongs to the format rather than to the checksum
+   * because it decides *which documents have a canonical form at all*: two implementations
+   * that agreed on the hash but disagreed on whether a given number was admissible would not
+   * agree on which packs exist. A future format may widen or narrow that profile, which is
+   * exactly why the format is named inside the artifact and read before anything is verified.
+   */
+  readonly pack_format_version: ContractVersion;
+  /**
+   * Version of the pack builder that assembled this artifact.
+   */
+  readonly builder_version: Identifier;
+  /**
+   * The exact normalized request this pack was built from.
+   */
+  readonly normalized_request: ContextPackNormalizedRequest;
+  /**
+   * The complete authority context the build ran under. Historical reproducibility context,
+   * never a live grant.
+   */
+  readonly authorization_context: ContextPackAuthorizationContext;
+  /**
+   * Exactly the L0 evidence identities this pack selected, in deterministic ascending order by
+   * identifier then checksum, with no duplicate, addition, or omission. Not a superset of what
+   * was selected and not a summary of it: the set itself, so a reproduction can be checked
+   * rather than believed.
+   */
+  readonly evidence_versions: readonly ContextPackEvidenceReference[];
+  /**
+   * Exactly the union of the governed-record identities this pack selected across `records`,
+   * `history`, and `context_models`, in deterministic ascending order by record identifier
+   * then version, with no duplicate, addition, or omission.
+   */
+  readonly record_versions: readonly RecordVersionReference[];
+  /**
+   * The projection versions and watermarks this pack was actually served from, under the same
+   * strict rule every other projection-served read in this contract states.
+   */
+  readonly freshness: ProjectionFreshness;
+  /**
+   * Version of the retrieval configuration that produced the candidate set.
+   */
+  readonly retrieval_version: Identifier;
+  /**
+   * Version of the ranking configuration applied to the authorized candidate set.
+   */
+  readonly ranking_version: Identifier;
+  /**
+   * Version of the reranking configuration applied after ranking.
+   */
+  readonly reranking_version: Identifier;
+  /**
+   * Version of the selection configuration that chose what fit the budget.
+   */
+  readonly selection_version: Identifier;
+  /**
+   * Identifier of the tokenizer every `token_count` in this pack was measured with.
+   */
+  readonly tokenizer_id: Identifier;
+  /**
+   * Version of that tokenizer. Token counts are only reproducible against an exact tokenizer
+   * identity and version.
+   */
+  readonly tokenizer_version: Identifier;
+  /**
+   * Version of the summarizer applied while producing this pack, or the literal `disabled`
+   * when none was used. Required either way: an absent field would leave a reader unable to
+   * tell a build that summarized nothing from one whose summarizer was simply never recorded.
+   */
+  readonly summarizer_version: Identifier;
+  /**
+   * Open map of model role to the exact model version used in that role. Required but allowed
+   * to be empty, which is how a build that used no model at all states so explicitly rather
+   * than by omission.
+   */
+  readonly model_versions: Readonly<Record<string, Identifier>>;
+  /**
+   * The instant the canonical knowledge in this pack was resolved at. Every selected item is
+   * judged current, historical, valid, or superseded against exactly this instant, and it is
+   * additionally an inclusive upper bound on every event and provenance instant a selected
+   * item carries: equality passes, strictly later is refused. For a selected
+   * `evidence.EvidenceArtifact` that covers `temporal.event_at`, `observed_at`, `ingested_at`,
+   * and `recorded_at`, `source.retrieved_at`, every `provenance_history[].occurred_at`, and
+   * every `provenance_history[].evidence[].source.retrieved_at`. For a selected
+   * `memory.GovernedRecord` in `records`, `history`, or `context_models` it covers
+   * `provenance.temporal.event_at`, `observed_at`, `ingested_at`, and `recorded_at`, every
+   * `provenance.sources[].retrieved_at`, every `provenance.history[].occurred_at`, every
+   * `provenance.history[].evidence[].source.retrieved_at`, `provenance.assertion.asserted_at`,
+   * every `provenance.assertion.evidence[].source.retrieved_at`, and
+   * `provenance.extraction.extracted_at`. It deliberately does not bound
+   * `provenance.assertion.proposed_valid_from` or `proposed_valid_until`: those are proposed
+   * effective dates, and an assertion about the future is a claim rather than an act that had
+   * not happened. This bound applies to selection into a pack only; the generic record and
+   * evidence rules are unchanged, and an out-of-range instant is a refusal to select, never a
+   * repair -- provenance is append-only, so nothing is dropped or truncated to make an item
+   * selectable.
+   */
+  readonly canonical_resolution_time: Timestamp;
+  /**
+   * When this pack was generated. Equal to `canonical_resolution_time`: a deterministic build
+   * is logically complete at the instant it resolved at, and letting wall-clock generation
+   * time drift from it would make two otherwise identical builds hash differently.
+   */
+  readonly generated_at: Timestamp;
+  /**
+   * Open code naming the canonicalization the checksum below was computed over. Frozen at
+   * `rfc8785` in v1: a checksum is only checkable against a stated, exactly specified
+   * canonical form, and an unrecognized value fails closed rather than being verified under a
+   * guessed one. Pack format 1.0 applies RFC 8785 byte serialization to an admitted I-JSON
+   * data model: every number must be a finite binary64 before canonicalization, and any number
+   * token written in integer form -- and any direct host-language integral value -- is
+   * admitted only when converting it to binary64 and back to the mathematical integer is
+   * exact. Decimal and exponent tokens are read as finite binary64 under ordinary JCS rules,
+   * with no requirement of an exact decimal rational representation. So `9007199254740992` and
+   * `1152921504606846976` are admitted while `9007199254740993` and `1152921504606846977` are
+   * refused, `1e400` is refused as non-finite, and `0.1` and `1e+21` are admitted. This is an
+   * admission rule, not a safe-integer range: exact larger integers such as powers of two stay
+   * valid. It refuses silent rounding of an integer identity or count without changing the RFC
+   * 8785 bytes any admitted document serializes to.
+   */
+  readonly artifact_canonicalization: OpenCode;
+  /**
+   * SHA-256 of the RFC 8785 canonical UTF-8 bytes of this complete result with exactly two
+   * members removed: the result's own `pack_id` and this field. Nothing else is excluded --
+   * not the generation time, the authority context, the freshness statement, the policy or
+   * configuration versions, the budget, the sections, the citations, or any selected content
+   * -- so any change to any of them changes the digest. What is hashed is the *admitted v1
+   * data model's* RFC 8785 canonical UTF-8 bytes, not the bytes as they happened to arrive:
+   * the document is first admitted under the numeric profile `pack_format_version` pins and
+   * the rest of the v1 data model (object member names are strings and no member name is
+   * duplicated, strings are valid Unicode scalar sequences with no lone surrogate), and only
+   * then canonicalized and hashed. So received whitespace, member order, number spelling, and
+   * optional string escaping do not reach the digest -- RFC 8785 defines them away -- while a
+   * document that is not admissible at all has no digest rather than a digest of some repaired
+   * version of itself. Member names are ordered by unsigned UTF-16 code unit and numbers
+   * rendered by ECMAScript `Number::toString`, both as RFC 8785 requires.
+   */
+  readonly artifact_checksum: ContextPackDigest;
 }
 
 /**
@@ -1935,6 +2905,86 @@ export interface ResponseMetadata {
 }
 
 /**
+ * One complete, append-preserving L0 evidence artifact: stable identity, workspace, exact
+ * source/native locator, applicable temporal instants, content checksum and media type, opaque
+ * metadata, permission/sensitivity labels, tombstone status, parser/ingestion status, and
+ * append-only provenance history. Carries no `GovernanceLayer`, `GovernanceState`,
+ * `RecordCurrentness`, or `authority_level` field: an evidence artifact is raw L0 material,
+ * never governed knowledge, and this shape must never be mistaken for a `GovernedRecord`.
+ */
+export interface EvidenceArtifact {
+  /**
+   * Stable identifier of this evidence artifact.
+   */
+  readonly evidence_id: EvidenceId;
+  /**
+   * Workspace this evidence artifact belongs to.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Exact source, native identifier, and locator this evidence was captured from.
+   */
+  readonly source: SourceReference;
+  /**
+   * The distinct instants applicable to this evidence: when observed, when ingested, and when
+   * this artifact was recorded, without collapsing them into one.
+   * `valid_from`/`valid_until`/`superseded_at` are rarely applicable to append-only L0
+   * evidence and are typically absent.
+   */
+  readonly temporal: RecordTemporalMetadata;
+  /**
+   * Checksum of this evidence artifact's content, proving the content has not been altered
+   * since capture.
+   */
+  readonly content_checksum: EvidenceChecksum;
+  /**
+   * Media type of this evidence artifact's content.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Opaque metadata captured alongside this evidence artifact.
+   */
+  readonly metadata: JsonObject;
+  /**
+   * Open codes naming the access/permission labels attached to this evidence artifact, such as
+   * `restricted` or `team_only`. May be empty when no label applies.
+   */
+  readonly permission_labels: readonly OpenCode[];
+  /**
+   * Open code naming this evidence artifact's sensitivity classification, such as `public` or
+   * `confidential`.
+   */
+  readonly sensitivity: OpenCode;
+  /**
+   * True when this evidence artifact has been tombstoned. A tombstoned artifact's append-only
+   * provenance history is never erased; tombstoning is itself recorded as a provenance entry.
+   */
+  readonly tombstoned: boolean;
+  /**
+   * Open code naming the status of parsing this evidence artifact's content, such as `parsed`
+   * or `parse_failed`.
+   */
+  readonly parser_status: OpenCode;
+  /**
+   * Open code naming the status of ingesting this evidence artifact, such as `ingested` or
+   * `quarantined`.
+   */
+  readonly ingestion_status: OpenCode;
+  /**
+   * Append-only history of actions taken on this evidence artifact. Never truncated or
+   * rewritten; a correction is a new entry, not an edit to a prior one. Never empty: even the
+   * first capture of this artifact is itself a provenance entry, so an artifact with no
+   * recorded history entry would be an unaudited state.
+   */
+  readonly provenance_history: readonly ProvenanceEntry[];
+  /**
+   * Identifier of the import run that produced this evidence artifact, when it was produced by
+   * one.
+   */
+  readonly import_run_id?: Identifier;
+}
+
+/**
  * The final outcome of a job once it has reached a terminal state, with the complete attempt
  * history that led there. Exactly one of a success, a failure, or a cancellation, never a mix:
  * each branch closes its property set and carries a unique required discriminator (`result`,
@@ -1976,12 +3026,13 @@ export interface MemoryCreateInput {
   readonly sources: readonly SourceReference[];
   /**
    * Who is asserting this candidate, when, on what evidence, and the validity window they
-   * propose. Every candidate carries one.
+   * propose. Every candidate carries one. Shared with `RecordProvenance.assertion`, so the
+   * lineage a proposal supplies is the lineage the resulting record preserves.
    */
   readonly assertion: CandidateAssertion;
   /**
    * Provenance of the automated extractor that produced this candidate, when one did. Absent
-   * for a candidate a human asserted directly.
+   * for a candidate a human asserted directly. Shared with `RecordProvenance.extraction`.
    */
   readonly extraction?: CandidateExtractionMetadata;
   /**
@@ -1997,7 +3048,11 @@ export interface MemoryCreateInput {
 
 /**
  * The full provenance envelope for one record version: identity, temporal metadata, its
- * authoring history, and the sources it draws on.
+ * authoring history, the sources it draws on, and the caller-supplied assertion/extraction
+ * lineage the claim in this version came from. `assertion`/`extraction` are structurally
+ * optional so a record written before they existed still decodes, but a governance transition
+ * that replaces or carries forward a claim must bind them; enforcing that is a semantic-
+ * validation concern, not a wire-shape one.
  */
 export interface RecordProvenance {
   /**
@@ -2009,7 +3064,13 @@ export interface RecordProvenance {
    */
   readonly temporal: RecordTemporalMetadata;
   /**
-   * Ordered history of actions that produced this record version.
+   * Ordered, append-only history of actions that produced this record version. Deliberately
+   * carries no `maxItems`: history is never erased or rewritten, and every governance
+   * transition appends exactly one event, so any finite inline cap would eventually make a
+   * previously valid record impossible to transition -- and raising the cap only postpones
+   * that contradiction. Bounding a response's size is a transport/operation concern, handled
+   * outside this inline provenance invariant, never by dropping, compacting, or summarising
+   * audit history.
    */
   readonly history: readonly ProvenanceEntry[];
   /**
@@ -2023,6 +3084,18 @@ export interface RecordProvenance {
    * empty only when `evidence_disposition` explicitly states evidence is unavailable.
    */
   readonly sources: readonly SourceReference[];
+  /**
+   * Who asserted the claim this version carries, when, on what evidence, and the validity
+   * window they proposed. Preserved verbatim from the `memory.create` or `record.supersede`
+   * input that supplied the claim, so candidate/replacement lineage survives every governance
+   * transition.
+   */
+  readonly assertion?: CandidateAssertion;
+  /**
+   * Provenance of the automated extractor that produced the claim this version carries, when
+   * one did. Absent for a claim a human asserted directly.
+   */
+  readonly extraction?: CandidateExtractionMetadata;
 }
 
 /**
@@ -2089,6 +3162,54 @@ export interface ErrorResponseEnvelope {
 }
 
 /**
+ * Result of `evidence.search`: complete, append-preserving L0 evidence artifacts with exact
+ * provenance. Never substitutes a `GovernedRecord` for an evidence artifact.
+ */
+export interface EvidenceSearchResult {
+  /**
+   * Evidence artifacts in this page.
+   */
+  readonly evidence: readonly EvidenceArtifact[];
+  /**
+   * Continuation position for the next page, absent on the last page.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Input for `record.supersede`: an explicit, authorized replacement of a current accepted
+ * (`l2`/`accepted`/`current`) governed record with a new accepted version. The target version is
+ * the envelope's `MutationPrecondition.record_version`, not duplicated here. Exactly three
+ * fields: which record, the complete replacement claim, and why. The replacement is a whole
+ * `MemoryCreateInput` rather than a loose bag of content/evidence fields, so the new version's
+ * content, evidence disposition, sources, assertion, extraction lineage, and proposed validity
+ * window are supplied and validated as one coherent claim under exactly the rules
+ * `memory.create` already enforces. It inherits that shape's least-authority-escalating
+ * guarantee: no governance-state, currentness, authority-level, reviewer, or supersession field
+ * is accepted from a caller. The server alone produces the new version's identity, authority,
+ * temporal envelope, and the reciprocal `supersedes`/`superseded_by` pointers, and the
+ * replacement's `record_type`/`domain_scope` must equal the superseded record's -- superseding
+ * replaces a claim, it never silently reclassifies the record.
+ */
+export interface RecordSupersedeInput {
+  /**
+   * Identifier of the current accepted record to supersede.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The complete replacement claim: content, evidence disposition, sources, assertion,
+   * optional extraction lineage, and optional event/observed times, in exactly the shape
+   * `memory.create` accepts. Its `record_type`/`domain_scope` must equal the superseded
+   * record's.
+   */
+  readonly replacement: MemoryCreateInput;
+  /**
+   * Reason this record is being superseded.
+   */
+  readonly rationale: GovernanceRationale;
+}
+
+/**
  * A provider-neutral governed record: which workspace it belongs to, what kind of record it is,
  * its domain scope and authority level, its full L0-L4 governance, temporal, evidence, and
  * provenance envelope, and its opaque JSON content. Carries no reference to, and is not a
@@ -2134,11 +3255,323 @@ export interface GovernedRecord {
 }
 
 /**
+ * Result of `context_pack.build`: the original query, the model-facing sections, the selected L0
+ * evidence, current canonical L2 records, supporting history and L3 context models, the exact
+ * citations every section and selected item rests on, the conflicts and uncertainties the pack
+ * surfaces rather than resolving, the policy and budget omissions, token accounting, and the
+ * complete reproducibility record. Selecting and citing this content never grants new authority:
+ * `fresh_authorization_required` is always true, and possessing `pack_id` grants nothing on its
+ * own -- it is a content digest anyone can recompute, not a capability.
+ */
+export interface ContextPackBuildResult {
+  /**
+   * Content-addressed identity of this pack, exactly equal to
+   * `reproducibility.artifact_checksum`. Two builds that produce the same content produce the
+   * same identity, and a changed pack can never keep an old one.
+   */
+  readonly pack_id: ContextPackDigest;
+  /**
+   * The mode this pack was built in, bound exactly to the request's mode.
+   */
+  readonly mode: ContextPackMode;
+  /**
+   * The original caller query this pack was built for, bound exactly to the request's query.
+   */
+  readonly query: MemoryQuery;
+  /**
+   * The model-facing sections of this pack, ordered deterministically by `section_id`. May be
+   * empty for a valid pack that found nothing to say; every section that is present is non-
+   * empty and cited.
+   */
+  readonly sections: readonly ContextPackSection[];
+  /**
+   * Selected L0 evidence artifacts, ordered deterministically by identifier then content
+   * checksum. Every artifact is held to the complete resolution-time closure:
+   * `canonical_resolution_time` is an inclusive upper bound on every act and observation the
+   * artifact carries, not only on the instants this partition's own rule reads --
+   * `temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`,
+   * `source.retrieved_at`, every `provenance_history[].occurred_at`, and every
+   * `provenance_history[].evidence[].source.retrieved_at`. Equality passes and only a strictly
+   * later instant is refused, and the refusal is a refusal rather than a repair: provenance is
+   * append-only, so an out-of-range instant is never dropped or truncated to make the artifact
+   * selectable. Its validity must contain the resolution instant inclusively --
+   * `temporal.valid_from` no later than it and `temporal.valid_until` no earlier than it, both
+   * boundaries accepted at equality. `temporal.superseded_at` must be absent or strictly after
+   * the resolution instant: supersession is exclusive where the closure is inclusive, because
+   * an artifact replaced *at* the instant a pack resolved was already not the live one, so
+   * equality is rejected here rather than accepted.
+   */
+  readonly evidence: readonly EvidenceArtifact[];
+  /**
+   * Selected current, canonical L2 governed records, ordered deterministically by record
+   * identifier then version. Every record is held to the complete resolution-time closure:
+   * `canonical_resolution_time` is an inclusive upper bound on every act and observation
+   * nested anywhere in its provenance, not only on the instants this partition's own rule
+   * reads -- `provenance.temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`,
+   * every `provenance.sources[].retrieved_at`, every `provenance.history[].occurred_at`, every
+   * `provenance.history[].evidence[].source.retrieved_at`, `provenance.assertion.asserted_at`,
+   * every `provenance.assertion.evidence[].source.retrieved_at`, and
+   * `provenance.extraction.extracted_at`. Equality passes and only a strictly later instant is
+   * refused, and the refusal is a refusal rather than a repair. Its validity must contain the
+   * resolution instant inclusively -- `provenance.temporal.valid_from` no later than it and
+   * `provenance.temporal.valid_until` no earlier than it, both boundaries accepted at
+   * equality; a version whose validity begins only afterwards was not yet in force, and one
+   * that expired before it was no longer the answer. The version must be current and
+   * unsuperseded at that instant: `currentness` exactly `current`, and
+   * `provenance.temporal.superseded_at` absent outright, irrespective of timestamp. Not merely
+   * absent at or before the resolution instant: a current version records no supersession at
+   * all, so a `superseded_at` strictly after the resolution instant is refused exactly as one
+   * at or before it is. A version that states when it was replaced belongs to `history`,
+   * whichever side of the resolution instant that statement falls on.
+   * `provenance.assertion.proposed_valid_from`/`proposed_valid_until` are deliberately not
+   * bounded by any of this -- a proposed effective date is a claim about the future rather
+   * than an act that had to have happened, and a record valid now may propose taking effect
+   * later.
+   */
+  readonly records: readonly GovernedRecord[];
+  /**
+   * Selected historical canonical L2 governed record versions -- versions that were canonical
+   * knowledge and had already been superseded at the canonical-resolution time -- ordered
+   * deterministically by record identifier then version. May be empty. Every version is held
+   * to the same complete resolution-time closure `records` states, over exactly the same
+   * nested provenance paths, inclusive at equality and refused rather than repaired past it.
+   * `provenance.temporal.superseded_at` is required and must be at or before the resolution
+   * instant, with equality *accepted*: a version replaced exactly at the instant a pack
+   * resolved was already history by it, and one superseded only afterwards was still canonical
+   * then and is not this partition's to carry. That is the mirror image of the `evidence`
+   * rule, where equality is rejected, and the two differ because they are asking opposite
+   * questions about the same boundary. Validity containment is deliberately *not* required
+   * here: a historical version's validity window may have closed long before the resolution
+   * instant -- that is what makes it historical -- so demanding containment would empty the
+   * partition of exactly the versions it exists to carry. Note also that `recorded_at <=
+   * superseded_at <= resolution` already follows from the intrinsic record rules composed with
+   * the supersession bound above, so a future `ingested_at`/`recorded_at` on a historical
+   * version is refused by those before the nested closure is ever consulted.
+   */
+  readonly history: readonly GovernedRecord[];
+  /**
+   * Selected current, canonical L3 context-model governed records, ordered deterministically
+   * by record identifier then version. May be empty. Held to exactly the same current rules
+   * `records` states, at L3 rather than L2: the same complete resolution-time closure over the
+   * same nested provenance paths, inclusive at equality and refused rather than repaired past
+   * it; the same inclusive validity containment of the resolution instant at both boundaries;
+   * and the same requirement to be current and unsuperseded at that instant, with
+   * `provenance.temporal.superseded_at` absent outright, irrespective of timestamp -- a value
+   * strictly after the resolution instant is refused exactly as one at or before it is. Only
+   * the governance layer differs -- `layer` exactly `l3` -- and a context model is otherwise
+   * no more selectable than an L2 record would be under the same temporal facts.
+   */
+  readonly context_models: readonly GovernedRecord[];
+  /**
+   * Exact citations binding this pack's sections and selected content to immutable evidence or
+   * governed record versions, ordered deterministically by `citation_id`. May be empty only
+   * when this pack selected nothing and states no section.
+   */
+  readonly citations: readonly ContextPackCitation[];
+  /**
+   * Conflicts among cited content this pack surfaces rather than silently resolving, in
+   * deterministic order. May be empty.
+   */
+  readonly conflicts: readonly ContextPackConflict[];
+  /**
+   * Uncertainties this pack surfaces rather than silently resolving, in deterministic order.
+   * May be empty.
+   */
+  readonly uncertainties: readonly ContextPackUncertainty[];
+  /**
+   * Policy or budget reasons content the caller might otherwise expect was left out of this
+   * pack, in deterministic order. May be empty.
+   */
+  readonly omissions: readonly Omission[];
+  /**
+   * Token budget accounting for this pack.
+   */
+  readonly budget: ContextPackBudget;
+  /**
+   * Everything a second build needs to reproduce this pack byte for byte, including the
+   * checksum that makes it content-addressed.
+   */
+  readonly reproducibility: ContextPackReproducibility;
+  /**
+   * Always true: following any citation in this pack always requires fresh authorization
+   * against the cited evidence or record. Possessing this pack, or `pack_id`, grants no access
+   * on its own.
+   */
+  readonly fresh_authorization_required: boolean;
+}
+
+/**
  * Exactly one of a success or an error response, never both. Both branches close their property
  * set, so a document carrying `result` and `error` together matches neither branch and is
  * invalid.
  */
 export type ResponseEnvelope = SuccessResponseEnvelope | ErrorResponseEnvelope;
+
+/**
+ * One node in a traversal result: a precise reference to the canonical governed record version
+ * it represents, the full governed record it wraps, and the depth at which this traversal
+ * reached it. Never carries a competing identity, provenance, lifecycle, authority, or
+ * governance state of its own -- `reference` and `record` are the only sources of truth, and
+ * they must agree.
+ */
+export interface GraphNode {
+  /**
+   * Precise reference to the canonical governed record version this node represents.
+   */
+  readonly reference: RecordVersionReference;
+  /**
+   * The full governed record this node wraps.
+   */
+  readonly record: GovernedRecord;
+  /**
+   * The traversal depth at which this node was reached, measured from the requested seeds: 0
+   * exactly for a node the request named in `start`, and never for any other node.
+   */
+  readonly depth: GraphDepthLimit;
+}
+
+/**
+ * One edge in a traversal result: the relation type, its source and target governed-record
+ * versions, the relation's own full governed record, and the precise reference identifying that
+ * relation record. Never carries a competing identity, provenance, lifecycle, authority, or
+ * governance state of its own beyond that wrapped record: `relation_reference` must identify
+ * `record.provenance.identity` exactly, so the relation record is referenced, never re-
+ * identified. `source` and `target` are structurally optional so a result can represent a
+ * justified page/depth boundary where one end of a relation was not reached; at least one must
+ * be present, and exactly one may be absent only together with a coherent `boundary_reason`.
+ * Both endpoints present means a fully materialized edge and forbids `boundary_reason`; both
+ * absent is never representable, since an edge that names no returned node states nothing this
+ * result can be trusted about.
+ */
+export interface GraphEdge {
+  /**
+   * Kind of relation this edge represents.
+   */
+  readonly relation_type: GraphRelationType;
+  /**
+   * The record version this edge originates from. Absent only at a justified page/depth
+   * boundary, together with a coherent `boundary_reason`; absence means this traversal did not
+   * reach that end, never that the relation has no source.
+   */
+  readonly source?: RecordVersionReference;
+  /**
+   * The record version this edge points to. Absent only at a justified page/depth boundary,
+   * together with a coherent `boundary_reason`; absence means this traversal did not reach
+   * that end, never that the relation has no target.
+   */
+  readonly target?: RecordVersionReference;
+  /**
+   * The relation's own full governed record, retaining its own full evidence and provenance.
+   */
+  readonly record: GovernedRecord;
+  /**
+   * Precise reference to the canonical governed record version of the relation itself -- the
+   * record `record` wraps. Must identify `record.provenance.identity` exactly; it is a pointer
+   * to that record's identity, never a second identity the edge owns.
+   */
+  readonly relation_reference: RecordVersionReference;
+  /**
+   * Why exactly one endpoint is absent. Required when exactly one of `source`/`target` is
+   * absent, forbidden when both are present, and never sufficient on its own: the stated
+   * reason must actually hold against this result's page metadata and applied limits.
+   */
+  readonly boundary_reason?: GraphBoundaryReason;
+}
+
+/**
+ * Result of `knowledge.search`. When the request's `view` was absent or `current_canonical`,
+ * every returned record must be the exact accepted, current, canonical version; no candidate,
+ * rejected, superseded, or non-canonical-layer record may appear.
+ */
+export interface KnowledgeSearchResult {
+  /**
+   * Governed records in this page, ordered per the request's `order`.
+   */
+  readonly records: readonly GovernedRecord[];
+  /**
+   * Continuation position for the next page, absent on the last page.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Result of `knowledge.propose`: both versions of the record as they stand *after* the
+ * transition, so a caller can validate the transition and confirm no history or provenance was
+ * lost. `previous_record` is the prior version, which the transition has itself marked
+ * superseded and pointed at the new one; `updated_record` is the newly current version. Neither
+ * is a pre-transition snapshot: `previous_record` is what that version now is, not what it
+ * looked like before the call.
+ */
+export interface KnowledgeProposeResult {
+  /**
+   * The prior version this transition replaced, as it stands after the transition: still
+   * carrying its own `proposed` claim, now marked superseded and pointing at `updated_record`.
+   */
+  readonly previous_record: GovernedRecord;
+  /**
+   * The newly current version: the record's new candidate state.
+   */
+  readonly updated_record: GovernedRecord;
+}
+
+/**
+ * Result of `candidate.approve`: both versions of the record as they stand *after* approval, so
+ * a caller can validate the transition and confirm no history or provenance was lost.
+ * `previous_record` is the prior candidate version, which the approval has itself marked
+ * superseded and pointed at the new one; `updated_record` is the newly current version. Neither
+ * is a pre-transition snapshot: `previous_record` is what that version now is, not what it
+ * looked like before the call.
+ */
+export interface CandidateApproveResult {
+  /**
+   * The prior candidate version this approval replaced, as it stands after the transition:
+   * still carrying its candidate authority, now marked superseded and pointing at
+   * `updated_record`.
+   */
+  readonly previous_record: GovernedRecord;
+  /**
+   * The newly current version: the record's new accepted, current, canonical state.
+   */
+  readonly updated_record: GovernedRecord;
+}
+
+/**
+ * Result of `candidate.reject`: both versions of the record as they stand *after* rejection, so
+ * a caller can validate the transition and confirm no history or provenance was lost.
+ * `previous_record` is the prior candidate version, which the rejection has itself marked
+ * superseded and pointed at the new one; `updated_record` is the newly current version. Neither
+ * is a pre-transition snapshot: `previous_record` is what that version now is, not what it
+ * looked like before the call.
+ */
+export interface CandidateRejectResult {
+  /**
+   * The prior candidate version this rejection replaced, as it stands after the transition:
+   * still carrying its candidate authority, now marked superseded and pointing at
+   * `updated_record`.
+   */
+  readonly previous_record: GovernedRecord;
+  /**
+   * The newly current version: the record's new rejected state. `rejected` carries a reviewer,
+   * but is never a favourable or accepted authority decision.
+   */
+  readonly updated_record: GovernedRecord;
+}
+
+/**
+ * Result of `record.supersede`: the prior current record (now superseded) and the new current
+ * record, so a caller can validate the reciprocal `supersedes`/`superseded_by` pointers, the
+ * preserved stable record identity, and the complete, unerased provenance history.
+ */
+export interface RecordSupersedeResult {
+  /**
+   * The prior current record, now superseded.
+   */
+  readonly previous_record: GovernedRecord;
+  /**
+   * The new current, accepted, canonical record.
+   */
+  readonly updated_record: GovernedRecord;
+}
 
 /**
  * Result of `memory.create`: the resulting proposed governed record.
@@ -2188,6 +3621,64 @@ export interface MemorySearchResult {
    * Continuation position for the next page, absent on the last page.
    */
   readonly page: PageMetadata;
+}
+
+/**
+ * Result of `graph.traverse`: the traversed nodes and edges, the traversal limits actually
+ * applied (which may be tighter than requested but never looser), the projection
+ * metadata/watermark this traversal was served from, and deterministic ordering evidence.
+ * Boundaries are stated, never implied: an edge whose source or target this traversal did not
+ * reach carries the endpoint absent plus a `boundary_reason` that must actually hold here --
+ * `page_boundary` only when `page` offers a continuation token and `nodes` reached
+ * `applied_node_limit` exactly, `depth_boundary` only when the endpoint that *is* present is a
+ * returned node sitting at `applied_depth_limit`. Projection loss is never canonical-data loss:
+ * an absent endpoint says this page stopped, not that the relation lost an end.
+ */
+export interface GraphTraversalResult {
+  /**
+   * Nodes reached by this traversal, in the order named by `ordering_basis`: ascending by
+   * `(depth, reference.record_id, reference.version)`.
+   */
+  readonly nodes: readonly GraphNode[];
+  /**
+   * Edges reached by this traversal, in the order named by `ordering_basis`: ascending by the
+   * complete tuple `(source.record_id, source.version, relation_type, target.record_id,
+   * target.version, relation_reference.record_id, relation_reference.version)`. All seven
+   * fields participate, so two edges sharing the same endpoints but naming different
+   * relations, or the same relation type recorded by different relation record versions, still
+   * have one reproducible order. An absent endpoint contributes the empty string in both of
+   * its positions, which sorts before any present reference.
+   */
+  readonly edges: readonly GraphEdge[];
+  /**
+   * The traversal depth actually applied.
+   */
+  readonly applied_depth_limit: GraphDepthLimit;
+  /**
+   * The node limit actually applied. May be tighter than a requested `node_limit`, but on a
+   * first page never below the number of requested `start` seeds -- including when the request
+   * named no `node_limit` and this limit is the server's own choice, since that page still
+   * owes every seed.
+   */
+  readonly applied_node_limit: PageLimit;
+  /**
+   * The edge limit actually applied.
+   */
+  readonly applied_edge_limit: PageLimit;
+  /**
+   * The projection version(s)/watermark this traversal was actually served from.
+   */
+  readonly freshness: ProjectionFreshness;
+  /**
+   * The deterministic key `nodes` and `edges` are ordered by.
+   */
+  readonly ordering_basis: GraphOrderingBasis;
+  /**
+   * Continuation position for the next page, when this traversal's ordering can be
+   * deterministically continued. Absent on the last page, or when the traversal cannot be
+   * paged.
+   */
+  readonly page?: PageMetadata;
 }
 
 /**

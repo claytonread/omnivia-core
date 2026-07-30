@@ -11,6 +11,10 @@
 #   contracts/application/v1/schemas/operations.schema.json
 #   contracts/application/v1/schemas/workspace.schema.json
 #   contracts/application/v1/schemas/memory.schema.json
+#   contracts/application/v1/schemas/evidence.schema.json
+#   contracts/application/v1/schemas/knowledge.schema.json
+#   contracts/application/v1/schemas/graph.schema.json
+#   contracts/application/v1/schemas/context-pack.schema.json
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
@@ -46,6 +50,8 @@ __all__ = [
     "COMPATIBILITY_STATUS_INCOMPATIBLE",
     "COMPATIBILITY_STATUS_UPGRADE_REQUIRED",
     "COMPONENT_KIND_PATTERN",
+    "CONTEXT_PACK_DIGEST_PATTERN",
+    "CONTEXT_PACK_MODE_PATTERN",
     "CONTRACT_VERSION",
     "CONTRACT_VERSION_PATTERN",
     "CORRELATION_ID_PATTERN",
@@ -76,13 +82,19 @@ __all__ = [
     "ERROR_CODE_WORKSPACE_LEASE_UNAVAILABLE",
     "ERROR_CODE_WORKSPACE_MIGRATION_REQUIRED",
     "ERROR_CODE_WORKSPACE_NOT_GRANTED",
+    "EVIDENCE_CHECKSUM_PATTERN",
     "EVIDENCE_DISPOSITION_PATTERN",
+    "EVIDENCE_ID_PATTERN",
     "FROZEN_ERROR_CODES",
     "FROZEN_RETRY_CLASSES",
     "GOVERNANCE_LAYER_PATTERN",
     "GOVERNANCE_STATE_PATTERN",
     "GOVERNED_RECORD_TYPE_PATTERN",
     "GOVERNED_RECORD_VIEW_PATTERN",
+    "GRAPH_BOUNDARY_REASON_PATTERN",
+    "GRAPH_DIRECTION_PATTERN",
+    "GRAPH_ORDERING_BASIS_PATTERN",
+    "GRAPH_RELATION_TYPE_PATTERN",
     "IDEMPOTENCY_KEY_PATTERN",
     "IDENTIFIER_PATTERN",
     "JOB_CANCELLATION_DISPOSITION_PATTERN",
@@ -90,6 +102,7 @@ __all__ = [
     "JOB_RESUME_DISPOSITION_PATTERN",
     "JOB_RETRY_DISPOSITION_PATTERN",
     "JOB_STATE_PATTERN",
+    "MEDIA_TYPE_PATTERN",
     "MEMORY_SEARCH_ORDER_PATTERN",
     "OPAQUE_TOKEN_PATTERN",
     "OPEN_CODE_PATTERN",
@@ -129,8 +142,12 @@ __all__ = [
     "WORKSPACE_STATUS_PATTERN",
     "ApiError",
     "AuditReference",
+    "CandidateApproveInput",
+    "CandidateApproveResult",
     "CandidateAssertion",
     "CandidateExtractionMetadata",
+    "CandidateRejectInput",
+    "CandidateRejectResult",
     "CapabilityCompatibilityEntry",
     "CapabilityId",
     "CapabilityRef",
@@ -140,6 +157,27 @@ __all__ = [
     "CompatibilityMatrix",
     "CompatibilityMetadata",
     "ComponentKind",
+    "ContextPackAuthorizationContext",
+    "ContextPackAuthorizedCandidate",
+    "ContextPackAuthorizedCandidateSetManifest",
+    "ContextPackAuthorizedEvidenceCandidate",
+    "ContextPackAuthorizedRecordCandidate",
+    "ContextPackBudget",
+    "ContextPackBuildInput",
+    "ContextPackBuildResult",
+    "ContextPackCitation",
+    "ContextPackConflict",
+    "ContextPackDigest",
+    "ContextPackEvidenceCitation",
+    "ContextPackEvidenceReference",
+    "ContextPackMode",
+    "ContextPackNormalizedRequest",
+    "ContextPackRecordCitation",
+    "ContextPackReproducibility",
+    "ContextPackSection",
+    "ContextPackTokenBudget",
+    "ContextPackTokenCount",
+    "ContextPackUncertainty",
     "ContractDecodeError",
     "ContractVersion",
     "CorrelationId",
@@ -147,14 +185,30 @@ __all__ = [
     "DurationMs",
     "ErrorCode",
     "ErrorResponseEnvelope",
+    "EvidenceArtifact",
+    "EvidenceChecksum",
     "EvidenceDisposition",
+    "EvidenceId",
+    "EvidenceQuery",
     "EvidenceReference",
+    "EvidenceSearchInput",
+    "EvidenceSearchResult",
     "GovernanceLayer",
+    "GovernanceRationale",
     "GovernanceState",
     "GovernedRecord",
     "GovernedRecordType",
     "GovernedRecordView",
     "GrantedAuthority",
+    "GraphBoundaryReason",
+    "GraphDepthLimit",
+    "GraphDirection",
+    "GraphEdge",
+    "GraphNode",
+    "GraphOrderingBasis",
+    "GraphRelationType",
+    "GraphTraversalInput",
+    "GraphTraversalResult",
     "IdempotencyKey",
     "Identifier",
     "JobAttempt",
@@ -175,6 +229,11 @@ __all__ = [
     "JobTerminalResult",
     "JobTerminalSuccess",
     "JsonObject",
+    "KnowledgeProposeInput",
+    "KnowledgeProposeResult",
+    "KnowledgeSearchInput",
+    "KnowledgeSearchResult",
+    "MediaType",
     "MemoryCreateInput",
     "MemoryCreateResult",
     "MemoryGetInput",
@@ -218,8 +277,11 @@ __all__ = [
     "RecordId",
     "RecordIdentity",
     "RecordProvenance",
+    "RecordSupersedeInput",
+    "RecordSupersedeResult",
     "RecordTemporalMetadata",
     "RecordVersion",
+    "RecordVersionReference",
     "ReleaseCompatibilityEntry",
     "ReleaseVersion",
     "RequestEnvelope",
@@ -254,6 +316,10 @@ __all__ = [
     "WorkspaceListInput",
     "WorkspaceListResult",
     "WorkspaceStatus",
+    "context_pack_authorized_candidate_from_wire",
+    "context_pack_authorized_candidate_to_wire",
+    "context_pack_citation_from_wire",
+    "context_pack_citation_to_wire",
     "job_terminal_result_from_wire",
     "job_terminal_result_to_wire",
     "response_envelope_from_wire",
@@ -368,7 +434,7 @@ def _encode_json_object(value: Mapping[str, Any]) -> dict[str, Any]:
 
 # --- contract identity -----------------------------------------------------
 
-CONTRACT_VERSION: Final = "1.1"
+CONTRACT_VERSION: Final = "1.2"
 SCHEMA_BASE_URI: Final = "https://contracts.omnivia.dev/application/v1/"
 
 # --- frozen vocabulary -----------------------------------------------------
@@ -552,9 +618,18 @@ PROJECTION_VERSION_PATTERN: Final = '^[!-~]+$'
 OPERATION_COMPATIBILITY_STATE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 QUALIFICATION_STATE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 COMPONENT_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+CONTEXT_PACK_MODE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+CONTEXT_PACK_DIGEST_PATTERN: Final = '^sha256:[0-9a-f]{64}$'
 OPERATION_NAME_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$'
 ERROR_CODE_PATTERN: Final = '^[a-z][a-z0-9_]*$'
 RETRY_CLASS_PATTERN: Final = '^[a-z][a-z0-9_]*$'
+EVIDENCE_ID_PATTERN: Final = '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
+EVIDENCE_CHECKSUM_PATTERN: Final = '^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$'
+MEDIA_TYPE_PATTERN: Final = '^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$'
+GRAPH_DIRECTION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+GRAPH_RELATION_TYPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+GRAPH_ORDERING_BASIS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+GRAPH_BOUNDARY_REASON_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_STATE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_PROGRESS_UNIT_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_CANCELLATION_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
@@ -673,6 +748,36 @@ or `runtime` or `cli` or `mcp` or `sdk`. Open by design so a compatible minor re
 components without breaking existing decoders.
 """
 
+ContextPackMode: TypeAlias = str
+"""Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a
+compatible minor release can add vocabulary, but trust-sensitive: v1 recognizes exactly one
+value, `deterministic_view` (a regenerated, non-persisted, deterministic view), and semantic
+validation fails closed on every other value rather than guessing at it. `immutable_snapshot` is
+deliberately not a v1 mode -- persistence is an operation posture this read does not have -- and
+`returned_artifact` was never a wire mode at all.
+"""
+
+ContextPackTokenCount: TypeAlias = int
+"""A bounded, non-negative count of tokens actually observed: the tokens one section's model-facing
+content occupies, or the total a whole pack consumed. Distinct from `ContextPackTokenBudget`,
+which is what a caller asked for: zero is a meaningful observation (an empty pack consumed
+nothing) but never a meaningful request.
+"""
+
+ContextPackTokenBudget: TypeAlias = int
+"""A bounded, strictly positive token budget a caller asks a pack to be built against. Zero is
+excluded rather than merely discouraged: a pack built against no budget at all can carry no
+content, so a zero budget states a request no build could usefully answer.
+"""
+
+ContextPackDigest: TypeAlias = str
+"""A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
+characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque
+server token a client round-trips but a value an independent implementation must be able to
+recompute and compare byte for byte, so exactly one algorithm, one length, and one letter case
+are admitted.
+"""
+
 OperationName: TypeAlias = str
 """Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue is
 out of scope for v1 foundations; only the name is contractual here.
@@ -687,6 +792,58 @@ them onto a known code.
 RetryClass: TypeAlias = str
 """How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized retry
 class MUST fail safe as non-retryable: never infer that an unknown class is retryable.
+"""
+
+EvidenceId: TypeAlias = str
+"""Stable identifier of one L0 evidence artifact, constant across its append-only provenance
+history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.
+"""
+
+EvidenceQuery: TypeAlias = str
+"""A caller-supplied, normalized search query for `evidence.search`. Normalization (case-folding,
+whitespace, tokenization) is caller-side; this document defines no normalization algorithm.
+"""
+
+EvidenceChecksum: TypeAlias = str
+"""A content checksum, spelled `algorithm:hex-digest` (such as `sha256:9f86d0...`) so the digest is
+never ambiguous about which algorithm produced it. Provider-neutral: this contract does not
+mandate a specific algorithm.
+"""
+
+MediaType: TypeAlias = str
+"""An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`."""
+
+GraphDirection: TypeAlias = str
+"""Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
+`inbound`, or `both`. Wire-open by shape, but trust-sensitive: only the known values are accepted
+by semantic validation, and an unrecognized value fails closed rather than being guessed at.
+"""
+
+GraphRelationType: TypeAlias = str
+"""Open, dot-namespaced code naming a kind of relation between governed records, such as
+`relates_to` or `derived_from`. Open by design so a compatible minor release can add relation
+types without breaking existing decoders.
+"""
+
+GraphDepthLimit: TypeAlias = int
+"""A bounded traversal depth a caller may request, or the server states it actually applied. Zero
+means the seeds themselves with no traversal beyond them; absent on input means the server's
+default depth of 1.
+"""
+
+GraphOrderingBasis: TypeAlias = str
+"""Open, dot-namespaced code naming the deterministic key a traversal result was ordered by, such as
+`record_id_asc`, so identical inputs against an unchanged projection reproduce identical
+node/edge ordering.
+"""
+
+GraphBoundaryReason: TypeAlias = str
+"""Open, dot-namespaced code justifying why one endpoint of an edge is absent from a traversal
+result: `page_boundary` when the traversal stopped at the node limit and offers a continuation
+token, or `depth_boundary` when the present endpoint sits exactly at the applied depth limit.
+Wire-open by shape, but trust-sensitive: an absent endpoint is a claim that the projection
+stopped, not that the relation lost an end, so only the recognized values are accepted by
+semantic validation and an unrecognized reason fails closed rather than being guessed at.
 """
 
 JobState: TypeAlias = str
@@ -1367,10 +1524,18 @@ class PartialResult:
 
 @dataclass(frozen=True, slots=True)
 class ProjectionFreshness:
-    """Staleness statement for reads served from a projection rather than the write model."""
+    """Staleness statement for reads served from a projection rather than the write model. Every
+    projection this read was served from must be named in both `projection_versions` and
+    `projection_watermarks`: the two maps are one statement about the same set of
+    projections, so their key sets are required to be identical and neither may be empty. A
+    read served from no named projection cannot state its own staleness, and a projection
+    that states a version but no watermark (or the reverse) leaves the caller unable to tell
+    how far behind the write model it actually is.
+    """
 
     as_of: Timestamp
     projection_versions: Mapping[str, ProjectionVersion]
+    projection_watermarks: Mapping[str, ProjectionVersion]
     stale: bool
 
     def to_wire(self) -> dict[str, Any]:
@@ -1382,6 +1547,7 @@ class ProjectionFreshness:
         wire: dict[str, Any] = {}
         wire["as_of"] = self.as_of
         wire["projection_versions"] = dict(self.projection_versions)
+        wire["projection_watermarks"] = dict(self.projection_watermarks)
         wire["stale"] = self.stale
         return wire
 
@@ -1404,10 +1570,21 @@ class ProjectionFreshness:
                 for key, value in field_projection_versions_entries.items()
             }
         )
+        field_projection_watermarks_entries = _require_mapping(
+            _require_field(mapping, "projection_watermarks", path),
+            f"{path}.projection_watermarks",
+        )
+        field_projection_watermarks = MappingProxyType(
+            {
+                key: _decode_str(value, f"{path}.projection_watermarks.{key}")
+                for key, value in field_projection_watermarks_entries.items()
+            }
+        )
         field_stale = _decode_bool(_require_field(mapping, "stale", path), f"{path}.stale")
         return cls(
             as_of=field_as_of,
             projection_versions=field_projection_versions,
+            projection_watermarks=field_projection_watermarks,
             stale=field_stale,
         )
 
@@ -1719,6 +1896,540 @@ class CapabilityRequirement:
             id=field_id,
             minimum_version=field_minimum_version,
             required=field_required,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackEvidenceReference:
+    """A precise pointer to one exact L0 evidence artifact: which artifact, and the content
+    checksum that artifact carried. Both are required, so the pointer names a specific
+    immutable content state rather than whatever the identifier resolves to later. Distinct
+    from `records.EvidenceReference`, which points at a source a record drew on rather than
+    at a captured L0 artifact.
+    """
+
+    evidence_id: EvidenceId
+    content_checksum: EvidenceChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["content_checksum"] = self.content_checksum
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackEvidenceReference"
+    ) -> ContextPackEvidenceReference:
+        """Decode a wire payload into a ContextPackEvidenceReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        return cls(
+            evidence_id=field_evidence_id,
+            content_checksum=field_content_checksum,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackSection:
+    """One model-facing section of a Context Pack: its identity, what kind of section it is, its
+    content, the citations that content rests on, and the tokens that content occupies. Every
+    section is substantiated: `citation_ids` is never empty, so no part of a pack's model-
+    facing content is unattributable.
+    """
+
+    section_id: Identifier
+    kind: OpenCode
+    content: str
+    citation_ids: tuple[Identifier, ...]
+    token_count: ContextPackTokenCount
+    title: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["section_id"] = self.section_id
+        wire["kind"] = self.kind
+        if self.title is not None:
+            wire["title"] = self.title
+        wire["content"] = self.content
+        wire["citation_ids"] = list(self.citation_ids)
+        wire["token_count"] = self.token_count
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ContextPackSection") -> ContextPackSection:
+        """Decode a wire payload into a ContextPackSection.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_section_id = _decode_str(
+            _require_field(mapping, "section_id", path),
+            f"{path}.section_id",
+        )
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_title: str | None = None
+        if "title" in mapping:
+            raw_title = mapping["title"]
+            if raw_title is None:
+                raise ContractDecodeError(
+                    f"{path}.title: null is not a valid value"
+                )
+            field_title = _decode_str(raw_title, f"{path}.title")
+        field_content = _decode_str(_require_field(mapping, "content", path), f"{path}.content")
+        field_citation_ids_items = _decode_sequence(
+            _require_field(mapping, "citation_ids", path),
+            f"{path}.citation_ids",
+        )
+        field_citation_ids = tuple(
+            _decode_str(item, f"{path}.citation_ids[{index}]")
+            for index, item in enumerate(field_citation_ids_items)
+        )
+        field_token_count = _decode_int(
+            _require_field(mapping, "token_count", path),
+            f"{path}.token_count",
+        )
+        return cls(
+            section_id=field_section_id,
+            kind=field_kind,
+            title=field_title,
+            content=field_content,
+            citation_ids=field_citation_ids,
+            token_count=field_token_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackConflict:
+    """A stated conflict between two or more citations this pack returned, which the pack
+    surfaces rather than resolving on the caller's behalf. Stated in citation identifiers
+    rather than record references so evidence and governed records are addressed by the one
+    reference system this pack already publishes, instead of a second, competing one that
+    could name something the pack never cited.
+    """
+
+    description: str
+    conflicting_citation_ids: tuple[Identifier, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["description"] = self.description
+        wire["conflicting_citation_ids"] = list(self.conflicting_citation_ids)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ContextPackConflict") -> ContextPackConflict:
+        """Decode a wire payload into a ContextPackConflict.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_description = _decode_str(
+            _require_field(mapping, "description", path),
+            f"{path}.description",
+        )
+        field_conflicting_citation_ids_items = _decode_sequence(
+            _require_field(mapping, "conflicting_citation_ids", path),
+            f"{path}.conflicting_citation_ids",
+        )
+        field_conflicting_citation_ids = tuple(
+            _decode_str(item, f"{path}.conflicting_citation_ids[{index}]")
+            for index, item in enumerate(field_conflicting_citation_ids_items)
+        )
+        return cls(
+            description=field_description,
+            conflicting_citation_ids=field_conflicting_citation_ids,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackUncertainty:
+    """A stated uncertainty this pack surfaces rather than silently resolving or hiding,
+    anchored to the citations it concerns.
+    """
+
+    description: str
+    related_citation_ids: tuple[Identifier, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["description"] = self.description
+        wire["related_citation_ids"] = list(self.related_citation_ids)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackUncertainty"
+    ) -> ContextPackUncertainty:
+        """Decode a wire payload into a ContextPackUncertainty.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_description = _decode_str(
+            _require_field(mapping, "description", path),
+            f"{path}.description",
+        )
+        field_related_citation_ids_items = _decode_sequence(
+            _require_field(mapping, "related_citation_ids", path),
+            f"{path}.related_citation_ids",
+        )
+        field_related_citation_ids = tuple(
+            _decode_str(item, f"{path}.related_citation_ids[{index}]")
+            for index, item in enumerate(field_related_citation_ids_items)
+        )
+        return cls(
+            description=field_description,
+            related_citation_ids=field_related_citation_ids,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackBudget:
+    """Token budget accounting for one Context Pack: the positive budget it was built against,
+    and the non-negative amount its sections actually consumed.
+    """
+
+    token_budget: ContextPackTokenBudget
+    tokens_used: ContextPackTokenCount
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["token_budget"] = self.token_budget
+        wire["tokens_used"] = self.tokens_used
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ContextPackBudget") -> ContextPackBudget:
+        """Decode a wire payload into a ContextPackBudget.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_tokens_used = _decode_int(
+            _require_field(mapping, "tokens_used", path),
+            f"{path}.tokens_used",
+        )
+        return cls(
+            token_budget=field_token_budget,
+            tokens_used=field_tokens_used,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackAuthorizedEvidenceCandidate:
+    """One L0 evidence artifact on the authorized candidate frontier, named by immutable
+    identity alone. Exactly three members and nothing else: the partition it was authorized
+    in, the artifact, and the exact content state that artifact carried. Content, excerpts,
+    provenance, spans, scores, distances, ranks, tie-breaks, selection flags, citations,
+    sections, query and normalization state, and every authority, policy, configuration, or
+    projection version are all deliberately absent -- a candidate-set digest must depend on
+    which authorized material existed and on nothing a later ranking or selection step could
+    change.
+    """
+
+    partition: str
+    evidence_id: EvidenceId
+    content_checksum: EvidenceChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["partition"] = self.partition
+        wire["evidence_id"] = self.evidence_id
+        wire["content_checksum"] = self.content_checksum
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackAuthorizedEvidenceCandidate"
+    ) -> ContextPackAuthorizedEvidenceCandidate:
+        """Decode a wire payload into a ContextPackAuthorizedEvidenceCandidate.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_partition = _decode_str(
+            _require_field(mapping, "partition", path),
+            f"{path}.partition",
+        )
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        return cls(
+            partition=field_partition,
+            evidence_id=field_evidence_id,
+            content_checksum=field_content_checksum,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackAuthorizedRecordCandidate:
+    """One governed record version on the authorized candidate frontier, named by immutable
+    identity alone. Exactly three members and nothing else: which governed partition it was
+    authorized in, the record, and the version. The same exclusions
+    `ContextPackAuthorizedEvidenceCandidate` states apply here for the same reason. Two
+    different versions of one record are two independent candidates whenever both were
+    independently eligible; the same version twice, in one partition or across two, is a
+    contradiction rather than a set.
+    """
+
+    partition: str
+    record_id: RecordId
+    version: RecordVersion
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["partition"] = self.partition
+        wire["record_id"] = self.record_id
+        wire["version"] = self.version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackAuthorizedRecordCandidate"
+    ) -> ContextPackAuthorizedRecordCandidate:
+        """Decode a wire payload into a ContextPackAuthorizedRecordCandidate.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_partition = _decode_str(
+            _require_field(mapping, "partition", path),
+            f"{path}.partition",
+        )
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        return cls(
+            partition=field_partition,
+            record_id=field_record_id,
+            version=field_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackNormalizedRequest:
+    """The exact normalized request one Context Pack was built from: the server-produced
+    normalized query and the version of the normalization that produced it, the mode, the
+    resolved record view, the token budget, and any selection filters. The single normalized
+    form of a request -- the original caller query stays on the result's own `query` field,
+    and nothing else restates it. Query normalization itself is server-owned and versioned:
+    this contract requires the normalized query to be non-empty and pins which normalization
+    produced it, and deliberately specifies no normalization algorithm of its own.
+    """
+
+    normalized_query: str
+    mode: ContextPackMode
+    view: GovernedRecordView
+    token_budget: ContextPackTokenBudget
+    normalization_version: Identifier
+    domain_scope: RecordDomainScope | None = None
+    record_type: GovernedRecordType | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["normalized_query"] = self.normalized_query
+        wire["mode"] = self.mode
+        wire["view"] = self.view
+        wire["token_budget"] = self.token_budget
+        wire["normalization_version"] = self.normalization_version
+        if self.domain_scope is not None:
+            wire["domain_scope"] = self.domain_scope
+        if self.record_type is not None:
+            wire["record_type"] = self.record_type
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackNormalizedRequest"
+    ) -> ContextPackNormalizedRequest:
+        """Decode a wire payload into a ContextPackNormalizedRequest.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_normalized_query = _decode_str(
+            _require_field(mapping, "normalized_query", path),
+            f"{path}.normalized_query",
+        )
+        field_mode = _decode_str(_require_field(mapping, "mode", path), f"{path}.mode")
+        field_view = _decode_str(_require_field(mapping, "view", path), f"{path}.view")
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_normalization_version = _decode_str(
+            _require_field(mapping, "normalization_version", path),
+            f"{path}.normalization_version",
+        )
+        field_domain_scope: RecordDomainScope | None = None
+        if "domain_scope" in mapping:
+            raw_domain_scope = mapping["domain_scope"]
+            if raw_domain_scope is None:
+                raise ContractDecodeError(
+                    f"{path}.domain_scope: null is not a valid value"
+                )
+            field_domain_scope = _decode_str(raw_domain_scope, f"{path}.domain_scope")
+        field_record_type: GovernedRecordType | None = None
+        if "record_type" in mapping:
+            raw_record_type = mapping["record_type"]
+            if raw_record_type is None:
+                raise ContractDecodeError(
+                    f"{path}.record_type: null is not a valid value"
+                )
+            field_record_type = _decode_str(raw_record_type, f"{path}.record_type")
+        return cls(
+            normalized_query=field_normalized_query,
+            mode=field_mode,
+            view=field_view,
+            token_budget=field_token_budget,
+            normalization_version=field_normalization_version,
+            domain_scope=field_domain_scope,
+            record_type=field_record_type,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackBuildInput:
+    """Input for `context_pack.build`. Workspace-scoped: the workspace, principal, scopes, and
+    purpose are the request envelope's; this payload never carries a second, independent copy
+    of any of them, and selecting content never grants new authority beyond what the envelope
+    already carries. Deliberately minimal: no view selector, no point-in-time selector, no
+    pagination, and no persistence, expiry, retention, snapshot, or job control. The v1
+    operation resolves the current canonical view synchronously and persists nothing, so none
+    of those controls has a meaning here, and a payload that smuggles one in is rejected
+    rather than ignored.
+    """
+
+    query: MemoryQuery
+    mode: ContextPackMode
+    token_budget: ContextPackTokenBudget
+    domain_scope: RecordDomainScope | None = None
+    record_type: GovernedRecordType | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query"] = self.query
+        wire["mode"] = self.mode
+        wire["token_budget"] = self.token_budget
+        if self.domain_scope is not None:
+            wire["domain_scope"] = self.domain_scope
+        if self.record_type is not None:
+            wire["record_type"] = self.record_type
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackBuildInput"
+    ) -> ContextPackBuildInput:
+        """Decode a wire payload into a ContextPackBuildInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query = _decode_str(_require_field(mapping, "query", path), f"{path}.query")
+        field_mode = _decode_str(_require_field(mapping, "mode", path), f"{path}.mode")
+        field_token_budget = _decode_int(
+            _require_field(mapping, "token_budget", path),
+            f"{path}.token_budget",
+        )
+        field_domain_scope: RecordDomainScope | None = None
+        if "domain_scope" in mapping:
+            raw_domain_scope = mapping["domain_scope"]
+            if raw_domain_scope is None:
+                raise ContractDecodeError(
+                    f"{path}.domain_scope: null is not a valid value"
+                )
+            field_domain_scope = _decode_str(raw_domain_scope, f"{path}.domain_scope")
+        field_record_type: GovernedRecordType | None = None
+        if "record_type" in mapping:
+            raw_record_type = mapping["record_type"]
+            if raw_record_type is None:
+                raise ContractDecodeError(
+                    f"{path}.record_type: null is not a valid value"
+                )
+            field_record_type = _decode_str(raw_record_type, f"{path}.record_type")
+        return cls(
+            query=field_query,
+            mode=field_mode,
+            token_budget=field_token_budget,
+            domain_scope=field_domain_scope,
+            record_type=field_record_type,
         )
 
 
@@ -2054,18 +2765,15 @@ class JobCancellationOutcome:
 
 
 @dataclass(frozen=True, slots=True)
-class CandidateExtractionMetadata:
-    """Optional provenance about the automated extractor that produced a `memory.create`
-    candidate, when one did. Absent entirely for a candidate a human asserted directly.
+class GovernanceRationale:
+    """A caller-supplied, auditable reason for a governance decision or transition: an open
+    reason code plus an optional bounded human-readable comment. Carries no reviewer
+    identity, authority level, or governance-state field of its own -- those are server-owned
+    and never asserted through this shape.
     """
 
-    extractor_id: Identifier
-    extracted_at: Timestamp
-    extractor_version: Identifier | None = None
-    model_version: Identifier | None = None
-    prompt_version: Identifier | None = None
-    confidence: float | None = None
-    reconciliation_state: OpenCode | None = None
+    reason_code: OpenCode
+    comment: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -2074,92 +2782,34 @@ class CandidateExtractionMetadata:
         round trip reproduces the original document exactly.
         """
         wire: dict[str, Any] = {}
-        wire["extractor_id"] = self.extractor_id
-        if self.extractor_version is not None:
-            wire["extractor_version"] = self.extractor_version
-        if self.model_version is not None:
-            wire["model_version"] = self.model_version
-        if self.prompt_version is not None:
-            wire["prompt_version"] = self.prompt_version
-        wire["extracted_at"] = self.extracted_at
-        if self.confidence is not None:
-            wire["confidence"] = self.confidence
-        if self.reconciliation_state is not None:
-            wire["reconciliation_state"] = self.reconciliation_state
+        wire["reason_code"] = self.reason_code
+        if self.comment is not None:
+            wire["comment"] = self.comment
         return wire
 
     @classmethod
-    def from_wire(
-        cls, payload: object, path: str = "CandidateExtractionMetadata"
-    ) -> CandidateExtractionMetadata:
-        """Decode a wire payload into a CandidateExtractionMetadata.
+    def from_wire(cls, payload: object, path: str = "GovernanceRationale") -> GovernanceRationale:
+        """Decode a wire payload into a GovernanceRationale.
 
         Unknown fields are ignored so a newer peer's additive minor release still decodes
         here. Missing required fields and wrongly typed values raise ContractDecodeError.
         """
         mapping = _require_mapping(payload, path)
-        field_extractor_id = _decode_str(
-            _require_field(mapping, "extractor_id", path),
-            f"{path}.extractor_id",
+        field_reason_code = _decode_str(
+            _require_field(mapping, "reason_code", path),
+            f"{path}.reason_code",
         )
-        field_extractor_version: Identifier | None = None
-        if "extractor_version" in mapping:
-            raw_extractor_version = mapping["extractor_version"]
-            if raw_extractor_version is None:
+        field_comment: str | None = None
+        if "comment" in mapping:
+            raw_comment = mapping["comment"]
+            if raw_comment is None:
                 raise ContractDecodeError(
-                    f"{path}.extractor_version: null is not a valid value"
+                    f"{path}.comment: null is not a valid value"
                 )
-            field_extractor_version = _decode_str(
-                raw_extractor_version,
-                f"{path}.extractor_version",
-            )
-        field_model_version: Identifier | None = None
-        if "model_version" in mapping:
-            raw_model_version = mapping["model_version"]
-            if raw_model_version is None:
-                raise ContractDecodeError(
-                    f"{path}.model_version: null is not a valid value"
-                )
-            field_model_version = _decode_str(raw_model_version, f"{path}.model_version")
-        field_prompt_version: Identifier | None = None
-        if "prompt_version" in mapping:
-            raw_prompt_version = mapping["prompt_version"]
-            if raw_prompt_version is None:
-                raise ContractDecodeError(
-                    f"{path}.prompt_version: null is not a valid value"
-                )
-            field_prompt_version = _decode_str(raw_prompt_version, f"{path}.prompt_version")
-        field_extracted_at = _decode_str(
-            _require_field(mapping, "extracted_at", path),
-            f"{path}.extracted_at",
-        )
-        field_confidence: float | None = None
-        if "confidence" in mapping:
-            raw_confidence = mapping["confidence"]
-            if raw_confidence is None:
-                raise ContractDecodeError(
-                    f"{path}.confidence: null is not a valid value"
-                )
-            field_confidence = _decode_number(raw_confidence, f"{path}.confidence")
-        field_reconciliation_state: OpenCode | None = None
-        if "reconciliation_state" in mapping:
-            raw_reconciliation_state = mapping["reconciliation_state"]
-            if raw_reconciliation_state is None:
-                raise ContractDecodeError(
-                    f"{path}.reconciliation_state: null is not a valid value"
-                )
-            field_reconciliation_state = _decode_str(
-                raw_reconciliation_state,
-                f"{path}.reconciliation_state",
-            )
+            field_comment = _decode_str(raw_comment, f"{path}.comment")
         return cls(
-            extractor_id=field_extractor_id,
-            extractor_version=field_extractor_version,
-            model_version=field_model_version,
-            prompt_version=field_prompt_version,
-            extracted_at=field_extracted_at,
-            confidence=field_confidence,
-            reconciliation_state=field_reconciliation_state,
+            reason_code=field_reason_code,
+            comment=field_comment,
         )
 
 
@@ -2427,6 +3077,118 @@ class SourceReference:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateExtractionMetadata:
+    """Optional provenance about the automated extractor that produced a governed record's
+    claim, when one did. Absent entirely for a claim a human asserted directly. Defined here
+    rather than in `memory.schema.json` so `RecordProvenance` can preserve it without
+    `records.schema.json` depending on a document that already depends on it.
+    """
+
+    extractor_id: Identifier
+    extracted_at: Timestamp
+    extractor_version: Identifier | None = None
+    model_version: Identifier | None = None
+    prompt_version: Identifier | None = None
+    confidence: float | None = None
+    reconciliation_state: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["extractor_id"] = self.extractor_id
+        if self.extractor_version is not None:
+            wire["extractor_version"] = self.extractor_version
+        if self.model_version is not None:
+            wire["model_version"] = self.model_version
+        if self.prompt_version is not None:
+            wire["prompt_version"] = self.prompt_version
+        wire["extracted_at"] = self.extracted_at
+        if self.confidence is not None:
+            wire["confidence"] = self.confidence
+        if self.reconciliation_state is not None:
+            wire["reconciliation_state"] = self.reconciliation_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateExtractionMetadata"
+    ) -> CandidateExtractionMetadata:
+        """Decode a wire payload into a CandidateExtractionMetadata.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extractor_id = _decode_str(
+            _require_field(mapping, "extractor_id", path),
+            f"{path}.extractor_id",
+        )
+        field_extractor_version: Identifier | None = None
+        if "extractor_version" in mapping:
+            raw_extractor_version = mapping["extractor_version"]
+            if raw_extractor_version is None:
+                raise ContractDecodeError(
+                    f"{path}.extractor_version: null is not a valid value"
+                )
+            field_extractor_version = _decode_str(
+                raw_extractor_version,
+                f"{path}.extractor_version",
+            )
+        field_model_version: Identifier | None = None
+        if "model_version" in mapping:
+            raw_model_version = mapping["model_version"]
+            if raw_model_version is None:
+                raise ContractDecodeError(
+                    f"{path}.model_version: null is not a valid value"
+                )
+            field_model_version = _decode_str(raw_model_version, f"{path}.model_version")
+        field_prompt_version: Identifier | None = None
+        if "prompt_version" in mapping:
+            raw_prompt_version = mapping["prompt_version"]
+            if raw_prompt_version is None:
+                raise ContractDecodeError(
+                    f"{path}.prompt_version: null is not a valid value"
+                )
+            field_prompt_version = _decode_str(raw_prompt_version, f"{path}.prompt_version")
+        field_extracted_at = _decode_str(
+            _require_field(mapping, "extracted_at", path),
+            f"{path}.extracted_at",
+        )
+        field_confidence: float | None = None
+        if "confidence" in mapping:
+            raw_confidence = mapping["confidence"]
+            if raw_confidence is None:
+                raise ContractDecodeError(
+                    f"{path}.confidence: null is not a valid value"
+                )
+            field_confidence = _decode_number(raw_confidence, f"{path}.confidence")
+        field_reconciliation_state: OpenCode | None = None
+        if "reconciliation_state" in mapping:
+            raw_reconciliation_state = mapping["reconciliation_state"]
+            if raw_reconciliation_state is None:
+                raise ContractDecodeError(
+                    f"{path}.reconciliation_state: null is not a valid value"
+                )
+            field_reconciliation_state = _decode_str(
+                raw_reconciliation_state,
+                f"{path}.reconciliation_state",
+            )
+        return cls(
+            extractor_id=field_extractor_id,
+            extractor_version=field_extractor_version,
+            model_version=field_model_version,
+            prompt_version=field_prompt_version,
+            extracted_at=field_extracted_at,
+            confidence=field_confidence,
+            reconciliation_state=field_reconciliation_state,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecordTemporalMetadata:
     """The distinct instants a governed record's lifecycle turns on: when the underlying fact
     occurred in the world, when it was observed, when the system ingested it, when this
@@ -2591,6 +3353,51 @@ class SupersessionReference:
             record_id=field_record_id,
             version=field_version,
             reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecordVersionReference:
+    """A precise, non-directional pointer to one exact record version: both `record_id` and
+    `version` are always required. Distinct from `SupersessionReference`, which is direction-
+    bearing (its meaning comes from which `RecordIdentity` field carries it) and whose
+    `version` is optional. Used wherever a payload must name a specific existing record
+    version -- a graph traversal start point or edge endpoint, a context pack citation or
+    source-version list -- without asserting any supersession relationship.
+    """
+
+    record_id: RecordId
+    version: RecordVersion
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["version"] = self.version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "RecordVersionReference"
+    ) -> RecordVersionReference:
+        """Decode a wire payload into a RecordVersionReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_version = _decode_str(_require_field(mapping, "version", path), f"{path}.version")
+        return cls(
+            record_id=field_record_id,
+            version=field_version,
         )
 
 
@@ -3114,6 +3921,203 @@ class OperationCompatibilityEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextPackEvidenceCitation:
+    """One citation binding a pack section to an exact L0 evidence artifact, optionally at a
+    precise location inside it. Possessing this citation grants no access on its own:
+    following it always requires fresh authorization against the cited evidence.
+    """
+
+    citation_id: Identifier
+    evidence_reference: ContextPackEvidenceReference
+    content_pointer: str | None = None
+    source_span: SourceSpan | None = None
+    excerpt: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["citation_id"] = self.citation_id
+        wire["evidence_reference"] = self.evidence_reference.to_wire()
+        if self.content_pointer is not None:
+            wire["content_pointer"] = self.content_pointer
+        if self.source_span is not None:
+            wire["source_span"] = self.source_span.to_wire()
+        if self.excerpt is not None:
+            wire["excerpt"] = self.excerpt
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackEvidenceCitation"
+    ) -> ContextPackEvidenceCitation:
+        """Decode a wire payload into a ContextPackEvidenceCitation.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_citation_id = _decode_str(
+            _require_field(mapping, "citation_id", path),
+            f"{path}.citation_id",
+        )
+        field_evidence_reference = ContextPackEvidenceReference.from_wire(
+            _require_field(mapping, "evidence_reference", path),
+            f"{path}.evidence_reference",
+        )
+        field_content_pointer: str | None = None
+        if "content_pointer" in mapping:
+            raw_content_pointer = mapping["content_pointer"]
+            if raw_content_pointer is None:
+                raise ContractDecodeError(
+                    f"{path}.content_pointer: null is not a valid value"
+                )
+            field_content_pointer = _decode_str(raw_content_pointer, f"{path}.content_pointer")
+        field_source_span: SourceSpan | None = None
+        if "source_span" in mapping:
+            raw_source_span = mapping["source_span"]
+            if raw_source_span is None:
+                raise ContractDecodeError(
+                    f"{path}.source_span: null is not a valid value"
+                )
+            field_source_span = SourceSpan.from_wire(raw_source_span, f"{path}.source_span")
+        field_excerpt: str | None = None
+        if "excerpt" in mapping:
+            raw_excerpt = mapping["excerpt"]
+            if raw_excerpt is None:
+                raise ContractDecodeError(
+                    f"{path}.excerpt: null is not a valid value"
+                )
+            field_excerpt = _decode_str(raw_excerpt, f"{path}.excerpt")
+        return cls(
+            citation_id=field_citation_id,
+            evidence_reference=field_evidence_reference,
+            content_pointer=field_content_pointer,
+            source_span=field_source_span,
+            excerpt=field_excerpt,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackRecordCitation:
+    """One citation binding a pack section to an exact governed record version, optionally at a
+    precise location inside it. Possessing this citation grants no access on its own:
+    following it always requires fresh authorization against the cited record.
+    """
+
+    citation_id: Identifier
+    record_reference: RecordVersionReference
+    content_pointer: str | None = None
+    source_span: SourceSpan | None = None
+    excerpt: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["citation_id"] = self.citation_id
+        wire["record_reference"] = self.record_reference.to_wire()
+        if self.content_pointer is not None:
+            wire["content_pointer"] = self.content_pointer
+        if self.source_span is not None:
+            wire["source_span"] = self.source_span.to_wire()
+        if self.excerpt is not None:
+            wire["excerpt"] = self.excerpt
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackRecordCitation"
+    ) -> ContextPackRecordCitation:
+        """Decode a wire payload into a ContextPackRecordCitation.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_citation_id = _decode_str(
+            _require_field(mapping, "citation_id", path),
+            f"{path}.citation_id",
+        )
+        field_record_reference = RecordVersionReference.from_wire(
+            _require_field(mapping, "record_reference", path),
+            f"{path}.record_reference",
+        )
+        field_content_pointer: str | None = None
+        if "content_pointer" in mapping:
+            raw_content_pointer = mapping["content_pointer"]
+            if raw_content_pointer is None:
+                raise ContractDecodeError(
+                    f"{path}.content_pointer: null is not a valid value"
+                )
+            field_content_pointer = _decode_str(raw_content_pointer, f"{path}.content_pointer")
+        field_source_span: SourceSpan | None = None
+        if "source_span" in mapping:
+            raw_source_span = mapping["source_span"]
+            if raw_source_span is None:
+                raise ContractDecodeError(
+                    f"{path}.source_span: null is not a valid value"
+                )
+            field_source_span = SourceSpan.from_wire(raw_source_span, f"{path}.source_span")
+        field_excerpt: str | None = None
+        if "excerpt" in mapping:
+            raw_excerpt = mapping["excerpt"]
+            if raw_excerpt is None:
+                raise ContractDecodeError(
+                    f"{path}.excerpt: null is not a valid value"
+                )
+            field_excerpt = _decode_str(raw_excerpt, f"{path}.excerpt")
+        return cls(
+            citation_id=field_citation_id,
+            record_reference=field_record_reference,
+            content_pointer=field_content_pointer,
+            source_span=field_source_span,
+            excerpt=field_excerpt,
+        )
+
+
+ContextPackAuthorizedCandidate: TypeAlias = ContextPackAuthorizedEvidenceCandidate | ContextPackAuthorizedRecordCandidate
+"""One member of the authorized candidate frontier: either an L0 evidence candidate or a governed
+record candidate, never both and never neither. Two distinct object shapes rather than one shape
+with optional pointers, so what a candidate names is settled structurally by the document instead
+of by a later agreement check.
+"""
+
+
+def context_pack_authorized_candidate_from_wire(
+    payload: object, path: str = "ContextPackAuthorizedCandidate"
+) -> ContextPackAuthorizedCandidate:
+    """Decode a wire payload into exactly one ContextPackAuthorizedCandidate branch.
+
+    The branches are mutually exclusive by construction: a payload carrying more than one
+    discriminator, or none at all, is rejected rather than guessed at.
+    """
+    mapping = _require_mapping(payload, path)
+    discriminators = ("content_checksum", "record_id")
+    matched = tuple(key for key in discriminators if key in mapping)
+    if len(matched) != 1:
+        raise ContractDecodeError(
+            f"{path}: expected exactly one of {discriminators}, found {matched}"
+        )
+    if matched[0] == "content_checksum":
+        return ContextPackAuthorizedEvidenceCandidate.from_wire(mapping, path)
+    if matched[0] == "record_id":
+        return ContextPackAuthorizedRecordCandidate.from_wire(mapping, path)
+    raise ContractDecodeError(f"{path}: unreachable discriminator state")
+
+
+def context_pack_authorized_candidate_to_wire(value: ContextPackAuthorizedCandidate) -> dict[str, Any]:
+    """Render one ContextPackAuthorizedCandidate branch as a JSON-compatible mapping."""
+    return value.to_wire()
+
+
+@dataclass(frozen=True, slots=True)
 class RequestMetadata:
     """Everything the server needs to route, scope, bound, and audit a request, independent of
     the operation payload.
@@ -3266,6 +4270,247 @@ class RequestMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceSearchInput:
+    """Input for `evidence.search`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier.
+    """
+
+    query: EvidenceQuery
+    sensitivity: OpenCode | None = None
+    include_tombstoned: bool | None = None
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query"] = self.query
+        if self.sensitivity is not None:
+            wire["sensitivity"] = self.sensitivity
+        if self.include_tombstoned is not None:
+            wire["include_tombstoned"] = self.include_tombstoned
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceSearchInput") -> EvidenceSearchInput:
+        """Decode a wire payload into a EvidenceSearchInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query = _decode_str(_require_field(mapping, "query", path), f"{path}.query")
+        field_sensitivity: OpenCode | None = None
+        if "sensitivity" in mapping:
+            raw_sensitivity = mapping["sensitivity"]
+            if raw_sensitivity is None:
+                raise ContractDecodeError(
+                    f"{path}.sensitivity: null is not a valid value"
+                )
+            field_sensitivity = _decode_str(raw_sensitivity, f"{path}.sensitivity")
+        field_include_tombstoned: bool | None = None
+        if "include_tombstoned" in mapping:
+            raw_include_tombstoned = mapping["include_tombstoned"]
+            if raw_include_tombstoned is None:
+                raise ContractDecodeError(
+                    f"{path}.include_tombstoned: null is not a valid value"
+                )
+            field_include_tombstoned = _decode_bool(
+                raw_include_tombstoned,
+                f"{path}.include_tombstoned",
+            )
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            query=field_query,
+            sensitivity=field_sensitivity,
+            include_tombstoned=field_include_tombstoned,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GraphTraversalInput:
+    """Input for `graph.traverse`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier. Absent `view` defaults to `current_canonical`; only an explicit `view`
+    selector may request `candidates` or `history`. Absent `direction` defaults to
+    `outbound`.
+    """
+
+    start: tuple[RecordVersionReference, ...]
+    direction: GraphDirection | None = None
+    relation_types: tuple[GraphRelationType, ...] | None = None
+    domain_scope: RecordDomainScope | None = None
+    view: GovernedRecordView | None = None
+    as_of: Timestamp | None = None
+    depth_limit: GraphDepthLimit | None = None
+    node_limit: PageLimit | None = None
+    edge_limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["start"] = [item.to_wire() for item in self.start]
+        if self.direction is not None:
+            wire["direction"] = self.direction
+        if self.relation_types is not None:
+            wire["relation_types"] = list(self.relation_types)
+        if self.domain_scope is not None:
+            wire["domain_scope"] = self.domain_scope
+        if self.view is not None:
+            wire["view"] = self.view
+        if self.as_of is not None:
+            wire["as_of"] = self.as_of
+        if self.depth_limit is not None:
+            wire["depth_limit"] = self.depth_limit
+        if self.node_limit is not None:
+            wire["node_limit"] = self.node_limit
+        if self.edge_limit is not None:
+            wire["edge_limit"] = self.edge_limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "GraphTraversalInput") -> GraphTraversalInput:
+        """Decode a wire payload into a GraphTraversalInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_start_items = _decode_sequence(
+            _require_field(mapping, "start", path),
+            f"{path}.start",
+        )
+        field_start = tuple(
+            RecordVersionReference.from_wire(item, f"{path}.start[{index}]")
+            for index, item in enumerate(field_start_items)
+        )
+        field_direction: GraphDirection | None = None
+        if "direction" in mapping:
+            raw_direction = mapping["direction"]
+            if raw_direction is None:
+                raise ContractDecodeError(
+                    f"{path}.direction: null is not a valid value"
+                )
+            field_direction = _decode_str(raw_direction, f"{path}.direction")
+        field_relation_types: tuple[GraphRelationType, ...] | None = None
+        if "relation_types" in mapping:
+            raw_relation_types = mapping["relation_types"]
+            if raw_relation_types is None:
+                raise ContractDecodeError(
+                    f"{path}.relation_types: null is not a valid value"
+                )
+            field_relation_types_items = _decode_sequence(
+                raw_relation_types,
+                f"{path}.relation_types",
+            )
+            field_relation_types = tuple(
+                _decode_str(item, f"{path}.relation_types[{index}]")
+                for index, item in enumerate(field_relation_types_items)
+            )
+        field_domain_scope: RecordDomainScope | None = None
+        if "domain_scope" in mapping:
+            raw_domain_scope = mapping["domain_scope"]
+            if raw_domain_scope is None:
+                raise ContractDecodeError(
+                    f"{path}.domain_scope: null is not a valid value"
+                )
+            field_domain_scope = _decode_str(raw_domain_scope, f"{path}.domain_scope")
+        field_view: GovernedRecordView | None = None
+        if "view" in mapping:
+            raw_view = mapping["view"]
+            if raw_view is None:
+                raise ContractDecodeError(
+                    f"{path}.view: null is not a valid value"
+                )
+            field_view = _decode_str(raw_view, f"{path}.view")
+        field_as_of: Timestamp | None = None
+        if "as_of" in mapping:
+            raw_as_of = mapping["as_of"]
+            if raw_as_of is None:
+                raise ContractDecodeError(
+                    f"{path}.as_of: null is not a valid value"
+                )
+            field_as_of = _decode_str(raw_as_of, f"{path}.as_of")
+        field_depth_limit: GraphDepthLimit | None = None
+        if "depth_limit" in mapping:
+            raw_depth_limit = mapping["depth_limit"]
+            if raw_depth_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.depth_limit: null is not a valid value"
+                )
+            field_depth_limit = _decode_int(raw_depth_limit, f"{path}.depth_limit")
+        field_node_limit: PageLimit | None = None
+        if "node_limit" in mapping:
+            raw_node_limit = mapping["node_limit"]
+            if raw_node_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.node_limit: null is not a valid value"
+                )
+            field_node_limit = _decode_int(raw_node_limit, f"{path}.node_limit")
+        field_edge_limit: PageLimit | None = None
+        if "edge_limit" in mapping:
+            raw_edge_limit = mapping["edge_limit"]
+            if raw_edge_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.edge_limit: null is not a valid value"
+                )
+            field_edge_limit = _decode_int(raw_edge_limit, f"{path}.edge_limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            start=field_start,
+            direction=field_direction,
+            relation_types=field_relation_types,
+            domain_scope=field_domain_scope,
+            view=field_view,
+            as_of=field_as_of,
+            depth_limit=field_depth_limit,
+            node_limit=field_node_limit,
+            edge_limit=field_edge_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class JobAttempt:
     """One execution attempt of a job. A job that is retried has more than one attempt."""
 
@@ -3330,6 +4575,253 @@ class JobAttempt:
             finished_at=field_finished_at,
             state=field_state,
             error=field_error,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchInput:
+    """Input for `knowledge.search`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier. Absent `view` defaults to `current_canonical`; only an explicit `view`
+    selector may request `candidates` or `history`, so a caller can never receive candidate,
+    rejected, superseded, or otherwise non-canonical governed knowledge by omission.
+    """
+
+    query: MemoryQuery
+    order: MemorySearchOrder | None = None
+    view: GovernedRecordView | None = None
+    record_type: GovernedRecordType | None = None
+    domain_scope: RecordDomainScope | None = None
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query"] = self.query
+        if self.order is not None:
+            wire["order"] = self.order
+        if self.view is not None:
+            wire["view"] = self.view
+        if self.record_type is not None:
+            wire["record_type"] = self.record_type
+        if self.domain_scope is not None:
+            wire["domain_scope"] = self.domain_scope
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "KnowledgeSearchInput") -> KnowledgeSearchInput:
+        """Decode a wire payload into a KnowledgeSearchInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query = _decode_str(_require_field(mapping, "query", path), f"{path}.query")
+        field_order: MemorySearchOrder | None = None
+        if "order" in mapping:
+            raw_order = mapping["order"]
+            if raw_order is None:
+                raise ContractDecodeError(
+                    f"{path}.order: null is not a valid value"
+                )
+            field_order = _decode_str(raw_order, f"{path}.order")
+        field_view: GovernedRecordView | None = None
+        if "view" in mapping:
+            raw_view = mapping["view"]
+            if raw_view is None:
+                raise ContractDecodeError(
+                    f"{path}.view: null is not a valid value"
+                )
+            field_view = _decode_str(raw_view, f"{path}.view")
+        field_record_type: GovernedRecordType | None = None
+        if "record_type" in mapping:
+            raw_record_type = mapping["record_type"]
+            if raw_record_type is None:
+                raise ContractDecodeError(
+                    f"{path}.record_type: null is not a valid value"
+                )
+            field_record_type = _decode_str(raw_record_type, f"{path}.record_type")
+        field_domain_scope: RecordDomainScope | None = None
+        if "domain_scope" in mapping:
+            raw_domain_scope = mapping["domain_scope"]
+            if raw_domain_scope is None:
+                raise ContractDecodeError(
+                    f"{path}.domain_scope: null is not a valid value"
+                )
+            field_domain_scope = _decode_str(raw_domain_scope, f"{path}.domain_scope")
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            query=field_query,
+            order=field_order,
+            view=field_view,
+            record_type=field_record_type,
+            domain_scope=field_domain_scope,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeProposeInput:
+    """Input for `knowledge.propose`: transitions an existing proposed (`l1`/`proposed`) record
+    into a candidate (`l1`/`candidate`) awaiting a governance decision. Never duplicates
+    `memory.create`: it identifies an already-existing record by `record_id` rather than
+    proposing new content, and never carries content, evidence, or assertion fields. The
+    target version is the envelope's `MutationPrecondition.record_version`, not duplicated
+    here. Like every other governance transition, the rationale is required: no governance
+    decision on this contract is ever recorded without an explicit, auditable reason.
+    """
+
+    record_id: RecordId
+    rationale: GovernanceRationale
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["rationale"] = self.rationale.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeProposeInput"
+    ) -> KnowledgeProposeInput:
+        """Decode a wire payload into a KnowledgeProposeInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_rationale = GovernanceRationale.from_wire(
+            _require_field(mapping, "rationale", path),
+            f"{path}.rationale",
+        )
+        return cls(
+            record_id=field_record_id,
+            rationale=field_rationale,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateApproveInput:
+    """Input for `candidate.approve`: creates a new accepted (`l2`/`accepted`) governed version
+    of an existing candidate record, with reviewer authority attributed server-side. The
+    target version is the envelope's `MutationPrecondition.record_version`, not duplicated
+    here. Carries no authority-level, reviewer identity, or governance-state field of its own
+    -- only the explicit, auditable rationale for the decision.
+    """
+
+    record_id: RecordId
+    rationale: GovernanceRationale
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["rationale"] = self.rationale.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateApproveInput"
+    ) -> CandidateApproveInput:
+        """Decode a wire payload into a CandidateApproveInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_rationale = GovernanceRationale.from_wire(
+            _require_field(mapping, "rationale", path),
+            f"{path}.rationale",
+        )
+        return cls(
+            record_id=field_record_id,
+            rationale=field_rationale,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRejectInput:
+    """Input for `candidate.reject`: creates a new rejected (`l1`/`rejected`) governed version
+    of an existing candidate record, with reviewer authority attributed server-side. The
+    target version is the envelope's `MutationPrecondition.record_version`, not duplicated
+    here. `rejected` is never treated as a favourable or accepted authority decision.
+    """
+
+    record_id: RecordId
+    rationale: GovernanceRationale
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["rationale"] = self.rationale.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CandidateRejectInput") -> CandidateRejectInput:
+        """Decode a wire payload into a CandidateRejectInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_rationale = GovernanceRationale.from_wire(
+            _require_field(mapping, "rationale", path),
+            f"{path}.rationale",
+        )
+        return cls(
+            record_id=field_record_id,
+            rationale=field_rationale,
         )
 
 
@@ -4096,6 +5588,207 @@ class CompatibilityMatrix:
         )
 
 
+ContextPackCitation: TypeAlias = ContextPackEvidenceCitation | ContextPackRecordCitation
+"""One exact citation in a pack: either an evidence citation or a governed-record citation, never
+both and never neither. The two branches are distinct object shapes rather than one shape with
+two optional pointers, so what a citation points at is settled structurally by the wire document
+instead of being left to a semantic agreement check.
+"""
+
+
+def context_pack_citation_from_wire(
+    payload: object, path: str = "ContextPackCitation"
+) -> ContextPackCitation:
+    """Decode a wire payload into exactly one ContextPackCitation branch.
+
+    The branches are mutually exclusive by construction: a payload carrying more than one
+    discriminator, or none at all, is rejected rather than guessed at.
+    """
+    mapping = _require_mapping(payload, path)
+    discriminators = ("evidence_reference", "record_reference")
+    matched = tuple(key for key in discriminators if key in mapping)
+    if len(matched) != 1:
+        raise ContractDecodeError(
+            f"{path}: expected exactly one of {discriminators}, found {matched}"
+        )
+    if matched[0] == "evidence_reference":
+        return ContextPackEvidenceCitation.from_wire(mapping, path)
+    if matched[0] == "record_reference":
+        return ContextPackRecordCitation.from_wire(mapping, path)
+    raise ContractDecodeError(f"{path}: unreachable discriminator state")
+
+
+def context_pack_citation_to_wire(value: ContextPackCitation) -> dict[str, Any]:
+    """Render one ContextPackCitation branch as a JSON-compatible mapping."""
+    return value.to_wire()
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackAuthorizationContext:
+    """The complete authority context one Context Pack was produced under, recorded so the build
+    can be reproduced and audited. Historical reproducibility context only, and never a live
+    grant: possessing it authorizes nothing, and following any citation still requires fresh
+    authorization against the cited evidence or record. Recorded structurally rather than as
+    an opaque fingerprint so a reviewer can actually check which principal, roles,
+    capabilities, scopes, purpose, and policy versions were in force, instead of comparing
+    two hashes and learning only that they differ.
+    """
+
+    workspace_id: WorkspaceId
+    authority: GrantedAuthority
+    scopes: tuple[Scope, ...]
+    purpose: Purpose
+    policy_versions: Mapping[str, OpaqueToken]
+    pre_ranking_authorization_enforced: bool
+    authorized_candidate_set_checksum: ContextPackDigest
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["authority"] = self.authority.to_wire()
+        wire["scopes"] = list(self.scopes)
+        wire["purpose"] = self.purpose
+        wire["policy_versions"] = dict(self.policy_versions)
+        wire["pre_ranking_authorization_enforced"] = self.pre_ranking_authorization_enforced
+        wire["authorized_candidate_set_checksum"] = self.authorized_candidate_set_checksum
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackAuthorizationContext"
+    ) -> ContextPackAuthorizationContext:
+        """Decode a wire payload into a ContextPackAuthorizationContext.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_authority = GrantedAuthority.from_wire(
+            _require_field(mapping, "authority", path),
+            f"{path}.authority",
+        )
+        field_scopes_items = _decode_sequence(
+            _require_field(mapping, "scopes", path),
+            f"{path}.scopes",
+        )
+        field_scopes = tuple(
+            _decode_str(item, f"{path}.scopes[{index}]")
+            for index, item in enumerate(field_scopes_items)
+        )
+        field_purpose = _decode_str(_require_field(mapping, "purpose", path), f"{path}.purpose")
+        field_policy_versions_entries = _require_mapping(
+            _require_field(mapping, "policy_versions", path),
+            f"{path}.policy_versions",
+        )
+        field_policy_versions = MappingProxyType(
+            {
+                key: _decode_str(value, f"{path}.policy_versions.{key}")
+                for key, value in field_policy_versions_entries.items()
+            }
+        )
+        field_pre_ranking_authorization_enforced = _decode_bool(
+            _require_field(mapping, "pre_ranking_authorization_enforced", path),
+            f"{path}.pre_ranking_authorization_enforced",
+        )
+        field_authorized_candidate_set_checksum = _decode_str(
+            _require_field(mapping, "authorized_candidate_set_checksum", path),
+            f"{path}.authorized_candidate_set_checksum",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            authority=field_authority,
+            scopes=field_scopes,
+            purpose=field_purpose,
+            policy_versions=field_policy_versions,
+            pre_ranking_authorization_enforced=field_pre_ranking_authorization_enforced,
+            authorized_candidate_set_checksum=field_authorized_candidate_set_checksum,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackAuthorizedCandidateSetManifest:
+    """The exact preimage `ContextPackAuthorizationContext.authorized_candidate_set_checksum` is
+    a digest of. It names the complete post-retrieval, post-request-scope, post-
+    workspace/scope/purpose/capability/policy/ACL/sensitivity-authorization candidate
+    frontier, frozen before the first ranking, reranking, selection, or budget decision: not
+    the whole workspace, and not merely the items a pack ended up selecting. Unauthorized,
+    request-filtered, tombstoned, and invalid-at-resolution material is absent; nothing may
+    be introduced into a pack after this frontier is frozen, so every selected item is a
+    member of it under its own exact partition. This is trusted in-process input to a
+    verifier, never a response field and never logged: it is the independent statement a
+    checksum copied out of the pack itself could never be. The digest is `sha256:` followed
+    by the lowercase hex SHA-256 of the RFC 8785 canonical UTF-8 bytes of this document, with
+    `candidates` sorted by partition and then by the remaining identity members in the order
+    they are declared, comparing each component by unsigned UTF-16 code unit with no Unicode
+    normalization. That sort makes the digest order-insensitive; a duplicate is refused
+    outright rather than collapsed, so sorting never has to decide what a repeated identity
+    meant. RFC 8785 orders object member names but never array elements, so that element sort
+    is part of this definition rather than of the canonicalization. UTF-16 code-unit
+    comparison is normative because it is the ordering RFC 8785 already imposes on member
+    names, and a preimage ordered by one rule and canonicalized under another would be two
+    rules pretending to be one; note that every v1 identity alphabet here is ASCII
+    (`EvidenceId`, `RecordId`), printable ASCII (`RecordVersion`), or an ASCII-restricted
+    checksum (`EvidenceChecksum`), so no valid v1 candidate can distinguish UTF-16 order from
+    code-point order -- the rule is stated for the canonicalizer it must agree with, not
+    because a v1 identity could exercise the difference. The empty candidate set is valid and
+    has a well-defined digest.
+    """
+
+    format: str
+    workspace_id: WorkspaceId
+    candidates: tuple[ContextPackAuthorizedCandidate, ...]
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["format"] = self.format
+        wire["workspace_id"] = self.workspace_id
+        wire["candidates"] = [context_pack_authorized_candidate_to_wire(item) for item in self.candidates]
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackAuthorizedCandidateSetManifest"
+    ) -> ContextPackAuthorizedCandidateSetManifest:
+        """Decode a wire payload into a ContextPackAuthorizedCandidateSetManifest.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_format = _decode_str(_require_field(mapping, "format", path), f"{path}.format")
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_candidates_items = _decode_sequence(
+            _require_field(mapping, "candidates", path),
+            f"{path}.candidates",
+        )
+        field_candidates = tuple(
+            context_pack_authorized_candidate_from_wire(item, f"{path}.candidates[{index}]")
+            for index, item in enumerate(field_candidates_items)
+        )
+        return cls(
+            format=field_format,
+            workspace_id=field_workspace_id,
+            candidates=field_candidates,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RequestEnvelope:
     """A single application request: what to do, under what conditions, with what payload."""
@@ -4420,11 +6113,14 @@ class JobTerminalCancellation:
 
 @dataclass(frozen=True, slots=True)
 class CandidateAssertion:
-    """Who is asserting a `memory.create` candidate, when, and on what evidence, plus the
-    validity window they propose for it. This is caller-supplied provenance for the proposal,
-    not the server-owned governance decision: it never carries authority level,
-    reviewer/policy identity, or any other field `MemoryCreateInput` itself is forbidden from
-    carrying.
+    """Who is asserting a governed record's claim, when, and on what evidence, plus the validity
+    window they propose for it. This is caller-supplied provenance for the claim -- carried
+    into `memory.create` and `record.supersede` inputs, and preserved on the resulting
+    record's `RecordProvenance` -- not the server-owned governance decision: it never carries
+    authority level, reviewer/policy identity, or any other field a least-authority-
+    escalating mutation input is forbidden from carrying. Defined here rather than in
+    `memory.schema.json` so `RecordProvenance` can preserve it without `records.schema.json`
+    depending on a document that already depends on it.
     """
 
     actor_id: Identifier
@@ -4517,12 +6213,16 @@ class CandidateAssertion:
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceEntry:
-    """One step in a record's history: who or what did what, and when."""
+    """One step in a record's history: who or what did what, when, and -- for a governance
+    transition -- the explicit rationale it was taken under.
+    """
 
     actor_id: Identifier
     actor_kind: OpenCode
     action: OpenCode
     occurred_at: Timestamp
+    reason_code: OpenCode | None = None
+    reason_comment: str | None = None
     evidence: tuple[EvidenceReference, ...] | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -4536,6 +6236,10 @@ class ProvenanceEntry:
         wire["actor_kind"] = self.actor_kind
         wire["action"] = self.action
         wire["occurred_at"] = self.occurred_at
+        if self.reason_code is not None:
+            wire["reason_code"] = self.reason_code
+        if self.reason_comment is not None:
+            wire["reason_comment"] = self.reason_comment
         if self.evidence is not None:
             wire["evidence"] = [item.to_wire() for item in self.evidence]
         return wire
@@ -4558,6 +6262,22 @@ class ProvenanceEntry:
             _require_field(mapping, "occurred_at", path),
             f"{path}.occurred_at",
         )
+        field_reason_code: OpenCode | None = None
+        if "reason_code" in mapping:
+            raw_reason_code = mapping["reason_code"]
+            if raw_reason_code is None:
+                raise ContractDecodeError(
+                    f"{path}.reason_code: null is not a valid value"
+                )
+            field_reason_code = _decode_str(raw_reason_code, f"{path}.reason_code")
+        field_reason_comment: str | None = None
+        if "reason_comment" in mapping:
+            raw_reason_comment = mapping["reason_comment"]
+            if raw_reason_comment is None:
+                raise ContractDecodeError(
+                    f"{path}.reason_comment: null is not a valid value"
+                )
+            field_reason_comment = _decode_str(raw_reason_comment, f"{path}.reason_comment")
         field_evidence: tuple[EvidenceReference, ...] | None = None
         if "evidence" in mapping:
             raw_evidence = mapping["evidence"]
@@ -4575,6 +6295,8 @@ class ProvenanceEntry:
             actor_kind=field_actor_kind,
             action=field_action,
             occurred_at=field_occurred_at,
+            reason_code=field_reason_code,
+            reason_comment=field_reason_comment,
             evidence=field_evidence,
         )
 
@@ -4648,6 +6370,191 @@ class WorkspaceDescriptor:
             compatibility=field_compatibility,
             created_at=field_created_at,
             updated_at=field_updated_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPackReproducibility:
+    """Everything a second build needs to reproduce one Context Pack byte for byte: the pack
+    format version, the builder, the normalized request, the authority context the build ran
+    under, the exact evidence and record versions selected, the projection the read was
+    served from, the retrieval/ranking/reranking/selection/tokenizer/summarizer/model
+    versions applied, the instant the canonical knowledge was resolved at, and the
+    canonicalization and checksum that make the result content-addressed. With every one of
+    these unchanged, rebuilding must reproduce the identical pack. Carries no audit
+    reference: the response envelope owns audit linkage, and folding a per-request audit
+    identifier into a content-addressed artifact would make two identical builds hash
+    differently.
+    """
+
+    pack_format_version: ContractVersion
+    builder_version: Identifier
+    normalized_request: ContextPackNormalizedRequest
+    authorization_context: ContextPackAuthorizationContext
+    evidence_versions: tuple[ContextPackEvidenceReference, ...]
+    record_versions: tuple[RecordVersionReference, ...]
+    freshness: ProjectionFreshness
+    retrieval_version: Identifier
+    ranking_version: Identifier
+    reranking_version: Identifier
+    selection_version: Identifier
+    tokenizer_id: Identifier
+    tokenizer_version: Identifier
+    summarizer_version: Identifier
+    model_versions: Mapping[str, Identifier]
+    canonical_resolution_time: Timestamp
+    generated_at: Timestamp
+    artifact_canonicalization: OpenCode
+    artifact_checksum: ContextPackDigest
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["pack_format_version"] = self.pack_format_version
+        wire["builder_version"] = self.builder_version
+        wire["normalized_request"] = self.normalized_request.to_wire()
+        wire["authorization_context"] = self.authorization_context.to_wire()
+        wire["evidence_versions"] = [item.to_wire() for item in self.evidence_versions]
+        wire["record_versions"] = [item.to_wire() for item in self.record_versions]
+        wire["freshness"] = self.freshness.to_wire()
+        wire["retrieval_version"] = self.retrieval_version
+        wire["ranking_version"] = self.ranking_version
+        wire["reranking_version"] = self.reranking_version
+        wire["selection_version"] = self.selection_version
+        wire["tokenizer_id"] = self.tokenizer_id
+        wire["tokenizer_version"] = self.tokenizer_version
+        wire["summarizer_version"] = self.summarizer_version
+        wire["model_versions"] = dict(self.model_versions)
+        wire["canonical_resolution_time"] = self.canonical_resolution_time
+        wire["generated_at"] = self.generated_at
+        wire["artifact_canonicalization"] = self.artifact_canonicalization
+        wire["artifact_checksum"] = self.artifact_checksum
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackReproducibility"
+    ) -> ContextPackReproducibility:
+        """Decode a wire payload into a ContextPackReproducibility.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_pack_format_version = _decode_str(
+            _require_field(mapping, "pack_format_version", path),
+            f"{path}.pack_format_version",
+        )
+        field_builder_version = _decode_str(
+            _require_field(mapping, "builder_version", path),
+            f"{path}.builder_version",
+        )
+        field_normalized_request = ContextPackNormalizedRequest.from_wire(
+            _require_field(mapping, "normalized_request", path),
+            f"{path}.normalized_request",
+        )
+        field_authorization_context = ContextPackAuthorizationContext.from_wire(
+            _require_field(mapping, "authorization_context", path),
+            f"{path}.authorization_context",
+        )
+        field_evidence_versions_items = _decode_sequence(
+            _require_field(mapping, "evidence_versions", path),
+            f"{path}.evidence_versions",
+        )
+        field_evidence_versions = tuple(
+            ContextPackEvidenceReference.from_wire(item, f"{path}.evidence_versions[{index}]")
+            for index, item in enumerate(field_evidence_versions_items)
+        )
+        field_record_versions_items = _decode_sequence(
+            _require_field(mapping, "record_versions", path),
+            f"{path}.record_versions",
+        )
+        field_record_versions = tuple(
+            RecordVersionReference.from_wire(item, f"{path}.record_versions[{index}]")
+            for index, item in enumerate(field_record_versions_items)
+        )
+        field_freshness = ProjectionFreshness.from_wire(
+            _require_field(mapping, "freshness", path),
+            f"{path}.freshness",
+        )
+        field_retrieval_version = _decode_str(
+            _require_field(mapping, "retrieval_version", path),
+            f"{path}.retrieval_version",
+        )
+        field_ranking_version = _decode_str(
+            _require_field(mapping, "ranking_version", path),
+            f"{path}.ranking_version",
+        )
+        field_reranking_version = _decode_str(
+            _require_field(mapping, "reranking_version", path),
+            f"{path}.reranking_version",
+        )
+        field_selection_version = _decode_str(
+            _require_field(mapping, "selection_version", path),
+            f"{path}.selection_version",
+        )
+        field_tokenizer_id = _decode_str(
+            _require_field(mapping, "tokenizer_id", path),
+            f"{path}.tokenizer_id",
+        )
+        field_tokenizer_version = _decode_str(
+            _require_field(mapping, "tokenizer_version", path),
+            f"{path}.tokenizer_version",
+        )
+        field_summarizer_version = _decode_str(
+            _require_field(mapping, "summarizer_version", path),
+            f"{path}.summarizer_version",
+        )
+        field_model_versions_entries = _require_mapping(
+            _require_field(mapping, "model_versions", path),
+            f"{path}.model_versions",
+        )
+        field_model_versions = MappingProxyType(
+            {
+                key: _decode_str(value, f"{path}.model_versions.{key}")
+                for key, value in field_model_versions_entries.items()
+            }
+        )
+        field_canonical_resolution_time = _decode_str(
+            _require_field(mapping, "canonical_resolution_time", path),
+            f"{path}.canonical_resolution_time",
+        )
+        field_generated_at = _decode_str(
+            _require_field(mapping, "generated_at", path),
+            f"{path}.generated_at",
+        )
+        field_artifact_canonicalization = _decode_str(
+            _require_field(mapping, "artifact_canonicalization", path),
+            f"{path}.artifact_canonicalization",
+        )
+        field_artifact_checksum = _decode_str(
+            _require_field(mapping, "artifact_checksum", path),
+            f"{path}.artifact_checksum",
+        )
+        return cls(
+            pack_format_version=field_pack_format_version,
+            builder_version=field_builder_version,
+            normalized_request=field_normalized_request,
+            authorization_context=field_authorization_context,
+            evidence_versions=field_evidence_versions,
+            record_versions=field_record_versions,
+            freshness=field_freshness,
+            retrieval_version=field_retrieval_version,
+            ranking_version=field_ranking_version,
+            reranking_version=field_reranking_version,
+            selection_version=field_selection_version,
+            tokenizer_id=field_tokenizer_id,
+            tokenizer_version=field_tokenizer_version,
+            summarizer_version=field_summarizer_version,
+            model_versions=field_model_versions,
+            canonical_resolution_time=field_canonical_resolution_time,
+            generated_at=field_generated_at,
+            artifact_canonicalization=field_artifact_canonicalization,
+            artifact_checksum=field_artifact_checksum,
         )
 
 
@@ -4815,6 +6722,150 @@ class ResponseMetadata:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceArtifact:
+    """One complete, append-preserving L0 evidence artifact: stable identity, workspace, exact
+    source/native locator, applicable temporal instants, content checksum and media type,
+    opaque metadata, permission/sensitivity labels, tombstone status, parser/ingestion
+    status, and append-only provenance history. Carries no `GovernanceLayer`,
+    `GovernanceState`, `RecordCurrentness`, or `authority_level` field: an evidence artifact
+    is raw L0 material, never governed knowledge, and this shape must never be mistaken for a
+    `GovernedRecord`.
+    """
+
+    evidence_id: EvidenceId
+    workspace_id: WorkspaceId
+    source: SourceReference
+    temporal: RecordTemporalMetadata
+    content_checksum: EvidenceChecksum
+    media_type: MediaType
+    metadata: JsonObject
+    permission_labels: tuple[OpenCode, ...]
+    sensitivity: OpenCode
+    tombstoned: bool
+    parser_status: OpenCode
+    ingestion_status: OpenCode
+    provenance_history: tuple[ProvenanceEntry, ...]
+    import_run_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence_id"] = self.evidence_id
+        wire["workspace_id"] = self.workspace_id
+        wire["source"] = self.source.to_wire()
+        wire["temporal"] = self.temporal.to_wire()
+        wire["content_checksum"] = self.content_checksum
+        wire["media_type"] = self.media_type
+        wire["metadata"] = _encode_json_object(self.metadata)
+        wire["permission_labels"] = list(self.permission_labels)
+        wire["sensitivity"] = self.sensitivity
+        wire["tombstoned"] = self.tombstoned
+        wire["parser_status"] = self.parser_status
+        wire["ingestion_status"] = self.ingestion_status
+        wire["provenance_history"] = [item.to_wire() for item in self.provenance_history]
+        if self.import_run_id is not None:
+            wire["import_run_id"] = self.import_run_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceArtifact") -> EvidenceArtifact:
+        """Decode a wire payload into a EvidenceArtifact.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_id = _decode_str(
+            _require_field(mapping, "evidence_id", path),
+            f"{path}.evidence_id",
+        )
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_source = SourceReference.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_temporal = RecordTemporalMetadata.from_wire(
+            _require_field(mapping, "temporal", path),
+            f"{path}.temporal",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_metadata = _decode_json_object(
+            _require_field(mapping, "metadata", path),
+            f"{path}.metadata",
+        )
+        field_permission_labels_items = _decode_sequence(
+            _require_field(mapping, "permission_labels", path),
+            f"{path}.permission_labels",
+        )
+        field_permission_labels = tuple(
+            _decode_str(item, f"{path}.permission_labels[{index}]")
+            for index, item in enumerate(field_permission_labels_items)
+        )
+        field_sensitivity = _decode_str(
+            _require_field(mapping, "sensitivity", path),
+            f"{path}.sensitivity",
+        )
+        field_tombstoned = _decode_bool(
+            _require_field(mapping, "tombstoned", path),
+            f"{path}.tombstoned",
+        )
+        field_parser_status = _decode_str(
+            _require_field(mapping, "parser_status", path),
+            f"{path}.parser_status",
+        )
+        field_ingestion_status = _decode_str(
+            _require_field(mapping, "ingestion_status", path),
+            f"{path}.ingestion_status",
+        )
+        field_provenance_history_items = _decode_sequence(
+            _require_field(mapping, "provenance_history", path),
+            f"{path}.provenance_history",
+        )
+        field_provenance_history = tuple(
+            ProvenanceEntry.from_wire(item, f"{path}.provenance_history[{index}]")
+            for index, item in enumerate(field_provenance_history_items)
+        )
+        field_import_run_id: Identifier | None = None
+        if "import_run_id" in mapping:
+            raw_import_run_id = mapping["import_run_id"]
+            if raw_import_run_id is None:
+                raise ContractDecodeError(
+                    f"{path}.import_run_id: null is not a valid value"
+                )
+            field_import_run_id = _decode_str(raw_import_run_id, f"{path}.import_run_id")
+        return cls(
+            evidence_id=field_evidence_id,
+            workspace_id=field_workspace_id,
+            source=field_source,
+            temporal=field_temporal,
+            content_checksum=field_content_checksum,
+            media_type=field_media_type,
+            metadata=field_metadata,
+            permission_labels=field_permission_labels,
+            sensitivity=field_sensitivity,
+            tombstoned=field_tombstoned,
+            parser_status=field_parser_status,
+            ingestion_status=field_ingestion_status,
+            provenance_history=field_provenance_history,
+            import_run_id=field_import_run_id,
+        )
+
+
 JobTerminalResult: TypeAlias = JobTerminalSuccess | JobTerminalFailure | JobTerminalCancellation
 """The final outcome of a job once it has reached a terminal state, with the complete attempt
 history that led there. Exactly one of a success, a failure, or a cancellation, never a mix: each
@@ -4971,7 +7022,11 @@ class MemoryCreateInput:
 @dataclass(frozen=True, slots=True)
 class RecordProvenance:
     """The full provenance envelope for one record version: identity, temporal metadata, its
-    authoring history, and the sources it draws on.
+    authoring history, the sources it draws on, and the caller-supplied assertion/extraction
+    lineage the claim in this version came from. `assertion`/`extraction` are structurally
+    optional so a record written before they existed still decodes, but a governance
+    transition that replaces or carries forward a claim must bind them; enforcing that is a
+    semantic-validation concern, not a wire-shape one.
     """
 
     identity: RecordIdentity
@@ -4979,6 +7034,8 @@ class RecordProvenance:
     history: tuple[ProvenanceEntry, ...]
     evidence_disposition: EvidenceDisposition
     sources: tuple[SourceReference, ...]
+    assertion: CandidateAssertion | None = None
+    extraction: CandidateExtractionMetadata | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -4992,6 +7049,10 @@ class RecordProvenance:
         wire["history"] = [item.to_wire() for item in self.history]
         wire["evidence_disposition"] = self.evidence_disposition
         wire["sources"] = [item.to_wire() for item in self.sources]
+        if self.assertion is not None:
+            wire["assertion"] = self.assertion.to_wire()
+        if self.extraction is not None:
+            wire["extraction"] = self.extraction.to_wire()
         return wire
 
     @classmethod
@@ -5030,12 +7091,33 @@ class RecordProvenance:
             SourceReference.from_wire(item, f"{path}.sources[{index}]")
             for index, item in enumerate(field_sources_items)
         )
+        field_assertion: CandidateAssertion | None = None
+        if "assertion" in mapping:
+            raw_assertion = mapping["assertion"]
+            if raw_assertion is None:
+                raise ContractDecodeError(
+                    f"{path}.assertion: null is not a valid value"
+                )
+            field_assertion = CandidateAssertion.from_wire(raw_assertion, f"{path}.assertion")
+        field_extraction: CandidateExtractionMetadata | None = None
+        if "extraction" in mapping:
+            raw_extraction = mapping["extraction"]
+            if raw_extraction is None:
+                raise ContractDecodeError(
+                    f"{path}.extraction: null is not a valid value"
+                )
+            field_extraction = CandidateExtractionMetadata.from_wire(
+                raw_extraction,
+                f"{path}.extraction",
+            )
         return cls(
             identity=field_identity,
             temporal=field_temporal,
             history=field_history,
             evidence_disposition=field_evidence_disposition,
             sources=field_sources,
+            assertion=field_assertion,
+            extraction=field_extraction,
         )
 
 
@@ -5235,6 +7317,110 @@ class ErrorResponseEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceSearchResult:
+    """Result of `evidence.search`: complete, append-preserving L0 evidence artifacts with exact
+    provenance. Never substitutes a `GovernedRecord` for an evidence artifact.
+    """
+
+    evidence: tuple[EvidenceArtifact, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["evidence"] = [item.to_wire() for item in self.evidence]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceSearchResult") -> EvidenceSearchResult:
+        """Decode a wire payload into a EvidenceSearchResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_evidence_items = _decode_sequence(
+            _require_field(mapping, "evidence", path),
+            f"{path}.evidence",
+        )
+        field_evidence = tuple(
+            EvidenceArtifact.from_wire(item, f"{path}.evidence[{index}]")
+            for index, item in enumerate(field_evidence_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            evidence=field_evidence,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecordSupersedeInput:
+    """Input for `record.supersede`: an explicit, authorized replacement of a current accepted
+    (`l2`/`accepted`/`current`) governed record with a new accepted version. The target
+    version is the envelope's `MutationPrecondition.record_version`, not duplicated here.
+    Exactly three fields: which record, the complete replacement claim, and why. The
+    replacement is a whole `MemoryCreateInput` rather than a loose bag of content/evidence
+    fields, so the new version's content, evidence disposition, sources, assertion,
+    extraction lineage, and proposed validity window are supplied and validated as one
+    coherent claim under exactly the rules `memory.create` already enforces. It inherits that
+    shape's least-authority-escalating guarantee: no governance-state, currentness,
+    authority-level, reviewer, or supersession field is accepted from a caller. The server
+    alone produces the new version's identity, authority, temporal envelope, and the
+    reciprocal `supersedes`/`superseded_by` pointers, and the replacement's
+    `record_type`/`domain_scope` must equal the superseded record's -- superseding replaces a
+    claim, it never silently reclassifies the record.
+    """
+
+    record_id: RecordId
+    replacement: MemoryCreateInput
+    rationale: GovernanceRationale
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        wire["replacement"] = self.replacement.to_wire()
+        wire["rationale"] = self.rationale.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "RecordSupersedeInput") -> RecordSupersedeInput:
+        """Decode a wire payload into a RecordSupersedeInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_replacement = MemoryCreateInput.from_wire(
+            _require_field(mapping, "replacement", path),
+            f"{path}.replacement",
+        )
+        field_rationale = GovernanceRationale.from_wire(
+            _require_field(mapping, "rationale", path),
+            f"{path}.rationale",
+        )
+        return cls(
+            record_id=field_record_id,
+            replacement=field_replacement,
+            rationale=field_rationale,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GovernedRecord:
     """A provider-neutral governed record: which workspace it belongs to, what kind of record it
     is, its domain scope and authority level, its full L0-L4 governance, temporal, evidence,
@@ -5318,6 +7504,174 @@ class GovernedRecord:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ContextPackBuildResult:
+    """Result of `context_pack.build`: the original query, the model-facing sections, the
+    selected L0 evidence, current canonical L2 records, supporting history and L3 context
+    models, the exact citations every section and selected item rests on, the conflicts and
+    uncertainties the pack surfaces rather than resolving, the policy and budget omissions,
+    token accounting, and the complete reproducibility record. Selecting and citing this
+    content never grants new authority: `fresh_authorization_required` is always true, and
+    possessing `pack_id` grants nothing on its own -- it is a content digest anyone can
+    recompute, not a capability.
+    """
+
+    pack_id: ContextPackDigest
+    mode: ContextPackMode
+    query: MemoryQuery
+    sections: tuple[ContextPackSection, ...]
+    evidence: tuple[EvidenceArtifact, ...]
+    records: tuple[GovernedRecord, ...]
+    history: tuple[GovernedRecord, ...]
+    context_models: tuple[GovernedRecord, ...]
+    citations: tuple[ContextPackCitation, ...]
+    conflicts: tuple[ContextPackConflict, ...]
+    uncertainties: tuple[ContextPackUncertainty, ...]
+    omissions: tuple[Omission, ...]
+    budget: ContextPackBudget
+    reproducibility: ContextPackReproducibility
+    fresh_authorization_required: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["pack_id"] = self.pack_id
+        wire["mode"] = self.mode
+        wire["query"] = self.query
+        wire["sections"] = [item.to_wire() for item in self.sections]
+        wire["evidence"] = [item.to_wire() for item in self.evidence]
+        wire["records"] = [item.to_wire() for item in self.records]
+        wire["history"] = [item.to_wire() for item in self.history]
+        wire["context_models"] = [item.to_wire() for item in self.context_models]
+        wire["citations"] = [context_pack_citation_to_wire(item) for item in self.citations]
+        wire["conflicts"] = [item.to_wire() for item in self.conflicts]
+        wire["uncertainties"] = [item.to_wire() for item in self.uncertainties]
+        wire["omissions"] = [item.to_wire() for item in self.omissions]
+        wire["budget"] = self.budget.to_wire()
+        wire["reproducibility"] = self.reproducibility.to_wire()
+        wire["fresh_authorization_required"] = self.fresh_authorization_required
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ContextPackBuildResult"
+    ) -> ContextPackBuildResult:
+        """Decode a wire payload into a ContextPackBuildResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_pack_id = _decode_str(_require_field(mapping, "pack_id", path), f"{path}.pack_id")
+        field_mode = _decode_str(_require_field(mapping, "mode", path), f"{path}.mode")
+        field_query = _decode_str(_require_field(mapping, "query", path), f"{path}.query")
+        field_sections_items = _decode_sequence(
+            _require_field(mapping, "sections", path),
+            f"{path}.sections",
+        )
+        field_sections = tuple(
+            ContextPackSection.from_wire(item, f"{path}.sections[{index}]")
+            for index, item in enumerate(field_sections_items)
+        )
+        field_evidence_items = _decode_sequence(
+            _require_field(mapping, "evidence", path),
+            f"{path}.evidence",
+        )
+        field_evidence = tuple(
+            EvidenceArtifact.from_wire(item, f"{path}.evidence[{index}]")
+            for index, item in enumerate(field_evidence_items)
+        )
+        field_records_items = _decode_sequence(
+            _require_field(mapping, "records", path),
+            f"{path}.records",
+        )
+        field_records = tuple(
+            GovernedRecord.from_wire(item, f"{path}.records[{index}]")
+            for index, item in enumerate(field_records_items)
+        )
+        field_history_items = _decode_sequence(
+            _require_field(mapping, "history", path),
+            f"{path}.history",
+        )
+        field_history = tuple(
+            GovernedRecord.from_wire(item, f"{path}.history[{index}]")
+            for index, item in enumerate(field_history_items)
+        )
+        field_context_models_items = _decode_sequence(
+            _require_field(mapping, "context_models", path),
+            f"{path}.context_models",
+        )
+        field_context_models = tuple(
+            GovernedRecord.from_wire(item, f"{path}.context_models[{index}]")
+            for index, item in enumerate(field_context_models_items)
+        )
+        field_citations_items = _decode_sequence(
+            _require_field(mapping, "citations", path),
+            f"{path}.citations",
+        )
+        field_citations = tuple(
+            context_pack_citation_from_wire(item, f"{path}.citations[{index}]")
+            for index, item in enumerate(field_citations_items)
+        )
+        field_conflicts_items = _decode_sequence(
+            _require_field(mapping, "conflicts", path),
+            f"{path}.conflicts",
+        )
+        field_conflicts = tuple(
+            ContextPackConflict.from_wire(item, f"{path}.conflicts[{index}]")
+            for index, item in enumerate(field_conflicts_items)
+        )
+        field_uncertainties_items = _decode_sequence(
+            _require_field(mapping, "uncertainties", path),
+            f"{path}.uncertainties",
+        )
+        field_uncertainties = tuple(
+            ContextPackUncertainty.from_wire(item, f"{path}.uncertainties[{index}]")
+            for index, item in enumerate(field_uncertainties_items)
+        )
+        field_omissions_items = _decode_sequence(
+            _require_field(mapping, "omissions", path),
+            f"{path}.omissions",
+        )
+        field_omissions = tuple(
+            Omission.from_wire(item, f"{path}.omissions[{index}]")
+            for index, item in enumerate(field_omissions_items)
+        )
+        field_budget = ContextPackBudget.from_wire(
+            _require_field(mapping, "budget", path),
+            f"{path}.budget",
+        )
+        field_reproducibility = ContextPackReproducibility.from_wire(
+            _require_field(mapping, "reproducibility", path),
+            f"{path}.reproducibility",
+        )
+        field_fresh_authorization_required = _decode_bool(
+            _require_field(mapping, "fresh_authorization_required", path),
+            f"{path}.fresh_authorization_required",
+        )
+        return cls(
+            pack_id=field_pack_id,
+            mode=field_mode,
+            query=field_query,
+            sections=field_sections,
+            evidence=field_evidence,
+            records=field_records,
+            history=field_history,
+            context_models=field_context_models,
+            citations=field_citations,
+            conflicts=field_conflicts,
+            uncertainties=field_uncertainties,
+            omissions=field_omissions,
+            budget=field_budget,
+            reproducibility=field_reproducibility,
+            fresh_authorization_required=field_fresh_authorization_required,
+        )
+
+
 ResponseEnvelope: TypeAlias = SuccessResponseEnvelope | ErrorResponseEnvelope
 """Exactly one of a success or an error response, never both. Both branches close their property
 set, so a document carrying `result` and `error` together matches neither branch and is invalid.
@@ -5349,6 +7703,386 @@ def response_envelope_from_wire(
 def response_envelope_to_wire(value: ResponseEnvelope) -> dict[str, Any]:
     """Render one ResponseEnvelope branch as a JSON-compatible mapping."""
     return value.to_wire()
+
+
+@dataclass(frozen=True, slots=True)
+class GraphNode:
+    """One node in a traversal result: a precise reference to the canonical governed record
+    version it represents, the full governed record it wraps, and the depth at which this
+    traversal reached it. Never carries a competing identity, provenance, lifecycle,
+    authority, or governance state of its own -- `reference` and `record` are the only
+    sources of truth, and they must agree.
+    """
+
+    reference: RecordVersionReference
+    record: GovernedRecord
+    depth: GraphDepthLimit
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["reference"] = self.reference.to_wire()
+        wire["record"] = self.record.to_wire()
+        wire["depth"] = self.depth
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "GraphNode") -> GraphNode:
+        """Decode a wire payload into a GraphNode.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_reference = RecordVersionReference.from_wire(
+            _require_field(mapping, "reference", path),
+            f"{path}.reference",
+        )
+        field_record = GovernedRecord.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        field_depth = _decode_int(_require_field(mapping, "depth", path), f"{path}.depth")
+        return cls(
+            reference=field_reference,
+            record=field_record,
+            depth=field_depth,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEdge:
+    """One edge in a traversal result: the relation type, its source and target governed-record
+    versions, the relation's own full governed record, and the precise reference identifying
+    that relation record. Never carries a competing identity, provenance, lifecycle,
+    authority, or governance state of its own beyond that wrapped record:
+    `relation_reference` must identify `record.provenance.identity` exactly, so the relation
+    record is referenced, never re-identified. `source` and `target` are structurally
+    optional so a result can represent a justified page/depth boundary where one end of a
+    relation was not reached; at least one must be present, and exactly one may be absent
+    only together with a coherent `boundary_reason`. Both endpoints present means a fully
+    materialized edge and forbids `boundary_reason`; both absent is never representable,
+    since an edge that names no returned node states nothing this result can be trusted
+    about.
+    """
+
+    relation_type: GraphRelationType
+    record: GovernedRecord
+    relation_reference: RecordVersionReference
+    source: RecordVersionReference | None = None
+    target: RecordVersionReference | None = None
+    boundary_reason: GraphBoundaryReason | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["relation_type"] = self.relation_type
+        if self.source is not None:
+            wire["source"] = self.source.to_wire()
+        if self.target is not None:
+            wire["target"] = self.target.to_wire()
+        wire["record"] = self.record.to_wire()
+        wire["relation_reference"] = self.relation_reference.to_wire()
+        if self.boundary_reason is not None:
+            wire["boundary_reason"] = self.boundary_reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "GraphEdge") -> GraphEdge:
+        """Decode a wire payload into a GraphEdge.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_relation_type = _decode_str(
+            _require_field(mapping, "relation_type", path),
+            f"{path}.relation_type",
+        )
+        field_source: RecordVersionReference | None = None
+        if "source" in mapping:
+            raw_source = mapping["source"]
+            if raw_source is None:
+                raise ContractDecodeError(
+                    f"{path}.source: null is not a valid value"
+                )
+            field_source = RecordVersionReference.from_wire(raw_source, f"{path}.source")
+        field_target: RecordVersionReference | None = None
+        if "target" in mapping:
+            raw_target = mapping["target"]
+            if raw_target is None:
+                raise ContractDecodeError(
+                    f"{path}.target: null is not a valid value"
+                )
+            field_target = RecordVersionReference.from_wire(raw_target, f"{path}.target")
+        field_record = GovernedRecord.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        field_relation_reference = RecordVersionReference.from_wire(
+            _require_field(mapping, "relation_reference", path),
+            f"{path}.relation_reference",
+        )
+        field_boundary_reason: GraphBoundaryReason | None = None
+        if "boundary_reason" in mapping:
+            raw_boundary_reason = mapping["boundary_reason"]
+            if raw_boundary_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.boundary_reason: null is not a valid value"
+                )
+            field_boundary_reason = _decode_str(raw_boundary_reason, f"{path}.boundary_reason")
+        return cls(
+            relation_type=field_relation_type,
+            source=field_source,
+            target=field_target,
+            record=field_record,
+            relation_reference=field_relation_reference,
+            boundary_reason=field_boundary_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearchResult:
+    """Result of `knowledge.search`. When the request's `view` was absent or
+    `current_canonical`, every returned record must be the exact accepted, current, canonical
+    version; no candidate, rejected, superseded, or non-canonical-layer record may appear.
+    """
+
+    records: tuple[GovernedRecord, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["records"] = [item.to_wire() for item in self.records]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeSearchResult"
+    ) -> KnowledgeSearchResult:
+        """Decode a wire payload into a KnowledgeSearchResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_records_items = _decode_sequence(
+            _require_field(mapping, "records", path),
+            f"{path}.records",
+        )
+        field_records = tuple(
+            GovernedRecord.from_wire(item, f"{path}.records[{index}]")
+            for index, item in enumerate(field_records_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            records=field_records,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeProposeResult:
+    """Result of `knowledge.propose`: both versions of the record as they stand *after* the
+    transition, so a caller can validate the transition and confirm no history or provenance
+    was lost. `previous_record` is the prior version, which the transition has itself marked
+    superseded and pointed at the new one; `updated_record` is the newly current version.
+    Neither is a pre-transition snapshot: `previous_record` is what that version now is, not
+    what it looked like before the call.
+    """
+
+    previous_record: GovernedRecord
+    updated_record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["previous_record"] = self.previous_record.to_wire()
+        wire["updated_record"] = self.updated_record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "KnowledgeProposeResult"
+    ) -> KnowledgeProposeResult:
+        """Decode a wire payload into a KnowledgeProposeResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_previous_record = GovernedRecord.from_wire(
+            _require_field(mapping, "previous_record", path),
+            f"{path}.previous_record",
+        )
+        field_updated_record = GovernedRecord.from_wire(
+            _require_field(mapping, "updated_record", path),
+            f"{path}.updated_record",
+        )
+        return cls(
+            previous_record=field_previous_record,
+            updated_record=field_updated_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateApproveResult:
+    """Result of `candidate.approve`: both versions of the record as they stand *after*
+    approval, so a caller can validate the transition and confirm no history or provenance
+    was lost. `previous_record` is the prior candidate version, which the approval has itself
+    marked superseded and pointed at the new one; `updated_record` is the newly current
+    version. Neither is a pre-transition snapshot: `previous_record` is what that version now
+    is, not what it looked like before the call.
+    """
+
+    previous_record: GovernedRecord
+    updated_record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["previous_record"] = self.previous_record.to_wire()
+        wire["updated_record"] = self.updated_record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateApproveResult"
+    ) -> CandidateApproveResult:
+        """Decode a wire payload into a CandidateApproveResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_previous_record = GovernedRecord.from_wire(
+            _require_field(mapping, "previous_record", path),
+            f"{path}.previous_record",
+        )
+        field_updated_record = GovernedRecord.from_wire(
+            _require_field(mapping, "updated_record", path),
+            f"{path}.updated_record",
+        )
+        return cls(
+            previous_record=field_previous_record,
+            updated_record=field_updated_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRejectResult:
+    """Result of `candidate.reject`: both versions of the record as they stand *after*
+    rejection, so a caller can validate the transition and confirm no history or provenance
+    was lost. `previous_record` is the prior candidate version, which the rejection has
+    itself marked superseded and pointed at the new one; `updated_record` is the newly
+    current version. Neither is a pre-transition snapshot: `previous_record` is what that
+    version now is, not what it looked like before the call.
+    """
+
+    previous_record: GovernedRecord
+    updated_record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["previous_record"] = self.previous_record.to_wire()
+        wire["updated_record"] = self.updated_record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateRejectResult"
+    ) -> CandidateRejectResult:
+        """Decode a wire payload into a CandidateRejectResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_previous_record = GovernedRecord.from_wire(
+            _require_field(mapping, "previous_record", path),
+            f"{path}.previous_record",
+        )
+        field_updated_record = GovernedRecord.from_wire(
+            _require_field(mapping, "updated_record", path),
+            f"{path}.updated_record",
+        )
+        return cls(
+            previous_record=field_previous_record,
+            updated_record=field_updated_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecordSupersedeResult:
+    """Result of `record.supersede`: the prior current record (now superseded) and the new
+    current record, so a caller can validate the reciprocal `supersedes`/`superseded_by`
+    pointers, the preserved stable record identity, and the complete, unerased provenance
+    history.
+    """
+
+    previous_record: GovernedRecord
+    updated_record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["previous_record"] = self.previous_record.to_wire()
+        wire["updated_record"] = self.updated_record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "RecordSupersedeResult"
+    ) -> RecordSupersedeResult:
+        """Decode a wire payload into a RecordSupersedeResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_previous_record = GovernedRecord.from_wire(
+            _require_field(mapping, "previous_record", path),
+            f"{path}.previous_record",
+        )
+        field_updated_record = GovernedRecord.from_wire(
+            _require_field(mapping, "updated_record", path),
+            f"{path}.updated_record",
+        )
+        return cls(
+            previous_record=field_previous_record,
+            updated_record=field_updated_record,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -5498,5 +8232,109 @@ class MemorySearchResult:
         field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
         return cls(
             records=field_records,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GraphTraversalResult:
+    """Result of `graph.traverse`: the traversed nodes and edges, the traversal limits actually
+    applied (which may be tighter than requested but never looser), the projection
+    metadata/watermark this traversal was served from, and deterministic ordering evidence.
+    Boundaries are stated, never implied: an edge whose source or target this traversal did
+    not reach carries the endpoint absent plus a `boundary_reason` that must actually hold
+    here -- `page_boundary` only when `page` offers a continuation token and `nodes` reached
+    `applied_node_limit` exactly, `depth_boundary` only when the endpoint that *is* present
+    is a returned node sitting at `applied_depth_limit`. Projection loss is never canonical-
+    data loss: an absent endpoint says this page stopped, not that the relation lost an end.
+    """
+
+    nodes: tuple[GraphNode, ...]
+    edges: tuple[GraphEdge, ...]
+    applied_depth_limit: GraphDepthLimit
+    applied_node_limit: PageLimit
+    applied_edge_limit: PageLimit
+    freshness: ProjectionFreshness
+    ordering_basis: GraphOrderingBasis
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["nodes"] = [item.to_wire() for item in self.nodes]
+        wire["edges"] = [item.to_wire() for item in self.edges]
+        wire["applied_depth_limit"] = self.applied_depth_limit
+        wire["applied_node_limit"] = self.applied_node_limit
+        wire["applied_edge_limit"] = self.applied_edge_limit
+        wire["freshness"] = self.freshness.to_wire()
+        wire["ordering_basis"] = self.ordering_basis
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "GraphTraversalResult") -> GraphTraversalResult:
+        """Decode a wire payload into a GraphTraversalResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_nodes_items = _decode_sequence(
+            _require_field(mapping, "nodes", path),
+            f"{path}.nodes",
+        )
+        field_nodes = tuple(
+            GraphNode.from_wire(item, f"{path}.nodes[{index}]")
+            for index, item in enumerate(field_nodes_items)
+        )
+        field_edges_items = _decode_sequence(
+            _require_field(mapping, "edges", path),
+            f"{path}.edges",
+        )
+        field_edges = tuple(
+            GraphEdge.from_wire(item, f"{path}.edges[{index}]")
+            for index, item in enumerate(field_edges_items)
+        )
+        field_applied_depth_limit = _decode_int(
+            _require_field(mapping, "applied_depth_limit", path),
+            f"{path}.applied_depth_limit",
+        )
+        field_applied_node_limit = _decode_int(
+            _require_field(mapping, "applied_node_limit", path),
+            f"{path}.applied_node_limit",
+        )
+        field_applied_edge_limit = _decode_int(
+            _require_field(mapping, "applied_edge_limit", path),
+            f"{path}.applied_edge_limit",
+        )
+        field_freshness = ProjectionFreshness.from_wire(
+            _require_field(mapping, "freshness", path),
+            f"{path}.freshness",
+        )
+        field_ordering_basis = _decode_str(
+            _require_field(mapping, "ordering_basis", path),
+            f"{path}.ordering_basis",
+        )
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            nodes=field_nodes,
+            edges=field_edges,
+            applied_depth_limit=field_applied_depth_limit,
+            applied_node_limit=field_applied_node_limit,
+            applied_edge_limit=field_applied_edge_limit,
+            freshness=field_freshness,
+            ordering_basis=field_ordering_basis,
             page=field_page,
         )

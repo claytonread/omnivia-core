@@ -38,10 +38,13 @@ from omnivia_core.contracts.v1.generated import (
     RECORD_VERSION_PATTERN,
     TIMESTAMP_PATTERN,
     WORKSPACE_ID_PATTERN,
+    CandidateAssertion,
+    CandidateExtractionMetadata,
     EvidenceReference,
     GovernedRecord,
     MemoryCreateInput,
     MemoryCreateResult,
+    ProvenanceEntry,
     RecordIdentity,
     RecordProvenance,
     RecordTemporalMetadata,
@@ -115,34 +118,90 @@ def resolve_governed_record_view(view: str | None) -> str:
     return view if view is not None else GOVERNED_RECORD_VIEW_CURRENT_CANONICAL
 
 
+# --- direct-entry type guards -------------------------------------------------
+
+def _require_type(value: object, expected: type, label: str) -> None:
+    """Raise unless `value` is an instance of `expected`.
+
+    Every public function in this module is a direct entry point: a caller may hand-build a
+    dataclass rather than decode one through `from_wire`, and a frozen dataclass enforces
+    nothing about the *types* of the fields it was handed. So a wrongly typed nested value
+    must surface here as a :class:`ContractSemanticError` rather than as a raw
+    `TypeError`/`AttributeError` from whatever this module does with it next. `bool` is
+    rejected wherever a non-`bool` type is expected, since `bool` subclasses `int` and would
+    otherwise satisfy an `int` guard silently.
+    """
+    if isinstance(value, bool) and expected is not bool:
+        raise ContractSemanticError(f"{label}: expected {expected.__name__}, got bool")
+    if not isinstance(value, expected):
+        raise ContractSemanticError(
+            f"{label}: expected {expected.__name__}, got {type(value).__name__}"
+        )
+
+
+def _require_str(value: object, label: str) -> str:
+    """Raise unless `value` is a `str`, returning it narrowed."""
+    if isinstance(value, bool) or not isinstance(value, str):
+        raise ContractSemanticError(f"{label}: expected a string, got {type(value).__name__}")
+    return value
+
+
+def _require_int(value: object, label: str) -> int:
+    """Raise unless `value` is a non-`bool` `int`, returning it narrowed."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ContractSemanticError(f"{label}: expected an integer, got {type(value).__name__}")
+    return value
+
+
+def _require_number(value: object, label: str) -> float:
+    """Raise unless `value` is a non-`bool` `int`/`float`, returning it as a `float`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractSemanticError(f"{label}: expected a number, got {type(value).__name__}")
+    return float(value)
+
+
+def _require_sequence(value: object, label: str) -> Sequence[object]:
+    """Raise unless `value` is a non-string sequence, returning it narrowed.
+
+    `str`/`bytes` are sequences but never a valid list-of-DTOs, so they are rejected rather
+    than silently iterated one character at a time.
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ContractSemanticError(f"{label}: expected a sequence, got {type(value).__name__}")
+    return value
+
+
 # --- temporal ordering -------------------------------------------------------
 
 _TIMESTAMP_RE: Final = re.compile(TIMESTAMP_PATTERN)
 
 
-def _parse_timestamp(value: str, label: str) -> datetime:
+def _parse_timestamp(value: object, label: str) -> datetime:
     """Parse `value` as a canonical `Timestamp`: UTC, literal `Z`, calendar-valid.
 
-    `datetime.fromisoformat` alone accepts spellings the canonical `Timestamp` contract
-    forbids -- a naive timestamp, a non-`Z` numeric offset, or a `Z` embedded in what is
-    otherwise a differently shaped string -- so the wire pattern is checked first. Only
-    after that structural gate does `fromisoformat` get a chance to reject a value that
-    matches the pattern but names a calendar-invalid instant (`2024-02-30T00:00:00Z`).
+    `value` is type-guarded first (:func:`_require_str`), since every caller of this is
+    reachable directly with a hand-built dataclass whose timestamp field may not be a string
+    at all. `datetime.fromisoformat` alone then accepts spellings the canonical `Timestamp`
+    contract forbids -- a naive timestamp, a non-`Z` numeric offset, or a `Z` embedded in
+    what is otherwise a differently shaped string -- so the wire pattern is checked next.
+    Only after both gates does `fromisoformat` get a chance to reject a value that matches
+    the pattern but names a calendar-invalid instant (`2024-02-30T00:00:00Z`).
     """
-    if not _TIMESTAMP_RE.match(value):
+    text = _require_str(value, label)
+    if not _TIMESTAMP_RE.match(text):
         raise ContractSemanticError(
-            f"{label}: {value!r} is not a canonical RFC 3339 UTC timestamp "
+            f"{label}: {text!r} is not a canonical RFC 3339 UTC timestamp "
             "(naive, offset, and malformed spellings are all rejected)"
         )
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(text)
     except ValueError as error:
         raise ContractSemanticError(
-            f"{label}: {value!r} is not a valid RFC 3339 timestamp"
+            f"{label}: {text!r} is not a valid RFC 3339 timestamp"
         ) from error
 
 
-def validate_record_temporal_metadata(temporal: RecordTemporalMetadata) -> None:
+def validate_record_temporal_metadata(temporal: object) -> None:
     """Raise unless every present instant on `temporal` independently parses as a
     canonical timestamp, and the instants that must agree are in a consistent order.
 
@@ -160,7 +219,14 @@ def validate_record_temporal_metadata(temporal: RecordTemporalMetadata) -> None:
       before the system first ingested the fact behind it);
     - `superseded_at`, when present, must not be before `recorded_at` (a version
       cannot be superseded before it was itself recorded).
+
+    A direct entry point: `temporal` is type-guarded, and every instant is parsed through
+    :func:`_parse_timestamp`, which guards each field's own type, so a hand-built
+    `RecordTemporalMetadata` carrying a non-string instant raises `ContractSemanticError`
+    rather than a raw `TypeError`.
     """
+    _require_type(temporal, RecordTemporalMetadata, "temporal")
+    assert isinstance(temporal, RecordTemporalMetadata)
     if temporal.event_at is not None:
         _parse_timestamp(temporal.event_at, "event_at")
     if temporal.observed_at is not None:
@@ -194,6 +260,12 @@ def validate_record_temporal_metadata(temporal: RecordTemporalMetadata) -> None:
 
 
 # --- bounded pattern-vocabulary validation -----------------------------------
+#
+# Every validator in this section takes `object`, not `str`, and guards the type before
+# measuring or matching it (:func:`_require_str`). Each one is reachable from a public
+# direct entry point holding a hand-built dataclass, where a field declared `str` may hold
+# anything at all, so a wrong type has to become a `ContractSemanticError` here rather than
+# a raw `TypeError` out of `len()` or `re.fullmatch()`.
 
 _IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
 _OPEN_CODE_RE: Final = re.compile(OPEN_CODE_PATTERN)
@@ -207,7 +279,7 @@ otherwise pattern-valid value is only caught by checking length separately.
 """
 
 
-def _validate_identifier(value: str, label: str) -> None:
+def _validate_identifier(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `Identifier`.
 
     Structural decoding never enforces `Identifier`'s `pattern`/`maxLength` (that is
@@ -216,19 +288,21 @@ def _validate_identifier(value: str, label: str) -> None:
     even though the pattern is itself fully anchored (`^...$`), to make the
     full-match intent explicit at the call site.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _IDENTIFIER_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid Identifier")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _IDENTIFIER_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid Identifier")
 
 
-def _validate_open_code(value: str, label: str) -> None:
+def _validate_open_code(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `OpenCode`.
 
     `OpenCode` is an open wire vocabulary: this only checks the shape every value
     -- known or not yet seen by this build -- must have, so an unrecognized but
     well-formed value still passes and is preserved verbatim by the caller.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _OPEN_CODE_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid OpenCode")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _OPEN_CODE_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid OpenCode")
 
 
 _WORKSPACE_ID_RE: Final = re.compile(WORKSPACE_ID_PATTERN)
@@ -245,95 +319,105 @@ _RECORD_VERSION_MAX_LENGTH: Final = 512
 module, `RecordVersion` allows up to 512 characters, not the shared 128-character bound."""
 
 
-def _validate_workspace_id(value: str, label: str) -> None:
+def _validate_workspace_id(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `WorkspaceId`.
 
     `fullmatch` is required, not `.match`: `WORKSPACE_ID_PATTERN` ends in `$`, and
     Python's `$` matches immediately before a trailing newline as well as at the true
     end of string, so `.match` alone would silently accept `"ws-1\\n"`.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _WORKSPACE_ID_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid WorkspaceId")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _WORKSPACE_ID_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid WorkspaceId")
 
 
-def _validate_governed_record_type(value: str, label: str) -> None:
+def _validate_governed_record_type(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `GovernedRecordType`.
 
     `GovernedRecordType` is an open wire vocabulary: this only checks the shape every
     value -- known or not yet seen by this build -- must have, so an unrecognized but
     well-formed record type still passes and is preserved verbatim by the caller.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNED_RECORD_TYPE_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid GovernedRecordType")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNED_RECORD_TYPE_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid GovernedRecordType")
 
 
-def _validate_evidence_disposition_code(value: str, label: str) -> None:
+def _validate_evidence_disposition_code(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `EvidenceDisposition`.
 
     `EvidenceDisposition` is an open wire vocabulary: this only checks shape, not
     membership in :data:`EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES` or any other
     known value -- an unrecognized but well-formed disposition still passes here.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _EVIDENCE_DISPOSITION_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid EvidenceDisposition")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _EVIDENCE_DISPOSITION_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid EvidenceDisposition")
 
 
-def _validate_record_id(value: str, label: str) -> None:
+def _validate_record_id(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `RecordId`."""
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_ID_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid RecordId")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_ID_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid RecordId")
 
 
-def _validate_record_version(value: str, label: str) -> None:
+def _validate_record_version(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `RecordVersion`.
 
     `RecordVersion`'s own `maxLength` is 512, not the 128-character bound shared by
     every other identifier/code validated in this module.
     """
-    if len(value) > _RECORD_VERSION_MAX_LENGTH or not _RECORD_VERSION_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid RecordVersion")
+    text = _require_str(value, label)
+    if len(text) > _RECORD_VERSION_MAX_LENGTH or not _RECORD_VERSION_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid RecordVersion")
 
 
-def _validate_governance_layer(value: str, label: str) -> None:
+def _validate_governance_layer(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `GovernanceLayer`.
 
     `GovernanceLayer` is an open wire vocabulary: this only checks shape, not
     membership in any known L0-L4 layer -- an unrecognized but well-formed layer
     still passes here.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNANCE_LAYER_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid GovernanceLayer")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNANCE_LAYER_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid GovernanceLayer")
 
 
-def _validate_governance_state_code(value: str, label: str) -> None:
+def _validate_governance_state_code(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `GovernanceState`.
 
     `GovernanceState` is an open wire vocabulary: this only checks shape, not
     membership in any known state -- an unrecognized but well-formed state still
     passes here.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNANCE_STATE_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid GovernanceState")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _GOVERNANCE_STATE_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid GovernanceState")
 
 
-def _validate_record_currentness_code(value: str, label: str) -> None:
+def _validate_record_currentness_code(value: object, label: str) -> None:
     """Raise unless `value` is a bounded, non-empty, pattern-valid `RecordCurrentness`.
 
     `RecordCurrentness` is an open wire vocabulary: this only checks shape, not
     membership in :data:`RECORD_CURRENTNESS_CURRENT`/:data:`RECORD_CURRENTNESS_SUPERSEDED`
     -- an unrecognized but well-formed currentness still passes here.
     """
-    if len(value) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_CURRENTNESS_RE.fullmatch(value):
-        raise ContractSemanticError(f"{label}: {value!r} is not a valid RecordCurrentness")
+    text = _require_str(value, label)
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_CURRENTNESS_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid RecordCurrentness")
 
 
-def _validate_supersession_reference(reference: SupersessionReference, label: str) -> None:
+def _validate_supersession_reference(reference: object, label: str) -> None:
     """Raise unless `reference`'s `record_id`/`version`/`reason` are each individually
     valid.
 
     `version` and `reason` are optional on `SupersessionReference` and are only
     validated when present; `record_id` is always required and always validated.
     """
+    _require_type(reference, SupersessionReference, label)
+    assert isinstance(reference, SupersessionReference)
     _validate_record_id(reference.record_id, f"{label}.record_id")
     if reference.version is not None:
         _validate_record_version(reference.version, f"{label}.version")
@@ -341,7 +425,7 @@ def _validate_supersession_reference(reference: SupersessionReference, label: st
         _validate_open_code(reference.reason, f"{label}.reason")
 
 
-def _validate_record_identity(identity: RecordIdentity, label: str = "identity") -> None:
+def _validate_record_identity(identity: object, label: str = "identity") -> None:
     """Raise unless `identity`'s own fields are each individually valid.
 
     Covers the bounded, pattern-valid shape of `record_id`, `version`, `layer`,
@@ -351,6 +435,8 @@ def _validate_record_identity(identity: RecordIdentity, label: str = "identity")
     :func:`validate_record_currentness_consistency` and
     :func:`validate_governed_record_authority_coherence`'s job, not this function's.
     """
+    _require_type(identity, RecordIdentity, label)
+    assert isinstance(identity, RecordIdentity)
     _validate_record_id(identity.record_id, f"{label}.record_id")
     _validate_record_version(identity.version, f"{label}.version")
     _validate_governance_layer(identity.layer, f"{label}.layer")
@@ -362,7 +448,7 @@ def _validate_record_identity(identity: RecordIdentity, label: str = "identity")
         _validate_supersession_reference(identity.superseded_by, f"{label}.superseded_by")
 
 
-def validate_record_domain_scope(domain_scope: str) -> None:
+def validate_record_domain_scope(domain_scope: object) -> None:
     """Raise unless `domain_scope` is a bounded, non-empty, pattern-valid `RecordDomainScope`.
 
     `RecordDomainScope` is open -- an unrecognized but well-formed classification such
@@ -371,12 +457,9 @@ def validate_record_domain_scope(domain_scope: str) -> None:
     `personal..preferences`, and overlong values are all rejected, using the generated
     `RECORD_DOMAIN_SCOPE_PATTERN` as a full-match constraint rather than duplicating it.
     """
-    if len(domain_scope) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_DOMAIN_SCOPE_RE.fullmatch(
-        domain_scope
-    ):
-        raise ContractSemanticError(
-            f"domain_scope {domain_scope!r} is not a valid RecordDomainScope"
-        )
+    text = _require_str(domain_scope, "domain_scope")
+    if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _RECORD_DOMAIN_SCOPE_RE.fullmatch(text):
+        raise ContractSemanticError(f"domain_scope {text!r} is not a valid RecordDomainScope")
 
 
 # --- evidence disposition / sources agreement --------------------------------
@@ -393,9 +476,7 @@ disable an invariant this build cannot verify holds.
 """
 
 
-def validate_evidence_disposition_sources(
-    disposition: str, sources: Sequence[SourceReference]
-) -> None:
+def validate_evidence_disposition_sources(disposition: object, sources: object) -> None:
     """Raise unless `sources` being empty is actually excused by `disposition`.
 
     Covers both required cases with one rule: `available` never excuses empty
@@ -403,8 +484,12 @@ def validate_evidence_disposition_sources(
     :data:`EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES` -- including an
     unrecognized future value, which fails safe rather than being assumed to
     excuse it.
+
+    A direct entry point: `sources` is guarded as a real sequence rather than merely tested
+    for truthiness, so a caller passing something that is not a source list at all fails
+    loudly instead of being read as "non-empty, therefore excused".
     """
-    if sources:
+    if _require_sequence(sources, "sources"):
         return
     if disposition not in EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES:
         raise ContractSemanticError(
@@ -419,9 +504,7 @@ RECORD_CURRENTNESS_CURRENT: Final = "current"
 RECORD_CURRENTNESS_SUPERSEDED: Final = "superseded"
 
 
-def validate_record_currentness_consistency(
-    identity: RecordIdentity, temporal: RecordTemporalMetadata
-) -> None:
+def validate_record_currentness_consistency(identity: object, temporal: object) -> None:
     """Raise unless `identity`/`temporal` agree on this version's supersession state.
 
     `current` cannot carry a `superseded_by` pointer or a `superseded_at` instant --
@@ -430,7 +513,13 @@ def validate_record_currentness_consistency(
     with no record of what replaced it, or when, is not fully stated. Neither
     `supersedes` nor `superseded_by` may point at this same version's own identity: a
     version cannot be its own predecessor or successor, regardless of `currentness`.
+
+    A direct entry point: both arguments are type-guarded before any field is read.
     """
+    _require_type(identity, RecordIdentity, "identity")
+    assert isinstance(identity, RecordIdentity)
+    _require_type(temporal, RecordTemporalMetadata, "temporal")
+    assert isinstance(temporal, RecordTemporalMetadata)
     if identity.currentness == RECORD_CURRENTNESS_CURRENT:
         if identity.superseded_by is not None:
             raise ContractSemanticError(
@@ -483,14 +572,19 @@ value, not a `layer` value; the two happen to share a name in the domain vocabul
 independent axes on `RecordIdentity`.
 """
 
-GOVERNANCE_STATES_REQUIRING_REVIEWER: Final[frozenset[str]] = frozenset({GOVERNANCE_STATE_ACCEPTED})
+GOVERNANCE_STATES_REQUIRING_REVIEWER: Final[frozenset[str]] = frozenset(
+    {GOVERNANCE_STATE_ACCEPTED, GOVERNANCE_STATE_REJECTED}
+)
 """Governance states that assert a decision was made and so must carry a reviewer.
 
-`accepted` is decision-bearing regardless of what `authority_level` happens to say:
-an unrecognized-but-valid open `authority_level` code must never be read as already
-satisfying, or exempting a record from, this requirement -- this build cannot verify
-what an unknown authority level means, so the check is keyed on the known,
-closed-vocabulary `governance_state` instead. Exact membership only.
+`accepted` and `rejected` are both decision-bearing regardless of what `authority_level`
+happens to say: an unrecognized-but-valid open `authority_level` code must never be read
+as already satisfying, or exempting a record from, this requirement -- this build cannot
+verify what an unknown authority level means, so the check is keyed on the known,
+closed-vocabulary `governance_state` instead. Exact membership only. Requiring a reviewer
+for `rejected` does not make it a favourable or accepted authority decision: see
+:data:`GOVERNANCE_STATES_KNOWN_NON_ACCEPTED`, which still forbids `rejected` from carrying
+any authority level in :data:`AUTHORITY_LEVELS_REQUIRING_REVIEWER`.
 """
 
 AUTHORITY_LEVELS_IMPLYING_ACCEPTED: Final[frozenset[str]] = frozenset({"reviewed", "canonical"})
@@ -532,7 +626,7 @@ open state are compatible with decision-bearing authority.
 
 
 def validate_governed_record_authority_coherence(
-    governance_state: str, authority_level: str, reviewer: str | None
+    governance_state: object, authority_level: object, reviewer: object
 ) -> None:
     """Raise unless `governance_state`, `authority_level`, and `reviewer` agree.
 
@@ -604,7 +698,7 @@ def validate_governed_record_authority_coherence(
 
 
 def validate_governed_record_layer_coherence(
-    layer: str, governance_state: str, authority_level: str
+    layer: object, governance_state: object, authority_level: object
 ) -> None:
     """Raise unless a known :data:`GOVERNANCE_LAYER_CANDIDATE` layer's `governance_state`/
     `authority_level` are coherent with still being a candidate.
@@ -616,9 +710,15 @@ def validate_governed_record_layer_coherence(
     is not a complete L0-L4 transition matrix, only the one contradiction this build
     can state with confidence -- so a `layer` outside :data:`GOVERNANCE_LAYER_CANDIDATE`,
     including any unrecognized open layer, is passed through untouched.
+
+    A direct entry point: each argument is guarded as a string before it is compared or
+    tested for frozen-set membership, so a wrongly typed (or unhashable) argument raises
+    `ContractSemanticError` rather than a raw `TypeError`.
     """
-    if layer != GOVERNANCE_LAYER_CANDIDATE:
+    if _require_str(layer, "layer") != GOVERNANCE_LAYER_CANDIDATE:
         return
+    _require_str(governance_state, "governance_state")
+    _require_str(authority_level, "authority_level")
     if governance_state == GOVERNANCE_STATE_ACCEPTED:
         raise ContractSemanticError(
             f"layer {GOVERNANCE_LAYER_CANDIDATE!r} must not carry governance_state "
@@ -631,10 +731,10 @@ def validate_governed_record_layer_coherence(
         )
 
 
-def validate_record_provenance(provenance: RecordProvenance) -> None:
+def validate_record_provenance(provenance: object) -> None:
     """Raise unless `provenance` is internally coherent: identity shape, temporal
     ordering, evidence-disposition/source agreement, currentness/supersession
-    coherence, source-list integrity, and history-entry validity all hold.
+    coherence, source-list integrity, claim lineage, and history-entry validity all hold.
 
     Composes :func:`validate_record_temporal_metadata`,
     :func:`validate_evidence_disposition_sources`, and
@@ -647,36 +747,80 @@ def validate_record_provenance(provenance: RecordProvenance) -> None:
     source_id)` -- checked with a seen-set so the rejection does not depend on which
     of the two conflicting declarations comes first; and every `history` entry has a
     bounded, pattern-valid `actor_id`/`actor_kind`/`action` and a canonical
-    `occurred_at`, with every piece of history evidence individually valid
-    (:func:`_validate_evidence_reference`) and required to point at a source this same
-    `provenance` actually declares, using the same non-conflicting locator/
-    retrieved-at semantics `memory.create` candidate evidence uses
-    (:func:`_validate_evidence_sources_declared`). An empty `history` is valid: no
-    history event is invented here.
+    `occurred_at`, with every piece of history evidence individually valid and the entry's
+    evidence list within its bounded cardinality (:func:`_validate_evidence_list`). A
+    history entry's optional `reason_code`/`reason_comment` -- present only on a
+    governance-transition event, which copies them verbatim from the requesting
+    `GovernanceRationale` -- are validated as a bounded, pattern-valid `OpenCode` and a
+    bounded comment when present; requiring them on a governance transition is that
+    operation's own result-validation concern, not this generic read's. An empty `history`
+    is valid: no history event is invented here, and `history` carries no upper bound at
+    all -- it is append-only and exactly one event is added per governance transition, so
+    any finite inline cap would eventually make a previously valid record impossible to
+    transition.
+
+    Historical evidence is validated *intrinsically only*: a history event's evidence is
+    never required to cite a source the record's *current* version declares. History is
+    append-only and survives supersession, so an event written against an earlier version
+    legitimately cites that version's sources -- sources a replacement claim drawing on
+    wholly different evidence does not, and must not, redeclare. What binds a transition's
+    own new event to the claim it justifies is exact equality against
+    `request.replacement.assertion.evidence` in
+    :mod:`~omnivia_core.contracts.v1.semantics_knowledge`, not a lookup against this list.
+
+    `assertion`/`extraction` are structurally optional so a record written before those
+    fields existed still decodes, but whenever either is present it is validated in full
+    (:func:`_validate_assertion_lineage`, :func:`_validate_extraction_lineage`) against
+    this same version's declared `sources` and `evidence_disposition` -- exactly the rules
+    `memory.create` enforces on the input that supplied it. Without that, a governance
+    transition preserving lineage unchanged would pass on lineage that is identically
+    malformed on both sides, since a transition validator can only see that the two agree.
+
+    A direct entry point: `provenance` and every nested value this reaches into are
+    type-guarded, so a hand-built dataclass raises `ContractSemanticError` rather than a
+    raw `TypeError`/`AttributeError`.
     """
+    _require_type(provenance, RecordProvenance, "provenance")
+    assert isinstance(provenance, RecordProvenance)
     _validate_record_identity(provenance.identity)
     validate_record_temporal_metadata(provenance.temporal)
     _validate_evidence_disposition_code(provenance.evidence_disposition, "evidence_disposition")
-    validate_evidence_disposition_sources(provenance.evidence_disposition, provenance.sources)
+    sources = _validate_no_duplicate_sources(provenance.sources, "sources")
+    validate_evidence_disposition_sources(provenance.evidence_disposition, sources)
     validate_record_currentness_consistency(provenance.identity, provenance.temporal)
 
-    _validate_no_duplicate_sources(provenance.sources, "sources")
-    for index, source in enumerate(provenance.sources):
+    for index, source in enumerate(sources):
         _validate_source_reference(source, f"sources[{index}]")
 
-    for history_index, entry in enumerate(provenance.history):
+    if provenance.assertion is not None:
+        _validate_assertion_lineage(
+            provenance.assertion, sources, provenance.evidence_disposition, "assertion"
+        )
+    if provenance.extraction is not None:
+        _validate_extraction_lineage(provenance.extraction, "extraction")
+
+    for history_index, entry in enumerate(_require_sequence(provenance.history, "history")):
         label = f"history[{history_index}]"
+        _require_type(entry, ProvenanceEntry, label)
+        assert isinstance(entry, ProvenanceEntry)
         _validate_identifier(entry.actor_id, f"{label}.actor_id")
         _validate_open_code(entry.actor_kind, f"{label}.actor_kind")
         _validate_open_code(entry.action, f"{label}.action")
         _parse_timestamp(entry.occurred_at, f"{label}.occurred_at")
+        if entry.reason_code is not None:
+            _validate_open_code(entry.reason_code, f"{label}.reason_code")
+        if entry.reason_comment is not None:
+            comment = _require_str(entry.reason_comment, f"{label}.reason_comment")
+            if len(comment) > _REASON_COMMENT_MAX_LENGTH:
+                raise ContractSemanticError(
+                    f"{label}.reason_comment exceeds the maximum length of "
+                    f"{_REASON_COMMENT_MAX_LENGTH}"
+                )
         if entry.evidence is not None:
-            for evidence_index, item in enumerate(entry.evidence):
-                _validate_evidence_reference(item, f"{label}.evidence[{evidence_index}]")
-            _validate_evidence_sources_declared(provenance.sources, entry.evidence, label)
+            _validate_evidence_list(entry.evidence, f"{label}.evidence")
 
 
-def validate_governed_record(record: GovernedRecord) -> None:
+def validate_governed_record(record: object) -> None:
     """Raise unless `record` is internally shape-valid, temporally, evidentially,
     provenance, currentness, and authority consistent.
 
@@ -688,7 +832,11 @@ def validate_governed_record(record: GovernedRecord) -> None:
     :func:`validate_governed_record_layer_coherence` over the resulting
     governance/authority/layer triple, so a caller decoding a `memory.get` /
     `memory.list` / `memory.search` result can enforce every invariant with one call.
+
+    A direct entry point: `record` is type-guarded before any field is read.
     """
+    _require_type(record, GovernedRecord, "record")
+    assert isinstance(record, GovernedRecord)
     _validate_workspace_id(record.workspace_id, "workspace_id")
     _validate_governed_record_type(record.record_type, "record_type")
     validate_record_domain_scope(record.domain_scope)
@@ -812,7 +960,7 @@ not a blocklist of forbidden values.
 """
 
 
-def validate_memory_create_result(result: MemoryCreateResult, expected_workspace_id: str) -> None:
+def validate_memory_create_result(result: object, expected_workspace_id: object) -> None:
     """Raise unless `result` is exactly the proposed-only `memory.create` result tuple.
 
     `memory.create` never creates accepted canonical knowledge (frozen decision #3):
@@ -828,7 +976,11 @@ def validate_memory_create_result(result: MemoryCreateResult, expected_workspace
     and validated as a real, pattern-valid workspace id: an absent or malformed
     expectation can never be satisfied by any record, so it fails closed rather than
     skipping the workspace check.
+
+    A direct entry point: `result` is type-guarded before any field is read.
     """
+    _require_type(result, MemoryCreateResult, "result")
+    assert isinstance(result, MemoryCreateResult)
     validate_governed_record(result.record)
     record = result.record
     identity = record.provenance.identity
@@ -877,22 +1029,62 @@ def validate_memory_create_result(result: MemoryCreateResult, expected_workspace
 # --- memory.create candidate evidence/provenance coherence -------------------
 
 
-def _validate_no_duplicate_sources(sources: Sequence[SourceReference], label: str) -> None:
-    """Raise unless no two entries in `sources` declare the same `(kind, source_id)`.
+_SOURCE_LIST_MAX_ITEMS: Final = 256
+"""The `maxItems` both source arrays declare: `RecordProvenance.sources` and
+`MemoryCreateInput.sources`.
+
+Enforced here because the tolerant generated decoder ignores `maxItems` by design, so an
+over-long list would otherwise decode and pass semantic validation while failing strict
+JSON Schema -- and a Context Pack selecting such a record would have been validated against
+a bar the schema does not agree with. Unlike `RecordProvenance.history`, which is
+deliberately unbounded because it is append-only and a finite cap would eventually make a
+previously valid record impossible to transition, `sources` is a *declaration set* for one
+version rather than a growing log, so a ceiling on it takes nothing away."""
+
+
+def _validate_no_duplicate_sources(sources: object, label: str) -> tuple[SourceReference, ...]:
+    """Raise unless no two entries in `sources` declare the same `(kind, source_id)`,
+    returning the list narrowed to a tuple of `SourceReference`.
 
     Checked with a seen-set rather than by building a `{key: source}` mapping, so the
     rejection is deterministic and does not depend on which of the two conflicting
     declarations happens to come first or last in the list: either list order
     (`[A, B]` or `[B, A]`) for the same conflicting pair raises the same way.
+
+    This is also where the source list's own shape is guarded, since it is the first thing
+    every caller runs over `sources`: the list must be a real sequence, every member a real
+    `SourceReference`, and each one's `kind`/`source_id` a real string, so building the key
+    below cannot raise a raw `AttributeError`/`TypeError` for a hand-built dataclass. The
+    narrowed tuple it returns is what callers validate in full afterwards.
+
+    The list's :data:`_SOURCE_LIST_MAX_ITEMS` cardinality is applied here for the same
+    reason and in the same place, since both source arrays this function guards --
+    `RecordProvenance.sources` and `MemoryCreateInput.sources` -- declare exactly that
+    `maxItems`, and the tolerant decoder applies neither.
     """
+    items = _require_sequence(sources, label)
+    if len(items) > _SOURCE_LIST_MAX_ITEMS:
+        raise ContractSemanticError(
+            f"{label} has {len(items)} entries, exceeding the maximum of "
+            f"{_SOURCE_LIST_MAX_ITEMS}"
+        )
     seen: set[tuple[str, str]] = set()
-    for index, source in enumerate(sources):
-        key = (source.kind, source.source_id)
+    validated: list[SourceReference] = []
+    for index, source in enumerate(items):
+        source_label = f"{label}[{index}]"
+        _require_type(source, SourceReference, source_label)
+        assert isinstance(source, SourceReference)
+        key = (
+            _require_str(source.kind, f"{source_label}.kind"),
+            _require_str(source.source_id, f"{source_label}.source_id"),
+        )
         if key in seen:
             raise ContractSemanticError(
                 f"{label}[{index}] duplicates an already-declared source {key!r}"
             )
         seen.add(key)
+        validated.append(source)
+    return tuple(validated)
 
 
 def _validate_evidence_sources_declared(
@@ -907,9 +1099,12 @@ def _validate_evidence_sources_declared(
     required to be repeated by the evidence, and compatible additive detail on the
     evidence side (present there, absent on the source) is never rejected as a
     conflict -- only two actually-present, actually-different values are. `context`
-    labels the error for whichever caller this is -- `memory.create` candidate
-    assertion evidence, or a governed record's history-entry evidence -- since both
-    reuse this same agreement rule against their own respective declared `sources`.
+    labels the error for whichever caller this is.
+
+    This binds a *claim's own* assertion evidence to the sources that claim declares. It is
+    deliberately never applied to a governed record's history-entry evidence: history is
+    append-only and survives supersession, so an event written against an earlier version
+    may legitimately cite a source only that earlier version declared.
     """
     declared_by_key = {(source.kind, source.source_id): source for source in sources}
     for item in evidence:
@@ -951,8 +1146,26 @@ _EVIDENCE_EXCERPT_MAX_LENGTH: Final = 4096
 """`EvidenceReference.excerpt`'s schema `maxLength`, enforced here since structural
 decoding never checks it."""
 
+_REASON_COMMENT_MAX_LENGTH: Final = 2048
+"""`ProvenanceEntry.reason_comment`'s schema `maxLength`, enforced here since structural
+decoding never checks it. The same bound `GovernanceRationale.comment` carries, since a
+governance-transition history entry copies that comment over verbatim."""
 
-def _validate_source_reference(source: SourceReference, label: str) -> None:
+
+_EVIDENCE_LIST_MAX_ITEMS: Final = 256
+"""The single `maxItems` both evidence arrays declare: `CandidateAssertion.evidence` and
+`ProvenanceEntry.evidence`.
+
+The two must be the same number, not merely both bounded. A `record.supersede` transition
+appends exactly one event whose evidence must equal the replacement's *complete* assertion
+evidence, so a lower bound on the event side would make an otherwise valid replacement
+impossible to record at all. Enforced here as well as in the schemas because the tolerant
+generated decoder ignores `maxItems` by design, so an over-long list would otherwise decode
+and pass semantic validation while failing strict schema validation.
+"""
+
+
+def _validate_source_reference(source: object, label: str) -> None:
     """Raise unless `source` has a valid `kind`/`source_id` shape, bounded `locator`,
     and a canonical `retrieved_at` timestamp when present.
 
@@ -960,18 +1173,24 @@ def _validate_source_reference(source: SourceReference, label: str) -> None:
     but well-formed kind is accepted -- only its shape is checked. `source_id` is a
     bounded, pattern-valid `Identifier`. `locator` has no wire pattern, only a schema
     `maxLength` structural decoding never enforces, so only its length is bounded here.
+
+    Direct-entry safe: `source` and each field read off it are type-guarded first.
     """
+    _require_type(source, SourceReference, label)
+    assert isinstance(source, SourceReference)
     _validate_open_code(source.kind, f"{label}.kind")
     _validate_identifier(source.source_id, f"{label}.source_id")
-    if source.locator is not None and len(source.locator) > _SOURCE_LOCATOR_MAX_LENGTH:
-        raise ContractSemanticError(
-            f"{label}.locator exceeds the maximum length of {_SOURCE_LOCATOR_MAX_LENGTH}"
-        )
+    if source.locator is not None:
+        locator = _require_str(source.locator, f"{label}.locator")
+        if len(locator) > _SOURCE_LOCATOR_MAX_LENGTH:
+            raise ContractSemanticError(
+                f"{label}.locator exceeds the maximum length of {_SOURCE_LOCATOR_MAX_LENGTH}"
+            )
     if source.retrieved_at is not None:
         _parse_timestamp(source.retrieved_at, f"{label}.retrieved_at")
 
 
-def _validate_source_span(span: SourceSpan, label: str) -> None:
+def _validate_source_span(span: object, label: str) -> None:
     """Raise unless `span` has a bounded `pointer` and a coherent, non-negative offset
     pair.
 
@@ -980,27 +1199,33 @@ def _validate_source_span(span: SourceSpan, label: str) -> None:
     decoding never enforces either, so a negative offset is only caught here; and when
     both are present, `start_offset` must not be after `end_offset` -- a span cannot
     end before it starts.
+
+    Direct-entry safe: `span` is type-guarded, `pointer` must be a real string, and each
+    present offset must be a real non-`bool` integer before it is compared.
     """
-    if len(span.pointer) > _SOURCE_SPAN_POINTER_MAX_LENGTH:
+    _require_type(span, SourceSpan, label)
+    assert isinstance(span, SourceSpan)
+    if len(_require_str(span.pointer, f"{label}.pointer")) > _SOURCE_SPAN_POINTER_MAX_LENGTH:
         raise ContractSemanticError(
             f"{label}.pointer exceeds the maximum length of {_SOURCE_SPAN_POINTER_MAX_LENGTH}"
         )
-    if span.start_offset is not None and span.start_offset < 0:
-        raise ContractSemanticError(f"{label}.start_offset {span.start_offset!r} is negative")
-    if span.end_offset is not None and span.end_offset < 0:
-        raise ContractSemanticError(f"{label}.end_offset {span.end_offset!r} is negative")
-    if (
-        span.start_offset is not None
-        and span.end_offset is not None
-        and span.start_offset > span.end_offset
-    ):
+    start_offset = None
+    end_offset = None
+    if span.start_offset is not None:
+        start_offset = _require_int(span.start_offset, f"{label}.start_offset")
+        if start_offset < 0:
+            raise ContractSemanticError(f"{label}.start_offset {start_offset!r} is negative")
+    if span.end_offset is not None:
+        end_offset = _require_int(span.end_offset, f"{label}.end_offset")
+        if end_offset < 0:
+            raise ContractSemanticError(f"{label}.end_offset {end_offset!r} is negative")
+    if start_offset is not None and end_offset is not None and start_offset > end_offset:
         raise ContractSemanticError(
-            f"{label}.start_offset {span.start_offset!r} is after "
-            f"{label}.end_offset {span.end_offset!r}"
+            f"{label}.start_offset {start_offset!r} is after {label}.end_offset {end_offset!r}"
         )
 
 
-def _validate_evidence_reference(evidence: EvidenceReference, label: str) -> None:
+def _validate_evidence_reference(evidence: object, label: str) -> None:
     """Raise unless `evidence`'s source, optional span, and optional excerpt are all
     individually valid.
 
@@ -1008,17 +1233,164 @@ def _validate_evidence_reference(evidence: EvidenceReference, label: str) -> Non
     schema deliberately declares both optional, since an exact `source` reference can
     itself be the available evidence link. When either is present, it must be
     internally coherent (:func:`_validate_source_span`) or within its bounded length.
+
+    Direct-entry safe: `evidence` and each nested value are type-guarded first.
     """
+    _require_type(evidence, EvidenceReference, label)
+    assert isinstance(evidence, EvidenceReference)
     _validate_source_reference(evidence.source, f"{label}.source")
     if evidence.span is not None:
         _validate_source_span(evidence.span, f"{label}.span")
-    if evidence.excerpt is not None and len(evidence.excerpt) > _EVIDENCE_EXCERPT_MAX_LENGTH:
+    if evidence.excerpt is not None:
+        excerpt = _require_str(evidence.excerpt, f"{label}.excerpt")
+        if len(excerpt) > _EVIDENCE_EXCERPT_MAX_LENGTH:
+            raise ContractSemanticError(
+                f"{label}.excerpt exceeds the maximum length of {_EVIDENCE_EXCERPT_MAX_LENGTH}"
+            )
+
+
+def _validate_evidence_list(evidence: object, label: str) -> tuple[EvidenceReference, ...]:
+    """Raise unless `evidence` is a bounded sequence of individually valid
+    `EvidenceReference`s, returning it narrowed to a tuple.
+
+    Shared by the two places an evidence array appears -- a `CandidateAssertion`'s claim
+    lineage and a `ProvenanceEntry`'s per-event evidence -- so both get the same
+    intrinsic validation and the same :data:`_EVIDENCE_LIST_MAX_ITEMS` cardinality bound.
+    Duplicate rejection is deliberately *not* here: two identical references are a
+    contradiction in a claim's own lineage (:func:`_reject_duplicate_evidence_references`)
+    but say nothing invalid about an append-only historical event.
+    """
+    items = _require_sequence(evidence, label)
+    if len(items) > _EVIDENCE_LIST_MAX_ITEMS:
         raise ContractSemanticError(
-            f"{label}.excerpt exceeds the maximum length of {_EVIDENCE_EXCERPT_MAX_LENGTH}"
+            f"{label} has {len(items)} entries, exceeding the maximum of "
+            f"{_EVIDENCE_LIST_MAX_ITEMS}"
+        )
+    validated: list[EvidenceReference] = []
+    for index, item in enumerate(items):
+        item_label = f"{label}[{index}]"
+        _require_type(item, EvidenceReference, item_label)
+        assert isinstance(item, EvidenceReference)
+        _validate_evidence_reference(item, item_label)
+        validated.append(item)
+    return tuple(validated)
+
+
+def _reject_duplicate_evidence_references(
+    evidence: Sequence[EvidenceReference], label: str
+) -> None:
+    """Raise unless no two entries in `evidence` are the same complete `EvidenceReference`.
+
+    Compared by full dataclass equality, not by source key: two references to the same
+    source at different spans are two distinct pieces of evidence and are both kept, while
+    the same span/excerpt listed twice is a duplicate. Compared against a list rather than a
+    set so nothing here depends on `EvidenceReference` staying hashable.
+    """
+    seen: list[EvidenceReference] = []
+    for index, item in enumerate(evidence):
+        if item in seen:
+            raise ContractSemanticError(
+                f"{label}[{index}] duplicates an already-declared evidence reference"
+            )
+        seen.append(item)
+
+
+def _validate_assertion_lineage(
+    assertion: object,
+    sources: Sequence[SourceReference],
+    evidence_disposition: str,
+    label: str,
+) -> None:
+    """Raise unless `assertion` is coherent claim lineage for a claim that declares exactly
+    `sources` under `evidence_disposition`.
+
+    The one rule set both `memory.create` input validation and generic governed-record
+    provenance validation run, so the same assertion cannot be judged twice by two
+    different standards. That sharing is the point: a governance-transition validator can
+    only see that both versions preserved lineage *identically*, so unless the lineage
+    itself is validated wherever it appears, an identically malformed assertion passes a
+    transition unchallenged.
+
+    In order: `evidence` is a bounded list of intrinsically valid references
+    (:func:`_validate_evidence_list`); any disposition outside
+    :data:`EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES` -- not only the literal
+    `available` value -- requires at least one concrete reference, so an unrecognized
+    future disposition never silently excuses missing evidence; no two references are the
+    same complete reference (:func:`_reject_duplicate_evidence_references`); every
+    reference points at a source this same claim actually declares, with no contradictory
+    `locator`/`retrieved_at` between the two (:func:`_validate_evidence_sources_declared`);
+    `actor_id` is a bounded, pattern-valid `Identifier` and `actor_kind`/`actor_role` are
+    bounded, pattern-valid `OpenCode`s; `asserted_at` is a canonical timestamp; and
+    `proposed_valid_from`/`proposed_valid_until` are each validated independently when
+    present, then compared for ordering only once both are.
+    """
+    _require_type(assertion, CandidateAssertion, label)
+    assert isinstance(assertion, CandidateAssertion)
+    evidence = _validate_evidence_list(assertion.evidence, f"{label}.evidence")
+    if evidence_disposition not in EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES and not evidence:
+        raise ContractSemanticError(
+            f"evidence_disposition {evidence_disposition!r} requires at least "
+            "one concrete evidence reference on the assertion; only "
+            f"{sorted(EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES)!r} may have none"
+        )
+    _reject_duplicate_evidence_references(evidence, f"{label}.evidence")
+    _validate_evidence_sources_declared(sources, evidence, label)
+
+    _validate_identifier(assertion.actor_id, f"{label}.actor_id")
+    _validate_open_code(assertion.actor_kind, f"{label}.actor_kind")
+    _validate_open_code(assertion.actor_role, f"{label}.actor_role")
+    _parse_timestamp(assertion.asserted_at, f"{label}.asserted_at")
+
+    valid_from = None
+    valid_until = None
+    if assertion.proposed_valid_from is not None:
+        valid_from = _parse_timestamp(
+            assertion.proposed_valid_from, f"{label}.proposed_valid_from"
+        )
+    if assertion.proposed_valid_until is not None:
+        valid_until = _parse_timestamp(
+            assertion.proposed_valid_until, f"{label}.proposed_valid_until"
+        )
+    if valid_from is not None and valid_until is not None and valid_from > valid_until:
+        raise ContractSemanticError(
+            f"{label}.proposed_valid_from {assertion.proposed_valid_from!r} is after "
+            f"{label}.proposed_valid_until {assertion.proposed_valid_until!r}"
         )
 
 
-def validate_memory_create_input(candidate: MemoryCreateInput) -> None:
+def _validate_extraction_lineage(extraction: object, label: str) -> None:
+    """Raise unless `extraction` is coherent automated-extraction lineage.
+
+    The companion to :func:`_validate_assertion_lineage`, shared by the same two callers
+    for the same reason. Every identifier -- the required `extractor_id` and the optional
+    `extractor_version`/`model_version`/`prompt_version` -- is a bounded, pattern-valid
+    `Identifier`; `extracted_at` is a canonical timestamp; an optional
+    `reconciliation_state` is a bounded, pattern-valid `OpenCode` whose unrecognized values
+    are preserved untouched (there is nothing it could widen: neither `MemoryCreateInput`
+    nor `RecordProvenance` carries an authority-level field derived from it); and an
+    optional `confidence` must be a real number inside `[0, 1]`.
+    """
+    _require_type(extraction, CandidateExtractionMetadata, label)
+    assert isinstance(extraction, CandidateExtractionMetadata)
+    _validate_identifier(extraction.extractor_id, f"{label}.extractor_id")
+    if extraction.extractor_version is not None:
+        _validate_identifier(extraction.extractor_version, f"{label}.extractor_version")
+    if extraction.model_version is not None:
+        _validate_identifier(extraction.model_version, f"{label}.model_version")
+    if extraction.prompt_version is not None:
+        _validate_identifier(extraction.prompt_version, f"{label}.prompt_version")
+    _parse_timestamp(extraction.extracted_at, f"{label}.extracted_at")
+    if extraction.reconciliation_state is not None:
+        _validate_open_code(extraction.reconciliation_state, f"{label}.reconciliation_state")
+    if extraction.confidence is not None:
+        confidence = _require_number(extraction.confidence, f"{label}.confidence")
+        if not (0.0 <= confidence <= 1.0):
+            raise ContractSemanticError(
+                f"{label}.confidence {extraction.confidence!r} is outside [0, 1]"
+            )
+
+
+def validate_memory_create_input(candidate: object) -> None:
     """Raise unless `candidate` is an internally coherent `memory.create` proposal.
 
     Composes :func:`validate_evidence_disposition_sources` over the input's own
@@ -1038,7 +1410,9 @@ def validate_memory_create_input(candidate: MemoryCreateInput) -> None:
     piece of assertion evidence has a valid `kind`, `source_id`, bounded `locator`, and
     canonical `retrieved_at` (:func:`_validate_source_reference`), and every evidence
     `span`, when present, has a bounded, coherent, non-negative offset pair and an
-    excerpt within its bounded length (:func:`_validate_source_span`);
+    excerpt within its bounded length (:func:`_validate_source_span`); no two pieces of
+    assertion evidence are the same complete reference, and the list stays within
+    :data:`_EVIDENCE_LIST_MAX_ITEMS`;
     `assertion.actor_id` and the extraction's identifiers are bounded, pattern-valid
     `Identifier`s; `assertion.actor_kind`/`actor_role` and the extraction's
     `reconciliation_state` are bounded, pattern-valid `OpenCode`s; `assertion.asserted_at`,
@@ -1049,74 +1423,40 @@ def validate_memory_create_input(candidate: MemoryCreateInput) -> None:
     Unknown open `reconciliation_state` values are preserved untouched -- there is
     nothing here that could widen authority from an input field, since
     `MemoryCreateInput` carries no authority-level field at all.
+
+    The assertion and extraction rules are not spelled out again here: they are
+    :func:`_validate_assertion_lineage` and :func:`_validate_extraction_lineage`, the same
+    two helpers :func:`validate_record_provenance` runs over the lineage this input is
+    preserved as, so an input and the record it produces are held to one standard rather
+    than two that can drift apart.
+
+    A direct entry point: `candidate` and every nested value are type-guarded, so a
+    hand-built dataclass raises `ContractSemanticError`, never a raw
+    `TypeError`/`AttributeError`.
     """
+    _require_type(candidate, MemoryCreateInput, "candidate")
+    assert isinstance(candidate, MemoryCreateInput)
     _validate_governed_record_type(candidate.record_type, "record_type")
     _validate_evidence_disposition_code(candidate.evidence_disposition, "evidence_disposition")
-    validate_evidence_disposition_sources(candidate.evidence_disposition, candidate.sources)
-    _validate_no_duplicate_sources(candidate.sources, "sources")
+    sources = _validate_no_duplicate_sources(candidate.sources, "sources")
+    validate_evidence_disposition_sources(candidate.evidence_disposition, sources)
 
-    assertion = candidate.assertion
-    if (
-        candidate.evidence_disposition not in EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES
-        and not assertion.evidence
-    ):
-        raise ContractSemanticError(
-            f"evidence_disposition {candidate.evidence_disposition!r} requires at least "
-            "one concrete evidence reference on the assertion; only "
-            f"{sorted(EVIDENCE_DISPOSITIONS_PERMITTING_EMPTY_SOURCES)!r} may have none"
-        )
-
-    _validate_evidence_sources_declared(candidate.sources, assertion.evidence, "assertion")
-
-    for index, source in enumerate(candidate.sources):
+    for index, source in enumerate(sources):
         _validate_source_reference(source, f"sources[{index}]")
-    for index, item in enumerate(assertion.evidence):
-        _validate_evidence_reference(item, f"assertion.evidence[{index}]")
 
-    _validate_identifier(assertion.actor_id, "assertion.actor_id")
-    _validate_open_code(assertion.actor_kind, "assertion.actor_kind")
-    _validate_open_code(assertion.actor_role, "assertion.actor_role")
-    _parse_timestamp(assertion.asserted_at, "assertion.asserted_at")
+    _validate_assertion_lineage(
+        candidate.assertion, sources, candidate.evidence_disposition, "assertion"
+    )
 
     if candidate.event_at is not None:
         _parse_timestamp(candidate.event_at, "event_at")
     if candidate.observed_at is not None:
         _parse_timestamp(candidate.observed_at, "observed_at")
 
-    valid_from = None
-    valid_until = None
-    if assertion.proposed_valid_from is not None:
-        valid_from = _parse_timestamp(
-            assertion.proposed_valid_from, "assertion.proposed_valid_from"
-        )
-    if assertion.proposed_valid_until is not None:
-        valid_until = _parse_timestamp(
-            assertion.proposed_valid_until, "assertion.proposed_valid_until"
-        )
-    if valid_from is not None and valid_until is not None and valid_from > valid_until:
-        raise ContractSemanticError(
-            f"assertion.proposed_valid_from {assertion.proposed_valid_from!r} is after "
-            f"assertion.proposed_valid_until {assertion.proposed_valid_until!r}"
-        )
-
     validate_record_domain_scope(candidate.domain_scope)
 
-    extraction = candidate.extraction
-    if extraction is not None:
-        _validate_identifier(extraction.extractor_id, "extraction.extractor_id")
-        if extraction.extractor_version is not None:
-            _validate_identifier(extraction.extractor_version, "extraction.extractor_version")
-        if extraction.model_version is not None:
-            _validate_identifier(extraction.model_version, "extraction.model_version")
-        if extraction.prompt_version is not None:
-            _validate_identifier(extraction.prompt_version, "extraction.prompt_version")
-        _parse_timestamp(extraction.extracted_at, "extraction.extracted_at")
-        if extraction.reconciliation_state is not None:
-            _validate_open_code(extraction.reconciliation_state, "extraction.reconciliation_state")
-        if extraction.confidence is not None and not (0.0 <= extraction.confidence <= 1.0):
-            raise ContractSemanticError(
-                f"extraction.confidence {extraction.confidence!r} is outside [0, 1]"
-            )
+    if candidate.extraction is not None:
+        _validate_extraction_lineage(candidate.extraction, "extraction")
 
 
 # --- bounded page limits ------------------------------------------------------

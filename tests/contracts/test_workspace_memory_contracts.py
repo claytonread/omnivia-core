@@ -96,8 +96,8 @@ _DEF_SOURCE: dict[str, str] = {
     "WorkspaceInspectResult": "workspace",
     "MemoryCreateInput": "memory",
     "MemoryCreateResult": "memory",
-    "CandidateAssertion": "memory",
-    "CandidateExtractionMetadata": "memory",
+    "CandidateAssertion": "records",
+    "CandidateExtractionMetadata": "records",
     "MemoryGetInput": "memory",
     "MemoryGetResult": "memory",
     "MemoryListInput": "memory",
@@ -230,16 +230,23 @@ def _provenance_wire(
     evidence_disposition: str = "available",
     sources: list[dict[str, Any]] | None = None,
     history: list[dict[str, Any]] | None = None,
+    assertion: dict[str, Any] | None = None,
+    extraction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if sources is None:
         sources = [{"kind": "document", "source_id": "doc-1"}]
-    return {
+    document: dict[str, Any] = {
         "identity": identity if identity is not None else _identity_wire(),
         "temporal": temporal if temporal is not None else _temporal_wire(),
         "history": history if history is not None else [],
         "evidence_disposition": evidence_disposition,
         "sources": sources,
     }
+    if assertion is not None:
+        document["assertion"] = assertion
+    if extraction is not None:
+        document["extraction"] = extraction
+    return document
 
 
 def _governed_record_wire(
@@ -2135,16 +2142,38 @@ def test_validate_record_provenance_rejects_malformed_history_occurred_at() -> N
         sem.validate_record_provenance(provenance)
 
 
-def test_validate_record_provenance_rejects_undeclared_history_evidence_source() -> None:
+def test_validate_record_provenance_accepts_history_evidence_citing_an_older_versions_source() -> None:
+    """History is append-only and survives supersession, so an event written against an
+    earlier version legitimately cites a source only *that* version declared.
+
+    Requiring every historical event's evidence to appear in the *current* version's
+    `sources` would make a supersession onto wholly different evidence unrepresentable:
+    the new claim declares its own sources, and the record still carries the older
+    events that cite the ones it replaced.
+    """
     provenance = _record_provenance(
-        sources=[{"kind": "document", "source_id": "doc-1"}],
+        sources=[{"kind": "document", "source_id": "doc-7"}],
         history=[
             _history_entry_wire(
-                evidence=[{"source": {"kind": "document", "source_id": "doc-2"}}]
+                evidence=[{"source": {"kind": "document", "source_id": "doc-1"}}]
             )
         ],
     )
-    with pytest.raises(ContractSemanticError):
+    sem.validate_record_provenance(provenance)
+
+
+def test_validate_record_provenance_still_validates_old_source_history_evidence_intrinsically() -> None:
+    """Dropping the current-source agreement never drops intrinsic validation: an
+    old-source historical reference must still be a well-formed `EvidenceReference`."""
+    provenance = _record_provenance(
+        sources=[{"kind": "document", "source_id": "doc-7"}],
+        history=[
+            _history_entry_wire(
+                evidence=[{"source": {"kind": "document", "source_id": "not a valid id!"}}]
+            )
+        ],
+    )
+    with pytest.raises(ContractSemanticError, match="source_id"):
         sem.validate_record_provenance(provenance)
 
 
@@ -2186,6 +2215,601 @@ def test_validate_governed_record_composes_provenance_validation() -> None:
     )
     with pytest.raises(ContractSemanticError):
         sem.validate_governed_record(record)
+
+
+# --------------------------------------------------------------------------
+# 12c-i. Preserved assertion/extraction lineage is validated, not merely present
+# --------------------------------------------------------------------------
+#
+# `validate_record_provenance` runs exactly the assertion/extraction rules
+# `validate_memory_create_input` runs on the input the lineage was preserved from. Without
+# that, a governance transition -- which can only see that both versions preserved lineage
+# *identically* -- would wave through lineage that is identically malformed on both sides.
+
+DOC_1 = {"kind": "document", "source_id": "doc-1"}
+
+
+def _lineage_provenance(**overrides: Any) -> RecordProvenance:
+    """A governed-record provenance carrying complete, valid claim lineage."""
+    defaults: dict[str, Any] = {
+        "sources": [dict(DOC_1)],
+        "assertion": _candidate_assertion_wire(evidence=[{"source": dict(DOC_1)}]),
+    }
+    defaults.update(overrides)
+    return _record_provenance(**defaults)
+
+
+def test_validate_record_provenance_accepts_complete_valid_lineage() -> None:
+    sem.validate_record_provenance(
+        _lineage_provenance(extraction=_candidate_extraction_metadata_wire(confidence=0.5))
+    )
+
+
+def test_validate_record_provenance_accepts_a_legacy_record_with_no_lineage() -> None:
+    """`assertion`/`extraction` stay structurally optional so a record written before they
+    existed still decodes and still validates; only a governance transition requires them."""
+    sem.validate_record_provenance(_record_provenance())
+
+
+MALFORMED_LINEAGE: tuple[tuple[str, dict[str, Any]], ...] = (
+    (
+        "assertion_actor_id",
+        {"assertion": _candidate_assertion_wire(actor_id="not a valid identifier!")},
+    ),
+    ("assertion_actor_kind", {"assertion": _candidate_assertion_wire(actor_kind="Not A Kind")}),
+    ("assertion_actor_role", {"assertion": _candidate_assertion_wire(actor_role="Not A Role")}),
+    ("assertion_asserted_at", {"assertion": _candidate_assertion_wire(asserted_at="2024-01-01")}),
+    (
+        "assertion_proposed_window_reversed",
+        {
+            "assertion": _candidate_assertion_wire(
+                proposed_valid_from=T1, proposed_valid_until=T0
+            )
+        },
+    ),
+    (
+        "assertion_proposed_valid_from_malformed",
+        {"assertion": _candidate_assertion_wire(proposed_valid_from="yesterday")},
+    ),
+    (
+        "assertion_proposed_valid_until_malformed",
+        {"assertion": _candidate_assertion_wire(proposed_valid_until="yesterday")},
+    ),
+    (
+        "assertion_evidence_source_not_declared",
+        {
+            "sources": [dict(DOC_1)],
+            "assertion": _candidate_assertion_wire(
+                evidence=[{"source": {"kind": "document", "source_id": "doc-99"}}]
+            ),
+        },
+    ),
+    (
+        "assertion_evidence_locator_conflicts_with_declared_source",
+        {
+            "sources": [{**DOC_1, "locator": "/body"}],
+            "assertion": _candidate_assertion_wire(
+                evidence=[{"source": {**DOC_1, "locator": "/somewhere-else"}}]
+            ),
+        },
+    ),
+    (
+        "assertion_evidence_retrieved_at_conflicts_with_declared_source",
+        {
+            "sources": [{**DOC_1, "retrieved_at": T0}],
+            "assertion": _candidate_assertion_wire(
+                evidence=[{"source": {**DOC_1, "retrieved_at": T1}}]
+            ),
+        },
+    ),
+    (
+        "assertion_evidence_malformed_source_id",
+        {
+            "assertion": _candidate_assertion_wire(
+                evidence=[{"source": {"kind": "document", "source_id": "not valid!"}}]
+            )
+        },
+    ),
+    (
+        "assertion_evidence_reversed_span",
+        {
+            "assertion": _candidate_assertion_wire(
+                evidence=[
+                    {
+                        "source": dict(DOC_1),
+                        "span": {"pointer": "p", "start_offset": 9, "end_offset": 2},
+                    }
+                ]
+            )
+        },
+    ),
+    (
+        "assertion_evidence_negative_offset",
+        {
+            "assertion": _candidate_assertion_wire(
+                evidence=[
+                    {"source": dict(DOC_1), "span": {"pointer": "p", "start_offset": -1}}
+                ]
+            )
+        },
+    ),
+    (
+        "assertion_evidence_overlong_excerpt",
+        {
+            "assertion": _candidate_assertion_wire(
+                evidence=[{"source": dict(DOC_1), "excerpt": "x" * 4097}]
+            )
+        },
+    ),
+    (
+        "assertion_duplicate_evidence",
+        {
+            "assertion": _candidate_assertion_wire(
+                evidence=[
+                    {"source": dict(DOC_1), "excerpt": "same"},
+                    {"source": dict(DOC_1), "excerpt": "same"},
+                ]
+            )
+        },
+    ),
+    (
+        "assertion_evidence_missing_under_available_disposition",
+        {"assertion": _candidate_assertion_wire(evidence=[])},
+    ),
+    (
+        "assertion_evidence_missing_under_unrecognized_disposition",
+        {
+            "evidence_disposition": "some_future_disposition",
+            "assertion": _candidate_assertion_wire(evidence=[]),
+        },
+    ),
+    (
+        "extraction_extractor_id",
+        {"extraction": _candidate_extraction_metadata_wire(extractor_id="not valid!")},
+    ),
+    (
+        "extraction_extractor_version",
+        {"extraction": _candidate_extraction_metadata_wire(extractor_version="not valid!")},
+    ),
+    (
+        "extraction_model_version",
+        {"extraction": _candidate_extraction_metadata_wire(model_version="not valid!")},
+    ),
+    (
+        "extraction_prompt_version",
+        {"extraction": _candidate_extraction_metadata_wire(prompt_version="not valid!")},
+    ),
+    (
+        "extraction_extracted_at",
+        {"extraction": _candidate_extraction_metadata_wire(extracted_at="yesterday")},
+    ),
+    (
+        "extraction_reconciliation_state",
+        {"extraction": _candidate_extraction_metadata_wire(reconciliation_state="Not A State")},
+    ),
+    (
+        "extraction_confidence_above_one",
+        {"extraction": _candidate_extraction_metadata_wire(confidence=1.5)},
+    ),
+    (
+        "extraction_confidence_below_zero",
+        {"extraction": _candidate_extraction_metadata_wire(confidence=-0.1)},
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "label,overrides", MALFORMED_LINEAGE, ids=[label for label, _ in MALFORMED_LINEAGE]
+)
+def test_validate_record_provenance_rejects_malformed_lineage(
+    label: str, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ContractSemanticError):
+        sem.validate_record_provenance(_lineage_provenance(**overrides))
+
+
+@pytest.mark.parametrize(
+    "label,overrides", MALFORMED_LINEAGE, ids=[label for label, _ in MALFORMED_LINEAGE]
+)
+def test_validate_governed_record_rejects_malformed_lineage(
+    label: str, overrides: dict[str, Any]
+) -> None:
+    """The same lineage rules reach a generic governed-record read, so `memory.get` /
+    `memory.list` / `memory.search` results are held to them too, not just transitions."""
+    defaults: dict[str, Any] = {
+        "sources": [dict(DOC_1)],
+        "assertion": _candidate_assertion_wire(evidence=[{"source": dict(DOC_1)}]),
+    }
+    defaults.update(overrides)
+    with pytest.raises(ContractSemanticError):
+        sem.validate_governed_record(_governed_record(provenance=_provenance_wire(**defaults)))
+
+
+def test_validate_record_provenance_preserves_unknown_reconciliation_state() -> None:
+    """An unrecognized-but-well-formed open code is preserved, never rejected: there is no
+    authority for it to widen, since `RecordProvenance` carries no authority-level field."""
+    sem.validate_record_provenance(
+        _lineage_provenance(
+            extraction=_candidate_extraction_metadata_wire(
+                reconciliation_state="some_future.state"
+            )
+        )
+    )
+
+
+def test_validate_record_provenance_accepts_lineage_evidence_at_the_same_source_twice_with_distinct_spans() -> None:
+    """Duplicate rejection is by *complete* reference equality: two spans into the same
+    source are two distinct pieces of evidence, not a duplicate."""
+    sem.validate_record_provenance(
+        _lineage_provenance(
+            assertion=_candidate_assertion_wire(
+                evidence=[
+                    {"source": dict(DOC_1), "span": {"pointer": "p", "start_offset": 0}},
+                    {"source": dict(DOC_1), "span": {"pointer": "p", "start_offset": 10}},
+                ]
+            )
+        )
+    )
+
+
+# --------------------------------------------------------------------------
+# 12c-ii. Evidence-array cardinality is enforced semantically, not only by schema
+# --------------------------------------------------------------------------
+#
+# `CandidateAssertion.evidence` and `ProvenanceEntry.evidence` declare the same 256-item
+# `maxItems`, but the tolerant generated decoder ignores `maxItems` by design, so the bound
+# has to hold on the semantic path as well or the two paths disagree.
+
+EVIDENCE_MAX_ITEMS = 256
+
+
+def _evidence_items(count: int) -> list[dict[str, Any]]:
+    """`count` distinct references into one declared source, distinguished by excerpt."""
+    return [{"source": dict(DOC_1), "excerpt": f"excerpt-{index}"} for index in range(count)]
+
+
+@pytest.mark.parametrize("count", [0, 1, 64, 65, EVIDENCE_MAX_ITEMS])
+def test_validate_record_provenance_accepts_evidence_within_the_bound(count: int) -> None:
+    disposition = "available" if count else "unavailable"
+    sem.validate_record_provenance(
+        _lineage_provenance(
+            evidence_disposition=disposition,
+            assertion=_candidate_assertion_wire(evidence=_evidence_items(count)),
+            history=[_history_entry_wire(evidence=_evidence_items(count))],
+        )
+    )
+
+
+def test_validate_record_provenance_rejects_assertion_evidence_over_the_bound() -> None:
+    with pytest.raises(ContractSemanticError, match="exceeding the maximum"):
+        sem.validate_record_provenance(
+            _lineage_provenance(
+                assertion=_candidate_assertion_wire(
+                    evidence=_evidence_items(EVIDENCE_MAX_ITEMS + 1)
+                )
+            )
+        )
+
+
+def test_validate_record_provenance_rejects_history_event_evidence_over_the_bound() -> None:
+    with pytest.raises(ContractSemanticError, match="exceeding the maximum"):
+        sem.validate_record_provenance(
+            _lineage_provenance(
+                history=[_history_entry_wire(evidence=_evidence_items(EVIDENCE_MAX_ITEMS + 1))]
+            )
+        )
+
+
+def test_validate_memory_create_input_rejects_assertion_evidence_over_the_bound() -> None:
+    candidate = MemoryCreateInput.from_wire(
+        _memory_create_input_wire(
+            assertion=_candidate_assertion_wire(evidence=_evidence_items(EVIDENCE_MAX_ITEMS + 1))
+        )
+    )
+    with pytest.raises(ContractSemanticError, match="exceeding the maximum"):
+        sem.validate_memory_create_input(candidate)
+
+
+def test_validate_memory_create_input_accepts_assertion_evidence_at_the_bound() -> None:
+    candidate = MemoryCreateInput.from_wire(
+        _memory_create_input_wire(
+            assertion=_candidate_assertion_wire(evidence=_evidence_items(EVIDENCE_MAX_ITEMS))
+        )
+    )
+    sem.validate_memory_create_input(candidate)
+
+
+def test_provenance_entry_evidence_bound_matches_the_assertion_bound_in_the_schema() -> None:
+    """The two arrays must declare the *same* bound: a `record.supersede` event echoes the
+    replacement's complete assertion evidence, so a lower bound on the event side would make
+    an otherwise valid replacement impossible to record."""
+    records = json.loads((SCHEMA_DIR / "records.schema.json").read_text(encoding="utf-8"))
+    defs = records["$defs"]
+    assert defs["ProvenanceEntry"]["properties"]["evidence"]["maxItems"] == EVIDENCE_MAX_ITEMS
+    assert defs["CandidateAssertion"]["properties"]["evidence"]["maxItems"] == EVIDENCE_MAX_ITEMS
+
+
+def test_record_provenance_history_declares_no_finite_cap_in_the_schema() -> None:
+    """History is append-only with exactly one event appended per governance transition, so
+    a fixed inline cap would eventually make a previously valid record untransitionable."""
+    records = json.loads((SCHEMA_DIR / "records.schema.json").read_text(encoding="utf-8"))
+    history = records["$defs"]["RecordProvenance"]["properties"]["history"]
+    assert "maxItems" not in history
+    assert history["type"] == "array"
+    assert "history" in records["$defs"]["RecordProvenance"]["required"]
+
+
+@pytest.mark.parametrize("count", [1024, 1025, 2048])
+def test_validate_record_provenance_accepts_history_beyond_the_removed_cap(count: int) -> None:
+    sem.validate_record_provenance(
+        _lineage_provenance(history=[_history_entry_wire()] * count)
+    )
+
+
+# --------------------------------------------------------------------------
+# 12c-iii. Direct entry points raise ContractSemanticError, never a raw TypeError
+# --------------------------------------------------------------------------
+#
+# A frozen dataclass enforces nothing about the types of the fields it was handed, so a
+# caller reaching these validators with a hand-built DTO must still get a
+# `ContractSemanticError` rather than an `AttributeError`/`TypeError` leaking out of `len()`,
+# `re.fullmatch()`, a comparison, or an attribute read.
+
+
+def _valid_source() -> SourceReference:
+    return SourceReference(kind="document", source_id="doc-1")
+
+
+def _valid_evidence() -> generated.EvidenceReference:
+    return generated.EvidenceReference(source=_valid_source())
+
+
+def _assertion(**overrides: Any) -> CandidateAssertion:
+    fields: dict[str, Any] = {
+        "actor_id": "actor-1",
+        "actor_kind": "user",
+        "actor_role": "owner",
+        "asserted_at": T0,
+        "evidence": (_valid_evidence(),),
+    }
+    fields.update(overrides)
+    return CandidateAssertion(**fields)
+
+
+def _extraction(**overrides: Any) -> CandidateExtractionMetadata:
+    fields: dict[str, Any] = {"extractor_id": "extractor-1", "extracted_at": T0}
+    fields.update(overrides)
+    return CandidateExtractionMetadata(**fields)
+
+
+def _hand_built_provenance(**overrides: Any) -> RecordProvenance:
+    """A `RecordProvenance` assembled directly, bypassing every `from_wire` type check."""
+    fields: dict[str, Any] = {
+        "identity": _record_identity(),
+        "temporal": _record_temporal(),
+        "history": (),
+        "evidence_disposition": "available",
+        "sources": (_valid_source(),),
+        "assertion": _assertion(),
+    }
+    fields.update(overrides)
+    return RecordProvenance(**fields)
+
+
+def _hand_built_input(**overrides: Any) -> MemoryCreateInput:
+    fields: dict[str, Any] = {
+        "record_type": "memory.fact",
+        "domain_scope": "personal.preferences",
+        "content": {"fact": "hello"},
+        "evidence_disposition": "available",
+        "sources": (_valid_source(),),
+        "assertion": _assertion(),
+    }
+    fields.update(overrides)
+    return MemoryCreateInput(**fields)
+
+
+def _entry(**overrides: Any) -> generated.ProvenanceEntry:
+    fields: dict[str, Any] = {
+        "actor_id": "actor-1",
+        "actor_kind": "user",
+        "action": "created",
+        "occurred_at": T0,
+    }
+    fields.update(overrides)
+    return generated.ProvenanceEntry(**fields)
+
+
+WRONGLY_TYPED_LINEAGE: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("provenance_identity", {"identity": {"record_id": "rec-1"}}),
+    ("provenance_temporal", {"temporal": "2024-01-01T00:00:00Z"}),
+    ("provenance_history", {"history": "not-a-list"}),
+    # A non-sized value, not just a wrong-but-iterable one: iterating a string happens to
+    # fail on its members, so only an `int` actually exercises the sequence guard itself.
+    ("provenance_history_not_sized", {"history": 7}),
+    ("provenance_history_member", {"history": ("not-an-entry",)}),
+    ("provenance_sources", {"sources": "not-a-list"}),
+    ("provenance_sources_not_sized", {"sources": 7}),
+    ("provenance_sources_member", {"sources": ({"kind": "document"},)}),
+    ("provenance_evidence_disposition", {"evidence_disposition": 7}),
+    ("provenance_assertion", {"assertion": {"actor_id": "actor-1"}}),
+    ("provenance_extraction", {"extraction": {"extractor_id": "extractor-1"}}),
+    ("source_kind", {"sources": (SourceReference(kind=7, source_id="doc-1"),)}),
+    ("source_id", {"sources": (SourceReference(kind="document", source_id=7),)}),
+    (
+        "source_locator",
+        {"sources": (SourceReference(kind="document", source_id="doc-1", locator=7),)},
+    ),
+    (
+        "source_retrieved_at",
+        {"sources": (SourceReference(kind="document", source_id="doc-1", retrieved_at=7),)},
+    ),
+    ("assertion_actor_id", {"assertion": _assertion(actor_id=7)}),
+    ("assertion_actor_kind", {"assertion": _assertion(actor_kind=7)}),
+    ("assertion_actor_role", {"assertion": _assertion(actor_role=7)}),
+    ("assertion_asserted_at", {"assertion": _assertion(asserted_at=7)}),
+    ("assertion_proposed_valid_from", {"assertion": _assertion(proposed_valid_from=7)}),
+    ("assertion_proposed_valid_until", {"assertion": _assertion(proposed_valid_until=7)}),
+    ("assertion_evidence", {"assertion": _assertion(evidence="not-a-list")}),
+    ("assertion_evidence_not_sized", {"assertion": _assertion(evidence=7)}),
+    ("assertion_evidence_member", {"assertion": _assertion(evidence=("not-evidence",))}),
+    (
+        "assertion_evidence_source",
+        {
+            "assertion": _assertion(
+                evidence=(generated.EvidenceReference(source={"kind": "document"}),)
+            )
+        },
+    ),
+    (
+        "assertion_evidence_span",
+        {
+            "assertion": _assertion(
+                evidence=(generated.EvidenceReference(source=_valid_source(), span={"pointer": "p"}),)
+            )
+        },
+    ),
+    (
+        "assertion_evidence_span_pointer",
+        {
+            "assertion": _assertion(
+                evidence=(
+                    generated.EvidenceReference(
+                        source=_valid_source(), span=generated.SourceSpan(pointer=7)
+                    ),
+                )
+            )
+        },
+    ),
+    (
+        "assertion_evidence_span_start_offset",
+        {
+            "assertion": _assertion(
+                evidence=(
+                    generated.EvidenceReference(
+                        source=_valid_source(),
+                        span=generated.SourceSpan(pointer="p", start_offset="0"),
+                    ),
+                )
+            )
+        },
+    ),
+    (
+        "assertion_evidence_span_end_offset",
+        {
+            "assertion": _assertion(
+                evidence=(
+                    generated.EvidenceReference(
+                        source=_valid_source(),
+                        span=generated.SourceSpan(pointer="p", end_offset="9"),
+                    ),
+                )
+            )
+        },
+    ),
+    (
+        "assertion_evidence_excerpt",
+        {
+            "assertion": _assertion(
+                evidence=(generated.EvidenceReference(source=_valid_source(), excerpt=7),)
+            )
+        },
+    ),
+    ("extraction_extractor_id", {"extraction": _extraction(extractor_id=7)}),
+    ("extraction_extractor_version", {"extraction": _extraction(extractor_version=7)}),
+    ("extraction_model_version", {"extraction": _extraction(model_version=7)}),
+    ("extraction_prompt_version", {"extraction": _extraction(prompt_version=7)}),
+    ("extraction_extracted_at", {"extraction": _extraction(extracted_at=7)}),
+    ("extraction_reconciliation_state", {"extraction": _extraction(reconciliation_state=7)}),
+    ("extraction_confidence", {"extraction": _extraction(confidence="0.5")}),
+    ("history_entry_actor_id", {"history": (_entry(actor_id=7),)}),
+    ("history_entry_actor_kind", {"history": (_entry(actor_kind=7),)}),
+    ("history_entry_action", {"history": (_entry(action=7),)}),
+    ("history_entry_occurred_at", {"history": (_entry(occurred_at=7),)}),
+    ("history_entry_reason_code", {"history": (_entry(reason_code=7),)}),
+    ("history_entry_reason_comment", {"history": (_entry(reason_comment=7),)}),
+    ("history_entry_evidence", {"history": (_entry(evidence="not-a-list"),)}),
+    ("history_entry_evidence_not_sized", {"history": (_entry(evidence=7),)}),
+    ("history_entry_evidence_member", {"history": (_entry(evidence=("not-evidence",)),)}),
+)
+
+
+@pytest.mark.parametrize(
+    "label,overrides", WRONGLY_TYPED_LINEAGE, ids=[label for label, _ in WRONGLY_TYPED_LINEAGE]
+)
+def test_validate_record_provenance_raises_contract_semantic_error_for_wrong_nested_types(
+    label: str, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ContractSemanticError):
+        sem.validate_record_provenance(_hand_built_provenance(**overrides))
+
+
+MEMORY_CREATE_INPUT_KEYS = frozenset(
+    {"sources", "assertion", "extraction", "evidence_disposition"}
+)
+
+
+@pytest.mark.parametrize(
+    "label,overrides",
+    [
+        (label, overrides)
+        for label, overrides in WRONGLY_TYPED_LINEAGE
+        if set(overrides) <= MEMORY_CREATE_INPUT_KEYS
+    ],
+    ids=[
+        label
+        for label, overrides in WRONGLY_TYPED_LINEAGE
+        if set(overrides) <= MEMORY_CREATE_INPUT_KEYS
+    ],
+)
+def test_validate_memory_create_input_raises_contract_semantic_error_for_wrong_nested_types(
+    label: str, overrides: dict[str, Any]
+) -> None:
+    with pytest.raises(ContractSemanticError):
+        sem.validate_memory_create_input(_hand_built_input(**overrides))
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: sem.validate_record_provenance("not a provenance"),
+        lambda: sem.validate_record_provenance(None),
+        lambda: sem.validate_governed_record("not a record"),
+        lambda: sem.validate_governed_record(None),
+        lambda: sem.validate_memory_create_input("not an input"),
+        lambda: sem.validate_memory_create_input(None),
+        lambda: sem.validate_memory_create_result("not a result", "ws-1"),
+        lambda: sem.validate_record_temporal_metadata("not temporal"),
+        lambda: sem.validate_record_currentness_consistency("not an identity", _record_temporal()),
+        lambda: sem.validate_record_currentness_consistency(_record_identity(), "not temporal"),
+        lambda: sem.validate_evidence_disposition_sources("available", "not a list"),
+        lambda: sem.validate_record_domain_scope(7),
+        lambda: sem.validate_governed_record_authority_coherence(7, "proposed", None),
+        lambda: sem.validate_governed_record_authority_coherence("proposed", 7, None),
+        lambda: sem.validate_governed_record_authority_coherence("accepted", "canonical", 7),
+        lambda: sem.validate_governed_record_layer_coherence(7, "accepted", "canonical"),
+        lambda: sem.validate_governed_record_layer_coherence("l1", 7, "canonical"),
+        lambda: sem.validate_governed_record_layer_coherence("l1", "candidate", ["canonical"]),
+        lambda: sem.validate_governed_record(
+            dataclasses.replace(_governed_record(), workspace_id=7)
+        ),
+        lambda: sem.validate_governed_record(
+            dataclasses.replace(_governed_record(), record_type=7)
+        ),
+        lambda: sem.validate_governed_record(
+            dataclasses.replace(_governed_record(), domain_scope=7)
+        ),
+        lambda: sem.validate_governed_record(
+            dataclasses.replace(_governed_record(), authority_level=7)
+        ),
+        lambda: sem.validate_governed_record(
+            dataclasses.replace(_governed_record(), provenance="not a provenance")
+        ),
+    ],
+)
+def test_public_semantics_entry_points_reject_malformed_arguments(call: Any) -> None:
+    with pytest.raises(ContractSemanticError):
+        call()
 
 
 # --------------------------------------------------------------------------
