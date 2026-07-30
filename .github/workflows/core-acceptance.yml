@@ -1,0 +1,244 @@
+# Merge-blocking acceptance gate for OmniVia Core (Phase 0/1).
+#
+# This workflow defines the single stable required check `Core acceptance`.
+# Adding this file does NOT by itself make the check merge-blocking: a
+# repository branch protection rule or ruleset must separately require the
+# `Core acceptance` check. That is an external repository setting and remains a
+# separate post-publication action.
+#
+# Residual risk -- Python dependency resolution is not fully locked yet. This
+# repository has no Python lockfile or constraints file, so the installs below
+# use range pins and resolve fresh on every run. Range pins are not a lockfile
+# and `actions/setup-python` pip caching would not make the resolution
+# deterministic either (it caches downloads, not a resolved set), so caching is
+# deliberately left off here. Node tooling is reproducible: `npm ci` installs
+# exactly `package-lock.json`.
+name: Core acceptance
+
+on:
+  # No path filtering: this gate runs for every pull request.
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-acceptance:
+    # Stable displayed job/check name. Do not rename: branch protection and
+    # rulesets reference this exact string.
+    name: Core acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Full history so the diff checks below can resolve their ranges: the
+          # pull-request base and head commits, and -- because this setting makes
+          # checkout fetch `+refs/heads/*:refs/remotes/origin/*` rather than the
+          # single checked-out ref -- `origin/<default branch>` on dispatch runs.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # No pip caching on purpose: see the residual-risk note at the top of
+          # this file.
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install Python tooling and test-only dependencies
+        run: |
+          # `scripts/check-package-builds.sh` builds each distribution with
+          # `python -m build --wheel --no-isolation`, so the `hatchling` backend
+          # that every `pyproject.toml` declares must already be installed here.
+          # Nothing else puts it in this environment before the wheel checks.
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "build>=1.2,<2" \
+            "hatchling>=1.26,<2" \
+            "jsonschema[format]>=4.25,<5" \
+            "types-jsonschema>=4.25,<5" \
+            "pymupdf>=1.24,<2" \
+            "python-docx>=1.1,<2"
+
+      - name: Install local packages
+        run: |
+          # The root package must go first: the compatibility distribution now
+          # declares `omnivia-core>=0.1.0,<0.2.0`, and installing this checkout
+          # editable satisfies that from the working tree rather than an index.
+          python -m pip install -e .
+          python -m pip install -e "services/omnivia-memory[dev]"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check package boundaries
+        run: python scripts/check-package-boundaries.py
+
+      - name: Run package boundary tests
+        run: python -m pytest tests/test_package_boundaries.py -q
+
+      - name: Build and install-check all distributions
+        run: PYTHON=python scripts/check-package-builds.sh
+
+      - name: Check application contracts
+        run: python scripts/check-application-contracts.py
+
+      - name: Run application contract tests
+        run: python -m pytest tests/contracts -q
+
+      - name: Check generated TypeScript contracts
+        run: npm run check:application-contracts
+
+      - name: Check compatibility facade routes
+        run: python scripts/check-facade-routes.py
+
+      - name: Run canonical migration and compatibility tests
+        run: python -m pytest tests/canonical_migration tests/compatibility -q
+
+      - name: Run compatibility root resolver and installed-root smoke
+        # A *resolving* install of the compatibility wheel (no `--no-deps`), with
+        # pip's own `--report` proving the `omnivia-core` artifact it chose is the
+        # wheel this run built, then all 47 registered route modules and the root
+        # identity/export audit run against the installed artifacts. Fail-closed
+        # and explicitly bounded: it needs the configured index to be reachable,
+        # and has no offline fallback and no skip path. Honestly labelled a
+        # current-index resolver smoke, not a locked supply-chain proof -- this
+        # repository has no lockfile, and the range pins are not one.
+        #
+        # It is a standalone script, not a pytest module, so that this step is the
+        # *only* place it runs: `tests/compatibility` and the full suite below are
+        # both collected by pytest, and a test module here would execute the
+        # network smoke three times per job.
+        timeout-minutes: 12
+        run: python scripts/check-root-facade-resolver.py
+
+      - name: Verify Phase 0 baseline
+        run: PYTHON=python scripts/check-core-baseline.sh
+
+      - name: Run full repository test suite
+        run: python -m pytest -q
+
+      - name: Run benchmark tests
+        run: python -m pytest benchmarks/tests -q
+
+      - name: Run Ruff
+        run: |
+          # Currently accepted clean scope: the canonical trees plus every
+          # converted legacy facade/barrel file listed below. The rest of the
+          # legacy service tree is not Ruff-clean yet and is deliberately out of
+          # scope.
+          python -m ruff check \
+            src \
+            packages \
+            baseline \
+            tests \
+            scripts \
+            services/omnivia-memory/src/omnivia_memory/__init__.py \
+            services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/models.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/validation.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
+            services/omnivia-memory/src/omnivia_memory/graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/graph/search_models.py \
+            services/omnivia-memory/src/omnivia_memory/ingestion/models.py \
+            services/omnivia-memory/src/omnivia_memory/ingestion/watcher/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/validation.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
+            services/omnivia-memory/src/omnivia_memory/memory/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/assembly.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/fixtures.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/validation.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/provenance/models.py \
+            services/omnivia-memory/src/omnivia_memory/run_ledger/models.py \
+            services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py \
+            services/omnivia-memory/src/omnivia_memory/workspace/models.py
+
+      - name: Run strict mypy
+        run: |
+          python -m mypy --strict \
+            src/omnivia_core \
+            packages/omnivia-core-runtime/src/omnivia_core_runtime \
+            packages/omnivia-core-mcp/src/omnivia_core_mcp \
+            packages/omnivia-core-cli/src/omnivia_core_cli \
+            baseline/facade_manifest.py \
+            scripts/check-facade-routes.py \
+            services/omnivia-memory/src/omnivia_memory/__init__.py \
+            services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/models.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/validation.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
+            services/omnivia-memory/src/omnivia_memory/graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/graph/search_models.py \
+            services/omnivia-memory/src/omnivia_memory/ingestion/models.py \
+            services/omnivia-memory/src/omnivia_memory/ingestion/watcher/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/validation.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
+            services/omnivia-memory/src/omnivia_memory/memory/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/assembly.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/fixtures.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/models.py \
+            services/omnivia-memory/src/omnivia_memory/memory_graph/validation.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/provenance/models.py \
+            services/omnivia-memory/src/omnivia_memory/run_ledger/models.py \
+            services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py \
+            services/omnivia-memory/src/omnivia_memory/workspace/models.py \
+            tests/typing/accepted_legacy_facade_consumer.py \
+            tests/typing/graph_facade_consumer.py \
+            tests/typing/hybrid_barrel_consumer.py \
+            tests/typing/ingestion_models_facade_consumer.py \
+            tests/typing/knowledge_facade_consumer.py \
+            tests/typing/module_manifest_facade_consumer.py \
+            tests/typing/root_facade_consumer.py \
+            tests/typing/watcher_models_facade_consumer.py \
+            tests/typing/workspace_models_facade_consumer.py
+
+      - name: Check pull-request diff for whitespace errors
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "${BASE_SHA}...${HEAD_SHA}"
+
+      - name: Check dispatch diff for whitespace errors
+        if: github.event_name != 'pull_request'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # A plain `git diff --check` would inspect the (always clean) checkout
+        # working tree and pass unconditionally. Diff the committed range instead:
+        # `fetch-depth: 0` above fetches `+refs/heads/*:refs/remotes/origin/*`, so
+        # the default branch is present as a remote-tracking ref, and the triple
+        # dot limits the check to commits this ref adds on top of it.
+        run: git diff --check "origin/${DEFAULT_BRANCH}...HEAD"
