@@ -12,18 +12,23 @@ from baseline import CORE_PACKAGE
 from baseline.dependencies import (
     ALLOWED_THIRD_PARTY,
     BANNED_IMPORT_PREFIXES,
+    DEPENDENCIES_PATH,
     FACADE_COMPATIBILITY_DEPENDENCY,
     FACADE_COMPATIBILITY_IMPORTERS,
     FACADE_COMPATIBILITY_PACKAGE,
+    FACADE_STDLIB_IMPORT_MOVES,
     TRANSITIONAL_IMPORT_REASONS,
     ImportEdge,
+    _canonical_module_imports_stdlib,
     _facade_dependency_problems,
+    _facade_stdlib_import_problems,
     _normalize_expected_dependencies,
     build_dependency_inventory,
     collect_import_edges,
     is_runtime_module,
     verify_dependency_inventory,
 )
+from baseline.determinism import load_json
 
 
 def test_dependency_inventory_matches_the_frozen_baseline() -> None:
@@ -284,3 +289,173 @@ def test_verify_dependency_inventory_fails_closed_on_unrelated_third_party_drift
     problems = verify_dependency_inventory()
 
     assert any("requests" in problem and "not allowlisted" in problem for problem in problems)
+
+
+# --------------------------------------------------------------------------
+# Compatibility-facade stdlib-import moves: converting a leaf can remove the
+# legacy tree's *only* import of a standard-library module, because the import
+# moves to the canonical owner and this scan walks the legacy tree alone. Each
+# such module is declared by name and proved before it may be normalized away.
+# --------------------------------------------------------------------------
+
+#: The declared moves, restated here rather than read off the declaration, so the
+#: tests below fail if the declaration itself grows, shrinks, or is repointed.
+_EXPECTED_STDLIB_MOVES = {"unicodedata": f"{CORE_PACKAGE}.knowledge.normalize"}
+
+
+def test_stdlib_import_moves_declaration_is_exactly_the_knowledge_normalizer() -> None:
+    """One module, one leaf. A second entry appearing without its own coverage
+    would let a genuinely dropped stdlib dependency be normalized away silently."""
+    assert FACADE_STDLIB_IMPORT_MOVES == _EXPECTED_STDLIB_MOVES
+    for legacy_module in FACADE_STDLIB_IMPORT_MOVES.values():
+        assert legacy_module in FACADE_COMPATIBILITY_IMPORTERS
+
+
+def test_facade_stdlib_import_problems_accepts_the_declared_move() -> None:
+    assert _facade_stdlib_import_problems(build_dependency_inventory()) == []
+
+
+def test_facade_stdlib_import_problems_rejects_a_non_facade_leaf() -> None:
+    """A stdlib import may only go missing because a *converted* leaf's
+    implementation moved. Attributing it to an unconverted module would excuse a
+    real deletion."""
+    problems = _facade_stdlib_import_problems(
+        build_dependency_inventory(),
+        moves={"unicodedata": f"{CORE_PACKAGE}.persistence.database"},
+    )
+    assert any(
+        "is not a declared compatibility-facade importer" in problem
+        for problem in problems
+    ), problems
+
+
+def test_facade_stdlib_import_problems_rejects_a_module_the_baseline_never_had() -> None:
+    """Declaring a move for a module Phase 0 never recorded is fabricated
+    provenance: there is nothing to normalize away."""
+    problems = _facade_stdlib_import_problems(
+        build_dependency_inventory(),
+        moves={"zoneinfo": f"{CORE_PACKAGE}.knowledge.normalize"},
+    )
+    assert any(
+        "the frozen baseline never recorded it" in problem for problem in problems
+    ), problems
+
+
+def test_facade_stdlib_import_problems_rejects_a_stale_declaration() -> None:
+    """A module still imported somewhere in the legacy tree needs no allowance.
+    Keeping the entry would mask a *future* removal of that same module."""
+    problems = _facade_stdlib_import_problems(
+        build_dependency_inventory(),
+        moves={"re": f"{CORE_PACKAGE}.knowledge.normalize"},
+    )
+    assert any(
+        "still imported somewhere in the legacy tree" in problem
+        for problem in problems
+    ), problems
+
+
+def test_facade_stdlib_import_problems_rejects_an_import_that_did_not_move() -> None:
+    """The paired canonical module must really perform the import. Naming a
+    canonical leaf that does not is how a dropped dependency would slip through --
+    ``knowledge.models`` is the plausible wrong answer, being the normalizer's own
+    sibling."""
+    problems = _facade_stdlib_import_problems(
+        build_dependency_inventory(),
+        moves={"unicodedata": f"{CORE_PACKAGE}.knowledge.models"},
+        importers=(*FACADE_COMPATIBILITY_IMPORTERS,),
+    )
+    assert any(
+        "does not import 'unicodedata'" in problem and "rather than moved" in problem
+        for problem in problems
+    ), problems
+
+
+def test_canonical_import_probe_matches_on_dotted_segments_only() -> None:
+    """The probe must not accept a near miss. ``unicodedata`` is imported by the
+    canonical normalizer; ``unicode`` and ``data`` are not, and neither is a
+    module the file merely mentions in prose."""
+    canonical = "omnivia_core.knowledge.normalize"
+    assert _canonical_module_imports_stdlib(canonical, "unicodedata")
+    assert _canonical_module_imports_stdlib(canonical, "re")
+    assert not _canonical_module_imports_stdlib(canonical, "unicode")
+    assert not _canonical_module_imports_stdlib(canonical, "data")
+    assert not _canonical_module_imports_stdlib(canonical, "unicodedatax")
+    assert not _canonical_module_imports_stdlib("omnivia_core.no_such_module", "re")
+
+
+def test_normalize_drops_exactly_the_declared_stdlib_modules() -> None:
+    """Removal is by exact key. A module whose name merely contains a declared
+    one, and every module not declared at all, must survive."""
+    expected = {
+        "declared_dependencies": [],
+        "third_party_imports": [],
+        "stdlib_imports": [
+            "re",
+            "unicodedata",
+            "unicodedatax",
+            "xunicodedata",
+            "unicode",
+            "uuid",
+        ],
+    }
+
+    normalized = _normalize_expected_dependencies(expected)
+
+    assert normalized["stdlib_imports"] == [
+        "re",
+        "unicodedatax",
+        "xunicodedata",
+        "unicode",
+        "uuid",
+    ]
+
+
+def test_normalize_leaves_stdlib_imports_alone_when_no_move_is_declared() -> None:
+    frozen = load_json(DEPENDENCIES_PATH)
+
+    normalized = _normalize_expected_dependencies(frozen, stdlib_moves={})
+
+    assert normalized["stdlib_imports"] == frozen["stdlib_imports"]
+    assert "unicodedata" in normalized["stdlib_imports"]
+
+
+def test_verify_fails_closed_on_an_unverified_stdlib_import_move(monkeypatch) -> None:
+    """The stdlib-move check runs *before* normalization and returns outright, so
+    an unverified move can never be applied to the frozen baseline."""
+    monkeypatch.setattr(
+        "baseline.dependencies._facade_stdlib_import_problems",
+        lambda *_args, **_kwargs: ["synthetic stdlib-move defect"],
+    )
+
+    def _must_not_run(*_args, **_kwargs):  # pragma: no cover - asserted unreachable
+        raise AssertionError("normalization ran despite an unverified stdlib move")
+
+    monkeypatch.setattr(
+        "baseline.dependencies._normalize_expected_dependencies", _must_not_run
+    )
+
+    problems = verify_dependency_inventory()
+
+    assert any(
+        "stdlib-import move verification failed" in problem for problem in problems
+    ), problems
+    assert any("synthetic stdlib-move defect" in problem for problem in problems)
+
+
+def test_verify_fails_closed_on_an_undeclared_stdlib_import_removal(monkeypatch) -> None:
+    """There is no general "stdlib imports may shrink" allowance: dropping a
+    module that has no declared move must still fail the inventory diff."""
+    real_build = build_dependency_inventory
+
+    def _tampered():
+        inventory = dict(real_build())
+        inventory["stdlib_imports"] = [
+            module for module in inventory["stdlib_imports"] if module != "uuid"
+        ]
+        return inventory
+
+    monkeypatch.setattr("baseline.dependencies.build_dependency_inventory", _tampered)
+
+    problems = verify_dependency_inventory()
+
+    assert any("uuid" in problem for problem in problems), problems

@@ -14,10 +14,17 @@ MODULE_MANIFEST_LEAVES = {
     "omnivia_memory.module_manifest.models",
     "omnivia_memory.module_manifest.validation",
 }
+KNOWLEDGE_LEAVES = {
+    "omnivia_memory.knowledge.models",
+    "omnivia_memory.knowledge.normalize",
+    "omnivia_memory.knowledge.validation",
+}
+DEDICATED_LEAVES = MODULE_MANIFEST_LEAVES | KNOWLEDGE_LEAVES
 CONSUMER_ROUTES = {
     "tests/typing/accepted_legacy_facade_consumer.py": (
-        set(FACADE_ROUTES) - MODULE_MANIFEST_LEAVES
+        set(FACADE_ROUTES) - DEDICATED_LEAVES
     ),
+    "tests/typing/knowledge_facade_consumer.py": KNOWLEDGE_LEAVES,
     "tests/typing/module_manifest_facade_consumer.py": MODULE_MANIFEST_LEAVES,
 }
 
@@ -80,7 +87,11 @@ def test_typed_consumer_audit_uses_segment_aware_package_matching() -> None:
 def test_typed_consumers_cover_every_accepted_facade_route_exactly() -> None:
     """A newly accepted route must add its API symbols to a typed consumer."""
     assert set().union(*CONSUMER_ROUTES.values()) == set(FACADE_ROUTES)
-    assert MODULE_MANIFEST_LEAVES <= set(FACADE_ROUTES)
+    assert DEDICATED_LEAVES <= set(FACADE_ROUTES)
+    # The fixtures must *partition* the routes, not merely cover them: a leaf
+    # named by two consumers would let one of them drop its imports unnoticed.
+    assert sum(len(routes) for routes in CONSUMER_ROUTES.values()) == len(FACADE_ROUTES)
+    assert MODULE_MANIFEST_LEAVES.isdisjoint(KNOWLEDGE_LEAVES)
 
     for relative_path, expected_modules in CONSUMER_ROUTES.items():
         imports = _legacy_imports(relative_path)

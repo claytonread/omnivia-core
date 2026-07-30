@@ -9,10 +9,10 @@ canonical objects (``omnivia_memory.X.Symbol is omnivia_core.X.Symbol``), not
 structurally equal lookalikes. The barrels above them (``BARREL_ALL_ORDER``)
 already delegated to their sibling leaves and need no source change, but their
 re-exported objects are now canonical too as a result -- the ``app_manifest``,
-``app_shell_bridge``, ``component_contract``, ``control_plane``,
+``app_shell_bridge``, ``component_contract``, ``control_plane``, ``knowledge``,
 ``module_manifest``, and ``run_ledger`` barrels become identity-preserving purely
-transitively, through their converted leaves (two each, except
-``control_plane``'s three).
+transitively, through their converted leaves (two each, except ``control_plane``'s
+and ``knowledge``'s three).
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -401,6 +401,141 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "scan_sensitive_fields": "omnivia_core._shared.validation",
         "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
     },
+    # Every name in this leaf's historical namespace resolves from its canonical
+    # counterpart, incidental bindings included: the knowledge models leaf imports
+    # nothing from another Core leaf.
+    "omnivia_memory.knowledge.models": {
+        "AgentGraphContext": "omnivia_core.knowledge.models",
+        "Any": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_NODE_KINDS": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_RELATIONS": "omnivia_core.knowledge.models",
+        "BUILTIN_OBJECT_KINDS": "omnivia_core.knowledge.models",
+        "ContractVersion": "omnivia_core.knowledge.models",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "Enum": "omnivia_core.knowledge.models",
+        "GRAPH_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GraphConfidence": "omnivia_core.knowledge.models",
+        "GraphEdge": "omnivia_core.knowledge.models",
+        "GraphEvidenceStrength": "omnivia_core.knowledge.models",
+        "GraphFragment": "omnivia_core.knowledge.models",
+        "GraphNode": "omnivia_core.knowledge.models",
+        "GraphOrigin": "omnivia_core.knowledge.models",
+        "GraphReviewStatus": "omnivia_core.knowledge.models",
+        "GraphSensitivity": "omnivia_core.knowledge.models",
+        "GraphSourceType": "omnivia_core.knowledge.models",
+        "GraphVisibility": "omnivia_core.knowledge.models",
+        "KNOWLEDGE_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "KnowledgeClaim": "omnivia_core.knowledge.models",
+        "KnowledgeCollection": "omnivia_core.knowledge.models",
+        "KnowledgeExtensionManifest": "omnivia_core.knowledge.models",
+        "KnowledgeLink": "omnivia_core.knowledge.models",
+        "KnowledgeObject": "omnivia_core.knowledge.models",
+        "KnowledgeSource": "omnivia_core.knowledge.models",
+        "KnowledgeSpace": "omnivia_core.knowledge.models",
+        "SourceRef": "omnivia_core.knowledge.models",
+        "annotations": "omnivia_core.knowledge.models",
+        "dataclass": "omnivia_core.knowledge.models",
+        "field": "omnivia_core.knowledge.models",
+    },
+    "omnivia_memory.knowledge.normalize": {
+        # The three bounded-vocabulary frozensets the canonical normalizer imports
+        # from its sibling ``models`` to validate against. They are part of this
+        # leaf's own historical module-scope namespace too, so their identity is
+        # checked against their real owner rather than against this leaf.
+        "BUILTIN_GRAPH_NODE_KINDS": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_RELATIONS": "omnivia_core.knowledge.models",
+        "BUILTIN_OBJECT_KINDS": "omnivia_core.knowledge.models",
+        "PurePosixPath": "omnivia_core.knowledge.normalize",
+        "annotations": "omnivia_core.knowledge.normalize",
+        "normalize_extension_value": "omnivia_core.knowledge.normalize",
+        "normalize_graph_edge_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_kind": "omnivia_core.knowledge.normalize",
+        "normalize_graph_relation": "omnivia_core.knowledge.normalize",
+        "normalize_identifier": "omnivia_core.knowledge.normalize",
+        "normalize_label": "omnivia_core.knowledge.normalize",
+        "normalize_object_id": "omnivia_core.knowledge.normalize",
+        "normalize_object_kind": "omnivia_core.knowledge.normalize",
+        "normalize_source_path": "omnivia_core.knowledge.normalize",
+        "normalize_space_id": "omnivia_core.knowledge.normalize",
+        "normalize_tags": "omnivia_core.knowledge.normalize",
+        # Plain module bindings an ``import`` statement leaves behind. They were
+        # importable from this leaf before conversion, so they still must be.
+        "re": "omnivia_core.knowledge.normalize",
+        "unicodedata": "omnivia_core.knowledge.normalize",
+    },
+    "omnivia_memory.knowledge.validation": {
+        # Twenty-three of the names in this dict are owned by this leaf's sibling
+        # ``models``, which the canonical validator imports them from; they were
+        # bound at this leaf's module scope historically too. They are interleaved
+        # below in sorted order rather than grouped.
+        "AgentGraphContext": "omnivia_core.knowledge.models",
+        "Any": "omnivia_core.knowledge.validation",
+        "BUILTIN_GRAPH_NODE_KINDS": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_RELATIONS": "omnivia_core.knowledge.models",
+        "BUILTIN_OBJECT_KINDS": "omnivia_core.knowledge.models",
+        "ContractVersion": "omnivia_core.knowledge.models",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GRAPH_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GraphConfidence": "omnivia_core.knowledge.models",
+        "GraphEdge": "omnivia_core.knowledge.models",
+        "GraphEvidenceStrength": "omnivia_core.knowledge.models",
+        "GraphFragment": "omnivia_core.knowledge.models",
+        "GraphNode": "omnivia_core.knowledge.models",
+        "GraphReviewStatus": "omnivia_core.knowledge.models",
+        "GraphSensitivity": "omnivia_core.knowledge.models",
+        "KNOWLEDGE_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "KnowledgeClaim": "omnivia_core.knowledge.models",
+        "KnowledgeCollection": "omnivia_core.knowledge.models",
+        "KnowledgeExtensionManifest": "omnivia_core.knowledge.models",
+        "KnowledgeLink": "omnivia_core.knowledge.models",
+        "KnowledgeObject": "omnivia_core.knowledge.models",
+        "KnowledgeSource": "omnivia_core.knowledge.models",
+        "KnowledgeSpace": "omnivia_core.knowledge.models",
+        "MAX_LABEL_LENGTH": "omnivia_core.knowledge.validation",
+        "MAX_QUOTE_PREVIEW_LENGTH": "omnivia_core.knowledge.validation",
+        "SCRIPT_LIKE_MARKERS": "omnivia_core.knowledge.validation",
+        "SourceRef": "omnivia_core.knowledge.models",
+        # This leaf never had a ``ValidationResult`` of its own: it historically
+        # imported the shared primitive, so it must keep routing to that one and
+        # not to any of the four domain classes of the same name. It is also the
+        # binding the legacy *root* takes its ``ValidationResult`` from, through
+        # the knowledge barrel's re-export of it. See
+        # ``test_knowledge_validation_result_keeps_its_historical_collision_owner``.
+        "ValidationResult": "omnivia_core._shared.validation",
+        "annotations": "omnivia_core.knowledge.validation",
+        "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
+        # The nine normalizers the canonical validator imports from its sibling
+        # ``normalize``. ``normalize_extension_value`` is one of them even though
+        # the barrel above never re-exported it.
+        "normalize_extension_value": "omnivia_core.knowledge.normalize",
+        "normalize_graph_edge_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_id": "omnivia_core.knowledge.normalize",
+        "normalize_identifier": "omnivia_core.knowledge.normalize",
+        "normalize_label": "omnivia_core.knowledge.normalize",
+        "normalize_object_id": "omnivia_core.knowledge.normalize",
+        "normalize_source_path": "omnivia_core.knowledge.normalize",
+        "normalize_space_id": "omnivia_core.knowledge.normalize",
+        "normalize_tags": "omnivia_core.knowledge.normalize",
+        # Owned by the shared validation primitive, which the canonical knowledge
+        # validator imports it from.
+        "scan_sensitive_fields": "omnivia_core._shared.validation",
+        "summarize_confidence": "omnivia_core.knowledge.validation",
+        "summarize_review_status": "omnivia_core.knowledge.validation",
+        "summarize_sensitivity": "omnivia_core.knowledge.validation",
+        "validate_agent_graph_context": "omnivia_core.knowledge.validation",
+        "validate_graph_edge": "omnivia_core.knowledge.validation",
+        "validate_graph_fragment": "omnivia_core.knowledge.validation",
+        "validate_graph_node": "omnivia_core.knowledge.validation",
+        "validate_knowledge_claim": "omnivia_core.knowledge.validation",
+        "validate_knowledge_collection": "omnivia_core.knowledge.validation",
+        "validate_knowledge_extension_manifest": "omnivia_core.knowledge.validation",
+        "validate_knowledge_link": "omnivia_core.knowledge.validation",
+        "validate_knowledge_object": "omnivia_core.knowledge.validation",
+        "validate_knowledge_source": "omnivia_core.knowledge.validation",
+        "validate_knowledge_space": "omnivia_core.knowledge.validation",
+        "validate_source_ref": "omnivia_core.knowledge.validation",
+    },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
         "Enum": "omnivia_core.lifecycle.models",
@@ -535,6 +670,9 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     "omnivia_memory.control_plane.validation": (
         "omnivia_core.control_plane.validation"
     ),
+    "omnivia_memory.knowledge.models": "omnivia_core.knowledge.models",
+    "omnivia_memory.knowledge.normalize": "omnivia_core.knowledge.normalize",
+    "omnivia_memory.knowledge.validation": "omnivia_core.knowledge.validation",
     "omnivia_memory.lifecycle.models": "omnivia_core.lifecycle.models",
     "omnivia_memory.lifecycle.rules": "omnivia_core.lifecycle.rules",
     "omnivia_memory.module_manifest.models": "omnivia_core.module_manifest.models",
@@ -683,6 +821,62 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
         "validate_openapi_import_spec",
         "verify_catalogue_artifacts",
     ],
+    "knowledge": [
+        "AgentGraphContext",
+        "BUILTIN_GRAPH_NODE_KINDS",
+        "BUILTIN_GRAPH_RELATIONS",
+        "BUILTIN_OBJECT_KINDS",
+        "ContractVersion",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION",
+        "GRAPH_CONTRACT_VERSION",
+        "GraphConfidence",
+        "GraphEdge",
+        "GraphEvidenceStrength",
+        "GraphFragment",
+        "GraphNode",
+        "GraphOrigin",
+        "GraphReviewStatus",
+        "GraphSensitivity",
+        "GraphSourceType",
+        "GraphVisibility",
+        "KNOWLEDGE_CONTRACT_VERSION",
+        "KnowledgeClaim",
+        "KnowledgeCollection",
+        "KnowledgeExtensionManifest",
+        "KnowledgeLink",
+        "KnowledgeObject",
+        "KnowledgeSource",
+        "KnowledgeSpace",
+        "SourceRef",
+        "ValidationResult",
+        "check_contract_version_compatibility",
+        "normalize_graph_edge_id",
+        "normalize_graph_node_id",
+        "normalize_graph_node_kind",
+        "normalize_graph_relation",
+        "normalize_identifier",
+        "normalize_label",
+        "normalize_object_id",
+        "normalize_object_kind",
+        "normalize_source_path",
+        "normalize_space_id",
+        "normalize_tags",
+        "summarize_confidence",
+        "summarize_review_status",
+        "summarize_sensitivity",
+        "validate_agent_graph_context",
+        "validate_graph_edge",
+        "validate_graph_fragment",
+        "validate_graph_node",
+        "validate_knowledge_claim",
+        "validate_knowledge_collection",
+        "validate_knowledge_extension_manifest",
+        "validate_knowledge_link",
+        "validate_knowledge_object",
+        "validate_knowledge_source",
+        "validate_knowledge_space",
+        "validate_source_ref",
+    ],
     "lifecycle": ["LifecycleState", "LifecycleRules", "CreatedBy"],
     "module_manifest": [
         "Entrypoint",
@@ -721,6 +915,7 @@ ABSOLUTE_IMPORT_BARRELS: tuple[str, ...] = (
     "_shared",
     "app_manifest",
     "control_plane",
+    "knowledge",
     "lifecycle",
     "module_manifest",
     "provenance",
@@ -904,6 +1099,91 @@ CONTROL_PLANE_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] =
     ),
 )
 
+#: The same, for the unchanged legacy knowledge barrel -- the second barrel in
+#: this set with *three* converted children. Its ``__all__`` is fully sorted,
+#: unlike the control-plane barrel's interleaved literal, and it deliberately
+#: publishes a *subset* of its children's routed surface: the normalize block
+#: below never named ``normalize_extension_value``, which is a routed symbol of
+#: that leaf. Its name order is its own historical source order -- constants
+#: leading the models block ahead of the classes rather than being alphabetized.
+#:
+#: ``ValidationResult`` leads the validation block: the knowledge validation leaf
+#: never owned a class of that name, so this is the one export whose object comes
+#: from outside the knowledge domain -- and it is the binding the legacy package
+#: root has always taken its ``ValidationResult`` from.
+KNOWLEDGE_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.knowledge.models",
+        (
+            "BUILTIN_GRAPH_NODE_KINDS",
+            "BUILTIN_GRAPH_RELATIONS",
+            "BUILTIN_OBJECT_KINDS",
+            "EXTENSION_MANIFEST_CONTRACT_VERSION",
+            "GRAPH_CONTRACT_VERSION",
+            "KNOWLEDGE_CONTRACT_VERSION",
+            "AgentGraphContext",
+            "ContractVersion",
+            "GraphConfidence",
+            "GraphEdge",
+            "GraphEvidenceStrength",
+            "GraphFragment",
+            "GraphNode",
+            "GraphOrigin",
+            "GraphReviewStatus",
+            "GraphSensitivity",
+            "GraphSourceType",
+            "GraphVisibility",
+            "KnowledgeClaim",
+            "KnowledgeCollection",
+            "KnowledgeExtensionManifest",
+            "KnowledgeLink",
+            "KnowledgeObject",
+            "KnowledgeSource",
+            "KnowledgeSpace",
+            "SourceRef",
+        ),
+    ),
+    (
+        "omnivia_memory.knowledge.normalize",
+        (
+            "normalize_graph_edge_id",
+            "normalize_graph_node_id",
+            "normalize_graph_node_kind",
+            "normalize_graph_relation",
+            "normalize_identifier",
+            "normalize_label",
+            "normalize_object_id",
+            "normalize_object_kind",
+            "normalize_source_path",
+            "normalize_space_id",
+            "normalize_tags",
+        ),
+    ),
+    (
+        "omnivia_memory.knowledge.validation",
+        (
+            "ValidationResult",
+            "check_contract_version_compatibility",
+            "summarize_confidence",
+            "summarize_review_status",
+            "summarize_sensitivity",
+            "validate_agent_graph_context",
+            "validate_graph_edge",
+            "validate_graph_fragment",
+            "validate_graph_node",
+            "validate_knowledge_claim",
+            "validate_knowledge_collection",
+            "validate_knowledge_extension_manifest",
+            "validate_knowledge_link",
+            "validate_knowledge_object",
+            "validate_knowledge_source",
+            "validate_knowledge_space",
+            "validate_source_ref",
+        ),
+    ),
+)
+
+
 #: The absolute-import barrels that additionally get the stricter, shape-exact
 #: gate below, and the exact shape each must keep. Keyed by barrel suffix so the
 #: shape gate and the transitive-identity gate both run over the same declared
@@ -917,6 +1197,7 @@ ABSOLUTE_IMPORT_BARREL_IMPORTS: dict[
 ] = {
     "app_manifest": APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
     "control_plane": CONTROL_PLANE_BARREL_ABSOLUTE_IMPORTS,
+    "knowledge": KNOWLEDGE_BARREL_ABSOLUTE_IMPORTS,
     "module_manifest": MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
     "run_ledger": RUN_LEDGER_BARREL_ABSOLUTE_IMPORTS,
 }
@@ -1014,6 +1295,9 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.control_plane.validation": (
         "omnivia_memory.control_plane.validation"
     ),
+    "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
+    "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
+    "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
     "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
@@ -1651,8 +1935,10 @@ def test_legacy_root_keeps_its_historical_owner_for_each_colliding_name() -> Non
     """The legacy package root re-exports all three colliding names, but from only
     one owner each: ``ProvenanceRequirement`` from the Component Contract (via
     ``from .component_contract import ...``), ``ValidationResult`` from the
-    shared primitive (via the knowledge barrel's re-export of it), and
-    ``LifecycleState`` from the control plane. The root is
+    shared primitive (via the knowledge barrel's re-export of it -- a hop that is
+    now itself two converted facades deep, the knowledge validation leaf and the
+    shared validation leaf), and ``LifecycleState`` from the control plane. The
+    root is
     *not* edited by this slice, so those three bindings must still resolve to the
     same objects they always did -- now the canonical ones, reached transitively
     through the converted leaves.
@@ -1723,6 +2009,75 @@ def test_app_shell_validation_result_keeps_its_historical_collision_owner() -> N
             "omnivia_memory.app_shell_bridge.models.ValidationResult must stay the App "
             f"Shell bridge's own dataclass, not {other_module}.ValidationResult"
         )
+
+
+def test_knowledge_validation_result_keeps_its_historical_collision_owner() -> None:
+    """``ValidationResult`` is a name collision across five independent domains,
+    and the knowledge validation leaf is the one converted leaf that owns *none*
+    of them: it has always imported the shared primitive. Routing it to any
+    domain's same-named dataclass would be a silent contract swap that every "is
+    the exact canonical object" check above would still pass -- and it would
+    change what the legacy package *root* binds, because the root takes its
+    ``ValidationResult`` through this leaf and the knowledge barrel above it.
+
+    Pin the owner on the leaf, on the barrel and at the root, and pin that it is
+    *not* any of the four domain classes.
+    """
+    legacy_leaf = importlib.import_module("omnivia_memory.knowledge.validation")
+    legacy_barrel = importlib.import_module("omnivia_memory.knowledge")
+    legacy_root = importlib.import_module("omnivia_memory")
+    shared = importlib.import_module("omnivia_core._shared.validation")
+
+    assert legacy_leaf.ValidationResult is shared.ValidationResult
+    assert legacy_barrel.ValidationResult is shared.ValidationResult
+    assert legacy_root.ValidationResult is shared.ValidationResult
+
+    for other_module in (
+        "omnivia_core.app_manifest.models",
+        "omnivia_memory.app_manifest.models",
+        "omnivia_core.app_shell_bridge.models",
+        "omnivia_memory.app_shell_bridge.models",
+        "omnivia_core.component_contract.models",
+        "omnivia_memory.component_contract.models",
+        "omnivia_core.control_plane.models",
+        "omnivia_memory.control_plane.models",
+    ):
+        other = importlib.import_module(other_module)
+        assert legacy_leaf.ValidationResult is not other.ValidationResult, (
+            "omnivia_memory.knowledge.validation.ValidationResult must stay the "
+            f"shared primitive, not {other_module}.ValidationResult"
+        )
+
+
+def test_knowledge_barrel_publishes_a_subset_of_its_children_routed_surface() -> None:
+    """The knowledge barrel is source-unchanged, and its historical source names
+    only a subset of what its children now route.
+
+    ``normalize_extension_value`` is the concrete case: it is a routed symbol of
+    the normalize leaf and importable from it, but the barrel has never
+    re-exported it, so it must stay absent from the barrel's ``__all__`` and from
+    the barrel module itself. A "helpful" edit that added it would widen the
+    barrel's advertised surface beyond what Phase 0 froze, and every identity
+    check in this module would still pass.
+    """
+    barrel = importlib.import_module("omnivia_memory.knowledge")
+    canonical_barrel = importlib.import_module("omnivia_core.knowledge")
+    leaf = importlib.import_module("omnivia_memory.knowledge.normalize")
+
+    assert hasattr(leaf, "normalize_extension_value")
+    for module in (barrel, canonical_barrel):
+        assert "normalize_extension_value" not in module.__all__
+        assert not hasattr(module, "normalize_extension_value"), (
+            f"{module.__name__} must not publish normalize_extension_value; the "
+            "barrel's historical source never imported it"
+        )
+
+    # And the barrel's surface really is a subset, not a different set: every name
+    # it advertises is bound at the leaf it re-exports from.
+    for legacy_leaf_name, names in KNOWLEDGE_BARREL_ABSOLUTE_IMPORTS:
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        for name in names:
+            assert hasattr(legacy_leaf, name)
 
 
 def test_facade_canonical_to_legacy_manifest_matches_the_expected_pairs() -> None:

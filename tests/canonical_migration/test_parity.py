@@ -48,7 +48,8 @@ A subset of once-duplicated leaves (``_shared.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
 ``control_plane.imports``, ``control_plane.models``,
-``control_plane.validation``, ``lifecycle.models``, ``lifecycle.rules``,
+``control_plane.validation``, ``knowledge.models``, ``knowledge.normalize``,
+``knowledge.validation``, ``lifecycle.models``, ``lifecycle.rules``,
 ``module_manifest.models``, ``module_manifest.validation``,
 ``provenance.models``, ``memory.models``, ``run_ledger.models``, and
 ``run_ledger.validation``) has since been converted

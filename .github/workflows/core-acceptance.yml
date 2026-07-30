@@ -135,6 +135,9 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
             services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
             services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
@@ -164,6 +167,9 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
             services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
             services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/models.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py \
+            services/omnivia-memory/src/omnivia_memory/knowledge/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
             services/omnivia-memory/src/omnivia_memory/memory/models.py \
@@ -173,6 +179,7 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/run_ledger/models.py \
             services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py \
             tests/typing/accepted_legacy_facade_consumer.py \
+            tests/typing/knowledge_facade_consumer.py \
             tests/typing/module_manifest_facade_consumer.py
 
       - name: Check pull-request diff for whitespace errors

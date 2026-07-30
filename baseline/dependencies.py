@@ -115,6 +115,9 @@ FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
             f"{CORE_PACKAGE}.control_plane.imports",
             f"{CORE_PACKAGE}.control_plane.models",
             f"{CORE_PACKAGE}.control_plane.validation",
+            f"{CORE_PACKAGE}.knowledge.models",
+            f"{CORE_PACKAGE}.knowledge.normalize",
+            f"{CORE_PACKAGE}.knowledge.validation",
             f"{CORE_PACKAGE}.lifecycle.models",
             f"{CORE_PACKAGE}.lifecycle.rules",
             f"{CORE_PACKAGE}.memory.models",
@@ -126,6 +129,35 @@ FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
         )
     )
 )
+
+#: The canonical package this scan does *not* otherwise walk. Used only by
+#: ``_facade_stdlib_import_problems`` below, to prove a declared stdlib-import
+#: move really landed on the paired canonical module.
+FACADE_CANONICAL_SRC = REPO_ROOT / "src"
+
+#: Standard-library top-level modules the frozen Phase 0 baseline recorded for the
+#: legacy tree whose *only* importer in that tree was a leaf that has since become
+#: a compatibility facade. Keys are the stdlib module; values are the exact
+#: converted legacy leaf whose canonical counterpart performs that import now.
+#:
+#: This is not a tolerance for a lost dependency. The import did not disappear: it
+#: moved across the package boundary with the implementation, and this scan only
+#: walks the legacy tree. ``unicodedata`` is the first and only such module --
+#: ``omnivia_memory.knowledge.normalize`` was the single place the legacy tree
+#: imported it, and ``omnivia_core.knowledge.normalize`` imports it now.
+#: Every other converted leaf's stdlib imports (``hashlib``, ``json``, ``re``,
+#: ``datetime`` and the rest) are still imported by unconverted legacy modules, so
+#: no other entry exists or is needed.
+#:
+#: Each entry is proved by ``_facade_stdlib_import_problems`` -- the named legacy
+#: leaf must be a declared facade importer, the module must really be absent from
+#: the live legacy tree, it must really have been in the frozen baseline, and the
+#: paired canonical module must really import it -- before it may be normalized
+#: away. There is no general "stdlib imports may shrink" allowance: an
+#: undeclared removal still fails the inventory diff.
+FACADE_STDLIB_IMPORT_MOVES: dict[str, str] = {
+    "unicodedata": f"{CORE_PACKAGE}.knowledge.normalize",
+}
 
 #: Why each contract -> runtime edge is tolerated for now. An observed edge with
 #: no entry here fails the check; an entry here with no observed edge is stale.
@@ -315,14 +347,99 @@ def _facade_dependency_problems(
     return problems
 
 
+def _canonical_module_imports_stdlib(canonical_module: str, module: str) -> bool:
+    """Whether ``canonical_module``'s source imports the stdlib ``module``.
+
+    Reads exactly one file with :mod:`ast`, and matches on the imported module's
+    first dotted segment so ``import unicodedata`` counts and a name that merely
+    starts with the same letters does not. Nothing is imported for effect.
+    """
+    path = FACADE_CANONICAL_SRC.joinpath(*canonical_module.split(".")).with_suffix(".py")
+    if not path.is_file():
+        return False
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):  # pragma: no cover - a broken tree fails earlier
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".")[0] == module for alias in node.names):
+                return True
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module is not None
+            and node.module.split(".")[0] == module
+        ):
+            return True
+    return False
+
+
+def _facade_stdlib_import_problems(
+    actual: dict[str, Any],
+    *,
+    moves: dict[str, str] = FACADE_STDLIB_IMPORT_MOVES,
+    importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
+    canonical_package: str = FACADE_COMPATIBILITY_PACKAGE,
+    frozen: dict[str, Any] | None = None,
+) -> list[str]:
+    """Verify every declared stdlib-import move before it may be normalized away.
+
+    Each entry must (a) name a legacy leaf that really is a declared
+    compatibility-facade importer, so the removal is attributable to a sanctioned
+    conversion and not to a deleted feature; (b) name a module the frozen baseline
+    really recorded; (c) name a module that really is gone from the live legacy
+    tree, so a stale entry cannot keep masking a module that came back; and (d)
+    name a paired canonical module that really performs the import now, so the
+    import is proved to have *moved* rather than been dropped.
+    """
+    if frozen is None:
+        frozen = load_json(DEPENDENCIES_PATH)
+    frozen_stdlib = set(frozen.get("stdlib_imports", []))
+    actual_stdlib = set(actual.get("stdlib_imports", []))
+    problems: list[str] = []
+    for module, legacy_module in sorted(moves.items()):
+        where = f"stdlib import {module!r} via {legacy_module}"
+        if legacy_module not in importers:
+            problems.append(
+                f"{where}: {legacy_module} is not a declared compatibility-facade "
+                "importer, so its stdlib import cannot have moved with a conversion"
+            )
+            continue
+        if module not in frozen_stdlib:
+            problems.append(f"{where}: the frozen baseline never recorded it")
+            continue
+        if module in actual_stdlib:
+            problems.append(
+                f"{where}: still imported somewhere in the legacy tree, so the "
+                "declaration is stale and must be removed"
+            )
+            continue
+        canonical_module = legacy_module.replace(CORE_PACKAGE, canonical_package, 1)
+        if not _canonical_module_imports_stdlib(canonical_module, module):
+            problems.append(
+                f"{where}: {canonical_module} does not import {module!r}, so the "
+                "import was dropped rather than moved"
+            )
+    return problems
+
+
 def _normalize_expected_dependencies(
     expected: dict[str, Any],
     *,
     package: str = FACADE_COMPATIBILITY_PACKAGE,
     dependency: str = FACADE_COMPATIBILITY_DEPENDENCY,
     importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
+    stdlib_moves: dict[str, str] = FACADE_STDLIB_IMPORT_MOVES,
 ) -> dict[str, Any]:
     """Return a copy of ``expected`` with only the sanctioned facade dependency delta applied.
+
+    Three deltas, all caused directly by the facade conversions: the declared
+    ``omnivia-core`` dependency, that package's exact importer set, and the exact
+    stdlib modules named by ``stdlib_moves`` -- each of which is dropped from the
+    expected list only after ``_facade_stdlib_import_problems`` has proved the
+    import moved to the paired canonical module. Removal is by exact key, never by
+    prefix or substring.
 
     The frozen artifact on disk is never touched; this operates on an
     in-memory copy so every other dependency difference still fails the
@@ -333,6 +450,12 @@ def _normalize_expected_dependencies(
     third_party = [entry for entry in normalized["third_party_imports"] if entry["module"] != package]
     third_party.append({"module": package, "imported_by": list(importers), "reason": None})
     normalized["third_party_imports"] = sorted(third_party, key=lambda entry: entry["module"])
+    if "stdlib_imports" in normalized:
+        normalized["stdlib_imports"] = [
+            module
+            for module in normalized["stdlib_imports"]
+            if module not in stdlib_moves
+        ]
     return normalized
 
 
@@ -376,6 +499,20 @@ def verify_dependency_inventory() -> list[str]:
         )
 
     expected = load_json(DEPENDENCIES_PATH)
+
+    stdlib_problems = _facade_stdlib_import_problems(actual, frozen=expected)
+    if stdlib_problems:
+        return [
+            *problems,
+            (
+                "Compatibility-facade stdlib-import move verification failed for one "
+                "or more entries in baseline.dependencies' "
+                "FACADE_STDLIB_IMPORT_MOVES; refusing to normalize the frozen Phase 0 "
+                "baseline for an unverified move."
+            ),
+            format_differences(stdlib_problems),
+        ]
+
     normalized_expected = _normalize_expected_dependencies(expected)
     differences = diff_json(normalized_expected, actual)
     if differences:

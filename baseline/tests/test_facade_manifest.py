@@ -126,6 +126,9 @@ EXPECTED_STATE_SUFFIXES = {
         "control_plane.imports",
         "control_plane.models",
         "control_plane.validation",
+        "knowledge.models",
+        "knowledge.normalize",
+        "knowledge.validation",
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
@@ -141,14 +144,18 @@ EXPECTED_STATE_SUFFIXES = {
         "app_shell_bridge",
         "component_contract",
         "control_plane",
+        "knowledge",
         "lifecycle",
         "module_manifest",
         "provenance",
         "run_ledger",
     },
-    MigrationState.PENDING_DIRECT_BARREL: {
-        "knowledge",
-    },
+    # Empty on purpose: ``knowledge`` was the last barrel pending direct
+    # conversion, so every ``direct`` barrel is now a ``transitive_facade`` and
+    # only the six ``hybrid_barrel`` barrels and the package root are still
+    # pending. The state stays listed rather than dropped so the partition below
+    # keeps asserting that nothing has quietly re-entered it.
+    MigrationState.PENDING_DIRECT_BARREL: set(),
     MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
     MigrationState.PENDING_ROOT: {""},
 }
@@ -350,13 +357,16 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("control_plane.imports", "source_parity", "move the state forward"),
         ("control_plane.models", "source_parity", "move the state forward"),
         ("control_plane.validation", "source_parity", "move the state forward"),
+        ("knowledge.models", "source_parity", "move the state forward"),
+        ("knowledge.normalize", "source_parity", "move the state forward"),
+        ("knowledge.validation", "source_parity", "move the state forward"),
         ("module_manifest.models", "source_parity", "move the state forward"),
         ("module_manifest.validation", "source_parity", "move the state forward"),
         ("run_ledger.models", "source_parity", "move the state forward"),
         ("run_ledger.validation", "source_parity", "move the state forward"),
         # The mirror direction: a leaf that is still a duplicated source-parity
         # copy may not be declared as a converted facade either.
-        ("knowledge.models", "direct_facade", "declared 'direct_facade'"),
+        ("workspace.models", "direct_facade", "declared 'direct_facade'"),
     ],
 )
 def test_checkout_rejects_source_state_swaps(
@@ -412,6 +422,9 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
         "control_plane.imports",
         "control_plane.models",
         "control_plane.validation",
+        "knowledge.models",
+        "knowledge.normalize",
+        "knowledge.validation",
         "module_manifest.models",
         "module_manifest.validation",
         "run_ledger.models",
@@ -935,6 +948,257 @@ def test_control_plane_barrel_transitive_form_requires_all_three_children() -> N
         ), (dropped, defects)
 
 
+#: The legacy knowledge barrel's exact historical export sets, per child,
+#: restated here rather than read off the barrel: the fixture below must not be
+#: derived from the very file whose mutations it is proving get rejected. Like
+#: the control-plane barrel it has *three* converted children and re-exports
+#: through *absolute* ``omnivia_memory.knowledge.<leaf>`` imports; unlike it, the
+#: ``__all__`` is fully sorted rather than interleaved.
+#:
+#: Note what the normalize block does *not* name: ``normalize_extension_value``
+#: is a routed symbol of that leaf which this barrel has never re-exported. A
+#: barrel is allowed to publish a subset of its children's surface; what it may
+#: not do is publish something it did not import, which is why the imported set
+#: and ``__all__`` are compared to each other below.
+_KNOWLEDGE_MODELS_EXPORTS: tuple[str, ...] = (
+    "BUILTIN_GRAPH_NODE_KINDS",
+    "BUILTIN_GRAPH_RELATIONS",
+    "BUILTIN_OBJECT_KINDS",
+    "EXTENSION_MANIFEST_CONTRACT_VERSION",
+    "GRAPH_CONTRACT_VERSION",
+    "KNOWLEDGE_CONTRACT_VERSION",
+    "AgentGraphContext",
+    "ContractVersion",
+    "GraphConfidence",
+    "GraphEdge",
+    "GraphEvidenceStrength",
+    "GraphFragment",
+    "GraphNode",
+    "GraphOrigin",
+    "GraphReviewStatus",
+    "GraphSensitivity",
+    "GraphSourceType",
+    "GraphVisibility",
+    "KnowledgeClaim",
+    "KnowledgeCollection",
+    "KnowledgeExtensionManifest",
+    "KnowledgeLink",
+    "KnowledgeObject",
+    "KnowledgeSource",
+    "KnowledgeSpace",
+    "SourceRef",
+)
+_KNOWLEDGE_NORMALIZE_EXPORTS: tuple[str, ...] = (
+    "normalize_graph_edge_id",
+    "normalize_graph_node_id",
+    "normalize_graph_node_kind",
+    "normalize_graph_relation",
+    "normalize_identifier",
+    "normalize_label",
+    "normalize_object_id",
+    "normalize_object_kind",
+    "normalize_source_path",
+    "normalize_space_id",
+    "normalize_tags",
+)
+#: ``ValidationResult`` leads this block. The knowledge validation leaf never
+#: owned a class of that name -- it imports the shared primitive -- so this is the
+#: one export in the barrel whose object comes from outside the knowledge domain
+#: entirely, and it is the binding the legacy package root has always taken its
+#: ``ValidationResult`` from.
+_KNOWLEDGE_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "ValidationResult",
+    "check_contract_version_compatibility",
+    "summarize_confidence",
+    "summarize_review_status",
+    "summarize_sensitivity",
+    "validate_agent_graph_context",
+    "validate_graph_edge",
+    "validate_graph_fragment",
+    "validate_graph_node",
+    "validate_knowledge_claim",
+    "validate_knowledge_collection",
+    "validate_knowledge_extension_manifest",
+    "validate_knowledge_link",
+    "validate_knowledge_object",
+    "validate_knowledge_source",
+    "validate_knowledge_space",
+    "validate_source_ref",
+)
+
+
+def _knowledge_barrel_source(extra_source: str) -> str:
+    def block(module: str, names: tuple[str, ...]) -> str:
+        body = "".join(f"    {name},\n" for name in names)
+        return f"from omnivia_memory.knowledge.{module} import (\n{body})\n"
+
+    exported = sorted(
+        _KNOWLEDGE_MODELS_EXPORTS
+        + _KNOWLEDGE_NORMALIZE_EXPORTS
+        + _KNOWLEDGE_VALIDATION_EXPORTS
+    )
+    all_body = "".join(f'    "{name}",\n' for name in exported)
+    return (
+        block("models", _KNOWLEDGE_MODELS_EXPORTS)
+        + block("normalize", _KNOWLEDGE_NORMALIZE_EXPORTS)
+        + block("validation", _KNOWLEDGE_VALIDATION_EXPORTS)
+        + f"__all__ = [\n{all_body}]\n"
+        + extra_source
+    )
+
+
+def _knowledge_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.knowledge"),
+        [
+            manifest.route_for_legacy("omnivia_memory.knowledge.models"),
+            manifest.route_for_legacy("omnivia_memory.knowledge.normalize"),
+            manifest.route_for_legacy("omnivia_memory.knowledge.validation"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.knowledge.models import KnowledgeSpace\n",
+            "unapproved module",
+        ),
+        # The knowledge validation leaf reaches the shared primitive for
+        # ``ValidationResult``, so a ``_shared`` import is the most plausible
+        # accidental extra module here -- and still not one of its three children.
+        (
+            "from omnivia_memory._shared.validation import ValidationResult\n",
+            "unapproved module",
+        ),
+        # An absolute reach at the canonical shared primitive: the same reroute
+        # from the other side of the package boundary.
+        (
+            "from omnivia_core._shared.validation import ValidationResult\n",
+            "unapproved module",
+        ),
+        # A relative reach into a runtime-only sibling that is deliberately not a
+        # route at all.
+        ("from ..persistence import Database\n", "unapproved module"),
+        # A *relative* form of one of its own children. The resolver does
+        # approve this module -- it resolves ``.models`` against the barrel's own
+        # package -- so what rejects the mutation is the binding/``__all__``
+        # mismatch it creates, not the module gate. Pinned here so the two
+        # branches are not confused for each other.
+        (
+            "from .models import KnowledgeSpace\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("ContractVersion = object()\n", "assignments"),
+        (
+            "def validate_knowledge_space(space):\n    return space\n",
+            "statements of its own",
+        ),
+        ("class KnowledgeSpace:\n    pass\n", "statements of its own"),
+    ],
+)
+def test_knowledge_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The knowledge barrel earns ``transitive_facade`` by re-exporting only its
+    three converted children. Reaching into ``omnivia_core`` itself, pulling a
+    fourth module by either an absolute or a relative path, or defining anything
+    of its own must be rejected -- each of those would make the barrel's identity
+    preservation direct or local rather than transitive, while still exporting the
+    same 54 names."""
+    route, children = _knowledge_barrel_route_and_children()
+    source = _knowledge_barrel_source(extra_source)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_knowledge_barrel_transitive_form_accepts_its_historical_source() -> None:
+    """The same fixture with nothing added must be defect-free, so the rejection
+    cases above are proven to fail on what they inject rather than on the barrel's
+    three-child absolute-import shape or its sorted ``__all__`` itself."""
+    route, children = _knowledge_barrel_route_and_children()
+    source = _knowledge_barrel_source("")
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+def test_knowledge_barrel_transitive_form_requires_all_three_children() -> None:
+    """Dropping any one child's import block must fail. With three children the
+    "does not import converted children" branch is reachable in a way the
+    two-child barrels never exercise: a barrel could keep a perfectly valid
+    two-block shape and still have stopped re-exporting a converted leaf."""
+    route, children = _knowledge_barrel_route_and_children()
+    blocks = {
+        "models": _KNOWLEDGE_MODELS_EXPORTS,
+        "normalize": _KNOWLEDGE_NORMALIZE_EXPORTS,
+        "validation": _KNOWLEDGE_VALIDATION_EXPORTS,
+    }
+    for dropped in blocks:
+        source = ""
+        exported: list[str] = []
+        for module, names in blocks.items():
+            if module == dropped:
+                continue
+            body = "".join(f"    {name},\n" for name in names)
+            source += f"from omnivia_memory.knowledge.{module} import (\n{body})\n"
+            exported.extend(names)
+        all_body = "".join(f'    "{name}",\n' for name in sorted(exported))
+        source += f"__all__ = [\n{all_body}]\n"
+        defects = transitive_facade_defects(ast.parse(source), route, children)
+        assert any(
+            "does not import converted children" in defect
+            and f"omnivia_memory.knowledge.{dropped}" in defect
+            for defect in defects
+        ), (dropped, defects)
+
+
+def test_knowledge_barrel_transitive_form_rejects_an_extra_import_of_a_child() -> None:
+    """A second import block for an already-imported child is not a reroute --
+    every module named is approved -- but it is still an extra import statement
+    the historical source does not have, and it makes the barrel's ``__all__``
+    disagree with the set of names it binds. That mismatch is what must fail."""
+    route, children = _knowledge_barrel_route_and_children()
+    source = _knowledge_barrel_source(
+        "from omnivia_memory.knowledge.normalize import normalize_extension_value\n"
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(
+        "the imported binding set does not exactly match the literal __all__"
+        in defect
+        for defect in defects
+    ), defects
+
+
+def test_knowledge_barrel_state_cannot_be_walked_back_to_a_pending_barrel() -> None:
+    """``pending_direct_barrel`` is now empty, and the knowledge barrel may not
+    quietly re-enter it: a pending state skips the source gate entirely, so
+    declaring it would stop checking that the barrel still routes purely through
+    its three converted children.
+
+    The registry's own combination rule is what forbids this: a ``direct``
+    barrel whose children are all converted has no legitimate pending state
+    left, and ``pending_hybrid``/``pending_root`` are not valid for its
+    kind/shape pair.
+    """
+    for state in ("pending_hybrid", "pending_root"):
+        document = _document()
+        _route(document, "knowledge")["migration_state"] = state
+        with pytest.raises(FacadeManifestError, match="valid combination"):
+            load_manifest(document)
+
+    # ``pending_direct_barrel`` is structurally valid for this pair, so it loads
+    # -- and then the checkout gate has nothing left to check, which is exactly
+    # why the state must not be walked back. Pin that it is no longer the state
+    # the committed registry declares.
+    assert (
+        load_manifest().route_for_legacy("omnivia_memory.knowledge").migration_state
+        is MigrationState.TRANSITIVE_FACADE
+    )
+    assert load_manifest().by_state(MigrationState.PENDING_DIRECT_BARREL) == ()
+
+
 #: The legacy component-contract barrel's exact historical export sets, per
 #: child, restated here rather than read off the barrel: the fixture below must
 #: not be derived from the very file whose mutations it is proving get rejected.
@@ -1097,12 +1361,14 @@ def test_checker_is_a_successful_executable_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
     assert "canonical_subset: 1" in result.stdout
-    # The per-state counts this batch moved: the three control-plane leaves into
+    # The per-state counts this batch moved: the three knowledge leaves into
     # ``direct_facade``, their barrel from ``pending_direct_barrel`` into
-    # ``transitive_facade``. ``knowledge`` is now the only barrel left pending
-    # direct conversion.
-    assert "source_parity: 11" in result.stdout
-    assert "direct_facade: 18" in result.stdout
-    assert "transitive_facade: 9" in result.stdout
-    assert "pending_direct_barrel: 1" in result.stdout
-    assert "remaining: 12 leaves and 7 barrels still to convert" in result.stdout
+    # ``transitive_facade``. That empties ``pending_direct_barrel``: only the six
+    # hybrid barrels and the package root are still pending.
+    assert "source_parity: 8" in result.stdout
+    assert "direct_facade: 21" in result.stdout
+    assert "transitive_facade: 10" in result.stdout
+    assert "pending_direct_barrel: 0" in result.stdout
+    assert "pending_hybrid: 6" in result.stdout
+    assert "pending_root: 1" in result.stdout
+    assert "remaining: 9 leaves and 6 barrels still to convert" in result.stdout

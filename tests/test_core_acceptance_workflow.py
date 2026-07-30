@@ -85,6 +85,9 @@ REQUIRED_RUFF_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/control_plane/imports.py",
     "services/omnivia-memory/src/omnivia_memory/control_plane/models.py",
     "services/omnivia-memory/src/omnivia_memory/control_plane/validation.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/models.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/validation.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/models.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py",
@@ -103,9 +106,9 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-cli/src/omnivia_core_cli",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
-    # Every converted facade wrapper, plus the two strict-mypy consumer fixtures
-    # that import them through their legacy paths: together they pin that
-    # `omnivia-memory`'s `py.typed` surface still re-exports these names
+    # Every converted facade wrapper, plus the three strict-mypy consumer
+    # fixtures that import them through their legacy paths: together they pin
+    # that `omnivia-memory`'s `py.typed` surface still re-exports these names
     # explicitly and without `Any` leakage.
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
@@ -117,6 +120,9 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/control_plane/imports.py",
     "services/omnivia-memory/src/omnivia_memory/control_plane/models.py",
     "services/omnivia-memory/src/omnivia_memory/control_plane/validation.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/models.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/normalize.py",
+    "services/omnivia-memory/src/omnivia_memory/knowledge/validation.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/models.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py",
     "services/omnivia-memory/src/omnivia_memory/memory/models.py",
@@ -126,6 +132,7 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/run_ledger/models.py",
     "services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py",
     "tests/typing/accepted_legacy_facade_consumer.py",
+    "tests/typing/knowledge_facade_consumer.py",
     "tests/typing/module_manifest_facade_consumer.py",
 )
 

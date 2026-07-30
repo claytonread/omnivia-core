@@ -80,7 +80,18 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: ``CONTROL_PLANE_CONTRACT_VERSION`` are ``ContractVersion`` instances their own
 #: models leaf builds, so the leaf owns the object while the knowledge leaf owns
 #: the class; see ``FACADE_ROOT_BINDING_OWNER_MOVES`` for the separate, exact
-#: root-binding deltas that follow from them.
+#: root-binding deltas that follow from them. The knowledge models leaf is itself
+#: routed now, but neither of those two constants is one of *its* routed symbols,
+#: so the ordinary exact-route normalization still cannot reach them.
+#:
+#: Each leaf's entry lists only the symbols that leaf *owns* and publishes. The
+#: incidental and cross-leaf-imported bindings a converted leaf's historical
+#: namespace also has to keep resolving (``Any``, ``annotations``, a plain
+#: ``re``/``unicodedata`` module binding, a sibling leaf's contract class) are
+#: deliberately absent: the frozen baseline never recorded them as definitions of
+#: that module, so there is no route delta to normalize. They are covered by
+#: ``tests/compatibility/test_facade_foundation.py``'s ``LEAF_SYMBOL_SOURCES``
+#: instead, which pins their exact owner and identity.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -260,6 +271,81 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "manifest_from_dict": "omnivia_core.control_plane.validation",
         "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
     },
+    # The three ``BUILTIN_*`` bounded-vocabulary constants are ``frozenset``
+    # instances, so ordinary ``__module__`` definition detection cannot see them
+    # and they are routed explicitly -- exactly as ``SENSITIVE_KEYS`` and the
+    # run-ledger/control-plane constants already are.
+    "omnivia_memory.knowledge.models": {
+        "AgentGraphContext": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_NODE_KINDS": "omnivia_core.knowledge.models",
+        "BUILTIN_GRAPH_RELATIONS": "omnivia_core.knowledge.models",
+        "BUILTIN_OBJECT_KINDS": "omnivia_core.knowledge.models",
+        "ContractVersion": "omnivia_core.knowledge.models",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GRAPH_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GraphConfidence": "omnivia_core.knowledge.models",
+        "GraphEdge": "omnivia_core.knowledge.models",
+        "GraphEvidenceStrength": "omnivia_core.knowledge.models",
+        "GraphFragment": "omnivia_core.knowledge.models",
+        "GraphNode": "omnivia_core.knowledge.models",
+        "GraphOrigin": "omnivia_core.knowledge.models",
+        "GraphReviewStatus": "omnivia_core.knowledge.models",
+        "GraphSensitivity": "omnivia_core.knowledge.models",
+        "GraphSourceType": "omnivia_core.knowledge.models",
+        "GraphVisibility": "omnivia_core.knowledge.models",
+        "KNOWLEDGE_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "KnowledgeClaim": "omnivia_core.knowledge.models",
+        "KnowledgeCollection": "omnivia_core.knowledge.models",
+        "KnowledgeExtensionManifest": "omnivia_core.knowledge.models",
+        "KnowledgeLink": "omnivia_core.knowledge.models",
+        "KnowledgeObject": "omnivia_core.knowledge.models",
+        "KnowledgeSource": "omnivia_core.knowledge.models",
+        "KnowledgeSpace": "omnivia_core.knowledge.models",
+        "SourceRef": "omnivia_core.knowledge.models",
+    },
+    "omnivia_memory.knowledge.normalize": {
+        "normalize_extension_value": "omnivia_core.knowledge.normalize",
+        "normalize_graph_edge_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_kind": "omnivia_core.knowledge.normalize",
+        "normalize_graph_relation": "omnivia_core.knowledge.normalize",
+        "normalize_identifier": "omnivia_core.knowledge.normalize",
+        "normalize_label": "omnivia_core.knowledge.normalize",
+        "normalize_object_id": "omnivia_core.knowledge.normalize",
+        "normalize_object_kind": "omnivia_core.knowledge.normalize",
+        "normalize_source_path": "omnivia_core.knowledge.normalize",
+        "normalize_space_id": "omnivia_core.knowledge.normalize",
+        "normalize_tags": "omnivia_core.knowledge.normalize",
+    },
+    # ``MAX_LABEL_LENGTH``, ``MAX_QUOTE_PREVIEW_LENGTH`` and
+    # ``SCRIPT_LIKE_MARKERS`` are the three public bounded-policy constants this
+    # leaf owns whose ``int``/``tuple`` values have no ``__module__``, so they are
+    # routed explicitly alongside its sixteen validators. This leaf's
+    # ``ValidationResult`` is deliberately *not* routed: it never owned one -- it
+    # imports the shared primitive -- so the frozen baseline recorded no
+    # definition to normalize. See ``LEAF_SYMBOL_SOURCES`` for that binding's
+    # pinned owner.
+    "omnivia_memory.knowledge.validation": {
+        "MAX_LABEL_LENGTH": "omnivia_core.knowledge.validation",
+        "MAX_QUOTE_PREVIEW_LENGTH": "omnivia_core.knowledge.validation",
+        "SCRIPT_LIKE_MARKERS": "omnivia_core.knowledge.validation",
+        "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
+        "summarize_confidence": "omnivia_core.knowledge.validation",
+        "summarize_review_status": "omnivia_core.knowledge.validation",
+        "summarize_sensitivity": "omnivia_core.knowledge.validation",
+        "validate_agent_graph_context": "omnivia_core.knowledge.validation",
+        "validate_graph_edge": "omnivia_core.knowledge.validation",
+        "validate_graph_fragment": "omnivia_core.knowledge.validation",
+        "validate_graph_node": "omnivia_core.knowledge.validation",
+        "validate_knowledge_claim": "omnivia_core.knowledge.validation",
+        "validate_knowledge_collection": "omnivia_core.knowledge.validation",
+        "validate_knowledge_extension_manifest": "omnivia_core.knowledge.validation",
+        "validate_knowledge_link": "omnivia_core.knowledge.validation",
+        "validate_knowledge_object": "omnivia_core.knowledge.validation",
+        "validate_knowledge_source": "omnivia_core.knowledge.validation",
+        "validate_knowledge_space": "omnivia_core.knowledge.validation",
+        "validate_source_ref": "omnivia_core.knowledge.validation",
+    },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
     },
@@ -384,10 +470,17 @@ FACADE_DESCRIPTOR_REWRITES: dict[
 #: ``RUN_LEDGER_CONTRACT_VERSION`` and ``CONTROL_PLANE_CONTRACT_VERSION`` are the
 #: two such root bindings -- each a ``ContractVersion`` its own models leaf
 #: builds -- so converting either leaf moves that binding's recorded owner from
-#: the legacy knowledge leaf to the canonical one even though ``knowledge.models``
-#: is not itself converted and appears in no route. Each delta is named and
+#: the legacy knowledge leaf to the canonical one. Each delta is named and
 #: declared here rather than derived, and ``_facade_root_binding_problems`` proves
 #: every entry before any of them may be normalized away.
+#:
+#: ``omnivia_memory.knowledge.models`` is now a converted facade with routes of
+#: its own, but that does not make either entry redundant: neither constant is one
+#: of *that* leaf's routed symbols (each belongs to the run-ledger / control-plane
+#: leaf that builds it), so the route loop never sees the binding and these two
+#: declarations remain the only thing that moves it. Their frozen and new owners
+#: are unchanged by the knowledge conversion -- the type's canonical owner is
+#: still ``omnivia_core.knowledge.models``.
 #:
 #: The two entries are independent: each is keyed by its own ``(binding, routed
 #: leaf)`` pair and applied by whole-string equality on that binding alone, so

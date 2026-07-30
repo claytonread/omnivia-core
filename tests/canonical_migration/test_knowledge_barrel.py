@@ -5,8 +5,15 @@ else, a star import exposing exactly what ``__all__`` advertises, and a
 fresh-process import that never touches ``omnivia_memory`` or a runtime
 module.
 
-``test_parity.py`` already proves each owner leaf (``knowledge.models``,
-``.normalize``, ``.validation``) is an exact port of its legacy counterpart.
+``omnivia_core.knowledge`` is now the sole implementation of the barrel at
+``omnivia_memory.knowledge``. It began as a canonical port of it; all three
+legacy owner leaves have since been converted into thin compatibility facades,
+so they are registered in ``_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY``
+rather than its source-parity map, and the legacy barrel -- itself
+source-unchanged -- became identity-preserving transitively through them.
+Identity, not source sameness, is what
+``tests/compatibility/test_facade_foundation.py`` proves for that hop.
+
 This module is only concerned with the barrel's own re-export contract, which
 none of those per-leaf gates observe.
 """

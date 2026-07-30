@@ -163,6 +163,56 @@ def test_facade_route_problems_rejects_a_component_contract_collision_owner_swap
         ), f"routing {symbol} to {wrong_owner} was accepted: {problems}"
 
 
+def test_knowledge_route_repointed_at_a_reexporting_sibling_still_fails_closed() -> None:
+    """The sharpest case this batch introduces: a route repointed at a module
+    that re-exports the *identical* object.
+
+    ``omnivia_core.run_ledger.models`` imports the knowledge domain's
+    ``ContractVersion`` to build its own version constant, and
+    ``omnivia_core.knowledge.validation`` imports ``normalize_label`` from its
+    sibling ``normalize``. Both hold the exact same object as the real owner, so
+    ``_facade_route_problems``'s identity check cannot discriminate -- and it
+    reports nothing, which this test asserts rather than papers over.
+
+    What still fails closed is the normalization it feeds: the root binding would
+    be rewritten to the wrong owner, and the diff against the live surface names
+    that binding. Without the diff layer, a route could silently relabel a public
+    symbol's owning module while every identity assertion passed.
+    """
+    actual = build_public_export_inventory()
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+    for legacy_module, symbol, reexporting_owner, real_owner in (
+        (
+            "omnivia_memory.knowledge.models",
+            "ContractVersion",
+            "omnivia_core.run_ledger.models",
+            "omnivia_core.knowledge.models",
+        ),
+        (
+            "omnivia_memory.knowledge.normalize",
+            "normalize_label",
+            "omnivia_core.knowledge.validation",
+            "omnivia_core.knowledge.normalize",
+        ),
+    ):
+        bad_routes = copy.deepcopy(FACADE_ROUTES)
+        bad_routes[legacy_module][symbol] = reexporting_owner
+
+        # Identity holds: the re-exporting module really does bind the same object.
+        assert _facade_route_problems(actual, routes=bad_routes) == []
+
+        normalized = _normalize_expected_for_facade_routes(
+            expected, routes=bad_routes
+        )
+        differences = diff_json(normalized, actual)
+        assert any(
+            f"root.bindings.{symbol}.defined_in" in difference
+            and reexporting_owner in difference
+            and real_owner in difference
+            for difference in differences
+        ), (symbol, differences)
+
+
 def test_facade_route_problems_reports_a_non_identical_object(monkeypatch) -> None:
     """A canonical attribute that resolves but is not the exact legacy object (a
     lookalike rebound after both modules already imported) must fail identity."""
@@ -390,9 +440,11 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
     # routed by more than one leaf, but each moves for exactly the one route whose
     # legacy module the root actually bound it from: the Component Contract for the
     # first, the shared primitive for the second, the control plane for the third.
-    # The App Manifest's and App Shell bridge's same-named result classes, and the
-    # lifecycle domain's own ``LifecycleState``, are leaf-local here and must move
-    # no root binding at all.
+    # The App Manifest's and App Shell bridge's same-named result classes, the
+    # lifecycle domain's own ``LifecycleState``, and -- now that the knowledge
+    # leaves are routed too -- the knowledge validation leaf's imported
+    # ``ValidationResult`` are leaf-local here and must move no root binding at
+    # all. The knowledge leaf never owned a class of that name, so it routes none.
     #
     # ``RUN_LEDGER_CONTRACT_VERSION`` and ``CONTROL_PLANE_CONTRACT_VERSION`` are the
     # two bindings that do not land on their own route's canonical module: each is a
@@ -401,12 +453,16 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
     # ``FACADE_ROOT_BINDING_OWNER_MOVES`` and proved by
     # ``_facade_root_binding_problems`` before either may be applied -- and they
     # land on the same new owner without interfering, which is what makes the
-    # mechanism's independence visible here.
+    # mechanism's independence visible here. They land on
+    # ``omnivia_core.knowledge.models`` -- the same destination the knowledge
+    # models leaf's own 26 routes move their bindings to -- yet by a different
+    # mechanism: neither constant is one of that leaf's routed symbols.
     assert moved == {
         "Agent": "omnivia_core.control_plane.models",
         "AgentAction": "omnivia_core.component_contract.models",
         "AgentBackedComponentContract": "omnivia_core.component_contract.models",
         "AgentBehavior": "omnivia_core.component_contract.models",
+        "AgentGraphContext": "omnivia_core.knowledge.models",
         "AgentRunRecord": "omnivia_core.component_contract.models",
         "AgentRunStatus": "omnivia_core.component_contract.models",
         "AppManifest": "omnivia_core.app_manifest.models",
@@ -424,7 +480,9 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ComponentAIMode": "omnivia_core.component_contract.models",
         "ComponentConnectorScope": "omnivia_core.component_contract.models",
         "ComponentContract": "omnivia_core.component_contract.models",
-        "ComponentContractValidationError": "omnivia_core.component_contract.validation",
+        "ComponentContractValidationError": (
+            "omnivia_core.component_contract.validation"
+        ),
         "ComponentDataSource": "omnivia_core.component_contract.models",
         "ComponentFamily": "omnivia_core.component_contract.models",
         "ComponentGraphScope": "omnivia_core.component_contract.models",
@@ -438,20 +496,41 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ConnectionKind": "omnivia_core.control_plane.models",
         "ConsultantAccessGrant": "omnivia_core.control_plane.models",
         "ConsultantGrantStatus": "omnivia_core.control_plane.models",
+        "ContractVersion": "omnivia_core.knowledge.models",
         "ControlPlaneManifest": "omnivia_core.control_plane.models",
         "ControlPlaneRunStatus": "omnivia_core.control_plane.models",
         "ControlPlaneValidationError": "omnivia_core.control_plane.validation",
         "DataSource": "omnivia_core.app_manifest.models",
+        "EXTENSION_MANIFEST_CONTRACT_VERSION": "omnivia_core.knowledge.models",
         "Entrypoint": "omnivia_core.module_manifest.models",
         "EvidenceFileRef": "omnivia_core.run_ledger.models",
         "ExecutionMode": "omnivia_core.control_plane.models",
         "ExecutionResult": "omnivia_core.control_plane.models",
+        "GRAPH_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "GraphConfidence": "omnivia_core.knowledge.models",
+        "GraphEdge": "omnivia_core.knowledge.models",
+        "GraphEvidenceStrength": "omnivia_core.knowledge.models",
+        "GraphFragment": "omnivia_core.knowledge.models",
+        "GraphNode": "omnivia_core.knowledge.models",
+        "GraphOrigin": "omnivia_core.knowledge.models",
+        "GraphReviewStatus": "omnivia_core.knowledge.models",
+        "GraphSensitivity": "omnivia_core.knowledge.models",
+        "GraphSourceType": "omnivia_core.knowledge.models",
+        "GraphVisibility": "omnivia_core.knowledge.models",
         "ImportRecord": "omnivia_core.control_plane.models",
         "ImportSourceChange": "omnivia_core.control_plane.imports",
         "ImportSourceProtocol": "omnivia_core.control_plane.models",
         "ImportSpecValidation": "omnivia_core.control_plane.imports",
         "ImportedCandidateSet": "omnivia_core.control_plane.imports",
         "Integrity": "omnivia_core.module_manifest.models",
+        "KNOWLEDGE_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "KnowledgeClaim": "omnivia_core.knowledge.models",
+        "KnowledgeCollection": "omnivia_core.knowledge.models",
+        "KnowledgeExtensionManifest": "omnivia_core.knowledge.models",
+        "KnowledgeLink": "omnivia_core.knowledge.models",
+        "KnowledgeObject": "omnivia_core.knowledge.models",
+        "KnowledgeSource": "omnivia_core.knowledge.models",
+        "KnowledgeSpace": "omnivia_core.knowledge.models",
         "LifecycleState": "omnivia_core.control_plane.models",
         "LocalApprovalNotification": "omnivia_core.control_plane.models",
         "LocalApprovalNotificationChannel": "omnivia_core.control_plane.models",
@@ -494,6 +573,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "SecretStorageScope": "omnivia_core.control_plane.models",
         "SideEffect": "omnivia_core.control_plane.models",
         "Source": "omnivia_core.provenance.models",
+        "SourceRef": "omnivia_core.knowledge.models",
         "SourceType": "omnivia_core.provenance.models",
         "SyncConflictStrategy": "omnivia_core.control_plane.models",
         "SyncDirection": "omnivia_core.control_plane.models",
@@ -505,6 +585,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "TriggerKind": "omnivia_core.control_plane.models",
         "ValidationResult": "omnivia_core._shared.validation",
         "WorkspaceRef": "omnivia_core.control_plane.models",
+        "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
         "compile_policy_expression": "omnivia_core.control_plane.validation",
         "detect_import_source_change": "omnivia_core.control_plane.imports",
         "import_asyncapi_candidates": "omnivia_core.control_plane.imports",
@@ -513,17 +594,43 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "import_mcp_candidates": "omnivia_core.control_plane.imports",
         "import_openapi_candidates": "omnivia_core.control_plane.imports",
         "manifest_from_dict": "omnivia_core.control_plane.validation",
+        "normalize_graph_edge_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_id": "omnivia_core.knowledge.normalize",
+        "normalize_graph_node_kind": "omnivia_core.knowledge.normalize",
+        "normalize_graph_relation": "omnivia_core.knowledge.normalize",
+        "normalize_identifier": "omnivia_core.knowledge.normalize",
+        "normalize_label": "omnivia_core.knowledge.normalize",
+        "normalize_object_id": "omnivia_core.knowledge.normalize",
+        "normalize_object_kind": "omnivia_core.knowledge.normalize",
+        "normalize_source_path": "omnivia_core.knowledge.normalize",
+        "normalize_space_id": "omnivia_core.knowledge.normalize",
+        "normalize_tags": "omnivia_core.knowledge.normalize",
+        "summarize_confidence": "omnivia_core.knowledge.validation",
+        "summarize_review_status": "omnivia_core.knowledge.validation",
+        "summarize_sensitivity": "omnivia_core.knowledge.validation",
+        "validate_agent_graph_context": "omnivia_core.knowledge.validation",
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_app_manifest": "omnivia_core.app_manifest.validation",
         "validate_asyncapi_import_spec": "omnivia_core.control_plane.imports",
         "validate_component_contract": "omnivia_core.component_contract.validation",
         "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
         "validate_evidence_file_ref": "omnivia_core.run_ledger.validation",
+        "validate_graph_edge": "omnivia_core.knowledge.validation",
+        "validate_graph_fragment": "omnivia_core.knowledge.validation",
+        "validate_graph_node": "omnivia_core.knowledge.validation",
+        "validate_knowledge_claim": "omnivia_core.knowledge.validation",
+        "validate_knowledge_collection": "omnivia_core.knowledge.validation",
+        "validate_knowledge_extension_manifest": "omnivia_core.knowledge.validation",
+        "validate_knowledge_link": "omnivia_core.knowledge.validation",
+        "validate_knowledge_object": "omnivia_core.knowledge.validation",
+        "validate_knowledge_source": "omnivia_core.knowledge.validation",
+        "validate_knowledge_space": "omnivia_core.knowledge.validation",
         "validate_mcp_import_spec": "omnivia_core.control_plane.imports",
         "validate_module_manifest": "omnivia_core.module_manifest.validation",
         "validate_openapi_import_spec": "omnivia_core.control_plane.imports",
         "validate_run_ledger_entry": "omnivia_core.run_ledger.validation",
         "validate_run_ledger_provenance": "omnivia_core.run_ledger.validation",
+        "validate_source_ref": "omnivia_core.knowledge.validation",
         "verify_catalogue_artifacts": "omnivia_core.control_plane.imports",
     }
 
@@ -609,12 +716,24 @@ def test_root_binding_owner_moves_declaration_is_exactly_the_instance_routes() -
             _INSTANCE_CANONICAL_OWNER,
         ),
     }
-    # The declared frozen owner is a module that is *not* itself converted and
-    # appears in no route: that is precisely why the moves have to be declared
-    # rather than derived from FACADE_ROUTES.
-    assert _INSTANCE_FROZEN_OWNER not in FACADE_ROUTES
+    # The declared frozen owner is itself a converted, routed leaf now -- but
+    # neither moved constant is one of *its* routed symbols, so the ordinary
+    # exact-route normalization still cannot reach either binding. That is
+    # precisely why the moves have to be declared rather than derived from
+    # FACADE_ROUTES.
+    assert _INSTANCE_FROZEN_OWNER in FACADE_ROUTES
     for (name, legacy_module), routed_canonical in _DECLARED_MOVES:
+        assert name not in FACADE_ROUTES[_INSTANCE_FROZEN_OWNER], (
+            f"{name} became a route of {_INSTANCE_FROZEN_OWNER}; the declared "
+            "owner move is now redundant and must be re-derived deliberately"
+        )
         assert FACADE_ROUTES[legacy_module][name] == routed_canonical
+    # The frozen owner's own routes all point at the same canonical module the
+    # two declared moves name, so a reader cannot tell the two mechanisms apart
+    # by destination alone -- only by which symbols each covers.
+    assert set(FACADE_ROUTES[_INSTANCE_FROZEN_OWNER].values()) == {
+        _INSTANCE_CANONICAL_OWNER
+    }
     # Both moves are declared, and both land on the same new owner. Declaring one
     # must not be mistaken for covering the other.
     assert len({key for key, _routed in _DECLARED_MOVES}) == 2
@@ -840,24 +959,42 @@ def test_normalize_owner_moves_apply_independently_of_each_other() -> None:
         )
 
 
-def test_normalize_leaves_the_unconverted_frozen_owner_leaf_intact() -> None:
-    """``knowledge.models`` supplies both moved bindings' new owner but is not
-    itself converted: its own frozen module entry -- ``defines`` included -- must
-    survive normalization completely unchanged, and no other knowledge-domain
-    root binding may move with them."""
+def test_declared_moves_are_the_only_thing_that_moves_the_instance_bindings() -> None:
+    """``knowledge.models`` is now a converted, routed leaf itself, and every one
+    of its routes lands on the same canonical module the two declared moves name.
+    That makes the two mechanisms indistinguishable by destination, so this pins
+    them apart by *cause*: with the moves dropped and every route still applied,
+    both instance bindings must stay on the legacy owner.
+
+    A substitution that keyed off the owner module rather than the exact routed
+    symbol -- or a broad package-prefix rewrite -- would move them anyway, and
+    would pass if this test only checked the fully-normalized result.
+    """
     expected = load_json(PUBLIC_EXPORTS_PATH)
+    declared = {name for (name, _legacy), _routed in _DECLARED_MOVES}
+
+    routes_only = _normalize_expected_for_facade_routes(expected, moves={})
+    for name in declared:
+        assert routes_only["root"]["bindings"][name]["defined_in"] == (
+            _INSTANCE_FROZEN_OWNER
+        ), f"{name} moved without its declared entry"
 
     normalized = _normalize_expected_for_facade_routes(expected)
+    for name in declared:
+        assert normalized["root"]["bindings"][name]["defined_in"] == (
+            _INSTANCE_CANONICAL_OWNER
+        )
 
-    for leaf in ("omnivia_memory.knowledge.models", "omnivia_memory.knowledge.validation"):
-        assert normalized["modules"][leaf] == expected["modules"][leaf]
-
-    declared = {name for (name, _legacy), _routed in _DECLARED_MOVES}
+    # Every *other* root binding the frozen baseline recorded on a knowledge leaf
+    # moves for an ordinary route, and each lands on that leaf's own canonical
+    # counterpart -- never on some other domain's module.
     frozen_bindings = expected["root"]["bindings"]
     for name, binding in normalized["root"]["bindings"].items():
         if name in declared:
             continue
-        if frozen_bindings[name]["defined_in"] == _INSTANCE_FROZEN_OWNER:
-            assert binding["defined_in"] == _INSTANCE_FROZEN_OWNER, (
-                f"{name} moved owner without a declared entry"
-            )
+        frozen_owner = frozen_bindings[name]["defined_in"]
+        if not str(frozen_owner).startswith("omnivia_memory.knowledge"):
+            continue
+        assert binding["defined_in"] == FACADE_ROUTES[frozen_owner][name], (
+            f"{name} did not move to the canonical owner its route declares"
+        )
