@@ -83,6 +83,7 @@ import json
 import math
 import subprocess
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any
@@ -2625,13 +2626,20 @@ def test_facade_canonical_to_legacy_manifest_matches_the_expected_pairs() -> Non
 
 
 def _run_isolated(script: str) -> None:
-    result = subprocess.run(
-        [PYTHON, "-I", "-S", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    # The generated identity probe can exceed the platform's ARG_MAX when
+    # passed via `-c`, so it is written to a temporary file and executed as a
+    # script instead. `-I` implies `-P`, so the temp directory is never
+    # prepended to sys.path -- the probe must still set up its own paths.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = Path(tmpdir) / "probe.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [PYTHON, "-I", "-S", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
     assert result.returncode == 0, (
         f"isolated subprocess failed (exit {result.returncode}):\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
