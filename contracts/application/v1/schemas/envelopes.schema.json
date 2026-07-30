@@ -39,7 +39,7 @@
         },
         "workspace_id": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
-          "description": "Workspace the request is scoped to."
+          "description": "Workspace the request is scoped to. Present only for workspace-scoped operations; an installation-scoped operation must never carry it. Whether a given operation requires or forbids it is a semantic concern (see `omnivia_core.contracts.v1.semantics`), not a wire-shape one."
         },
         "scopes": {
           "type": "array",
@@ -84,7 +84,6 @@
         "trace_id",
         "api_version",
         "client",
-        "workspace_id",
         "scopes",
         "purpose",
         "required_capabilities"

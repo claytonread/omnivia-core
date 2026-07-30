@@ -161,11 +161,11 @@ binding, or transport implementation yet.
 
 Canonical source and generated artifacts:
 
-- `contracts/application/v1/schemas/*.schema.json` — ten JSON Schema
+- `contracts/application/v1/schemas/*.schema.json` — twelve JSON Schema
   Draft 2020-12 documents (`common`, `compatibility`, `errors`, `envelopes`,
-  `service`, `records`, `jobs`, `operations`, `compatibility-matrix`, and the
-  reference-only `application-v1` registry). These are the single source of
-  truth; everything else is derived from them.
+  `service`, `records`, `jobs`, `operations`, `workspace`, `memory`,
+  `compatibility-matrix`, and the reference-only `application-v1` registry).
+  These are the single source of truth; everything else is derived from them.
 - `contracts/application/v1/fixtures/` — thirteen canonical example wire
   documents plus `manifest.json`, covering compatible negotiation, capability
   denial, an incompatible major version, a minimal request, a retryable
@@ -188,6 +188,12 @@ Canonical source and generated artifacts:
   the window the same envelope publishes as supported. The open
   `CompatibilityStatus` vocabulary is deliberately left unconstrained, so a
   newer peer's unseen status still decodes. Standard library only.
+- `src/omnivia_core/contracts/v1/semantics.py` — pure semantic validation for
+  the workspace and governed-memory DTOs (A2.2, ADR-038/ADR-039): domain-scope
+  and identifier/open-code shape checks, temporal ordering, evidence/
+  currentness/supersession/authority coherence, `memory.create` proposed-only
+  result-tuple enforcement (including the reserved-field decode guard), and
+  candidate evidence/provenance coherence. Standard library only.
 - `src/omnivia_core/contracts/v1/resources.py` — standard-library-only
   accessors for the packaged schemas and fixtures (see below).
 - `generated/typescript/application/v1/index.ts` — the same contract surface
@@ -211,7 +217,7 @@ Regenerate and verify:
 ```
 
 The conformance gate checks the canonical schema directory holds exactly the
-ten frozen schema documents (an extra one would be read by no check yet
+twelve frozen schema documents (an extra one would be read by no check yet
 packaged by the wheel, and a missing one is reported in the same place),
 validates every schema against the Draft 2020-12
 metaschema and its exact `$schema`/`$id`, resolves every `$ref` offline,
@@ -246,8 +252,8 @@ development-only dependency declared under `[dependency-groups]` in
 `pyproject.toml`, used only by `scripts/check-application-contracts.py` and
 its tests — the `format` extra provides the RFC 3339 calendar validation
 `jsonschema.FormatChecker` needs. The contract package itself (`generated.py`,
-`codec.py`, `compatibility.py`, `resources.py`) has zero runtime
-dependencies, including on `jsonschema`.
+`codec.py`, `compatibility.py`, `semantics.py`, `resources.py`) has zero
+runtime dependencies, including on `jsonschema`.
 
 The generated TypeScript module is regenerated and checked for drift the same
 way as the Python module, and is strict-compiled (`--strict --noEmit

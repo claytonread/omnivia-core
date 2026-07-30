@@ -13,6 +13,8 @@
     "https://contracts.omnivia.dev/application/v1/records.schema.json",
     "https://contracts.omnivia.dev/application/v1/jobs.schema.json",
     "https://contracts.omnivia.dev/application/v1/operations.schema.json",
+    "https://contracts.omnivia.dev/application/v1/workspace.schema.json",
+    "https://contracts.omnivia.dev/application/v1/memory.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json"
   ],
   "$defs": {
@@ -93,6 +95,9 @@
     },
     "ProjectionFreshness": {
       "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness"
+    },
+    "PageLimit": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit"
     },
     "PageMetadata": {
       "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata"
@@ -294,6 +299,81 @@
     },
     "OperationMetadata": {
       "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationMetadata"
+    },
+    "WorkspaceStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceStatus"
+    },
+    "WorkspaceCompatibility": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceCompatibility"
+    },
+    "WorkspaceDescriptor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceDescriptor"
+    },
+    "WorkspaceListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceListInput"
+    },
+    "WorkspaceListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceListResult"
+    },
+    "WorkspaceCreateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceCreateInput"
+    },
+    "WorkspaceCreateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceCreateResult"
+    },
+    "WorkspaceInspectInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceInspectInput"
+    },
+    "WorkspaceInspectResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceInspectResult"
+    },
+    "GovernedRecordType": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordType"
+    },
+    "GovernedRecordView": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordView"
+    },
+    "RecordDomainScope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope"
+    },
+    "GovernedRecord": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
+    },
+    "CandidateAssertion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateAssertion"
+    },
+    "CandidateExtractionMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/CandidateExtractionMetadata"
+    },
+    "MemoryQuery": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryQuery"
+    },
+    "MemorySearchOrder": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemorySearchOrder"
+    },
+    "MemoryCreateInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateInput"
+    },
+    "MemoryCreateResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateResult"
+    },
+    "MemoryGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryGetInput"
+    },
+    "MemoryGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryGetResult"
+    },
+    "MemoryListInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryListInput"
+    },
+    "MemoryListResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryListResult"
+    },
+    "MemorySearchInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemorySearchInput"
+    },
+    "MemorySearchResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemorySearchResult"
     },
     "OperationCompatibilityState": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityState"

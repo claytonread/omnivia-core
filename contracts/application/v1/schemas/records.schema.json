@@ -167,9 +167,13 @@
     },
     "RecordTemporalMetadata": {
       "title": "RecordTemporalMetadata",
-      "description": "The distinct instants a governed record's lifecycle turns on: when the underlying fact was observed, when the system ingested it, when this version was persisted, and the window it is asserted valid for.",
+      "description": "The distinct instants a governed record's lifecycle turns on: when the underlying fact occurred in the world, when it was observed, when the system ingested it, when this version was persisted, the window it is asserted valid for, and when it was superseded.",
       "type": "object",
       "properties": {
+        "event_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the underlying fact occurred in the world (source/event time), when distinguishable from `observed_at`."
+        },
         "observed_at": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
           "description": "When the underlying fact was observed to be true in the world, when known."
@@ -189,6 +193,10 @@
         "valid_until": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
           "description": "End of the window this record is asserted valid for, when bounded."
+        },
+        "superseded_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this record version was superseded by a newer version, present only once superseded."
         }
       },
       "required": ["ingested_at", "recorded_at"],

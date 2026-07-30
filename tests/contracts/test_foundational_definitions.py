@@ -79,6 +79,8 @@ ALL_SCHEMAS = (
     "records",
     "jobs",
     "operations",
+    "workspace",
+    "memory",
     "compatibility-matrix",
     "application-v1",
 )

@@ -27,8 +27,9 @@ instead of silently producing wrong types:
   ``additionalProperties`` becomes the opaque JSON-object type;
 - a ``$defs`` entry that is ``oneOf`` of ``$ref`` members becomes a union,
   discriminated by a required property unique to one member;
-- inside a property: ``$ref``, ``string``, ``integer``, ``boolean``, ``array``
-  with ``items``, and ``object`` with ``additionalProperties`` (an open map).
+- inside a property: ``$ref``, ``string``, ``integer``, ``number``, ``boolean``,
+  ``array`` with ``items``, and ``object`` with ``additionalProperties`` (an
+  open map).
 
 Everything the generator emits is structural. Pattern, length, and range
 constraints are *not* re-implemented in the decoders: strict conformance is
@@ -66,6 +67,8 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "records",
     "jobs",
     "operations",
+    "workspace",
+    "memory",
     "compatibility-matrix",
 )
 #: The reference-only registry. It contributes annotations, never definitions.
@@ -93,8 +96,8 @@ class UnsupportedSchemaError(Exception):
 class TypeRef:
     """A resolved property type.
 
-    ``kind`` is one of ``definition``, ``string``, ``integer``, ``boolean``,
-    ``array``, ``map``, or ``json_object``.
+    ``kind`` is one of ``definition``, ``string``, ``integer``, ``number``,
+    ``boolean``, ``array``, ``map``, or ``json_object``.
     """
 
     kind: str
@@ -208,6 +211,8 @@ def parse_type(node: dict[str, Any], location: str) -> TypeRef:
         return TypeRef("string")
     if node_type == "integer":
         return TypeRef("integer")
+    if node_type == "number":
+        return TypeRef("number")
     if node_type == "boolean":
         return TypeRef("boolean")
     if node_type == "array":
@@ -632,6 +637,19 @@ def _decode_int(value: object, path: str) -> int:
     return value
 
 
+def _decode_number(value: object, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractDecodeError(f"{path}: expected a number, got {type(value).__name__}")
+    if isinstance(value, float) and not isfinite(value):
+        raise ContractDecodeError(f"{path}: {value!r} is not representable in JSON")
+    try:
+        return float(value)
+    except OverflowError as error:
+        raise ContractDecodeError(
+            f"{path}: {value!r} is too large to represent as a JSON number"
+        ) from error
+
+
 def _decode_bool(value: object, path: str) -> bool:
     if not isinstance(value, bool):
         raise ContractDecodeError(f"{path}: expected a boolean, got {type(value).__name__}")
@@ -699,6 +717,8 @@ def python_annotation(type_ref: TypeRef, by_name: dict[str, Definition]) -> str:
         return "str"
     if type_ref.kind == "integer":
         return "int"
+    if type_ref.kind == "number":
+        return "float"
     if type_ref.kind == "boolean":
         return "bool"
     if type_ref.kind == "array":
@@ -721,6 +741,7 @@ def _scalar_decoder(type_ref: TypeRef, by_name: dict[str, Definition]) -> str | 
     return {
         "string": "_decode_str",
         "integer": "_decode_int",
+        "number": "_decode_number",
         "boolean": "_decode_bool",
         "json_object": "_decode_json_object",
     }.get(kind)
@@ -784,7 +805,7 @@ def python_encode_expr(type_ref: TypeRef, accessor: str, by_name: dict[str, Defi
             return f"{snake(type_ref.name)}_to_wire({accessor})"
     if kind == "json_object":
         return f"_encode_json_object({accessor})"
-    if kind in {"string", "integer", "boolean"}:
+    if kind in {"string", "integer", "number", "boolean"}:
         return accessor
     if kind == "array":
         inner = python_encode_expr(type_ref.inner, "item", by_name)
@@ -855,7 +876,10 @@ def emit_python_dataclass(definition: Definition, by_name: dict[str, Definition]
         "        ",
     )
     lines.append('        """')
-    lines.append("        mapping = _require_mapping(payload, path)")
+    if definition.properties:
+        lines.append("        mapping = _require_mapping(payload, path)")
+    else:
+        lines.append("        _require_mapping(payload, path)")
     for prop in definition.properties:
         suffix = f".{prop.name}"
         target = f"field_{prop.name}"
@@ -1122,7 +1146,7 @@ def typescript_annotation(type_ref: TypeRef) -> str:
         return type_ref.name
     if type_ref.kind == "string":
         return "string"
-    if type_ref.kind == "integer":
+    if type_ref.kind in {"integer", "number"}:
         return "number"
     if type_ref.kind == "boolean":
         return "boolean"

@@ -9,6 +9,8 @@
 #   contracts/application/v1/schemas/records.schema.json
 #   contracts/application/v1/schemas/jobs.schema.json
 #   contracts/application/v1/schemas/operations.schema.json
+#   contracts/application/v1/schemas/workspace.schema.json
+#   contracts/application/v1/schemas/memory.schema.json
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
@@ -79,6 +81,8 @@ __all__ = [
     "FROZEN_RETRY_CLASSES",
     "GOVERNANCE_LAYER_PATTERN",
     "GOVERNANCE_STATE_PATTERN",
+    "GOVERNED_RECORD_TYPE_PATTERN",
+    "GOVERNED_RECORD_VIEW_PATTERN",
     "IDEMPOTENCY_KEY_PATTERN",
     "IDENTIFIER_PATTERN",
     "JOB_CANCELLATION_DISPOSITION_PATTERN",
@@ -86,6 +90,7 @@ __all__ = [
     "JOB_RESUME_DISPOSITION_PATTERN",
     "JOB_RETRY_DISPOSITION_PATTERN",
     "JOB_STATE_PATTERN",
+    "MEMORY_SEARCH_ORDER_PATTERN",
     "OPAQUE_TOKEN_PATTERN",
     "OPEN_CODE_PATTERN",
     "OPERATION_COMPATIBILITY_STATE_PATTERN",
@@ -99,6 +104,7 @@ __all__ = [
     "PURPOSE_PATTERN",
     "QUALIFICATION_STATE_PATTERN",
     "RECORD_CURRENTNESS_PATTERN",
+    "RECORD_DOMAIN_SCOPE_PATTERN",
     "RECORD_ID_PATTERN",
     "RECORD_VERSION_PATTERN",
     "RELEASE_VERSION_PATTERN",
@@ -120,8 +126,11 @@ __all__ = [
     "UPGRADE_STATE_OPTIONAL",
     "UPGRADE_STATE_REQUIRED",
     "WORKSPACE_ID_PATTERN",
+    "WORKSPACE_STATUS_PATTERN",
     "ApiError",
     "AuditReference",
+    "CandidateAssertion",
+    "CandidateExtractionMetadata",
     "CapabilityCompatibilityEntry",
     "CapabilityId",
     "CapabilityRef",
@@ -142,6 +151,9 @@ __all__ = [
     "EvidenceReference",
     "GovernanceLayer",
     "GovernanceState",
+    "GovernedRecord",
+    "GovernedRecordType",
+    "GovernedRecordView",
     "GrantedAuthority",
     "IdempotencyKey",
     "Identifier",
@@ -163,6 +175,16 @@ __all__ = [
     "JobTerminalResult",
     "JobTerminalSuccess",
     "JsonObject",
+    "MemoryCreateInput",
+    "MemoryCreateResult",
+    "MemoryGetInput",
+    "MemoryGetResult",
+    "MemoryListInput",
+    "MemoryListResult",
+    "MemoryQuery",
+    "MemorySearchInput",
+    "MemorySearchOrder",
+    "MemorySearchResult",
     "MutationPrecondition",
     "Omission",
     "OpaqueToken",
@@ -180,6 +202,7 @@ __all__ = [
     "OperationScope",
     "OperationScopeKind",
     "OperationSideEffect",
+    "PageLimit",
     "PageMetadata",
     "PartialResult",
     "PrincipalClaim",
@@ -191,6 +214,7 @@ __all__ = [
     "Purpose",
     "QualificationState",
     "RecordCurrentness",
+    "RecordDomainScope",
     "RecordId",
     "RecordIdentity",
     "RecordProvenance",
@@ -220,7 +244,16 @@ __all__ = [
     "VersionCapabilityEnvelope",
     "VersionWindow",
     "Warning",
+    "WorkspaceCompatibility",
+    "WorkspaceCreateInput",
+    "WorkspaceCreateResult",
+    "WorkspaceDescriptor",
     "WorkspaceId",
+    "WorkspaceInspectInput",
+    "WorkspaceInspectResult",
+    "WorkspaceListInput",
+    "WorkspaceListResult",
+    "WorkspaceStatus",
     "job_terminal_result_from_wire",
     "job_terminal_result_to_wire",
     "response_envelope_from_wire",
@@ -261,6 +294,19 @@ def _decode_int(value: object, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ContractDecodeError(f"{path}: expected an integer, got {type(value).__name__}")
     return value
+
+
+def _decode_number(value: object, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractDecodeError(f"{path}: expected a number, got {type(value).__name__}")
+    if isinstance(value, float) and not isfinite(value):
+        raise ContractDecodeError(f"{path}: {value!r} is not representable in JSON")
+    try:
+        return float(value)
+    except OverflowError as error:
+        raise ContractDecodeError(
+            f"{path}: {value!r} is too large to represent as a JSON number"
+        ) from error
 
 
 def _decode_bool(value: object, path: str) -> bool:
@@ -514,6 +560,10 @@ JOB_PROGRESS_UNIT_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_CANCELLATION_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_RETRY_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_RESUME_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+GOVERNED_RECORD_TYPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+GOVERNED_RECORD_VIEW_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+RECORD_DOMAIN_SCOPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+MEMORY_SEARCH_ORDER_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 OPERATION_SIDE_EFFECT_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 OPERATION_SCOPE_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 OPERATION_COMPLETION_MODE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
@@ -526,6 +576,7 @@ SOURCE_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 EVIDENCE_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 PROBE_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 PROBE_STATUS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+WORKSPACE_STATUS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 
 
 # --- generated types -------------------------------------------------------
@@ -599,6 +650,9 @@ JsonObject: TypeAlias = Mapping[str, Any]
 per-operation payload schemas are out of scope for v1 foundations.
 """
 
+PageLimit: TypeAlias = int
+"""A bounded positive page size a caller requests for a paginated read."""
+
 OperationCompatibilityState: TypeAlias = str
 """Open, dot-namespaced code naming an operation's lifecycle state, such as `stable` or
 `experimental` or `deprecated` or `removed`. Open by design so a compatible minor release can add
@@ -663,6 +717,40 @@ JobResumeDisposition: TypeAlias = str
 """Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as
 `not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler,
 worker, lease, or persistence detail.
+"""
+
+GovernedRecordType: TypeAlias = str
+"""Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact` or
+`memory.entity` or `memory.relation`. Open by design so a compatible minor release can add record
+types without breaking existing decoders.
+"""
+
+GovernedRecordView: TypeAlias = str
+"""Open, dot-namespaced code selecting which slice of a governed record's versions a read considers:
+`current_canonical` (the single active accepted version, the default when this field is absent),
+`candidates` (proposed/candidate versions not yet accepted), or `history` (every version,
+including superseded ones). Open by design so a compatible minor release can add views without
+breaking existing decoders. Default resolution when absent is a semantic concern (see
+`omnivia_core.contracts.v1.semantics`), not a wire-shape one.
+"""
+
+RecordDomainScope: TypeAlias = str
+"""Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed
+record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the caller-
+authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or checks a
+permission, it only classifies what the record is about. Open by design so a compatible minor
+release can add classifications without breaking existing decoders.
+"""
+
+MemoryQuery: TypeAlias = str
+"""A caller-supplied, normalized search query for `memory.search`. Normalization (case-folding,
+whitespace, tokenization) is caller-side; this document defines no normalization algorithm.
+"""
+
+MemorySearchOrder: TypeAlias = str
+"""Open, dot-namespaced code naming how `memory.search` results are ordered, such as `relevance` or
+`recency`. Open by design so a compatible minor release can add orders without breaking existing
+decoders.
 """
 
 OperationSideEffect: TypeAlias = str
@@ -927,6 +1015,78 @@ ProbeStatus: TypeAlias = str
 or `warn` or `fail`. Open by design; an unrecognized status must be preserved and surfaced, not
 coerced to a known one.
 """
+
+WorkspaceStatus: TypeAlias = str
+"""Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
+`provisioning` or `archived`. Open by design so a compatible minor release can add statuses
+without breaking existing decoders.
+"""
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCreateInput:
+    """Input for `workspace.create`. Installation-scoped: carries only installation-level
+    creation data, and never a caller-supplied workspace identifier.
+    """
+
+    display_name: str
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["display_name"] = self.display_name
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkspaceCreateInput") -> WorkspaceCreateInput:
+        """Decode a wire payload into a WorkspaceCreateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_display_name = _decode_str(
+            _require_field(mapping, "display_name", path),
+            f"{path}.display_name",
+        )
+        return cls(
+            display_name=field_display_name,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceInspectInput:
+    """Input for `workspace.inspect`. Workspace-scoped: the workspace to inspect is the request
+    envelope's selected workspace; this payload never carries a second, independent workspace
+    identifier.
+    """
+
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkspaceInspectInput"
+    ) -> WorkspaceInspectInput:
+        """Decode a wire payload into a WorkspaceInspectInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        _require_mapping(payload, path)
+        return cls(
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ClientIdentity:
@@ -1894,6 +2054,176 @@ class JobCancellationOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateExtractionMetadata:
+    """Optional provenance about the automated extractor that produced a `memory.create`
+    candidate, when one did. Absent entirely for a candidate a human asserted directly.
+    """
+
+    extractor_id: Identifier
+    extracted_at: Timestamp
+    extractor_version: Identifier | None = None
+    model_version: Identifier | None = None
+    prompt_version: Identifier | None = None
+    confidence: float | None = None
+    reconciliation_state: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["extractor_id"] = self.extractor_id
+        if self.extractor_version is not None:
+            wire["extractor_version"] = self.extractor_version
+        if self.model_version is not None:
+            wire["model_version"] = self.model_version
+        if self.prompt_version is not None:
+            wire["prompt_version"] = self.prompt_version
+        wire["extracted_at"] = self.extracted_at
+        if self.confidence is not None:
+            wire["confidence"] = self.confidence
+        if self.reconciliation_state is not None:
+            wire["reconciliation_state"] = self.reconciliation_state
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "CandidateExtractionMetadata"
+    ) -> CandidateExtractionMetadata:
+        """Decode a wire payload into a CandidateExtractionMetadata.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_extractor_id = _decode_str(
+            _require_field(mapping, "extractor_id", path),
+            f"{path}.extractor_id",
+        )
+        field_extractor_version: Identifier | None = None
+        if "extractor_version" in mapping:
+            raw_extractor_version = mapping["extractor_version"]
+            if raw_extractor_version is None:
+                raise ContractDecodeError(
+                    f"{path}.extractor_version: null is not a valid value"
+                )
+            field_extractor_version = _decode_str(
+                raw_extractor_version,
+                f"{path}.extractor_version",
+            )
+        field_model_version: Identifier | None = None
+        if "model_version" in mapping:
+            raw_model_version = mapping["model_version"]
+            if raw_model_version is None:
+                raise ContractDecodeError(
+                    f"{path}.model_version: null is not a valid value"
+                )
+            field_model_version = _decode_str(raw_model_version, f"{path}.model_version")
+        field_prompt_version: Identifier | None = None
+        if "prompt_version" in mapping:
+            raw_prompt_version = mapping["prompt_version"]
+            if raw_prompt_version is None:
+                raise ContractDecodeError(
+                    f"{path}.prompt_version: null is not a valid value"
+                )
+            field_prompt_version = _decode_str(raw_prompt_version, f"{path}.prompt_version")
+        field_extracted_at = _decode_str(
+            _require_field(mapping, "extracted_at", path),
+            f"{path}.extracted_at",
+        )
+        field_confidence: float | None = None
+        if "confidence" in mapping:
+            raw_confidence = mapping["confidence"]
+            if raw_confidence is None:
+                raise ContractDecodeError(
+                    f"{path}.confidence: null is not a valid value"
+                )
+            field_confidence = _decode_number(raw_confidence, f"{path}.confidence")
+        field_reconciliation_state: OpenCode | None = None
+        if "reconciliation_state" in mapping:
+            raw_reconciliation_state = mapping["reconciliation_state"]
+            if raw_reconciliation_state is None:
+                raise ContractDecodeError(
+                    f"{path}.reconciliation_state: null is not a valid value"
+                )
+            field_reconciliation_state = _decode_str(
+                raw_reconciliation_state,
+                f"{path}.reconciliation_state",
+            )
+        return cls(
+            extractor_id=field_extractor_id,
+            extractor_version=field_extractor_version,
+            model_version=field_model_version,
+            prompt_version=field_prompt_version,
+            extracted_at=field_extracted_at,
+            confidence=field_confidence,
+            reconciliation_state=field_reconciliation_state,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryGetInput:
+    """Input for `memory.get`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier.
+    """
+
+    record_id: RecordId
+    version: RecordVersion | None = None
+    view: GovernedRecordView | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_id"] = self.record_id
+        if self.version is not None:
+            wire["version"] = self.version
+        if self.view is not None:
+            wire["view"] = self.view
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryGetInput") -> MemoryGetInput:
+        """Decode a wire payload into a MemoryGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_id = _decode_str(
+            _require_field(mapping, "record_id", path),
+            f"{path}.record_id",
+        )
+        field_version: RecordVersion | None = None
+        if "version" in mapping:
+            raw_version = mapping["version"]
+            if raw_version is None:
+                raise ContractDecodeError(
+                    f"{path}.version: null is not a valid value"
+                )
+            field_version = _decode_str(raw_version, f"{path}.version")
+        field_view: GovernedRecordView | None = None
+        if "view" in mapping:
+            raw_view = mapping["view"]
+            if raw_view is None:
+                raise ContractDecodeError(
+                    f"{path}.view: null is not a valid value"
+                )
+            field_view = _decode_str(raw_view, f"{path}.view")
+        return cls(
+            record_id=field_record_id,
+            version=field_version,
+            view=field_view,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OperationScope:
     """What an operation itself declares it needs and touches, independent of any single
     caller's request.
@@ -2099,15 +2429,17 @@ class SourceReference:
 @dataclass(frozen=True, slots=True)
 class RecordTemporalMetadata:
     """The distinct instants a governed record's lifecycle turns on: when the underlying fact
-    was observed, when the system ingested it, when this version was persisted, and the
-    window it is asserted valid for.
+    occurred in the world, when it was observed, when the system ingested it, when this
+    version was persisted, the window it is asserted valid for, and when it was superseded.
     """
 
     ingested_at: Timestamp
     recorded_at: Timestamp
+    event_at: Timestamp | None = None
     observed_at: Timestamp | None = None
     valid_from: Timestamp | None = None
     valid_until: Timestamp | None = None
+    superseded_at: Timestamp | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -2116,6 +2448,8 @@ class RecordTemporalMetadata:
         round trip reproduces the original document exactly.
         """
         wire: dict[str, Any] = {}
+        if self.event_at is not None:
+            wire["event_at"] = self.event_at
         if self.observed_at is not None:
             wire["observed_at"] = self.observed_at
         wire["ingested_at"] = self.ingested_at
@@ -2124,6 +2458,8 @@ class RecordTemporalMetadata:
             wire["valid_from"] = self.valid_from
         if self.valid_until is not None:
             wire["valid_until"] = self.valid_until
+        if self.superseded_at is not None:
+            wire["superseded_at"] = self.superseded_at
         return wire
 
     @classmethod
@@ -2136,6 +2472,14 @@ class RecordTemporalMetadata:
         here. Missing required fields and wrongly typed values raise ContractDecodeError.
         """
         mapping = _require_mapping(payload, path)
+        field_event_at: Timestamp | None = None
+        if "event_at" in mapping:
+            raw_event_at = mapping["event_at"]
+            if raw_event_at is None:
+                raise ContractDecodeError(
+                    f"{path}.event_at: null is not a valid value"
+                )
+            field_event_at = _decode_str(raw_event_at, f"{path}.event_at")
         field_observed_at: Timestamp | None = None
         if "observed_at" in mapping:
             raw_observed_at = mapping["observed_at"]
@@ -2168,12 +2512,22 @@ class RecordTemporalMetadata:
                     f"{path}.valid_until: null is not a valid value"
                 )
             field_valid_until = _decode_str(raw_valid_until, f"{path}.valid_until")
+        field_superseded_at: Timestamp | None = None
+        if "superseded_at" in mapping:
+            raw_superseded_at = mapping["superseded_at"]
+            if raw_superseded_at is None:
+                raise ContractDecodeError(
+                    f"{path}.superseded_at: null is not a valid value"
+                )
+            field_superseded_at = _decode_str(raw_superseded_at, f"{path}.superseded_at")
         return cls(
+            event_at=field_event_at,
             observed_at=field_observed_at,
             ingested_at=field_ingested_at,
             recorded_at=field_recorded_at,
             valid_from=field_valid_from,
             valid_until=field_valid_until,
+            superseded_at=field_superseded_at,
         )
 
 
@@ -2770,10 +3124,10 @@ class RequestMetadata:
     trace_id: TraceId
     api_version: ContractVersion
     client: ClientIdentity
-    workspace_id: WorkspaceId
     scopes: tuple[Scope, ...]
     purpose: Purpose
     required_capabilities: tuple[CapabilityRequirement, ...]
+    workspace_id: WorkspaceId | None = None
     deadline_ms: DurationMs | None = None
     idempotency_key: IdempotencyKey | None = None
     mutation_precondition: MutationPrecondition | None = None
@@ -2791,7 +3145,8 @@ class RequestMetadata:
         wire["trace_id"] = self.trace_id
         wire["api_version"] = self.api_version
         wire["client"] = self.client.to_wire()
-        wire["workspace_id"] = self.workspace_id
+        if self.workspace_id is not None:
+            wire["workspace_id"] = self.workspace_id
         wire["scopes"] = list(self.scopes)
         wire["purpose"] = self.purpose
         if self.deadline_ms is not None:
@@ -2830,10 +3185,14 @@ class RequestMetadata:
             _require_field(mapping, "client", path),
             f"{path}.client",
         )
-        field_workspace_id = _decode_str(
-            _require_field(mapping, "workspace_id", path),
-            f"{path}.workspace_id",
-        )
+        field_workspace_id: WorkspaceId | None = None
+        if "workspace_id" in mapping:
+            raw_workspace_id = mapping["workspace_id"]
+            if raw_workspace_id is None:
+                raise ContractDecodeError(
+                    f"{path}.workspace_id: null is not a valid value"
+                )
+            field_workspace_id = _decode_str(raw_workspace_id, f"{path}.workspace_id")
         field_scopes_items = _decode_sequence(
             _require_field(mapping, "scopes", path),
             f"{path}.scopes",
@@ -2971,6 +3330,178 @@ class JobAttempt:
             finished_at=field_finished_at,
             state=field_state,
             error=field_error,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryListInput:
+    """Input for `memory.list`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier.
+    """
+
+    view: GovernedRecordView | None = None
+    record_type: GovernedRecordType | None = None
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.view is not None:
+            wire["view"] = self.view
+        if self.record_type is not None:
+            wire["record_type"] = self.record_type
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryListInput") -> MemoryListInput:
+        """Decode a wire payload into a MemoryListInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_view: GovernedRecordView | None = None
+        if "view" in mapping:
+            raw_view = mapping["view"]
+            if raw_view is None:
+                raise ContractDecodeError(
+                    f"{path}.view: null is not a valid value"
+                )
+            field_view = _decode_str(raw_view, f"{path}.view")
+        field_record_type: GovernedRecordType | None = None
+        if "record_type" in mapping:
+            raw_record_type = mapping["record_type"]
+            if raw_record_type is None:
+                raise ContractDecodeError(
+                    f"{path}.record_type: null is not a valid value"
+                )
+            field_record_type = _decode_str(raw_record_type, f"{path}.record_type")
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            view=field_view,
+            record_type=field_record_type,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchInput:
+    """Input for `memory.search`. Workspace-scoped: the workspace is the request envelope's
+    selected workspace; this payload never carries a second, independent workspace
+    identifier. Carries the normalized query and requested order a later stateful conformance
+    slice will bind an issued continuation token to, alongside principal/workspace/operation
+    binding.
+    """
+
+    query: MemoryQuery
+    order: MemorySearchOrder | None = None
+    view: GovernedRecordView | None = None
+    record_type: GovernedRecordType | None = None
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["query"] = self.query
+        if self.order is not None:
+            wire["order"] = self.order
+        if self.view is not None:
+            wire["view"] = self.view
+        if self.record_type is not None:
+            wire["record_type"] = self.record_type
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemorySearchInput") -> MemorySearchInput:
+        """Decode a wire payload into a MemorySearchInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_query = _decode_str(_require_field(mapping, "query", path), f"{path}.query")
+        field_order: MemorySearchOrder | None = None
+        if "order" in mapping:
+            raw_order = mapping["order"]
+            if raw_order is None:
+                raise ContractDecodeError(
+                    f"{path}.order: null is not a valid value"
+                )
+            field_order = _decode_str(raw_order, f"{path}.order")
+        field_view: GovernedRecordView | None = None
+        if "view" in mapping:
+            raw_view = mapping["view"]
+            if raw_view is None:
+                raise ContractDecodeError(
+                    f"{path}.view: null is not a valid value"
+                )
+            field_view = _decode_str(raw_view, f"{path}.view")
+        field_record_type: GovernedRecordType | None = None
+        if "record_type" in mapping:
+            raw_record_type = mapping["record_type"]
+            if raw_record_type is None:
+                raise ContractDecodeError(
+                    f"{path}.record_type: null is not a valid value"
+                )
+            field_record_type = _decode_str(raw_record_type, f"{path}.record_type")
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            query=field_query,
+            order=field_order,
+            view=field_view,
+            record_type=field_record_type,
+            limit=field_limit,
+            page=field_page,
         )
 
 
@@ -3329,6 +3860,108 @@ class ServiceProbeResult:
             components=field_components,
             supported_capabilities=field_supported_capabilities,
             details=field_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCompatibility:
+    """The concrete workspace-format version a workspace is stored at, and the inclusive version
+    window this server build can read and write. Reuses the same `VersionWindow` and
+    `OpenCode` primitives `VersionCapabilityEnvelope` negotiates with, rather than inventing
+    a second version model.
+    """
+
+    workspace_format_version: ContractVersion
+    supported_workspace_versions: VersionWindow
+    status: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_format_version"] = self.workspace_format_version
+        wire["supported_workspace_versions"] = self.supported_workspace_versions.to_wire()
+        wire["status"] = self.status
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkspaceCompatibility"
+    ) -> WorkspaceCompatibility:
+        """Decode a wire payload into a WorkspaceCompatibility.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_format_version = _decode_str(
+            _require_field(mapping, "workspace_format_version", path),
+            f"{path}.workspace_format_version",
+        )
+        field_supported_workspace_versions = VersionWindow.from_wire(
+            _require_field(mapping, "supported_workspace_versions", path),
+            f"{path}.supported_workspace_versions",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        return cls(
+            workspace_format_version=field_workspace_format_version,
+            supported_workspace_versions=field_supported_workspace_versions,
+            status=field_status,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceListInput:
+    """Input for `workspace.list`. Installation-scoped: carries no workspace identifier, since
+    it lists every workspace the caller's installation-level authority can see.
+    """
+
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkspaceListInput") -> WorkspaceListInput:
+        """Decode a wire payload into a WorkspaceListInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            limit=field_limit,
+            page=field_page,
         )
 
 
@@ -3786,6 +4419,103 @@ class JobTerminalCancellation:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateAssertion:
+    """Who is asserting a `memory.create` candidate, when, and on what evidence, plus the
+    validity window they propose for it. This is caller-supplied provenance for the proposal,
+    not the server-owned governance decision: it never carries authority level,
+    reviewer/policy identity, or any other field `MemoryCreateInput` itself is forbidden from
+    carrying.
+    """
+
+    actor_id: Identifier
+    actor_kind: OpenCode
+    actor_role: OpenCode
+    asserted_at: Timestamp
+    evidence: tuple[EvidenceReference, ...]
+    proposed_valid_from: Timestamp | None = None
+    proposed_valid_until: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["actor_id"] = self.actor_id
+        wire["actor_kind"] = self.actor_kind
+        wire["actor_role"] = self.actor_role
+        wire["asserted_at"] = self.asserted_at
+        if self.proposed_valid_from is not None:
+            wire["proposed_valid_from"] = self.proposed_valid_from
+        if self.proposed_valid_until is not None:
+            wire["proposed_valid_until"] = self.proposed_valid_until
+        wire["evidence"] = [item.to_wire() for item in self.evidence]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CandidateAssertion") -> CandidateAssertion:
+        """Decode a wire payload into a CandidateAssertion.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_actor_id = _decode_str(_require_field(mapping, "actor_id", path), f"{path}.actor_id")
+        field_actor_kind = _decode_str(
+            _require_field(mapping, "actor_kind", path),
+            f"{path}.actor_kind",
+        )
+        field_actor_role = _decode_str(
+            _require_field(mapping, "actor_role", path),
+            f"{path}.actor_role",
+        )
+        field_asserted_at = _decode_str(
+            _require_field(mapping, "asserted_at", path),
+            f"{path}.asserted_at",
+        )
+        field_proposed_valid_from: Timestamp | None = None
+        if "proposed_valid_from" in mapping:
+            raw_proposed_valid_from = mapping["proposed_valid_from"]
+            if raw_proposed_valid_from is None:
+                raise ContractDecodeError(
+                    f"{path}.proposed_valid_from: null is not a valid value"
+                )
+            field_proposed_valid_from = _decode_str(
+                raw_proposed_valid_from,
+                f"{path}.proposed_valid_from",
+            )
+        field_proposed_valid_until: Timestamp | None = None
+        if "proposed_valid_until" in mapping:
+            raw_proposed_valid_until = mapping["proposed_valid_until"]
+            if raw_proposed_valid_until is None:
+                raise ContractDecodeError(
+                    f"{path}.proposed_valid_until: null is not a valid value"
+                )
+            field_proposed_valid_until = _decode_str(
+                raw_proposed_valid_until,
+                f"{path}.proposed_valid_until",
+            )
+        field_evidence_items = _decode_sequence(
+            _require_field(mapping, "evidence", path),
+            f"{path}.evidence",
+        )
+        field_evidence = tuple(
+            EvidenceReference.from_wire(item, f"{path}.evidence[{index}]")
+            for index, item in enumerate(field_evidence_items)
+        )
+        return cls(
+            actor_id=field_actor_id,
+            actor_kind=field_actor_kind,
+            actor_role=field_actor_role,
+            asserted_at=field_asserted_at,
+            proposed_valid_from=field_proposed_valid_from,
+            proposed_valid_until=field_proposed_valid_until,
+            evidence=field_evidence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ProvenanceEntry:
     """One step in a record's history: who or what did what, and when."""
 
@@ -3846,6 +4576,78 @@ class ProvenanceEntry:
             action=field_action,
             occurred_at=field_occurred_at,
             evidence=field_evidence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceDescriptor:
+    """A workspace's identity, display name, lifecycle status, format compatibility, and
+    lifecycle timestamps.
+    """
+
+    workspace_id: WorkspaceId
+    display_name: str
+    status: WorkspaceStatus
+    compatibility: WorkspaceCompatibility
+    created_at: Timestamp
+    updated_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["display_name"] = self.display_name
+        wire["status"] = self.status
+        wire["compatibility"] = self.compatibility.to_wire()
+        wire["created_at"] = self.created_at
+        if self.updated_at is not None:
+            wire["updated_at"] = self.updated_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkspaceDescriptor") -> WorkspaceDescriptor:
+        """Decode a wire payload into a WorkspaceDescriptor.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_display_name = _decode_str(
+            _require_field(mapping, "display_name", path),
+            f"{path}.display_name",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_compatibility = WorkspaceCompatibility.from_wire(
+            _require_field(mapping, "compatibility", path),
+            f"{path}.compatibility",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_updated_at: Timestamp | None = None
+        if "updated_at" in mapping:
+            raw_updated_at = mapping["updated_at"]
+            if raw_updated_at is None:
+                raise ContractDecodeError(
+                    f"{path}.updated_at: null is not a valid value"
+                )
+            field_updated_at = _decode_str(raw_updated_at, f"{path}.updated_at")
+        return cls(
+            workspace_id=field_workspace_id,
+            display_name=field_display_name,
+            status=field_status,
+            compatibility=field_compatibility,
+            created_at=field_created_at,
+            updated_at=field_updated_at,
         )
 
 
@@ -4051,6 +4853,122 @@ def job_terminal_result_to_wire(value: JobTerminalResult) -> dict[str, Any]:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryCreateInput:
+    """Input for `memory.create`: the proposed record's type, domain scope, content,
+    evidence/provenance, and assertion. Carries no authority-level, reviewer/policy decision,
+    governance-state, currentness, record id, version, recorded time, or supersession field,
+    so a caller can never assert accepted, current-canonical, superseded, or historical
+    authority through this payload; every `memory.create` result is proposed-only.
+    """
+
+    record_type: GovernedRecordType
+    domain_scope: RecordDomainScope
+    content: JsonObject
+    evidence_disposition: EvidenceDisposition
+    sources: tuple[SourceReference, ...]
+    assertion: CandidateAssertion
+    extraction: CandidateExtractionMetadata | None = None
+    event_at: Timestamp | None = None
+    observed_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record_type"] = self.record_type
+        wire["domain_scope"] = self.domain_scope
+        wire["content"] = _encode_json_object(self.content)
+        wire["evidence_disposition"] = self.evidence_disposition
+        wire["sources"] = [item.to_wire() for item in self.sources]
+        wire["assertion"] = self.assertion.to_wire()
+        if self.extraction is not None:
+            wire["extraction"] = self.extraction.to_wire()
+        if self.event_at is not None:
+            wire["event_at"] = self.event_at
+        if self.observed_at is not None:
+            wire["observed_at"] = self.observed_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryCreateInput") -> MemoryCreateInput:
+        """Decode a wire payload into a MemoryCreateInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record_type = _decode_str(
+            _require_field(mapping, "record_type", path),
+            f"{path}.record_type",
+        )
+        field_domain_scope = _decode_str(
+            _require_field(mapping, "domain_scope", path),
+            f"{path}.domain_scope",
+        )
+        field_content = _decode_json_object(
+            _require_field(mapping, "content", path),
+            f"{path}.content",
+        )
+        field_evidence_disposition = _decode_str(
+            _require_field(mapping, "evidence_disposition", path),
+            f"{path}.evidence_disposition",
+        )
+        field_sources_items = _decode_sequence(
+            _require_field(mapping, "sources", path),
+            f"{path}.sources",
+        )
+        field_sources = tuple(
+            SourceReference.from_wire(item, f"{path}.sources[{index}]")
+            for index, item in enumerate(field_sources_items)
+        )
+        field_assertion = CandidateAssertion.from_wire(
+            _require_field(mapping, "assertion", path),
+            f"{path}.assertion",
+        )
+        field_extraction: CandidateExtractionMetadata | None = None
+        if "extraction" in mapping:
+            raw_extraction = mapping["extraction"]
+            if raw_extraction is None:
+                raise ContractDecodeError(
+                    f"{path}.extraction: null is not a valid value"
+                )
+            field_extraction = CandidateExtractionMetadata.from_wire(
+                raw_extraction,
+                f"{path}.extraction",
+            )
+        field_event_at: Timestamp | None = None
+        if "event_at" in mapping:
+            raw_event_at = mapping["event_at"]
+            if raw_event_at is None:
+                raise ContractDecodeError(
+                    f"{path}.event_at: null is not a valid value"
+                )
+            field_event_at = _decode_str(raw_event_at, f"{path}.event_at")
+        field_observed_at: Timestamp | None = None
+        if "observed_at" in mapping:
+            raw_observed_at = mapping["observed_at"]
+            if raw_observed_at is None:
+                raise ContractDecodeError(
+                    f"{path}.observed_at: null is not a valid value"
+                )
+            field_observed_at = _decode_str(raw_observed_at, f"{path}.observed_at")
+        return cls(
+            record_type=field_record_type,
+            domain_scope=field_domain_scope,
+            content=field_content,
+            evidence_disposition=field_evidence_disposition,
+            sources=field_sources,
+            assertion=field_assertion,
+            extraction=field_extraction,
+            event_at=field_event_at,
+            observed_at=field_observed_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecordProvenance:
     """The full provenance envelope for one record version: identity, temporal metadata, its
     authoring history, and the sources it draws on.
@@ -4118,6 +5036,120 @@ class RecordProvenance:
             history=field_history,
             evidence_disposition=field_evidence_disposition,
             sources=field_sources,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceListResult:
+    """Result of `workspace.list`."""
+
+    workspaces: tuple[WorkspaceDescriptor, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspaces"] = [item.to_wire() for item in self.workspaces]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkspaceListResult") -> WorkspaceListResult:
+        """Decode a wire payload into a WorkspaceListResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspaces_items = _decode_sequence(
+            _require_field(mapping, "workspaces", path),
+            f"{path}.workspaces",
+        )
+        field_workspaces = tuple(
+            WorkspaceDescriptor.from_wire(item, f"{path}.workspaces[{index}]")
+            for index, item in enumerate(field_workspaces_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            workspaces=field_workspaces,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceCreateResult:
+    """Result of `workspace.create`: the concrete created workspace, including its server-
+    assigned identifier and format compatibility. Never a sentinel or placeholder workspace
+    identifier.
+    """
+
+    workspace: WorkspaceDescriptor
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace"] = self.workspace.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkspaceCreateResult"
+    ) -> WorkspaceCreateResult:
+        """Decode a wire payload into a WorkspaceCreateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace = WorkspaceDescriptor.from_wire(
+            _require_field(mapping, "workspace", path),
+            f"{path}.workspace",
+        )
+        return cls(
+            workspace=field_workspace,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceInspectResult:
+    """Result of `workspace.inspect`: the envelope-selected workspace's concrete descriptor."""
+
+    workspace: WorkspaceDescriptor
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace"] = self.workspace.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkspaceInspectResult"
+    ) -> WorkspaceInspectResult:
+        """Decode a wire payload into a WorkspaceInspectResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace = WorkspaceDescriptor.from_wire(
+            _require_field(mapping, "workspace", path),
+            f"{path}.workspace",
+        )
+        return cls(
+            workspace=field_workspace,
         )
 
 
@@ -4202,6 +5234,90 @@ class ErrorResponseEnvelope:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class GovernedRecord:
+    """A provider-neutral governed record: which workspace it belongs to, what kind of record it
+    is, its domain scope and authority level, its full L0-L4 governance, temporal, evidence,
+    and provenance envelope, and its opaque JSON content. Carries no reference to, and is not
+    a substitute for, any repo-local `Memory`, `MemoryFact`, or `SourceRef` domain class.
+    """
+
+    workspace_id: WorkspaceId
+    record_type: GovernedRecordType
+    domain_scope: RecordDomainScope
+    authority_level: OpenCode
+    provenance: RecordProvenance
+    content: JsonObject
+    reviewer: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["record_type"] = self.record_type
+        wire["domain_scope"] = self.domain_scope
+        wire["authority_level"] = self.authority_level
+        if self.reviewer is not None:
+            wire["reviewer"] = self.reviewer
+        wire["provenance"] = self.provenance.to_wire()
+        wire["content"] = _encode_json_object(self.content)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "GovernedRecord") -> GovernedRecord:
+        """Decode a wire payload into a GovernedRecord.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_record_type = _decode_str(
+            _require_field(mapping, "record_type", path),
+            f"{path}.record_type",
+        )
+        field_domain_scope = _decode_str(
+            _require_field(mapping, "domain_scope", path),
+            f"{path}.domain_scope",
+        )
+        field_authority_level = _decode_str(
+            _require_field(mapping, "authority_level", path),
+            f"{path}.authority_level",
+        )
+        field_reviewer: Identifier | None = None
+        if "reviewer" in mapping:
+            raw_reviewer = mapping["reviewer"]
+            if raw_reviewer is None:
+                raise ContractDecodeError(
+                    f"{path}.reviewer: null is not a valid value"
+                )
+            field_reviewer = _decode_str(raw_reviewer, f"{path}.reviewer")
+        field_provenance = RecordProvenance.from_wire(
+            _require_field(mapping, "provenance", path),
+            f"{path}.provenance",
+        )
+        field_content = _decode_json_object(
+            _require_field(mapping, "content", path),
+            f"{path}.content",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            record_type=field_record_type,
+            domain_scope=field_domain_scope,
+            authority_level=field_authority_level,
+            reviewer=field_reviewer,
+            provenance=field_provenance,
+            content=field_content,
+        )
+
+
 ResponseEnvelope: TypeAlias = SuccessResponseEnvelope | ErrorResponseEnvelope
 """Exactly one of a success or an error response, never both. Both branches close their property
 set, so a document carrying `result` and `error` together matches neither branch and is invalid.
@@ -4233,3 +5349,154 @@ def response_envelope_from_wire(
 def response_envelope_to_wire(value: ResponseEnvelope) -> dict[str, Any]:
     """Render one ResponseEnvelope branch as a JSON-compatible mapping."""
     return value.to_wire()
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCreateResult:
+    """Result of `memory.create`: the resulting proposed governed record.
+    `provenance.identity.governance_state` is always `proposed`; this operation never creates
+    accepted canonical knowledge.
+    """
+
+    record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record"] = self.record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryCreateResult") -> MemoryCreateResult:
+        """Decode a wire payload into a MemoryCreateResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record = GovernedRecord.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        return cls(
+            record=field_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryGetResult:
+    """Result of `memory.get`: the governed record."""
+
+    record: GovernedRecord
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["record"] = self.record.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryGetResult") -> MemoryGetResult:
+        """Decode a wire payload into a MemoryGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_record = GovernedRecord.from_wire(
+            _require_field(mapping, "record", path),
+            f"{path}.record",
+        )
+        return cls(
+            record=field_record,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryListResult:
+    """Result of `memory.list`."""
+
+    records: tuple[GovernedRecord, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["records"] = [item.to_wire() for item in self.records]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemoryListResult") -> MemoryListResult:
+        """Decode a wire payload into a MemoryListResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_records_items = _decode_sequence(
+            _require_field(mapping, "records", path),
+            f"{path}.records",
+        )
+        field_records = tuple(
+            GovernedRecord.from_wire(item, f"{path}.records[{index}]")
+            for index, item in enumerate(field_records_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            records=field_records,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySearchResult:
+    """Result of `memory.search`."""
+
+    records: tuple[GovernedRecord, ...]
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["records"] = [item.to_wire() for item in self.records]
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MemorySearchResult") -> MemorySearchResult:
+        """Decode a wire payload into a MemorySearchResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_records_items = _decode_sequence(
+            _require_field(mapping, "records", path),
+            f"{path}.records",
+        )
+        field_records = tuple(
+            GovernedRecord.from_wire(item, f"{path}.records[{index}]")
+            for index, item in enumerate(field_records_items)
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            records=field_records,
+            page=field_page,
+        )

@@ -9,6 +9,8 @@
 //   contracts/application/v1/schemas/records.schema.json
 //   contracts/application/v1/schemas/jobs.schema.json
 //   contracts/application/v1/schemas/operations.schema.json
+//   contracts/application/v1/schemas/workspace.schema.json
+//   contracts/application/v1/schemas/memory.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
@@ -163,6 +165,11 @@ export const PROJECTION_VERSION_PATTERN: string = "^[!-~]+$";
 export type JsonObject = { readonly [key: string]: JsonValue };
 
 /**
+ * A bounded positive page size a caller requests for a paginated read.
+ */
+export type PageLimit = number;
+
+/**
  * Open, dot-namespaced code naming an operation's lifecycle state, such as `stable` or
  * `experimental` or `deprecated` or `removed`. Open by design so a compatible minor release can
  * add states without breaking existing decoders.
@@ -252,6 +259,49 @@ export const JOB_RETRY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z
  */
 export type JobResumeDisposition = string;
 export const JOB_RESUME_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
+ * or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add
+ * record types without breaking existing decoders.
+ */
+export type GovernedRecordType = string;
+export const GOVERNED_RECORD_TYPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code selecting which slice of a governed record's versions a read
+ * considers: `current_canonical` (the single active accepted version, the default when this
+ * field is absent), `candidates` (proposed/candidate versions not yet accepted), or `history`
+ * (every version, including superseded ones). Open by design so a compatible minor release can
+ * add views without breaking existing decoders. Default resolution when absent is a semantic
+ * concern (see `omnivia_core.contracts.v1.semantics`), not a wire-shape one.
+ */
+export type GovernedRecordView = string;
+export const GOVERNED_RECORD_VIEW_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed
+ * record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the
+ * caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or
+ * checks a permission, it only classifies what the record is about. Open by design so a
+ * compatible minor release can add classifications without breaking existing decoders.
+ */
+export type RecordDomainScope = string;
+export const RECORD_DOMAIN_SCOPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * A caller-supplied, normalized search query for `memory.search`. Normalization (case-folding,
+ * whitespace, tokenization) is caller-side; this document defines no normalization algorithm.
+ */
+export type MemoryQuery = string;
+
+/**
+ * Open, dot-namespaced code naming how `memory.search` results are ordered, such as `relevance`
+ * or `recency`. Open by design so a compatible minor release can add orders without breaking
+ * existing decoders.
+ */
+export type MemorySearchOrder = string;
+export const MEMORY_SEARCH_ORDER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
  * Open, dot-namespaced code naming whether invoking an operation mutates state, such as `none`
@@ -422,6 +472,33 @@ export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*
  */
 export type ProbeStatus = string;
 export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
+ * `provisioning` or `archived`. Open by design so a compatible minor release can add statuses
+ * without breaking existing decoders.
+ */
+export type WorkspaceStatus = string;
+export const WORKSPACE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Input for `workspace.create`. Installation-scoped: carries only installation-level creation
+ * data, and never a caller-supplied workspace identifier.
+ */
+export interface WorkspaceCreateInput {
+  /**
+   * Human-readable name for the new workspace.
+   */
+  readonly display_name: string;
+}
+
+/**
+ * Input for `workspace.inspect`. Workspace-scoped: the workspace to inspect is the request
+ * envelope's selected workspace; this payload never carries a second, independent workspace
+ * identifier.
+ */
+export interface WorkspaceInspectInput {
+}
 
 /**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
@@ -785,6 +862,63 @@ export interface JobCancellationOutcome {
 }
 
 /**
+ * Optional provenance about the automated extractor that produced a `memory.create` candidate,
+ * when one did. Absent entirely for a candidate a human asserted directly.
+ */
+export interface CandidateExtractionMetadata {
+  /**
+   * Identifier of the extractor that produced this candidate.
+   */
+  readonly extractor_id: Identifier;
+  /**
+   * Version of the extractor that produced this candidate, when known.
+   */
+  readonly extractor_version?: Identifier;
+  /**
+   * Version of the model the extractor used, when known.
+   */
+  readonly model_version?: Identifier;
+  /**
+   * Version of the prompt the extractor used, when known.
+   */
+  readonly prompt_version?: Identifier;
+  /**
+   * When the extractor produced this candidate.
+   */
+  readonly extracted_at: Timestamp;
+  /**
+   * The extractor's self-reported confidence in this candidate, on a 0-1 scale, when known.
+   */
+  readonly confidence?: number;
+  /**
+   * Open code naming this candidate's reconciliation/deduplication state against prior
+   * extractions, such as `novel` or `duplicate` or `merged`, when the extractor determined
+   * one. Open by design; an unrecognized value must be preserved, not coerced to a known one,
+   * and must never widen this candidate's authority.
+   */
+  readonly reconciliation_state?: OpenCode;
+}
+
+/**
+ * Input for `memory.get`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier.
+ */
+export interface MemoryGetInput {
+  /**
+   * Stable identifier of the record to fetch.
+   */
+  readonly record_id: RecordId;
+  /**
+   * Specific opaque version to fetch, when known; absent means the latest version for `view`.
+   */
+  readonly version?: RecordVersion;
+  /**
+   * Which slice of this record's versions to consider. Absent defaults to `current_canonical`.
+   */
+  readonly view?: GovernedRecordView;
+}
+
+/**
  * What an operation itself declares it needs and touches, independent of any single caller's
  * request.
  */
@@ -856,11 +990,16 @@ export interface SourceReference {
 }
 
 /**
- * The distinct instants a governed record's lifecycle turns on: when the underlying fact was
- * observed, when the system ingested it, when this version was persisted, and the window it is
- * asserted valid for.
+ * The distinct instants a governed record's lifecycle turns on: when the underlying fact
+ * occurred in the world, when it was observed, when the system ingested it, when this version
+ * was persisted, the window it is asserted valid for, and when it was superseded.
  */
 export interface RecordTemporalMetadata {
+  /**
+   * When the underlying fact occurred in the world (source/event time), when distinguishable
+   * from `observed_at`.
+   */
+  readonly event_at?: Timestamp;
   /**
    * When the underlying fact was observed to be true in the world, when known.
    */
@@ -881,6 +1020,10 @@ export interface RecordTemporalMetadata {
    * End of the window this record is asserted valid for, when bounded.
    */
   readonly valid_until?: Timestamp;
+  /**
+   * When this record version was superseded by a newer version, present only once superseded.
+   */
+  readonly superseded_at?: Timestamp;
 }
 
 /**
@@ -1139,9 +1282,12 @@ export interface RequestMetadata {
    */
   readonly client: ClientIdentity;
   /**
-   * Workspace the request is scoped to.
+   * Workspace the request is scoped to. Present only for workspace-scoped operations; an
+   * installation-scoped operation must never carry it. Whether a given operation requires or
+   * forbids it is a semantic concern (see `omnivia_core.contracts.v1.semantics`), not a wire-
+   * shape one.
    */
-  readonly workspace_id: WorkspaceId;
+  readonly workspace_id?: WorkspaceId;
   /**
    * Scopes the caller is exercising. Scopes narrow authority; they never widen it.
    */
@@ -1198,6 +1344,62 @@ export interface JobAttempt {
    * The failure this attempt ended with, when it failed.
    */
   readonly error?: ApiError;
+}
+
+/**
+ * Input for `memory.list`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier.
+ */
+export interface MemoryListInput {
+  /**
+   * Which slice of records' versions to consider. Absent defaults to `current_canonical`.
+   */
+  readonly view?: GovernedRecordView;
+  /**
+   * Restrict results to this record type, when set.
+   */
+  readonly record_type?: GovernedRecordType;
+  /**
+   * Bounded maximum number of records to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Input for `memory.search`. Workspace-scoped: the workspace is the request envelope's selected
+ * workspace; this payload never carries a second, independent workspace identifier. Carries the
+ * normalized query and requested order a later stateful conformance slice will bind an issued
+ * continuation token to, alongside principal/workspace/operation binding.
+ */
+export interface MemorySearchInput {
+  /**
+   * Normalized search query.
+   */
+  readonly query: MemoryQuery;
+  /**
+   * Requested result order. Absent means the server's default order.
+   */
+  readonly order?: MemorySearchOrder;
+  /**
+   * Which slice of records' versions to consider. Absent defaults to `current_canonical`.
+   */
+  readonly view?: GovernedRecordView;
+  /**
+   * Restrict results to this record type, when set.
+   */
+  readonly record_type?: GovernedRecordType;
+  /**
+   * Bounded maximum number of records to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
 }
 
 /**
@@ -1352,6 +1554,44 @@ export interface ServiceProbeResult {
    * Optional structured detail.
    */
   readonly details?: JsonObject;
+}
+
+/**
+ * The concrete workspace-format version a workspace is stored at, and the inclusive version
+ * window this server build can read and write. Reuses the same `VersionWindow` and `OpenCode`
+ * primitives `VersionCapabilityEnvelope` negotiates with, rather than inventing a second version
+ * model.
+ */
+export interface WorkspaceCompatibility {
+  /**
+   * Concrete workspace-format version this workspace is currently stored at.
+   */
+  readonly workspace_format_version: ContractVersion;
+  /**
+   * Inclusive workspace-format version window this server build can read and write.
+   */
+  readonly supported_workspace_versions: VersionWindow;
+  /**
+   * Compatibility status of `workspace_format_version` against `supported_workspace_versions`.
+   * Known values are listed in `compatibility.schema.json`'s `x-omnivia-compatibility-
+   * statuses`; unknown values must be preserved.
+   */
+  readonly status: OpenCode;
+}
+
+/**
+ * Input for `workspace.list`. Installation-scoped: carries no workspace identifier, since it
+ * lists every workspace the caller's installation-level authority can see.
+ */
+export interface WorkspaceListInput {
+  /**
+   * Bounded maximum number of workspaces to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page, when paging.
+   */
+  readonly page?: PageMetadata;
 }
 
 /**
@@ -1539,6 +1779,47 @@ export interface JobTerminalCancellation {
 }
 
 /**
+ * Who is asserting a `memory.create` candidate, when, and on what evidence, plus the validity
+ * window they propose for it. This is caller-supplied provenance for the proposal, not the
+ * server-owned governance decision: it never carries authority level, reviewer/policy identity,
+ * or any other field `MemoryCreateInput` itself is forbidden from carrying.
+ */
+export interface CandidateAssertion {
+  /**
+   * Principal or system asserting this candidate.
+   */
+  readonly actor_id: Identifier;
+  /**
+   * Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`.
+   */
+  readonly actor_kind: OpenCode;
+  /**
+   * Open code naming the role the actor asserted this candidate under.
+   */
+  readonly actor_role: OpenCode;
+  /**
+   * When the actor asserted this candidate.
+   */
+  readonly asserted_at: Timestamp;
+  /**
+   * Start of the validity window the caller proposes for this candidate, when known. The
+   * server remains the final authority on the validity window actually stored.
+   */
+  readonly proposed_valid_from?: Timestamp;
+  /**
+   * End of the validity window the caller proposes for this candidate, when bounded. The
+   * server remains the final authority on the validity window actually stored.
+   */
+  readonly proposed_valid_until?: Timestamp;
+  /**
+   * Concrete evidence substantiating this assertion. May be empty only when the enclosing
+   * input's `evidence_disposition` explicitly excuses it; enforcing that agreement is a
+   * semantic-validation concern, not a wire-shape one.
+   */
+  readonly evidence: readonly EvidenceReference[];
+}
+
+/**
  * One step in a record's history: who or what did what, and when.
  */
 export interface ProvenanceEntry {
@@ -1562,6 +1843,37 @@ export interface ProvenanceEntry {
    * Evidence supporting this action, when applicable.
    */
   readonly evidence?: readonly EvidenceReference[];
+}
+
+/**
+ * A workspace's identity, display name, lifecycle status, format compatibility, and lifecycle
+ * timestamps.
+ */
+export interface WorkspaceDescriptor {
+  /**
+   * Stable, server-assigned identifier of this workspace.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Human-readable workspace name.
+   */
+  readonly display_name: string;
+  /**
+   * Current lifecycle status of this workspace.
+   */
+  readonly status: WorkspaceStatus;
+  /**
+   * Concrete workspace-format version and the compatibility window it falls within.
+   */
+  readonly compatibility: WorkspaceCompatibility;
+  /**
+   * When this workspace was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When this workspace's descriptor was last updated, when known.
+   */
+  readonly updated_at?: Timestamp;
 }
 
 /**
@@ -1631,6 +1943,59 @@ export interface ResponseMetadata {
 export type JobTerminalResult = JobTerminalSuccess | JobTerminalFailure | JobTerminalCancellation;
 
 /**
+ * Input for `memory.create`: the proposed record's type, domain scope, content,
+ * evidence/provenance, and assertion. Carries no authority-level, reviewer/policy decision,
+ * governance-state, currentness, record id, version, recorded time, or supersession field, so a
+ * caller can never assert accepted, current-canonical, superseded, or historical authority
+ * through this payload; every `memory.create` result is proposed-only.
+ */
+export interface MemoryCreateInput {
+  /**
+   * What kind of governed record is being proposed.
+   */
+  readonly record_type: GovernedRecordType;
+  /**
+   * Non-empty domain/record classification the caller proposes for this record; every
+   * candidate proposes one. The server remains the final authority on the domain scope
+   * actually stored; this field never carries authority level, reviewer/policy decision, or
+   * any other server-owned governance field.
+   */
+  readonly domain_scope: RecordDomainScope;
+  /**
+   * Opaque proposed content.
+   */
+  readonly content: JsonObject;
+  /**
+   * Whether concrete evidence is actually available for this proposal.
+   */
+  readonly evidence_disposition: EvidenceDisposition;
+  /**
+   * Sources this proposal draws on. May be empty only when `evidence_disposition` explicitly
+   * excuses it.
+   */
+  readonly sources: readonly SourceReference[];
+  /**
+   * Who is asserting this candidate, when, on what evidence, and the validity window they
+   * propose. Every candidate carries one.
+   */
+  readonly assertion: CandidateAssertion;
+  /**
+   * Provenance of the automated extractor that produced this candidate, when one did. Absent
+   * for a candidate a human asserted directly.
+   */
+  readonly extraction?: CandidateExtractionMetadata;
+  /**
+   * When the underlying fact occurred in the world (source/event time), when the caller can
+   * supply it.
+   */
+  readonly event_at?: Timestamp;
+  /**
+   * When the underlying fact was observed, when the caller can supply it.
+   */
+  readonly observed_at?: Timestamp;
+}
+
+/**
  * The full provenance envelope for one record version: identity, temporal metadata, its
  * authoring history, and the sources it draws on.
  */
@@ -1658,6 +2023,41 @@ export interface RecordProvenance {
    * empty only when `evidence_disposition` explicitly states evidence is unavailable.
    */
   readonly sources: readonly SourceReference[];
+}
+
+/**
+ * Result of `workspace.list`.
+ */
+export interface WorkspaceListResult {
+  /**
+   * Workspaces visible to the caller's installation-level authority, in this page.
+   */
+  readonly workspaces: readonly WorkspaceDescriptor[];
+  /**
+   * Continuation position for the next page, absent on the last page.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Result of `workspace.create`: the concrete created workspace, including its server-assigned
+ * identifier and format compatibility. Never a sentinel or placeholder workspace identifier.
+ */
+export interface WorkspaceCreateResult {
+  /**
+   * The concrete workspace that was created.
+   */
+  readonly workspace: WorkspaceDescriptor;
+}
+
+/**
+ * Result of `workspace.inspect`: the envelope-selected workspace's concrete descriptor.
+ */
+export interface WorkspaceInspectResult {
+  /**
+   * The inspected workspace.
+   */
+  readonly workspace: WorkspaceDescriptor;
 }
 
 /**
@@ -1689,11 +2089,106 @@ export interface ErrorResponseEnvelope {
 }
 
 /**
+ * A provider-neutral governed record: which workspace it belongs to, what kind of record it is,
+ * its domain scope and authority level, its full L0-L4 governance, temporal, evidence, and
+ * provenance envelope, and its opaque JSON content. Carries no reference to, and is not a
+ * substitute for, any repo-local `Memory`, `MemoryFact`, or `SourceRef` domain class.
+ */
+export interface GovernedRecord {
+  /**
+   * Workspace this record belongs to.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * What kind of governed record this is.
+   */
+  readonly record_type: GovernedRecordType;
+  /**
+   * Non-empty domain/record classification this record is filed under. Every governed record
+   * carries exactly one; a caller may propose one through `memory.create`, but the server is
+   * always the final authority on what is actually stored here. Distinct from caller-
+   * authorization `Scope`.
+   */
+  readonly domain_scope: RecordDomainScope;
+  /**
+   * Open code naming the authority level this record's governance decision currently carries,
+   * such as `proposed` or `reviewed` or `canonical`. Server-owned: no `memory.create` input
+   * field lets a caller assert this directly.
+   */
+  readonly authority_level: OpenCode;
+  /**
+   * Identifier of the reviewer or policy that produced this record's current governance
+   * decision, when one has been recorded. Absent when no reviewer/policy decision applies yet,
+   * such as a freshly proposed record.
+   */
+  readonly reviewer?: Identifier;
+  /**
+   * Identity, governance layer/state/currentness, temporal metadata, history, and evidence for
+   * this record version.
+   */
+  readonly provenance: RecordProvenance;
+  /**
+   * Opaque governed content this record carries.
+   */
+  readonly content: JsonObject;
+}
+
+/**
  * Exactly one of a success or an error response, never both. Both branches close their property
  * set, so a document carrying `result` and `error` together matches neither branch and is
  * invalid.
  */
 export type ResponseEnvelope = SuccessResponseEnvelope | ErrorResponseEnvelope;
+
+/**
+ * Result of `memory.create`: the resulting proposed governed record.
+ * `provenance.identity.governance_state` is always `proposed`; this operation never creates
+ * accepted canonical knowledge.
+ */
+export interface MemoryCreateResult {
+  /**
+   * The newly proposed governed record.
+   */
+  readonly record: GovernedRecord;
+}
+
+/**
+ * Result of `memory.get`: the governed record.
+ */
+export interface MemoryGetResult {
+  /**
+   * The fetched governed record.
+   */
+  readonly record: GovernedRecord;
+}
+
+/**
+ * Result of `memory.list`.
+ */
+export interface MemoryListResult {
+  /**
+   * Governed records in this page.
+   */
+  readonly records: readonly GovernedRecord[];
+  /**
+   * Continuation position for the next page, absent on the last page.
+   */
+  readonly page: PageMetadata;
+}
+
+/**
+ * Result of `memory.search`.
+ */
+export interface MemorySearchResult {
+  /**
+   * Governed records in this page, ordered per the request's `order`.
+   */
+  readonly records: readonly GovernedRecord[];
+  /**
+   * Continuation position for the next page, absent on the last page.
+   */
+  readonly page: PageMetadata;
+}
 
 /**
  * The frozen v1 error-code vocabulary. ErrorCode stays an open string on the wire, so a value

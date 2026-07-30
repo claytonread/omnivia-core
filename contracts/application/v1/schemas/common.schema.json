@@ -312,6 +312,13 @@
       "required": ["as_of", "projection_versions", "stale"],
       "unevaluatedProperties": false
     },
+    "PageLimit": {
+      "title": "PageLimit",
+      "description": "A bounded positive page size a caller requests for a paginated read.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
     "PageMetadata": {
       "title": "PageMetadata",
       "description": "Pagination position. Token issuance semantics are deliberately out of scope for v1 foundations.",
