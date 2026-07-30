@@ -340,7 +340,7 @@
       "canonical_module": "omnivia_core.workspace.models",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     }
   ],
   "runtime_only_modules": [

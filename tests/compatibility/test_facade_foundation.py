@@ -14,15 +14,16 @@ re-exported objects are now canonical too as a result -- the ``app_manifest``,
 transitively, through their converted leaves (two each, except ``control_plane``'s
 and ``knowledge``'s three).
 
-``memory_graph`` is the first converted leaf set whose barrel is *not* one of
-those: it is a **hybrid**. Thirty-one of its thirty-eight exports now hop through
-its four converted children to canonical objects, while the other seven are owned
-by the runtime-only ``ingestion_adapter``/``store`` leaves that never enter Core.
-Its legacy and canonical ``__all__`` are therefore different sizes, so it is
+``memory_graph`` is the second converted leaf set whose barrel is *not* one of
+those -- ``memory``, converted before it, was the first -- and it is a
+**hybrid**. Thirty-one of its thirty-eight exports now hop through its four
+converted children to canonical objects, while the other seven are owned by the
+runtime-only ``ingestion_adapter``/``store`` leaves that never enter Core. Its
+legacy and canonical ``__all__`` are therefore different sizes, so it is
 deliberately excluded from ``BARREL_ALL_ORDER`` and every gate built on it, and
 gets its own section at the end of this module instead.
 
-``graph`` is the second hybrid barrel, and its ``search_models`` leaf is the first
+``graph`` is the third hybrid barrel, and its ``search_models`` leaf is the first
 **split** facade: it routes its whole portable namespace to the canonical objects
 like any other facade, but additionally keeps the four relevance-scoring helpers
 Core deliberately excludes defined locally, because the unconverted, legacy-owned
@@ -32,7 +33,7 @@ gate keyed on it -- and declared in ``SPLIT_LEAF_SYMBOL_SOURCES`` /
 ``SPLIT_LEAF_RETAINED_HELPERS`` instead. Both halves get their own gates in the
 ``graph`` section of this module.
 
-``ingestion`` is the third and fourth hybrid barrel, and the first pair of them
+``ingestion`` is the fourth and fifth hybrid barrel, and the first pair of them
 in one domain: ``ingestion.models`` and ``ingestion.watcher.models`` are plain
 direct facades, but fourteen of the ``ingestion`` barrel's nineteen exports and
 two of the ``ingestion.watcher`` barrel's twelve are owned by runtime-only leaves
@@ -42,6 +43,25 @@ name collisions that section exists to keep separate: ``Source`` (ingestion vs.
 provenance, where the legacy root binds the provenance one) and
 ``SourceReference`` (the watcher models record vs. the distinct dataclass the
 runtime-only ``watcher.tracker`` defines for itself).
+
+``workspace`` is a hybrid barrel too, and its leaf is the last of all:
+``workspace.models`` is a plain direct facade, but two of its barrel's seven
+exports (``WorkspaceRepository`` and ``WorkspaceService``) are owned by the
+runtime-only ``repository``/``service`` leaves, which reach SQLite and the
+ingestion pipeline and never enter Core. That barrel therefore stays out of
+``BARREL_ALL_ORDER`` too and gets its own section at the end of this module. It
+is the sixth and last of the six barrels the registry holds at
+``pending_hybrid`` -- ``graph``, ``ingestion``, ``ingestion.watcher``,
+``memory``, ``memory_graph``, ``workspace``.
+
+Unlike every other hybrid here it brings no *cross-domain* name collision with
+it: no other domain owns a distinct contract under any of its five routed
+names, and neither package root re-exports any of the barrel's seven exports.
+Those five names are of course rebound -- by the two ``workspace`` barrels and
+by the runtime ``repository``/``service`` consumers -- but every one of those
+bindings is the routed canonical object itself, which is what the gates below
+pin. The legacy root's ``WorkspaceRef`` is a separate control-plane contract
+(``omnivia_core.control_plane.models.WorkspaceRef``), not one of these names.
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -53,6 +73,7 @@ converted leaf via ``FACADE_CANONICAL_TO_LEGACY`` -- see
 from __future__ import annotations
 
 import ast
+import dataclasses
 import hashlib
 import importlib
 import importlib.util
@@ -890,6 +911,29 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "validate_memory_segment": "omnivia_core.memory_graph.validation",
         "validate_memory_source": "omnivia_core.memory_graph.validation",
     },
+    # Every name in this leaf's historical namespace resolves from its canonical
+    # counterpart, incidental bindings and the plain ``uuid`` module binding
+    # included: the workspace models leaf imports nothing from another Core leaf.
+    # None of its five owned names collides with another domain's contract, and
+    # neither package root has ever bound one of them. Its barrel stays a hybrid:
+    # ``WorkspaceRepository`` and ``WorkspaceService`` are owned by the
+    # runtime-only ``repository``/``service`` leaves.
+    "omnivia_memory.workspace.models": {
+        "Any": "omnivia_core.workspace.models",
+        "Enum": "omnivia_core.workspace.models",
+        "ImportSummary": "omnivia_core.workspace.models",
+        "Path": "omnivia_core.workspace.models",
+        "Workspace": "omnivia_core.workspace.models",
+        "WorkspaceCreate": "omnivia_core.workspace.models",
+        "WorkspaceIndexStatus": "omnivia_core.workspace.models",
+        "WorkspaceUpdate": "omnivia_core.workspace.models",
+        "annotations": "omnivia_core.workspace.models",
+        "dataclass": "omnivia_core.workspace.models",
+        "datetime": "omnivia_core.workspace.models",
+        "field": "omnivia_core.workspace.models",
+        "timezone": "omnivia_core.workspace.models",
+        "uuid": "omnivia_core.workspace.models",
+    },
 }
 
 #: Each leaf's entire body must be exactly one ``from <module> import (...)``
@@ -939,6 +983,7 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     ),
     "omnivia_memory.run_ledger.models": "omnivia_core.run_ledger.models",
     "omnivia_memory.run_ledger.validation": "omnivia_core.run_ledger.validation",
+    "omnivia_memory.workspace.models": "omnivia_core.workspace.models",
 }
 
 #: The barrels above the converted leaves, all source-unchanged, and the exact
@@ -1575,6 +1620,7 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     ),
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
+    "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
 }
 
 #: The same, for the leaves converted into a *split* facade. Declared
@@ -2711,9 +2757,10 @@ def test_fresh_process_import_order_preserves_identity(canonical_first: bool) ->
 # ---------------------------------------------------------------------------
 # The ``memory_graph`` hybrid barrel.
 #
-# Every other converted leaf set in this module sits under a barrel whose whole
-# advertised surface became canonical. ``memory_graph`` is the first that does
-# not: seven of its thirty-eight exports are owned by the runtime-only
+# Most converted leaf sets in this module sit under a barrel whose whole
+# advertised surface became canonical. ``memory_graph`` is the second that does
+# not -- ``memory``, converted before it, is the earlier counterexample: seven of
+# its thirty-eight exports are owned by the runtime-only
 # ``ingestion_adapter``/``store`` leaves, which never enter Core, so the barrel
 # cannot become a pure re-export of the canonical package and stays
 # ``pending_hybrid`` in ``compatibility/facade-routes.v1.json``. Its legacy and
@@ -5395,3 +5442,894 @@ def test_ingestion_conversion_declares_no_descriptor_rewrite_or_root_owner_move(
         ("omnivia_memory.app_manifest.validation", "validate_app_manifest"),
         ("omnivia_memory.module_manifest.validation", "validate_module_manifest"),
     }
+
+
+# ---------------------------------------------------------------------------
+# The ``workspace`` pair: the last direct facade, under the sixth hybrid barrel.
+#
+# ``workspace.models`` is a plain direct facade -- one import, nothing retained
+# -- and it is the last leaf of the whole conversion: no ``source_parity`` route
+# remains after it. Its barrel still cannot follow. Two of the barrel's seven
+# exports (``WorkspaceRepository`` and ``WorkspaceService``) are owned by the
+# runtime-only ``repository``/``service`` leaves, which reach SQLite through
+# ``omnivia_memory.persistence`` and files through the ingestion pipeline, so
+# ``workspace`` stays ``pending_hybrid`` in
+# ``compatibility/facade-routes.v1.json``, the two trees' ``__all__`` are
+# different sizes, and the barrel stays out of ``BARREL_ALL_ORDER`` and every
+# gate built on it.
+#
+# Unlike the ``memory_graph``/``graph``/``ingestion`` hybrids this one brings no
+# cross-domain name collision: no other domain owns a distinct contract under any
+# of its five routed names, and neither package root re-exports any of the
+# barrel's seven exports. The five names *are* rebound -- by the two ``workspace``
+# barrels and by the runtime ``repository``/``service`` consumers -- but each of
+# those bindings is the routed canonical object itself, not a second owner. The
+# legacy root's ``WorkspaceRef`` is the distinct control-plane contract, not one
+# of these names. All of that is pinned below rather than assumed.
+# ---------------------------------------------------------------------------
+
+WORKSPACE_MODELS_LEAF = "omnivia_memory.workspace.models"
+WORKSPACE_MODELS_CANONICAL = "omnivia_core.workspace.models"
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy
+#: ``workspace`` barrel must still have: ``(absolute module, imported names in
+#: source order)``. Three blocks, in the barrel's own historical order -- the
+#: portable ``models`` block first, then the two runtime ones. Restated here
+#: rather than read off the barrel, because this is the file whose edits it
+#: exists to reject.
+WORKSPACE_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        WORKSPACE_MODELS_LEAF,
+        (
+            "ImportSummary",
+            "Workspace",
+            "WorkspaceCreate",
+            "WorkspaceIndexStatus",
+            "WorkspaceUpdate",
+        ),
+    ),
+    (
+        "omnivia_memory.workspace.repository",
+        ("WorkspaceRepository",),
+    ),
+    (
+        "omnivia_memory.workspace.service",
+        ("WorkspaceService",),
+    ),
+)
+
+#: The barrel's exact ordered 7-name ``__all__`` literal, restated rather than
+#: derived: it is sorted, so the two runtime names interleave with the portable
+#: five and it matches none of the blocks above.
+WORKSPACE_BARREL_ALL: tuple[str, ...] = (
+    "ImportSummary",
+    "Workspace",
+    "WorkspaceCreate",
+    "WorkspaceIndexStatus",
+    "WorkspaceRepository",
+    "WorkspaceService",
+    "WorkspaceUpdate",
+)
+
+#: The barrel's two runtime-only children, each declared runtime-only in the
+#: frozen route registry and deliberately not a facade.
+WORKSPACE_RUNTIME_ONLY_LEAVES: tuple[str, ...] = (
+    "omnivia_memory.workspace.repository",
+    "omnivia_memory.workspace.service",
+)
+
+#: The barrel's exact two runtime-only exports: they must stay legacy-owned and
+#: must never appear on the canonical barrel.
+WORKSPACE_RUNTIME_EXPORTS: frozenset[str] = frozenset(
+    {"WorkspaceRepository", "WorkspaceService"}
+)
+
+#: The barrel's exact five portable exports: everything else, all of which must
+#: hop through the converted models child to a canonical object.
+WORKSPACE_PORTABLE_EXPORTS: frozenset[str] = frozenset(WORKSPACE_BARREL_ALL) - (
+    WORKSPACE_RUNTIME_EXPORTS
+)
+
+#: The workspace runtime modules that stay legacy-owned and unedited by this
+#: batch, and the canonical names each must now hold.
+WORKSPACE_RUNTIME_CONSUMERS: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.workspace.repository": ("Workspace", "WorkspaceIndexStatus"),
+    "omnivia_memory.workspace.service": (
+        "ImportSummary",
+        "Workspace",
+        "WorkspaceCreate",
+        "WorkspaceUpdate",
+    ),
+}
+
+#: The exact canonical closure a canonical-only workspace import may produce.
+#: Anything else -- a sibling domain, a runtime leaf -- is a leak.
+WORKSPACE_CANONICAL_MODULE_CLOSURE: frozenset[str] = frozenset(
+    {
+        "omnivia_core",
+        "omnivia_core.workspace",
+        "omnivia_core.workspace.models",
+    }
+)
+
+#: Module roots a canonical-only workspace import must never load. The workspace
+#: runtime reaches SQLite through ``omnivia_memory.persistence`` and file content
+#: through the ingestion pipeline's PDF/DOCX readers, so their absence is part of
+#: what "the canonical contract layer stands alone" means here.
+WORKSPACE_FORBIDDEN_MODULE_ROOTS: tuple[str, ...] = (
+    "docx",
+    "fitz",
+    "omnivia_cloud",
+    "omnivia_core_cli",
+    "omnivia_core_mcp",
+    "omnivia_core_runtime",
+    "omnivia_dev",
+    "omnivia_memory",
+    "omnivia_platform",
+    "sqlalchemy",
+    "sqlite3",
+)
+
+
+def test_workspace_hybrid_barrel_is_held_out_of_the_equal_all_gates() -> None:
+    """The barrel's two trees advertise *different* surfaces, so every gate keyed
+    on ``BARREL_ALL_ORDER`` (which asserts ``legacy.__all__ == canonical.__all__``)
+    would be wrong for it. Pin that it is absent from those gates, and pin the
+    inequality that is the reason -- so a future edit that "helpfully" added it to
+    ``BARREL_ALL_ORDER`` fails here with the reason rather than as a confusing list
+    mismatch.
+    """
+    assert "workspace" not in BARREL_ALL_ORDER
+    assert "workspace" not in ABSOLUTE_IMPORT_BARRELS
+    assert "workspace" not in ABSOLUTE_IMPORT_BARREL_IMPORTS
+    assert "workspace" not in RELATIVE_IMPORT_BARREL_IMPORTS
+
+    legacy = importlib.import_module("omnivia_memory.workspace")
+    canonical = importlib.import_module("omnivia_core.workspace")
+    assert tuple(legacy.__all__) == WORKSPACE_BARREL_ALL
+    assert len(legacy.__all__) == 7
+    assert len(canonical.__all__) == 5
+    assert set(canonical.__all__) == set(WORKSPACE_BARREL_ALL) - (
+        WORKSPACE_RUNTIME_EXPORTS
+    )
+
+
+def test_workspace_hybrid_barrel_source_is_unchanged_reexport() -> None:
+    """The hybrid barrel is *source-unchanged* by this slice: its portable half
+    becomes identity-preserving transitively, through its converted ``models``
+    child, and its runtime half keeps resolving locally. Pin its exact historical
+    shape -- the absolute ``from omnivia_memory.workspace.<leaf> import (...)``
+    statements in source order with their exact ordered name lists, then the
+    ``__all__`` literal -- so an edit that reroutes it at ``omnivia_core``, drops
+    the runtime blocks, adds a ``__getattr__``, or reorders its re-exports fails
+    here.
+    """
+    body = _module_body_after_docstring("omnivia_memory.workspace")
+    assert len(body) == len(WORKSPACE_BARREL_ABSOLUTE_IMPORTS) + 1, (
+        "omnivia_memory.workspace: expected exactly "
+        f"{len(WORKSPACE_BARREL_ABSOLUTE_IMPORTS)} absolute imports plus __all__, "
+        f"found {[ast.dump(node) for node in body]}"
+    )
+    for node, (module, names) in zip(
+        body, WORKSPACE_BARREL_ABSOLUTE_IMPORTS, strict=False
+    ):
+        assert isinstance(node, ast.ImportFrom), f"expected an import, found {node!r}"
+        assert node.level == 0, f"the {module} import must stay absolute"
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        for alias in node.names:
+            assert alias.name != "*", "star import is not allowed"
+            assert alias.asname is None, f"{alias.name!r} uses a rename/dynamic alias"
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign), f"expected __all__, found {all_node!r}"
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert tuple(
+        elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
+    ) == WORKSPACE_BARREL_ALL
+
+    # Every name the imports bind is exactly what ``__all__`` advertises: the
+    # barrel adds nothing of its own and hides nothing it imported.
+    imported = sorted(
+        name for _, names in WORKSPACE_BARREL_ABSOLUTE_IMPORTS for name in names
+    )
+    assert imported == sorted(WORKSPACE_BARREL_ALL)
+    assert "__getattr__" not in vars(importlib.import_module("omnivia_memory.workspace"))
+
+
+def test_workspace_hybrid_barrel_portable_exports_hop_through_their_facade() -> None:
+    """The barrel's five portable exports must be the exact object bound at the
+    *legacy child facade* it re-exports from, and that object must in turn be the
+    canonical one. A barrel that started sourcing a name from somewhere else would
+    still pass the canonical-identity check alone; requiring the leaf hop too is
+    what pins the transitive route through the converted child.
+    """
+    barrel = importlib.import_module("omnivia_memory.workspace")
+    portable = 0
+    for legacy_leaf_name, names in WORKSPACE_BARREL_ABSOLUTE_IMPORTS:
+        if legacy_leaf_name in WORKSPACE_RUNTIME_ONLY_LEAVES:
+            continue
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        owners = LEAF_SYMBOL_SOURCES[legacy_leaf_name]
+        for name in names:
+            canonical_owner = importlib.import_module(owners[name])
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.workspace.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            assert getattr(barrel, name) is getattr(canonical_owner, name), (
+                f"omnivia_memory.workspace.{name} is not the exact object bound at "
+                f"{owners[name]}.{name}"
+            )
+            portable += 1
+    assert portable == 5
+
+
+def test_workspace_hybrid_barrel_runtime_exports_stay_legacy_owned() -> None:
+    """The runtime exports are the whole reason this barrel is a hybrid, so their
+    *non*-conversion is as much a contract as the portable half's conversion. Each
+    must still be the exact object bound at its legacy owner, and each of those
+    owners must still be a real legacy module backed by a file in the
+    compatibility tree -- not a facade that quietly acquired a canonical
+    counterpart.
+    """
+    barrel = importlib.import_module("omnivia_memory.workspace")
+    by_module = dict(WORKSPACE_BARREL_ABSOLUTE_IMPORTS)
+    covered: set[str] = set()
+    for legacy_leaf_name in WORKSPACE_RUNTIME_ONLY_LEAVES:
+        assert legacy_leaf_name not in LEAF_SYMBOL_SOURCES, (
+            f"{legacy_leaf_name} is runtime-owned and must not become a facade"
+        )
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        leaf_path = Path(legacy_leaf.__file__ or "").resolve()
+        assert leaf_path.is_relative_to(MEMORY_SRC), (
+            f"{legacy_leaf_name} resolved to {leaf_path}, outside the legacy tree"
+        )
+        for name in by_module[legacy_leaf_name]:
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.workspace.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            covered.add(name)
+    assert covered == set(WORKSPACE_RUNTIME_EXPORTS)
+
+
+def test_workspace_runtime_exports_are_absent_from_the_canonical_barrel() -> None:
+    """Neither runtime-owned name may leak into Core -- not into its ``__all__``
+    and not as an attribute. This is what keeps the runtime-owned half out of the
+    canonical package rather than merely un-advertised there.
+    """
+    canonical = importlib.import_module("omnivia_core.workspace")
+    for name in sorted(WORKSPACE_RUNTIME_EXPORTS):
+        assert name not in canonical.__all__, (
+            f"{name} is runtime-owned and must not be in omnivia_core.workspace.__all__"
+        )
+        assert not hasattr(canonical, name), (
+            f"{name} is runtime-owned and must not be an attribute of "
+            "omnivia_core.workspace"
+        )
+
+
+def test_workspace_barrel_publishes_exactly_its_models_leaf_routed_surface() -> None:
+    """Unlike the ``ingestion`` barrel, this one advertises *every* symbol its
+    models child routes -- all five, no leaf-only names. Pin that equality: an
+    edit that dropped one from the barrel, or added a routed-looking name the
+    barrel never had, would leave every identity check in this module passing.
+    """
+    leaf = importlib.import_module(WORKSPACE_MODELS_LEAF)
+    routed = set(FACADE_ROUTES[WORKSPACE_MODELS_LEAF])
+    assert routed == set(WORKSPACE_PORTABLE_EXPORTS)
+    for name in sorted(routed):
+        assert hasattr(leaf, name)
+    for barrel_name in ("omnivia_memory.workspace", "omnivia_core.workspace"):
+        barrel = importlib.import_module(barrel_name)
+        assert routed <= set(barrel.__all__)
+        for name in sorted(routed):
+            assert hasattr(barrel, name)
+
+    # And the barrel's surface really is its blocks' bindings, not a different
+    # set: every name it advertises is bound at the leaf it re-exports from.
+    for legacy_leaf_name, names in WORKSPACE_BARREL_ABSOLUTE_IMPORTS:
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        for name in names:
+            assert hasattr(legacy_leaf, name)
+
+
+def test_workspace_routes_cover_exactly_the_owned_definitions() -> None:
+    """The leaf's route set is exactly the five symbols the frozen baseline
+    recorded it as *defining*, and nothing else. The incidental bindings its
+    historical namespace also keeps resolving (``Any``, ``Enum``, ``Path``,
+    ``uuid`` and the rest) are deliberately absent from ``FACADE_ROUTES``: the
+    baseline never recorded them as definitions, so there is no route delta to
+    normalize. They are covered by ``LEAF_SYMBOL_SOURCES`` instead.
+    """
+    assert FACADE_ROUTES[WORKSPACE_MODELS_LEAF] == {
+        "ImportSummary": WORKSPACE_MODELS_CANONICAL,
+        "Workspace": WORKSPACE_MODELS_CANONICAL,
+        "WorkspaceCreate": WORKSPACE_MODELS_CANONICAL,
+        "WorkspaceIndexStatus": WORKSPACE_MODELS_CANONICAL,
+        "WorkspaceUpdate": WORKSPACE_MODELS_CANONICAL,
+    }
+    routed = set(FACADE_ROUTES[WORKSPACE_MODELS_LEAF])
+    namespace = set(LEAF_SYMBOL_SOURCES[WORKSPACE_MODELS_LEAF])
+    assert routed < namespace
+    assert len(namespace) == 14
+
+
+def test_workspace_routed_names_collide_with_no_other_domain() -> None:
+    """Every previous hybrid batch brought a live name collision with it; this one
+    does not, and that is a checked fact rather than an omission.
+
+    None of the five routed names appears in ``COLLIDING_OWNERS``, and none is
+    bound by any other converted leaf's namespace -- so ``LEAF_SYMBOL_SOURCES``
+    routing them all to the one canonical module cannot be quietly hiding a second
+    owner the way ``Source`` or ``SourceRef`` would.
+    """
+    routed = set(FACADE_ROUTES[WORKSPACE_MODELS_LEAF])
+    assert routed.isdisjoint(COLLIDING_OWNERS)
+    for legacy_module, symbols in LEAF_SYMBOL_SOURCES.items():
+        if legacy_module == WORKSPACE_MODELS_LEAF:
+            continue
+        assert routed.isdisjoint(symbols), (
+            f"{legacy_module} also binds {sorted(routed & set(symbols))}; the "
+            "workspace routes are no longer collision-free"
+        )
+    for legacy_module, symbols in SPLIT_LEAF_SYMBOL_SOURCES.items():
+        assert routed.isdisjoint(symbols), (
+            f"{legacy_module} also binds {sorted(routed & set(symbols))}"
+        )
+
+
+def test_workspace_models_behave_identically_through_both_import_paths() -> None:
+    """The routed models are the same objects, so this is not a cross-tree
+    comparison: it is proof that those exact objects still construct, round-trip,
+    mutate and apply correctly when reached through the legacy leaf and the hybrid
+    barrel -- the two paths no per-symbol identity check exercises.
+    """
+    barrel = importlib.import_module("omnivia_memory.workspace")
+    leaf = importlib.import_module(WORKSPACE_MODELS_LEAF)
+
+    assert [member.value for member in barrel.WorkspaceIndexStatus] == [
+        "unindexed",
+        "indexing",
+        "indexed",
+        "error",
+        "stale",
+    ]
+
+    payload = {
+        "id": "ws-1",
+        "name": "My Workspace",
+        "root_path": "/tmp/root",
+        "storage_path": "/tmp/storage",
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    workspace = barrel.Workspace.from_dict(payload)
+    assert isinstance(workspace, leaf.Workspace)
+    assert workspace.index_status is leaf.WorkspaceIndexStatus.UNINDEXED
+    assert workspace.description is None
+    assert workspace.settings == {}
+    assert workspace.last_indexed_at is None
+    restored = leaf.Workspace.from_dict(workspace.to_dict())
+    assert restored.to_dict() == workspace.to_dict()
+    assert restored.to_dict()["index_status"] == "unindexed"
+
+    # ``touch`` and the two marker methods are the mutation surface the runtime
+    # calls; ``_now`` stays private to the canonical module, so this also proves
+    # the facade did not have to import it.
+    stamped = workspace.updated_at
+    workspace.touch()
+    assert workspace.updated_at >= stamped
+    workspace.mark_indexed()
+    assert workspace.index_status is barrel.WorkspaceIndexStatus.INDEXED
+    assert workspace.last_indexed_at == workspace.updated_at
+    workspace.mark_error()
+    assert workspace.index_status is leaf.WorkspaceIndexStatus.ERROR
+    assert not hasattr(leaf, "_now")
+
+    created = barrel.WorkspaceCreate(
+        name="A",
+        root_path=leaf.Path("/tmp/root"),
+        storage_path=leaf.Path("/tmp/storage"),
+    ).to_workspace()
+    assert isinstance(created, leaf.Workspace)
+    assert created.root_path == str(leaf.Path("/tmp/root").expanduser().resolve())
+    assert created.storage_path == str(leaf.Path("/tmp/storage").expanduser().resolve())
+    assert created.name == "A"
+
+    # ``WorkspaceCreate`` with no ``storage_path`` derives one under the home
+    # directory from the new workspace's own id -- behaviour no identity check
+    # reaches, and the only place the leaf's ``Path`` binding is load-bearing.
+    assert not hasattr(barrel, "Path"), (
+        "the workspace barrel has never re-exported the leaf's incidental Path "
+        "binding, so the leaf's own path is the only way to reach it"
+    )
+    derived = leaf.WorkspaceCreate(name="B", root_path=leaf.Path("/tmp/root"))
+    derived_workspace = derived.to_workspace()
+    assert derived_workspace.storage_path == str(
+        leaf.Path.home() / ".omnivia" / "workspaces" / derived_workspace.id
+    )
+
+    assert barrel.WorkspaceUpdate(name="A").apply_to(created) is False
+    assert leaf.WorkspaceUpdate(
+        name="B",
+        description="d",
+        index_status=barrel.WorkspaceIndexStatus.STALE,
+        settings={"k": 1},
+    ).apply_to(created) is True
+    assert (created.name, created.description, created.settings) == ("B", "d", {"k": 1})
+    assert created.index_status is leaf.WorkspaceIndexStatus.STALE
+
+    summary = barrel.ImportSummary(
+        workspace_id="ws-1",
+        files_seen=2,
+        sources_created=1,
+        memories_created=3,
+    )
+    assert isinstance(summary, leaf.ImportSummary)
+    assert summary.errors == []
+    assert summary == leaf.ImportSummary(
+        workspace_id="ws-1", files_seen=2, sources_created=1, memories_created=3
+    )
+
+
+def test_workspace_default_factories_survive_the_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CANONICAL_TO_LEGACY`` is empty now, so the source-parity gate that used to
+    compare ``field(default_factory=...)`` expressions between the two copies no
+    longer covers any leaf. Default factories are exactly the kind of detail a
+    hand-written facade can drop silently -- a shared mutable default, an id that
+    stopped being generated, or a timestamp field that stopped being stamped -- so
+    the last leaf pins them here directly, fail-closed, on the canonical objects
+    the facade re-exports.
+
+    The assertions are identity/independence ones on purpose, and the two
+    generative factories (``Workspace.id`` and ``_now``) are pinned by
+    substituting deterministic sentinels for the canonical module's own ``uuid``
+    and ``datetime`` bindings: no timestamp comparison and no sleep, so this
+    cannot go green -- or flaky -- on clock resolution. Both substitutions go
+    through ``monkeypatch`` and are undone (and the undo asserted) before the
+    test ends, so nothing leaks into later tests in this module.
+    """
+    canonical = importlib.import_module(WORKSPACE_MODELS_CANONICAL)
+    leaf = importlib.import_module(WORKSPACE_MODELS_LEAF)
+    barrel = importlib.import_module("omnivia_memory.workspace")
+
+    # Everything below is exercised through the identities the rest of this
+    # module already pinned, so a drifting facade cannot route around it.
+    assert barrel.Workspace is leaf.Workspace is canonical.Workspace
+    assert barrel.WorkspaceCreate is leaf.WorkspaceCreate is canonical.WorkspaceCreate
+    assert barrel.ImportSummary is leaf.ImportSummary is canonical.ImportSummary
+
+    # 1. Both timestamp fields are still stamped by the canonical module's own
+    #    ``_now`` -- the same function object, not merely something callable.
+    workspace_fields = {
+        field.name: field for field in dataclasses.fields(canonical.Workspace)
+    }
+    for name in ("created_at", "updated_at"):
+        assert workspace_fields[name].default_factory is canonical._now, (
+            f"Workspace.{name} no longer defaults through the canonical _now"
+        )
+    assert callable(canonical._now)
+    assert canonical._now.__module__ == WORKSPACE_MODELS_CANONICAL
+    assert isinstance(canonical._now(), str)
+
+    # 2. ...and ``_now`` stays private to canonical: the facade never had to
+    #    import it, and neither legacy path publishes it.
+    assert not hasattr(leaf, "_now")
+    assert not hasattr(barrel, "_now")
+
+    # 3. The three mutable defaults are still per-instance factories, proven by
+    #    mutating one instance and checking the other is untouched.
+    mutable_defaults = {
+        (canonical.Workspace, "settings"): dict,
+        (canonical.WorkspaceCreate, "settings"): dict,
+        (canonical.ImportSummary, "errors"): list,
+    }
+    for (cls, name), factory in mutable_defaults.items():
+        field = {f.name: f for f in dataclasses.fields(cls)}[name]
+        assert field.default_factory is factory, (
+            f"{cls.__name__}.{name} no longer defaults through {factory.__name__}"
+        )
+        assert field.default is dataclasses.MISSING, (
+            f"{cls.__name__}.{name} now carries a shared class-level default"
+        )
+
+    first_workspace = barrel.Workspace(
+        name="A", root_path="/tmp/root", storage_path="/tmp/storage"
+    )
+    second_workspace = leaf.Workspace(
+        name="B", root_path="/tmp/root", storage_path="/tmp/storage"
+    )
+    assert first_workspace.settings is not second_workspace.settings
+    first_workspace.settings["k"] = 1
+    assert second_workspace.settings == {}
+
+    first_create = barrel.WorkspaceCreate(name="A", root_path=leaf.Path("/tmp/root"))
+    second_create = leaf.WorkspaceCreate(name="B", root_path=leaf.Path("/tmp/root"))
+    assert first_create.settings is not second_create.settings
+    first_create.settings["k"] = 1
+    assert second_create.settings == {}
+
+    summary_kwargs = {
+        "workspace_id": "ws-1",
+        "files_seen": 0,
+        "sources_created": 0,
+        "memories_created": 0,
+    }
+    first_summary = barrel.ImportSummary(**summary_kwargs)
+    second_summary = leaf.ImportSummary(**summary_kwargs)
+    assert first_summary.errors is not second_summary.errors
+    first_summary.errors.append("boom")
+    assert second_summary.errors == []
+
+    # 4. ``Workspace.id`` is a generative factory, and the one whose loss would
+    #    be quietest: a facade that dropped it would still hand out ids through
+    #    ``from_dict``/``to_workspace``, and "the id is a nonempty string" would
+    #    stay true for almost any replacement. So pin the *delegation* instead --
+    #    swap the canonical module's own ``uuid.uuid4`` for a two-value sequence
+    #    and prove the field stringifies exactly those, in order.
+    id_field = workspace_fields["id"]
+    assert id_field.default is dataclasses.MISSING, (
+        "Workspace.id now carries a shared class-level default"
+    )
+    assert callable(id_field.default_factory), (
+        "Workspace.id no longer defaults through a factory"
+    )
+
+    real_uuid4 = canonical.uuid.uuid4
+    sentinel_uuids = [
+        canonical.uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        canonical.uuid.UUID("00000000-0000-4000-8000-000000000002"),
+    ]
+    assert sentinel_uuids[0] != sentinel_uuids[1]
+    issued: list[object] = []
+
+    def _sequenced_uuid4() -> object:
+        value = sentinel_uuids[len(issued)]
+        issued.append(value)
+        return value
+
+    monkeypatch.setattr(canonical.uuid, "uuid4", _sequenced_uuid4)
+
+    # Reached through the identities pinned above, so the facade cannot route
+    # around this either.
+    first_id_workspace = barrel.Workspace(
+        name="A", root_path="/tmp/root", storage_path="/tmp/storage"
+    )
+    second_id_workspace = leaf.Workspace(
+        name="B", root_path="/tmp/root", storage_path="/tmp/storage"
+    )
+    assert issued == sentinel_uuids, (
+        "Workspace.id did not draw exactly one value per instance from the "
+        "canonical module's uuid.uuid4"
+    )
+    assert isinstance(first_id_workspace.id, str)
+    assert isinstance(second_id_workspace.id, str)
+    assert first_id_workspace.id == str(sentinel_uuids[0])
+    assert second_id_workspace.id == str(sentinel_uuids[1])
+    assert first_id_workspace.id != second_id_workspace.id
+    assert canonical.uuid.UUID(first_id_workspace.id) == sentinel_uuids[0]
+    assert canonical.uuid.UUID(second_id_workspace.id) == sentinel_uuids[1]
+
+    # 5. ``_now`` itself, pinned without reading a clock: replace the canonical
+    #    module's ``datetime`` binding with a fake that certifies both hops --
+    #    that ``now`` is called with the canonical ``timezone.utc`` object, and
+    #    that the result is rendered through ``isoformat``.
+    real_datetime = canonical.datetime
+    stamp_calls: list[str] = []
+    sentinel_stamp = "2024-01-01T00:00:00+00:00"
+
+    class _FakeStamp:
+        def isoformat(self) -> str:
+            stamp_calls.append("isoformat")
+            return sentinel_stamp
+
+    class _FakeDatetime:
+        @staticmethod
+        def now(tz: object) -> _FakeStamp:
+            assert tz is canonical.timezone.utc, (
+                "_now no longer stamps through the canonical timezone.utc object"
+            )
+            stamp_calls.append("now")
+            return _FakeStamp()
+
+    monkeypatch.setattr(canonical, "datetime", _FakeDatetime)
+    assert canonical._now() == sentinel_stamp, (
+        "_now no longer returns what its datetime binding's isoformat produced"
+    )
+    assert stamp_calls == ["now", "isoformat"]
+
+    # 6. Both substitutions come back out, so the rest of this module -- which
+    #    constructs plenty of workspaces and compares real timestamps -- runs
+    #    against the real bindings again.
+    monkeypatch.undo()
+    assert canonical.uuid.uuid4 is real_uuid4
+    assert canonical.datetime is real_datetime
+    restored = leaf.Workspace(name="C", root_path="/tmp/root", storage_path="/tmp/storage")
+    assert restored.id not in {first_id_workspace.id, second_id_workspace.id}
+    assert restored.created_at != sentinel_stamp
+
+
+def test_workspace_runtime_consumers_hold_the_canonical_objects() -> None:
+    """The workspace repository and service are unconverted modules that import
+    their contracts *from the converted facade*, so they now hold canonical model
+    objects while staying legacy-owned themselves. Pin that hop, and pin that
+    neither source reaches ``omnivia_core`` directly.
+    """
+    canonical = importlib.import_module(WORKSPACE_MODELS_CANONICAL)
+    for module_name, names in WORKSPACE_RUNTIME_CONSUMERS.items():
+        module = importlib.import_module(module_name)
+        for name in names:
+            assert getattr(module, name) is getattr(canonical, name), (
+                f"{module_name}.{name} is not the exact canonical object"
+            )
+
+    for module_name in WORKSPACE_RUNTIME_CONSUMERS:
+        source = Path(importlib.import_module(module_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        assert canonical_imports(ast.parse(source)) == [], (
+            f"{module_name} now imports omnivia_core directly; the runtime must keep "
+            "reaching its contracts through the legacy facade"
+        )
+
+
+#: Fresh-process import orders for the workspace pair. Each is a full order, not
+#: a prefix: whichever module is named first is the one that gets to define the
+#: shared objects, so an order that only works because something else was
+#: imported earlier fails here.
+WORKSPACE_IMPORT_ORDERS: dict[str, tuple[str, ...]] = {
+    "canonical-first": (WORKSPACE_MODELS_CANONICAL, WORKSPACE_MODELS_LEAF),
+    "facade-first": (WORKSPACE_MODELS_LEAF, WORKSPACE_MODELS_CANONICAL),
+    "canonical-barrel-first": ("omnivia_core.workspace", "omnivia_memory.workspace"),
+    "legacy-barrel-first": ("omnivia_memory.workspace", "omnivia_core.workspace"),
+    "runtime-first": (
+        "omnivia_memory.workspace.repository",
+        "omnivia_memory.workspace.service",
+        "omnivia_core.workspace",
+    ),
+    "reverse": (
+        "omnivia_memory.workspace",
+        WORKSPACE_MODELS_LEAF,
+        "omnivia_core.workspace",
+        WORKSPACE_MODELS_CANONICAL,
+    ),
+    "repeated": (
+        WORKSPACE_MODELS_CANONICAL,
+        WORKSPACE_MODELS_LEAF,
+        WORKSPACE_MODELS_CANONICAL,
+        WORKSPACE_MODELS_LEAF,
+        "omnivia_memory.workspace",
+        "omnivia_core.workspace",
+    ),
+}
+
+
+def _workspace_identity_script(import_order: tuple[str, ...]) -> str:
+    always = (
+        "omnivia_core.workspace",
+        WORKSPACE_MODELS_CANONICAL,
+        "omnivia_memory.workspace",
+        WORKSPACE_MODELS_LEAF,
+        "omnivia_memory.workspace.repository",
+        "omnivia_memory.workspace.service",
+    )
+    lines = [
+        "import importlib",
+        "import sys",
+        f"sys.path.insert(0, {str(MEMORY_SRC)!r})",
+        f"sys.path.insert(0, {str(CORE_SRC)!r})",
+        f"for module_name in {import_order!r}:",
+        "    importlib.import_module(module_name)",
+        # Everything asserted below must be reachable regardless of the order under
+        # test, so pull in whatever that order did not name.
+        f"for module_name in {always!r}:",
+        "    importlib.import_module(module_name)",
+        *(f"import {module}" for module in always),
+    ]
+    for symbol, canonical_module in LEAF_SYMBOL_SOURCES[WORKSPACE_MODELS_LEAF].items():
+        lines.append(
+            f"assert {WORKSPACE_MODELS_LEAF}.{symbol} is {canonical_module}.{symbol}, "
+            f"'{WORKSPACE_MODELS_LEAF}.{symbol} is not {canonical_module}.{symbol}'"
+        )
+    for name in sorted(WORKSPACE_PORTABLE_EXPORTS):
+        lines.append(
+            f"assert omnivia_memory.workspace.{name} is omnivia_core.workspace.{name}, "
+            f"'the hybrid barrel stopped publishing the canonical {name}'"
+        )
+    for name in sorted(WORKSPACE_RUNTIME_EXPORTS):
+        lines.append(
+            f"assert not hasattr(omnivia_core.workspace, {name!r}), "
+            f"'{name} leaked into the canonical barrel'"
+        )
+    for module_name, names in WORKSPACE_RUNTIME_CONSUMERS.items():
+        for name in names:
+            lines.append(
+                f"assert {module_name}.{name} is {WORKSPACE_MODELS_CANONICAL}.{name}, "
+                f"'{module_name}.{name} is not the canonical object'"
+            )
+    # No duplicate class objects anywhere in the loaded closure: exactly one object
+    # per routed contract name across both trees. Unlike the ingestion pair this
+    # scan needs no exclusions -- none of these five names collides with another
+    # domain's contract, which is the property
+    # ``test_workspace_routed_names_collide_with_no_other_domain`` pins in-process.
+    routed = sorted(FACADE_ROUTES[WORKSPACE_MODELS_LEAF])
+    lines.extend(
+        [
+            "records = {}",
+            "for module_name, module in sorted(sys.modules.items()):",
+            "    if not (module_name == 'omnivia_core' or module_name.startswith('omnivia_')):",
+            "        continue",
+            f"    for name in {routed!r}:",
+            "        value = getattr(module, name, None)",
+            "        if value is None or getattr(value, '__module__', '').startswith('omnivia_') is False:",
+            "            continue",
+            "        records.setdefault(name, set()).add(id(value))",
+            "duplicated = sorted(name for name, ids in records.items() if len(ids) != 1)",
+            "assert not duplicated, f'duplicate objects for {duplicated}'",
+            f"assert set(records) == set({routed!r})",
+        ]
+    )
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    "order_name", sorted(WORKSPACE_IMPORT_ORDERS), ids=sorted(WORKSPACE_IMPORT_ORDERS)
+)
+def test_workspace_fresh_process_import_orders_preserve_identity(
+    order_name: str,
+) -> None:
+    """Seven fresh processes, one per order. A shared process would hide an order
+    that only works because an earlier test's imports had already settled which
+    module defines what -- and the ``runtime-first`` order is the one that most
+    needs it here, because the workspace service pulls in the ingestion and memory
+    runtimes before anything canonical is named.
+    """
+    _run_isolated(_workspace_identity_script(WORKSPACE_IMPORT_ORDERS[order_name]))
+
+
+def test_canonical_workspace_closure_loads_neither_the_runtime_nor_omnivia_memory() -> None:
+    """A canonical-only workspace import must reach ``omnivia_memory`` not at all
+    -- and in particular not the workspace repository/service, the ingestion
+    pipeline they drive, the persistence layer, or any private package. The
+    workspace runtime reaches SQLite through ``omnivia_memory.persistence`` and
+    file content through third-party readers, so their absence is part of what
+    "the canonical contract layer stands alone" means. The exact canonical closure
+    is pinned too, so a canonical leaf that started importing a sibling domain
+    fails here rather than growing the closure quietly. Only ``src`` goes on the
+    path.
+    """
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            "import omnivia_core.workspace",
+            "import omnivia_core.workspace.models",
+            "assert 'omnivia_memory' not in sys.modules",
+            "loaded = {",
+            "    name for name in sys.modules",
+            "    if name == 'omnivia_core' or name.startswith('omnivia_core.')",
+            "}",
+            f"expected = set({sorted(WORKSPACE_CANONICAL_MODULE_CLOSURE)!r})",
+            "assert loaded == expected, sorted(loaded ^ expected)",
+            f"forbidden = set({list(WORKSPACE_FORBIDDEN_MODULE_ROOTS)!r})",
+            "leaked = sorted(forbidden & {name.split('.')[0] for name in sys.modules})",
+            "assert not leaked, leaked",
+            "runtime = sorted(",
+            "    name for name in sys.modules",
+            "    if name.endswith(('.repository', '.service', '.pipeline', '.database'))",
+            ")",
+            "assert not runtime, runtime",
+            "private = sorted(",
+            "    name for name in sys.modules",
+            "    if name.startswith('omnivia_core._')",
+            "    or name.startswith('omnivia_core.ingestion')",
+            "    or name.startswith('omnivia_core.persistence')",
+            ")",
+            "assert not private, private",
+        ]
+    )
+    _run_isolated(script)
+
+
+def test_neither_root_exposes_any_of_the_workspace_barrel_exports() -> None:
+    """Both roots are deliberately unedited by this batch, and neither exposes any
+    of the ``workspace`` barrel's seven model/runtime exports. That is what makes
+    this batch move *no* root binding at all, so it is pinned rather than left
+    implicit: a root that started re-exporting one of these would need a declared
+    root-binding owner move, and there is none.
+
+    This is the exact invariant, and deliberately not the broader "no workspace
+    name anywhere" claim: the legacy root *does* export ``WorkspaceRef``, the
+    separate control-plane contract. That binding is asserted below so the
+    narrower claim cannot silently widen back out again.
+    """
+    workspace_names = sorted(WORKSPACE_BARREL_ALL)
+    assert len(workspace_names) == 7
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        root = importlib.import_module(root_name)
+        present = [name for name in workspace_names if hasattr(root, name)]
+        assert present == [], f"{root_name} now re-exports workspace symbols {present}"
+        advertised = [
+            name for name in workspace_names if name in getattr(root, "__all__", ())
+        ]
+        assert advertised == []
+
+    # ...and the one workspace-*shaped* root binding that does exist is the
+    # control-plane contract, owned by a different domain entirely.
+    legacy_root = importlib.import_module("omnivia_memory")
+    control_plane = importlib.import_module("omnivia_core.control_plane.models")
+    assert "WorkspaceRef" not in workspace_names
+    assert "WorkspaceRef" in legacy_root.__all__
+    assert legacy_root.WorkspaceRef is control_plane.WorkspaceRef
+
+    # ...and the workspace barrel is not a package either root imports from.
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        source = Path(importlib.import_module(root_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        reached = {
+            node.module
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert f"{root_name}.workspace" not in reached
+
+
+def test_workspace_conversion_declares_no_descriptor_rewrite_or_root_owner_move() -> None:
+    """The workspace leaf uses ``from __future__ import annotations``, so every
+    frozen signature it recorded is already a string forward reference that never
+    named a package -- there is no descriptor text for the ownership move to
+    change. And it owns no root binding (see the test above), so no root-binding
+    owner move follows either. Pin that the two declaration maps carry nothing for
+    workspace, and that the entries they do carry are untouched -- which, this
+    being the last leaf, is also the final state of both maps.
+    """
+    assert not any(
+        legacy_module.startswith("omnivia_memory.workspace")
+        for legacy_module, _symbol in FACADE_DESCRIPTOR_REWRITES
+    )
+    assert not any(
+        legacy_module.startswith("omnivia_memory.workspace")
+        for _binding, legacy_module in FACADE_ROOT_BINDING_OWNER_MOVES
+    )
+    assert set(FACADE_ROOT_BINDING_OWNER_MOVES) == {
+        ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"),
+        ("CONTROL_PLANE_CONTRACT_VERSION", "omnivia_memory.control_plane.models"),
+    }
+    assert set(FACADE_DESCRIPTOR_REWRITES) == {
+        ("omnivia_memory.app_manifest.validation", "validate_app_manifest"),
+        ("omnivia_memory.module_manifest.validation", "validate_module_manifest"),
+    }
+
+
+def test_workspace_is_the_last_source_parity_leaf_to_convert() -> None:
+    """This batch empties ``source_parity``: every routed leaf in the frozen
+    registry is now converted, and the only unconverted routes left are the six
+    hybrid barrels and the package root.
+
+    Pinned here, next to the leaf that did it, so a later batch that reintroduced
+    a duplicated leaf -- or that quietly left this one behind -- has to say so.
+    """
+    manifest = load_manifest()
+    assert manifest.by_state(MigrationState.SOURCE_PARITY) == ()
+    assert manifest.by_state(MigrationState.CANONICAL_SUBSET) == ()
+    workspace = manifest.route_for_legacy(WORKSPACE_MODELS_LEAF)
+    assert workspace.migration_state is MigrationState.DIRECT_FACADE
+    assert workspace.canonical_module == WORKSPACE_MODELS_CANONICAL
+
+    unconverted = [route for route in manifest.routes if not route.is_converted]
+    assert [route.legacy_module for route in unconverted] == [
+        "omnivia_memory",
+        "omnivia_memory.graph",
+        "omnivia_memory.ingestion",
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_memory.memory",
+        "omnivia_memory.memory_graph",
+        "omnivia_memory.workspace",
+    ]

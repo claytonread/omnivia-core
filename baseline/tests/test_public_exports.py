@@ -463,12 +463,20 @@ def test_retained_definition_verification_passes_and_is_fail_closed() -> None:
     actual = build_public_export_inventory()
     assert _facade_retained_definition_problems(actual, frozen=expected) == []
 
+    # ``workspace.repository`` is runtime-owned: it is declared
+    # ``runtime_only_modules`` in the frozen route registry and can never become
+    # a route, so it is a stable stand-in for "a leaf with no routes". This used
+    # to be ``workspace.models``, which stopped being one when that leaf was
+    # converted.
     problems = _facade_retained_definition_problems(
         actual,
-        retained_definitions={"omnivia_memory.workspace.models": ("Workspace",)},
+        retained_definitions={
+            "omnivia_memory.workspace.repository": ("WorkspaceRepository",)
+        },
         frozen=expected,
     )
     assert any("is not a routed leaf" in problem for problem in problems), problems
+    assert "omnivia_memory.workspace.repository" not in FACADE_ROUTES
 
     problems = _facade_retained_definition_problems(
         actual,

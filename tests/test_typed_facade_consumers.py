@@ -29,12 +29,16 @@ GRAPH_LEAVES = {
 # behind the other's.
 INGESTION_MODELS_LEAVES = {"omnivia_memory.ingestion.models"}
 WATCHER_MODELS_LEAVES = {"omnivia_memory.ingestion.watcher.models"}
+# The workspace leaf is the portable half of a hybrid barrel, so it gets a
+# fixture of its own for the same reason the ingestion pair do.
+WORKSPACE_MODELS_LEAVES = {"omnivia_memory.workspace.models"}
 DEDICATED_LEAVES = (
     MODULE_MANIFEST_LEAVES
     | KNOWLEDGE_LEAVES
     | GRAPH_LEAVES
     | INGESTION_MODELS_LEAVES
     | WATCHER_MODELS_LEAVES
+    | WORKSPACE_MODELS_LEAVES
 )
 CONSUMER_ROUTES = {
     "tests/typing/accepted_legacy_facade_consumer.py": (
@@ -45,6 +49,7 @@ CONSUMER_ROUTES = {
     "tests/typing/knowledge_facade_consumer.py": KNOWLEDGE_LEAVES,
     "tests/typing/module_manifest_facade_consumer.py": MODULE_MANIFEST_LEAVES,
     "tests/typing/watcher_models_facade_consumer.py": WATCHER_MODELS_LEAVES,
+    "tests/typing/workspace_models_facade_consumer.py": WORKSPACE_MODELS_LEAVES,
 }
 
 #: Definitions a split facade keeps owning: they are not routes, so a consumer
@@ -406,6 +411,7 @@ def test_typed_consumers_cover_every_accepted_facade_route_exactly() -> None:
         GRAPH_LEAVES,
         INGESTION_MODELS_LEAVES,
         WATCHER_MODELS_LEAVES,
+        WORKSPACE_MODELS_LEAVES,
     )
     for index, first in enumerate(dedicated_groups):
         for second in dedicated_groups[index + 1 :]:

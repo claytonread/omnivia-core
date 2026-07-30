@@ -43,7 +43,7 @@ Four layers of comparison run here, from loosest to strictest:
   rejects a stale or unused rule -- which is what emptied the map: every leaf
   that ever needed a rule has since become a facade).
 
-Almost every once-duplicated leaf (``_shared.validation``,
+Every once-duplicated leaf (``_shared.validation``,
 ``app_manifest.models``, ``app_manifest.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
@@ -55,8 +55,8 @@ Almost every once-duplicated leaf (``_shared.validation``,
 ``memory_graph.assembly``, ``memory_graph.fixtures``, ``memory_graph.models``,
 ``memory_graph.validation``,
 ``module_manifest.models``, ``module_manifest.validation``,
-``provenance.models``, ``memory.models``, ``run_ledger.models``, and
-``run_ledger.validation``) has since been converted
+``provenance.models``, ``memory.models``, ``run_ledger.models``,
+``run_ledger.validation``, and ``workspace.models``) has since been converted
 into thin compatibility facades:
 the legacy leaf now imports its supported symbols directly from the canonical
 owner (``legacy.Foo is canonical.Foo``) instead of holding a duplicated,
@@ -65,6 +65,14 @@ legacy counterpart by design, so they are held out of
 ``CANONICAL_TO_LEGACY`` and the parametrized gates below -- listed instead in
 ``FACADE_CANONICAL_TO_LEGACY`` -- and verified for exact symbol identity, not
 source sameness, by ``tests/compatibility/test_facade_foundation.py``.
+
+``workspace.models`` was the last of them, which is what emptied
+``CANONICAL_TO_LEGACY``: the two parametrized gates below therefore have no
+cases left to run today. They are deliberately kept rather than deleted --
+they are the source-parity policy for any leaf a later batch ports before
+converting it -- and ``test_copied_leaf_manifest_is_empty_because_every_leaf_is_converted``
+pins that the emptiness is the conversion's doing rather than a manifest that
+quietly lost its entries.
 
 ``graph.search_models`` is converted too, as a *split* facade: it routes its
 portable namespace to the canonical objects while keeping the four
@@ -358,6 +366,30 @@ def test_ast_gate_covers_every_leaf_but_the_declared_split_facades() -> None:
     ):
         assert set(first).isdisjoint(second)
         assert set(first.values()).isdisjoint(second.values())
+
+
+def test_copied_leaf_manifest_is_empty_because_every_leaf_is_converted() -> None:
+    """``CANONICAL_TO_LEGACY`` is empty, and that must be *because* every leaf has
+    been converted -- not because entries were dropped.
+
+    The two gates above are parametrized over that map, so an empty map silently
+    disables both. Assert the reason directly: every canonical leaf other than the
+    ``_shared`` barrel is now filed under one of the two facade manifests, and
+    ``omnivia_core.workspace.models`` -- the last copied leaf -- is specifically a
+    plain facade. A leaf dropped from ``CANONICAL_TO_LEGACY`` without being added
+    to a facade manifest fails
+    ``test_ast_gate_covers_every_leaf_but_the_declared_split_facades``; a leaf
+    dropped from all three fails here as well.
+    """
+    assert CANONICAL_TO_LEGACY == {}
+    assert (
+        FACADE_CANONICAL_TO_LEGACY["omnivia_core.workspace.models"]
+        == "omnivia_memory.workspace.models"
+    )
+    converted = set(FACADE_CANONICAL_TO_LEGACY) | set(SPLIT_FACADE_CANONICAL_TO_LEGACY)
+    assert {
+        name for name in CANONICAL_LEAF_MODULES if name != "omnivia_core._shared"
+    } <= converted
 
 
 def test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once() -> None:

@@ -150,9 +150,9 @@ EXPECTED_STATE_SUFFIXES = {
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
-        # The first converted leaves whose barrel stays a hybrid: ``memory_graph``
-        # is still ``pending_hybrid`` below, because its other two children are
-        # runtime-only.
+        # The second converted leaf set whose barrel stays a hybrid, after
+        # ``memory.models`` above: ``memory_graph`` is still ``pending_hybrid``
+        # below, because its other two children are runtime-only.
         "memory_graph.assembly",
         "memory_graph.fixtures",
         "memory_graph.models",
@@ -162,6 +162,10 @@ EXPECTED_STATE_SUFFIXES = {
         "provenance.models",
         "run_ledger.models",
         "run_ledger.validation",
+        # The last leaf of all. Its barrel stays a hybrid below, because
+        # ``WorkspaceRepository`` and ``WorkspaceService`` are owned by the
+        # runtime-only ``repository``/``service`` leaves.
+        "workspace.models",
     },
     MigrationState.TRANSITIVE_FACADE: {
         "_shared",
@@ -184,6 +188,10 @@ EXPECTED_STATE_SUFFIXES = {
     MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
     MigrationState.PENDING_ROOT: {""},
 }
+#: Derived rather than listed, so it is whatever the sets above do not claim.
+#: It is empty now -- ``workspace.models`` was the last duplicated leaf -- which
+#: is exactly why it stays derived: an entry dropped from ``DIRECT_FACADE``
+#: above reappears here and fails the partition, instead of vanishing.
 EXPECTED_STATE_SUFFIXES[MigrationState.SOURCE_PARITY] = (
     set(EXPECTED_SUFFIXES)
     - set().union(*EXPECTED_STATE_SUFFIXES.values())
@@ -409,9 +417,21 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("module_manifest.validation", "source_parity", "move the state forward"),
         ("run_ledger.models", "source_parity", "move the state forward"),
         ("run_ledger.validation", "source_parity", "move the state forward"),
-        # The mirror direction: a leaf that is still a duplicated source-parity
-        # copy may not be declared as a converted facade either.
-        ("workspace.models", "direct_facade", "declared 'direct_facade'"),
+        # The last leaf, and the one whose barrel is the sixth hybrid: like the
+        # ingestion pair and the memory-graph four, a relabelling is caught only
+        # by its *own* source gate.
+        ("workspace.models", "source_parity", "move the state forward"),
+        # The mirror direction used to be ``workspace.models`` declared
+        # ``direct_facade`` while its source was still a duplicated copy. That
+        # leaf is now the facade, and it was the last duplicated one, so no
+        # unconverted leaf is left to point at. The rule itself is unchanged and
+        # still covered from the other side by ``graph.search_models``, whose
+        # split source is rejected when it is declared ``direct_facade``
+        # (``test_a_split_source_is_not_a_direct_facade`` and
+        # ``test_validate_route_sources_enforces_the_graph_states`` below).
+        # Restoring a case
+        # here would mean reintroducing a duplicated leaf, which this slice
+        # exists to end.
     ],
 )
 def test_checkout_rejects_source_state_swaps(
@@ -3004,6 +3024,482 @@ def test_ingestion_barrel_transitive_form_requires_its_converted_child(
     ), defects
 
 
+#: --------------------------------------------------------------------------
+#: The ``workspace`` pair: the last direct facade, under the sixth hybrid barrel.
+#:
+#: ``workspace.models`` is a plain ``direct_facade`` leaf -- one import, nothing
+#: retained -- and converting it empties ``source_parity`` entirely: no
+#: duplicated leaf remains anywhere in the registry. Its barrel still cannot
+#: follow, because two of its seven exports (``WorkspaceRepository`` and
+#: ``WorkspaceService``) come from the runtime-only ``repository``/``service``
+#: leaves. It stays ``pending_hybrid``.
+#: --------------------------------------------------------------------------
+
+_WORKSPACE_MODELS_CANONICAL = "omnivia_core.workspace.models"
+
+#: The leaf's exact 14-name public/star namespace, in the source order its
+#: wrapper uses. Only the owned names are routes -- 5 of these 14; the rest are
+#: the incidental imports the historical module's own namespace also published.
+#: Restated here rather than read off the wrapper: this fixture is the adversary
+#: base for mutations of that very file.
+_WORKSPACE_MODELS_NAMESPACE: tuple[str, ...] = (
+    "Any",
+    "Enum",
+    "ImportSummary",
+    "Path",
+    "Workspace",
+    "WorkspaceCreate",
+    "WorkspaceIndexStatus",
+    "WorkspaceUpdate",
+    "annotations",
+    "dataclass",
+    "datetime",
+    "field",
+    "timezone",
+    "uuid",
+)
+
+
+def test_workspace_pair_states_and_shapes_are_exact() -> None:
+    """The registry's own record of this batch: a ``direct``/``leaf`` pair that is
+    ``direct_facade`` and converted, under a ``hybrid_barrel`` that is not.
+    Pinned exactly, because every other gate in this section is about what may
+    *not* happen to those states."""
+    manifest = load_manifest()
+
+    leaf = manifest.route_for_legacy("omnivia_memory.workspace.models")
+    assert (leaf.pair_kind, leaf.shape, leaf.migration_state) == (
+        PairKind.DIRECT,
+        Shape.LEAF,
+        MigrationState.DIRECT_FACADE,
+    )
+    assert leaf.is_converted
+    assert leaf.canonical_module == _WORKSPACE_MODELS_CANONICAL
+
+    barrel = manifest.route_for_legacy("omnivia_memory.workspace")
+    assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
+        PairKind.HYBRID_BARREL,
+        Shape.BARREL,
+        MigrationState.PENDING_HYBRID,
+    )
+    assert not barrel.is_converted
+
+    for runtime_only in (
+        "omnivia_memory.workspace.repository",
+        "omnivia_memory.workspace.service",
+    ):
+        assert runtime_only in manifest.runtime_only_modules
+        with pytest.raises(KeyError):
+            manifest.route_for_legacy(runtime_only)
+
+
+def test_no_duplicated_leaf_remains_in_the_registry() -> None:
+    """``workspace.models`` was the last of them, so both duplicated-source states
+    are now empty and every ``leaf`` route is converted.
+
+    Pinned as its own fact rather than inferred from ``EXPECTED_STATE_SUFFIXES``:
+    that map derives ``source_parity`` by subtraction, so it would stay satisfied
+    if a leaf were dropped from the registry altogether. This counts the leaves
+    instead."""
+    manifest = load_manifest()
+    assert manifest.by_state(MigrationState.SOURCE_PARITY) == ()
+    assert manifest.by_state(MigrationState.CANONICAL_SUBSET) == ()
+
+    leaves = manifest.by_shape(Shape.LEAF)
+    assert len(leaves) == manifest.expected_counts.leaf == 30
+    assert all(route.is_converted for route in leaves)
+
+    unconverted = [route for route in manifest.routes if not route.is_converted]
+    assert {route.shape for route in unconverted} == {Shape.BARREL, Shape.ROOT}
+    assert [route.legacy_module for route in unconverted] == [
+        "omnivia_memory",
+        "omnivia_memory.graph",
+        "omnivia_memory.ingestion",
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_memory.memory",
+        "omnivia_memory.memory_graph",
+        "omnivia_memory.workspace",
+    ]
+
+
+@pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
+def test_workspace_leaf_direct_facade_state_cannot_be_walked_back(state: str) -> None:
+    """Neither duplicated-source state may be re-declared over a leaf that is now
+    an exact single-import wrapper: the source no longer duplicates the canonical
+    module at all, and relabelling it would silently stop it being checked as
+    converted -- and would put the registry back into a ``source_parity`` this
+    batch exists to empty."""
+    document = _document()
+    _route(document, "workspace.models")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert f"declared {state!r} but the source is an exact facade" in joined
+
+
+@pytest.mark.parametrize(
+    ("state", "pattern"),
+    [
+        ("split_facade", "declared 'split_facade'"),
+        ("canonical_subset", "move the state forward"),
+        ("source_parity", "move the state forward"),
+    ],
+    ids=["as-split", "as-canonical-subset", "as-source-parity"],
+)
+def test_validate_route_sources_enforces_the_workspace_state(
+    state: str, pattern: str
+) -> None:
+    """``validate_route_sources`` is the source half of the gate on its own -- no
+    checkout rediscovery, no shape agreement, just each route's declared state
+    against its file. It must reach the same verdicts as ``validate_checkout``:
+    accept the real registry, and reject every mislabelling of the leaf.
+    ``split_facade`` is the specific temptation here: a wrapper with no retained
+    definitions is not a split facade, and declaring it one would swap in a source
+    policy that this wrapper cannot satisfy."""
+    validate_route_sources()
+    document = _document()
+    _route(document, "workspace.models")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match=pattern):
+        validate_route_sources(manifest=document)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "transitive_facade",
+        "pending_direct_barrel",
+        "direct_facade",
+        "split_facade",
+        "source_parity",
+        "canonical_subset",
+        "pending_root",
+    ],
+)
+def test_workspace_barrel_cannot_be_promoted_out_of_pending_hybrid(state: str) -> None:
+    """The barrel's one portable child is converted, so ``transitive_facade`` looks
+    tempting -- and it is exactly wrong: the barrel also re-exports from two
+    runtime-only leaves that are not routes and can never be converted children.
+    ``pending_hybrid`` is the only state a ``hybrid_barrel``/``barrel`` pair may be
+    in, so every other value is rejected at load time by the combination rule
+    rather than needing a state-specific waiver."""
+    document = _document()
+    _route(document, "workspace")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="valid combination"):
+        load_manifest(document)
+
+
+def test_workspace_wrapper_shape_is_the_defect_free_adversary_base() -> None:
+    """The accepted shape -- a docstring and exactly one absolute, unaliased,
+    non-star import of the paired canonical module -- must be defect-free, so each
+    rejection below is proven to fail on what it injects rather than on the shape
+    itself."""
+    source = _direct_wrapper_source(
+        _WORKSPACE_MODELS_CANONICAL, _WORKSPACE_MODELS_NAMESPACE
+    )
+    assert direct_facade_defects(ast.parse(source), _WORKSPACE_MODELS_CANONICAL) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # An ``__all__`` of its own: the leaf never declared one, and adding it
+        # would let the wrapper advertise a surface its route does not decide.
+        ('__all__ = ["Workspace"]\n', "statements of its own"),
+        # A local definition, of either kind.
+        ("class Workspace:\n    pass\n", "statements of its own"),
+        # The private timestamp helper the canonical module keeps. Redefining it
+        # here is the sharpest local-definition case: the canonical dataclasses'
+        # ``default_factory`` still points at *their* ``_now``, so a wrapper that
+        # grew one would change nothing observable and still not be a facade.
+        (
+            "def _now() -> str:\n    return ''\n",
+            "statements of its own",
+        ),
+        # A dynamic hook: every name must be decided at import time.
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+        ("import uuid\n", "statements of its own"),
+        (
+            "import sys\nsys.modules[__name__].__dict__['probe'] = 1\n",
+            "statements of its own",
+        ),
+        # A second from-import, whether it reaches a sibling canonical leaf, the
+        # legacy runtime, or ``__future__``.
+        (
+            "from omnivia_core.provenance.models import SourceType\n",
+            "from-imports, expected exactly one",
+        ),
+        (
+            "from omnivia_memory.workspace.repository import WorkspaceRepository\n",
+            "from-imports, expected exactly one",
+        ),
+        ("from __future__ import annotations\n", "from-imports, expected exactly one"),
+    ],
+)
+def test_workspace_wrapper_rejects_a_local_definition_or_second_import(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """Injected into the defect-free base above, so the asserted pattern is the
+    one the mutation causes."""
+    source = _direct_wrapper_source(
+        _WORKSPACE_MODELS_CANONICAL, _WORKSPACE_MODELS_NAMESPACE, extra_source
+    )
+    defects = direct_facade_defects(ast.parse(source), _WORKSPACE_MODELS_CANONICAL)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("source", "pattern"),
+    [
+        # The wrong canonical module -- including the barrel one level up, which
+        # is the near miss a copy/paste would produce and which really does bind
+        # four of the five routed names.
+        (
+            "from omnivia_core.workspace import Workspace\n",
+            "imports from 'omnivia_core.workspace'",
+        ),
+        (
+            "from omnivia_core.memory.models import Memory\n",
+            "imports from 'omnivia_core.memory.models'",
+        ),
+        # The legacy path: a wrapper that re-exported from its own tree would keep
+        # every name resolving and route nothing.
+        (
+            "from omnivia_memory.workspace.models import Workspace\n",
+            "imports from 'omnivia_memory.workspace.models'",
+        ),
+        # Relative, star, and aliased forms of the one permitted statement.
+        ("from .models import Workspace\n", "relative import"),
+        ("from omnivia_core.workspace.models import *\n", "star import"),
+        # The alias case is the sharpest: ``WorkspaceIndexStatus`` is a real name
+        # in this leaf's namespace, so an aliasing wrapper would publish a
+        # namespace that looks right and is built by renaming rather than routing.
+        (
+            (
+                "from omnivia_core.workspace.models import "
+                "WorkspaceIndexStatus as IndexStatus\n"
+            ),
+            "aliases 'WorkspaceIndexStatus' as 'IndexStatus'",
+        ),
+        (
+            "from omnivia_core.workspace.models import Workspace as WorkspaceCreate\n",
+            "aliases 'Workspace' as 'WorkspaceCreate'",
+        ),
+    ],
+    ids=[
+        "imports-its-own-barrel",
+        "imports-another-domain",
+        "imports-legacy-self",
+        "relative",
+        "star",
+        "aliases-the-index-status",
+        "aliases-one-routed-name-as-another",
+    ],
+)
+def test_workspace_wrapper_rejects_a_reroute_star_or_alias(
+    source: str, pattern: str
+) -> None:
+    """Each of these replaces the one permitted statement rather than adding to
+    it, so the wrapper still has exactly one from-import and the defect reported
+    is the reroute/star/alias itself."""
+    defects = direct_facade_defects(
+        ast.parse(f'"""Doc."""\n{source}'), _WORKSPACE_MODELS_CANONICAL
+    )
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("docstring", "extra_source", "pattern"),
+    [
+        # No docstring at all. This is the case a blanket "ignore every module
+        # string expression" filter cannot see: the remaining body is exactly one
+        # from-import of the right module with no statements of its own, so every
+        # other rule is satisfied and only the positional docstring rule rejects
+        # it. A wrapper is a documented boundary, not an anonymous re-export.
+        ("", "", "does not open with a module docstring"),
+        # A stray string after the import: a module-scope expression the wrapper
+        # itself executes, and not the docstring.
+        (
+            '"""Compatibility facade."""\n',
+            '"""Trailing note."""\n',
+            "standalone string expression(s) besides the module docstring",
+        ),
+        # A stray string between the docstring and the import.
+        (
+            '"""Compatibility facade."""\n"""Second string."""\n',
+            "",
+            "standalone string expression(s) besides the module docstring",
+        ),
+        # Both at once, so neither rule can be satisfied by the other's string.
+        (
+            '"""Compatibility facade."""\n"""Second string."""\n',
+            '"""Trailing note."""\n',
+            "standalone string expression(s) besides the module docstring",
+        ),
+    ],
+    ids=["no-docstring", "trailing-string", "middle-string", "middle-and-trailing"],
+)
+def test_workspace_wrapper_requires_exactly_one_leading_module_docstring(
+    docstring: str, extra_source: str, pattern: str
+) -> None:
+    """The accepted direct-facade shape is a *sequence*: one leading docstring, then
+    one import. Counting kinds is not enough -- a wrapper with no docstring, or with
+    strings bolted on before or after the import, has exactly the permitted kinds in
+    the permitted quantities and is not the accepted shape."""
+    source = _direct_wrapper_source(
+        _WORKSPACE_MODELS_CANONICAL,
+        _WORKSPACE_MODELS_NAMESPACE,
+        extra_source,
+        docstring=docstring,
+    )
+    defects = direct_facade_defects(ast.parse(source), _WORKSPACE_MODELS_CANONICAL)
+    assert any(pattern in defect for defect in defects), defects
+
+
+#: The legacy ``workspace`` barrel's exact historical import blocks, in source
+#: order. Restated rather than read off the barrel, because that is the file
+#: whose edits these gates exist to reject.
+_WORKSPACE_BARREL_HISTORICAL_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "models",
+        (
+            "ImportSummary",
+            "Workspace",
+            "WorkspaceCreate",
+            "WorkspaceIndexStatus",
+            "WorkspaceUpdate",
+        ),
+    ),
+    ("repository", ("WorkspaceRepository",)),
+    ("service", ("WorkspaceService",)),
+)
+
+
+def _workspace_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    """This barrel's route and its one converted child.
+
+    The synthetic barrel sources below are built with the ingestion section's
+    ``_ingestion_barrel_source``: it is a generic ``(module, names)`` -> source
+    builder, and its sorted ``__all__`` happens to be exactly this barrel's own
+    order.
+    """
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.workspace"),
+        [manifest.route_for_legacy("omnivia_memory.workspace.models")],
+    )
+
+
+def test_workspace_barrel_historical_source_is_not_a_transitive_facade() -> None:
+    """Even with the state gate bypassed, the barrel's historical composition
+    cannot pass the transitive-facade source check: its two runtime-only blocks
+    are not converted children, and those are the *only* defects -- so the failure
+    is attributable to the runtime-owned half specifically, not to the barrel's
+    shape or its ``__all__``.
+
+    The input is a synthetic source built from the exact historical import blocks
+    and the exact set of names the barrel advertises, not a byte copy of the file.
+    Exact source order is pinned separately, against the real file, by
+    ``test_workspace_hybrid_barrel_source_is_unchanged_reexport`` in
+    ``tests/compatibility/test_facade_foundation.py``."""
+    route, children = _workspace_barrel_route_and_children()
+    source = _ingestion_barrel_source(
+        "omnivia_memory.workspace", _WORKSPACE_BARREL_HISTORICAL_BLOCKS
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert len(defects) == 2, defects
+    for module in ("repository", "service"):
+        assert any(
+            "unapproved module" in defect
+            and f"omnivia_memory.workspace.{module}" in defect
+            for defect in defects
+        ), (module, defects)
+
+
+def test_workspace_portable_only_shape_is_the_defect_free_adversary_base() -> None:
+    """The hypothetical promoted barrel -- its single ``models`` block and the
+    matching ``__all__`` -- must be defect-free, so each rejection below is proven
+    to fail on what it injects."""
+    route, children = _workspace_barrel_route_and_children()
+    portable = tuple(
+        block for block in _WORKSPACE_BARREL_HISTORICAL_BLOCKS if block[0] == "models"
+    )
+    source = _ingestion_barrel_source("omnivia_memory.workspace", portable)
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # A direct reroute at the canonical package: the barrel's identity
+        # preservation would become direct rather than transitive.
+        (
+            "from omnivia_core.workspace.models import Workspace\n",
+            "unapproved module",
+        ),
+        # The runtime-only siblings the *real* barrel imports, absolutely and
+        # relatively. They are still not approved children, which is the whole
+        # reason the barrel stays a hybrid.
+        (
+            "from omnivia_memory.workspace.service import WorkspaceService\n",
+            "unapproved module",
+        ),
+        ("from .repository import WorkspaceRepository\n", "unapproved module"),
+        # A sibling domain the barrel has never re-exported.
+        ("from omnivia_memory.persistence import Database\n", "unapproved module"),
+        ("from ..memory.models import Memory\n", "unapproved module"),
+        # A *relative* form of its own child. The resolver approves the module, so
+        # what rejects this is the binding/``__all__`` mismatch it creates --
+        # pinned so the two branches are not confused for each other.
+        (
+            "from .models import Workspace\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        # One of the leaf's incidental bindings: importable from the child, and a
+        # name the barrel has never advertised.
+        (
+            "from omnivia_memory.workspace.models import Path\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("Workspace = object()\n", "assignments"),
+        ("def create(name):\n    return name\n", "statements of its own"),
+        ("class WorkspaceService:\n    pass\n", "statements of its own"),
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_workspace_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    route, children = _workspace_barrel_route_and_children()
+    portable = tuple(
+        block for block in _WORKSPACE_BARREL_HISTORICAL_BLOCKS if block[0] == "models"
+    )
+    source = _ingestion_barrel_source(
+        "omnivia_memory.workspace", portable, extra_source=extra_source
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_workspace_barrel_transitive_form_requires_its_converted_child() -> None:
+    """Dropping the one portable block must fail: an empty-bodied barrel is a
+    valid shape and has still stopped re-exporting its converted leaf."""
+    route, children = _workspace_barrel_route_and_children()
+    source = _ingestion_barrel_source("omnivia_memory.workspace", ())
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(
+        "does not import converted children" in defect
+        and "omnivia_memory.workspace.models" in defect
+        for defect in defects
+    ), defects
+
 def test_validate_checkout_revalidates_public_dataclass_instances() -> None:
     manifest = load_manifest()
     forged = replace(manifest, routes=(manifest.routes[0], manifest.routes[0]))
@@ -3063,22 +3559,22 @@ def test_checker_is_a_successful_executable_gate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
-    # The per-state counts this batch moved: ``ingestion.models`` and
-    # ``ingestion.watcher.models`` from ``source_parity`` into ``direct_facade``.
-    # Nothing else moved: their two barrels are hybrids, so no barrel changed
-    # state with them (``transitive_facade`` and ``pending_hybrid`` both stay
-    # where they were), and neither ``canonical_subset`` nor ``split_facade`` is
-    # touched. Both leaves are converted, so two come off the remaining-leaf
-    # count, leaving ``workspace.models`` as the only unconverted leaf.
+    # The per-state counts this batch moved: ``workspace.models`` from
+    # ``source_parity`` into ``direct_facade``, which empties ``source_parity``.
+    # Nothing else moved: its barrel is a hybrid, so no barrel changed state with
+    # it (``transitive_facade`` and ``pending_hybrid`` both stay where they were),
+    # and neither ``canonical_subset`` nor ``split_facade`` is touched. It was the
+    # last unconverted leaf, so the remaining-leaf count reaches zero and only the
+    # six hybrid barrels and the package root are left.
     assert "canonical_subset: 0" in result.stdout
-    assert "source_parity: 1" in result.stdout
-    assert "direct_facade: 28" in result.stdout
+    assert "source_parity: 0" in result.stdout
+    assert "direct_facade: 29" in result.stdout
     assert "split_facade: 1" in result.stdout
     assert "transitive_facade: 10" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
     assert "pending_hybrid: 6" in result.stdout
     assert "pending_root: 1" in result.stdout
-    assert "remaining: 1 leaf and 6 barrels still to convert" in result.stdout
+    assert "remaining: 0 leaves and 6 barrels still to convert" in result.stdout
 
 
 def _checker_module() -> Any:

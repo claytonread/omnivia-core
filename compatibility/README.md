@@ -143,10 +143,10 @@ encode are enforced by other gates in the same acceptance run:
 - **Installed layout.** `tests/compatibility/test_facade_wheel_install.py` builds
   both wheels and installs them offline, so the bounded
   `compatibility_dependency` recorded above is checked as real packaging
-  metadata, and the Graph split and the ingestion pair are re-verified against
-  the installed artifacts — including that neither the Graph nor the ingestion
-  runtime was ever packaged into the Core wheel.
+  metadata, and the Graph split, the ingestion pair and the workspace leaf are
+  re-verified against the installed artifacts — including that none of the
+  Graph, ingestion or workspace runtime was ever packaged into the Core wheel.
 
-None of this says the conversion is finished — leaves, barrels, and the root
-remain. It says that what has been converted is correct and cannot silently stop
-being correct. For what is left, read the checker's output, not this file.
+None of this says the conversion is finished — the six hybrid barrels and the
+root remain. It says that what has been converted is correct and cannot silently
+stop being correct. For what is left, read the checker's output, not this file.

@@ -48,9 +48,14 @@ CANONICAL_LEAF_MODULES: tuple[str, ...] = (
 
 #: canonical module -> matching legacy module, for the modules that are a
 #: direct 1:1 port (compared symbol-for-symbol by test_parity.py).
-CANONICAL_TO_LEGACY: dict[str, str] = {
-    "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
-}
+#:
+#: Empty on purpose: ``workspace.models`` was the last duplicated leaf, and it is
+#: now a compatibility facade in ``FACADE_CANONICAL_TO_LEGACY`` below. The map
+#: stays (rather than being deleted) because the source-parity oracle it drives
+#: is still the policy for any leaf a later batch ports before converting it, and
+#: because ``test_ast_gate_covers_every_leaf_but_the_declared_split_facades``
+#: keeps asserting that the three maps partition every canonical leaf.
+CANONICAL_TO_LEGACY: dict[str, str] = {}
 
 #: canonical module -> matching legacy module, for the modules where the
 #: legacy leaf has been converted into a thin compatibility facade that
@@ -62,13 +67,15 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
 #: asserts symbol identity rather than source-level sameness.
 #:
 #: A converted leaf's *barrel* is not necessarily converted with it: the four
-#: ``memory_graph`` leaves, ``graph.models``, ``ingestion.models`` and
-#: ``ingestion.watcher.models`` are facades while ``omnivia_memory.memory_graph``,
-#: ``omnivia_memory.graph``, ``omnivia_memory.ingestion`` and
-#: ``omnivia_memory.ingestion.watcher`` stay hybrid barrels, because some of their
+#: ``memory_graph`` leaves, ``graph.models``, ``ingestion.models``,
+#: ``ingestion.watcher.models`` and ``workspace.models`` are facades while
+#: ``omnivia_memory.memory_graph``, ``omnivia_memory.graph``,
+#: ``omnivia_memory.ingestion``, ``omnivia_memory.ingestion.watcher`` and
+#: ``omnivia_memory.workspace`` stay hybrid barrels, because some of their
 #: exports are owned by runtime-only leaves (``ingestion_adapter``/``store``,
 #: ``search_service``, the ingestion chunker/extractor/pipeline/repository/scanner
-#: set, and the watcher's ``debouncer``/``tracker``) that never enter Core.
+#: set, the watcher's ``debouncer``/``tracker``, and the workspace
+#: ``repository``/``service``) that never enter Core.
 #:
 #: A leaf that keeps *some* definitions of its own is a ``split_facade`` and lives
 #: in ``SPLIT_FACADE_CANONICAL_TO_LEGACY`` below instead, not here: this map is
@@ -104,6 +111,7 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.memory_graph.validation": "omnivia_memory.memory_graph.validation",
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
+    "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
 }
 
 #: canonical module -> matching legacy module, for the leaves converted into a

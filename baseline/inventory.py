@@ -525,6 +525,24 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "CreatedBy": "omnivia_core.lifecycle.rules",
         "Source": "omnivia_core.provenance.models",
     },
+    # The last duplicated leaf. All five names are this leaf's own definitions
+    # and none of them collides with another domain's contract, so this route set
+    # is simply the frozen ``defines`` entry. The ``workspace`` barrel above it
+    # stays a hybrid: two of its seven exports (``WorkspaceRepository`` and
+    # ``WorkspaceService``) are owned by the runtime-only ``repository``/
+    # ``service`` leaves, which are deliberately not routed. Neither package root
+    # re-exports any of that barrel's five model names or two runtime names, so
+    # this route moves no root binding at all. The legacy root does export
+    # ``WorkspaceRef``, but that is the distinct control-plane contract
+    # ``omnivia_core.control_plane.models.WorkspaceRef`` -- a different domain's
+    # name, routed by the ``control_plane`` leaf, not one of these seven.
+    "omnivia_memory.workspace.models": {
+        "ImportSummary": "omnivia_core.workspace.models",
+        "Workspace": "omnivia_core.workspace.models",
+        "WorkspaceCreate": "omnivia_core.workspace.models",
+        "WorkspaceIndexStatus": "omnivia_core.workspace.models",
+        "WorkspaceUpdate": "omnivia_core.workspace.models",
+    },
 }
 
 

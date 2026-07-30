@@ -30,7 +30,12 @@ built artifacts:
    definitions are the exact canonical objects, the ``IngestSource`` alias is
    still the same object as ``Source``, the barrels' runtime-owned exports are
    still legacy-only, and the watcher tracker's same-named ``SourceReference``
-   is still its own distinct class.
+   is still its own distinct class;
+8. in a fourth child process, do the same for the workspace facade leaf under
+   its hybrid barrel: the five routed definitions are the exact canonical
+   objects, the barrel's ``WorkspaceRepository``/``WorkspaceService`` exports
+   are still legacy-only, the repository and service hold the canonical models,
+   and Core packages neither of them.
 
 Scope limits, stated explicitly so this evidence is not over-read:
 
@@ -40,12 +45,13 @@ Scope limits, stated explicitly so this evidence is not over-read:
   ``omnivia-core`` for a user installing ``omnivia-memory`` from an index.
   The test asserts that SQLAlchemy is absent from the environment to keep
   that boundary visible rather than implied.
-* Steps 6 and 7 are **not** a full runtime-root import proof either. They
-  import the Graph and ingestion compatibility leaves, their barrels, and
-  their canonical counterparts, which is possible precisely because those
-  closures need no third-party package -- the Graph runtime reaches SQLite
-  through the standard library, and the ingestion extractors import PyMuPDF
-  and ``python-docx`` lazily inside the methods that use them. Nothing that
+* Steps 6, 7 and 8 are **not** a full runtime-root import proof either. They
+  import the Graph, ingestion and workspace compatibility leaves, their
+  barrels, and their canonical counterparts, which is possible precisely
+  because those closures need no third-party package -- the Graph and workspace
+  runtimes reach SQLite through the standard library, and the ingestion
+  extractors import PyMuPDF and ``python-docx`` lazily inside the methods that
+  use them. Nothing that
   would need the uninstalled SQLAlchemy dependency is imported. Broader facade
   import behaviour and the rest of the canonical object identities are covered
   by ``tests/compatibility/test_facade_foundation.py``, in the source tree.
@@ -483,6 +489,110 @@ assert omnivia_memory.ingestion.watcher.SourceReference is (
 print("OK")
 """
 
+#: The five definitions the ``workspace.models`` facade routes. Restated here
+#: rather than imported from ``baseline.inventory``, for the same reason the
+#: Graph and ingestion sets above are: this file checks *installed artifacts*,
+#: and reading the expectation out of the source tree it is meant to be
+#: independent of would weaken the check.
+WORKSPACE_MODELS_ROUTED = (
+    "ImportSummary",
+    "Workspace",
+    "WorkspaceCreate",
+    "WorkspaceIndexStatus",
+    "WorkspaceUpdate",
+)
+#: The hybrid barrel's runtime-owned exports, which stay legacy-only and must
+#: never appear on the installed canonical barrel.
+WORKSPACE_BARREL_RUNTIME_EXPORTS = ("WorkspaceRepository", "WorkspaceService")
+#: Workspace modules that are runtime-owned: legacy-only, never in the Core wheel.
+WORKSPACE_RUNTIME_WHEEL_PATHS = (
+    "omnivia_core/workspace/repository.py",
+    "omnivia_core/workspace/service.py",
+)
+
+#: Run inside the throwaway environment, against the installed wheels only. Same
+#: ``-I`` isolation as the scripts above. The workspace closure needs no
+#: third-party package either: its repository reaches SQLite through the
+#: standard library, and the ingestion extractors its service pulls in import
+#: PyMuPDF and ``python-docx`` lazily.
+INSTALLED_WORKSPACE_FACADE_SCRIPT = f"""
+import sys
+
+import omnivia_core.workspace
+import omnivia_core.workspace.models
+import omnivia_memory.workspace
+import omnivia_memory.workspace.models
+
+legacy_models = sys.modules["omnivia_memory.workspace.models"]
+canonical_models = sys.modules["omnivia_core.workspace.models"]
+
+for name in {WORKSPACE_MODELS_ROUTED!r}:
+    assert getattr(legacy_models, name) is getattr(canonical_models, name), name
+
+# Every module resolved from the installed distributions, not a source tree.
+for module in (legacy_models, canonical_models):
+    assert "site-packages" in module.__file__, module.__file__
+
+# The hybrid barrel: the portable half is canonical on both barrels, the runtime
+# half is legacy-only.
+for name in {WORKSPACE_MODELS_ROUTED!r}:
+    assert getattr(omnivia_memory.workspace, name) is getattr(canonical_models, name)
+    assert getattr(omnivia_core.workspace, name) is getattr(canonical_models, name)
+for name in {WORKSPACE_BARREL_RUNTIME_EXPORTS!r}:
+    assert name in omnivia_memory.workspace.__all__, name
+    assert not hasattr(omnivia_core.workspace, name), name
+    assert name not in omnivia_core.workspace.__all__, name
+
+# The routed records still round-trip and mutate through the canonical objects.
+payload = {{
+    "id": "ws-1",
+    "name": "My Workspace",
+    "root_path": "/tmp/root",
+    "storage_path": "/tmp/storage",
+    "created_at": "2024-01-01T00:00:00+00:00",
+    "updated_at": "2024-01-01T00:00:00+00:00",
+}}
+workspace = legacy_models.Workspace.from_dict(payload)
+assert canonical_models.Workspace.from_dict(workspace.to_dict()).to_dict() == (
+    workspace.to_dict()
+)
+assert workspace.index_status is canonical_models.WorkspaceIndexStatus.UNINDEXED
+workspace.mark_indexed()
+assert workspace.index_status is canonical_models.WorkspaceIndexStatus.INDEXED
+assert legacy_models.WorkspaceUpdate(name="Renamed").apply_to(workspace) is True
+assert workspace.name == "Renamed"
+summary = legacy_models.ImportSummary(
+    workspace_id="ws-1", files_seen=1, sources_created=1, memories_created=1
+)
+assert isinstance(summary, canonical_models.ImportSummary)
+assert summary.errors == []
+
+# The workspace runtime is legacy-only: importable from the compatibility
+# distribution, absent from Core.
+import omnivia_memory.workspace.repository
+import omnivia_memory.workspace.service
+
+for name in ("repository", "service"):
+    assert f"omnivia_core.workspace.{{name}}" not in sys.modules, name
+    try:
+        __import__(f"omnivia_core.workspace.{{name}}")
+    except ImportError:
+        pass
+    else:
+        raise AssertionError(f"omnivia_core.workspace.{{name}} is importable")
+
+repository = sys.modules["omnivia_memory.workspace.repository"]
+service = sys.modules["omnivia_memory.workspace.service"]
+assert repository.Workspace is canonical_models.Workspace
+assert repository.WorkspaceIndexStatus is canonical_models.WorkspaceIndexStatus
+assert service.ImportSummary is canonical_models.ImportSummary
+assert service.WorkspaceCreate is canonical_models.WorkspaceCreate
+assert service.WorkspaceUpdate is canonical_models.WorkspaceUpdate
+assert omnivia_memory.workspace.WorkspaceRepository is repository.WorkspaceRepository
+assert omnivia_memory.workspace.WorkspaceService is service.WorkspaceService
+print("OK")
+"""
+
 
 def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_offline() -> None:
     with tempfile.TemporaryDirectory(prefix="omnivia-facade-wheel-") as raw_workdir:
@@ -549,19 +659,24 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
         # third-party package at all.
         assert installed["sqlalchemy_installed"] is False
 
-        # The runtime-owned Graph and ingestion modules were never packaged into
-        # Core.
+        # The runtime-owned Graph, ingestion and workspace modules were never
+        # packaged into Core.
         with zipfile.ZipFile(core_wheel) as core_archive:
             core_names = set(core_archive.namelist())
-            for path in (*GRAPH_RUNTIME_WHEEL_PATHS, *INGESTION_RUNTIME_WHEEL_PATHS):
+            for path in (
+                *GRAPH_RUNTIME_WHEEL_PATHS,
+                *INGESTION_RUNTIME_WHEEL_PATHS,
+                *WORKSPACE_RUNTIME_WHEEL_PATHS,
+            ):
                 assert path not in core_names, (
                     f"{core_wheel.name} packages the runtime-owned {path}"
                 )
-            # ...and the two ingestion contract leaves really are in it, so the
-            # absences above are a partition rather than a missing subtree.
+            # ...and the three contract leaves really are in it, so the absences
+            # above are a partition rather than a missing subtree.
             for path in (
                 "omnivia_core/ingestion/models.py",
                 "omnivia_core/ingestion/watcher/models.py",
+                "omnivia_core/workspace/models.py",
             ):
                 assert path in core_names, (
                     f"{core_wheel.name} is missing the canonical {path}"
@@ -603,3 +718,18 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
         )
         assert ingestion.returncode == 0, f"{ingestion.stdout}\n{ingestion.stderr}"
         assert ingestion.stdout.strip() == "OK"
+
+        # The same for the workspace leaf: exact routed identities under the sixth
+        # hybrid barrel, a legacy-only repository/service, and both of those still
+        # holding the canonical models.
+        workspace = subprocess.run(
+            [str(venv_python), "-I", "-c", INSTALLED_WORKSPACE_FACADE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(workdir),
+            check=False,
+            env=_child_env(),
+        )
+        assert workspace.returncode == 0, f"{workspace.stdout}\n{workspace.stderr}"
+        assert workspace.stdout.strip() == "OK"
