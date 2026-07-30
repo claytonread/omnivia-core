@@ -54,8 +54,6 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
     "omnivia_core.app_manifest.models": "omnivia_memory.app_manifest.models",
     "omnivia_core.app_manifest.validation": "omnivia_memory.app_manifest.validation",
-    "omnivia_core.app_shell_bridge.models": "omnivia_memory.app_shell_bridge.models",
-    "omnivia_core.app_shell_bridge.validation": "omnivia_memory.app_shell_bridge.validation",
     "omnivia_core.component_contract.models": "omnivia_memory.component_contract.models",
     "omnivia_core.component_contract.validation": "omnivia_memory.component_contract.validation",
     "omnivia_core.control_plane.imports": "omnivia_memory.control_plane.imports",
@@ -85,6 +83,8 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
 #: asserts symbol identity rather than source-level sameness.
 FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
+    "omnivia_core.app_shell_bridge.models": "omnivia_memory.app_shell_bridge.models",
+    "omnivia_core.app_shell_bridge.validation": "omnivia_memory.app_shell_bridge.validation",
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",

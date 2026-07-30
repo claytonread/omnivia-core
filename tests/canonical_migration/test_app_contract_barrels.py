@@ -1,14 +1,14 @@
 """``omnivia_core.app_manifest`` and ``omnivia_core.app_shell_bridge`` barrel
 and behavioral parity coverage.
 
-``test_parity.py`` already proves each owner leaf (``app_manifest.models``,
-``app_manifest.validation``, ``app_shell_bridge.models``,
-``app_shell_bridge.validation``) is an exact port of its legacy counterpart,
-and ``test_behavioral_parity.py`` already pins the plain-dataclass defaults
-for both. This module is only concerned with what those two suites leave
-uncovered: the barrels' own re-export contract (exact historical ``__all__``
-order, owner bindings, star-import surface, isolated-import module closure
-and forbidden-import leakage -- the same shape of coverage
+``test_parity.py`` proves the app-manifest owner leaves remain exact ports,
+while ``test_facade_foundation.py`` proves the app-shell owner leaves are
+identity-preserving compatibility facades. ``test_behavioral_parity.py`` also
+pins the plain-dataclass defaults for both. This module is concerned with what
+those suites leave uncovered: the barrels' own re-export contract (exact
+historical ``__all__`` order, owner bindings, star-import surface,
+isolated-import module closure and forbidden-import leakage -- the same shape
+of coverage
 ``test_knowledge_barrel.py`` gives the knowledge barrel), and representative
 validator behavioral parity beyond bare construction (fail-closed error
 paths, exception identity, and non-mutation of caller input).

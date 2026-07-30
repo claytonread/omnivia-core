@@ -50,7 +50,7 @@ PUBLIC_EXPORTS_PATH = INVENTORY_DIR / "public-exports.json"
 
 _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 
-#: The five legacy leaves converted into thin compatibility facades over
+#: The legacy leaves converted into thin compatibility facades over
 #: ``omnivia_core`` (see ``tests/canonical_migration/_leaves.py``'s
 #: ``FACADE_CANONICAL_TO_LEGACY`` and ``tests/compatibility/test_facade_foundation.py``),
 #: and -- for each symbol the frozen inventory once recorded as *defined* by
@@ -58,6 +58,12 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: to. Only these exact, narrow routes are ever normalized away before
 #: comparing against the frozen Phase 0 baseline; every other public-export
 #: difference still fails ``verify_public_export_inventory``.
+#:
+#: ``ValidationResult`` appears under two different owners here on purpose:
+#: ``omnivia_memory._shared.validation`` routes to the shared primitive, while
+#: ``omnivia_memory.app_shell_bridge.models`` routes to the App Shell bridge's
+#: own same-named dataclass. They are distinct objects and each leaf must keep
+#: its historical one.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -65,6 +71,18 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "scan_sensitive_fields": "omnivia_core._shared.validation",
         "validate_iso_timestamp": "omnivia_core._shared.validation",
         "validate_optional_iso_timestamp": "omnivia_core._shared.validation",
+    },
+    "omnivia_memory.app_shell_bridge.models": {
+        "AppShellBodyDescriptor": "omnivia_core.app_shell_bridge.models",
+        "AppShellHostContext": "omnivia_core.app_shell_bridge.models",
+        "AppShellRuntimeState": "omnivia_core.app_shell_bridge.models",
+        "AppShellSource": "omnivia_core.app_shell_bridge.models",
+        "ValidationResult": "omnivia_core.app_shell_bridge.models",
+    },
+    "omnivia_memory.app_shell_bridge.validation": {
+        "AppShellBridgeValidationError": "omnivia_core.app_shell_bridge.validation",
+        "validate_app_shell_body_descriptor": "omnivia_core.app_shell_bridge.validation",
+        "validate_app_shell_host_context": "omnivia_core.app_shell_bridge.validation",
     },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
@@ -282,7 +300,7 @@ def verify_public_export_inventory() -> list[str]:
         return [
             (
                 "Compatibility-facade route verification failed for one or more of the "
-                "five leaves converted in tests/canonical_migration/_leaves.py's "
+                "leaves converted in tests/canonical_migration/_leaves.py's "
                 "FACADE_CANONICAL_TO_LEGACY; refusing to normalize the frozen Phase 0 "
                 "baseline for an unverified delta."
             ),

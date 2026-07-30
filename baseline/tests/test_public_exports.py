@@ -89,7 +89,7 @@ def test_drift_check_names_the_symbol_that_moved() -> None:
 
 # --------------------------------------------------------------------------
 # Compatibility-facade route normalization: the frozen Phase 0 baseline never
-# described the five converted leaves as facades, so verify_public_export_inventory
+# describes converted leaves as facades, so verify_public_export_inventory
 # only accepts that specific delta after these checks pass, and only exactly as
 # they describe it. Each case below asserts a specific way the delta could be
 # wrong still fails closed.

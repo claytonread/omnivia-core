@@ -41,16 +41,17 @@ Four layers of comparison run here, from loosest to strictest:
   (``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once``
   rejects a stale or unused rule).
 
-A subset of once-duplicated leaves (``_shared.validation``, ``lifecycle.models``,
-``lifecycle.rules``, ``provenance.models``, ``memory.models``) has since been
-converted into thin compatibility facades: the legacy leaf now imports its
-supported symbols directly from the canonical owner (``legacy.Foo is
-canonical.Foo``) instead of holding a duplicated, source-parity copy. Those
-leaves are no longer source-identical to their legacy counterpart by design,
-so they are held out of ``CANONICAL_TO_LEGACY`` and the parametrized gates
-below -- listed instead in ``FACADE_CANONICAL_TO_LEGACY`` -- and verified for
-exact symbol identity, not source sameness, by
-``tests/compatibility/test_facade_foundation.py``.
+A subset of once-duplicated leaves (``_shared.validation``,
+``app_shell_bridge.models``, ``app_shell_bridge.validation``,
+``lifecycle.models``, ``lifecycle.rules``, ``provenance.models``, and
+``memory.models``) has since been converted into thin compatibility facades:
+the legacy leaf now imports its supported symbols directly from the canonical
+owner (``legacy.Foo is canonical.Foo``) instead of holding a duplicated,
+source-parity copy. Those leaves are no longer source-identical to their
+legacy counterpart by design, so they are held out of
+``CANONICAL_TO_LEGACY`` and the parametrized gates below -- listed instead in
+``FACADE_CANONICAL_TO_LEGACY`` -- and verified for exact symbol identity, not
+source sameness, by ``tests/compatibility/test_facade_foundation.py``.
 
 Neither the structural nor the AST layer normalizes annotation spellings
 away: a canonical leaf that "modernizes" a legacy ``typing.List``/
