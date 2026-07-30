@@ -1943,25 +1943,45 @@ def validate_graph_traversal_input(input_: object) -> None:
 
 
 def _validate_page_metadata(page: object, label: str) -> str:
-    """Raise unless `page` is a shape-valid `PageMetadata` that actually names a continuation
-    position, and return its continuation token.
+    """Raise unless `page` is a shape-valid *request* `PageMetadata` that actually names a
+    continuation position, and return its continuation token.
 
-    Present-but-empty page metadata (wire `page: {}`) is rejected on both sides of
-    `graph.traverse`, because on neither side does it state anything checkable. Page metadata
-    *is* a continuation position: on a request it would ask to continue from nowhere, and on
-    a result it would offer a next page it cannot name. "No continuation" is stated by
-    omitting the field -- the last page carries no `page` at all -- so an empty one is a
-    third, meaningless spelling that a validator could only honour by guessing which of the
-    two the caller meant. It fails closed instead.
+    Present-but-empty page metadata (wire `page: {}`) is rejected on a request, because a
+    request's `page` is the position it asks to continue *from*, and one that names nothing
+    asks to continue from nowhere. "Start at the beginning" is stated by omitting the field
+    entirely, so an empty one is a third, meaningless spelling that a validator could only
+    honour by guessing which of the two the caller meant. It fails closed instead.
+
+    A *result* page reads the other way and uses :func:`_validate_result_page_metadata`: it is
+    always present, and `{}` there is the positive statement that the read is exhausted.
     """
     _require_type(page, PageMetadata, label)
     assert isinstance(page, PageMetadata)
     if page.continuation_token is None:
         raise ContractSemanticError(
-            f"{label} is present but names no continuation_token; page metadata is a "
-            "continuation position, and one that names nothing can neither be continued "
-            "from nor offered -- an absent page is how 'no continuation' is stated"
+            f"{label} is present but names no continuation_token; a request's page is the "
+            "position it continues from, and one that names nothing can be continued from "
+            "nowhere -- an absent page is how 'start at the first page' is stated"
         )
+    token = _require_str(page.continuation_token, f"{label}.continuation_token")
+    _validate_opaque_token(token, f"{label}.continuation_token")
+    return token
+
+
+def _validate_result_page_metadata(page: object, label: str) -> str | None:
+    """Raise unless `page` is a shape-valid *result* `PageMetadata`, and return its
+    continuation token, or `None` when the read is exhausted.
+
+    A result's `page` is mandatory and states the position this read reached: a token means
+    more remains, and `{}` means it does not. Exhaustion is therefore *stated* rather than
+    inferred from a field that is not there, which is the one posture every paginated result
+    in this contract shares -- a caller never has to know which result type it is holding to
+    know what "no next page" looks like.
+    """
+    _require_type(page, PageMetadata, label)
+    assert isinstance(page, PageMetadata)
+    if page.continuation_token is None:
+        return None
     token = _require_str(page.continuation_token, f"{label}.continuation_token")
     _validate_opaque_token(token, f"{label}.continuation_token")
     return token
@@ -2054,8 +2074,8 @@ def validate_graph_traversal_result(
     target.version, relation_reference.record_id, relation_reference.version)` tuple (both
     failing closed on an unrecognized `ordering_basis`); every edge names at least one
     endpoint, and an absent endpoint carries exactly one recognized `boundary_reason` that
-    actually holds here (see below); and continuation `page` metadata is never offered
-    without one of the applied limits having been reached.
+    actually holds here (see below); and a `page` continuation token is never offered without
+    one of the applied limits having been reached.
 
     Boundary closure: both endpoints absent is always rejected. Both present states a *fully
     materialized* edge -- it forbids `boundary_reason` and requires **both** endpoints to name
@@ -2100,11 +2120,18 @@ def validate_graph_traversal_result(
     applied-limit rule *is* checked here, since it also binds a server that chose the limit
     itself when the request named none.
 
-    Page closure: `page` is the continuation position of a *next* page, so a present `page`
-    must actually name a continuation token (:func:`_validate_page_metadata`) *and* one of the
-    applied limits must have been reached. Both halves are required independently: reaching a
-    limit does not turn an empty `page: {}` into a continuation offer, and the last page states
-    itself by omitting `page` entirely rather than by carrying an empty one.
+    Page closure: `page` is always present on a result and states the position this traversal
+    reached (:func:`_validate_result_page_metadata`). A continuation token means more remains,
+    and it is only honest when one of the applied limits was actually reached -- a traversal
+    that stopped short of every limit has nothing left to continue. `{}` is the positive
+    statement that the traversal is exhausted, which is the same spelling every other
+    paginated result in this contract uses, and it never justifies a `page_boundary`: an
+    exhausted read offers no next page for a missing endpoint to be waiting on.
+
+    On the *request* side `{}` still fails closed (:func:`_validate_page_metadata`). The two
+    readings are not in tension: a request's `page` says where to continue *from*, and there
+    is nothing to continue from in an empty one, while a result's `page` says where this read
+    *reached*, and "the end" is a real position.
 
     A direct entry point: every argument is type-guarded, so a hand-built DTO raises
     `ContractSemanticError`, never a raw `TypeError`/`AttributeError`.
@@ -2182,9 +2209,7 @@ def validate_graph_traversal_result(
             f"must be one of {sorted(GRAPH_ORDERING_BASES)!r}"
         )
 
-    continuation_token = (
-        _validate_page_metadata(result.page, "page") if result.page is not None else None
-    )
+    continuation_token = _validate_result_page_metadata(result.page, "page")
 
     nodes = _require_sequence(result.nodes, "nodes")
     edges = _require_sequence(result.edges, "edges")
@@ -2404,12 +2429,12 @@ def validate_graph_traversal_result(
             )
         previous_edge_sort_key = edge_sort_key
 
-    if result.page is not None:
+    if continuation_token is not None:
         node_limit_reached = len(nodes) >= applied_node_limit
         edge_limit_reached = len(edges) >= applied_edge_limit
         if not node_limit_reached and not edge_limit_reached:
             raise ContractSemanticError(
-                "page continuation metadata is present but neither applied_node_limit nor "
+                "page offers a continuation token but neither applied_node_limit nor "
                 "applied_edge_limit was reached; a snapshot-stable traversal has nothing "
                 "left to continue"
             )

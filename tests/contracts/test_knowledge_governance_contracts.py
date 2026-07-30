@@ -1003,9 +1003,10 @@ def _graph_traversal_result_wire(
         "applied_edge_limit": applied_edge_limit,
         "freshness": freshness if freshness is not None else _freshness_wire(),
         "ordering_basis": ordering_basis,
+        # `page` is required on every paginated result in this contract, and `{}` is how an
+        # exhausted read states itself. A test that wants "more remains" passes a token.
+        "page": page if page is not None else {},
     }
-    if page is not None:
-        document["page"] = page
     return document
 
 
@@ -5130,20 +5131,21 @@ def test_graph_traversal_result_accepts_a_coherent_depth_boundary() -> None:
     _validate_graph_result(result)
 
 
-def test_graph_traversal_result_rejects_page_boundary_backed_by_empty_page_metadata() -> None:
-    """`page_boundary` still requires a real opaque token: an empty `page` is not a weaker
-    continuation offer, it is no offer at all, and it cannot justify an absent endpoint."""
+def test_graph_traversal_result_rejects_page_boundary_backed_by_an_exhausted_page() -> None:
+    """`page_boundary` requires a real continuation offer. `page: {}` is the opposite claim --
+    this traversal is exhausted -- so there is no further page for the missing endpoint to be
+    waiting on, and the boundary is unjustified."""
     edge = _graph_edge_wire(include_target=False, boundary_reason="page_boundary")
     result = _graph_result(edges=[edge], applied_node_limit=1, page={})
-    with pytest.raises(ContractSemanticError, match="names no continuation_token"):
+    with pytest.raises(ContractSemanticError, match="offers no page continuation token"):
         _validate_graph_result(result)
 
 
-def test_graph_traversal_result_rejects_incoherent_page_metadata() -> None:
+def test_graph_traversal_result_rejects_a_continuation_token_with_no_limit_reached() -> None:
     result = _graph_result(
         applied_node_limit=10, applied_edge_limit=10, page={"continuation_token": "cont-1"}
     )
-    with pytest.raises(ContractSemanticError, match="page continuation"):
+    with pytest.raises(ContractSemanticError, match="offers a continuation token"):
         _validate_graph_result(result)
 
 
@@ -5152,19 +5154,17 @@ def test_graph_traversal_result_accepts_page_metadata_when_node_limit_reached() 
     _validate_graph_result(result)
 
 
-def test_graph_traversal_result_rejects_empty_page_metadata_at_exact_node_limit_saturation() -> None:
-    """Reaching a limit is not what makes `page` meaningful -- naming a continuation position
-    is. This result saturates `applied_node_limit` exactly, which is the one condition that
-    would otherwise let an empty `page` through the limit-reached check, and it is still
-    rejected: `page` is the continuation position of a *next* page, and the schema says it is
-    absent on the last page, so an empty one states nothing a caller could continue from."""
+def test_graph_traversal_result_accepts_an_exhausted_page_at_exact_node_limit_saturation() -> None:
+    """A traversal may stop exactly at its node limit and still have nothing further to give.
+    `{}` says exactly that, and it is the only spelling of it: `page` is required on every
+    paginated result in this contract, so exhaustion is stated rather than left to be inferred
+    from a field that is not there."""
     wire = _graph_traversal_result_wire(applied_node_limit=1, applied_edge_limit=10, page={})
     assert _is_schema_valid("GraphTraversalResult", wire)
-    with pytest.raises(ContractSemanticError, match="names no continuation_token"):
-        _validate_graph_result(GraphTraversalResult.from_wire(wire))
+    _validate_graph_result(GraphTraversalResult.from_wire(wire))
 
 
-def test_graph_traversal_result_rejects_empty_page_metadata_at_exact_edge_limit_saturation() -> None:
+def test_graph_traversal_result_accepts_an_exhausted_page_at_exact_edge_limit_saturation() -> None:
     """The same holds for the other limit that can be saturated."""
     result = _graph_result(
         nodes=_both_endpoint_nodes_wire(),
@@ -5173,16 +5173,13 @@ def test_graph_traversal_result_rejects_empty_page_metadata_at_exact_edge_limit_
         applied_edge_limit=1,
         page={},
     )
-    with pytest.raises(ContractSemanticError, match="names no continuation_token"):
-        _validate_graph_result(result)
+    _validate_graph_result(result)
 
 
-def test_graph_traversal_result_rejects_empty_page_metadata_with_no_limit_reached() -> None:
-    """And when no limit is reached either, the empty-page rule is what fires -- the two are
-    independent, so neither can be satisfied by the other being satisfied."""
+def test_graph_traversal_result_accepts_an_exhausted_page_with_no_limit_reached() -> None:
+    """The ordinary last page: nothing was truncated, and the read is over."""
     result = _graph_result(applied_node_limit=10, applied_edge_limit=10, page={})
-    with pytest.raises(ContractSemanticError, match="names no continuation_token"):
-        _validate_graph_result(result)
+    _validate_graph_result(result)
 
 
 def test_graph_traversal_result_rejects_a_malformed_continuation_token() -> None:
@@ -5193,12 +5190,18 @@ def test_graph_traversal_result_rejects_a_malformed_continuation_token() -> None
         _validate_graph_result(result)
 
 
-def test_graph_traversal_result_accepts_a_last_page_stating_itself_by_omission() -> None:
-    """The counterpart the empty-page rule depends on: a last page is representable, and it is
-    representable by carrying no `page` at all, even at exact limit saturation."""
-    result = _graph_result(applied_node_limit=1, applied_edge_limit=10)
-    assert result.page is None
-    _validate_graph_result(result)
+def test_graph_traversal_result_rejects_a_missing_result_page() -> None:
+    """The half that makes `{}` unambiguous: a result may not omit `page`. Rejected by the
+    strict schema, by the tolerant decoder, and -- for a hand-built DTO that never went
+    through either -- by the semantic validator itself."""
+    wire = _graph_traversal_result_wire()
+    del wire["page"]
+    assert not _is_schema_valid("GraphTraversalResult", wire)
+    with pytest.raises(ContractDecodeError, match="missing required field 'page'"):
+        GraphTraversalResult.from_wire(wire)
+    hand_built = dataclasses.replace(_graph_result(), page=None)
+    with pytest.raises(ContractSemanticError, match="page"):
+        _validate_graph_result(hand_built)
 
 
 # --- result: shared projection freshness ---------------------------------------

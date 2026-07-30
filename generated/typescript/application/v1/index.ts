@@ -131,10 +131,15 @@ export const PURPOSE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$
 
 /**
  * A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never
- * parse it.
+ * parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a
+ * widening of the character domain: a bare `$` matches before a final line terminator in some
+ * conforming regex engines, so a token spelled with a trailing newline would be schema-valid
+ * while the semantic validators -- which match the whole string -- refuse it. The lookahead pins
+ * the anchor to absolute end of input, so strict schema and semantic validation accept exactly
+ * the same tokens.
  */
 export type OpaqueToken = string;
-export const OPAQUE_TOKEN_PATTERN: string = "^[!-~]+$";
+export const OPAQUE_TOKEN_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
 
 /**
  * Caller-assigned key making a mutation safe to retry. Equal keys with different inputs are an
@@ -347,29 +352,74 @@ export type JobProgressUnit = string;
 export const JOB_PROGRESS_UNIT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
- * Open, dot-namespaced code naming whether a job may be cancelled and where a requested
- * cancellation stands, such as `not_cancellable` or `cancellable` or `cancellation_requested` or
- * `cancelled`. Open by design; carries no scheduler, worker, lease, or persistence detail.
+ * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right
+ * now and where an already-requested cancellation stands, with four known values: `cancellable`
+ * (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already
+ * requested and has not yet taken effect), `cancelled` (the job is already cancelled), and
+ * `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about
+ * the job as observed, not the outcome of a control call: what a particular `job.cancel` did is
+ * reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is
+ * preserved but never implies cancellation is permitted, and carries no scheduler, worker,
+ * lease, or persistence detail.
+ */
+export type JobCancellationAvailability = string;
+export const JOB_CANCELLATION_AVAILABILITY_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right
+ * now, with three known values: `retryable` (a failed job that `job.retry` would run again),
+ * `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and
+ * `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation
+ * and carries no action selector, so this code reports which recovery server state would choose
+ * rather than offering the caller a choice; what a particular `job.retry` did is reported by
+ * `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but
+ * never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or
+ * persistence detail.
+ */
+export type JobRecoveryAvailability = string;
+export const JOB_RECOVERY_AVAILABILITY_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known
+ * values: `cancellation_requested` (cancellation was accepted and the job will stop),
+ * `cancelled` (the job is already cancelled, so the call changed nothing), and `not_cancellable`
+ * (the call was refused and the job is unchanged). A state-based refusal is a successful,
+ * idempotent control result rather than an API error: `not_cancellable` is returned alongside
+ * the current unchanged handle, not raised as `conflict`. Open by design; an unrecognized value
+ * decodes and is preserved but never implies cancellation was accepted, and carries no
+ * scheduler, worker, lease, or persistence detail.
  */
 export type JobCancellationDisposition = string;
 export const JOB_CANCELLATION_DISPOSITION_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
- * Open, dot-namespaced code naming whether a job may be retried and where a requested retry
- * stands, such as `not_retryable` or `retryable` or `retry_scheduled`. Open by design; carries
- * no scheduler, worker, lease, or persistence detail.
+ * Open, dot-namespaced code naming what one `job.retry` call actually did, with three known
+ * values: `retry_scheduled` (a failed job was scheduled to run again, from the beginning or from
+ * a supported checkpoint), `resume_scheduled` (a cancelled resumable job was scheduled to
+ * continue from its checkpoint), and `not_retryable` (no recovery was scheduled and the job is
+ * unchanged). `job.retry` is the single recovery operation and carries no action selector:
+ * server state, not the caller, decides between retrying and resuming, so this code reports that
+ * decision rather than accepting it. A state-based refusal is a successful, idempotent control
+ * result rather than an API error. Open by design; an unrecognized value decodes and is
+ * preserved but never implies recovery was accepted, and carries no scheduler, worker, lease,
+ * checkpoint, or persistence detail.
  */
-export type JobRetryDisposition = string;
-export const JOB_RETRY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export type JobRecoveryDisposition = string;
+export const JOB_RECOVERY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
- * Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as
- * `not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler,
- * worker, lease, or persistence detail.
+ * A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
+ * characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque
+ * server token a client round-trips but a value the caller and the server must be able to
+ * recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one
+ * length, and one letter case are admitted. Stated as what v1 initially requires: admitting a
+ * further algorithm later is an additive widening of this pattern, not a redefinition of what a
+ * checksum means.
  */
-export type JobResumeDisposition = string;
-export const JOB_RESUME_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export type ContentChecksum = string;
+export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$";
 
 /**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
@@ -457,13 +507,25 @@ export interface OperationPaginationMetadata {
 }
 
 /**
- * How this operation may safely be retried.
+ * How this operation may safely be retried. The three fields are not independent: `required`
+ * entails `supports_idempotency_key` (an operation cannot demand a key it does not honour),
+ * `safe_to_retry` excludes `required` (a request that is safe to repeat without a key cannot
+ * also be rejected for lacking one), and an operation that does not support keys cannot require
+ * them. A combination breaking any of those is a metadata statement no implementation can
+ * satisfy.
  */
 export interface OperationIdempotencyMetadata {
   /**
    * Whether this operation honours `RequestMetadata.idempotency_key`.
    */
   readonly supports_idempotency_key: boolean;
+  /**
+   * Whether omitting the idempotency key is itself rejected. A mutation that starts durable
+   * work or changes a job's control state requires one, so a network-level repeat can never
+   * become a second mutation; omitting it is a non-retryable invalid request, not a silently
+   * accepted single-shot call.
+   */
+  readonly required: boolean;
   /**
    * Whether an identical request may be retried without an idempotency key, such as a plain
    * read.
@@ -739,12 +801,23 @@ export interface ProjectionFreshness {
 }
 
 /**
- * Pagination position. Token issuance semantics are deliberately out of scope for v1
- * foundations.
+ * A pagination position. Direction-neutral: the same shape is read differently on a request than
+ * on a result, and neither reading is the other's default. On a request, an absent `page` asks
+ * for the first page, and a present `page` must actually name a continuation token -- `{}`
+ * states nothing to continue from and is invalid. On a result, `page` is always present and
+ * states the position this read reached: a continuation token means more remains, and `{}` means
+ * the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one
+ * spelling on every paginated result, so a caller never has to know which result type it is
+ * holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the
+ * bindings a token proves are deliberately out of scope here; a token is opaque, and a reader
+ * that needs to prove what one was bound to takes that binding as separate trusted input rather
+ * than parsing the token.
  */
 export interface PageMetadata {
   /**
-   * Opaque cursor for the next page. Absent means the last page.
+   * Opaque cursor. On a request, the position to continue from; on a result, the position the
+   * next page starts at. Absent on a result means the read is exhausted, which is why an
+   * exhausted result still carries `page` as `{}` rather than dropping the field.
    */
   readonly continuation_token?: OpaqueToken;
 }
@@ -1185,23 +1258,24 @@ export interface JobProgress {
 }
 
 /**
- * The control actions a caller may take on a job: cancellation, retry, and resume. Deliberately
- * exposes only these caller-facing dispositions, never scheduler, worker, lease, or persistence
+ * The control actions a caller may take on a job right now: cancellation and recovery. There are
+ * exactly two, because there are exactly two control operations -- `job.cancel` and `job.retry`.
+ * There is deliberately no `resume` member and no `job.resume` operation: retrying a failed job
+ * and resuming a cancelled resumable one are two readings of the same single recovery operation,
+ * chosen from server state rather than selected by the caller, so a separate resume disposition
+ * would have offered a control the contract does not have. Deliberately exposes only these
+ * caller-facing availabilities, never scheduler, worker, lease, checkpoint, or persistence
  * detail.
  */
 export interface JobControl {
   /**
-   * Whether this job may be cancelled and where a requested cancellation stands.
+   * Whether this job may be cancelled and where an already-requested cancellation stands.
    */
-  readonly cancellation: JobCancellationDisposition;
+  readonly cancellation: JobCancellationAvailability;
   /**
-   * Whether this job may be retried and where a requested retry stands.
+   * Whether this job may be recovered by `job.retry`, and which recovery that would be.
    */
-  readonly retry: JobRetryDisposition;
-  /**
-   * Whether this job may be resumed and where a requested resume stands.
-   */
-  readonly resume: JobResumeDisposition;
+  readonly recovery: JobRecoveryAvailability;
 }
 
 /**
@@ -1240,6 +1314,91 @@ export interface JobCancellationOutcome {
    * `deadline_exceeded`.
    */
   readonly reason: OpenCode;
+}
+
+/**
+ * The immutable description of one already-staged import source. Provider-neutral by
+ * construction: it names a server-issued staging handle and the content facts that handle
+ * resolves to, and nothing about how the content got there or how it will be read. It carries no
+ * filesystem path, URL, inline archive, credential, connector configuration, parser
+ * implementation name, or runtime/storage option, so an import cannot be steered from the wire
+ * into reading something the server did not already stage. Immutable: the descriptor accepted by
+ * `import.start` is the exact descriptor the resulting `ImportCompletionResult` reports back, so
+ * what was imported is never in question after the fact.
+ */
+export interface ImportSourceDescriptor {
+  /**
+   * Server-issued, immutable handle naming the already-staged content. Clients round-trip it
+   * verbatim and never parse it; it is the only locator this contract accepts.
+   */
+  readonly staged_source_ref: OpaqueToken;
+  /**
+   * Open code naming what kind of source was staged, such as `archive` or `document`.
+   * Descriptive only: it never selects a parser implementation.
+   */
+  readonly source_kind: OpenCode;
+  /**
+   * Digest of the staged content, so the import and the caller can prove they are talking
+   * about the same bytes.
+   */
+  readonly content_checksum: ContentChecksum;
+  /**
+   * Length of the staged content in bytes. Zero is valid: empty staged content is a
+   * legitimate, checksummable import source.
+   */
+  readonly content_length_bytes: number;
+  /**
+   * Media type of the staged content. The same `MediaType` the resulting L0 evidence carries,
+   * so one type describes one concept wherever it is reached from.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Caller-meaningful version of the staged source, when the source has one. Never an
+   * authorization input and never a locator.
+   */
+  readonly source_version?: Identifier;
+}
+
+/**
+ * Input for `job.get`. Names one job. Workspace-scoped through the request envelope's selected
+ * workspace, so this payload never carries a second, independent workspace identifier.
+ */
+export interface JobGetInput {
+  /**
+   * Opaque identifier of the job to read.
+   */
+  readonly job_id: OpaqueToken;
+}
+
+/**
+ * Input for `job.cancel`. Names one job and, optionally, why. Workspace-scoped through the
+ * request envelope's selected workspace, so this payload never carries a second, independent
+ * workspace identifier.
+ */
+export interface JobCancelInput {
+  /**
+   * Opaque identifier of the job to cancel.
+   */
+  readonly job_id: OpaqueToken;
+  /**
+   * Open code naming why the caller is cancelling, such as `caller_requested`. Recorded on the
+   * job's cancellation outcome; never an authorization input.
+   */
+  readonly reason?: OpenCode;
+}
+
+/**
+ * Input for `job.retry`, the single recovery operation. Names one job and nothing else: there is
+ * deliberately no action selector and no checkpoint reference, because whether recovery is a
+ * retry from the beginning or a resume from a supported checkpoint is chosen from server state,
+ * not requested by the caller. Workspace-scoped through the request envelope's selected
+ * workspace, so this payload never carries a second, independent workspace identifier.
+ */
+export interface JobRetryInput {
+  /**
+   * Opaque identifier of the job to recover.
+   */
+  readonly job_id: OpaqueToken;
 }
 
 /**
@@ -1311,6 +1470,14 @@ export interface OperationJobMetadata {
    * one.
    */
   readonly job_kind?: OpenCode;
+  /**
+   * Reference to the JSON Schema governing `JobTerminalSuccess.result` for the job this
+   * operation starts. This is what makes terminal success typed rather than opaque:
+   * `result_kind` names the shape and this reference resolves it. Absent until the operation
+   * catalogue binds it, in which case the binding is a semantic rule rather than a published
+   * reference.
+   */
+  readonly terminal_result_schema_ref?: SchemaReference;
 }
 
 /**
@@ -1903,7 +2070,12 @@ export interface GraphTraversalInput {
 }
 
 /**
- * One execution attempt of a job. A job that is retried has more than one attempt.
+ * One execution attempt of a job. A job that is retried has more than one attempt. An attempt
+ * exists because execution started, so `queued` is not an attempt state: waiting to run is a
+ * state of the *job*, not of an execution of it, and an attempt numbered against a job that
+ * never ran would make the attempt history unreadable. Within one job's history attempts are
+ * numbered `1..N` contiguously, never overlap, and only a `failed` or `cancelled` attempt may be
+ * followed by another one -- a `succeeded` attempt is final.
  */
 export interface JobAttempt {
   /**
@@ -1926,6 +2098,121 @@ export interface JobAttempt {
    * The failure this attempt ended with, when it failed.
    */
   readonly error?: ApiError;
+}
+
+/**
+ * Input for `import.start`. Carries exactly one thing: the immutable descriptor of an already-
+ * staged source. Workspace-scoped through the request envelope's selected workspace, so this
+ * payload never carries a second, independent workspace identifier, and it accepts no path, URL,
+ * inline archive, credential, parser implementation name, or runtime/storage option.
+ */
+export interface ImportStartInput {
+  /**
+   * The immutable staged source this import reads.
+   */
+  readonly source: ImportSourceDescriptor;
+}
+
+/**
+ * The typed terminal result of a successful `ingestion.import` job: what was imported, and what
+ * it produced. It reports the creation of L0 evidence only -- candidate extraction and any
+ * governed record that later cites this evidence are separate, later operations, so nothing here
+ * asserts that knowledge was proposed, approved, or accepted. `discovered_items` is the total
+ * the import saw and must equal `evidence_records_created + skipped_items + failed_items`: an
+ * item is accounted for exactly once, and a count that does not add up is a report of an import
+ * nobody can audit. `partial` is not an independent claim either; it is exactly `failed_items >
+ * 0`. `source` is byte-for-byte the descriptor `import.start` accepted.
+ */
+export interface ImportCompletionResult {
+  /**
+   * Identifier of this import run, equal to the job's own `job_id`. Typed as `OpaqueToken` for
+   * exactly that reason: `JobIdentity.job_id` is an opaque server-issued token, and a run id
+   * spelled in any narrower vocabulary could not state the equality for every job id the
+   * contract admits. The same run the L0 evidence this run produced points back to through
+   * `EvidenceArtifact.import_run_id`, so evidence traces back to the run that created it.
+   */
+  readonly import_run_id: OpaqueToken;
+  /**
+   * The immutable staged source this run read, exactly as accepted by `import.start`.
+   */
+  readonly source: ImportSourceDescriptor;
+  /**
+   * Total items the run discovered in the staged source.
+   */
+  readonly discovered_items: number;
+  /**
+   * Discovered items that became L0 evidence artifacts. Never a count of governed records.
+   */
+  readonly evidence_records_created: number;
+  /**
+   * Discovered items the run deliberately did not import, such as an unchanged item already
+   * present.
+   */
+  readonly skipped_items: number;
+  /**
+   * Discovered items the run tried and failed to import.
+   */
+  readonly failed_items: number;
+  /**
+   * True when the run completed with failures. Exactly `failed_items > 0`: a successful job
+   * may still be a partial import, and a caller must not read success as completeness.
+   */
+  readonly partial: boolean;
+}
+
+/**
+ * Input for `job.events`: a bounded, snapshot-stable read of one job's ordered event stream. A
+ * request carrying no `page` starts a new pagination session and captures the job's current
+ * event count as that session's snapshot; a request carrying one continues the session that
+ * token names and can never widen it. Transport-level streaming is out of scope: this is a paged
+ * read, not a subscription. Workspace-scoped through the request envelope's selected workspace,
+ * so this payload never carries a second, independent workspace identifier.
+ */
+export interface JobEventsInput {
+  /**
+   * Opaque identifier of the job whose events to read.
+   */
+  readonly job_id: OpaqueToken;
+  /**
+   * Bounded maximum number of events to return in this page.
+   */
+  readonly limit?: PageLimit;
+  /**
+   * Continuation position from a prior page of the same pagination session. Absent means start
+   * a new session at the first page.
+   */
+  readonly page?: PageMetadata;
+}
+
+/**
+ * Result of `job.events`: one page of a snapshot-stable event read. `snapshot_event_count` is
+ * the event count captured when this pagination session began, so the session's sequences are
+ * exactly `0 .. snapshot_event_count - 1` and events recorded after the snapshot never appear in
+ * it; the same count is repeated on every page of the session and never changes within one. A
+ * fresh tokenless request captures a new snapshot and may see more. Page events are strictly
+ * increasing, duplicate-free, and contiguous from the position the request continued from.
+ * `page` is always present: a continuation token means more of the snapshot remains, and no
+ * token means the snapshot is exhausted.
+ */
+export interface JobEventsResult {
+  /**
+   * Opaque identifier of the job these events belong to. Echoes the request.
+   */
+  readonly job_id: OpaqueToken;
+  /**
+   * Events in this page, in ascending sequence order.
+   */
+  readonly events: readonly JobEvent[];
+  /**
+   * Number of events captured when this pagination session began. Constant across every page
+   * of one session.
+   */
+  readonly snapshot_event_count: number;
+  /**
+   * Position within this pagination session: a continuation token when more of the captured
+   * snapshot remains, and no token when it is exhausted.
+   */
+  readonly page: PageMetadata;
 }
 
 /**
@@ -2454,7 +2741,13 @@ export interface RequestEnvelope {
 
 /**
  * What a caller holds to track a job over time: its identity, current state, latest known
- * progress and attempt, and which control actions are available.
+ * progress and attempt, and which control actions are available. `latest_attempt` is the job's
+ * attempt *N*, not a history: a `running` job reports the running attempt it executes under, a
+ * `succeeded` or `failed` job reports the finished attempt that produced that outcome, and a
+ * `queued` job either has never executed (no attempt at all) or reports the finished
+ * `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled recovery --
+ * never a succeeded, running, queued, or unfinished one, since none of those describes a job
+ * waiting to start.
  */
 export interface JobHandle {
   /**
@@ -2489,7 +2782,13 @@ export interface JobHandle {
 
 /**
  * The final outcome of a job that succeeded. Carries `result` and never `error` or
- * `cancellation`.
+ * `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which frozen
+ * result shape `result` carries, so a caller reads a success payload by matching a declared kind
+ * instead of guessing from the job kind. `result` stays an opaque JSON object in this document
+ * because JSON Schema cannot bind it to a per-kind shape within the subset the generator
+ * supports; the binding is a semantic rule (`omnivia_core.contracts.v1.semantics_jobs`) until
+ * the A2.5 operation catalogue publishes `OperationJobMetadata.terminal_result_schema_ref`. The
+ * one kind frozen in v1 is `import_completion`, whose `result` is an `ImportCompletionResult`.
  */
 export interface JobTerminalSuccess {
   /**
@@ -2509,13 +2808,24 @@ export interface JobTerminalSuccess {
    */
   readonly attempts: readonly JobAttempt[];
   /**
-   * Opaque success payload.
+   * Open code naming which frozen result shape `result` carries, such as `import_completion`.
+   * Open by design; an unrecognized kind decodes and is preserved, but a caller must not
+   * interpret `result` under a kind it does not know.
+   */
+  readonly result_kind: OpenCode;
+  /**
+   * The success payload, in the shape `result_kind` names. Opaque only in this document: a
+   * `result_kind` of `import_completion` makes it exactly an `ImportCompletionResult`.
    */
   readonly result: JsonObject;
 }
 
 /**
  * The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`.
+ * `attempts` is non-empty -- a job cannot fail without having executed -- and `error` is exactly
+ * the final attempt's own `error`: the failure that ended the last attempt is the failure that
+ * ended the job, and two spellings of it that could disagree would leave a caller unable to say
+ * which one is the outcome.
  */
 export interface JobTerminalFailure {
   /**
@@ -2542,7 +2852,9 @@ export interface JobTerminalFailure {
 
 /**
  * The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or
- * `error`.
+ * `error`. `attempts` may be empty, and only here: a job cancelled while still queued never
+ * executed, so it has no attempt to report. When it does carry attempts, the final one is the
+ * `cancelled` attempt that ended it and finished when the job did.
  */
 export interface JobTerminalCancellation {
   /**
@@ -2978,10 +3290,14 @@ export interface EvidenceArtifact {
    */
   readonly provenance_history: readonly ProvenanceEntry[];
   /**
-   * Identifier of the import run that produced this evidence artifact, when it was produced by
-   * one.
+   * Names the import job/run that produced this evidence artifact, when it was produced by
+   * one. Typed as `OpaqueToken` because it is drawn from exactly the same opaque token domain
+   * as `JobIdentity.job_id` and `ImportCompletionResult.import_run_id`: the completion
+   * contract promises this backlink names the run that created this evidence, and spelled in
+   * any narrower vocabulary it could not hold every job id the contract admits -- a run such
+   * as `job/opaque-token` could complete and then have no writable backlink at all.
    */
-  readonly import_run_id?: Identifier;
+  readonly import_run_id?: OpaqueToken;
 }
 
 /**
@@ -2991,6 +3307,61 @@ export interface EvidenceArtifact {
  * `error`, or `cancellation`), so a payload combining or omitting all three matches no branch.
  */
 export type JobTerminalResult = JobTerminalSuccess | JobTerminalFailure | JobTerminalCancellation;
+
+/**
+ * Result of `import.start`. Carries exactly one thing: the handle for the durable job that was
+ * started. `import.start` always returns a job and never a synchronous import outcome, so there
+ * is nothing else honest to return here. The response envelope's `ResponseMetadata.job` names
+ * the same job as this handle: one operation started one job, and the two statements of that
+ * fact must agree.
+ */
+export interface ImportStartResult {
+  /**
+   * Handle for the durable import job this call started.
+   */
+  readonly job: JobHandle;
+}
+
+/**
+ * Result of `job.cancel`: what the call did, and the handle as it now stands. A state-based
+ * refusal is a successful, idempotent control result rather than an API error -- a job that
+ * cannot be cancelled returns `not_cancellable` alongside its current unchanged handle, and is
+ * never reported as `conflict` merely for being terminal. Authorization failures, a missing job,
+ * and workspace failures stay typed API errors.
+ */
+export interface JobCancelResult {
+  /**
+   * The job's handle after this call. Unchanged, including its identity, when the call was
+   * refused.
+   */
+  readonly job: JobHandle;
+  /**
+   * What this call actually did: accepted the cancellation, found it already cancelled, or
+   * refused.
+   */
+  readonly cancellation_disposition: JobCancellationDisposition;
+}
+
+/**
+ * Result of `job.retry`: which recovery the server chose, and the handle as it now stands. An
+ * accepted recovery keeps the same job identity and returns the job to `queued`; it starts no
+ * new attempt until execution actually begins, so the previous terminal attempt remains
+ * `latest_attempt` while the recovered handle is queued. A state-based refusal is a successful,
+ * idempotent control result rather than an API error -- `not_retryable` is returned alongside
+ * the current unchanged handle, and is never reported as `conflict` merely for being terminal.
+ * Authorization failures, a missing job, and workspace failures stay typed API errors.
+ */
+export interface JobRetryResult {
+  /**
+   * The job's handle after this call. Unchanged, including its identity, when the call was
+   * refused.
+   */
+  readonly job: JobHandle;
+  /**
+   * What this call actually did: scheduled a retry, scheduled a resume, or refused.
+   */
+  readonly recovery_disposition: JobRecoveryDisposition;
+}
 
 /**
  * Input for `memory.create`: the proposed record's type, domain scope, content,
@@ -3174,6 +3545,29 @@ export interface EvidenceSearchResult {
    * Continuation position for the next page, absent on the last page.
    */
   readonly page: PageMetadata;
+}
+
+/**
+ * Result of `job.get`: the current handle, plus the terminal result when the job has one.
+ * `terminal_result` is present exactly when `job.state` is a known terminal state, and it is
+ * closed against the handle it accompanies: identity and state match exactly, every attempt
+ * instant in the terminal history falls inside the handle's own `created_at`/`updated_at`
+ * lifetime, and the handle's `latest_attempt` is exactly the final attempt of that history (and
+ * is absent exactly when the history is). One read describes one job, never two disagreeing
+ * statements about it. An unknown state is preserved but implies nothing: a handle in a state
+ * this build has never seen carries no `terminal_result`, because this build cannot know whether
+ * that state is terminal.
+ */
+export interface JobGetResult {
+  /**
+   * Current handle for this job.
+   */
+  readonly job: JobHandle;
+  /**
+   * The job's final outcome and complete attempt history, present exactly when the handle is
+   * in a known terminal state.
+   */
+  readonly terminal_result?: JobTerminalResult;
 }
 
 /**
@@ -3674,11 +4068,12 @@ export interface GraphTraversalResult {
    */
   readonly ordering_basis: GraphOrderingBasis;
   /**
-   * Continuation position for the next page, when this traversal's ordering can be
-   * deterministically continued. Absent on the last page, or when the traversal cannot be
-   * paged.
+   * Position this traversal reached. Always present: a continuation token when the traversal's
+   * ordering can be deterministically continued and more remains, and `{}` when it is
+   * exhausted or cannot be paged. Exhaustion is stated rather than implied by an absent field,
+   * so a caller reads the same shape here as on every other paginated result in this contract.
    */
-  readonly page?: PageMetadata;
+  readonly page: PageMetadata;
 }
 
 /**
@@ -3691,6 +4086,7 @@ export const FROZEN_ERROR_CODES = [
   "workspace_not_granted",
   "capability_not_granted",
   "invalid_purpose",
+  "invalid_request",
   "not_found",
   "conflict",
   "mutation_precondition_failed",
@@ -3745,6 +4141,7 @@ export const DEFAULT_RETRY_CLASSIFICATION: Readonly<Record<FrozenErrorCode, Froz
   workspace_not_granted: "non_retryable",
   capability_not_granted: "non_retryable",
   invalid_purpose: "non_retryable",
+  invalid_request: "non_retryable",
   not_found: "non_retryable",
   conflict: "non_retryable",
   mutation_precondition_failed: "retryable_after_precondition_refresh",

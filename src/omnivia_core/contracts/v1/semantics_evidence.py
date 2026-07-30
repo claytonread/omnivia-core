@@ -29,6 +29,7 @@ from omnivia_core.contracts.v1.generated import (
     EVIDENCE_ID_PATTERN,
     IDENTIFIER_PATTERN,
     MEDIA_TYPE_PATTERN,
+    OPAQUE_TOKEN_PATTERN,
     OPEN_CODE_PATTERN,
     TIMESTAMP_PATTERN,
     WORKSPACE_ID_PATTERN,
@@ -54,6 +55,7 @@ __all__ = [
 ]
 
 _BOUNDED_VALUE_MAX_LENGTH: Final = 128
+_OPAQUE_TOKEN_MAX_LENGTH: Final = 512
 _EVIDENCE_CHECKSUM_MAX_LENGTH: Final = 256
 _MEDIA_TYPE_MAX_LENGTH: Final = 255
 _LOCATOR_MAX_LENGTH: Final = 2048
@@ -84,6 +86,7 @@ generic `created`/`modified` entry is not evidence that a tombstone was itself a
 
 _EVIDENCE_ID_RE: Final = re.compile(EVIDENCE_ID_PATTERN)
 _IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
+_OPAQUE_TOKEN_RE: Final = re.compile(OPAQUE_TOKEN_PATTERN)
 _OPEN_CODE_RE: Final = re.compile(OPEN_CODE_PATTERN)
 _WORKSPACE_ID_RE: Final = re.compile(WORKSPACE_ID_PATTERN)
 _EVIDENCE_CHECKSUM_RE: Final = re.compile(EVIDENCE_CHECKSUM_PATTERN)
@@ -148,6 +151,15 @@ def _validate_identifier(value: object, label: str) -> None:
     text = _require_str(value, label)
     if len(text) > _BOUNDED_VALUE_MAX_LENGTH or not _IDENTIFIER_RE.fullmatch(text):
         raise ContractSemanticError(f"{label}: {text!r} is not a valid Identifier")
+
+
+def _validate_opaque_token(value: object, label: str) -> None:
+    """Validate a server-issued opaque token, held to the same bound and pattern the sibling
+    semantic modules hold one to: the token domain is one domain wherever it is reached from,
+    and `import_run_id` is reached from both the job side and this one."""
+    text = _require_str(value, label)
+    if len(text) > _OPAQUE_TOKEN_MAX_LENGTH or not _OPAQUE_TOKEN_RE.fullmatch(text):
+        raise ContractSemanticError(f"{label}: {text!r} is not a valid OpaqueToken")
 
 
 def _validate_open_code(value: object, label: str) -> str:
@@ -327,8 +339,12 @@ def validate_evidence_artifact(artifact: object) -> None:
     at least one `provenance_history` entry whose `action` is the frozen tombstone action
     (:data:`EVIDENCE_TOMBSTONE_ACTION`) -- a generic `created`/`modified` entry is not
     evidence the tombstoning act itself was audited; and `import_run_id`, when present, is a
-    bounded, pattern-valid `Identifier` (absent because evidence may be captured outside an
-    import run, but validated when the artifact does name one).
+    bounded, pattern-valid `OpaqueToken` (absent because evidence may be captured outside an
+    import run, but validated when the artifact does name one) -- the same token domain as
+    `JobIdentity.job_id` and `ImportCompletionResult.import_run_id`, so a run that completed
+    under an opaque job id such as `job/opaque-token` can actually be written into the
+    backlink the completion contract promises, rather than naming a run no artifact could
+    point back to.
 
     Every bounded array is held to its schema `maxItems` here as well as in the schema --
     `permission_labels` (:data:`_PERMISSION_LABELS_MAX_ITEMS`), `provenance_history`
@@ -411,7 +427,7 @@ def validate_evidence_artifact(artifact: object) -> None:
         )
 
     if artifact.import_run_id is not None:
-        _validate_identifier(artifact.import_run_id, "import_run_id")
+        _validate_opaque_token(artifact.import_run_id, "import_run_id")
 
 
 def validate_evidence_search_input(input_: object) -> None:

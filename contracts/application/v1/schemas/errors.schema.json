@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/errors.schema.json",
   "title": "OmniVia Core Application Contract v1 - errors",
-  "description": "Stable error semantics. `ErrorCode` and `RetryClass` are deliberately open patterned strings rather than closed JSON Schema enums, so a compatible minor release can add vocabulary without breaking existing decoders. The frozen v1 vocabulary is carried as annotations below and is the source the code generator reads.",
+  "description": "Stable error semantics. `ErrorCode` and `RetryClass` are deliberately open patterned strings rather than closed JSON Schema enums, so a compatible minor release can add vocabulary without breaking existing decoders. The frozen v1 vocabulary is carried as annotations below and is the source the code generator reads. `invalid_request` is the one canonical code for a request the server cannot execute as stated -- a missing required idempotency key, a precondition sent to an operation that applies none, a continuation token that is not valid for the request presenting it -- and it is deliberately singular: a second, operation-specific alias for the same fact would let two peers classify the same failure differently. It is non-retryable because the identical request fails identically.",
   "x-omnivia-retry-classes": {
     "non_retryable": "Retrying the identical request cannot succeed. Surface the failure.",
     "retryable": "The identical request may succeed if retried; no minimum delay is implied.",
@@ -16,6 +16,7 @@
     "workspace_not_granted": "non_retryable",
     "capability_not_granted": "non_retryable",
     "invalid_purpose": "non_retryable",
+    "invalid_request": "non_retryable",
     "not_found": "non_retryable",
     "conflict": "non_retryable",
     "mutation_precondition_failed": "retryable_after_precondition_refresh",

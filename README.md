@@ -209,7 +209,10 @@ Canonical source and generated artifacts:
 - `src/omnivia_core/contracts/v1/semantics_evidence.py` — pure semantic
   validation for the L0 `evidence.search` DTOs (A2.3, ADR-039): evidence
   artifact integrity, tombstone rules, and sensitivity/leakage enforcement.
-  Standard library only.
+  An artifact's optional `import_run_id` is validated as an `OpaqueToken`,
+  the same token domain a job id and an import completion's `import_run_id`
+  live in, so the backlink the completion contract promises can actually hold
+  the run that produced the evidence. Standard library only.
 - `src/omnivia_core/contracts/v1/semantics_knowledge.py` — pure semantic
   validation for the governed-knowledge, graph, and Context Pack DTOs (A2.3,
   ADR-039): `knowledge.search` default-canonical-view leak prevention, the
@@ -262,11 +265,13 @@ Canonical source and generated artifacts:
   materialized on this page, so both must be nodes the result actually
   returned; an end the traversal did not reach is stated by omitting that
   endpoint with a boundary reason, never by naming a record the result never
-  returned. `page` is likewise a continuation *position*, not a flag: present
-  on either the request or the result it must name a real continuation token,
-  since a request naming nowhere to continue from and a result offering a next
-  page it cannot name are both meaningless — a last page, and a request to
-  start at the beginning, are stated by omitting `page` entirely.
+  returned. `page` follows the one direction-neutral posture this contract
+  applies everywhere: a request omits it to ask for the first page and must
+  name a real continuation token when it carries one, since `{}` would ask to
+  continue from nowhere; a result always carries it, offering a token when more
+  remains and `{}` when the traversal is exhausted. A `{}` result page
+  therefore never justifies a `page_boundary` — an exhausted read has no next
+  page for a missing endpoint to be waiting on.
 
   A traversal also answers the question it was asked, and depth is measured
   from the seeds it was asked to start from — which is what an absent request
@@ -489,6 +494,208 @@ Canonical source and generated artifacts:
   `compute_context_pack_artifact_digest` take an already-strict trusted value and
   document that they cannot recover what an earlier parser discarded. Ordinary,
   non-integrity decoding stays tolerant exactly as ADR-038 requires.
+- `src/omnivia_core/contracts/v1/semantics_jobs.py` — pure semantic validation
+  for the durable-job and provider-neutral import DTOs (A2.4, ADR-039):
+  `import.start`, `job.get`, `job.cancel`, `job.retry`, and `job.events`.
+  Standard library only.
+
+  `import.start` accepts an `ImportSourceDescriptor` and nothing else. That
+  descriptor names a server-issued `staged_source_ref` plus the content facts it
+  resolves to — a `ContentChecksum` (`sha256:` and exactly 64 lowercase hex
+  characters, deliberately narrower than the general `EvidenceChecksum` because
+  both sides must recompute it), a byte length, a `MediaType`, and an optional
+  `source_version`. There is no path, URL, inline archive, credential, connector
+  configuration, parser implementation name, or storage option anywhere in the
+  shape, so an import cannot be steered from the wire into reading something the
+  server did not already stage. `ImportStartResult` carries a `JobHandle` and
+  nothing else, and the response envelope's `ResponseMetadata.job` names the same
+  job: `import.start` always starts durable work, so that reference is mandatory
+  and must agree with the handle. The four synchronous `job.*` operations add no
+  second job reference of their own.
+
+  Terminal success is typed rather than opaque. `JobTerminalSuccess` carries a
+  required `result_kind` naming which frozen shape `result` holds; a successful
+  `ingestion.import` job started by `import.start` must report
+  `import_completion`, and that kind may appear on no other job — the binding is
+  enforced in both directions, so neither a bare opaque payload passed off as an
+  import outcome nor an import completion attached to a job that never imported
+  anything survives. `ImportCompletionResult` reports L0 evidence only:
+  `discovered_items` must equal `evidence_records_created + skipped_items +
+  failed_items`, and `partial` is exactly `failed_items > 0`.
+  `OperationJobMetadata.terminal_result_schema_ref` is the field the later
+  operation catalogue binds to the same shape this module already enforces.
+
+  Two of an import completion's claims cannot be checked from the document
+  alone, so they are checked against trusted context that the API *requires*
+  rather than accepts. `import_run_id` equals the job's own `job_id` and is
+  typed as the same `OpaqueToken` for that reason — spelled in any narrower
+  vocabulary it could not state the equality for every job id the contract
+  admits, so a job id like `job/opaque-token` would have made the rule
+  unstateable. The L0 evidence backlink is typed in that same domain:
+  `EvidenceArtifact.import_run_id` is an `OpaqueToken` too, so the run a
+  completion reports is a run its evidence can actually name — typed any
+  narrower, that same `job/opaque-token` run could complete and then have no
+  writable backlink at all. And `source` is byte-for-byte the descriptor
+  `import.start` accepted, staged handle through checksum, byte length, media
+  type and source version alike. `validate_job_terminal_result` and `validate_job_get_result`
+  therefore take a mandatory `accepted_import_source`: an import success with no
+  trusted source to check against is rejected, and `None` is a statement a
+  caller makes for the branches that have none (a failure, a cancellation, a
+  success of some other job kind) rather than an omission the validator infers.
+  The intrinsic half is still available on its own, named for what it is —
+  `validate_import_completion_result_shape`.
+
+  A `job.get` result is one description of one job, not two that travel
+  together. Where a terminal result accompanies a handle, identity and state
+  match exactly, the handle's `latest_attempt` *is* the final attempt of the
+  terminal history (and is absent exactly when that history is empty), every
+  attempt instant in the history falls inside the handle's own
+  `created_at`/`updated_at` lifetime, and a terminal failure's `error` is
+  exactly the final attempt's own error — the failure that ended the last
+  attempt is the failure that ended the job.
+
+  There is one recovery operation. `job.retry` retries a failed job from the
+  beginning or a supported checkpoint, and resumes a cancelled resumable one from
+  its checkpoint; server state chooses, so the input carries no action selector
+  and no checkpoint reference, and there is no `job.resume` operation and no
+  `JobControl.resume` member. A handle states *availability* (`cancellable` /
+  `cancellation_pending` / `cancelled` / `not_cancellable`, and `retryable` /
+  `resumable` / `not_retryable`); a control result states what one call *did*
+  (`cancellation_requested` / `cancelled` / `not_cancellable`, and
+  `retry_scheduled` / `resume_scheduled` / `not_retryable`). Both vocabularies
+  are open and both fail safe: an unrecognized value implies neither permission
+  nor acceptance. A handle carrying an availability this build has never seen is
+  preserved and judged for shape only — it is a newer peer's word, not a
+  falsehood — and it grants nothing, because `permits_cancellation` and
+  `permits_recovery` answer false for it. What *is* rejected is a known
+  availability that contradicts a known state: a succeeded job advertising
+  `cancellable` is not a value this build failed to recognize.
+
+  A state-based refusal is a successful, idempotent control result, never an API
+  error. `not_cancellable`, `not_retryable`, `cancelled` (the job was already
+  cancelled, so the call changed nothing), and every disposition this build does
+  not recognize come back with the current handle unchanged, and `conflict` is
+  not raised merely because a job is already terminal; authorization failures, a
+  missing job, and workspace failures stay typed API errors.
+
+  A control result states what *changed*, and what changed cannot be read from
+  the returned handle alone — `retry_scheduled` beside a queued job is either an
+  honest recovery or a fabrication, and the two are identical documents. So the
+  full validators require the trusted pre-mutation handle rather than treating it
+  as optional enrichment, and the structural-only readings are named for what
+  they are (`validate_job_cancel_result_shape`,
+  `validate_job_retry_result_shape`). `cancellation_requested` is accepted only
+  from a handle that offered `cancellable`, and the handle it returns has stopped
+  offering it; a succeeded, failed, already-cancelled, or already-pending job is
+  never rewound into a fresh acceptance. `retry_scheduled` is accepted only from
+  `failed` + `retryable` and `resume_scheduled` only from `cancelled` +
+  `resumable` — neither pairing substitutes for the other, and a queued job has
+  nothing to recover from. An accepted recovery returns the *same* job id to
+  `queued` and creates no attempt: attempt N+1 appears only when execution
+  starts, so the previous finished attempt is still `latest_attempt` on the
+  handle the call returns.
+
+  A replay re-authorizes and answers from the recorded outcome. It preserves the
+  operation, the disposition, and the job's *whole* immutable identity — job
+  kind, originating operation, audit reference and workspace included, since a
+  drifted audit reference under a stable id is a different job wearing a familiar
+  name. Its handle legitimately differs, because the job goes on evolving: a
+  recovery that returned `queued` may since be running or finished, and a
+  replay is checked as a legal later *observation* rather than for equality with
+  the instant the first call returned. The original call's own transition rules
+  are deliberately not re-applied to it — they judge a mutation against the
+  handle it acted on, and the replay performed none. What a replay may never do
+  is drive a second transition, create an attempt (a still-`queued` job shows the
+  same retained attempt), regress progress, or rewrite a state.
+
+  The job state machine and attempt chronology are exact. Known adjacent
+  transitions are `queued -> queued|running|failed|cancelled`, `running ->
+  running|succeeded|failed|cancelled`, and each terminal state to itself;
+  `failed -> queued` and `cancelled -> queued` open only under an accepted
+  `job.retry`, and nothing reopens `succeeded`. Polling is sampling rather than
+  witnessing, so two *observations* are checked against the closure of that table
+  (`JOB_STATE_OBSERVABLE_PROGRESSIONS`): a caller may read `queued` and next
+  `succeeded` without ever seeing `running`, and may skip an attempt entirely.
+  What it may never see is a regression — time, state, attempt number or
+  completed units going backwards — or a rewrite: attempt N starts once, and once
+  it has finished, its state, finish instant and error are history. A job's
+  progress unit and, once stated, its total are fixed for its whole history, and
+  completed units never fall.
+
+  An attempt exists because execution started, so `queued` is not an attempt
+  state at all. Attempts are numbered `1..N` contiguously, never overlap or move
+  backward (abutting instants are allowed), carry a terminal error exactly when
+  they failed, and only a `failed` or `cancelled` attempt is ever followed by
+  another — a succeeded attempt is final. Only the final attempt of an actively
+  executing job may be unfinished. A success or failure needs at least one
+  attempt; a job cancelled before it started may have none. The job's
+  `finished_at` equals its last attempt's, and every attempt instant falls inside
+  `created_at`/`updated_at`. A `queued` handle either has never executed or
+  reports the finished `failed`/`cancelled` attempt an accepted recovery was
+  scheduled from — never a succeeded, running, or unfinished one. Unknown states
+  are preserved and judged for shape only: this build cannot know whether a state
+  it has never seen is terminal, so it never treats one as terminal and never
+  infers a successor for it.
+
+  `job.events` is snapshot-stable. The first tokenless request captures the
+  job's current event count, and that session's sequences are exactly
+  `0 .. snapshot_event_count - 1` — an event recorded afterwards never appears in
+  it, so a caller paging a running job reads a fixed history rather than one
+  growing under the cursor. Pages are contiguous from the position they continued
+  from, strictly increasing and duplicate-free, and `page` is always present:
+  a continuation token exactly when more of the snapshot remains, `{}` when it
+  is exhausted — the one direction-neutral posture every paginated result in
+  this contract shares, so a caller never has to know which result type it is
+  holding to know what "no next page" looks like. Continuation tokens stay
+  adapter-owned: nothing here decodes one. A caller proves what a token was bound
+  to by handing in a trusted, non-wire `JobEventsPageBinding` (token format
+  version, validated principal, workspace, operation `job.events`, job id,
+  ordering `sequence_asc`, snapshot count, next sequence), and every mismatch —
+  another principal, workspace, operation, job, ordering, format version, or
+  snapshot — raises one uniform rejection that never says which member disagreed,
+  so a rejected token is not an oracle for what a valid one contains. It reports
+  the catalogue's own `invalid_request` (`non_retryable`), which
+  `errors.schema.json` publishes as the single canonical code for a request the
+  server cannot execute as stated: a token that is not valid for the request
+  presenting it, a missing required idempotency key, a precondition sent to an
+  operation that applies none. There is deliberately no second, operation-specific
+  alias, since two spellings of one fact let two peers classify it differently.
+  Transport streaming is out of scope.
+
+  Idempotency equivalence is scoped, not global: a key is the caller's word
+  inside one *validated* principal, one workspace, and one operation. Two
+  requests are the same request when that scope matches and the fingerprint over
+  the normalized operation input, purpose, exercised scopes, and required
+  capabilities matches; request/correlation/trace ids, deadline, and client
+  diagnostics are excluded, because a genuine retry is expected to change exactly
+  those and folding them in would make every honest retry a conflict. Scopes and
+  capability requirements compare as sets, and a capability requirement
+  participates in full — id, minimum version, *and* the `required` flag, because
+  "I need this capability" and "use it if you have it" are different requests
+  even when they name the same capability at the same version. The same scoped
+  key with a different fingerprint is `idempotency_conflict`.
+  `OperationIdempotencyMetadata` gains a
+  required `required` flag, and the three flags must be mutually satisfiable
+  (`required` entails `supports_idempotency_key`; `safe_to_retry` excludes
+  `required`). `import.start`, `job.cancel`, and `job.retry` require a key and
+  apply no precondition; `job.get` and `job.events` are safe reads. Those five
+  postures are published as `JOB_LIFECYCLE_OPERATION_POSTURES` for the operation
+  catalogue to bind rather than restate.
+
+  Every public entry point here is a *direct* entry point: a caller may reach it
+  without a tolerant `from_wire` decode in front. So each type-checks what it was
+  handed before using it and raises `ContractSemanticError` rather than leaking a
+  `TypeError`, `AttributeError`, or `ContractDecodeError` — including every
+  boolean, since Python truthiness is not semantic validation. `"false"` is
+  truthy and `0` is falsy, and neither is a statement a caller made:
+  `recovery_accepted` unlocks a step out of a terminal state, `executing`
+  licenses an unfinished attempt, and the idempotency and precondition flags
+  decide whether a request is executable at all.
+
+  `ImportSourceDescriptor`, `ContentChecksum`, and the five operations' payloads
+  live in `jobs.schema.json` rather than in a new top-level document: each is a
+  statement about one durable job, so a separate schema would add a document
+  boundary where no boundary exists.
 - `src/omnivia_core/contracts/v1/canonical_json.py` — the RFC 8785 JSON
   Canonicalization Scheme the Context Pack digest is defined over, kept separate
   from the contract semantics so it can be audited on its own. Standard library

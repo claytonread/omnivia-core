@@ -100,11 +100,11 @@
     },
     "OpaqueToken": {
       "title": "OpaqueToken",
-      "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it.",
+      "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
       "type": "string",
       "minLength": 1,
       "maxLength": 512,
-      "pattern": "^[!-~]+$"
+      "pattern": "^[!-~]+$(?![\\s\\S])"
     },
     "IdempotencyKey": {
       "title": "IdempotencyKey",
@@ -336,12 +336,12 @@
     },
     "PageMetadata": {
       "title": "PageMetadata",
-      "description": "Pagination position. Token issuance semantics are deliberately out of scope for v1 foundations.",
+      "description": "A pagination position. Direction-neutral: the same shape is read differently on a request than on a result, and neither reading is the other's default. On a request, an absent `page` asks for the first page, and a present `page` must actually name a continuation token -- `{}` states nothing to continue from and is invalid. On a result, `page` is always present and states the position this read reached: a continuation token means more remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never implied by an absent field -- one spelling on every paginated result, so a caller never has to know which result type it is holding to know what 'no next page' looks like. Token issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope here; a token is opaque, and a reader that needs to prove what one was bound to takes that binding as separate trusted input rather than parsing the token.",
       "type": "object",
       "properties": {
         "continuation_token": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
-          "description": "Opaque cursor for the next page. Absent means the last page."
+          "description": "Opaque cursor. On a request, the position to continue from; on a result, the position the next page starts at. Absent on a result means the read is exhausted, which is why an exhausted result still carries `page` as `{}` rather than dropping the field."
         }
       },
       "required": [],

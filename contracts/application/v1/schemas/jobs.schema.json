@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/jobs.schema.json",
   "title": "OmniVia Core Application Contract v1 - asynchronous job foundations",
-  "description": "Job identity, state, progress, attempt, event, handle, and terminal-result shapes for asynchronous work started by an operation. This document declares no root type; it is a definition container only.",
+  "description": "Job identity, state, progress, attempt, event, handle, and terminal-result shapes for asynchronous work started by an operation, plus the provider-neutral payloads of the operations that start and control one: `import.start`, `job.get`, `job.cancel`, `job.retry`, and `job.events` (A2.4, ADR-039). The `import.start` payloads live here rather than in a separate ingestion document deliberately: `ImportStartInput` names nothing but an already-staged, server-issued source handle, `ImportStartResult` carries nothing but a `JobHandle`, and `ImportCompletionResult` is the typed terminal result of the `ingestion.import` job itself -- all three are statements about one durable job, so a separate top-level schema would add a document boundary without adding a boundary that exists. `ImportSourceDescriptor` and `ContentChecksum` are owned here for the same reason: they exist only to describe what one import job was told to read. This document declares no root type; it is a definition container only.",
   "$defs": {
     "JobState": {
       "title": "JobState",
@@ -77,25 +77,33 @@
       "required": ["unit", "completed_units"],
       "unevaluatedProperties": false
     },
+    "JobCancellationAvailability": {
+      "title": "JobCancellationAvailability",
+      "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now and where an already-requested cancellation stands, with four known values: `cancellable` (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about the job as observed, not the outcome of a control call: what a particular `job.cancel` did is reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence detail.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobRecoveryAvailability": {
+      "title": "JobRecoveryAvailability",
+      "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now, with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation and carries no action selector, so this code reports which recovery server state would choose rather than offering the caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
     "JobCancellationDisposition": {
       "title": "JobCancellationDisposition",
-      "description": "Open, dot-namespaced code naming whether a job may be cancelled and where a requested cancellation stands, such as `not_cancellable` or `cancellable` or `cancellation_requested` or `cancelled`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
+      "description": "Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known values: `cancellation_requested` (cancellation was accepted and the job will stop), `cancelled` (the job is already cancelled, so the call changed nothing), and `not_cancellable` (the call was refused and the job is unchanged). A state-based refusal is a successful, idempotent control result rather than an API error: `not_cancellable` is returned alongside the current unchanged handle, not raised as `conflict`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation was accepted, and carries no scheduler, worker, lease, or persistence detail.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
     },
-    "JobRetryDisposition": {
-      "title": "JobRetryDisposition",
-      "description": "Open, dot-namespaced code naming whether a job may be retried and where a requested retry stands, such as `not_retryable` or `retryable` or `retry_scheduled`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
-    },
-    "JobResumeDisposition": {
-      "title": "JobResumeDisposition",
-      "description": "Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as `not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
+    "JobRecoveryDisposition": {
+      "title": "JobRecoveryDisposition",
+      "description": "Open, dot-namespaced code naming what one `job.retry` call actually did, with three known values: `retry_scheduled` (a failed job was scheduled to run again, from the beginning or from a supported checkpoint), `resume_scheduled` (a cancelled resumable job was scheduled to continue from its checkpoint), and `not_retryable` (no recovery was scheduled and the job is unchanged). `job.retry` is the single recovery operation and carries no action selector: server state, not the caller, decides between retrying and resuming, so this code reports that decision rather than accepting it. A state-based refusal is a successful, idempotent control result rather than an API error. Open by design; an unrecognized value decodes and is preserved but never implies recovery was accepted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
@@ -103,28 +111,24 @@
     },
     "JobControl": {
       "title": "JobControl",
-      "description": "The control actions a caller may take on a job: cancellation, retry, and resume. Deliberately exposes only these caller-facing dispositions, never scheduler, worker, lease, or persistence detail.",
+      "description": "The control actions a caller may take on a job right now: cancellation and recovery. There are exactly two, because there are exactly two control operations -- `job.cancel` and `job.retry`. There is deliberately no `resume` member and no `job.resume` operation: retrying a failed job and resuming a cancelled resumable one are two readings of the same single recovery operation, chosen from server state rather than selected by the caller, so a separate resume disposition would have offered a control the contract does not have. Deliberately exposes only these caller-facing availabilities, never scheduler, worker, lease, checkpoint, or persistence detail.",
       "type": "object",
       "properties": {
         "cancellation": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationDisposition",
-          "description": "Whether this job may be cancelled and where a requested cancellation stands."
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationAvailability",
+          "description": "Whether this job may be cancelled and where an already-requested cancellation stands."
         },
-        "retry": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryDisposition",
-          "description": "Whether this job may be retried and where a requested retry stands."
-        },
-        "resume": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobResumeDisposition",
-          "description": "Whether this job may be resumed and where a requested resume stands."
+        "recovery": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRecoveryAvailability",
+          "description": "Whether this job may be recovered by `job.retry`, and which recovery that would be."
         }
       },
-      "required": ["cancellation", "retry", "resume"],
+      "required": ["cancellation", "recovery"],
       "unevaluatedProperties": false
     },
     "JobAttempt": {
       "title": "JobAttempt",
-      "description": "One execution attempt of a job. A job that is retried has more than one attempt.",
+      "description": "One execution attempt of a job. A job that is retried has more than one attempt. An attempt exists because execution started, so `queued` is not an attempt state: waiting to run is a state of the *job*, not of an execution of it, and an attempt numbered against a job that never ran would make the attempt history unreadable. Within one job's history attempts are numbered `1..N` contiguously, never overlap, and only a `failed` or `cancelled` attempt may be followed by another one -- a `succeeded` attempt is final.",
       "type": "object",
       "properties": {
         "attempt_number": {
@@ -185,7 +189,7 @@
     },
     "JobHandle": {
       "title": "JobHandle",
-      "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available.",
+      "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available. `latest_attempt` is the job's attempt *N*, not a history: a `running` job reports the running attempt it executes under, a `succeeded` or `failed` job reports the finished attempt that produced that outcome, and a `queued` job either has never executed (no attempt at all) or reports the finished `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled recovery -- never a succeeded, running, queued, or unfinished one, since none of those describes a job waiting to start.",
       "type": "object",
       "properties": {
         "identity": {
@@ -235,7 +239,7 @@
     },
     "JobTerminalSuccess": {
       "title": "JobTerminalSuccess",
-      "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`.",
+      "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which frozen result shape `result` carries, so a caller reads a success payload by matching a declared kind instead of guessing from the job kind. `result` stays an opaque JSON object in this document because JSON Schema cannot bind it to a per-kind shape within the subset the generator supports; the binding is a semantic rule (`omnivia_core.contracts.v1.semantics_jobs`) until the A2.5 operation catalogue publishes `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is `import_completion`, whose `result` is an `ImportCompletionResult`.",
       "type": "object",
       "properties": {
         "identity": {
@@ -258,17 +262,21 @@
           },
           "maxItems": 256
         },
+        "result_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming which frozen result shape `result` carries, such as `import_completion`. Open by design; an unrecognized kind decodes and is preserved, but a caller must not interpret `result` under a kind it does not know."
+        },
         "result": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
-          "description": "Opaque success payload."
+          "description": "The success payload, in the shape `result_kind` names. Opaque only in this document: a `result_kind` of `import_completion` makes it exactly an `ImportCompletionResult`."
         }
       },
-      "required": ["identity", "state", "finished_at", "attempts", "result"],
+      "required": ["identity", "state", "finished_at", "attempts", "result_kind", "result"],
       "unevaluatedProperties": false
     },
     "JobTerminalFailure": {
       "title": "JobTerminalFailure",
-      "description": "The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`.",
+      "description": "The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`. `attempts` is non-empty -- a job cannot fail without having executed -- and `error` is exactly the final attempt's own `error`: the failure that ended the last attempt is the failure that ended the job, and two spellings of it that could disagree would leave a caller unable to say which one is the outcome.",
       "type": "object",
       "properties": {
         "identity": {
@@ -301,7 +309,7 @@
     },
     "JobTerminalCancellation": {
       "title": "JobTerminalCancellation",
-      "description": "The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or `error`.",
+      "description": "The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or `error`. `attempts` may be empty, and only here: a job cancelled while still queued never executed, so it has no attempt to report. When it does carry attempts, the final one is the `cancelled` attempt that ended it and finished when the job did.",
       "type": "object",
       "properties": {
         "identity": {
@@ -346,6 +354,274 @@
           "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalCancellation"
         }
       ]
+    },
+    "ContentChecksum": {
+      "title": "ContentChecksum",
+      "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ImportSourceDescriptor": {
+      "title": "ImportSourceDescriptor",
+      "description": "The immutable description of one already-staged import source. Provider-neutral by construction: it names a server-issued staging handle and the content facts that handle resolves to, and nothing about how the content got there or how it will be read. It carries no filesystem path, URL, inline archive, credential, connector configuration, parser implementation name, or runtime/storage option, so an import cannot be steered from the wire into reading something the server did not already stage. Immutable: the descriptor accepted by `import.start` is the exact descriptor the resulting `ImportCompletionResult` reports back, so what was imported is never in question after the fact.",
+      "type": "object",
+      "properties": {
+        "staged_source_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Server-issued, immutable handle naming the already-staged content. Clients round-trip it verbatim and never parse it; it is the only locator this contract accepts."
+        },
+        "source_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what kind of source was staged, such as `archive` or `document`. Descriptive only: it never selects a parser implementation."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest of the staged content, so the import and the caller can prove they are talking about the same bytes."
+        },
+        "content_length_bytes": {
+          "type": "integer",
+          "description": "Length of the staged content in bytes. Zero is valid: empty staged content is a legitimate, checksummable import source.",
+          "minimum": 0
+        },
+        "media_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType",
+          "description": "Media type of the staged content. The same `MediaType` the resulting L0 evidence carries, so one type describes one concept wherever it is reached from."
+        },
+        "source_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Caller-meaningful version of the staged source, when the source has one. Never an authorization input and never a locator."
+        }
+      },
+      "required": [
+        "staged_source_ref",
+        "source_kind",
+        "content_checksum",
+        "content_length_bytes",
+        "media_type"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ImportStartInput": {
+      "title": "ImportStartInput",
+      "description": "Input for `import.start`. Carries exactly one thing: the immutable descriptor of an already-staged source. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier, and it accepts no path, URL, inline archive, credential, parser implementation name, or runtime/storage option.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportSourceDescriptor",
+          "description": "The immutable staged source this import reads."
+        }
+      },
+      "required": ["source"],
+      "unevaluatedProperties": false
+    },
+    "ImportStartResult": {
+      "title": "ImportStartResult",
+      "description": "Result of `import.start`. Carries exactly one thing: the handle for the durable job that was started. `import.start` always returns a job and never a synchronous import outcome, so there is nothing else honest to return here. The response envelope's `ResponseMetadata.job` names the same job as this handle: one operation started one job, and the two statements of that fact must agree.",
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "Handle for the durable import job this call started."
+        }
+      },
+      "required": ["job"],
+      "unevaluatedProperties": false
+    },
+    "ImportCompletionResult": {
+      "title": "ImportCompletionResult",
+      "description": "The typed terminal result of a successful `ingestion.import` job: what was imported, and what it produced. It reports the creation of L0 evidence only -- candidate extraction and any governed record that later cites this evidence are separate, later operations, so nothing here asserts that knowledge was proposed, approved, or accepted. `discovered_items` is the total the import saw and must equal `evidence_records_created + skipped_items + failed_items`: an item is accounted for exactly once, and a count that does not add up is a report of an import nobody can audit. `partial` is not an independent claim either; it is exactly `failed_items > 0`. `source` is byte-for-byte the descriptor `import.start` accepted.",
+      "type": "object",
+      "properties": {
+        "import_run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Identifier of this import run, equal to the job's own `job_id`. Typed as `OpaqueToken` for exactly that reason: `JobIdentity.job_id` is an opaque server-issued token, and a run id spelled in any narrower vocabulary could not state the equality for every job id the contract admits. The same run the L0 evidence this run produced points back to through `EvidenceArtifact.import_run_id`, so evidence traces back to the run that created it."
+        },
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportSourceDescriptor",
+          "description": "The immutable staged source this run read, exactly as accepted by `import.start`."
+        },
+        "discovered_items": {
+          "type": "integer",
+          "description": "Total items the run discovered in the staged source.",
+          "minimum": 0
+        },
+        "evidence_records_created": {
+          "type": "integer",
+          "description": "Discovered items that became L0 evidence artifacts. Never a count of governed records.",
+          "minimum": 0
+        },
+        "skipped_items": {
+          "type": "integer",
+          "description": "Discovered items the run deliberately did not import, such as an unchanged item already present.",
+          "minimum": 0
+        },
+        "failed_items": {
+          "type": "integer",
+          "description": "Discovered items the run tried and failed to import.",
+          "minimum": 0
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "True when the run completed with failures. Exactly `failed_items > 0`: a successful job may still be a partial import, and a caller must not read success as completeness."
+        }
+      },
+      "required": [
+        "import_run_id",
+        "source",
+        "discovered_items",
+        "evidence_records_created",
+        "skipped_items",
+        "failed_items",
+        "partial"
+      ],
+      "unevaluatedProperties": false
+    },
+    "JobGetInput": {
+      "title": "JobGetInput",
+      "description": "Input for `job.get`. Names one job. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque identifier of the job to read."
+        }
+      },
+      "required": ["job_id"],
+      "unevaluatedProperties": false
+    },
+    "JobGetResult": {
+      "title": "JobGetResult",
+      "description": "Result of `job.get`: the current handle, plus the terminal result when the job has one. `terminal_result` is present exactly when `job.state` is a known terminal state, and it is closed against the handle it accompanies: identity and state match exactly, every attempt instant in the terminal history falls inside the handle's own `created_at`/`updated_at` lifetime, and the handle's `latest_attempt` is exactly the final attempt of that history (and is absent exactly when the history is). One read describes one job, never two disagreeing statements about it. An unknown state is preserved but implies nothing: a handle in a state this build has never seen carries no `terminal_result`, because this build cannot know whether that state is terminal.",
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "Current handle for this job."
+        },
+        "terminal_result": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalResult",
+          "description": "The job's final outcome and complete attempt history, present exactly when the handle is in a known terminal state."
+        }
+      },
+      "required": ["job"],
+      "unevaluatedProperties": false
+    },
+    "JobCancelInput": {
+      "title": "JobCancelInput",
+      "description": "Input for `job.cancel`. Names one job and, optionally, why. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque identifier of the job to cancel."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why the caller is cancelling, such as `caller_requested`. Recorded on the job's cancellation outcome; never an authorization input."
+        }
+      },
+      "required": ["job_id"],
+      "unevaluatedProperties": false
+    },
+    "JobCancelResult": {
+      "title": "JobCancelResult",
+      "description": "Result of `job.cancel`: what the call did, and the handle as it now stands. A state-based refusal is a successful, idempotent control result rather than an API error -- a job that cannot be cancelled returns `not_cancellable` alongside its current unchanged handle, and is never reported as `conflict` merely for being terminal. Authorization failures, a missing job, and workspace failures stay typed API errors.",
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "The job's handle after this call. Unchanged, including its identity, when the call was refused."
+        },
+        "cancellation_disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationDisposition",
+          "description": "What this call actually did: accepted the cancellation, found it already cancelled, or refused."
+        }
+      },
+      "required": ["job", "cancellation_disposition"],
+      "unevaluatedProperties": false
+    },
+    "JobRetryInput": {
+      "title": "JobRetryInput",
+      "description": "Input for `job.retry`, the single recovery operation. Names one job and nothing else: there is deliberately no action selector and no checkpoint reference, because whether recovery is a retry from the beginning or a resume from a supported checkpoint is chosen from server state, not requested by the caller. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque identifier of the job to recover."
+        }
+      },
+      "required": ["job_id"],
+      "unevaluatedProperties": false
+    },
+    "JobRetryResult": {
+      "title": "JobRetryResult",
+      "description": "Result of `job.retry`: which recovery the server chose, and the handle as it now stands. An accepted recovery keeps the same job identity and returns the job to `queued`; it starts no new attempt until execution actually begins, so the previous terminal attempt remains `latest_attempt` while the recovered handle is queued. A state-based refusal is a successful, idempotent control result rather than an API error -- `not_retryable` is returned alongside the current unchanged handle, and is never reported as `conflict` merely for being terminal. Authorization failures, a missing job, and workspace failures stay typed API errors.",
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle",
+          "description": "The job's handle after this call. Unchanged, including its identity, when the call was refused."
+        },
+        "recovery_disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRecoveryDisposition",
+          "description": "What this call actually did: scheduled a retry, scheduled a resume, or refused."
+        }
+      },
+      "required": ["job", "recovery_disposition"],
+      "unevaluatedProperties": false
+    },
+    "JobEventsInput": {
+      "title": "JobEventsInput",
+      "description": "Input for `job.events`: a bounded, snapshot-stable read of one job's ordered event stream. A request carrying no `page` starts a new pagination session and captures the job's current event count as that session's snapshot; a request carrying one continues the session that token names and can never widen it. Transport-level streaming is out of scope: this is a paged read, not a subscription. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque identifier of the job whose events to read."
+        },
+        "limit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit",
+          "description": "Bounded maximum number of events to return in this page."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position from a prior page of the same pagination session. Absent means start a new session at the first page."
+        }
+      },
+      "required": ["job_id"],
+      "unevaluatedProperties": false
+    },
+    "JobEventsResult": {
+      "title": "JobEventsResult",
+      "description": "Result of `job.events`: one page of a snapshot-stable event read. `snapshot_event_count` is the event count captured when this pagination session began, so the session's sequences are exactly `0 .. snapshot_event_count - 1` and events recorded after the snapshot never appear in it; the same count is repeated on every page of the session and never changes within one. A fresh tokenless request captures a new snapshot and may see more. Page events are strictly increasing, duplicate-free, and contiguous from the position the request continued from. `page` is always present: a continuation token means more of the snapshot remains, and no token means the snapshot is exhausted.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque identifier of the job these events belong to. Echoes the request."
+        },
+        "events": {
+          "type": "array",
+          "description": "Events in this page, in ascending sequence order.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEvent"
+          },
+          "maxItems": 1000
+        },
+        "snapshot_event_count": {
+          "type": "integer",
+          "description": "Number of events captured when this pagination session began. Constant across every page of one session.",
+          "minimum": 0
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Position within this pagination session: a continuation token when more of the captured snapshot remains, and no token when it is exhausted."
+        }
+      },
+      "required": ["job_id", "events", "snapshot_event_count", "page"],
+      "unevaluatedProperties": false
     }
   }
 }

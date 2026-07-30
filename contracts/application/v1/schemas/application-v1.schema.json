@@ -244,14 +244,17 @@
     "JobProgress": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobProgress"
     },
+    "JobCancellationAvailability": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationAvailability"
+    },
+    "JobRecoveryAvailability": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRecoveryAvailability"
+    },
     "JobCancellationDisposition": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationDisposition"
     },
-    "JobRetryDisposition": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryDisposition"
-    },
-    "JobResumeDisposition": {
-      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobResumeDisposition"
+    "JobRecoveryDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRecoveryDisposition"
     },
     "JobControl": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobControl"
@@ -279,6 +282,45 @@
     },
     "JobTerminalResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalResult"
+    },
+    "ContentChecksum": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum"
+    },
+    "ImportSourceDescriptor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportSourceDescriptor"
+    },
+    "ImportStartInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportStartInput"
+    },
+    "ImportStartResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportStartResult"
+    },
+    "ImportCompletionResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ImportCompletionResult"
+    },
+    "JobGetInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobGetInput"
+    },
+    "JobGetResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobGetResult"
+    },
+    "JobCancelInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancelInput"
+    },
+    "JobCancelResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancelResult"
+    },
+    "JobRetryInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryInput"
+    },
+    "JobRetryResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryResult"
+    },
+    "JobEventsInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEventsInput"
+    },
+    "JobEventsResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEventsResult"
     },
     "OperationSideEffect": {
       "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationSideEffect"

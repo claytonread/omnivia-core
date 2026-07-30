@@ -81,6 +81,10 @@ ALL_SCHEMAS = (
     "operations",
     "workspace",
     "memory",
+    # `jobs` reaches `evidence.MediaType` from `ImportSourceDescriptor`, so the
+    # evidence document has to be resolvable here even though nothing in this
+    # file validates an evidence shape directly.
+    "evidence",
     "compatibility-matrix",
     "application-v1",
 )
@@ -498,7 +502,7 @@ def test_job_handle_round_trip_with_control() -> None:
         state="running",
         created_at="2026-07-30T00:00:00Z",
         updated_at="2026-07-30T00:00:05Z",
-        control=JobControl(cancellation="cancellable", retry="not_retryable", resume="not_resumable"),
+        control=JobControl(cancellation="cancellable", recovery="not_retryable"),
         progress=JobProgress(unit="item", completed_units=3, total_units=10),
         latest_attempt=JobAttempt(attempt_number=1, started_at="2026-07-30T00:00:00Z", state="running"),
     )
@@ -521,7 +525,7 @@ def test_job_handle_requires_control() -> None:
 
 def test_job_control_carries_no_scheduler_worker_lease_or_persistence_fields() -> None:
     field_names = {field.name for field in fields(JobControl)}
-    assert field_names == {"cancellation", "retry", "resume"}
+    assert field_names == {"cancellation", "recovery"}
     forbidden_substrings = ("scheduler", "worker", "lease", "persistence", "queue")
     for name in field_names:
         assert not any(substring in name for substring in forbidden_substrings)
@@ -537,9 +541,9 @@ def test_job_progress_unit_unknown_value_is_preserved() -> None:
     assert decoded.unit == "future_unit.not_yet_known"
 
 
-@pytest.mark.parametrize("field_name", ["cancellation", "retry", "resume"])
+@pytest.mark.parametrize("field_name", ["cancellation", "recovery"])
 def test_job_control_disposition_unknown_value_is_preserved(field_name: str) -> None:
-    wire = {"cancellation": "cancellable", "retry": "retryable", "resume": "resumable"}
+    wire = {"cancellation": "cancellable", "recovery": "retryable"}
     wire[field_name] = "future_disposition.not_yet_known"
     decoded = JobControl.from_wire(wire)
     assert getattr(decoded, field_name) == "future_disposition.not_yet_known"
@@ -551,6 +555,7 @@ def test_job_terminal_result_success_round_trip() -> None:
         state="succeeded",
         finished_at="2026-07-30T00:01:00Z",
         attempts=(JobAttempt(attempt_number=1, started_at="2026-07-30T00:00:00Z", state="succeeded"),),
+        result_kind="future_kind.not_yet_known",
         result={"imported": 3},
     )
     wire = job_terminal_result_to_wire(original)
@@ -624,7 +629,7 @@ def test_job_terminal_result_rejects_neither_result_nor_error_nor_cancellation()
 @pytest.mark.parametrize(
     ("discriminator", "extra"),
     [
-        ("result", {"result": {}}),
+        ("result", {"result_kind": "future_kind.not_yet_known", "result": {}}),
         ("error", {"error": {"code": "internal_recoverable", "message": "x", "retry_class": "retryable"}}),
         ("cancellation", {"cancellation": {"reason": "caller_requested"}}),
     ],
@@ -675,7 +680,9 @@ def _operation_metadata() -> OperationMetadata:
         required_capability=CapabilityRequirement(id="memory.read", minimum_version="1.0", required=True),
         job=OperationJobMetadata(completion_mode="synchronous"),
         pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(supports_idempotency_key=False, safe_to_retry=True),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False, required=False, safe_to_retry=True
+        ),
         precondition=OperationPreconditionMetadata(supports_mutation_precondition=False, required=False),
         audit=OperationAuditMetadata(audited=True, audit_category="read"),
         allowed_errors=("not_found", "authorization_denied"),
@@ -699,7 +706,9 @@ def test_import_start_is_representable_as_a_mutation_plus_durable_job() -> None:
         required_capability=CapabilityRequirement(id="ingestion.import", minimum_version="1.0", required=True),
         job=OperationJobMetadata(completion_mode="always_returns_job", job_kind="ingestion.import"),
         pagination=OperationPaginationMetadata(paginated=False),
-        idempotency=OperationIdempotencyMetadata(supports_idempotency_key=True, safe_to_retry=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True, required=True, safe_to_retry=False
+        ),
         precondition=OperationPreconditionMetadata(supports_mutation_precondition=False, required=False),
         audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
         allowed_errors=("workspace_not_granted",),

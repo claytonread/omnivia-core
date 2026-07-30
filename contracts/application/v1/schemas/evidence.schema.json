@@ -102,8 +102,8 @@
           "maxItems": 1024
         },
         "import_run_id": {
-          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
-          "description": "Identifier of the import run that produced this evidence artifact, when it was produced by one."
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Names the import job/run that produced this evidence artifact, when it was produced by one. Typed as `OpaqueToken` because it is drawn from exactly the same opaque token domain as `JobIdentity.job_id` and `ImportCompletionResult.import_run_id`: the completion contract promises this backlink names the run that created this evidence, and spelled in any narrower vocabulary it could not hold every job id the contract admits -- a run such as `job/opaque-token` could complete and then have no writable backlink at all."
         }
       },
       "required": [

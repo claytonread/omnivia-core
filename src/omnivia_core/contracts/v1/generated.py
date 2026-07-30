@@ -50,6 +50,7 @@ __all__ = [
     "COMPATIBILITY_STATUS_INCOMPATIBLE",
     "COMPATIBILITY_STATUS_UPGRADE_REQUIRED",
     "COMPONENT_KIND_PATTERN",
+    "CONTENT_CHECKSUM_PATTERN",
     "CONTEXT_PACK_DIGEST_PATTERN",
     "CONTEXT_PACK_MODE_PATTERN",
     "CONTRACT_VERSION",
@@ -69,6 +70,7 @@ __all__ = [
     "ERROR_CODE_INTERNAL_NON_RECOVERABLE",
     "ERROR_CODE_INTERNAL_RECOVERABLE",
     "ERROR_CODE_INVALID_PURPOSE",
+    "ERROR_CODE_INVALID_REQUEST",
     "ERROR_CODE_MUTATION_PRECONDITION_FAILED",
     "ERROR_CODE_NOT_FOUND",
     "ERROR_CODE_PATTERN",
@@ -97,10 +99,11 @@ __all__ = [
     "GRAPH_RELATION_TYPE_PATTERN",
     "IDEMPOTENCY_KEY_PATTERN",
     "IDENTIFIER_PATTERN",
+    "JOB_CANCELLATION_AVAILABILITY_PATTERN",
     "JOB_CANCELLATION_DISPOSITION_PATTERN",
     "JOB_PROGRESS_UNIT_PATTERN",
-    "JOB_RESUME_DISPOSITION_PATTERN",
-    "JOB_RETRY_DISPOSITION_PATTERN",
+    "JOB_RECOVERY_AVAILABILITY_PATTERN",
+    "JOB_RECOVERY_DISPOSITION_PATTERN",
     "JOB_STATE_PATTERN",
     "MEDIA_TYPE_PATTERN",
     "MEMORY_SEARCH_ORDER_PATTERN",
@@ -157,6 +160,7 @@ __all__ = [
     "CompatibilityMatrix",
     "CompatibilityMetadata",
     "ComponentKind",
+    "ContentChecksum",
     "ContextPackAuthorizationContext",
     "ContextPackAuthorizedCandidate",
     "ContextPackAuthorizedCandidateSetManifest",
@@ -211,18 +215,31 @@ __all__ = [
     "GraphTraversalResult",
     "IdempotencyKey",
     "Identifier",
+    "ImportCompletionResult",
+    "ImportSourceDescriptor",
+    "ImportStartInput",
+    "ImportStartResult",
     "JobAttempt",
+    "JobCancelInput",
+    "JobCancelResult",
+    "JobCancellationAvailability",
     "JobCancellationDisposition",
     "JobCancellationOutcome",
     "JobControl",
     "JobEvent",
+    "JobEventsInput",
+    "JobEventsResult",
+    "JobGetInput",
+    "JobGetResult",
     "JobHandle",
     "JobIdentity",
     "JobProgress",
     "JobProgressUnit",
+    "JobRecoveryAvailability",
+    "JobRecoveryDisposition",
     "JobReference",
-    "JobResumeDisposition",
-    "JobRetryDisposition",
+    "JobRetryInput",
+    "JobRetryResult",
     "JobState",
     "JobTerminalCancellation",
     "JobTerminalFailure",
@@ -448,6 +465,7 @@ ERROR_CODE_AUTHORIZATION_DENIED: Final = "authorization_denied"
 ERROR_CODE_WORKSPACE_NOT_GRANTED: Final = "workspace_not_granted"
 ERROR_CODE_CAPABILITY_NOT_GRANTED: Final = "capability_not_granted"
 ERROR_CODE_INVALID_PURPOSE: Final = "invalid_purpose"
+ERROR_CODE_INVALID_REQUEST: Final = "invalid_request"
 ERROR_CODE_NOT_FOUND: Final = "not_found"
 ERROR_CODE_CONFLICT: Final = "conflict"
 ERROR_CODE_MUTATION_PRECONDITION_FAILED: Final = "mutation_precondition_failed"
@@ -475,6 +493,7 @@ FROZEN_ERROR_CODES: Final[tuple[str, ...]] = (
     ERROR_CODE_WORKSPACE_NOT_GRANTED,
     ERROR_CODE_CAPABILITY_NOT_GRANTED,
     ERROR_CODE_INVALID_PURPOSE,
+    ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
@@ -535,6 +554,7 @@ DEFAULT_RETRY_CLASSIFICATION: Final[Mapping[str, str]] = MappingProxyType(
         ERROR_CODE_WORKSPACE_NOT_GRANTED: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_CAPABILITY_NOT_GRANTED: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_INVALID_PURPOSE: RETRY_CLASS_NON_RETRYABLE,
+        ERROR_CODE_INVALID_REQUEST: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_NOT_FOUND: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_CONFLICT: RETRY_CLASS_NON_RETRYABLE,
         ERROR_CODE_MUTATION_PRECONDITION_FAILED: RETRY_CLASS_RETRYABLE_AFTER_PRECONDITION_REFRESH,
@@ -608,7 +628,7 @@ CAPABILITY_ID_PATTERN: Final = (
 OPEN_CODE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 SCOPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$'
 PURPOSE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
-OPAQUE_TOKEN_PATTERN: Final = '^[!-~]+$'
+OPAQUE_TOKEN_PATTERN: Final = '^[!-~]+$(?![\\s\\S])'
 IDEMPOTENCY_KEY_PATTERN: Final = '^[A-Za-z0-9][A-Za-z0-9._:-]*$'
 TIMESTAMP_PATTERN: Final = (
     '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:'
@@ -632,9 +652,11 @@ GRAPH_ORDERING_BASIS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 GRAPH_BOUNDARY_REASON_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_STATE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_PROGRESS_UNIT_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+JOB_CANCELLATION_AVAILABILITY_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+JOB_RECOVERY_AVAILABILITY_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 JOB_CANCELLATION_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
-JOB_RETRY_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
-JOB_RESUME_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+JOB_RECOVERY_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
+CONTENT_CHECKSUM_PATTERN: Final = '^sha256:[0-9a-f]{64}$'
 GOVERNED_RECORD_TYPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 GOVERNED_RECORD_VIEW_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
 RECORD_DOMAIN_SCOPE_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$'
@@ -703,7 +725,11 @@ Purpose: TypeAlias = str
 
 OpaqueToken: TypeAlias = str
 """A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse
-it.
+it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the
+character domain: a bare `$` matches before a final line terminator in some conforming regex
+engines, so a token spelled with a trailing newline would be schema-valid while the semantic
+validators -- which match the whole string -- refuse it. The lookahead pins the anchor to
+absolute end of input, so strict schema and semantic validation accept exactly the same tokens.
 """
 
 IdempotencyKey: TypeAlias = str
@@ -858,22 +884,59 @@ JobProgressUnit: TypeAlias = str
 without breaking existing decoders.
 """
 
+JobCancellationAvailability: TypeAlias = str
+"""Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now
+and where an already-requested cancellation stands, with four known values: `cancellable` (a
+`job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and
+has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a
+`job.cancel` would be refused). This is an availability statement about the job as observed, not
+the outcome of a control call: what a particular `job.cancel` did is reported by
+`JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but
+never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence
+detail.
+"""
+
+JobRecoveryAvailability: TypeAlias = str
+"""Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now,
+with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable`
+(a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a
+`job.retry` would be refused). `job.retry` is the single recovery operation and carries no action
+selector, so this code reports which recovery server state would choose rather than offering the
+caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open
+by design; an unrecognized value decodes and is preserved but never implies recovery is
+permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.
+"""
+
 JobCancellationDisposition: TypeAlias = str
-"""Open, dot-namespaced code naming whether a job may be cancelled and where a requested
-cancellation stands, such as `not_cancellable` or `cancellable` or `cancellation_requested` or
-`cancelled`. Open by design; carries no scheduler, worker, lease, or persistence detail.
+"""Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known
+values: `cancellation_requested` (cancellation was accepted and the job will stop), `cancelled`
+(the job is already cancelled, so the call changed nothing), and `not_cancellable` (the call was
+refused and the job is unchanged). A state-based refusal is a successful, idempotent control
+result rather than an API error: `not_cancellable` is returned alongside the current unchanged
+handle, not raised as `conflict`. Open by design; an unrecognized value decodes and is preserved
+but never implies cancellation was accepted, and carries no scheduler, worker, lease, or
+persistence detail.
 """
 
-JobRetryDisposition: TypeAlias = str
-"""Open, dot-namespaced code naming whether a job may be retried and where a requested retry stands,
-such as `not_retryable` or `retryable` or `retry_scheduled`. Open by design; carries no
-scheduler, worker, lease, or persistence detail.
+JobRecoveryDisposition: TypeAlias = str
+"""Open, dot-namespaced code naming what one `job.retry` call actually did, with three known values:
+`retry_scheduled` (a failed job was scheduled to run again, from the beginning or from a
+supported checkpoint), `resume_scheduled` (a cancelled resumable job was scheduled to continue
+from its checkpoint), and `not_retryable` (no recovery was scheduled and the job is unchanged).
+`job.retry` is the single recovery operation and carries no action selector: server state, not
+the caller, decides between retrying and resuming, so this code reports that decision rather than
+accepting it. A state-based refusal is a successful, idempotent control result rather than an API
+error. Open by design; an unrecognized value decodes and is preserved but never implies recovery
+was accepted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.
 """
 
-JobResumeDisposition: TypeAlias = str
-"""Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as
-`not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler,
-worker, lease, or persistence detail.
+ContentChecksum: TypeAlias = str
+"""A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
+characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque
+server token a client round-trips but a value the caller and the server must be able to recompute
+and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and
+one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm
+later is an additive widening of this pattern, not a redefinition of what a checksum means.
 """
 
 GovernedRecordType: TypeAlias = str
@@ -980,9 +1043,16 @@ class OperationPaginationMetadata:
 
 @dataclass(frozen=True, slots=True)
 class OperationIdempotencyMetadata:
-    """How this operation may safely be retried."""
+    """How this operation may safely be retried. The three fields are not independent:
+    `required` entails `supports_idempotency_key` (an operation cannot demand a key it does
+    not honour), `safe_to_retry` excludes `required` (a request that is safe to repeat
+    without a key cannot also be rejected for lacking one), and an operation that does not
+    support keys cannot require them. A combination breaking any of those is a metadata
+    statement no implementation can satisfy.
+    """
 
     supports_idempotency_key: bool
+    required: bool
     safe_to_retry: bool
 
     def to_wire(self) -> dict[str, Any]:
@@ -993,6 +1063,7 @@ class OperationIdempotencyMetadata:
         """
         wire: dict[str, Any] = {}
         wire["supports_idempotency_key"] = self.supports_idempotency_key
+        wire["required"] = self.required
         wire["safe_to_retry"] = self.safe_to_retry
         return wire
 
@@ -1010,12 +1081,14 @@ class OperationIdempotencyMetadata:
             _require_field(mapping, "supports_idempotency_key", path),
             f"{path}.supports_idempotency_key",
         )
+        field_required = _decode_bool(_require_field(mapping, "required", path), f"{path}.required")
         field_safe_to_retry = _decode_bool(
             _require_field(mapping, "safe_to_retry", path),
             f"{path}.safe_to_retry",
         )
         return cls(
             supports_idempotency_key=field_supports_idempotency_key,
+            required=field_required,
             safe_to_retry=field_safe_to_retry,
         )
 
@@ -1591,8 +1664,17 @@ class ProjectionFreshness:
 
 @dataclass(frozen=True, slots=True)
 class PageMetadata:
-    """Pagination position. Token issuance semantics are deliberately out of scope for v1
-    foundations.
+    """A pagination position. Direction-neutral: the same shape is read differently on a request
+    than on a result, and neither reading is the other's default. On a request, an absent
+    `page` asks for the first page, and a present `page` must actually name a continuation
+    token -- `{}` states nothing to continue from and is invalid. On a result, `page` is
+    always present and states the position this read reached: a continuation token means more
+    remains, and `{}` means the read is exhausted. Exhaustion is therefore stated, never
+    implied by an absent field -- one spelling on every paginated result, so a caller never
+    has to know which result type it is holding to know what 'no next page' looks like. Token
+    issuance, encoding, expiry, and the bindings a token proves are deliberately out of scope
+    here; a token is opaque, and a reader that needs to prove what one was bound to takes
+    that binding as separate trusted input rather than parsing the token.
     """
 
     continuation_token: OpaqueToken | None = None
@@ -2623,14 +2705,18 @@ class JobProgress:
 
 @dataclass(frozen=True, slots=True)
 class JobControl:
-    """The control actions a caller may take on a job: cancellation, retry, and resume.
-    Deliberately exposes only these caller-facing dispositions, never scheduler, worker,
-    lease, or persistence detail.
+    """The control actions a caller may take on a job right now: cancellation and recovery.
+    There are exactly two, because there are exactly two control operations -- `job.cancel`
+    and `job.retry`. There is deliberately no `resume` member and no `job.resume` operation:
+    retrying a failed job and resuming a cancelled resumable one are two readings of the same
+    single recovery operation, chosen from server state rather than selected by the caller,
+    so a separate resume disposition would have offered a control the contract does not have.
+    Deliberately exposes only these caller-facing availabilities, never scheduler, worker,
+    lease, checkpoint, or persistence detail.
     """
 
-    cancellation: JobCancellationDisposition
-    retry: JobRetryDisposition
-    resume: JobResumeDisposition
+    cancellation: JobCancellationAvailability
+    recovery: JobRecoveryAvailability
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -2640,8 +2726,7 @@ class JobControl:
         """
         wire: dict[str, Any] = {}
         wire["cancellation"] = self.cancellation
-        wire["retry"] = self.retry
-        wire["resume"] = self.resume
+        wire["recovery"] = self.recovery
         return wire
 
     @classmethod
@@ -2656,12 +2741,10 @@ class JobControl:
             _require_field(mapping, "cancellation", path),
             f"{path}.cancellation",
         )
-        field_retry = _decode_str(_require_field(mapping, "retry", path), f"{path}.retry")
-        field_resume = _decode_str(_require_field(mapping, "resume", path), f"{path}.resume")
+        field_recovery = _decode_str(_require_field(mapping, "recovery", path), f"{path}.recovery")
         return cls(
             cancellation=field_cancellation,
-            retry=field_retry,
-            resume=field_resume,
+            recovery=field_recovery,
         )
 
 
@@ -2761,6 +2844,204 @@ class JobCancellationOutcome:
         field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
         return cls(
             reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ImportSourceDescriptor:
+    """The immutable description of one already-staged import source. Provider-neutral by
+    construction: it names a server-issued staging handle and the content facts that handle
+    resolves to, and nothing about how the content got there or how it will be read. It
+    carries no filesystem path, URL, inline archive, credential, connector configuration,
+    parser implementation name, or runtime/storage option, so an import cannot be steered
+    from the wire into reading something the server did not already stage. Immutable: the
+    descriptor accepted by `import.start` is the exact descriptor the resulting
+    `ImportCompletionResult` reports back, so what was imported is never in question after
+    the fact.
+    """
+
+    staged_source_ref: OpaqueToken
+    source_kind: OpenCode
+    content_checksum: ContentChecksum
+    content_length_bytes: int
+    media_type: MediaType
+    source_version: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["staged_source_ref"] = self.staged_source_ref
+        wire["source_kind"] = self.source_kind
+        wire["content_checksum"] = self.content_checksum
+        wire["content_length_bytes"] = self.content_length_bytes
+        wire["media_type"] = self.media_type
+        if self.source_version is not None:
+            wire["source_version"] = self.source_version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ImportSourceDescriptor"
+    ) -> ImportSourceDescriptor:
+        """Decode a wire payload into a ImportSourceDescriptor.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_staged_source_ref = _decode_str(
+            _require_field(mapping, "staged_source_ref", path),
+            f"{path}.staged_source_ref",
+        )
+        field_source_kind = _decode_str(
+            _require_field(mapping, "source_kind", path),
+            f"{path}.source_kind",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_content_length_bytes = _decode_int(
+            _require_field(mapping, "content_length_bytes", path),
+            f"{path}.content_length_bytes",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_source_version: Identifier | None = None
+        if "source_version" in mapping:
+            raw_source_version = mapping["source_version"]
+            if raw_source_version is None:
+                raise ContractDecodeError(
+                    f"{path}.source_version: null is not a valid value"
+                )
+            field_source_version = _decode_str(raw_source_version, f"{path}.source_version")
+        return cls(
+            staged_source_ref=field_staged_source_ref,
+            source_kind=field_source_kind,
+            content_checksum=field_content_checksum,
+            content_length_bytes=field_content_length_bytes,
+            media_type=field_media_type,
+            source_version=field_source_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobGetInput:
+    """Input for `job.get`. Names one job. Workspace-scoped through the request envelope's
+    selected workspace, so this payload never carries a second, independent workspace
+    identifier.
+    """
+
+    job_id: OpaqueToken
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job_id"] = self.job_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobGetInput") -> JobGetInput:
+        """Decode a wire payload into a JobGetInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job_id = _decode_str(_require_field(mapping, "job_id", path), f"{path}.job_id")
+        return cls(
+            job_id=field_job_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobCancelInput:
+    """Input for `job.cancel`. Names one job and, optionally, why. Workspace-scoped through the
+    request envelope's selected workspace, so this payload never carries a second,
+    independent workspace identifier.
+    """
+
+    job_id: OpaqueToken
+    reason: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job_id"] = self.job_id
+        if self.reason is not None:
+            wire["reason"] = self.reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobCancelInput") -> JobCancelInput:
+        """Decode a wire payload into a JobCancelInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job_id = _decode_str(_require_field(mapping, "job_id", path), f"{path}.job_id")
+        field_reason: OpenCode | None = None
+        if "reason" in mapping:
+            raw_reason = mapping["reason"]
+            if raw_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.reason: null is not a valid value"
+                )
+            field_reason = _decode_str(raw_reason, f"{path}.reason")
+        return cls(
+            job_id=field_job_id,
+            reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobRetryInput:
+    """Input for `job.retry`, the single recovery operation. Names one job and nothing else:
+    there is deliberately no action selector and no checkpoint reference, because whether
+    recovery is a retry from the beginning or a resume from a supported checkpoint is chosen
+    from server state, not requested by the caller. Workspace-scoped through the request
+    envelope's selected workspace, so this payload never carries a second, independent
+    workspace identifier.
+    """
+
+    job_id: OpaqueToken
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job_id"] = self.job_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobRetryInput") -> JobRetryInput:
+        """Decode a wire payload into a JobRetryInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job_id = _decode_str(_require_field(mapping, "job_id", path), f"{path}.job_id")
+        return cls(
+            job_id=field_job_id,
         )
 
 
@@ -2932,6 +3213,7 @@ class OperationJobMetadata:
 
     completion_mode: OperationCompletionMode
     job_kind: OpenCode | None = None
+    terminal_result_schema_ref: SchemaReference | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -2943,6 +3225,8 @@ class OperationJobMetadata:
         wire["completion_mode"] = self.completion_mode
         if self.job_kind is not None:
             wire["job_kind"] = self.job_kind
+        if self.terminal_result_schema_ref is not None:
+            wire["terminal_result_schema_ref"] = self.terminal_result_schema_ref
         return wire
 
     @classmethod
@@ -2965,9 +3249,21 @@ class OperationJobMetadata:
                     f"{path}.job_kind: null is not a valid value"
                 )
             field_job_kind = _decode_str(raw_job_kind, f"{path}.job_kind")
+        field_terminal_result_schema_ref: SchemaReference | None = None
+        if "terminal_result_schema_ref" in mapping:
+            raw_terminal_result_schema_ref = mapping["terminal_result_schema_ref"]
+            if raw_terminal_result_schema_ref is None:
+                raise ContractDecodeError(
+                    f"{path}.terminal_result_schema_ref: null is not a valid value"
+                )
+            field_terminal_result_schema_ref = _decode_str(
+                raw_terminal_result_schema_ref,
+                f"{path}.terminal_result_schema_ref",
+            )
         return cls(
             completion_mode=field_completion_mode,
             job_kind=field_job_kind,
+            terminal_result_schema_ref=field_terminal_result_schema_ref,
         )
 
 
@@ -4512,7 +4808,13 @@ class GraphTraversalInput:
 
 @dataclass(frozen=True, slots=True)
 class JobAttempt:
-    """One execution attempt of a job. A job that is retried has more than one attempt."""
+    """One execution attempt of a job. A job that is retried has more than one attempt. An
+    attempt exists because execution started, so `queued` is not an attempt state: waiting to
+    run is a state of the *job*, not of an execution of it, and an attempt numbered against a
+    job that never ran would make the attempt history unreadable. Within one job's history
+    attempts are numbered `1..N` contiguously, never overlap, and only a `failed` or
+    `cancelled` attempt may be followed by another one -- a `succeeded` attempt is final.
+    """
 
     attempt_number: int
     started_at: Timestamp
@@ -4575,6 +4877,248 @@ class JobAttempt:
             finished_at=field_finished_at,
             state=field_state,
             error=field_error,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ImportStartInput:
+    """Input for `import.start`. Carries exactly one thing: the immutable descriptor of an
+    already-staged source. Workspace-scoped through the request envelope's selected
+    workspace, so this payload never carries a second, independent workspace identifier, and
+    it accepts no path, URL, inline archive, credential, parser implementation name, or
+    runtime/storage option.
+    """
+
+    source: ImportSourceDescriptor
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source"] = self.source.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ImportStartInput") -> ImportStartInput:
+        """Decode a wire payload into a ImportStartInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source = ImportSourceDescriptor.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        return cls(
+            source=field_source,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ImportCompletionResult:
+    """The typed terminal result of a successful `ingestion.import` job: what was imported, and
+    what it produced. It reports the creation of L0 evidence only -- candidate extraction and
+    any governed record that later cites this evidence are separate, later operations, so
+    nothing here asserts that knowledge was proposed, approved, or accepted.
+    `discovered_items` is the total the import saw and must equal `evidence_records_created +
+    skipped_items + failed_items`: an item is accounted for exactly once, and a count that
+    does not add up is a report of an import nobody can audit. `partial` is not an
+    independent claim either; it is exactly `failed_items > 0`. `source` is byte-for-byte the
+    descriptor `import.start` accepted.
+    """
+
+    import_run_id: OpaqueToken
+    source: ImportSourceDescriptor
+    discovered_items: int
+    evidence_records_created: int
+    skipped_items: int
+    failed_items: int
+    partial: bool
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["import_run_id"] = self.import_run_id
+        wire["source"] = self.source.to_wire()
+        wire["discovered_items"] = self.discovered_items
+        wire["evidence_records_created"] = self.evidence_records_created
+        wire["skipped_items"] = self.skipped_items
+        wire["failed_items"] = self.failed_items
+        wire["partial"] = self.partial
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ImportCompletionResult"
+    ) -> ImportCompletionResult:
+        """Decode a wire payload into a ImportCompletionResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_import_run_id = _decode_str(
+            _require_field(mapping, "import_run_id", path),
+            f"{path}.import_run_id",
+        )
+        field_source = ImportSourceDescriptor.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_discovered_items = _decode_int(
+            _require_field(mapping, "discovered_items", path),
+            f"{path}.discovered_items",
+        )
+        field_evidence_records_created = _decode_int(
+            _require_field(mapping, "evidence_records_created", path),
+            f"{path}.evidence_records_created",
+        )
+        field_skipped_items = _decode_int(
+            _require_field(mapping, "skipped_items", path),
+            f"{path}.skipped_items",
+        )
+        field_failed_items = _decode_int(
+            _require_field(mapping, "failed_items", path),
+            f"{path}.failed_items",
+        )
+        field_partial = _decode_bool(_require_field(mapping, "partial", path), f"{path}.partial")
+        return cls(
+            import_run_id=field_import_run_id,
+            source=field_source,
+            discovered_items=field_discovered_items,
+            evidence_records_created=field_evidence_records_created,
+            skipped_items=field_skipped_items,
+            failed_items=field_failed_items,
+            partial=field_partial,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobEventsInput:
+    """Input for `job.events`: a bounded, snapshot-stable read of one job's ordered event
+    stream. A request carrying no `page` starts a new pagination session and captures the
+    job's current event count as that session's snapshot; a request carrying one continues
+    the session that token names and can never widen it. Transport-level streaming is out of
+    scope: this is a paged read, not a subscription. Workspace-scoped through the request
+    envelope's selected workspace, so this payload never carries a second, independent
+    workspace identifier.
+    """
+
+    job_id: OpaqueToken
+    limit: PageLimit | None = None
+    page: PageMetadata | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job_id"] = self.job_id
+        if self.limit is not None:
+            wire["limit"] = self.limit
+        if self.page is not None:
+            wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobEventsInput") -> JobEventsInput:
+        """Decode a wire payload into a JobEventsInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job_id = _decode_str(_require_field(mapping, "job_id", path), f"{path}.job_id")
+        field_limit: PageLimit | None = None
+        if "limit" in mapping:
+            raw_limit = mapping["limit"]
+            if raw_limit is None:
+                raise ContractDecodeError(
+                    f"{path}.limit: null is not a valid value"
+                )
+            field_limit = _decode_int(raw_limit, f"{path}.limit")
+        field_page: PageMetadata | None = None
+        if "page" in mapping:
+            raw_page = mapping["page"]
+            if raw_page is None:
+                raise ContractDecodeError(
+                    f"{path}.page: null is not a valid value"
+                )
+            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        return cls(
+            job_id=field_job_id,
+            limit=field_limit,
+            page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobEventsResult:
+    """Result of `job.events`: one page of a snapshot-stable event read. `snapshot_event_count`
+    is the event count captured when this pagination session began, so the session's
+    sequences are exactly `0 .. snapshot_event_count - 1` and events recorded after the
+    snapshot never appear in it; the same count is repeated on every page of the session and
+    never changes within one. A fresh tokenless request captures a new snapshot and may see
+    more. Page events are strictly increasing, duplicate-free, and contiguous from the
+    position the request continued from. `page` is always present: a continuation token means
+    more of the snapshot remains, and no token means the snapshot is exhausted.
+    """
+
+    job_id: OpaqueToken
+    events: tuple[JobEvent, ...]
+    snapshot_event_count: int
+    page: PageMetadata
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job_id"] = self.job_id
+        wire["events"] = [item.to_wire() for item in self.events]
+        wire["snapshot_event_count"] = self.snapshot_event_count
+        wire["page"] = self.page.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobEventsResult") -> JobEventsResult:
+        """Decode a wire payload into a JobEventsResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job_id = _decode_str(_require_field(mapping, "job_id", path), f"{path}.job_id")
+        field_events_items = _decode_sequence(
+            _require_field(mapping, "events", path),
+            f"{path}.events",
+        )
+        field_events = tuple(
+            JobEvent.from_wire(item, f"{path}.events[{index}]")
+            for index, item in enumerate(field_events_items)
+        )
+        field_snapshot_event_count = _decode_int(
+            _require_field(mapping, "snapshot_event_count", path),
+            f"{path}.snapshot_event_count",
+        )
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
+        return cls(
+            job_id=field_job_id,
+            events=field_events,
+            snapshot_event_count=field_snapshot_event_count,
+            page=field_page,
         )
 
 
@@ -5836,7 +6380,13 @@ class RequestEnvelope:
 @dataclass(frozen=True, slots=True)
 class JobHandle:
     """What a caller holds to track a job over time: its identity, current state, latest known
-    progress and attempt, and which control actions are available.
+    progress and attempt, and which control actions are available. `latest_attempt` is the
+    job's attempt *N*, not a history: a `running` job reports the running attempt it executes
+    under, a `succeeded` or `failed` job reports the finished attempt that produced that
+    outcome, and a `queued` job either has never executed (no attempt at all) or reports the
+    finished `failed`/`cancelled` attempt retained after an accepted `job.retry` scheduled
+    recovery -- never a succeeded, running, queued, or unfinished one, since none of those
+    describes a job waiting to start.
     """
 
     identity: JobIdentity
@@ -5923,13 +6473,21 @@ class JobHandle:
 @dataclass(frozen=True, slots=True)
 class JobTerminalSuccess:
     """The final outcome of a job that succeeded. Carries `result` and never `error` or
-    `cancellation`.
+    `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which
+    frozen result shape `result` carries, so a caller reads a success payload by matching a
+    declared kind instead of guessing from the job kind. `result` stays an opaque JSON object
+    in this document because JSON Schema cannot bind it to a per-kind shape within the subset
+    the generator supports; the binding is a semantic rule
+    (`omnivia_core.contracts.v1.semantics_jobs`) until the A2.5 operation catalogue publishes
+    `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is
+    `import_completion`, whose `result` is an `ImportCompletionResult`.
     """
 
     identity: JobIdentity
     state: JobState
     finished_at: Timestamp
     attempts: tuple[JobAttempt, ...]
+    result_kind: OpenCode
     result: JsonObject
 
     def to_wire(self) -> dict[str, Any]:
@@ -5943,6 +6501,7 @@ class JobTerminalSuccess:
         wire["state"] = self.state
         wire["finished_at"] = self.finished_at
         wire["attempts"] = [item.to_wire() for item in self.attempts]
+        wire["result_kind"] = self.result_kind
         wire["result"] = _encode_json_object(self.result)
         return wire
 
@@ -5971,6 +6530,10 @@ class JobTerminalSuccess:
             JobAttempt.from_wire(item, f"{path}.attempts[{index}]")
             for index, item in enumerate(field_attempts_items)
         )
+        field_result_kind = _decode_str(
+            _require_field(mapping, "result_kind", path),
+            f"{path}.result_kind",
+        )
         field_result = _decode_json_object(
             _require_field(mapping, "result", path),
             f"{path}.result",
@@ -5980,6 +6543,7 @@ class JobTerminalSuccess:
             state=field_state,
             finished_at=field_finished_at,
             attempts=field_attempts,
+            result_kind=field_result_kind,
             result=field_result,
         )
 
@@ -5987,7 +6551,10 @@ class JobTerminalSuccess:
 @dataclass(frozen=True, slots=True)
 class JobTerminalFailure:
     """The final outcome of a job that failed. Carries `error` and never `result` or
-    `cancellation`.
+    `cancellation`. `attempts` is non-empty -- a job cannot fail without having executed --
+    and `error` is exactly the final attempt's own `error`: the failure that ended the last
+    attempt is the failure that ended the job, and two spellings of it that could disagree
+    would leave a caller unable to say which one is the outcome.
     """
 
     identity: JobIdentity
@@ -6048,7 +6615,9 @@ class JobTerminalFailure:
 @dataclass(frozen=True, slots=True)
 class JobTerminalCancellation:
     """The final outcome of a job that was cancelled. Carries `cancellation` and never `result`
-    or `error`.
+    or `error`. `attempts` may be empty, and only here: a job cancelled while still queued
+    never executed, so it has no attempt to report. When it does carry attempts, the final
+    one is the `cancelled` attempt that ended it and finished when the job did.
     """
 
     identity: JobIdentity
@@ -6746,7 +7315,7 @@ class EvidenceArtifact:
     parser_status: OpenCode
     ingestion_status: OpenCode
     provenance_history: tuple[ProvenanceEntry, ...]
-    import_run_id: Identifier | None = None
+    import_run_id: OpaqueToken | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -6840,7 +7409,7 @@ class EvidenceArtifact:
             ProvenanceEntry.from_wire(item, f"{path}.provenance_history[{index}]")
             for index, item in enumerate(field_provenance_history_items)
         )
-        field_import_run_id: Identifier | None = None
+        field_import_run_id: OpaqueToken | None = None
         if "import_run_id" in mapping:
             raw_import_run_id = mapping["import_run_id"]
             if raw_import_run_id is None:
@@ -6901,6 +7470,128 @@ def job_terminal_result_from_wire(
 def job_terminal_result_to_wire(value: JobTerminalResult) -> dict[str, Any]:
     """Render one JobTerminalResult branch as a JSON-compatible mapping."""
     return value.to_wire()
+
+
+@dataclass(frozen=True, slots=True)
+class ImportStartResult:
+    """Result of `import.start`. Carries exactly one thing: the handle for the durable job that
+    was started. `import.start` always returns a job and never a synchronous import outcome,
+    so there is nothing else honest to return here. The response envelope's
+    `ResponseMetadata.job` names the same job as this handle: one operation started one job,
+    and the two statements of that fact must agree.
+    """
+
+    job: JobHandle
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job"] = self.job.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ImportStartResult") -> ImportStartResult:
+        """Decode a wire payload into a ImportStartResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job = JobHandle.from_wire(_require_field(mapping, "job", path), f"{path}.job")
+        return cls(
+            job=field_job,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobCancelResult:
+    """Result of `job.cancel`: what the call did, and the handle as it now stands. A state-based
+    refusal is a successful, idempotent control result rather than an API error -- a job that
+    cannot be cancelled returns `not_cancellable` alongside its current unchanged handle, and
+    is never reported as `conflict` merely for being terminal. Authorization failures, a
+    missing job, and workspace failures stay typed API errors.
+    """
+
+    job: JobHandle
+    cancellation_disposition: JobCancellationDisposition
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job"] = self.job.to_wire()
+        wire["cancellation_disposition"] = self.cancellation_disposition
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobCancelResult") -> JobCancelResult:
+        """Decode a wire payload into a JobCancelResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job = JobHandle.from_wire(_require_field(mapping, "job", path), f"{path}.job")
+        field_cancellation_disposition = _decode_str(
+            _require_field(mapping, "cancellation_disposition", path),
+            f"{path}.cancellation_disposition",
+        )
+        return cls(
+            job=field_job,
+            cancellation_disposition=field_cancellation_disposition,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobRetryResult:
+    """Result of `job.retry`: which recovery the server chose, and the handle as it now stands.
+    An accepted recovery keeps the same job identity and returns the job to `queued`; it
+    starts no new attempt until execution actually begins, so the previous terminal attempt
+    remains `latest_attempt` while the recovered handle is queued. A state-based refusal is a
+    successful, idempotent control result rather than an API error -- `not_retryable` is
+    returned alongside the current unchanged handle, and is never reported as `conflict`
+    merely for being terminal. Authorization failures, a missing job, and workspace failures
+    stay typed API errors.
+    """
+
+    job: JobHandle
+    recovery_disposition: JobRecoveryDisposition
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job"] = self.job.to_wire()
+        wire["recovery_disposition"] = self.recovery_disposition
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobRetryResult") -> JobRetryResult:
+        """Decode a wire payload into a JobRetryResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job = JobHandle.from_wire(_require_field(mapping, "job", path), f"{path}.job")
+        field_recovery_disposition = _decode_str(
+            _require_field(mapping, "recovery_disposition", path),
+            f"{path}.recovery_disposition",
+        )
+        return cls(
+            job=field_job,
+            recovery_disposition=field_recovery_disposition,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -7356,6 +8047,60 @@ class EvidenceSearchResult:
         return cls(
             evidence=field_evidence,
             page=field_page,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class JobGetResult:
+    """Result of `job.get`: the current handle, plus the terminal result when the job has one.
+    `terminal_result` is present exactly when `job.state` is a known terminal state, and it
+    is closed against the handle it accompanies: identity and state match exactly, every
+    attempt instant in the terminal history falls inside the handle's own
+    `created_at`/`updated_at` lifetime, and the handle's `latest_attempt` is exactly the
+    final attempt of that history (and is absent exactly when the history is). One read
+    describes one job, never two disagreeing statements about it. An unknown state is
+    preserved but implies nothing: a handle in a state this build has never seen carries no
+    `terminal_result`, because this build cannot know whether that state is terminal.
+    """
+
+    job: JobHandle
+    terminal_result: JobTerminalResult | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["job"] = self.job.to_wire()
+        if self.terminal_result is not None:
+            wire["terminal_result"] = job_terminal_result_to_wire(self.terminal_result)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "JobGetResult") -> JobGetResult:
+        """Decode a wire payload into a JobGetResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_job = JobHandle.from_wire(_require_field(mapping, "job", path), f"{path}.job")
+        field_terminal_result: JobTerminalResult | None = None
+        if "terminal_result" in mapping:
+            raw_terminal_result = mapping["terminal_result"]
+            if raw_terminal_result is None:
+                raise ContractDecodeError(
+                    f"{path}.terminal_result: null is not a valid value"
+                )
+            field_terminal_result = job_terminal_result_from_wire(
+                raw_terminal_result,
+                f"{path}.terminal_result",
+            )
+        return cls(
+            job=field_job,
+            terminal_result=field_terminal_result,
         )
 
 
@@ -8256,7 +9001,7 @@ class GraphTraversalResult:
     applied_edge_limit: PageLimit
     freshness: ProjectionFreshness
     ordering_basis: GraphOrderingBasis
-    page: PageMetadata | None = None
+    page: PageMetadata
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -8272,8 +9017,7 @@ class GraphTraversalResult:
         wire["applied_edge_limit"] = self.applied_edge_limit
         wire["freshness"] = self.freshness.to_wire()
         wire["ordering_basis"] = self.ordering_basis
-        if self.page is not None:
-            wire["page"] = self.page.to_wire()
+        wire["page"] = self.page.to_wire()
         return wire
 
     @classmethod
@@ -8320,14 +9064,7 @@ class GraphTraversalResult:
             _require_field(mapping, "ordering_basis", path),
             f"{path}.ordering_basis",
         )
-        field_page: PageMetadata | None = None
-        if "page" in mapping:
-            raw_page = mapping["page"]
-            if raw_page is None:
-                raise ContractDecodeError(
-                    f"{path}.page: null is not a valid value"
-                )
-            field_page = PageMetadata.from_wire(raw_page, f"{path}.page")
+        field_page = PageMetadata.from_wire(_require_field(mapping, "page", path), f"{path}.page")
         return cls(
             nodes=field_nodes,
             edges=field_edges,

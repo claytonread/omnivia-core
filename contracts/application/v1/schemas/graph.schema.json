@@ -200,7 +200,7 @@
         },
         "page": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
-          "description": "Continuation position for the next page, when this traversal's ordering can be deterministically continued. Absent on the last page, or when the traversal cannot be paged."
+          "description": "Position this traversal reached. Always present: a continuation token when the traversal's ordering can be deterministically continued and more remains, and `{}` when it is exhausted or cannot be paged. Exhaustion is stated rather than implied by an absent field, so a caller reads the same shape here as on every other paginated result in this contract."
         }
       },
       "required": [
@@ -210,7 +210,8 @@
         "applied_node_limit",
         "applied_edge_limit",
         "freshness",
-        "ordering_basis"
+        "ordering_basis",
+        "page"
       ],
       "unevaluatedProperties": false
     }
