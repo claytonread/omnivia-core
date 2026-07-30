@@ -1,4 +1,11 @@
 """Validation helpers for memory graph contracts."""
+# `ValidationResult` is part of this leaf's historical public namespace: it is the
+# exact shared primitive re-exported from `omnivia_memory._shared.validation`, and
+# strict consumers (`memory_graph.store`, the `memory_graph` barrel) must keep
+# seeing it as exported from here, exactly as they did before conversion. This is
+# comment-only, so canonical/legacy AST parity, the runtime namespace, and object
+# identity are all unchanged.
+# mypy: implicit_reexport = True
 
 from __future__ import annotations
 
