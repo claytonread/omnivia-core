@@ -9,14 +9,16 @@ tolerant decoder deliberately does not.
 Checks performed, entirely offline (no network access, no installed package
 required beyond the ``jsonschema``/``referencing`` dev dependency):
 
-- ``contracts/application/v1/schemas`` holds exactly the five frozen schema
+- ``contracts/application/v1/schemas`` holds exactly the frozen schema
   documents -- none missing, and none extra that no check here would ever open
   but the wheel would still package;
 - every schema document under ``contracts/application/v1/schemas`` is a valid
   Draft 2020-12 schema;
 - the reference-only registry (``application-v1.schema.json``) publishes
-  exactly the definitions the four canonical source schemas declare, no more
+  exactly the definitions the canonical source schemas declare, no more
   and no fewer;
+- the fixture manifest's ``contract_version`` matches the registry's
+  ``x-omnivia-contract-version`` exactly;
 - every fixture listed in ``contracts/application/v1/fixtures/manifest.json``
   exists, matches its declared schema-validity, and satisfies its declared
   semantic expectation (version/capability negotiation math, retry
@@ -51,7 +53,17 @@ CONTRACTS_SRC = REPO_ROOT / "src" / "omnivia_core" / "contracts"
 SRC_ROOT = REPO_ROOT / "src"
 GENERATOR_SCRIPT = REPO_ROOT / "scripts" / "generate-application-contracts.py"
 
-SOURCE_SCHEMAS: tuple[str, ...] = ("common", "compatibility", "errors", "envelopes")
+SOURCE_SCHEMAS: tuple[str, ...] = (
+    "common",
+    "compatibility",
+    "errors",
+    "envelopes",
+    "service",
+    "records",
+    "jobs",
+    "operations",
+    "compatibility-matrix",
+)
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
 
@@ -264,7 +276,7 @@ def check_all_refs_resolve() -> list[str]:
 
 
 def check_registry_matches_source_schemas() -> list[str]:
-    """The registry must publish exactly the union of the four source schemas' ``$defs``."""
+    """The registry must publish exactly the union of the source schemas' ``$defs``."""
     findings: list[str] = []
     registry_document = _load_schema(REGISTRY_SCHEMA)
     registry_defs = registry_document.get("$defs", {})
@@ -308,7 +320,7 @@ def check_registry_matches_source_schemas() -> list[str]:
 
 
 def check_schema_identity() -> list[str]:
-    """Every one of the five schema documents must declare the exact Draft 2020-12
+    """Every one of the frozen schema documents must declare the exact Draft 2020-12
     dialect URI and its own exact canonical ``$id``. A missing or drifted ``$id`` breaks
     every ``$ref`` in this contract silently (resolution falls back to a relative or
     default base), so it must be reported loudly instead.
@@ -330,7 +342,7 @@ def check_schema_identity() -> list[str]:
 
 
 def check_registry_sources_are_exact() -> list[str]:
-    """The registry's ``x-omnivia-schema-sources`` annotation must list exactly the four
+    """The registry's ``x-omnivia-schema-sources`` annotation must list exactly the
     canonical source schemas' URIs, in the canonical order -- neither a stale entry left
     over from a renamed schema nor a source schema missing from the list.
     """
@@ -366,6 +378,30 @@ def _load_manifest() -> list[dict[str, Any]] | None:
     if not isinstance(fixtures, list):
         return None
     return fixtures
+
+
+def check_fixture_manifest_contract_version_matches_registry() -> list[str]:
+    """The fixture manifest's ``contract_version`` must equal the registry's
+    ``x-omnivia-contract-version`` exactly, so a contract version bump that forgets to
+    touch the fixtures fails loudly instead of silently shipping fixtures stamped with a
+    stale version.
+    """
+    manifest_path = FIXTURES_DIR / "manifest.json"
+    if not manifest_path.is_file():
+        return [f"{manifest_path}: missing"]
+    with manifest_path.open(encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    manifest_version = manifest.get("contract_version")
+    registry_document = _load_schema(REGISTRY_SCHEMA)
+    registry_version = registry_document.get("x-omnivia-contract-version")
+    if manifest_version != registry_version:
+        return [
+            (
+                f"{manifest_path}: contract_version {manifest_version!r} does not match "
+                f"registry x-omnivia-contract-version {registry_version!r}"
+            )
+        ]
+    return []
 
 
 def check_fixture_manifest_is_complete() -> list[str]:
@@ -1180,6 +1216,7 @@ def run_checks() -> list[str]:
     findings += check_registry_matches_source_schemas()
     findings += check_schema_identity()
     findings += check_registry_sources_are_exact()
+    findings += check_fixture_manifest_contract_version_matches_registry()
     findings += check_fixture_manifest_is_complete()
     findings += check_fixture_manifest_entries_are_well_formed()
     findings += check_fixture_manifest_matches_frozen_mapping()

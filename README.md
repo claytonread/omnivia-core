@@ -161,10 +161,11 @@ binding, or transport implementation yet.
 
 Canonical source and generated artifacts:
 
-- `contracts/application/v1/schemas/*.schema.json` — five JSON Schema
+- `contracts/application/v1/schemas/*.schema.json` — ten JSON Schema
   Draft 2020-12 documents (`common`, `compatibility`, `errors`, `envelopes`,
-  and the reference-only `application-v1` registry). These are the single
-  source of truth; everything else is derived from them.
+  `service`, `records`, `jobs`, `operations`, `compatibility-matrix`, and the
+  reference-only `application-v1` registry). These are the single source of
+  truth; everything else is derived from them.
 - `contracts/application/v1/fixtures/` — thirteen canonical example wire
   documents plus `manifest.json`, covering compatible negotiation, capability
   denial, an incompatible major version, a minimal request, a retryable
@@ -210,7 +211,7 @@ Regenerate and verify:
 ```
 
 The conformance gate checks the canonical schema directory holds exactly the
-five frozen schema documents (an extra one would be read by no check yet
+ten frozen schema documents (an extra one would be read by no check yet
 packaged by the wheel, and a missing one is reported in the same place),
 validates every schema against the Draft 2020-12
 metaschema and its exact `$schema`/`$id`, resolves every `$ref` offline,

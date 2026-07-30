@@ -57,7 +57,17 @@ TYPESCRIPT_TARGET = REPO_ROOT / "generated" / "typescript" / "application" / "v1
 BASE_URI = "https://contracts.omnivia.dev/application/v1/"
 
 #: Canonical source documents, in the order their definitions are emitted.
-SOURCE_SCHEMAS: tuple[str, ...] = ("common", "compatibility", "errors", "envelopes")
+SOURCE_SCHEMAS: tuple[str, ...] = (
+    "common",
+    "compatibility",
+    "errors",
+    "envelopes",
+    "service",
+    "records",
+    "jobs",
+    "operations",
+    "compatibility-matrix",
+)
 #: The reference-only registry. It contributes annotations, never definitions.
 REGISTRY_SCHEMA = "application-v1"
 

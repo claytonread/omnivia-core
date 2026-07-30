@@ -5,6 +5,11 @@
 //   contracts/application/v1/schemas/compatibility.schema.json
 //   contracts/application/v1/schemas/errors.schema.json
 //   contracts/application/v1/schemas/envelopes.schema.json
+//   contracts/application/v1/schemas/service.schema.json
+//   contracts/application/v1/schemas/records.schema.json
+//   contracts/application/v1/schemas/jobs.schema.json
+//   contracts/application/v1/schemas/operations.schema.json
+//   contracts/application/v1/schemas/compatibility-matrix.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -29,7 +34,7 @@ export type JsonValue =
 /**
  * Contract version of this generated module.
  */
-export const CONTRACT_VERSION = "1.0" as const;
+export const CONTRACT_VERSION = "1.1" as const;
 
 /**
  * Base URI every canonical v1 schema `$id` is rooted at.
@@ -158,6 +163,34 @@ export const PROJECTION_VERSION_PATTERN: string = "^[!-~]+$";
 export type JsonObject = { readonly [key: string]: JsonValue };
 
 /**
+ * Open, dot-namespaced code naming an operation's lifecycle state, such as `stable` or
+ * `experimental` or `deprecated` or `removed`. Open by design so a compatible minor release can
+ * add states without breaking existing decoders.
+ */
+export type OperationCompatibilityState = string;
+export const OPERATION_COMPATIBILITY_STATE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming how thoroughly a release or capability combination has
+ * actually been verified, such as `development` or `unverified` or `qualified` or `supported`.
+ * Open by design so a compatible minor release can add states without breaking existing
+ * decoders. A combination absent this state, or carrying anything other than an explicitly
+ * verified state, must never be treated as supported: an empty or `unverified` entry is not
+ * evidence of support.
+ */
+export type QualificationState = string;
+export const QUALIFICATION_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming which component a compatibility entry describes, such as
+ * `core` or `runtime` or `cli` or `mcp` or `sdk`. Open by design so a compatible minor release
+ * can add components without breaking existing decoders.
+ */
+export type ComponentKind = string;
+export const COMPONENT_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue
  * is out of scope for v1 foundations; only the name is contractual here.
  */
@@ -178,6 +211,217 @@ export const ERROR_CODE_PATTERN: string = "^[a-z][a-z0-9_]*$";
  */
 export type RetryClass = string;
 export const RETRY_CLASS_PATTERN: string = "^[a-z][a-z0-9_]*$";
+
+/**
+ * Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or
+ * `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor
+ * release can add states without breaking existing decoders.
+ */
+export type JobState = string;
+export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such
+ * as `item` or `byte` or `document`. Open by design so a compatible minor release can add units
+ * without breaking existing decoders.
+ */
+export type JobProgressUnit = string;
+export const JOB_PROGRESS_UNIT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming whether a job may be cancelled and where a requested
+ * cancellation stands, such as `not_cancellable` or `cancellable` or `cancellation_requested` or
+ * `cancelled`. Open by design; carries no scheduler, worker, lease, or persistence detail.
+ */
+export type JobCancellationDisposition = string;
+export const JOB_CANCELLATION_DISPOSITION_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming whether a job may be retried and where a requested retry
+ * stands, such as `not_retryable` or `retryable` or `retry_scheduled`. Open by design; carries
+ * no scheduler, worker, lease, or persistence detail.
+ */
+export type JobRetryDisposition = string;
+export const JOB_RETRY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as
+ * `not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler,
+ * worker, lease, or persistence detail.
+ */
+export type JobResumeDisposition = string;
+export const JOB_RESUME_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming whether invoking an operation mutates state, such as `none`
+ * or `create` or `update` or `delete`. Open by design so a compatible minor release can add
+ * classifications without breaking existing decoders.
+ */
+export type OperationSideEffect = string;
+export const OPERATION_SIDE_EFFECT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming the kind of scope an operation carries, such as
+ * `installation` or `workspace`. Open by design so a compatible minor release can add scope
+ * kinds without breaking existing decoders. A given operation's scope metadata carries exactly
+ * one kind.
+ */
+export type OperationScopeKind = string;
+export const OPERATION_SCOPE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming how an operation completes, such as `synchronous` (no durable
+ * job, ever), `may_return_job` (a response may carry a `JobReference`), or `always_returns_job`
+ * (every invocation starts a durable job). Independent of `OperationSideEffect`: an operation
+ * like `import.start` is representable as a mutation (`side_effect`) that always returns a
+ * durable job (`completion_mode`). Open by design so a compatible minor release can add modes
+ * without breaking existing decoders.
+ */
+export type OperationCompletionMode = string;
+export const OPERATION_COMPLETION_MODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Whether and how an operation's results are paginated.
+ */
+export interface OperationPaginationMetadata {
+  /**
+   * Whether this operation's result may span more than one page.
+   */
+  readonly paginated: boolean;
+  /**
+   * Largest page size this operation accepts, when paginated.
+   */
+  readonly max_page_size?: number;
+}
+
+/**
+ * How this operation may safely be retried.
+ */
+export interface OperationIdempotencyMetadata {
+  /**
+   * Whether this operation honours `RequestMetadata.idempotency_key`.
+   */
+  readonly supports_idempotency_key: boolean;
+  /**
+   * Whether an identical request may be retried without an idempotency key, such as a plain
+   * read.
+   */
+  readonly safe_to_retry: boolean;
+}
+
+/**
+ * How this operation uses optimistic-concurrency preconditions.
+ */
+export interface OperationPreconditionMetadata {
+  /**
+   * Whether this operation honours `RequestMetadata.mutation_precondition`.
+   */
+  readonly supports_mutation_precondition: boolean;
+  /**
+   * Whether omitting the precondition is itself rejected for this mutation.
+   */
+  readonly required: boolean;
+}
+
+/**
+ * A URI reference to the JSON Schema document governing an operation's input or result payload.
+ */
+export type SchemaReference = string;
+
+/**
+ * Stable identifier of a governed record, constant across every version of that record.
+ */
+export type RecordId = string;
+export const RECORD_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+
+/**
+ * Opaque, server-issued version marker of one specific revision of a record. Clients must round-
+ * trip it verbatim and must never parse it.
+ */
+export type RecordVersion = string;
+export const RECORD_VERSION_PATTERN: string = "^[!-~]+$";
+
+/**
+ * Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw
+ * evidence), `l1` (candidate observations), `l2` (governed records / canonical knowledge), `l3`
+ * (context models), or `l4` (organisational model). Distinct from workspace scope, which is a
+ * caller-facing tenancy boundary, not a knowledge-governance layer. Open by design so a
+ * compatible minor release can add layers without breaking existing decoders.
+ */
+export type GovernanceLayer = string;
+export const GOVERNANCE_LAYER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming whether a record version is the active one, such as `current`
+ * or `superseded` or `retracted`. Open by design; an unrecognized value must be preserved, not
+ * coerced to a known one.
+ */
+export type RecordCurrentness = string;
+export const RECORD_CURRENTNESS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming a record's position in its own governance workflow, such as
+ * `proposed` or `candidate` or `accepted` or `rejected`. Distinct from `GovernanceLayer` (which
+ * namespace a record belongs to) and `RecordCurrentness` (whether this version is the active
+ * one): a record can be `accepted` and still later superseded, or `proposed` and never adopted.
+ * Open by design so a compatible minor release can add states without breaking existing
+ * decoders.
+ */
+export type GovernanceState = string;
+export const GOVERNANCE_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming the kind of thing a source reference points at, such as
+ * `document` or `conversation` or `api_response`.
+ */
+export type SourceKind = string;
+export const SOURCE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * An addressable position within a source: a pointer plus an optional character span, so
+ * evidence can be pinpointed within a source rather than only referencing the source as a whole.
+ */
+export interface SourceSpan {
+  /**
+   * Locator within the source, such as a JSON Pointer, XPath, byte offset path, or line
+   * reference.
+   */
+  readonly pointer: string;
+  /**
+   * Start of the span, in characters from the start of the pointed-at unit, when known.
+   */
+  readonly start_offset?: number;
+  /**
+   * End of the span, in characters from the start of the pointed-at unit, when known.
+   */
+  readonly end_offset?: number;
+}
+
+/**
+ * Open, dot-namespaced code stating whether concrete evidence is actually available for a
+ * record, such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized
+ * value must be preserved, not coerced to a known one.
+ */
+export type EvidenceDisposition = string;
+export const EVIDENCE_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
+ * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
+ * `service.discover`. Open by design so a compatible minor release can add probe kinds without
+ * breaking existing callers.
+ */
+export type ProbeKind = string;
+export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+
+/**
+ * Open, dot-namespaced code naming the outcome of a probe or one of its components, such as
+ * `pass` or `warn` or `fail`. Open by design; an unrecognized status must be preserved and
+ * surfaced, not coerced to a known one.
+ */
+export type ProbeStatus = string;
+export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
 
 /**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
@@ -432,6 +676,281 @@ export interface ApiError {
 }
 
 /**
+ * The identity of one asynchronous job: what it is, which application operation started it, its
+ * immutable audit linkage, and, when applicable, which workspace it runs against.
+ */
+export interface JobIdentity {
+  /**
+   * Opaque, server-issued identifier of this job.
+   */
+  readonly job_id: OpaqueToken;
+  /**
+   * Open code naming the kind of work this job performs, such as `ingestion.import`.
+   */
+  readonly job_kind: OpenCode;
+  /**
+   * The application operation whose invocation started this job.
+   */
+  readonly originating_operation: OperationName;
+  /**
+   * Immutable reference to the audit record for the operation invocation that started this
+   * job.
+   */
+  readonly audit_reference: AuditReference;
+  /**
+   * Workspace this job runs against, when the job is workspace-scoped.
+   */
+  readonly workspace_id?: WorkspaceId;
+}
+
+/**
+ * A point-in-time progress statement for a running job.
+ */
+export interface JobProgress {
+  /**
+   * What `completed_units`/`total_units` count, so the counters are interpretable without job-
+   * kind-specific knowledge.
+   */
+  readonly unit: JobProgressUnit;
+  /**
+   * Units of work completed so far, counted in `unit`.
+   */
+  readonly completed_units: number;
+  /**
+   * Total units of work expected, when known in advance, counted in `unit`.
+   */
+  readonly total_units?: number;
+  /**
+   * Human-readable progress note. Not a stable interface.
+   */
+  readonly message?: string;
+}
+
+/**
+ * The control actions a caller may take on a job: cancellation, retry, and resume. Deliberately
+ * exposes only these caller-facing dispositions, never scheduler, worker, lease, or persistence
+ * detail.
+ */
+export interface JobControl {
+  /**
+   * Whether this job may be cancelled and where a requested cancellation stands.
+   */
+  readonly cancellation: JobCancellationDisposition;
+  /**
+   * Whether this job may be retried and where a requested retry stands.
+   */
+  readonly retry: JobRetryDisposition;
+  /**
+   * Whether this job may be resumed and where a requested resume stands.
+   */
+  readonly resume: JobResumeDisposition;
+}
+
+/**
+ * One entry in a job's ordered event stream.
+ */
+export interface JobEvent {
+  /**
+   * Monotonically increasing ordinal of this event within the job.
+   */
+  readonly sequence: number;
+  /**
+   * When this event occurred.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * State the job was in when this event was recorded.
+   */
+  readonly state: JobState;
+  /**
+   * Human-readable event note. Not a stable interface.
+   */
+  readonly message?: string;
+  /**
+   * Optional structured detail.
+   */
+  readonly details?: JsonObject;
+}
+
+/**
+ * The explicit outcome recorded when a job's terminal state is cancellation, distinguishing it
+ * from an ordinary success or failure.
+ */
+export interface JobCancellationOutcome {
+  /**
+   * Open code naming why the job was cancelled, such as `caller_requested` or
+   * `deadline_exceeded`.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
+ * What an operation itself declares it needs and touches, independent of any single caller's
+ * request.
+ */
+export interface OperationScope {
+  /**
+   * Scopes a caller must hold to invoke this operation.
+   */
+  readonly required_scopes: readonly Scope[];
+  /**
+   * Whether invoking this operation mutates state.
+   */
+  readonly side_effect: OperationSideEffect;
+  /**
+   * The single scope kind this operation requires, such as `installation` or `workspace`.
+   */
+  readonly scope_kind: OperationScopeKind;
+}
+
+/**
+ * How an operation completes and, when durable work is involved, what kind of job it starts.
+ */
+export interface OperationJobMetadata {
+  /**
+   * How this operation completes: synchronously, optionally through a job, or always through a
+   * job.
+   */
+  readonly completion_mode: OperationCompletionMode;
+  /**
+   * Open code naming the kind of job this operation starts, when `completion_mode` entails
+   * one.
+   */
+  readonly job_kind?: OpenCode;
+}
+
+/**
+ * Whether and how this operation is audited.
+ */
+export interface OperationAuditMetadata {
+  /**
+   * Whether invoking this operation produces an audit record.
+   */
+  readonly audited: boolean;
+  /**
+   * Open code categorizing this operation's audit records, when audited.
+   */
+  readonly audit_category?: OpenCode;
+}
+
+/**
+ * A pointer to the external or internal thing a record's claim came from.
+ */
+export interface SourceReference {
+  /**
+   * What kind of thing this reference points at.
+   */
+  readonly kind: SourceKind;
+  /**
+   * Identifier of the source within its own system of record.
+   */
+  readonly source_id: Identifier;
+  /**
+   * Optional locator within the source, such as a path, offset, or message id.
+   */
+  readonly locator?: string;
+  /**
+   * When the source was read to produce the record it supports.
+   */
+  readonly retrieved_at?: Timestamp;
+}
+
+/**
+ * The distinct instants a governed record's lifecycle turns on: when the underlying fact was
+ * observed, when the system ingested it, when this version was persisted, and the window it is
+ * asserted valid for.
+ */
+export interface RecordTemporalMetadata {
+  /**
+   * When the underlying fact was observed to be true in the world, when known.
+   */
+  readonly observed_at?: Timestamp;
+  /**
+   * When the system first ingested the fact behind this record.
+   */
+  readonly ingested_at: Timestamp;
+  /**
+   * When this specific version was persisted.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * Start of the window this record is asserted valid for, when bounded.
+   */
+  readonly valid_from?: Timestamp;
+  /**
+   * End of the window this record is asserted valid for, when bounded.
+   */
+  readonly valid_until?: Timestamp;
+}
+
+/**
+ * A direction-neutral pointer from one record version to another related record version. The
+ * direction of the relationship comes entirely from which field on `RecordIdentity` carries it
+ * (`supersedes` vs `superseded_by`); this DTO itself states only which record and version, and
+ * why.
+ */
+export interface SupersessionReference {
+  /**
+   * Identifier of the related record.
+   */
+  readonly record_id: RecordId;
+  /**
+   * The specific related version, when known.
+   */
+  readonly version?: RecordVersion;
+  /**
+   * Open code naming why this supersession relationship exists.
+   */
+  readonly reason?: OpenCode;
+}
+
+/**
+ * A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
+ * carries no `operation`, no `input`, and no workspace or authority scoping, because a probe
+ * must be answerable before those concepts apply.
+ */
+export interface ServiceProbeRequest {
+  /**
+   * Which probe is being requested.
+   */
+  readonly probe: ProbeKind;
+  /**
+   * Identifies this probe attempt, for correlating logs across a health check.
+   */
+  readonly request_id?: RequestId;
+  /**
+   * Relative time budget for answering the probe.
+   */
+  readonly deadline_ms?: DurationMs;
+}
+
+/**
+ * The health of one subsystem a readiness or health probe inspected.
+ */
+export interface ServiceComponentStatus {
+  /**
+   * Stable identifier of the subsystem, such as `storage` or `search_index`.
+   */
+  readonly id: Identifier;
+  /**
+   * Outcome for this subsystem.
+   */
+  readonly status: ProbeStatus;
+  /**
+   * When this subsystem was last checked.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * Human-readable explanation. Not a stable interface.
+   */
+  readonly message?: string;
+  /**
+   * Optional structured detail.
+   */
+  readonly details?: JsonObject;
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -507,6 +1026,94 @@ export interface CapabilitySet {
 }
 
 /**
+ * One concrete component release, the contract and workspace-format version windows it supports,
+ * and how thoroughly that support has been qualified. An entry's mere presence is not itself
+ * support evidence; `qualification_state` is.
+ */
+export interface ReleaseCompatibilityEntry {
+  /**
+   * Which component this release identity names, such as `core` or `runtime` or `cli` or `mcp`
+   * or `sdk`.
+   */
+  readonly component: ComponentKind;
+  /**
+   * Concrete build version of this release.
+   */
+  readonly release_version: ReleaseVersion;
+  /**
+   * Contract version this release applies by default.
+   */
+  readonly api_version: ContractVersion;
+  /**
+   * Inclusive API contract version window this release supports.
+   */
+  readonly supported_api_versions: VersionWindow;
+  /**
+   * Inclusive workspace format version window this release supports.
+   */
+  readonly supported_workspace_versions: VersionWindow;
+  /**
+   * How thoroughly this release's declared support windows have actually been verified. A
+   * development or unverified state must never be read as supported.
+   */
+  readonly qualification_state: QualificationState;
+}
+
+/**
+ * One capability's compatibility posture: the concrete capability and version, when it was
+ * introduced, and how thoroughly it has been qualified. Mirrors `ReleaseCompatibilityEntry`'s
+ * qualification discipline: presence in this list is not itself support evidence.
+ */
+export interface CapabilityCompatibilityEntry {
+  /**
+   * The concrete capability and version this entry describes.
+   */
+  readonly capability: CapabilityRef;
+  /**
+   * Contract version in which this capability first appeared.
+   */
+  readonly introduced_in: ContractVersion;
+  /**
+   * How thoroughly this capability has actually been verified. A development or unverified
+   * state must never be read as supported.
+   */
+  readonly qualification_state: QualificationState;
+}
+
+/**
+ * One operation's compatibility posture: when it was introduced, its current lifecycle state,
+ * and how thoroughly that lifecycle state has actually been verified. `state` and
+ * `qualification_state` are deliberately separate axes: an operation's mere presence in this
+ * list, or its lifecycle being `stable`, must never be read as evidence that it has been
+ * qualified -- only `qualification_state` is that evidence.
+ */
+export interface OperationCompatibilityEntry {
+  /**
+   * Operation this entry describes.
+   */
+  readonly operation: OperationName;
+  /**
+   * Contract version in which this operation first appeared.
+   */
+  readonly introduced_in: ContractVersion;
+  /**
+   * This operation's current lifecycle state (`stable`, `experimental`, `deprecated`,
+   * `removed`). Independent of `qualification_state`: a `stable` lifecycle state is not itself
+   * qualification evidence.
+   */
+  readonly state: OperationCompatibilityState;
+  /**
+   * How thoroughly this operation has actually been verified, independent of its lifecycle
+   * `state`. A development or unverified state must never be read as supported.
+   */
+  readonly qualification_state: QualificationState;
+  /**
+   * Deprecation notice, present when `state` marks this operation as deprecated.
+   */
+  readonly deprecation?: Deprecation;
+}
+
+/**
  * Everything the server needs to route, scope, bound, and audit a request, independent of the
  * operation payload.
  */
@@ -568,6 +1175,186 @@ export interface RequestMetadata {
 }
 
 /**
+ * One execution attempt of a job. A job that is retried has more than one attempt.
+ */
+export interface JobAttempt {
+  /**
+   * 1-based ordinal of this attempt.
+   */
+  readonly attempt_number: number;
+  /**
+   * When this attempt started.
+   */
+  readonly started_at: Timestamp;
+  /**
+   * When this attempt finished, when it has.
+   */
+  readonly finished_at?: Timestamp;
+  /**
+   * State this attempt reached.
+   */
+  readonly state: JobState;
+  /**
+   * The failure this attempt ended with, when it failed.
+   */
+  readonly error?: ApiError;
+}
+
+/**
+ * The full declared contract characteristics of one operation: its scope, payload schemas,
+ * required capability, side effects, and job/pagination/idempotency/precondition/audit/error
+ * posture. This is the complete shape a future per-operation catalogue entry will carry, so
+ * publishing that catalogue is additive rather than requiring later required-field breaks.
+ * Binding this to a concrete request/result payload and publishing a catalogue of operations is
+ * out of scope for this document.
+ */
+export interface OperationMetadata {
+  /**
+   * Operation this metadata describes.
+   */
+  readonly name: OperationName;
+  /**
+   * What this operation requires and touches.
+   */
+  readonly scope: OperationScope;
+  /**
+   * Reference to the JSON Schema governing this operation's `input` payload.
+   */
+  readonly input_schema_ref: SchemaReference;
+  /**
+   * Reference to the JSON Schema governing this operation's `result` payload.
+   */
+  readonly result_schema_ref: SchemaReference;
+  /**
+   * The capability, and minimum version, this operation depends on.
+   */
+  readonly required_capability: CapabilityRequirement;
+  /**
+   * How this operation completes and whether it may return asynchronous work.
+   */
+  readonly job: OperationJobMetadata;
+  /**
+   * Whether and how this operation's results are paginated.
+   */
+  readonly pagination: OperationPaginationMetadata;
+  /**
+   * How this operation may safely be retried.
+   */
+  readonly idempotency: OperationIdempotencyMetadata;
+  /**
+   * How this operation uses optimistic-concurrency preconditions.
+   */
+  readonly precondition: OperationPreconditionMetadata;
+  /**
+   * Whether and how this operation is audited.
+   */
+  readonly audit: OperationAuditMetadata;
+  /**
+   * The stable error codes this operation may fail with.
+   */
+  readonly allowed_errors: readonly ErrorCode[];
+}
+
+/**
+ * A concrete piece of evidence supporting one claim in a record.
+ */
+export interface EvidenceReference {
+  /**
+   * The source this evidence was drawn from.
+   */
+  readonly source: SourceReference;
+  /**
+   * Addressable position within the source this evidence was drawn from, when known.
+   */
+  readonly span?: SourceSpan;
+  /**
+   * Optional short excerpt from the source substantiating the claim. Not a stable interface.
+   */
+  readonly excerpt?: string;
+}
+
+/**
+ * The identity, version, governance layer, governance state, and currentness of one record
+ * version.
+ */
+export interface RecordIdentity {
+  /**
+   * Identifier stable across every version of this record.
+   */
+  readonly record_id: RecordId;
+  /**
+   * Opaque version of this specific revision.
+   */
+  readonly version: RecordVersion;
+  /**
+   * Governance layer this record belongs to.
+   */
+  readonly layer: GovernanceLayer;
+  /**
+   * This record version's position in its own governance workflow, independent of `layer` and
+   * `currentness`.
+   */
+  readonly governance_state: GovernanceState;
+  /**
+   * Whether this version is the active one.
+   */
+  readonly currentness: RecordCurrentness;
+  /**
+   * The earlier record version this version replaces, when this version is itself the newer
+   * one.
+   */
+  readonly supersedes?: SupersessionReference;
+  /**
+   * The newer record version that replaced this one, present when `currentness` marks this
+   * version as superseded.
+   */
+  readonly superseded_by?: SupersessionReference;
+}
+
+/**
+ * The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
+ * `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority,
+ * because a probe answers a transport-level question, not an application operation.
+ */
+export interface ServiceProbeResult {
+  /**
+   * Echoes the probe that was requested.
+   */
+  readonly probe: ProbeKind;
+  /**
+   * Overall outcome for this probe.
+   */
+  readonly status: ProbeStatus;
+  /**
+   * Concrete server build version answering the probe.
+   */
+  readonly server_version: ReleaseVersion;
+  /**
+   * API contract version this server build implements.
+   */
+  readonly api_version: ContractVersion;
+  /**
+   * When this probe was answered.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * Per-subsystem detail, for a health or readiness probe.
+   */
+  readonly components?: readonly ServiceComponentStatus[];
+  /**
+   * Capabilities this server build implements, for a discovery probe. This is a runtime
+   * discovery fact only: an unauthenticated probe has no caller and no workspace to authorize
+   * against, so it must never state `granted` or `effective` authority. A caller must still
+   * negotiate `CapabilitySet.granted`/`effective` through an authenticated request.
+   */
+  readonly supported_capabilities?: readonly CapabilityRef[];
+  /**
+   * Optional structured detail.
+   */
+  readonly details?: JsonObject;
+}
+
+/**
  * Everything a caller needs to reason about what this server accepted and what it can do.
  * Returned on every response, success or error.
  */
@@ -595,6 +1382,30 @@ export interface VersionCapabilityEnvelope {
 }
 
 /**
+ * The compatibility matrix foundation: every known release's supported version windows, every
+ * known operation's introduction version, lifecycle state, and qualification state, and every
+ * known capability's compatibility posture. This shape is not itself evidence that anything it
+ * lists is supported -- each entry's own `qualification_state` is the only thing a caller may
+ * treat as a support claim; neither an entry's mere presence nor an operation's lifecycle
+ * `state` implies qualification, and an empty or unverified matrix must never be read as
+ * 'nothing is unsupported'.
+ */
+export interface CompatibilityMatrix {
+  /**
+   * Known component releases and the version windows and qualification state they support.
+   */
+  readonly releases: readonly ReleaseCompatibilityEntry[];
+  /**
+   * Known operations and their compatibility posture.
+   */
+  readonly operations: readonly OperationCompatibilityEntry[];
+  /**
+   * Known capabilities and their compatibility posture.
+   */
+  readonly capabilities: readonly CapabilityCompatibilityEntry[];
+}
+
+/**
  * A single application request: what to do, under what conditions, with what payload.
  */
 export interface RequestEnvelope {
@@ -610,6 +1421,147 @@ export interface RequestEnvelope {
    * Opaque operation payload.
    */
   readonly input: JsonObject;
+}
+
+/**
+ * What a caller holds to track a job over time: its identity, current state, latest known
+ * progress and attempt, and which control actions are available.
+ */
+export interface JobHandle {
+  /**
+   * Identity of this job.
+   */
+  readonly identity: JobIdentity;
+  /**
+   * Current state of this job.
+   */
+  readonly state: JobState;
+  /**
+   * When this job was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When this job's state was last observed to change.
+   */
+  readonly updated_at: Timestamp;
+  /**
+   * Which control actions a caller may take on this job right now.
+   */
+  readonly control: JobControl;
+  /**
+   * Latest known progress, while running.
+   */
+  readonly progress?: JobProgress;
+  /**
+   * Most recent execution attempt.
+   */
+  readonly latest_attempt?: JobAttempt;
+}
+
+/**
+ * The final outcome of a job that succeeded. Carries `result` and never `error` or
+ * `cancellation`.
+ */
+export interface JobTerminalSuccess {
+  /**
+   * Identity of this job.
+   */
+  readonly identity: JobIdentity;
+  /**
+   * Terminal state the job reached, such as `succeeded`.
+   */
+  readonly state: JobState;
+  /**
+   * When the job reached its terminal state.
+   */
+  readonly finished_at: Timestamp;
+  /**
+   * Every execution attempt this job made, in order.
+   */
+  readonly attempts: readonly JobAttempt[];
+  /**
+   * Opaque success payload.
+   */
+  readonly result: JsonObject;
+}
+
+/**
+ * The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`.
+ */
+export interface JobTerminalFailure {
+  /**
+   * Identity of this job.
+   */
+  readonly identity: JobIdentity;
+  /**
+   * Terminal state the job reached, such as `failed`.
+   */
+  readonly state: JobState;
+  /**
+   * When the job reached its terminal state.
+   */
+  readonly finished_at: Timestamp;
+  /**
+   * Every execution attempt this job made, in order.
+   */
+  readonly attempts: readonly JobAttempt[];
+  /**
+   * The terminal failure.
+   */
+  readonly error: ApiError;
+}
+
+/**
+ * The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or
+ * `error`.
+ */
+export interface JobTerminalCancellation {
+  /**
+   * Identity of this job.
+   */
+  readonly identity: JobIdentity;
+  /**
+   * Terminal state the job reached, such as `cancelled`.
+   */
+  readonly state: JobState;
+  /**
+   * When the job reached its terminal state.
+   */
+  readonly finished_at: Timestamp;
+  /**
+   * Every execution attempt this job made, in order.
+   */
+  readonly attempts: readonly JobAttempt[];
+  /**
+   * The explicit cancellation outcome.
+   */
+  readonly cancellation: JobCancellationOutcome;
+}
+
+/**
+ * One step in a record's history: who or what did what, and when.
+ */
+export interface ProvenanceEntry {
+  /**
+   * Principal or system that performed this action.
+   */
+  readonly actor_id: Identifier;
+  /**
+   * Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`.
+   */
+  readonly actor_kind: OpenCode;
+  /**
+   * Open code naming what happened, such as `created` or `modified` or `superseded`.
+   */
+  readonly action: OpenCode;
+  /**
+   * When this action occurred.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * Evidence supporting this action, when applicable.
+   */
+  readonly evidence?: readonly EvidenceReference[];
 }
 
 /**
@@ -668,6 +1620,44 @@ export interface ResponseMetadata {
    * Reference to the audit record for this operation.
    */
   readonly audit_reference?: AuditReference;
+}
+
+/**
+ * The final outcome of a job once it has reached a terminal state, with the complete attempt
+ * history that led there. Exactly one of a success, a failure, or a cancellation, never a mix:
+ * each branch closes its property set and carries a unique required discriminator (`result`,
+ * `error`, or `cancellation`), so a payload combining or omitting all three matches no branch.
+ */
+export type JobTerminalResult = JobTerminalSuccess | JobTerminalFailure | JobTerminalCancellation;
+
+/**
+ * The full provenance envelope for one record version: identity, temporal metadata, its
+ * authoring history, and the sources it draws on.
+ */
+export interface RecordProvenance {
+  /**
+   * Identity, version, governance layer, and currentness of this record.
+   */
+  readonly identity: RecordIdentity;
+  /**
+   * Observed, ingested, recorded, and valid time for this record.
+   */
+  readonly temporal: RecordTemporalMetadata;
+  /**
+   * Ordered history of actions that produced this record version.
+   */
+  readonly history: readonly ProvenanceEntry[];
+  /**
+   * Whether concrete evidence is actually available for this record. `sources` may be empty
+   * only when this disposition explicitly states evidence is unavailable; enforcing that
+   * agreement is a semantic-validation concern, not a wire-shape one.
+   */
+  readonly evidence_disposition: EvidenceDisposition;
+  /**
+   * Sources this record draws on, independent of any single history entry's evidence. May be
+   * empty only when `evidence_disposition` explicitly states evidence is unavailable.
+   */
+  readonly sources: readonly SourceReference[];
 }
 
 /**

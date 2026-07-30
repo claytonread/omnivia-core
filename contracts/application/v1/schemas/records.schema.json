@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/records.schema.json",
+  "title": "OmniVia Core Application Contract v1 - governed record foundations",
+  "description": "Provider-neutral wire shapes for record identity, governance, evidence, and provenance (ADR-039). These are schema-generated transport records, not a second domain authority: they carry no reference to, and are not substitutes for, any repo-local Memory, MemoryFact, or SourceRef domain class. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "RecordId": {
+      "title": "RecordId",
+      "description": "Stable identifier of a governed record, constant across every version of that record.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "RecordVersion": {
+      "title": "RecordVersion",
+      "description": "Opaque, server-issued version marker of one specific revision of a record. Clients must round-trip it verbatim and must never parse it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[!-~]+$"
+    },
+    "GovernanceLayer": {
+      "title": "GovernanceLayer",
+      "description": "Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw evidence), `l1` (candidate observations), `l2` (governed records / canonical knowledge), `l3` (context models), or `l4` (organisational model). Distinct from workspace scope, which is a caller-facing tenancy boundary, not a knowledge-governance layer. Open by design so a compatible minor release can add layers without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "RecordCurrentness": {
+      "title": "RecordCurrentness",
+      "description": "Open, dot-namespaced code naming whether a record version is the active one, such as `current` or `superseded` or `retracted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "GovernanceState": {
+      "title": "GovernanceState",
+      "description": "Open, dot-namespaced code naming a record's position in its own governance workflow, such as `proposed` or `candidate` or `accepted` or `rejected`. Distinct from `GovernanceLayer` (which namespace a record belongs to) and `RecordCurrentness` (whether this version is the active one): a record can be `accepted` and still later superseded, or `proposed` and never adopted. Open by design so a compatible minor release can add states without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "SourceKind": {
+      "title": "SourceKind",
+      "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "SourceReference": {
+      "title": "SourceReference",
+      "description": "A pointer to the external or internal thing a record's claim came from.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceKind",
+          "description": "What kind of thing this reference points at."
+        },
+        "source_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the source within its own system of record."
+        },
+        "locator": {
+          "type": "string",
+          "description": "Optional locator within the source, such as a path, offset, or message id.",
+          "maxLength": 2048
+        },
+        "retrieved_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the source was read to produce the record it supports."
+        }
+      },
+      "required": ["kind", "source_id"],
+      "unevaluatedProperties": false
+    },
+    "SourceSpan": {
+      "title": "SourceSpan",
+      "description": "An addressable position within a source: a pointer plus an optional character span, so evidence can be pinpointed within a source rather than only referencing the source as a whole.",
+      "type": "object",
+      "properties": {
+        "pointer": {
+          "type": "string",
+          "description": "Locator within the source, such as a JSON Pointer, XPath, byte offset path, or line reference.",
+          "maxLength": 2048
+        },
+        "start_offset": {
+          "type": "integer",
+          "description": "Start of the span, in characters from the start of the pointed-at unit, when known.",
+          "minimum": 0
+        },
+        "end_offset": {
+          "type": "integer",
+          "description": "End of the span, in characters from the start of the pointed-at unit, when known.",
+          "minimum": 0
+        }
+      },
+      "required": ["pointer"],
+      "unevaluatedProperties": false
+    },
+    "EvidenceDisposition": {
+      "title": "EvidenceDisposition",
+      "description": "Open, dot-namespaced code stating whether concrete evidence is actually available for a record, such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "EvidenceReference": {
+      "title": "EvidenceReference",
+      "description": "A concrete piece of evidence supporting one claim in a record.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference",
+          "description": "The source this evidence was drawn from."
+        },
+        "span": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceSpan",
+          "description": "Addressable position within the source this evidence was drawn from, when known."
+        },
+        "excerpt": {
+          "type": "string",
+          "description": "Optional short excerpt from the source substantiating the claim. Not a stable interface.",
+          "maxLength": 4096
+        }
+      },
+      "required": ["source"],
+      "unevaluatedProperties": false
+    },
+    "ProvenanceEntry": {
+      "title": "ProvenanceEntry",
+      "description": "One step in a record's history: who or what did what, and when.",
+      "type": "object",
+      "properties": {
+        "actor_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Principal or system that performed this action."
+        },
+        "actor_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the kind of actor, such as `user` or `agent` or `ingestion_pipeline`."
+        },
+        "action": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what happened, such as `created` or `modified` or `superseded`."
+        },
+        "occurred_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this action occurred."
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Evidence supporting this action, when applicable.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": ["actor_id", "actor_kind", "action", "occurred_at"],
+      "unevaluatedProperties": false
+    },
+    "RecordTemporalMetadata": {
+      "title": "RecordTemporalMetadata",
+      "description": "The distinct instants a governed record's lifecycle turns on: when the underlying fact was observed, when the system ingested it, when this version was persisted, and the window it is asserted valid for.",
+      "type": "object",
+      "properties": {
+        "observed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the underlying fact was observed to be true in the world, when known."
+        },
+        "ingested_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the system first ingested the fact behind this record."
+        },
+        "recorded_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this specific version was persisted."
+        },
+        "valid_from": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Start of the window this record is asserted valid for, when bounded."
+        },
+        "valid_until": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "End of the window this record is asserted valid for, when bounded."
+        }
+      },
+      "required": ["ingested_at", "recorded_at"],
+      "unevaluatedProperties": false
+    },
+    "SupersessionReference": {
+      "title": "SupersessionReference",
+      "description": "A direction-neutral pointer from one record version to another related record version. The direction of the relationship comes entirely from which field on `RecordIdentity` carries it (`supersedes` vs `superseded_by`); this DTO itself states only which record and version, and why.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the related record."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion",
+          "description": "The specific related version, when known."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why this supersession relationship exists."
+        }
+      },
+      "required": ["record_id"],
+      "unevaluatedProperties": false
+    },
+    "RecordIdentity": {
+      "title": "RecordIdentity",
+      "description": "The identity, version, governance layer, governance state, and currentness of one record version.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier stable across every version of this record."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion",
+          "description": "Opaque version of this specific revision."
+        },
+        "layer": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceLayer",
+          "description": "Governance layer this record belongs to."
+        },
+        "governance_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceState",
+          "description": "This record version's position in its own governance workflow, independent of `layer` and `currentness`."
+        },
+        "currentness": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordCurrentness",
+          "description": "Whether this version is the active one."
+        },
+        "supersedes": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SupersessionReference",
+          "description": "The earlier record version this version replaces, when this version is itself the newer one."
+        },
+        "superseded_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SupersessionReference",
+          "description": "The newer record version that replaced this one, present when `currentness` marks this version as superseded."
+        }
+      },
+      "required": ["record_id", "version", "layer", "governance_state", "currentness"],
+      "unevaluatedProperties": false
+    },
+    "RecordProvenance": {
+      "title": "RecordProvenance",
+      "description": "The full provenance envelope for one record version: identity, temporal metadata, its authoring history, and the sources it draws on.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordIdentity",
+          "description": "Identity, version, governance layer, and currentness of this record."
+        },
+        "temporal": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordTemporalMetadata",
+          "description": "Observed, ingested, recorded, and valid time for this record."
+        },
+        "history": {
+          "type": "array",
+          "description": "Ordered history of actions that produced this record version.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/ProvenanceEntry"
+          },
+          "maxItems": 1024
+        },
+        "evidence_disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceDisposition",
+          "description": "Whether concrete evidence is actually available for this record. `sources` may be empty only when this disposition explicitly states evidence is unavailable; enforcing that agreement is a semantic-validation concern, not a wire-shape one."
+        },
+        "sources": {
+          "type": "array",
+          "description": "Sources this record draws on, independent of any single history entry's evidence. May be empty only when `evidence_disposition` explicitly states evidence is unavailable.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference"
+          },
+          "maxItems": 256
+        }
+      },
+      "required": ["identity", "temporal", "history", "evidence_disposition", "sources"],
+      "unevaluatedProperties": false
+    }
+  }
+}

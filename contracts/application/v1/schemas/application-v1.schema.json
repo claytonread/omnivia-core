@@ -2,13 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/application-v1.schema.json",
   "title": "OmniVia Core Application Contract v1 - registry",
-  "description": "Reference-only registry of every type in the v1 application contract. This document validates nothing on its own and declares no root type: it exists so one stable URI enumerates the whole contract surface, and so tooling can detect a definition that was added to a source schema but never published. The four sibling documents remain canonical.",
-  "x-omnivia-contract-version": "1.0",
+  "description": "Reference-only registry of every type in the v1 application contract. This document validates nothing on its own and declares no root type: it exists so one stable URI enumerates the whole contract surface, and so tooling can detect a definition that was added to a source schema but never published. The sibling source documents remain canonical.",
+  "x-omnivia-contract-version": "1.1",
   "x-omnivia-schema-sources": [
     "https://contracts.omnivia.dev/application/v1/common.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility.schema.json",
     "https://contracts.omnivia.dev/application/v1/errors.schema.json",
-    "https://contracts.omnivia.dev/application/v1/envelopes.schema.json"
+    "https://contracts.omnivia.dev/application/v1/envelopes.schema.json",
+    "https://contracts.omnivia.dev/application/v1/service.schema.json",
+    "https://contracts.omnivia.dev/application/v1/records.schema.json",
+    "https://contracts.omnivia.dev/application/v1/jobs.schema.json",
+    "https://contracts.omnivia.dev/application/v1/operations.schema.json",
+    "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -148,6 +153,168 @@
     },
     "ResponseEnvelope": {
       "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/ResponseEnvelope"
+    },
+    "ProbeKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeKind"
+    },
+    "ProbeStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeStatus"
+    },
+    "ServiceProbeRequest": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProbeRequest"
+    },
+    "ServiceComponentStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceComponentStatus"
+    },
+    "ServiceProbeResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProbeResult"
+    },
+    "RecordId": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId"
+    },
+    "RecordVersion": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion"
+    },
+    "GovernanceLayer": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceLayer"
+    },
+    "GovernanceState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/GovernanceState"
+    },
+    "RecordCurrentness": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordCurrentness"
+    },
+    "SourceKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceKind"
+    },
+    "SourceReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference"
+    },
+    "SourceSpan": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceSpan"
+    },
+    "EvidenceDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceDisposition"
+    },
+    "EvidenceReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/EvidenceReference"
+    },
+    "ProvenanceEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/ProvenanceEntry"
+    },
+    "RecordTemporalMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordTemporalMetadata"
+    },
+    "SupersessionReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SupersessionReference"
+    },
+    "RecordIdentity": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordIdentity"
+    },
+    "RecordProvenance": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordProvenance"
+    },
+    "JobState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState"
+    },
+    "JobIdentity": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobIdentity"
+    },
+    "JobProgressUnit": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobProgressUnit"
+    },
+    "JobProgress": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobProgress"
+    },
+    "JobCancellationDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationDisposition"
+    },
+    "JobRetryDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryDisposition"
+    },
+    "JobResumeDisposition": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobResumeDisposition"
+    },
+    "JobControl": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobControl"
+    },
+    "JobAttempt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobAttempt"
+    },
+    "JobEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobEvent"
+    },
+    "JobHandle": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobHandle"
+    },
+    "JobCancellationOutcome": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationOutcome"
+    },
+    "JobTerminalSuccess": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalSuccess"
+    },
+    "JobTerminalFailure": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalFailure"
+    },
+    "JobTerminalCancellation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalCancellation"
+    },
+    "JobTerminalResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalResult"
+    },
+    "OperationSideEffect": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationSideEffect"
+    },
+    "OperationScopeKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationScopeKind"
+    },
+    "OperationScope": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationScope"
+    },
+    "OperationCompletionMode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationCompletionMode"
+    },
+    "OperationJobMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationJobMetadata"
+    },
+    "OperationPaginationMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationPaginationMetadata"
+    },
+    "OperationIdempotencyMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationIdempotencyMetadata"
+    },
+    "OperationPreconditionMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationPreconditionMetadata"
+    },
+    "OperationAuditMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationAuditMetadata"
+    },
+    "SchemaReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/SchemaReference"
+    },
+    "OperationMetadata": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/operations.schema.json#/$defs/OperationMetadata"
+    },
+    "OperationCompatibilityState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityState"
+    },
+    "QualificationState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/QualificationState"
+    },
+    "ComponentKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/ComponentKind"
+    },
+    "ReleaseCompatibilityEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/ReleaseCompatibilityEntry"
+    },
+    "OperationCompatibilityEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityEntry"
+    },
+    "CapabilityCompatibilityEntry": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CapabilityCompatibilityEntry"
+    },
+    "CompatibilityMatrix": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CompatibilityMatrix"
     }
   }
 }

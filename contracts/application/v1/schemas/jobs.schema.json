@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/jobs.schema.json",
+  "title": "OmniVia Core Application Contract v1 - asynchronous job foundations",
+  "description": "Job identity, state, progress, attempt, event, handle, and terminal-result shapes for asynchronous work started by an operation. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "JobState": {
+      "title": "JobState",
+      "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobIdentity": {
+      "title": "JobIdentity",
+      "description": "The identity of one asynchronous job: what it is, which application operation started it, its immutable audit linkage, and, when applicable, which workspace it runs against.",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Opaque, server-issued identifier of this job."
+        },
+        "job_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the kind of work this job performs, such as `ingestion.import`."
+        },
+        "originating_operation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/OperationName",
+          "description": "The application operation whose invocation started this job."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for the operation invocation that started this job."
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this job runs against, when the job is workspace-scoped."
+        }
+      },
+      "required": ["job_id", "job_kind", "originating_operation", "audit_reference"],
+      "unevaluatedProperties": false
+    },
+    "JobProgressUnit": {
+      "title": "JobProgressUnit",
+      "description": "Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such as `item` or `byte` or `document`. Open by design so a compatible minor release can add units without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobProgress": {
+      "title": "JobProgress",
+      "description": "A point-in-time progress statement for a running job.",
+      "type": "object",
+      "properties": {
+        "unit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobProgressUnit",
+          "description": "What `completed_units`/`total_units` count, so the counters are interpretable without job-kind-specific knowledge."
+        },
+        "completed_units": {
+          "type": "integer",
+          "description": "Units of work completed so far, counted in `unit`.",
+          "minimum": 0
+        },
+        "total_units": {
+          "type": "integer",
+          "description": "Total units of work expected, when known in advance, counted in `unit`.",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable progress note. Not a stable interface.",
+          "maxLength": 2048
+        }
+      },
+      "required": ["unit", "completed_units"],
+      "unevaluatedProperties": false
+    },
+    "JobCancellationDisposition": {
+      "title": "JobCancellationDisposition",
+      "description": "Open, dot-namespaced code naming whether a job may be cancelled and where a requested cancellation stands, such as `not_cancellable` or `cancellable` or `cancellation_requested` or `cancelled`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobRetryDisposition": {
+      "title": "JobRetryDisposition",
+      "description": "Open, dot-namespaced code naming whether a job may be retried and where a requested retry stands, such as `not_retryable` or `retryable` or `retry_scheduled`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobResumeDisposition": {
+      "title": "JobResumeDisposition",
+      "description": "Open, dot-namespaced code naming whether a suspended or cancelled job may be resumed, such as `not_resumable` or `resumable` or `resume_requested`. Open by design; carries no scheduler, worker, lease, or persistence detail.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "JobControl": {
+      "title": "JobControl",
+      "description": "The control actions a caller may take on a job: cancellation, retry, and resume. Deliberately exposes only these caller-facing dispositions, never scheduler, worker, lease, or persistence detail.",
+      "type": "object",
+      "properties": {
+        "cancellation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationDisposition",
+          "description": "Whether this job may be cancelled and where a requested cancellation stands."
+        },
+        "retry": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobRetryDisposition",
+          "description": "Whether this job may be retried and where a requested retry stands."
+        },
+        "resume": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobResumeDisposition",
+          "description": "Whether this job may be resumed and where a requested resume stands."
+        }
+      },
+      "required": ["cancellation", "retry", "resume"],
+      "unevaluatedProperties": false
+    },
+    "JobAttempt": {
+      "title": "JobAttempt",
+      "description": "One execution attempt of a job. A job that is retried has more than one attempt.",
+      "type": "object",
+      "properties": {
+        "attempt_number": {
+          "type": "integer",
+          "description": "1-based ordinal of this attempt.",
+          "minimum": 1
+        },
+        "started_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this attempt started."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this attempt finished, when it has."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "State this attempt reached."
+        },
+        "error": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ApiError",
+          "description": "The failure this attempt ended with, when it failed."
+        }
+      },
+      "required": ["attempt_number", "started_at", "state"],
+      "unevaluatedProperties": false
+    },
+    "JobEvent": {
+      "title": "JobEvent",
+      "description": "One entry in a job's ordered event stream.",
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "description": "Monotonically increasing ordinal of this event within the job.",
+          "minimum": 0
+        },
+        "occurred_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this event occurred."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "State the job was in when this event was recorded."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable event note. Not a stable interface.",
+          "maxLength": 2048
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional structured detail."
+        }
+      },
+      "required": ["sequence", "occurred_at", "state"],
+      "unevaluatedProperties": false
+    },
+    "JobHandle": {
+      "title": "JobHandle",
+      "description": "What a caller holds to track a job over time: its identity, current state, latest known progress and attempt, and which control actions are available.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobIdentity",
+          "description": "Identity of this job."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "Current state of this job."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this job was created."
+        },
+        "updated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this job's state was last observed to change."
+        },
+        "control": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobControl",
+          "description": "Which control actions a caller may take on this job right now."
+        },
+        "progress": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobProgress",
+          "description": "Latest known progress, while running."
+        },
+        "latest_attempt": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobAttempt",
+          "description": "Most recent execution attempt."
+        }
+      },
+      "required": ["identity", "state", "created_at", "updated_at", "control"],
+      "unevaluatedProperties": false
+    },
+    "JobCancellationOutcome": {
+      "title": "JobCancellationOutcome",
+      "description": "The explicit outcome recorded when a job's terminal state is cancellation, distinguishing it from an ordinary success or failure.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why the job was cancelled, such as `caller_requested` or `deadline_exceeded`."
+        }
+      },
+      "required": ["reason"],
+      "unevaluatedProperties": false
+    },
+    "JobTerminalSuccess": {
+      "title": "JobTerminalSuccess",
+      "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobIdentity",
+          "description": "Identity of this job."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "Terminal state the job reached, such as `succeeded`."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the job reached its terminal state."
+        },
+        "attempts": {
+          "type": "array",
+          "description": "Every execution attempt this job made, in order.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobAttempt"
+          },
+          "maxItems": 256
+        },
+        "result": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque success payload."
+        }
+      },
+      "required": ["identity", "state", "finished_at", "attempts", "result"],
+      "unevaluatedProperties": false
+    },
+    "JobTerminalFailure": {
+      "title": "JobTerminalFailure",
+      "description": "The final outcome of a job that failed. Carries `error` and never `result` or `cancellation`.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobIdentity",
+          "description": "Identity of this job."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "Terminal state the job reached, such as `failed`."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the job reached its terminal state."
+        },
+        "attempts": {
+          "type": "array",
+          "description": "Every execution attempt this job made, in order.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobAttempt"
+          },
+          "maxItems": 256
+        },
+        "error": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ApiError",
+          "description": "The terminal failure."
+        }
+      },
+      "required": ["identity", "state", "finished_at", "attempts", "error"],
+      "unevaluatedProperties": false
+    },
+    "JobTerminalCancellation": {
+      "title": "JobTerminalCancellation",
+      "description": "The final outcome of a job that was cancelled. Carries `cancellation` and never `result` or `error`.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobIdentity",
+          "description": "Identity of this job."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobState",
+          "description": "Terminal state the job reached, such as `cancelled`."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the job reached its terminal state."
+        },
+        "attempts": {
+          "type": "array",
+          "description": "Every execution attempt this job made, in order.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobAttempt"
+          },
+          "maxItems": 256
+        },
+        "cancellation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobCancellationOutcome",
+          "description": "The explicit cancellation outcome."
+        }
+      },
+      "required": ["identity", "state", "finished_at", "attempts", "cancellation"],
+      "unevaluatedProperties": false
+    },
+    "JobTerminalResult": {
+      "title": "JobTerminalResult",
+      "description": "The final outcome of a job once it has reached a terminal state, with the complete attempt history that led there. Exactly one of a success, a failure, or a cancellation, never a mix: each branch closes its property set and carries a unique required discriminator (`result`, `error`, or `cancellation`), so a payload combining or omitting all three matches no branch.",
+      "oneOf": [
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalSuccess"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalFailure"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/JobTerminalCancellation"
+        }
+      ]
+    }
+  }
+}

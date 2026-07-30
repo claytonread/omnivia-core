@@ -1,5 +1,5 @@
 {
-  "contract_version": "1.0",
+  "contract_version": "1.1",
   "fixtures": [
     {
       "id": "compatible-negotiation",
