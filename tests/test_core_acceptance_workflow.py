@@ -65,8 +65,10 @@ GATE_STEPS = (
 # below, so they appear here only to pin their place in the gate order.
 SCOPED_STEPS = ("Run Ruff", "Run strict mypy")
 
-# Ruff's currently accepted clean scope: the canonical trees plus the eight
-# converted legacy facade/barrel files.
+# Ruff's currently accepted clean scope: the canonical trees plus every
+# converted legacy facade/barrel file. This list grows as leaves are converted;
+# it is pinned exactly rather than counted, so an added target must be declared
+# here and a dropped one fails.
 REQUIRED_RUFF_TARGETS = (
     "src",
     "packages",
@@ -74,6 +76,8 @@ REQUIRED_RUFF_TARGETS = (
     "tests",
     "scripts",
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
+    "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
+    "services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py",
     "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py",

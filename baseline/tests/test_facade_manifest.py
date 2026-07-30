@@ -117,6 +117,8 @@ EXPECTED_STATE_SUFFIXES = {
     MigrationState.CANONICAL_SUBSET: {"graph.search_models"},
     MigrationState.DIRECT_FACADE: {
         "_shared.validation",
+        "app_manifest.models",
+        "app_manifest.validation",
         "app_shell_bridge.models",
         "app_shell_bridge.validation",
         "lifecycle.models",
@@ -126,12 +128,12 @@ EXPECTED_STATE_SUFFIXES = {
     },
     MigrationState.TRANSITIVE_FACADE: {
         "_shared",
+        "app_manifest",
         "app_shell_bridge",
         "lifecycle",
         "provenance",
     },
     MigrationState.PENDING_DIRECT_BARREL: {
-        "app_manifest",
         "component_contract",
         "control_plane",
         "knowledge",
@@ -332,7 +334,9 @@ def test_checkout_and_route_source_validation_pass() -> None:
     ("suffix", "state", "pattern"),
     [
         ("app_shell_bridge.models", "source_parity", "move the state forward"),
-        ("app_manifest.models", "direct_facade", "declared 'direct_facade'"),
+        ("app_manifest.models", "source_parity", "move the state forward"),
+        ("app_manifest.validation", "source_parity", "move the state forward"),
+        ("component_contract.models", "direct_facade", "declared 'direct_facade'"),
     ],
 )
 def test_checkout_rejects_source_state_swaps(
@@ -377,11 +381,66 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
     assert any(pattern in defect for defect in defects), defects
 
 
-def test_transitive_facade_rejects_an_unconverted_child() -> None:
+@pytest.mark.parametrize(
+    "child_suffix",
+    ["_shared.validation", "app_manifest.models", "app_manifest.validation"],
+)
+def test_transitive_facade_rejects_an_unconverted_child(child_suffix: str) -> None:
     document = _document()
-    _route(document, "_shared.validation")["migration_state"] = "source_parity"
+    _route(document, child_suffix)["migration_state"] = "source_parity"
     with pytest.raises(FacadeManifestError, match="routed children are not converted"):
         validate_checkout(manifest=document)
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        ("from omnivia_core.app_manifest.models import AppManifest\n", "unapproved module"),
+        ("from omnivia_memory.knowledge import ValidationResult\n", "unapproved module"),
+        ("AppState = object()\n", "assignments"),
+        ("def validate_app_manifest(data):\n    return data\n", "statements of its own"),
+    ],
+)
+def test_app_manifest_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The app-manifest barrel earns ``transitive_facade`` by re-exporting only
+    its two converted children. Reaching into ``omnivia_core`` itself, pulling a
+    third module, or defining anything of its own must be rejected -- each of
+    those would make the barrel's identity preservation direct or local rather
+    than transitive, while still exporting the same seven names."""
+    manifest = load_manifest()
+    route = manifest.route_for_legacy("omnivia_memory.app_manifest")
+    children = [
+        manifest.route_for_legacy("omnivia_memory.app_manifest.models"),
+        manifest.route_for_legacy("omnivia_memory.app_manifest.validation"),
+    ]
+    source = (
+        "from omnivia_memory.app_manifest.models import (\n"
+        "    AppState,\n"
+        "    AppManifest,\n"
+        "    DataSource,\n"
+        "    ProvenanceRequirement,\n"
+        "    ValidationResult,\n"
+        ")\n"
+        "from omnivia_memory.app_manifest.validation import (\n"
+        "    AppManifestValidationError,\n"
+        "    validate_app_manifest,\n"
+        ")\n"
+        '__all__ = [\n'
+        '    "AppManifest",\n'
+        '    "AppManifestValidationError",\n'
+        '    "AppState",\n'
+        '    "DataSource",\n'
+        '    "ProvenanceRequirement",\n'
+        '    "ValidationResult",\n'
+        '    "validate_app_manifest",\n'
+        "]\n"
+        f"{extra_source}"
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
 
 
 def test_validate_checkout_revalidates_public_dataclass_instances() -> None:

@@ -1,9 +1,8 @@
 """``omnivia_core.app_manifest`` and ``omnivia_core.app_shell_bridge`` barrel
 and behavioral parity coverage.
 
-``test_parity.py`` proves the app-manifest owner leaves remain exact ports,
-while ``test_facade_foundation.py`` proves the app-shell owner leaves are
-identity-preserving compatibility facades. ``test_behavioral_parity.py`` also
+``test_facade_foundation.py`` proves both barrels' owner leaves are
+identity-preserving compatibility facades, and ``test_behavioral_parity.py``
 pins the plain-dataclass defaults for both. This module is concerned with what
 those suites leave uncovered: the barrels' own re-export contract (exact
 historical ``__all__`` order, owner bindings, star-import surface,
@@ -12,6 +11,11 @@ of coverage
 ``test_knowledge_barrel.py`` gives the knowledge barrel), and representative
 validator behavioral parity beyond bare construction (fail-closed error
 paths, exception identity, and non-mutation of caller input).
+
+The validator parity checks below now compare a canonical engine against a
+legacy path that routes to that same engine, so they read as a live guarantee
+that the legacy import path still behaves identically rather than as a
+two-implementation comparison.
 
 ``baseline.inventory.describe_symbol`` records each barrel's ``__all__``
 *sorted*, so ``baseline/inventories/public-exports.json`` is a membership /

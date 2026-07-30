@@ -106,6 +106,8 @@ FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
     sorted(
         (
             f"{CORE_PACKAGE}._shared.validation",
+            f"{CORE_PACKAGE}.app_manifest.models",
+            f"{CORE_PACKAGE}.app_manifest.validation",
             f"{CORE_PACKAGE}.app_shell_bridge.models",
             f"{CORE_PACKAGE}.app_shell_bridge.validation",
             f"{CORE_PACKAGE}.lifecycle.models",

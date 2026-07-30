@@ -59,11 +59,13 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: comparing against the frozen Phase 0 baseline; every other public-export
 #: difference still fails ``verify_public_export_inventory``.
 #:
-#: ``ValidationResult`` appears under two different owners here on purpose:
+#: ``ValidationResult`` appears under several different owners here on purpose:
 #: ``omnivia_memory._shared.validation`` routes to the shared primitive, while
-#: ``omnivia_memory.app_shell_bridge.models`` routes to the App Shell bridge's
-#: own same-named dataclass. They are distinct objects and each leaf must keep
-#: its historical one.
+#: ``omnivia_memory.app_shell_bridge.models`` and
+#: ``omnivia_memory.app_manifest.models`` each route to their own domain's
+#: same-named dataclass. They are distinct objects and each leaf must keep its
+#: historical one. ``ProvenanceRequirement`` collides the same way between the
+#: App Manifest contract and the Component Contract.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -71,6 +73,17 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "scan_sensitive_fields": "omnivia_core._shared.validation",
         "validate_iso_timestamp": "omnivia_core._shared.validation",
         "validate_optional_iso_timestamp": "omnivia_core._shared.validation",
+    },
+    "omnivia_memory.app_manifest.models": {
+        "AppManifest": "omnivia_core.app_manifest.models",
+        "AppState": "omnivia_core.app_manifest.models",
+        "DataSource": "omnivia_core.app_manifest.models",
+        "ProvenanceRequirement": "omnivia_core.app_manifest.models",
+        "ValidationResult": "omnivia_core.app_manifest.models",
+    },
+    "omnivia_memory.app_manifest.validation": {
+        "AppManifestValidationError": "omnivia_core.app_manifest.validation",
+        "validate_app_manifest": "omnivia_core.app_manifest.validation",
     },
     "omnivia_memory.app_shell_bridge.models": {
         "AppShellBodyDescriptor": "omnivia_core.app_shell_bridge.models",
@@ -105,6 +118,49 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "Source": "omnivia_core.provenance.models",
     },
 }
+
+
+#: Exact descriptor deltas caused solely by a sanctioned ownership move.
+#: Keys are ``(legacy module, symbol)`` and values are ``(frozen, normalized)``.
+#: This deliberately does not perform a general package-name substitution:
+#: package-looking text inside a constant or default argument is contract data,
+#: not ownership metadata, and must continue to fail the frozen baseline.
+FACADE_DESCRIPTOR_REWRITES: dict[
+    tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
+] = {
+    (
+        "omnivia_memory.app_manifest.validation",
+        "validate_app_manifest",
+    ): (
+        {
+            "kind": "function",
+            "signature": (
+                "(data: Dict[str, Any]) -> "
+                "omnivia_memory.app_manifest.models.AppManifest"
+            ),
+        },
+        {
+            "kind": "function",
+            "signature": (
+                "(data: Dict[str, Any]) -> "
+                "omnivia_core.app_manifest.models.AppManifest"
+            ),
+        },
+    ),
+}
+
+
+def _expected_facade_descriptor(
+    legacy_module: str,
+    symbol: str,
+    frozen_descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the one exact sanctioned descriptor rewrite, if applicable."""
+    rewrite = FACADE_DESCRIPTOR_REWRITES.get((legacy_module, symbol))
+    if rewrite is None:
+        return frozen_descriptor
+    old, new = rewrite
+    return new if frozen_descriptor == old else frozen_descriptor
 
 
 class InventoryError(RuntimeError):
@@ -202,10 +258,11 @@ def _facade_route_problems(
     *exact* object bound at its declared canonical module (not a lookalike),
     and (c) -- when the frozen baseline once recorded a historical
     ``defines`` descriptor for it -- describe identically to that frozen
-    descriptor, so a structural contract change cannot hide behind the
-    ownership move. Symbols the frozen inventory never tracked as a
-    definition (for example a bare constant with no ``__module__``) skip
-    only that third check; identity is still required.
+    descriptor after applying only an exact route-and-symbol-specific sanctioned
+    ownership rewrite (see ``FACADE_DESCRIPTOR_REWRITES``), so a structural
+    contract change cannot hide behind the ownership move. Symbols the frozen
+    inventory never tracked as a definition (for example a bare constant with
+    no ``__module__``) skip only that third check; identity is still required.
     """
     if frozen is None:
         frozen = load_json(PUBLIC_EXPORTS_PATH)
@@ -247,7 +304,11 @@ def _facade_route_problems(
                     f"{canonical_module}.{symbol}"
                 )
                 continue
-            if symbol in frozen_defines and describe_symbol(live_legacy) != frozen_defines[symbol]:
+            if symbol in frozen_defines and describe_symbol(
+                live_legacy
+            ) != _expected_facade_descriptor(
+                legacy_module, symbol, frozen_defines[symbol]
+            ):
                 problems.append(
                     f"{legacy_module}.{symbol}: contract drifted from the frozen historical "
                     "definition"

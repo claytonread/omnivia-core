@@ -11,6 +11,7 @@ from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
     FACADE_ROUTES,
     PUBLIC_EXPORTS_PATH,
+    _expected_facade_descriptor,
     _facade_route_problems,
     _normalize_expected_for_facade_routes,
     build_public_export_inventory,
@@ -110,6 +111,30 @@ def test_facade_route_problems_reports_a_wrong_canonical_route() -> None:
     assert any("has no such symbol" in problem for problem in problems)
 
 
+def test_facade_route_problems_rejects_an_app_manifest_collision_owner_swap() -> None:
+    """``ValidationResult`` and ``ProvenanceRequirement`` are name collisions
+    across independent domains, so a route repointed at another domain's
+    same-named class still *resolves*: the routed canonical module has the
+    symbol, and only the identity check can tell the swap apart from the real
+    owner. It must, or the normalization would silently rewrite the App
+    Manifest contract's owner to another domain's."""
+    actual = build_public_export_inventory()
+    for symbol, wrong_owner in (
+        ("ValidationResult", "omnivia_core._shared.validation"),
+        ("ProvenanceRequirement", "omnivia_core.component_contract.models"),
+    ):
+        bad_routes = copy.deepcopy(FACADE_ROUTES)
+        bad_routes["omnivia_memory.app_manifest.models"][symbol] = wrong_owner
+
+        problems = _facade_route_problems(actual, routes=bad_routes)
+
+        assert any(
+            "is not the exact object bound at" in problem
+            and f"app_manifest.models.{symbol}" in problem
+            for problem in problems
+        ), f"routing {symbol} to {wrong_owner} was accepted: {problems}"
+
+
 def test_facade_route_problems_reports_a_non_identical_object(monkeypatch) -> None:
     """A canonical attribute that resolves but is not the exact legacy object (a
     lookalike rebound after both modules already imported) must fail identity."""
@@ -159,6 +184,59 @@ def test_facade_route_problems_reports_contract_descriptor_drift() -> None:
     )
 
 
+def test_facade_descriptor_rewrite_is_exact_and_symbol_specific() -> None:
+    actual = build_public_export_inventory()
+    frozen = copy.deepcopy(load_json(PUBLIC_EXPORTS_PATH))
+    descriptor = frozen["modules"]["omnivia_memory.app_manifest.validation"]["defines"][
+        "validate_app_manifest"
+    ]
+
+    # The exact historical descriptor gets the one sanctioned owner rename.
+    assert _facade_route_problems(actual, frozen=frozen) == []
+
+    # Package-looking text in a default is contract data, not ownership
+    # metadata. A broad recursive replacement would hide this mutation.
+    descriptor["signature"] = (
+        "(data: Dict[str, Any] = "
+        "'omnivia_memory.app_manifest.models.AppManifest') -> "
+        "omnivia_memory.app_manifest.models.AppManifest"
+    )
+    problems = _facade_route_problems(actual, frozen=frozen)
+    assert any(
+        "contract drifted" in problem
+        and "app_manifest.validation.validate_app_manifest" in problem
+        for problem in problems
+    )
+
+    # Assert the helper itself leaves a near miss byte-for-structure unchanged.
+    # The former broad recursive replacement would have altered both
+    # package-looking substrings, including the default value.
+    near_miss = copy.deepcopy(descriptor)
+    assert (
+        _expected_facade_descriptor(
+            "omnivia_memory.app_manifest.validation",
+            "validate_app_manifest",
+            near_miss,
+        )
+        is near_miss
+    )
+    assert "omnivia_memory" in near_miss["signature"]
+
+    exact_old = copy.deepcopy(
+        load_json(PUBLIC_EXPORTS_PATH)["modules"][
+            "omnivia_memory.app_manifest.validation"
+        ]["defines"]["validate_app_manifest"]
+    )
+    assert (
+        _expected_facade_descriptor(
+            "omnivia_memory.app_manifest.validation",
+            "another_symbol",
+            exact_old,
+        )
+        is exact_old
+    )
+
+
 def test_normalize_expected_for_facade_routes_does_not_mutate_its_argument() -> None:
     expected = load_json(PUBLIC_EXPORTS_PATH)
     before = copy.deepcopy(expected)
@@ -188,11 +266,16 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         if binding["defined_in"] != expected["root"]["bindings"][name]["defined_in"]
     }
     assert moved == {
+        "AppManifest": "omnivia_core.app_manifest.models",
+        "AppManifestValidationError": "omnivia_core.app_manifest.validation",
+        "AppState": "omnivia_core.app_manifest.models",
+        "DataSource": "omnivia_core.app_manifest.models",
         "MemoryCreate": "omnivia_core.memory.models",
         "MemoryUpdate": "omnivia_core.memory.models",
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
         "ValidationResult": "omnivia_core._shared.validation",
+        "validate_app_manifest": "omnivia_core.app_manifest.validation",
     }
 
 

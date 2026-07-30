@@ -115,9 +115,10 @@ jobs:
 
       - name: Run Ruff
         run: |
-          # Currently accepted clean scope: the canonical trees plus the six
-          # changed legacy facade/barrel files. The rest of the legacy service
-          # tree is not Ruff-clean yet and is deliberately out of scope.
+          # Currently accepted clean scope: the canonical trees plus every
+          # converted legacy facade/barrel file listed below. The rest of the
+          # legacy service tree is not Ruff-clean yet and is deliberately out of
+          # scope.
           python -m ruff check \
             src \
             packages \
@@ -125,6 +126,8 @@ jobs:
             tests \
             scripts \
             services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
             services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py \
             services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py \
