@@ -135,6 +135,30 @@ def test_facade_route_problems_rejects_an_app_manifest_collision_owner_swap() ->
         ), f"routing {symbol} to {wrong_owner} was accepted: {problems}"
 
 
+def test_facade_route_problems_rejects_a_component_contract_collision_owner_swap() -> None:
+    """The same collision trap from the other side. The Component Contract owns
+    its own ``ValidationResult`` and ``ProvenanceRequirement``, and it is the
+    owner the legacy *root* binds ``ProvenanceRequirement`` from -- so a route
+    repointed at another domain's same-named class would both swap the leaf's
+    contract and rewrite that root binding's owner. Only the identity check can
+    tell the swap apart from the real owner."""
+    actual = build_public_export_inventory()
+    for symbol, wrong_owner in (
+        ("ValidationResult", "omnivia_core._shared.validation"),
+        ("ProvenanceRequirement", "omnivia_core.app_manifest.models"),
+    ):
+        bad_routes = copy.deepcopy(FACADE_ROUTES)
+        bad_routes["omnivia_memory.component_contract.models"][symbol] = wrong_owner
+
+        problems = _facade_route_problems(actual, routes=bad_routes)
+
+        assert any(
+            "is not the exact object bound at" in problem
+            and f"component_contract.models.{symbol}" in problem
+            for problem in problems
+        ), f"routing {symbol} to {wrong_owner} was accepted: {problems}"
+
+
 def test_facade_route_problems_reports_a_non_identical_object(monkeypatch) -> None:
     """A canonical attribute that resolves but is not the exact legacy object (a
     lookalike rebound after both modules already imported) must fail identity."""
@@ -265,17 +289,47 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         for name, binding in normalized["root"]["bindings"].items()
         if binding["defined_in"] != expected["root"]["bindings"][name]["defined_in"]
     }
+    # ``ProvenanceRequirement`` and ``ValidationResult`` are routed by more than
+    # one leaf, but each moves for exactly the one route whose legacy module the
+    # root actually bound it from: the Component Contract for the former, the
+    # shared primitive for the latter. The App Manifest's and App Shell bridge's
+    # same-named classes are leaf-local and must move no root binding at all.
     assert moved == {
+        "AgentAction": "omnivia_core.component_contract.models",
+        "AgentBackedComponentContract": "omnivia_core.component_contract.models",
+        "AgentBehavior": "omnivia_core.component_contract.models",
+        "AgentRunRecord": "omnivia_core.component_contract.models",
+        "AgentRunStatus": "omnivia_core.component_contract.models",
         "AppManifest": "omnivia_core.app_manifest.models",
         "AppManifestValidationError": "omnivia_core.app_manifest.validation",
         "AppState": "omnivia_core.app_manifest.models",
+        "ApprovalPolicy": "omnivia_core.component_contract.models",
+        "AuditRequirement": "omnivia_core.component_contract.models",
+        "ComponentAIMode": "omnivia_core.component_contract.models",
+        "ComponentConnectorScope": "omnivia_core.component_contract.models",
+        "ComponentContract": "omnivia_core.component_contract.models",
+        "ComponentContractValidationError": "omnivia_core.component_contract.validation",
+        "ComponentDataSource": "omnivia_core.component_contract.models",
+        "ComponentFamily": "omnivia_core.component_contract.models",
+        "ComponentGraphScope": "omnivia_core.component_contract.models",
+        "ComponentInput": "omnivia_core.component_contract.models",
+        "ComponentOutput": "omnivia_core.component_contract.models",
+        "ComponentOutputType": "omnivia_core.component_contract.models",
+        "ComponentPermission": "omnivia_core.component_contract.models",
+        "ComponentRunMode": "omnivia_core.component_contract.models",
+        "ComponentSafetyLevel": "omnivia_core.component_contract.models",
         "DataSource": "omnivia_core.app_manifest.models",
         "MemoryCreate": "omnivia_core.memory.models",
         "MemoryUpdate": "omnivia_core.memory.models",
+        "PermissionPolicy": "omnivia_core.component_contract.models",
+        "ProvenanceBehavior": "omnivia_core.component_contract.models",
+        "ProvenanceRequirement": "omnivia_core.component_contract.models",
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
         "ValidationResult": "omnivia_core._shared.validation",
+        "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_app_manifest": "omnivia_core.app_manifest.validation",
+        "validate_component_contract": "omnivia_core.component_contract.validation",
     }
 
 

@@ -8,9 +8,10 @@ each is a thin compatibility facade whose supported symbols are the *exact*
 canonical objects (``omnivia_memory.X.Symbol is omnivia_core.X.Symbol``), not
 structurally equal lookalikes. The barrels above them (``BARREL_ALL_ORDER``)
 already delegated to their sibling leaves and need no source change, but their
-re-exported objects are now canonical too as a result -- the ``app_manifest``
-and ``app_shell_bridge`` barrels become identity-preserving purely
-transitively, through their two converted leaves each.
+re-exported objects are now canonical too as a result -- the ``app_manifest``,
+``app_shell_bridge``, and ``component_contract`` barrels become
+identity-preserving purely transitively, through their two converted leaves
+each.
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -135,6 +136,54 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "validate_app_shell_body_descriptor": "omnivia_core.app_shell_bridge.validation",
         "validate_app_shell_host_context": "omnivia_core.app_shell_bridge.validation",
     },
+    "omnivia_memory.component_contract.models": {
+        "AgentAction": "omnivia_core.component_contract.models",
+        "AgentBackedComponentContract": "omnivia_core.component_contract.models",
+        "AgentBehavior": "omnivia_core.component_contract.models",
+        "AgentRunRecord": "omnivia_core.component_contract.models",
+        "AgentRunStatus": "omnivia_core.component_contract.models",
+        "ApprovalPolicy": "omnivia_core.component_contract.models",
+        "AuditRequirement": "omnivia_core.component_contract.models",
+        "ComponentAIMode": "omnivia_core.component_contract.models",
+        "ComponentConnectorScope": "omnivia_core.component_contract.models",
+        "ComponentContract": "omnivia_core.component_contract.models",
+        "ComponentDataSource": "omnivia_core.component_contract.models",
+        "ComponentFamily": "omnivia_core.component_contract.models",
+        "ComponentGraphScope": "omnivia_core.component_contract.models",
+        "ComponentInput": "omnivia_core.component_contract.models",
+        "ComponentOutput": "omnivia_core.component_contract.models",
+        "ComponentOutputType": "omnivia_core.component_contract.models",
+        "ComponentPermission": "omnivia_core.component_contract.models",
+        "ComponentRunMode": "omnivia_core.component_contract.models",
+        "ComponentSafetyLevel": "omnivia_core.component_contract.models",
+        "Enum": "omnivia_core.component_contract.models",
+        "List": "omnivia_core.component_contract.models",
+        "Optional": "omnivia_core.component_contract.models",
+        "PermissionPolicy": "omnivia_core.component_contract.models",
+        "ProvenanceBehavior": "omnivia_core.component_contract.models",
+        # Not the App Manifest contract's class of the same name: the Component
+        # Contract historically defined its own ``ProvenanceRequirement``
+        # dataclass -- and it is the one the legacy root binds -- so this leaf
+        # must keep routing to that one. See
+        # ``test_component_contract_collision_names_keep_their_historical_owners``.
+        "ProvenanceRequirement": "omnivia_core.component_contract.models",
+        # Likewise not the ``_shared.validation`` primitive, nor the App
+        # Manifest's / App Shell bridge's / control plane's same-named class.
+        "ValidationResult": "omnivia_core.component_contract.models",
+        "dataclass": "omnivia_core.component_contract.models",
+        "field": "omnivia_core.component_contract.models",
+    },
+    "omnivia_memory.component_contract.validation": {
+        "Any": "omnivia_core.component_contract.validation",
+        "ComponentContractValidationError": "omnivia_core.component_contract.validation",
+        "Dict": "omnivia_core.component_contract.validation",
+        "Enum": "omnivia_core.component_contract.validation",
+        "List": "omnivia_core.component_contract.validation",
+        "Optional": "omnivia_core.component_contract.validation",
+        "TYPE_CHECKING": "omnivia_core.component_contract.validation",
+        "validate_agent_run_record": "omnivia_core.component_contract.validation",
+        "validate_component_contract": "omnivia_core.component_contract.validation",
+    },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
         "Enum": "omnivia_core.lifecycle.models",
@@ -185,6 +234,10 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     "omnivia_memory.app_manifest.validation": "omnivia_core.app_manifest.validation",
     "omnivia_memory.app_shell_bridge.models": "omnivia_core.app_shell_bridge.models",
     "omnivia_memory.app_shell_bridge.validation": "omnivia_core.app_shell_bridge.validation",
+    "omnivia_memory.component_contract.models": "omnivia_core.component_contract.models",
+    "omnivia_memory.component_contract.validation": (
+        "omnivia_core.component_contract.validation"
+    ),
     "omnivia_memory.lifecycle.models": "omnivia_core.lifecycle.models",
     "omnivia_memory.lifecycle.rules": "omnivia_core.lifecycle.rules",
     "omnivia_memory.provenance.models": "omnivia_core.provenance.models",
@@ -223,17 +276,46 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
         "validate_app_shell_host_context",
         "validate_app_shell_body_descriptor",
     ],
+    "component_contract": [
+        "AgentAction",
+        "AgentBackedComponentContract",
+        "AgentBehavior",
+        "AgentRunRecord",
+        "AgentRunStatus",
+        "ApprovalPolicy",
+        "AuditRequirement",
+        "ComponentAIMode",
+        "ComponentConnectorScope",
+        "ComponentContract",
+        "ComponentDataSource",
+        "ComponentFamily",
+        "ComponentGraphScope",
+        "ComponentInput",
+        "ComponentOutput",
+        "ComponentOutputType",
+        "ComponentPermission",
+        "ComponentRunMode",
+        "ComponentSafetyLevel",
+        "PermissionPolicy",
+        "ProvenanceBehavior",
+        "ProvenanceRequirement",
+        "ValidationResult",
+        "ComponentContractValidationError",
+        "validate_agent_run_record",
+        "validate_component_contract",
+    ],
     "lifecycle": ["LifecycleState", "LifecycleRules", "CreatedBy"],
     "provenance": ["Source", "SourceType"],
 }
 
 #: The barrels whose legacy source is a pure *absolute*-import re-export body,
-#: checkable by ``_assert_pure_facade_module``. ``app_shell_bridge`` is
-#: deliberately absent: its legacy barrel re-exports through the historical
-#: ``from .models import ...`` / ``from .validation import ...`` relative form
-#: and stays source-unchanged in this slice, so it gets its own stricter,
-#: shape-exact gate (``test_app_shell_barrel_source_is_unchanged_relative_reexport``)
-#: rather than a relaxed version of the shared one.
+#: checkable by ``_assert_pure_facade_module``. ``app_shell_bridge`` and
+#: ``component_contract`` are deliberately absent: their legacy barrels
+#: re-export through the historical ``from .models import ...`` /
+#: ``from .validation import ...`` relative form and stay source-unchanged, so
+#: they get their own stricter, shape-exact gate
+#: (``test_relative_import_barrel_source_is_unchanged_reexport``) rather than a
+#: relaxed version of the shared one.
 ABSOLUTE_IMPORT_BARRELS: tuple[str, ...] = (
     "_shared",
     "app_manifest",
@@ -292,6 +374,59 @@ APP_SHELL_BARREL_RELATIVE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+#: The same, for the unchanged legacy component-contract barrel. Its name order
+#: is its own historical source order -- which here happens to match the
+#: canonical barrel's, unlike the app-manifest pair.
+COMPONENT_CONTRACT_BARREL_RELATIVE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "models",
+        (
+            "AgentAction",
+            "AgentBackedComponentContract",
+            "AgentBehavior",
+            "AgentRunRecord",
+            "AgentRunStatus",
+            "ApprovalPolicy",
+            "AuditRequirement",
+            "ComponentAIMode",
+            "ComponentConnectorScope",
+            "ComponentContract",
+            "ComponentDataSource",
+            "ComponentFamily",
+            "ComponentGraphScope",
+            "ComponentInput",
+            "ComponentOutput",
+            "ComponentOutputType",
+            "ComponentPermission",
+            "ComponentRunMode",
+            "ComponentSafetyLevel",
+            "PermissionPolicy",
+            "ProvenanceBehavior",
+            "ProvenanceRequirement",
+            "ValidationResult",
+        ),
+    ),
+    (
+        "validation",
+        (
+            "ComponentContractValidationError",
+            "validate_agent_run_record",
+            "validate_component_contract",
+        ),
+    ),
+)
+
+#: Every barrel held out of ``ABSOLUTE_IMPORT_BARRELS``, and the exact relative
+#: re-export shape it must keep. Keyed by barrel suffix so the shape gate and
+#: the transitive-identity gate below both run over the same declared set --
+#: a barrel cannot be dropped from one without also leaving the other.
+RELATIVE_IMPORT_BARREL_IMPORTS: dict[
+    str, tuple[tuple[str, tuple[str, ...]], ...]
+] = {
+    "app_shell_bridge": APP_SHELL_BARREL_RELATIVE_IMPORTS,
+    "component_contract": COMPONENT_CONTRACT_BARREL_RELATIVE_IMPORTS,
+}
+
 #: Independently declared expectation for the manifest the migration-test
 #: suite uses to exclude every converted leaf from its source-parity gates.
 EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
@@ -300,6 +435,10 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.app_manifest.validation": "omnivia_memory.app_manifest.validation",
     "omnivia_core.app_shell_bridge.models": "omnivia_memory.app_shell_bridge.models",
     "omnivia_core.app_shell_bridge.validation": "omnivia_memory.app_shell_bridge.validation",
+    "omnivia_core.component_contract.models": "omnivia_memory.component_contract.models",
+    "omnivia_core.component_contract.validation": (
+        "omnivia_memory.component_contract.validation"
+    ),
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
@@ -324,6 +463,16 @@ COLLIDING_OWNERS: dict[str, tuple[str, ...]] = {
         "omnivia_core.app_manifest.models",
         "omnivia_core.component_contract.models",
     ),
+}
+
+#: For each colliding name, the single owner the *legacy package root* has always
+#: re-exported it from. The root itself is deliberately unedited by this slice:
+#: these two bindings move to the canonical objects transitively, through the
+#: converted leaves, and which owner each lands on must not change. See
+#: ``test_legacy_root_keeps_its_historical_owner_for_each_colliding_name``.
+ROOT_OWNERS: dict[str, str] = {
+    "ValidationResult": "omnivia_core._shared.validation",
+    "ProvenanceRequirement": "omnivia_core.component_contract.models",
 }
 
 
@@ -495,16 +644,19 @@ def test_barrel_ast_is_pure_facade(barrel: str) -> None:
     _assert_pure_facade_module(barrel, allow_all=True)
 
 
-def test_absolute_import_barrels_cover_every_barrel_but_the_app_shell_exception() -> None:
-    """``ABSOLUTE_IMPORT_BARRELS`` may hold out exactly one barrel -- the
-    app-shell one, which keeps its historical relative re-export form and is
-    covered by its own stricter gate below. The held-out set must not quietly
-    grow to a second barrel."""
+def test_absolute_import_barrels_cover_every_barrel_but_the_relative_exceptions() -> None:
+    """A barrel may only be held out of the shared absolute-import AST gate by
+    being declared in ``RELATIVE_IMPORT_BARREL_IMPORTS``, which subjects it to
+    the stricter shape-exact gate below instead. The two sets must partition
+    ``BARREL_ALL_ORDER`` exactly, so a barrel cannot slip out of the absolute
+    gate without landing in the relative one -- or be listed as relative while
+    still being checked as absolute."""
     held_out = set(BARREL_ALL_ORDER) - set(ABSOLUTE_IMPORT_BARRELS)
-    assert held_out == {"app_shell_bridge"}, (
-        "app_shell_bridge is the only barrel that may be held out of the shared "
-        f"absolute-import AST gate; found {sorted(held_out)}"
+    assert held_out == set(RELATIVE_IMPORT_BARREL_IMPORTS), (
+        "only barrels declared in RELATIVE_IMPORT_BARREL_IMPORTS may be held out of "
+        f"the shared absolute-import AST gate; found {sorted(held_out)}"
     )
+    assert set(ABSOLUTE_IMPORT_BARRELS).isdisjoint(RELATIVE_IMPORT_BARREL_IMPORTS)
 
 
 def test_app_manifest_barrel_source_is_unchanged_absolute_reexport() -> None:
@@ -652,24 +804,26 @@ def test_colliding_owners_cover_every_facade_leaf_that_binds_the_name() -> None:
             )
 
 
-def test_app_shell_barrel_source_is_unchanged_relative_reexport() -> None:
-    """The legacy app-shell barrel is *source-unchanged* by this slice: it
-    becomes identity-preserving transitively, through its two converted leaves,
-    not by being rewritten itself. Pin its exact historical shape -- two
+@pytest.mark.parametrize("barrel", sorted(RELATIVE_IMPORT_BARREL_IMPORTS))
+def test_relative_import_barrel_source_is_unchanged_reexport(barrel: str) -> None:
+    """These legacy barrels are *source-unchanged*: each becomes
+    identity-preserving transitively, through its two converted leaves, not by
+    being rewritten itself. Pin each one's exact historical shape -- two
     relative ``from .<leaf> import (...)`` statements in source order with
     their exact ordered name lists, then the ``__all__`` literal -- so a
-    future edit that reroutes the barrel directly at ``omnivia_core``, adds a
+    future edit that reroutes a barrel directly at ``omnivia_core``, adds a
     ``__getattr__``, or reorders its re-exports fails here.
     """
-    body = _module_body_after_docstring("omnivia_memory.app_shell_bridge")
-    assert len(body) == len(APP_SHELL_BARREL_RELATIVE_IMPORTS) + 1, (
-        "omnivia_memory.app_shell_bridge: expected exactly "
-        f"{len(APP_SHELL_BARREL_RELATIVE_IMPORTS)} relative imports plus __all__, found "
-        f"{[ast.dump(node) for node in body]}"
+    expected_imports = RELATIVE_IMPORT_BARREL_IMPORTS[barrel]
+    module_name = f"omnivia_memory.{barrel}"
+    body = _module_body_after_docstring(module_name)
+    assert len(body) == len(expected_imports) + 1, (
+        f"{module_name}: expected exactly {len(expected_imports)} relative imports plus "
+        f"__all__, found {[ast.dump(node) for node in body]}"
     )
-    for node, (module, names) in zip(body, APP_SHELL_BARREL_RELATIVE_IMPORTS, strict=False):
+    for node, (module, names) in zip(body, expected_imports, strict=False):
         assert isinstance(node, ast.ImportFrom), f"expected an import, found {ast.dump(node)}"
-        assert node.level == 1, f"omnivia_memory.app_shell_bridge: {module} import is not relative"
+        assert node.level == 1, f"{module_name}: {module} import is not relative"
         assert node.module == module
         assert tuple(alias.name for alias in node.names) == names
         for alias in node.names:
@@ -683,7 +837,120 @@ def test_app_shell_barrel_source_is_unchanged_relative_reexport() -> None:
     assert isinstance(all_node.value, ast.List)
     assert [
         elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
-    ] == BARREL_ALL_ORDER["app_shell_bridge"]
+    ] == BARREL_ALL_ORDER[barrel]
+
+    # Every name the two imports bind is exactly what ``__all__`` advertises:
+    # the barrel adds nothing of its own and hides nothing it imported.
+    imported = sorted(name for _, names in expected_imports for name in names)
+    assert imported == sorted(BARREL_ALL_ORDER[barrel])
+
+
+@pytest.mark.parametrize("barrel", sorted(RELATIVE_IMPORT_BARREL_IMPORTS))
+def test_relative_import_barrel_identity_is_transitive_through_its_leaves(
+    barrel: str,
+) -> None:
+    """Each export must be the exact object bound at the *legacy leaf* it
+    re-exports from, and that object must in turn be the canonical one. A barrel
+    that started sourcing a name from somewhere else would still pass the
+    canonical-identity check alone; requiring the leaf hop too is what pins the
+    transitive route.
+    """
+    barrel_module = importlib.import_module(f"omnivia_memory.{barrel}")
+    for relative_leaf, names in RELATIVE_IMPORT_BARREL_IMPORTS[barrel]:
+        legacy_leaf_name = f"omnivia_memory.{barrel}.{relative_leaf}"
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        canonical_leaf = importlib.import_module(LEAF_IMPORT_SOURCE[legacy_leaf_name])
+        for name in names:
+            assert getattr(barrel_module, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.{barrel}.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            assert getattr(barrel_module, name) is getattr(canonical_leaf, name), (
+                f"omnivia_memory.{barrel}.{name} is not the exact object bound at "
+                f"{LEAF_IMPORT_SOURCE[legacy_leaf_name]}.{name}"
+            )
+
+
+def test_component_contract_collision_names_keep_their_historical_owners() -> None:
+    """``ValidationResult`` and ``ProvenanceRequirement`` are name collisions
+    across independent domains. The Component Contract's own dataclasses are the
+    ones this leaf historically exposed -- and its ``ProvenanceRequirement`` is
+    additionally the one the legacy package root binds -- so routing either to
+    another domain's same-named class would be a silent contract swap that every
+    "is the exact canonical object" check above would still pass. Pin the owners,
+    and pin that they are *not* the others.
+    """
+    legacy_leaf = importlib.import_module("omnivia_memory.component_contract.models")
+    legacy_barrel = importlib.import_module("omnivia_memory.component_contract")
+    canonical_leaf = importlib.import_module("omnivia_core.component_contract.models")
+
+    for name in ("ValidationResult", "ProvenanceRequirement"):
+        assert getattr(legacy_leaf, name) is getattr(canonical_leaf, name)
+        assert getattr(legacy_barrel, name) is getattr(canonical_leaf, name)
+
+    for other_module in (
+        "omnivia_core._shared.validation",
+        "omnivia_memory._shared.validation",
+        "omnivia_core.app_manifest.models",
+        "omnivia_memory.app_manifest.models",
+        "omnivia_core.app_shell_bridge.models",
+        "omnivia_memory.app_shell_bridge.models",
+        "omnivia_core.control_plane.models",
+        "omnivia_memory.control_plane.models",
+    ):
+        other = importlib.import_module(other_module)
+        for name in ("ValidationResult", "ProvenanceRequirement"):
+            if not hasattr(other, name):
+                continue
+            assert getattr(legacy_leaf, name) is not getattr(other, name), (
+                f"omnivia_memory.component_contract.models.{name} must stay the "
+                f"Component Contract's own class, not {other_module}.{name}"
+            )
+
+
+def test_legacy_root_keeps_its_historical_owner_for_each_colliding_name() -> None:
+    """The legacy package root re-exports both colliding names, but from only one
+    owner each: ``ProvenanceRequirement`` from the Component Contract (via
+    ``from .component_contract import ...``) and ``ValidationResult`` from the
+    shared primitive (via the knowledge barrel's re-export of it). The root is
+    *not* edited by this slice, so those two bindings must still resolve to the
+    same objects they always did -- now the canonical ones, reached transitively
+    through the converted leaves.
+
+    This is the invariant the leaf-level checks cannot see. ``ROOT_OWNERS``
+    below pins one owner per name out of the five/two candidates, and the
+    negative half pins that the root did not silently pick up a *different*
+    domain's same-named class -- which is exactly what a converted leaf routed
+    to the wrong owner would cause, several import hops away from the leaf.
+    """
+    root = importlib.import_module("omnivia_memory")
+    for name, owner in ROOT_OWNERS.items():
+        expected = getattr(importlib.import_module(owner), name)
+        assert getattr(root, name) is expected, (
+            f"omnivia_memory.{name} is no longer the object bound at {owner}.{name}"
+        )
+        for other in COLLIDING_OWNERS[name]:
+            if other == owner:
+                continue
+            assert getattr(root, name) is not getattr(
+                importlib.import_module(other), name
+            ), (
+                f"omnivia_memory.{name} must stay {owner}.{name}, not {other}.{name}"
+            )
+
+
+def test_root_owners_name_a_single_listed_owner_for_every_colliding_name() -> None:
+    """``ROOT_OWNERS`` must stay in step with ``COLLIDING_OWNERS``: every
+    colliding name the root re-exports needs exactly one declared owner, and
+    that owner has to be one of the candidates the collision test already
+    separates -- otherwise the root invariant above could be satisfied by an
+    owner whose distinctness from the others is unchecked."""
+    assert set(ROOT_OWNERS) == set(COLLIDING_OWNERS)
+    for name, owner in ROOT_OWNERS.items():
+        assert owner in COLLIDING_OWNERS[name], (
+            f"ROOT_OWNERS[{name!r}] is {owner}, which is not one of that name's "
+            f"declared colliding owners {COLLIDING_OWNERS[name]}"
+        )
 
 
 def test_app_shell_validation_result_keeps_its_historical_collision_owner() -> None:

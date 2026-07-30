@@ -61,11 +61,15 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #:
 #: ``ValidationResult`` appears under several different owners here on purpose:
 #: ``omnivia_memory._shared.validation`` routes to the shared primitive, while
-#: ``omnivia_memory.app_shell_bridge.models`` and
-#: ``omnivia_memory.app_manifest.models`` each route to their own domain's
+#: ``omnivia_memory.app_shell_bridge.models``,
+#: ``omnivia_memory.app_manifest.models``, and
+#: ``omnivia_memory.component_contract.models`` each route to their own domain's
 #: same-named dataclass. They are distinct objects and each leaf must keep its
 #: historical one. ``ProvenanceRequirement`` collides the same way between the
-#: App Manifest contract and the Component Contract.
+#: App Manifest contract and the Component Contract. The legacy *root* binds
+#: ``ProvenanceRequirement`` from the Component Contract and ``ValidationResult``
+#: from the shared primitive, so only those two routes ever move a root binding
+#: for the colliding names -- the other same-named owners are leaf-local.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -97,6 +101,36 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "validate_app_shell_body_descriptor": "omnivia_core.app_shell_bridge.validation",
         "validate_app_shell_host_context": "omnivia_core.app_shell_bridge.validation",
     },
+    "omnivia_memory.component_contract.models": {
+        "AgentAction": "omnivia_core.component_contract.models",
+        "AgentBackedComponentContract": "omnivia_core.component_contract.models",
+        "AgentBehavior": "omnivia_core.component_contract.models",
+        "AgentRunRecord": "omnivia_core.component_contract.models",
+        "AgentRunStatus": "omnivia_core.component_contract.models",
+        "ApprovalPolicy": "omnivia_core.component_contract.models",
+        "AuditRequirement": "omnivia_core.component_contract.models",
+        "ComponentAIMode": "omnivia_core.component_contract.models",
+        "ComponentConnectorScope": "omnivia_core.component_contract.models",
+        "ComponentContract": "omnivia_core.component_contract.models",
+        "ComponentDataSource": "omnivia_core.component_contract.models",
+        "ComponentFamily": "omnivia_core.component_contract.models",
+        "ComponentGraphScope": "omnivia_core.component_contract.models",
+        "ComponentInput": "omnivia_core.component_contract.models",
+        "ComponentOutput": "omnivia_core.component_contract.models",
+        "ComponentOutputType": "omnivia_core.component_contract.models",
+        "ComponentPermission": "omnivia_core.component_contract.models",
+        "ComponentRunMode": "omnivia_core.component_contract.models",
+        "ComponentSafetyLevel": "omnivia_core.component_contract.models",
+        "PermissionPolicy": "omnivia_core.component_contract.models",
+        "ProvenanceBehavior": "omnivia_core.component_contract.models",
+        "ProvenanceRequirement": "omnivia_core.component_contract.models",
+        "ValidationResult": "omnivia_core.component_contract.models",
+    },
+    "omnivia_memory.component_contract.validation": {
+        "ComponentContractValidationError": "omnivia_core.component_contract.validation",
+        "validate_agent_run_record": "omnivia_core.component_contract.validation",
+        "validate_component_contract": "omnivia_core.component_contract.validation",
+    },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
     },
@@ -125,6 +159,12 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
 #: This deliberately does not perform a general package-name substitution:
 #: package-looking text inside a constant or default argument is contract data,
 #: not ownership metadata, and must continue to fail the frozen baseline.
+#:
+#: Only a descriptor that spells an owning package survives the ownership move
+#: with different text, which is why most converted leaves need no entry here.
+#: The Component Contract validators, for instance, annotate their return types
+#: as string forward references (``-> "ComponentContract"``), so their frozen
+#: signatures never named ``omnivia_memory`` and are unchanged by the move.
 FACADE_DESCRIPTOR_REWRITES: dict[
     tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
 ] = {

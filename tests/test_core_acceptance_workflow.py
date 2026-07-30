@@ -80,6 +80,8 @@ REQUIRED_RUFF_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py",
     "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py",
+    "services/omnivia-memory/src/omnivia_memory/component_contract/models.py",
+    "services/omnivia-memory/src/omnivia_memory/component_contract/validation.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/models.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py",

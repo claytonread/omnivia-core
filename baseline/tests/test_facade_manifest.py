@@ -121,6 +121,8 @@ EXPECTED_STATE_SUFFIXES = {
         "app_manifest.validation",
         "app_shell_bridge.models",
         "app_shell_bridge.validation",
+        "component_contract.models",
+        "component_contract.validation",
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
@@ -130,11 +132,11 @@ EXPECTED_STATE_SUFFIXES = {
         "_shared",
         "app_manifest",
         "app_shell_bridge",
+        "component_contract",
         "lifecycle",
         "provenance",
     },
     MigrationState.PENDING_DIRECT_BARREL: {
-        "component_contract",
         "control_plane",
         "knowledge",
         "module_manifest",
@@ -336,7 +338,9 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("app_shell_bridge.models", "source_parity", "move the state forward"),
         ("app_manifest.models", "source_parity", "move the state forward"),
         ("app_manifest.validation", "source_parity", "move the state forward"),
-        ("component_contract.models", "direct_facade", "declared 'direct_facade'"),
+        ("component_contract.models", "source_parity", "move the state forward"),
+        ("component_contract.validation", "source_parity", "move the state forward"),
+        ("module_manifest.models", "direct_facade", "declared 'direct_facade'"),
     ],
 )
 def test_checkout_rejects_source_state_swaps(
@@ -383,7 +387,13 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
 
 @pytest.mark.parametrize(
     "child_suffix",
-    ["_shared.validation", "app_manifest.models", "app_manifest.validation"],
+    [
+        "_shared.validation",
+        "app_manifest.models",
+        "app_manifest.validation",
+        "component_contract.models",
+        "component_contract.validation",
+    ],
 )
 def test_transitive_facade_rejects_an_unconverted_child(child_suffix: str) -> None:
     document = _document()
@@ -441,6 +451,108 @@ def test_app_manifest_barrel_transitive_form_rejects_a_reroute_or_local_definiti
     )
     defects = transitive_facade_defects(ast.parse(source), route, children)
     assert any(pattern in defect for defect in defects), defects
+
+
+#: The legacy component-contract barrel's exact historical export sets, per
+#: child, restated here rather than read off the barrel: the fixture below must
+#: not be derived from the very file whose mutations it is proving get rejected.
+#: Unlike the app-manifest barrel, this one re-exports through *relative*
+#: imports, which ``transitive_facade_defects`` has to resolve against the
+#: barrel's own package before it can tell an approved child from a reroute.
+_COMPONENT_CONTRACT_MODELS_EXPORTS: tuple[str, ...] = (
+    "AgentAction",
+    "AgentBackedComponentContract",
+    "AgentBehavior",
+    "AgentRunRecord",
+    "AgentRunStatus",
+    "ApprovalPolicy",
+    "AuditRequirement",
+    "ComponentAIMode",
+    "ComponentConnectorScope",
+    "ComponentContract",
+    "ComponentDataSource",
+    "ComponentFamily",
+    "ComponentGraphScope",
+    "ComponentInput",
+    "ComponentOutput",
+    "ComponentOutputType",
+    "ComponentPermission",
+    "ComponentRunMode",
+    "ComponentSafetyLevel",
+    "PermissionPolicy",
+    "ProvenanceBehavior",
+    "ProvenanceRequirement",
+    "ValidationResult",
+)
+_COMPONENT_CONTRACT_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "ComponentContractValidationError",
+    "validate_agent_run_record",
+    "validate_component_contract",
+)
+
+
+def _component_contract_barrel_source(extra_source: str) -> str:
+    def block(module: str, names: tuple[str, ...]) -> str:
+        body = "".join(f"    {name},\n" for name in names)
+        return f"from .{module} import (\n{body})\n"
+
+    exported = _COMPONENT_CONTRACT_MODELS_EXPORTS + _COMPONENT_CONTRACT_VALIDATION_EXPORTS
+    all_body = "".join(f'    "{name}",\n' for name in exported)
+    return (
+        block("models", _COMPONENT_CONTRACT_MODELS_EXPORTS)
+        + block("validation", _COMPONENT_CONTRACT_VALIDATION_EXPORTS)
+        + f"__all__ = [\n{all_body}]\n"
+        + extra_source
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.component_contract.models import ComponentContract\n",
+            "unapproved module",
+        ),
+        ("from omnivia_memory.knowledge import ValidationResult\n", "unapproved module"),
+        ("from .persistence import Database\n", "unapproved module"),
+        ("ComponentFamily = object()\n", "assignments"),
+        ("def validate_component_contract(data):\n    return data\n", "statements of its own"),
+    ],
+)
+def test_component_contract_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The component-contract barrel earns ``transitive_facade`` by re-exporting
+    only its two converted children, through the relative imports it has always
+    used. Reaching into ``omnivia_core`` itself, pulling a third module by either
+    an absolute or a relative path, or defining anything of its own must be
+    rejected -- each of those would make the barrel's identity preservation
+    direct or local rather than transitive, while still exporting the same 26
+    names."""
+    manifest = load_manifest()
+    route = manifest.route_for_legacy("omnivia_memory.component_contract")
+    children = [
+        manifest.route_for_legacy("omnivia_memory.component_contract.models"),
+        manifest.route_for_legacy("omnivia_memory.component_contract.validation"),
+    ]
+    source = _component_contract_barrel_source(extra_source)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_component_contract_barrel_transitive_form_accepts_its_historical_source() -> None:
+    """The same fixture with nothing added must be defect-free, so the rejection
+    cases above are proven to fail on what they inject rather than on the
+    relative-import shape itself."""
+    manifest = load_manifest()
+    route = manifest.route_for_legacy("omnivia_memory.component_contract")
+    children = [
+        manifest.route_for_legacy("omnivia_memory.component_contract.models"),
+        manifest.route_for_legacy("omnivia_memory.component_contract.validation"),
+    ]
+    source = _component_contract_barrel_source("")
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
 
 
 def test_validate_checkout_revalidates_public_dataclass_instances() -> None:

@@ -44,6 +44,7 @@ Four layers of comparison run here, from loosest to strictest:
 A subset of once-duplicated leaves (``_shared.validation``,
 ``app_manifest.models``, ``app_manifest.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
+``component_contract.models``, ``component_contract.validation``,
 ``lifecycle.models``, ``lifecycle.rules``, ``provenance.models``, and
 ``memory.models``) has since been converted into thin compatibility facades:
 the legacy leaf now imports its supported symbols directly from the canonical
