@@ -43,7 +43,6 @@ from baseline.facade_manifest import (
     SCHEMA_PATH,
     FacadeManifestError,
     MigrationState,
-    PairKind,
     Shape,
     load_manifest,
     validate_checkout,
@@ -139,16 +138,18 @@ def main() -> int:
         f"{len(modules.legacy_only)} legacy-only, "
         f"{len(modules.canonical_only)} canonical-only (not routed at this checkpoint)"
     )
-    unconverted = [
-        route
-        for route in manifest.routes
-        if not route.is_converted and route.pair_kind is not PairKind.ROOT
-    ]
+    # Every unconverted route, the package root included. The root is *not*
+    # excluded from this line: hiding it here would let the gate print "nothing
+    # remaining" while the one route that publishes the whole advertised surface
+    # was still a duplicate.
+    unconverted = [route for route in manifest.routes if not route.is_converted]
     leaves_left = [route for route in unconverted if route.shape is Shape.LEAF]
+    barrels_left = [route for route in unconverted if route.shape is Shape.BARREL]
+    roots_left = [route for route in unconverted if route.shape is Shape.ROOT]
     print(
-        f"  remaining: {_counted(len(leaves_left), 'leaf', 'leaves')} and "
-        f"{_counted(len(unconverted) - len(leaves_left), 'barrel', 'barrels')} "
-        f"still to convert"
+        f"  remaining: {_counted(len(leaves_left), 'leaf', 'leaves')}, "
+        f"{_counted(len(barrels_left), 'barrel', 'barrels')} and "
+        f"{_counted(len(roots_left), 'root', 'roots')} still to convert"
     )
     return 0
 

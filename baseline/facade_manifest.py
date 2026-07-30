@@ -27,10 +27,12 @@ Three independent things are checked:
    synchronous function definitions, a ``transitive_facade`` barrel that still
    has unconverted children or reaches into the canonical package itself, a
    ``hybrid_facade`` barrel that reaches anything but its converted routed
-   children and its declared runtime-only descendants, a still-duplicated leaf
-   that has quietly become either kind of facade without its state being moved
-   forward, or a ``pending_hybrid`` barrel that already qualifies as a
-   ``hybrid_facade`` and is therefore understating what it is.
+   children and its declared runtime-only descendants, a ``root_facade`` root
+   whose imports are not exactly the frozen owner-by-owner table behind its
+   frozen ordered ``__all__``, a still-duplicated leaf that has quietly become
+   either kind of facade without its state being moved forward, or a
+   ``pending_hybrid``/``pending_root`` route that already qualifies as its
+   converted state and is therefore understating what it is.
 
 A ``FacadeManifest`` handed to :func:`validate_checkout` is revalidated before
 it is trusted: the public dataclass constructor cannot be used to smuggle a
@@ -184,6 +186,20 @@ class MigrationState(str, Enum):
     #: runtime-only surface. Its source policy is
     #: :func:`hybrid_facade_defects`.
     HYBRID_FACADE = "hybrid_facade"
+    #: The converted package root. Deliberately *not* ``direct_facade``: the
+    #: canonical root exposes only ``__version__`` on purpose, so a single
+    #: re-export of ``omnivia_core`` could never carry the legacy root's
+    #: advertised contract. This state means the legacy root imports every one of
+    #: its advertised names directly from the exact canonical owner or barrel that
+    #: publishes it, takes ``__version__`` from the canonical root rather than
+    #: assigning one of its own, and keeps a small declared set of non-advertised
+    #: compatibility bindings -- two canonical Core inputs, and two deliberately
+    #: still owned by legacy runtime modules the registry declares runtime-only.
+    #:
+    #: It is valid only for ``(PairKind.ROOT, Shape.ROOT)``, counts as converted,
+    #: and may replace ``pending_root`` only once every other route is converted
+    #: *and* the source satisfies :func:`root_facade_defects`.
+    ROOT_FACADE = "root_facade"
     #: A direct barrel awaiting conversion.
     PENDING_DIRECT_BARREL = "pending_direct_barrel"
     #: A hybrid barrel awaiting conversion.
@@ -197,9 +213,11 @@ class MigrationState(str, Enum):
 #: cannot be "transitively" converted (it has no children to convert), a barrel
 #: cannot be a ``direct_facade`` while its leaves are still copies, and
 #: ``canonical_subset``/``split_facade`` describe one module's symbol set, so
-#: only a leaf whose pair is direct can be in either, and ``hybrid_facade``
+#: only a leaf whose pair is direct can be in either, ``hybrid_facade``
 #: describes a barrel that publishes a declared runtime-only half, so only a
-#: ``hybrid_barrel`` pair can be in it.
+#: ``hybrid_barrel`` pair can be in it, and ``root_facade`` describes the package
+#: root's own frozen export contract, so only the ``root``/``root`` pair can be
+#: in it.
 _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] = (
     frozenset(
         {
@@ -211,6 +229,7 @@ _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] 
             (PairKind.DIRECT, Shape.BARREL, MigrationState.PENDING_DIRECT_BARREL),
             (PairKind.HYBRID_BARREL, Shape.BARREL, MigrationState.HYBRID_FACADE),
             (PairKind.HYBRID_BARREL, Shape.BARREL, MigrationState.PENDING_HYBRID),
+            (PairKind.ROOT, Shape.ROOT, MigrationState.ROOT_FACADE),
             (PairKind.ROOT, Shape.ROOT, MigrationState.PENDING_ROOT),
         }
     )
@@ -221,23 +240,507 @@ _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] 
 #: blanket exemption from source checking, and the three members are not treated
 #: alike:
 #:
-#: * ``PENDING_DIRECT_BARREL`` and ``PENDING_ROOT`` have no source shape to
-#:   contradict -- the file is whatever it always was, and neither state claims
-#:   anything about it -- so :func:`_collect_source_state_errors` skips them.
-#: * ``PENDING_HYBRID`` stays in this set because it really does declare an
-#:   unmoved route, but it is *retained and specially inspected* rather than
-#:   skipped: the moment every routed prerequisite child of a hybrid barrel is
-#:   converted *and* its unchanged source already qualifies as an exact hybrid
-#:   facade over those children and its declared runtime-only descendants, the
-#:   registry is understating the file and the state must move forward. Until
-#:   both conditions hold the route is legitimately pending and nothing is
-#:   reported.
+#: * ``PENDING_DIRECT_BARREL`` has no source shape to contradict -- the file is
+#:   whatever it always was, and the state claims nothing about it -- so
+#:   :func:`_collect_source_state_errors` skips it.
+#: * ``PENDING_HYBRID`` and ``PENDING_ROOT`` stay in this set because they really
+#:   do declare an unmoved route, but they are *retained and specially inspected*
+#:   rather than skipped: the moment a hybrid barrel's routed prerequisite
+#:   children are all converted *and* its unchanged source already qualifies as an
+#:   exact hybrid facade over those children and its declared runtime-only
+#:   descendants -- or, for the root, the moment every other route is converted
+#:   *and* the root source already satisfies :func:`root_facade_defects` -- the
+#:   registry is understating the file and the state must move forward. Until both
+#:   conditions hold the route is legitimately pending and nothing is reported.
 _PENDING_STATES: Final[frozenset[MigrationState]] = frozenset(
     {
         MigrationState.PENDING_DIRECT_BARREL,
         MigrationState.PENDING_HYBRID,
         MigrationState.PENDING_ROOT,
     }
+)
+
+#: The pending states whose source is nonetheless read, so a registry that has
+#: fallen behind a file it describes fails rather than silently understating it.
+_INSPECTED_PENDING_STATES: Final[frozenset[MigrationState]] = frozenset(
+    {MigrationState.PENDING_HYBRID, MigrationState.PENDING_ROOT}
+)
+
+
+# --------------------------------------------------------------------------- #
+# the frozen root export contract
+# --------------------------------------------------------------------------- #
+
+#: The canonical module the legacy root takes ``__version__`` from. It is the
+#: canonical *root*, and that is the whole reason the root cannot be a
+#: ``direct_facade``: ``omnivia_core`` advertises only this one name.
+ROOT_FACADE_VERSION_MODULE: Final = CANONICAL_PACKAGE
+
+#: The one name the canonical root supplies, and the exact literal ``__all__``
+#: that root must declare.
+ROOT_FACADE_VERSION_BINDING: Final = "__version__"
+CANONICAL_ROOT_ALL: Final[tuple[str, ...]] = (ROOT_FACADE_VERSION_BINDING,)
+
+#: Every canonical module the converted legacy root may import from, and the
+#: exact set of names it must take from each. This table *is* the frozen root
+#: contract: it is hand-maintained and restated here rather than derived from the
+#: file it constrains, so a name moved to a different -- but same-named -- owner
+#: fails instead of being absorbed.
+#:
+#: It also pins the six export collisions independently of import order, because
+#: each colliding name appears in exactly one module's set:
+#:
+#: * ``ValidationResult`` -> ``omnivia_core._shared.validation``, never the
+#:   knowledge barrel that also republishes it;
+#: * ``SourceRef`` -> ``omnivia_core.knowledge``, never the memory graph's
+#:   same-named record;
+#: * ``ProvenanceRequirement`` -> ``omnivia_core.component_contract``, never the
+#:   app manifest's;
+#: * ``LifecycleState`` -> ``omnivia_core.control_plane``, never the lifecycle
+#:   domain's;
+#: * ``Source`` and ``SourceType`` -> ``omnivia_core.provenance``, never
+#:   ingestion's same-named ``Source``.
+#:
+#: ``MemoryCreate`` and ``MemoryUpdate`` are here too, and are canonical Core
+#: objects, but they are not advertised: see
+#: :data:`ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS`.
+ROOT_FACADE_CANONICAL_IMPORTS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "omnivia_core": (
+            "__version__",
+        ),
+        "omnivia_core._shared.validation": (
+            "ValidationResult",
+        ),
+        "omnivia_core.app_manifest": (
+            "AppManifest",
+            "AppManifestValidationError",
+            "AppState",
+            "DataSource",
+            "validate_app_manifest",
+        ),
+        "omnivia_core.component_contract": (
+            "AgentAction",
+            "AgentBackedComponentContract",
+            "AgentBehavior",
+            "AgentRunRecord",
+            "AgentRunStatus",
+            "ApprovalPolicy",
+            "AuditRequirement",
+            "ComponentAIMode",
+            "ComponentConnectorScope",
+            "ComponentContract",
+            "ComponentContractValidationError",
+            "ComponentDataSource",
+            "ComponentFamily",
+            "ComponentGraphScope",
+            "ComponentInput",
+            "ComponentOutput",
+            "ComponentOutputType",
+            "ComponentPermission",
+            "ComponentRunMode",
+            "ComponentSafetyLevel",
+            "PermissionPolicy",
+            "ProvenanceBehavior",
+            "ProvenanceRequirement",
+            "validate_agent_run_record",
+            "validate_component_contract",
+        ),
+        "omnivia_core.control_plane": (
+            "CONTROL_PLANE_CONTRACT_VERSION",
+            "CONTROL_PLANE_SCHEMA_VERSION",
+            "DANGEROUS_SIDE_EFFECTS",
+            "Agent",
+            "Approval",
+            "AuditEvent",
+            "Automation",
+            "Capability",
+            "CapabilityType",
+            "CatalogueArtifactVerification",
+            "Connection",
+            "ConnectionKind",
+            "ConsultantAccessGrant",
+            "ConsultantGrantStatus",
+            "ControlPlaneManifest",
+            "ControlPlaneRunStatus",
+            "ControlPlaneValidationError",
+            "ExecutionMode",
+            "ExecutionResult",
+            "ImportedCandidateSet",
+            "ImportRecord",
+            "ImportSourceChange",
+            "ImportSourceProtocol",
+            "ImportSpecValidation",
+            "LifecycleState",
+            "LocalApprovalNotification",
+            "LocalApprovalNotificationChannel",
+            "LocalApprovalNotificationEvent",
+            "LocalApprovalNotificationStatus",
+            "LocalModelInvocationRecord",
+            "LocalObservabilityLogRecord",
+            "LocalUsageLedgerEntry",
+            "Policy",
+            "PolicyAttributeCondition",
+            "PolicyAttributeExpression",
+            "PolicyDecision",
+            "PolicyDecisionReason",
+            "PolicyDecisionRecord",
+            "PolicyRulePack",
+            "PolicyTemplate",
+            "RunMode",
+            "RunObservabilityMetrics",
+            "RunRecord",
+            "RunStepRecord",
+            "RunStepStatus",
+            "RunStepType",
+            "SecretMetadata",
+            "SecretReference",
+            "SecretResolutionResult",
+            "SecretStorageScope",
+            "SideEffect",
+            "SyncConflictStrategy",
+            "SyncDirection",
+            "SyncRule",
+            "TenantIsolationRule",
+            "Trigger",
+            "TriggerEventEnvelope",
+            "TriggerIngestionResult",
+            "TriggerKind",
+            "WorkspaceRef",
+            "compile_policy_expression",
+            "detect_import_source_change",
+            "import_asyncapi_candidates",
+            "import_catalogue_candidates",
+            "import_catalogue_generated_candidates",
+            "import_mcp_candidates",
+            "import_openapi_candidates",
+            "manifest_from_dict",
+            "validate_asyncapi_import_spec",
+            "validate_control_plane_manifest",
+            "validate_mcp_import_spec",
+            "validate_openapi_import_spec",
+            "verify_catalogue_artifacts",
+        ),
+        "omnivia_core.knowledge": (
+            "BUILTIN_GRAPH_NODE_KINDS",
+            "BUILTIN_GRAPH_RELATIONS",
+            "BUILTIN_OBJECT_KINDS",
+            "EXTENSION_MANIFEST_CONTRACT_VERSION",
+            "GRAPH_CONTRACT_VERSION",
+            "KNOWLEDGE_CONTRACT_VERSION",
+            "AgentGraphContext",
+            "ContractVersion",
+            "GraphConfidence",
+            "GraphEdge",
+            "GraphEvidenceStrength",
+            "GraphFragment",
+            "GraphNode",
+            "GraphOrigin",
+            "GraphReviewStatus",
+            "GraphSensitivity",
+            "GraphSourceType",
+            "GraphVisibility",
+            "KnowledgeClaim",
+            "KnowledgeCollection",
+            "KnowledgeExtensionManifest",
+            "KnowledgeLink",
+            "KnowledgeObject",
+            "KnowledgeSource",
+            "KnowledgeSpace",
+            "SourceRef",
+            "check_contract_version_compatibility",
+            "normalize_graph_edge_id",
+            "normalize_graph_node_id",
+            "normalize_graph_node_kind",
+            "normalize_graph_relation",
+            "normalize_identifier",
+            "normalize_label",
+            "normalize_object_id",
+            "normalize_object_kind",
+            "normalize_source_path",
+            "normalize_space_id",
+            "normalize_tags",
+            "summarize_confidence",
+            "summarize_review_status",
+            "summarize_sensitivity",
+            "validate_agent_graph_context",
+            "validate_graph_edge",
+            "validate_graph_fragment",
+            "validate_graph_node",
+            "validate_knowledge_claim",
+            "validate_knowledge_collection",
+            "validate_knowledge_extension_manifest",
+            "validate_knowledge_link",
+            "validate_knowledge_object",
+            "validate_knowledge_source",
+            "validate_knowledge_space",
+            "validate_source_ref",
+        ),
+        "omnivia_core.memory.models": (
+            "MemoryCreate",
+            "MemoryUpdate",
+        ),
+        "omnivia_core.memory_graph": (
+            "EvidenceGraphResponse",
+            "GraphPreviewResponse",
+            "MemoryGraphFixture",
+            "RetrievalTrace",
+            "build_memory_graph_fixture",
+        ),
+        "omnivia_core.module_manifest": (
+            "Entrypoint",
+            "Integrity",
+            "ModuleKind",
+            "ModuleManifest",
+            "ModuleManifestValidationError",
+            "Permission",
+            "PublishedTarget",
+            "validate_module_manifest",
+        ),
+        "omnivia_core.provenance": (
+            "Source",
+            "SourceType",
+        ),
+        "omnivia_core.run_ledger": (
+            "RUN_LEDGER_CONTRACT_VERSION",
+            "RUN_LEDGER_PATH_ENV",
+            "TERMINAL_RUN_STATUSES",
+            "EvidenceFileRef",
+            "RunLedgerEntry",
+            "RunLedgerProvenance",
+            "RunLedgerStatus",
+            "validate_evidence_file_ref",
+            "validate_run_ledger_entry",
+            "validate_run_ledger_provenance",
+        ),
+    }
+)
+
+#: The only legacy modules the converted root may import from, and the exact
+#: names it may take from each. Both modules must also appear in the registry's
+#: own ``runtime_only_modules``, so this table cannot license a runtime import
+#: from a module the registry has not declared. Core deliberately does not own
+#: either object, and converting the root does not move them.
+ROOT_FACADE_RUNTIME_IMPORTS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "omnivia_memory.memory.service": (
+            "MemoryService",
+        ),
+        "omnivia_memory.persistence": (
+            "Database",
+        ),
+    }
+)
+
+#: The frozen, ordered literal ``__all__`` the converted root must declare, exactly:
+#: 182 advertised portable names plus ``__version__``. Order is part of the
+#: contract, so this is a tuple compared element by element rather than a set.
+ROOT_FACADE_ALL: Final[tuple[str, ...]] = (
+    "AgentGraphContext",
+    "AppManifest",
+    "AppManifestValidationError",
+    "AppState",
+    "AgentAction",
+    "AgentBackedComponentContract",
+    "AgentBehavior",
+    "AgentRunRecord",
+    "AgentRunStatus",
+    "ApprovalPolicy",
+    "AuditRequirement",
+    "BUILTIN_GRAPH_NODE_KINDS",
+    "BUILTIN_GRAPH_RELATIONS",
+    "BUILTIN_OBJECT_KINDS",
+    "ComponentAIMode",
+    "ComponentConnectorScope",
+    "ComponentContract",
+    "ComponentContractValidationError",
+    "ComponentDataSource",
+    "ComponentFamily",
+    "ComponentGraphScope",
+    "ComponentInput",
+    "ComponentOutput",
+    "ComponentOutputType",
+    "ComponentPermission",
+    "ComponentRunMode",
+    "ComponentSafetyLevel",
+    "ContractVersion",
+    "CONTROL_PLANE_CONTRACT_VERSION",
+    "CONTROL_PLANE_SCHEMA_VERSION",
+    "DANGEROUS_SIDE_EFFECTS",
+    "DataSource",
+    "Entrypoint",
+    "EXTENSION_MANIFEST_CONTRACT_VERSION",
+    "EvidenceFileRef",
+    "EvidenceGraphResponse",
+    "GRAPH_CONTRACT_VERSION",
+    "GraphConfidence",
+    "GraphPreviewResponse",
+    "GraphEdge",
+    "GraphEvidenceStrength",
+    "GraphFragment",
+    "GraphNode",
+    "GraphOrigin",
+    "GraphReviewStatus",
+    "GraphSensitivity",
+    "GraphSourceType",
+    "GraphVisibility",
+    "Integrity",
+    "CatalogueArtifactVerification",
+    "ImportSpecValidation",
+    "ImportedCandidateSet",
+    "KNOWLEDGE_CONTRACT_VERSION",
+    "KnowledgeClaim",
+    "KnowledgeCollection",
+    "KnowledgeExtensionManifest",
+    "KnowledgeLink",
+    "KnowledgeObject",
+    "KnowledgeSource",
+    "KnowledgeSpace",
+    "MemoryGraphFixture",
+    "ModuleKind",
+    "ModuleManifest",
+    "ModuleManifestValidationError",
+    "Permission",
+    "PermissionPolicy",
+    "PublishedTarget",
+    "ProvenanceBehavior",
+    "ProvenanceRequirement",
+    "RUN_LEDGER_CONTRACT_VERSION",
+    "RUN_LEDGER_PATH_ENV",
+    "Agent",
+    "Approval",
+    "AuditEvent",
+    "Automation",
+    "Capability",
+    "CapabilityType",
+    "Connection",
+    "ConnectionKind",
+    "ConsultantAccessGrant",
+    "ConsultantGrantStatus",
+    "ControlPlaneManifest",
+    "ControlPlaneRunStatus",
+    "ControlPlaneValidationError",
+    "ExecutionMode",
+    "ExecutionResult",
+    "ImportRecord",
+    "ImportSourceProtocol",
+    "LifecycleState",
+    "LocalApprovalNotification",
+    "LocalApprovalNotificationChannel",
+    "LocalApprovalNotificationEvent",
+    "LocalApprovalNotificationStatus",
+    "LocalObservabilityLogRecord",
+    "Policy",
+    "PolicyAttributeCondition",
+    "PolicyAttributeExpression",
+    "PolicyDecision",
+    "PolicyDecisionReason",
+    "PolicyDecisionRecord",
+    "PolicyRulePack",
+    "PolicyTemplate",
+    "RunMode",
+    "RunObservabilityMetrics",
+    "RunRecord",
+    "RunStepRecord",
+    "RunStepStatus",
+    "RunStepType",
+    "SecretReference",
+    "SecretMetadata",
+    "SecretStorageScope",
+    "SideEffect",
+    "SyncConflictStrategy",
+    "SyncDirection",
+    "SyncRule",
+    "TenantIsolationRule",
+    "Trigger",
+    "TriggerEventEnvelope",
+    "TriggerIngestionResult",
+    "TriggerKind",
+    "WorkspaceRef",
+    "RetrievalTrace",
+    "RunLedgerEntry",
+    "RunLedgerProvenance",
+    "RunLedgerStatus",
+    "Source",
+    "SourceRef",
+    "SourceType",
+    "TERMINAL_RUN_STATUSES",
+    "ValidationResult",
+    "__version__",
+    "build_memory_graph_fixture",
+    "check_contract_version_compatibility",
+    "normalize_graph_edge_id",
+    "normalize_graph_node_id",
+    "normalize_graph_node_kind",
+    "normalize_graph_relation",
+    "normalize_identifier",
+    "normalize_label",
+    "normalize_object_id",
+    "normalize_object_kind",
+    "normalize_source_path",
+    "normalize_space_id",
+    "normalize_tags",
+    "detect_import_source_change",
+    "ImportSourceChange",
+    "import_asyncapi_candidates",
+    "import_catalogue_candidates",
+    "import_catalogue_generated_candidates",
+    "import_mcp_candidates",
+    "import_openapi_candidates",
+    "validate_asyncapi_import_spec",
+    "validate_mcp_import_spec",
+    "validate_openapi_import_spec",
+    "LocalModelInvocationRecord",
+    "LocalUsageLedgerEntry",
+    "compile_policy_expression",
+    "manifest_from_dict",
+    "summarize_confidence",
+    "summarize_review_status",
+    "summarize_sensitivity",
+    "validate_agent_graph_context",
+    "validate_agent_run_record",
+    "validate_app_manifest",
+    "validate_component_contract",
+    "validate_control_plane_manifest",
+    "verify_catalogue_artifacts",
+    "validate_evidence_file_ref",
+    "validate_graph_edge",
+    "validate_graph_fragment",
+    "validate_graph_node",
+    "validate_module_manifest",
+    "validate_knowledge_claim",
+    "validate_knowledge_collection",
+    "validate_knowledge_extension_manifest",
+    "validate_knowledge_link",
+    "validate_knowledge_object",
+    "validate_knowledge_source",
+    "validate_knowledge_space",
+    "validate_run_ledger_entry",
+    "SecretResolutionResult",
+    "validate_run_ledger_provenance",
+    "validate_source_ref",
+)
+
+
+#: The two non-advertised compatibility bindings whose objects are canonical
+#: Core inputs. Importable from the legacy root, absent from ``__all__``.
+ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS: Final[tuple[str, ...]] = (
+    "MemoryCreate",
+    "MemoryUpdate",
+)
+
+#: The two non-advertised compatibility bindings that stay legacy-owned on
+#: purpose. ``Database`` and ``MemoryService`` are runtime objects Core does not
+#: own; the root keeps them importable without advertising them.
+ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS: Final[tuple[str, ...]] = (
+    "Database",
+    "MemoryService",
+)
+
+#: All four non-advertised compatibility bindings, sorted. The converted root's
+#: complete public namespace is exactly ``ROOT_FACADE_ALL`` plus these.
+ROOT_FACADE_HIDDEN_BINDINGS: Final[tuple[str, ...]] = tuple(
+    sorted((*ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS, *ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS))
 )
 
 
@@ -275,6 +778,10 @@ class FacadeRoute:
           barrels today -- imported from descendants the registry declares
           runtime-only. Those identities are legacy on purpose and converting
           the barrel does not move them into Core.
+        * ``root_facade`` resolves all 182 advertised names and ``__version__``
+          to canonical objects imported straight from their owners, while
+          keeping four non-advertised compatibility bindings -- two canonical,
+          and ``Database``/``MemoryService`` deliberately still legacy-owned.
 
         So a true value means "this route is done under its own contract", not
         "everything here is canonical".
@@ -284,6 +791,7 @@ class FacadeRoute:
             MigrationState.SPLIT_FACADE,
             MigrationState.TRANSITIVE_FACADE,
             MigrationState.HYBRID_FACADE,
+            MigrationState.ROOT_FACADE,
         )
 
 
@@ -933,6 +1441,11 @@ def legacy_source_path(repo_root: Path, route: FacadeRoute) -> Path:
     return root.joinpath(*parts, "__init__.py")
 
 
+def canonical_root_source_path(repo_root: Path) -> Path:
+    """The canonical package root's own ``__init__.py`` in ``repo_root``."""
+    return repo_root / CANONICAL_SRC_RELATIVE / CANONICAL_PACKAGE / "__init__.py"
+
+
 def _is_docstring(node: ast.stmt) -> bool:
     return (
         isinstance(node, ast.Expr)
@@ -1520,6 +2033,400 @@ def hybrid_facade_defects(
     return defects
 
 
+def canonical_root_defects(tree: ast.Module) -> list[str]:
+    """Why the canonical package root is not version-only.
+
+    An empty list means it is. The canonical root deliberately advertises nothing
+    but ``__version__`` -- that is the reason the *legacy* root cannot be a
+    ``direct_facade`` over it, so it has to be a checked fact rather than a
+    remark: if Core's root started exporting contracts of its own, the legacy
+    root's 182-owner import table would be one plausible re-export away from
+    being replaceable by a single wildcard, and reviewers would stop being told.
+
+    The accepted form is a module docstring, an optional
+    ``from __future__ import annotations``, one ``__version__`` assigned a string
+    literal, and one literal ``__all__`` equal to
+    :data:`CANONICAL_ROOT_ALL`. Any other statement, assignment, definition,
+    import, or module ``__getattr__``/``__dir__`` is a defect.
+    """
+    defects: list[str] = []
+
+    body = list(tree.body)
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    else:
+        defects.append("does not open with a module docstring")
+    strays = [node for node in body if _is_docstring(node)]
+    if strays:
+        defects.append(
+            f"has {len(strays)} standalone string expression(s) besides the module "
+            f"docstring, at line(s) {sorted(node.lineno for node in strays)}"
+        )
+        body = [node for node in body if not _is_docstring(node)]
+
+    assignments: list[ast.Assign] = []
+    others: list[ast.stmt] = []
+    for node in body:
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == "__future__"
+        ):
+            for alias in sorted(node.names, key=lambda item: item.name):
+                if alias.name != "annotations" or alias.asname is not None:
+                    defects.append(
+                        f"imports the future feature {alias.name!r} as "
+                        f"{alias.asname!r}, expected only 'annotations'"
+                    )
+            continue
+        if isinstance(node, ast.Assign):
+            assignments.append(node)
+            continue
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in _MODULE_DYNAMIC_HOOKS
+        ):
+            defects.append(f"defines the dynamic module hook {node.name!r}")
+        others.append(node)
+    if others:
+        kinds = sorted({type(node).__name__ for node in others})
+        defects.append(
+            f"has statements besides its version and __all__ ({', '.join(kinds)})"
+        )
+
+    targets: dict[str, ast.Assign] = {}
+    for node in assignments:
+        names = [
+            target.id for target in node.targets if isinstance(target, ast.Name)
+        ]
+        if len(node.targets) != 1 or len(names) != 1:
+            defects.append("has an assignment whose target is not a single plain name")
+            continue
+        if names[0] in targets:
+            defects.append(f"assigns {names[0]!r} more than once")
+            continue
+        targets[names[0]] = node
+
+    unexpected = sorted(set(targets) - {ROOT_FACADE_VERSION_BINDING, "__all__"})
+    if unexpected:
+        defects.append(f"assigns {unexpected} besides its version and __all__")
+
+    version = targets.get(ROOT_FACADE_VERSION_BINDING)
+    if version is None:
+        defects.append(f"does not assign {ROOT_FACADE_VERSION_BINDING!r}")
+    elif not (
+        isinstance(version.value, ast.Constant) and isinstance(version.value.value, str)
+    ):
+        defects.append(
+            f"assigns a non-string {ROOT_FACADE_VERSION_BINDING!r}"
+        )
+
+    all_assignment = targets.get("__all__")
+    if all_assignment is None:
+        defects.append("declares no literal __all__")
+    else:
+        exported = _literal_all([all_assignment], defects)
+        if exported is not None and tuple(exported) != CANONICAL_ROOT_ALL:
+            defects.append(
+                f"declares __all__ {exported}, expected {list(CANONICAL_ROOT_ALL)}"
+            )
+    return defects
+
+
+def root_facade_defects(
+    tree: ast.Module,
+    route: FacadeRoute,
+    routes: Sequence[FacadeRoute],
+    runtime_only_modules: Sequence[str],
+    canonical_root: ast.Module | None = None,
+) -> list[str]:
+    """Why ``tree`` is not an exact *root* facade for ``route``.
+
+    An empty list means it is one. This is the strictest of the source policies
+    because the root is the only module whose advertised surface spans every
+    domain at once, so "it imports the right names" is not enough: *which owner*
+    each name comes from is the contract, and several names are published under
+    the same spelling by more than one domain.
+
+    The accepted top-level form is:
+
+    1. exactly one module docstring, and it is the first statement. No other
+       standalone string expression appears at module scope (comments are
+       invisible to :mod:`ast` and stay free);
+    2. one absolute, unaliased, non-star ``from ... import ...`` per approved
+       owner -- every key of :data:`ROOT_FACADE_CANONICAL_IMPORTS` and
+       :data:`ROOT_FACADE_RUNTIME_IMPORTS`, each reached exactly once and each
+       naming exactly that owner's declared name set;
+    3. exactly one assignment, of the frozen ordered literal
+       :data:`ROOT_FACADE_ALL` to ``__all__``, and it is the last statement.
+
+    What that buys, checked as separate named facts rather than left implied:
+
+    * every route other than the root is already converted, so the root cannot be
+      declared terminal on top of unconverted children;
+    * every advertised name and ``__version__`` is a canonical import, and
+      ``__version__`` comes from the canonical *root* -- not a second version
+      string assigned here;
+    * the only legacy-runtime imports are
+      :data:`ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS`, and only from modules the
+      registry itself declares runtime-only;
+    * the imported binding set is exactly ``__all__`` plus the four
+      :data:`ROOT_FACADE_HIDDEN_BINDINGS`, so the module's whole public namespace
+      is accounted for and no extra binding (an ``annotations`` future feature
+      included) can appear;
+    * the four hidden bindings are absent from ``__all__``;
+    * the canonical root is still version-only.
+
+    Anything else fails: a relative or star import, an alias, a second block for
+    one owner, a plain ``import x``, an owner that is not in the table, a
+    definition, a second assignment, a module ``__getattr__``/``__dir__``, a
+    duplicated binding or ``__all__`` entry, a reordered ``__all__``, or a
+    statement sitting after the ``__all__`` assignment.
+    """
+    defects: list[str] = []
+
+    if route.pair_kind is not PairKind.ROOT or route.shape is not Shape.ROOT:
+        defects.append(
+            f"is not the package root: {route.legacy_module!r} is a "
+            f"{route.pair_kind.value}/{route.shape.value} route"
+        )
+
+    unconverted = sorted(
+        other.legacy_module
+        for other in routes
+        if other.pair_kind is not PairKind.ROOT and not other.is_converted
+    )
+    if unconverted:
+        defects.append(
+            f"is offered as terminal while these routes are still unconverted: "
+            f"{unconverted}"
+        )
+
+    body = list(tree.body)
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    else:
+        defects.append("does not open with a module docstring")
+    strays = [node for node in body if _is_docstring(node)]
+    if strays:
+        defects.append(
+            f"has {len(strays)} standalone string expression(s) besides the module "
+            f"docstring, at line(s) {sorted(node.lineno for node in strays)}"
+        )
+        body = [node for node in body if not _is_docstring(node)]
+
+    imports = [node for node in body if isinstance(node, ast.ImportFrom)]
+    assignments = [node for node in body if isinstance(node, ast.Assign)]
+    plain_imports = [node for node in body if isinstance(node, ast.Import)]
+    others = [
+        node
+        for node in body
+        if not isinstance(node, (ast.ImportFrom, ast.Assign, ast.Import))
+    ]
+    for node in others:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in _MODULE_DYNAMIC_HOOKS
+        ):
+            defects.append(f"defines the dynamic module hook {node.name!r}")
+    if others:
+        kinds = sorted({type(node).__name__ for node in others})
+        defects.append(f"has statements of its own ({', '.join(kinds)})")
+    for node in plain_imports:
+        plain_names = sorted(alias.name for alias in node.names)
+        defects.append(
+            f"has a top-level plain import of {plain_names}; only from-imports are "
+            f"allowed"
+        )
+
+    # The mandatory sequence, checked positionally: every import first, then the
+    # single ``__all__``. Counting kinds is not enough -- a source with exactly
+    # the right statements in the wrong order is still not the accepted shape.
+    if body:
+        if not isinstance(body[-1], ast.Assign):
+            defects.append(
+                f"has {type(body[-1]).__name__} as its last top-level statement, "
+                f"expected the literal __all__ assignment"
+            )
+        misplaced = sorted(
+            node.lineno for node in body[:-1] if not isinstance(node, ast.ImportFrom)
+        )
+        if misplaced:
+            defects.append(
+                f"has non-import statements before its __all__ assignment, at "
+                f"line(s) {misplaced}"
+            )
+
+    approved: dict[str, tuple[str, ...]] = {
+        **ROOT_FACADE_CANONICAL_IMPORTS,
+        **ROOT_FACADE_RUNTIME_IMPORTS,
+    }
+    declared_runtime = set(runtime_only_modules)
+    for runtime_owner in sorted(ROOT_FACADE_RUNTIME_IMPORTS):
+        if runtime_owner not in declared_runtime:
+            defects.append(
+                f"would take a legacy-owned binding from {runtime_owner!r}, which the "
+                f"registry does not declare runtime-only"
+            )
+        for name in ROOT_FACADE_RUNTIME_IMPORTS[runtime_owner]:
+            if name not in ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS:
+                defects.append(
+                    f"declares {name!r} as a legacy-runtime import of "
+                    f"{runtime_owner!r} without declaring it a hidden runtime binding"
+                )
+
+    reached: dict[str, list[str]] = {}
+    imported_names: list[str] = []
+    for node in imports:
+        module: str | None
+        if node.level != 0:
+            defects.append(
+                f"uses a relative import (level {node.level}) of {node.module!r}"
+            )
+            module = None
+        else:
+            module = node.module
+        names: list[str] = []
+        for alias in node.names:
+            if alias.name == "*":
+                defects.append("uses a star import")
+            elif alias.asname is not None:
+                defects.append(f"aliases {alias.name!r} as {alias.asname!r}")
+            else:
+                names.append(alias.name)
+                imported_names.append(alias.name)
+        if module is None:
+            continue
+        if module in reached:
+            defects.append(f"imports from {module!r} in more than one block")
+            reached[module].extend(names)
+            continue
+        reached[module] = names
+        if module in approved:
+            continue
+        if _module_is_under(module, CANONICAL_PACKAGE):
+            defects.append(
+                f"imports the canonical module {module!r}, which is not an approved "
+                f"root owner"
+            )
+        elif _module_is_under(module, LEGACY_PACKAGE):
+            defects.append(
+                f"imports the legacy module {module!r}; only "
+                f"{sorted(ROOT_FACADE_RUNTIME_IMPORTS)} may supply a legacy-owned "
+                f"compatibility binding"
+            )
+        else:
+            defects.append(f"imports {module!r}, which is outside both packages")
+
+    for module in sorted(approved):
+        if module not in reached:
+            defects.append(f"does not import the approved owner {module!r}")
+            continue
+        missing = sorted(set(approved[module]) - set(reached[module]))
+        extra = sorted(set(reached[module]) - set(approved[module]))
+        if missing or extra:
+            defects.append(
+                f"imports the wrong names from {module!r}: missing {missing}, "
+                f"extra {extra}"
+            )
+
+    if ROOT_FACADE_VERSION_BINDING not in reached.get(ROOT_FACADE_VERSION_MODULE, ()):
+        defects.append(
+            f"does not import {ROOT_FACADE_VERSION_BINDING!r} from "
+            f"{ROOT_FACADE_VERSION_MODULE!r}"
+        )
+
+    # Observed rather than read off the table: the same two claims, made against
+    # what the source actually reaches, so a table edit alone cannot satisfy them.
+    from_canonical = {
+        name
+        for module, names in reached.items()
+        if _module_is_under(module, CANONICAL_PACKAGE)
+        for name in names
+    }
+    from_legacy = {
+        name
+        for module, names in reached.items()
+        if _module_is_under(module, LEGACY_PACKAGE)
+        for name in names
+    }
+    not_canonical = sorted(set(ROOT_FACADE_ALL) - from_canonical)
+    if not_canonical:
+        defects.append(
+            f"does not import {not_canonical} from a canonical owner; every "
+            f"advertised name and the version must be a canonical import"
+        )
+    unsanctioned_legacy = sorted(from_legacy - set(ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS))
+    if unsanctioned_legacy:
+        defects.append(
+            f"imports {unsanctioned_legacy} from a legacy runtime module; only "
+            f"{list(ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS)} may stay legacy-owned"
+        )
+
+    local_targets = sorted(
+        {
+            target.id
+            for node in assignments
+            for target in node.targets
+            if isinstance(target, ast.Name) and target.id != "__all__"
+        }
+    )
+    if local_targets:
+        defects.append(
+            f"assigns {local_targets} of its own; the root may only assign __all__, "
+            f"and must import its version rather than restating it"
+        )
+
+    duplicate_bindings = sorted(
+        {name for name in imported_names if imported_names.count(name) > 1}
+    )
+    if duplicate_bindings:
+        defects.append(f"binds the same imported name twice: {duplicate_bindings}")
+
+    expected_bindings = {*ROOT_FACADE_ALL, *ROOT_FACADE_HIDDEN_BINDINGS}
+    if set(imported_names) != expected_bindings:
+        defects.append(
+            f"the imported binding set is not exactly __all__ plus the four hidden "
+            f"compatibility bindings: missing "
+            f"{sorted(expected_bindings - set(imported_names))}, extra "
+            f"{sorted(set(imported_names) - expected_bindings)}"
+        )
+
+    exported_names = _literal_all(assignments, defects)
+    if exported_names is not None:
+        duplicate_exports = sorted(
+            {name for name in exported_names if exported_names.count(name) > 1}
+        )
+        if duplicate_exports:
+            defects.append(f"__all__ contains duplicate names: {duplicate_exports}")
+        if tuple(exported_names) != ROOT_FACADE_ALL:
+            missing = sorted(set(ROOT_FACADE_ALL) - set(exported_names))
+            extra = sorted(set(exported_names) - set(ROOT_FACADE_ALL))
+            if missing or extra:
+                defects.append(
+                    f"__all__ drifted from the frozen contract: missing {missing}, "
+                    f"extra {extra}"
+                )
+            else:
+                defects.append(
+                    "__all__ names the frozen set in a different order; the order is "
+                    "part of the contract"
+                )
+        advertised_hidden = [
+            name for name in ROOT_FACADE_HIDDEN_BINDINGS if name in exported_names
+        ]
+        if advertised_hidden:
+            defects.append(
+                f"advertises the deliberately non-advertised binding(s) "
+                f"{advertised_hidden}"
+            )
+
+    if canonical_root is not None:
+        for defect in canonical_root_defects(canonical_root):
+            defects.append(f"pairs with a canonical root that {defect}")
+    return defects
+
+
 def _collect_source_state_errors(
     repo_root: Path,
     routes: Sequence[FacadeRoute],
@@ -1535,13 +2442,14 @@ def _collect_source_state_errors(
     ``runtime_only_modules`` supplies the legacy-only modules a
     ``hybrid_facade`` barrel is allowed to reach.
 
-    ``pending_hybrid`` is deliberately *not* skipped with the other pending
-    states. A pending state means "the source is whatever it always was, so
-    there is nothing to contradict", and that stops being true the moment a
-    hybrid barrel's routed children are all converted and its source already
-    satisfies :func:`hybrid_facade_defects`: the barrel is then a converted
-    hybrid facade understating itself, which is exactly the drift this gate
-    exists to catch.
+    ``pending_hybrid`` and ``pending_root`` are deliberately *not* skipped with
+    ``pending_direct_barrel``. A pending state means "the source is whatever it
+    always was, so there is nothing to contradict", and that stops being true the
+    moment a hybrid barrel's routed children are all converted and its source
+    already satisfies :func:`hybrid_facade_defects` -- or the moment every
+    non-root route is converted and the root's source already satisfies
+    :func:`root_facade_defects`. Either way the registry is understating the file,
+    which is exactly the drift this gate exists to catch.
     """
     children: dict[str, list[FacadeRoute]] = {}
     for route in all_routes:
@@ -1550,7 +2458,7 @@ def _collect_source_state_errors(
 
     for route in sorted(routes, key=lambda item: item.legacy_module):
         state = route.migration_state
-        if state in _PENDING_STATES and state is not MigrationState.PENDING_HYBRID:
+        if state in _PENDING_STATES and state not in _INSPECTED_PENDING_STATES:
             continue
         where = f"route {route.legacy_module!r}"
         tree = _parse_module(legacy_source_path(repo_root, route), where, errors)
@@ -1604,6 +2512,16 @@ def _collect_source_state_errors(
                 errors.append(
                     f"{where}: declared 'hybrid_facade' but the source {defect}"
                 )
+        elif state is MigrationState.ROOT_FACADE:
+            canonical_root = _parse_module(
+                canonical_root_source_path(repo_root), where, errors
+            )
+            for defect in root_facade_defects(
+                tree, route, all_routes, runtime_only_modules, canonical_root
+            ):
+                errors.append(
+                    f"{where}: declared 'root_facade' but the source {defect}"
+                )
         elif state is MigrationState.PENDING_HYBRID:
             routed_children = children.get(route.suffix, ())
             if all(child.is_converted for child in routed_children) and not (
@@ -1615,6 +2533,19 @@ def _collect_source_state_errors(
                     f"{where}: declared 'pending_hybrid' but every routed child is "
                     f"converted and the source is an exact hybrid facade over them "
                     f"and its declared runtime-only descendants; move the state "
+                    f"forward"
+                )
+        elif state is MigrationState.PENDING_ROOT:
+            canonical_root = _parse_module(
+                canonical_root_source_path(repo_root), where, errors
+            )
+            if canonical_root is not None and not root_facade_defects(
+                tree, route, all_routes, runtime_only_modules, canonical_root
+            ):
+                errors.append(
+                    f"{where}: declared 'pending_root' but every other route is "
+                    f"converted and the source is already an exact root facade over "
+                    f"its approved canonical owners and barrels; move the state "
                     f"forward"
                 )
         elif not direct_facade_defects(tree, route.canonical_module):
@@ -1752,12 +2683,21 @@ def validate_checkout(
 
 __all__ = [
     "CANONICAL_PACKAGE",
+    "CANONICAL_ROOT_ALL",
     "COMPATIBILITY_DEPENDENCY",
     "COUNT_KEYS",
     "FORMAT_VERSION",
     "LEGACY_PACKAGE",
     "MANIFEST_PATH",
     "REPO_ROOT",
+    "ROOT_FACADE_ALL",
+    "ROOT_FACADE_CANONICAL_IMPORTS",
+    "ROOT_FACADE_HIDDEN_BINDINGS",
+    "ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS",
+    "ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS",
+    "ROOT_FACADE_RUNTIME_IMPORTS",
+    "ROOT_FACADE_VERSION_BINDING",
+    "ROOT_FACADE_VERSION_MODULE",
     "ROUTE_KEYS",
     "SCHEMA_PATH",
     "TOP_LEVEL_KEYS",
@@ -1770,12 +2710,15 @@ __all__ = [
     "PairKind",
     "Shape",
     "canonical_imports",
+    "canonical_root_defects",
+    "canonical_root_source_path",
     "direct_facade_defects",
     "discover_checkout",
     "discover_package_modules",
     "hybrid_facade_defects",
     "legacy_source_path",
     "load_manifest",
+    "root_facade_defects",
     "split_facade_defects",
     "transitive_facade_defects",
     "validate_checkout",

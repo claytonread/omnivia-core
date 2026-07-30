@@ -11,6 +11,7 @@ import pytest
 from baseline import CORE_PACKAGE, REPO_ROOT
 from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
+    FACADE_DESCRIPTOR_REWRITES,
     FACADE_RETAINED_DEFINITIONS,
     FACADE_ROOT_BINDING_OWNER_MOVES,
     FACADE_ROUTES,
@@ -1120,3 +1121,189 @@ def test_declared_moves_are_the_only_thing_that_moves_the_instance_bindings() ->
         assert binding["defined_in"] == FACADE_ROUTES[frozen_owner][name], (
             f"{name} did not move to the canonical owner its route declares"
         )
+
+
+# --------------------------------------------------------------------------
+# The converted compatibility root.
+#
+# The root's conversion changes *where* each root binding is imported from, not
+# what object it is: every advertised name was already the canonical object,
+# reached transitively through a converted leaf, so no ``defined_in`` moves and no
+# new normalization is needed. That is a claim worth checking rather than
+# assuming, so the tests below prove the frozen export baseline still describes
+# the live surface exactly, with the root's 182 advertised bindings covered, the
+# four hidden owners exact, the two instance-owner exceptions untouched, and no
+# descriptor or root-binding declaration added.
+# --------------------------------------------------------------------------
+
+#: Advertised root bindings whose value has no ``__module__``, so the inventory
+#: records ``defined_in: null`` for them. Six frozensets and one string -- all
+#: module-level constants, none of them a class or a function.
+_ROOT_OWNERLESS_CONSTANTS = [
+    "BUILTIN_GRAPH_NODE_KINDS",
+    "BUILTIN_GRAPH_RELATIONS",
+    "BUILTIN_OBJECT_KINDS",
+    "CONTROL_PLANE_SCHEMA_VERSION",
+    "DANGEROUS_SIDE_EFFECTS",
+    "RUN_LEDGER_PATH_ENV",
+    "TERMINAL_RUN_STATUSES",
+]
+
+_ROOT_HIDDEN_OWNERS = {
+    "Database": "omnivia_memory.persistence.database",
+    "MemoryCreate": "omnivia_core.memory.models",
+    "MemoryService": "omnivia_memory.memory.service",
+    "MemoryUpdate": "omnivia_core.memory.models",
+}
+
+
+def test_converted_root_needs_no_new_export_normalization() -> None:
+    """The whole reason this batch adds nothing to ``baseline.inventory``: the frozen
+    export baseline already describes the converted root, so the drift check passes
+    with the *unmodified* normalization. If a future root edit did move a binding,
+    this fails and the delta has to be declared rather than absorbed."""
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+    actual = build_public_export_inventory()
+    assert diff_json(_normalize_expected_for_facade_routes(expected), actual) == []
+
+
+def test_every_advertised_root_binding_is_covered_by_the_frozen_baseline() -> None:
+    """All 182 advertised portable names -- and only those, plus the four hidden
+    bindings -- appear in the frozen baseline's root binding table, with an owner
+    recorded for each. ``__version__`` is excluded because the inventory skips
+    dunders, so it is asserted as an absence rather than left ambiguous."""
+    inventory = build_public_export_inventory()
+    root_all = inventory["root"]["all"]
+    bindings = inventory["root"]["bindings"]
+
+    assert len(root_all) == 183
+    assert "__version__" in root_all
+    assert "__version__" not in bindings
+
+    advertised = {name for name in root_all if not name.startswith("__")}
+    assert len(advertised) == 182
+    assert set(bindings) == advertised | set(_ROOT_HIDDEN_OWNERS)
+    assert len(bindings) == 186
+
+    # Every binding that *can* report an owner does. The seven that cannot are
+    # bare constants -- ``frozenset`` and ``str`` values with no ``__module__``
+    # for ``defined_in`` to read -- so they are named rather than left as a gap an
+    # eighth could slip into.
+    ownerless = sorted(
+        name for name, descriptor in bindings.items() if descriptor["defined_in"] is None
+    )
+    assert ownerless == _ROOT_OWNERLESS_CONSTANTS
+    for name, descriptor in sorted(bindings.items()):
+        if name in _ROOT_OWNERLESS_CONSTANTS:
+            continue
+        assert descriptor["defined_in"], f"{name} has no recorded owner"
+
+
+def test_root_binding_owners_are_canonical_except_the_two_runtime_ones() -> None:
+    """Every advertised binding is owned by a canonical module. The only legacy
+    owners left in the root's namespace are ``Database`` and ``MemoryService``,
+    which stay legacy on purpose."""
+    inventory = build_public_export_inventory()
+    bindings = inventory["root"]["bindings"]
+    legacy_owned = sorted(
+        name
+        for name, descriptor in bindings.items()
+        if (descriptor["defined_in"] or "").startswith(f"{CORE_PACKAGE}.")
+    )
+    assert legacy_owned == ["Database", "MemoryService"]
+
+
+def test_the_four_hidden_root_owners_are_exact() -> None:
+    """The two canonical inputs and the two legacy runtime objects, each recorded
+    against the module that really owns it. Restated here rather than derived, so a
+    hidden binding silently repointed at another owner fails."""
+    inventory = build_public_export_inventory()
+    bindings = inventory["root"]["bindings"]
+    for name, owner in sorted(_ROOT_HIDDEN_OWNERS.items()):
+        assert bindings[name]["defined_in"] == owner, name
+    assert set(inventory["root"]["compatibility_exports"]) == set(_ROOT_HIDDEN_OWNERS)
+    assert len(inventory["root"]["compatibility_exports"]) == 4
+
+
+def test_the_root_declares_no_definitions_of_its_own() -> None:
+    """A pure re-export root defines nothing, so its ``defines`` entry stays empty --
+    which is also how a locally defined shim or a copied version string would show
+    up here."""
+    inventory = build_public_export_inventory()
+    assert inventory["modules"][CORE_PACKAGE]["defines"] == {}
+    assert inventory["modules"][CORE_PACKAGE]["all"] == sorted(
+        inventory["root"]["all"]
+    )
+    assert inventory["package_version"] == "0.1.0"
+    assert inventory["package_source"] == (
+        "services/omnivia-memory/src/omnivia_memory/__init__.py"
+    )
+
+
+def test_the_root_conversion_declares_no_descriptor_or_owner_move() -> None:
+    """Neither declaration map grew. Both are pinned exactly, so this batch cannot
+    have quietly widened either -- and the two instance-owner exceptions are still
+    the same two, pointing at the same two owners."""
+    assert set(FACADE_ROOT_BINDING_OWNER_MOVES) == {
+        ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"),
+        ("CONTROL_PLANE_CONTRACT_VERSION", "omnivia_memory.control_plane.models"),
+    }
+    assert set(FACADE_ROOT_BINDING_OWNER_MOVES.values()) == {
+        ("omnivia_memory.knowledge.models", "omnivia_core.knowledge.models")
+    }
+    assert _facade_root_binding_problems() == []
+
+    assert set(FACADE_DESCRIPTOR_REWRITES) == {
+        ("omnivia_memory.app_manifest.validation", "validate_app_manifest"),
+        ("omnivia_memory.module_manifest.validation", "validate_module_manifest"),
+    }
+    # The root itself is not a routed leaf and declares nothing in either map.
+    assert CORE_PACKAGE not in FACADE_ROUTES
+    assert not any(module == CORE_PACKAGE for module, _symbol in FACADE_DESCRIPTOR_REWRITES)
+    assert not any(
+        module == CORE_PACKAGE for _binding, module in FACADE_ROOT_BINDING_OWNER_MOVES
+    )
+    assert CORE_PACKAGE not in FACADE_RETAINED_DEFINITIONS
+
+
+def test_root_conversion_fails_closed_on_an_unrelated_root_binding_change(
+    monkeypatch,
+) -> None:
+    """The drift check has to stay sensitive to the root after conversion. A single
+    advertised binding repointed at another owner must still fail, rather than being
+    absorbed by any of the sanctioned deltas."""
+    real_build = build_public_export_inventory
+
+    def _tampered():
+        inventory = copy.deepcopy(real_build())
+        inventory["root"]["bindings"]["AppManifest"]["defined_in"] = (
+            "omnivia_core.component_contract.models"
+        )
+        return inventory
+
+    monkeypatch.setattr("baseline.inventory.build_public_export_inventory", _tampered)
+
+    problems = verify_public_export_inventory()
+
+    assert any("AppManifest" in problem for problem in problems), problems
+
+
+def test_root_conversion_fails_closed_on_a_fifth_compatibility_export(
+    monkeypatch,
+) -> None:
+    """A fifth non-advertised root binding is a change to the public surface, not a
+    free extension point, so it must fail the frozen baseline."""
+    real_build = build_public_export_inventory
+
+    def _tampered():
+        inventory = copy.deepcopy(real_build())
+        inventory["root"]["compatibility_exports"] = sorted(
+            [*inventory["root"]["compatibility_exports"], "MemoryGraphStore"]
+        )
+        return inventory
+
+    monkeypatch.setattr("baseline.inventory.build_public_export_inventory", _tampered)
+
+    problems = verify_public_export_inventory()
+
+    assert any("MemoryGraphStore" in problem for problem in problems), problems

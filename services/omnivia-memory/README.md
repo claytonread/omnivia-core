@@ -1,6 +1,108 @@
-# OmniVia Portable Knowledge Contracts
+# OmniVia Portable Knowledge Contracts (deprecated compatibility facade)
 
-This package now exposes a contract-level public API for portable knowledge
+> **`omnivia-memory` is deprecated.** It is a compatibility facade over
+> `omnivia-core`. New code should depend on `omnivia-core` and import from
+> `omnivia_core`. See [Migration](#migration) below.
+
+Every one of the 183 names `omnivia_memory`'s package root advertises is
+imported, unchanged, from `omnivia_core` — from the approved canonical owner or,
+where the contract is published through one, the canonical barrel that re-exports
+it. Either way the object is the same one: `omnivia_memory.X is
+omnivia_core.<the module named below>.X` holds for all of them, and switching an
+import changes nothing about the objects your code receives. Importing this package emits no
+warning and writes nothing to stdout, stderr, or a logger: the deprecation notice
+lives in this file and in the release metadata (ADR-036), never in runtime
+behaviour.
+
+## Migration
+
+### Dependency
+
+```diff
+-dependencies = ["omnivia-memory>=0.1.0,<0.2.0"]
++dependencies = ["omnivia-core>=0.1.0,<0.2.0"]
+```
+
+### Imports
+
+Replace the legacy root path with the canonical owner. The objects are identical,
+so no other change is needed:
+
+```diff
+-from omnivia_memory import KnowledgeObject, KnowledgeSpace, KnowledgeSource, SourceRef
++from omnivia_core.knowledge import (
++    KnowledgeObject,
++    KnowledgeSpace,
++    KnowledgeSource,
++    SourceRef,
++)
+
+-from omnivia_memory import AppManifest, validate_app_manifest
++from omnivia_core.app_manifest import AppManifest, validate_app_manifest
+
+-from omnivia_memory import ControlPlaneManifest, LifecycleState, Policy
++from omnivia_core.control_plane import ControlPlaneManifest, LifecycleState, Policy
+
+-from omnivia_memory import ModuleManifest, validate_module_manifest
++from omnivia_core.module_manifest import ModuleManifest, validate_module_manifest
+
+-from omnivia_memory import RunLedgerEntry, validate_run_ledger_entry
++from omnivia_core.run_ledger import RunLedgerEntry, validate_run_ledger_entry
+
+-from omnivia_memory import Source, SourceType
++from omnivia_core.provenance import Source, SourceType
+
+-from omnivia_memory import ValidationResult
++from omnivia_core._shared.validation import ValidationResult
+
+-from omnivia_memory import EvidenceGraphResponse, build_memory_graph_fixture
++from omnivia_core.memory_graph import EvidenceGraphResponse, build_memory_graph_fixture
+
+-from omnivia_memory import MemoryCreate, MemoryUpdate
++from omnivia_core.memory.models import MemoryCreate, MemoryUpdate
+```
+
+Note the collisions: several names are published under the same spelling by more
+than one domain, and the legacy root binds exactly one of each. `ValidationResult`
+is the shared record, not any domain's local one; `SourceRef` is knowledge's, not
+the memory graph's; `ProvenanceRequirement` is the component contract's, not the
+app manifest's; `LifecycleState` is the control plane's, not the lifecycle
+domain's; and `Source`/`SourceType` are provenance's, not ingestion's. Migrate
+each to the owner listed above rather than to whichever module happens to export
+the name.
+
+### What is not moving yet
+
+`Database` and `MemoryService` are importable from `omnivia_memory` but are
+deliberately **not** in `__all__`, and Core does not own them. They stay in
+`omnivia_memory.persistence` and `omnivia_memory.memory.service` respectively;
+there is no `omnivia_core` equivalent to migrate to yet, and this facade's
+removal is not what will provide one.
+
+### Support window and removal
+
+- This facade is supported for **at least two scheduled release trains** after
+  the release that introduced this notice.
+- It will be **removed only in a major release**, never in a minor or patch one.
+- Removal additionally requires release-authority sign-off, published migration
+  guidance, and export-drift proof that the canonical surface still covers every
+  name this root advertises.
+
+### Updating a consumer
+
+1. Add `omnivia-core` to your dependencies (the range above) and remove
+   `omnivia-memory` once no import references it.
+2. Rewrite each `omnivia_memory` import to its canonical owner, using the table
+   above and the collision notes.
+3. Re-run your type checker. `omnivia-core` ships `py.typed`, and the canonical
+   paths expose the same precise types the facade did, so a clean run before the
+   change should stay clean after it.
+4. If you import `Database` or `MemoryService`, keep those two imports pointed at
+   `omnivia_memory` for now and track the runtime-ownership work separately.
+
+## Included contracts
+
+This package exposes a contract-level public API for portable knowledge
 spaces, graph fragments, source refs, extension manifests, validation helpers,
 and normalization helpers.
 
@@ -33,7 +135,10 @@ From the `omnivia-core` repository root:
 python3 -m pip install -e services/omnivia-memory[dev]
 ```
 
-## Public Import Example
+## Legacy Import Example
+
+Kept for reference while the facade is supported; new code should use the
+canonical form shown under [Migration](#migration) instead.
 
 ```python
 from omnivia_memory import (

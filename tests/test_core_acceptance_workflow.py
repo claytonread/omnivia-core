@@ -57,6 +57,13 @@ GATE_STEPS = (
         "Run canonical migration and compatibility tests",
         "python -m pytest tests/canonical_migration tests/compatibility -q",
     ),
+    # The resolving install / installed-root smoke. A standalone script rather
+    # than a pytest module, so this step is the only place the network gate runs;
+    # its explicit timeout is pinned below.
+    (
+        "Run compatibility root resolver and installed-root smoke",
+        "python scripts/check-root-facade-resolver.py",
+    ),
     ("Verify Phase 0 baseline", "PYTHON=python scripts/check-core-baseline.sh"),
     # The full suite, on its own: an exact match rejects added filters.
     ("Run full repository test suite", "python -m pytest -q"),
@@ -68,8 +75,8 @@ GATE_STEPS = (
 SCOPED_STEPS = ("Run Ruff", "Run strict mypy")
 
 # Ruff's currently accepted clean scope: the canonical trees plus every
-# converted legacy facade/barrel file. This list grows as leaves are converted;
-# it is pinned exactly rather than counted, so an added target must be declared
+# converted legacy facade/barrel file, and now the converted package root. This
+# list is pinned exactly rather than counted, so an added target must be declared
 # here and a dropped one fails.
 REQUIRED_RUFF_TARGETS = (
     "src",
@@ -77,6 +84,7 @@ REQUIRED_RUFF_TARGETS = (
     "baseline",
     "tests",
     "scripts",
+    "services/omnivia-memory/src/omnivia_memory/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py",
@@ -117,13 +125,16 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-cli/src/omnivia_core_cli",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
-    # Every converted facade wrapper, plus the eight strict-mypy consumer
-    # fixtures that import them through their legacy paths: seven keyed on the
-    # leaf routes in `baseline.inventory.FACADE_ROUTES`, and
-    # `hybrid_barrel_consumer.py` keyed on the six hybrid barrels' `__all__`
-    # tuples instead (they are module routes, not symbol routes). Together they
-    # pin that `omnivia-memory`'s `py.typed` surface still re-exports these
-    # names explicitly and without `Any` leakage.
+    # Every converted facade wrapper -- the package root included, now that it is
+    # a `root_facade` -- plus the nine strict-mypy consumer fixtures that import
+    # them through their legacy paths: seven keyed on the leaf routes in
+    # `baseline.inventory.FACADE_ROUTES`, `hybrid_barrel_consumer.py` keyed on the
+    # six hybrid barrels' `__all__` tuples, and `root_facade_consumer.py` keyed on
+    # the frozen root contract in `baseline.facade_manifest` (all three of those
+    # are module routes, not symbol routes). Together they pin that
+    # `omnivia-memory`'s `py.typed` surface still re-exports these names
+    # explicitly and without `Any` leakage.
+    "services/omnivia-memory/src/omnivia_memory/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py",
@@ -160,6 +171,7 @@ REQUIRED_MYPY_TARGETS = (
     "tests/typing/ingestion_models_facade_consumer.py",
     "tests/typing/knowledge_facade_consumer.py",
     "tests/typing/module_manifest_facade_consumer.py",
+    "tests/typing/root_facade_consumer.py",
     "tests/typing/watcher_models_facade_consumer.py",
     "tests/typing/workspace_models_facade_consumer.py",
 )
@@ -563,3 +575,95 @@ def test_performance_workflow_stays_separate_and_informational() -> None:
     # The acceptance gate must not delegate to, or reuse, the informational
     # performance workflow.
     assert "core-performance" not in _text()
+
+
+RESOLVER_SMOKE_STEP = "Run compatibility root resolver and installed-root smoke"
+
+
+RESOLVER_SCRIPT = "scripts/check-root-facade-resolver.py"
+
+
+def test_resolver_smoke_step_is_bounded_and_fail_closed() -> None:
+    """The resolving install is the one gate step that reaches the network, so it
+    carries its own explicit timeout rather than relying on the job's 30 minutes --
+    a hung index would otherwise burn the whole budget before failing. It must also
+    be a single command with no skip flag and no offline fallback: a step that
+    quietly degraded to `--no-deps` or `--no-index` would report a pass for a proof
+    it had not run.
+    """
+    step = _step(_steps(), RESOLVER_SMOKE_STEP)
+    assert _entry(step, "timeout-minutes") == "12"
+    assert _entry(step, "continue-on-error") is None
+    assert _entry(step, "if") is None
+
+    commands = _commands(step)
+    assert commands == (f"python {RESOLVER_SCRIPT}",)
+    for forbidden in ("--no-deps", "--no-index", "|| true", "continue-on-error", "-k "):
+        assert forbidden not in commands[0], forbidden
+
+
+def test_the_network_resolver_smoke_runs_exactly_once() -> None:
+    """The gate is a script rather than a pytest module precisely so that this is
+    provable from the workflow: the two broad pytest commands in this job collect
+    `tests/` -- once as `tests/canonical_migration tests/compatibility` and once as
+    the whole suite -- so a test module holding the resolving install would run the
+    network smoke three times per job.
+
+    Exactly one active step names the script, and no pytest command in the workflow
+    names it or the module it used to live in.
+    """
+    steps = _steps()
+    # `uses:` steps (checkout, setup-python, setup-node) have no `run:` script.
+    by_step = {
+        name: _commands(_step(steps, name))
+        for name in _step_names(steps)
+        if _locate(_step(steps, name), "run") is not None
+    }
+    naming = sorted(
+        name
+        for name, commands in by_step.items()
+        if any(RESOLVER_SCRIPT in command for command in commands)
+    )
+    assert naming == [RESOLVER_SMOKE_STEP]
+
+    assert (REPO_ROOT / RESOLVER_SCRIPT).is_file()
+    # `scripts/` is outside pytest's `testpaths`, and the file matches no default
+    # `python_files` pattern; `tests/compatibility/test_root_facade_distribution.py`
+    # keeps only the offline metadata checks and the structural pins for the script.
+    for commands in by_step.values():
+        for command in commands:
+            if "pytest" in command:
+                assert RESOLVER_SCRIPT not in command, command
+
+
+def test_resolver_smoke_runs_after_the_offline_wheel_proof() -> None:
+    """The deterministic offline `--no-deps` artifact install keeps its own place in
+    the compatibility suite; the resolving smoke is a separate, later step. Pinned
+    so the two are never collapsed into one and neither replaces the other."""
+    order = _step_names(_steps())
+    assert order.index("Run canonical migration and compatibility tests") < order.index(
+        RESOLVER_SMOKE_STEP
+    )
+    assert order.index(RESOLVER_SMOKE_STEP) < order.index("Verify Phase 0 baseline")
+    # The offline proof is still reached by the compatibility suite step above.
+    assert (REPO_ROOT / "tests" / "compatibility" / "test_facade_wheel_install.py").is_file()
+    assert (
+        REPO_ROOT / "tests" / "compatibility" / "test_root_facade_distribution.py"
+    ).is_file()
+
+
+def test_converted_package_root_is_in_both_lint_scopes() -> None:
+    """The root is the last converted file, and it has to be held to the same two
+    lint gates as every leaf before it -- pinned as its own fact so a future edit to
+    either target list cannot drop it while the aggregate audits still pass."""
+    root = "services/omnivia-memory/src/omnivia_memory/__init__.py"
+    assert root in REQUIRED_RUFF_TARGETS
+    assert root in REQUIRED_MYPY_TARGETS
+    assert "tests/typing/root_facade_consumer.py" in REQUIRED_MYPY_TARGETS
+    # Nine typed consumer fixtures now, and every one of them is a mypy target.
+    fixtures = sorted(
+        path.name for path in (REPO_ROOT / "tests" / "typing").glob("*_consumer.py")
+    )
+    assert len(fixtures) == 9
+    for name in fixtures:
+        assert f"tests/typing/{name}" in REQUIRED_MYPY_TARGETS, name

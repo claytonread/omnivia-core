@@ -104,6 +104,23 @@ jobs:
       - name: Run canonical migration and compatibility tests
         run: python -m pytest tests/canonical_migration tests/compatibility -q
 
+      - name: Run compatibility root resolver and installed-root smoke
+        # A *resolving* install of the compatibility wheel (no `--no-deps`), with
+        # pip's own `--report` proving the `omnivia-core` artifact it chose is the
+        # wheel this run built, then all 47 registered route modules and the root
+        # identity/export audit run against the installed artifacts. Fail-closed
+        # and explicitly bounded: it needs the configured index to be reachable,
+        # and has no offline fallback and no skip path. Honestly labelled a
+        # current-index resolver smoke, not a locked supply-chain proof -- this
+        # repository has no lockfile, and the range pins are not one.
+        #
+        # It is a standalone script, not a pytest module, so that this step is the
+        # *only* place it runs: `tests/compatibility` and the full suite below are
+        # both collected by pytest, and a test module here would execute the
+        # network smoke three times per job.
+        timeout-minutes: 12
+        run: python scripts/check-root-facade-resolver.py
+
       - name: Verify Phase 0 baseline
         run: PYTHON=python scripts/check-core-baseline.sh
 
@@ -125,6 +142,7 @@ jobs:
             baseline \
             tests \
             scripts \
+            services/omnivia-memory/src/omnivia_memory/__init__.py \
             services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
             services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
             services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
@@ -166,6 +184,7 @@ jobs:
             packages/omnivia-core-cli/src/omnivia_core_cli \
             baseline/facade_manifest.py \
             scripts/check-facade-routes.py \
+            services/omnivia-memory/src/omnivia_memory/__init__.py \
             services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
             services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
             services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
@@ -202,6 +221,7 @@ jobs:
             tests/typing/ingestion_models_facade_consumer.py \
             tests/typing/knowledge_facade_consumer.py \
             tests/typing/module_manifest_facade_consumer.py \
+            tests/typing/root_facade_consumer.py \
             tests/typing/watcher_models_facade_consumer.py \
             tests/typing/workspace_models_facade_consumer.py
 

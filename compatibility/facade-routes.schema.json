@@ -105,7 +105,7 @@
           "enum": ["leaf", "barrel", "root"]
         },
         "migration_state": {
-          "description": "source_parity: still a duplicated copy, symbol for symbol. canonical_subset: still a duplicated copy but a strict superset of the canonical module, because canonical Core deliberately omits runtime-owned symbols. direct_facade: re-exports canonical objects itself. split_facade: imports its whole portable namespace from its exact canonical counterpart while retaining explicitly tested, legacy-owned synchronous function definitions Core deliberately excludes. transitive_facade: identity-preserving purely through converted children. hybrid_facade: a source-unchanged hybrid barrel whose portable bindings resolve transitively through converted routed children to exact canonical objects while its remaining bindings stay the exact legacy objects imported from descendant modules declared in runtime_only_modules; converted for compatibility accounting without moving runtime code into Core. pending_*: not yet converted.",
+          "description": "source_parity: still a duplicated copy, symbol for symbol. canonical_subset: still a duplicated copy but a strict superset of the canonical module, because canonical Core deliberately omits runtime-owned symbols. direct_facade: re-exports canonical objects itself. split_facade: imports its whole portable namespace from its exact canonical counterpart while retaining explicitly tested, legacy-owned synchronous function definitions Core deliberately excludes. transitive_facade: identity-preserving purely through converted children. hybrid_facade: a source-unchanged hybrid barrel whose portable bindings resolve transitively through converted routed children to exact canonical objects while its remaining bindings stay the exact legacy objects imported from descendant modules declared in runtime_only_modules; converted for compatibility accounting without moving runtime code into Core. root_facade: the converted package root, valid only for the root/root pair -- it imports each of its 182 advertised names and __version__ directly from the exact approved canonical owner or barrel named by the frozen root import table, and keeps four non-advertised compatibility bindings, two canonical and two (Database, MemoryService) deliberately still owned by declared runtime-only legacy modules. Deliberately not direct_facade: the canonical root advertises only __version__, so a single re-export could not carry this contract. pending_*: not yet converted.",
           "enum": [
             "source_parity",
             "canonical_subset",
@@ -113,6 +113,7 @@
             "split_facade",
             "transitive_facade",
             "hybrid_facade",
+            "root_facade",
             "pending_direct_barrel",
             "pending_hybrid",
             "pending_root"

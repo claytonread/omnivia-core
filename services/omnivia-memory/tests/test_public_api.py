@@ -151,6 +151,32 @@ FORBIDDEN_IMPORT_PREFIXES = (
 )
 
 
+#: The package root's two sanctioned runtime imports, and the one binding each
+#: supplies. The root is a compatibility facade: ``Database`` and ``MemoryService``
+#: are deliberately still owned by the legacy runtime, stay out of ``__all__``, and
+#: are imported *absolutely* -- the root's frozen source policy
+#: (``baseline.facade_manifest.root_facade_defects``) rejects relative imports
+#: outright, so these two edges are visible to the scan below where they used to be
+#: hidden behind ``from .persistence import ...``.
+#:
+#: They are exempted by exact ``(module, name)`` pair, never by prefix: anything
+#: else the root reached into these packages for -- or any other runtime module it
+#: reached at all -- still fails. The knowledge surface files get no exemption.
+ROOT_RUNTIME_COMPATIBILITY_IMPORTS = frozenset(
+    {
+        ("omnivia_memory.persistence", "Database"),
+        ("omnivia_memory.memory.service", "MemoryService"),
+    }
+)
+
+#: The same exemption expressed as the module paths ``_absolute_imported_modules``
+#: reports for them, so the scan can subtract exactly those and nothing more.
+ROOT_RUNTIME_EXEMPT_MODULES = frozenset(
+    {module for module, _name in ROOT_RUNTIME_COMPATIBILITY_IMPORTS}
+    | {f"{module}.{name}" for module, name in ROOT_RUNTIME_COMPATIBILITY_IMPORTS}
+)
+
+
 def _absolute_imported_modules(path: Path) -> set[str]:
     """Return the absolute module paths a file imports, taken from its AST.
 
@@ -171,16 +197,66 @@ def _absolute_imported_modules(path: Path) -> set[str]:
 
 
 def test_contract_surface_has_no_runtime_import_creep() -> None:
-    """Knowledge surface files stay isolated from runtime-oriented modules."""
+    """Knowledge surface files stay isolated from runtime-oriented modules.
+
+    The package root is held to the same rule with exactly one exemption: the two
+    ``(module, name)`` pairs in ``ROOT_RUNTIME_COMPATIBILITY_IMPORTS``. Those are
+    the compatibility bindings Core deliberately does not own, and nothing else in
+    the root -- not another name from those two modules, and not any other runtime
+    module -- is allowed through.
+    """
     source_root = Path(__file__).parents[1] / "src" / "omnivia_memory"
     knowledge_files = sorted((source_root / "knowledge").glob("*.py"))
-    files_to_check = knowledge_files + [source_root / "__init__.py"]
+    root_init = source_root / "__init__.py"
+    files_to_check = knowledge_files + [root_init]
 
     for path in files_to_check:
-        for module in sorted(_absolute_imported_modules(path)):
+        exempt = ROOT_RUNTIME_EXEMPT_MODULES if path == root_init else frozenset()
+        for module in sorted(_absolute_imported_modules(path) - exempt):
             for prefix in FORBIDDEN_IMPORT_PREFIXES:
                 assert module != prefix and not module.startswith(f"{prefix}."), (
                     path.name,
                     module,
                     prefix,
                 )
+
+
+def test_root_runtime_compatibility_imports_are_exactly_the_declared_two() -> None:
+    """The exemption above is pinned against the root's real source in both
+    directions, so it can neither go stale nor quietly widen.
+
+    Every exempted pair must really be imported by the root, and every runtime
+    module the root really reaches must be an exempted one. A third runtime import
+    would fail here as well as at the frozen root source gate.
+    """
+    root_init = Path(__file__).parents[1] / "src" / "omnivia_memory" / "__init__.py"
+    tree = ast.parse(root_init.read_text(encoding="utf-8"), filename=str(root_init))
+
+    imported: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        assert not isinstance(node, ast.Import), "the root uses from-imports only"
+        if isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "the root imports absolutely, never relatively"
+            assert node.module is not None
+            imported.update((node.module, alias.name) for alias in node.names)
+
+    legacy = {
+        (module, name)
+        for module, name in imported
+        if module == "omnivia_memory" or module.startswith("omnivia_memory.")
+    }
+    assert legacy == set(ROOT_RUNTIME_COMPATIBILITY_IMPORTS), legacy
+
+    # ...and both are runtime modules the ban above really covers, so the exemption
+    # is exercising the rule rather than pointing somewhere it never applied.
+    for module, _name in ROOT_RUNTIME_COMPATIBILITY_IMPORTS:
+        assert any(
+            module == prefix or module.startswith(f"{prefix}.")
+            for prefix in FORBIDDEN_IMPORT_PREFIXES
+        ), module
+
+    # Neither may be advertised: the root's contract-only ``__all__`` is what keeps
+    # them compatibility-only.
+    for _module, name in ROOT_RUNTIME_COMPATIBILITY_IMPORTS:
+        assert name not in omnivia_memory.__all__
+        assert hasattr(omnivia_memory, name)

@@ -43,9 +43,11 @@ built artifacts:
    runtime owner has a canonical twin to have come from;
 10. install the Core wheel alone into a *second* throwaway environment and
     confirm the canonical barrels stand up with ``omnivia-memory`` absent
-    entirely, exposing every portable name and no runtime one -- and that the
-    Core wheel declares no reverse dependency on the compatibility
-    distribution.
+    entirely, exposing every portable name and no runtime one; in the same
+    environment, confirm the canonical package *root* is version-only, publishes
+    none of the compatibility root's 186 advertised-or-hidden names, and names
+    the legacy package nowhere -- and that the Core wheel declares no reverse
+    dependency on the compatibility distribution.
 
 Scope limits, stated explicitly so this evidence is not over-read:
 
@@ -93,6 +95,12 @@ import zipfile
 from pathlib import Path
 
 from packaging.requirements import Requirement
+
+from baseline.facade_manifest import (
+    CANONICAL_ROOT_ALL,
+    ROOT_FACADE_ALL,
+    ROOT_FACADE_HIDDEN_BINDINGS,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = REPO_ROOT
@@ -777,11 +785,22 @@ assert runtime_checked == {HYBRID_RUNTIME_COUNT}, runtime_checked
 print("OK")
 """
 
+#: Every name the compatibility root either advertises or keeps as a hidden
+#: binding, minus ``__version__`` -- the one name both roots legitimately share.
+#: The canonical root may publish none of them: it is version-only, and the
+#: compatibility root aggregates its surface from eleven owners precisely because
+#: there is no single canonical re-export to have taken it from.
+ROOT_ADVERTISED_AND_HIDDEN = tuple(
+    sorted({*ROOT_FACADE_ALL, *ROOT_FACADE_HIDDEN_BINDINGS} - {"__version__"})
+)
+
 #: Run inside a *second* throwaway environment that has only the Core wheel
 #: installed. Nothing here may need ``omnivia-memory`` to exist at all.
 CORE_ONLY_BARRELS_SCRIPT = f"""
 import importlib
 import sys
+
+CHECKOUT = {str(REPO_ROOT)!r}
 
 try:
     importlib.import_module("omnivia_memory")
@@ -789,6 +808,44 @@ except ImportError:
     pass
 else:
     raise AssertionError("omnivia_memory is installed in the Core-only environment")
+
+# The canonical package root, in the installed Core wheel and with the
+# compatibility distribution absent. `test_root_facade.py` makes the same claims
+# about the source checkout; this is the artifact half, and it is the only place
+# the root is checked with nothing of `omnivia_memory` on disk to lean on.
+canonical_root = importlib.import_module("omnivia_core")
+assert "site-packages" in canonical_root.__file__, canonical_root.__file__
+assert not canonical_root.__file__.startswith(CHECKOUT), canonical_root.__file__
+
+# Version-only, and no dynamic hook widening that.
+assert list(canonical_root.__all__) == {list(CANONICAL_ROOT_ALL)!r}, list(
+    canonical_root.__all__
+)
+assert canonical_root.__version__ == {EXPECTED_VERSION!r}, canonical_root.__version__
+assert "__getattr__" not in vars(canonical_root)
+assert "__dir__" not in vars(canonical_root)
+
+# None of the compatibility root's 186 advertised-or-hidden names leaks in --
+# neither the 182 portable contracts nor the four hidden bindings, two of which
+# (`Database`, `MemoryService`) are runtime-owned and must have no canonical
+# counterpart at all.
+root_names = {list(ROOT_ADVERTISED_AND_HIDDEN)!r}
+assert len(root_names) == 186, len(root_names)
+leaked_root = sorted(name for name in root_names if hasattr(canonical_root, name))
+assert not leaked_root, leaked_root
+public_root = sorted(
+    name
+    for name, value in vars(canonical_root).items()
+    if not name.startswith("_") and type(value).__name__ != "module"
+)
+assert public_root == ["annotations"], public_root
+
+# ...and it carries no runtime-owned legacy dependency: the installed source
+# never names the legacy package, so nothing here could reach back into it.
+with open(canonical_root.__file__, encoding="utf-8") as handle:
+    assert "omnivia_memory" not in handle.read(), (
+        "the canonical root names the legacy package"
+    )
 
 runtime_names = set()
 for owners in {HYBRID_BARREL_RUNTIME!r}.values():
@@ -972,9 +1029,11 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
 
         # ...and the canonical half stands on its own. A second environment with
         # only the Core wheel installed: every canonical barrel imports, every
-        # portable name is there, no runtime name is, and ``omnivia_memory`` is
-        # not merely unimported but absent. The bounded
-        # ``omnivia-memory -> omnivia-core`` dependency has no reverse.
+        # portable name is there, no runtime name is, the canonical package root
+        # is version-only and publishes none of the compatibility root's 186
+        # advertised-or-hidden names, and ``omnivia_memory`` is not merely
+        # unimported but absent. The bounded ``omnivia-memory -> omnivia-core``
+        # dependency has no reverse.
         core_only_dir = workdir / "core-only-venv"
         venv.EnvBuilder(with_pip=True).create(core_only_dir)
         core_only_python = core_only_dir / "bin" / "python"

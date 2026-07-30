@@ -18,7 +18,7 @@
       "canonical_module": "omnivia_core",
       "pair_kind": "root",
       "shape": "root",
-      "migration_state": "pending_root"
+      "migration_state": "root_facade"
     },
     {
       "legacy_module": "omnivia_memory._shared",

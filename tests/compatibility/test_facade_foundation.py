@@ -6313,9 +6313,9 @@ def test_workspace_conversion_declares_no_descriptor_rewrite_or_root_owner_move(
 
 def test_workspace_is_the_last_source_parity_leaf_to_convert() -> None:
     """The workspace batch emptied ``source_parity``: every routed leaf in the
-    frozen registry is converted. The six hybrid barrels above them have since
-    been promoted to ``hybrid_facade`` too, so the package root is now the only
-    unconverted route left.
+    frozen registry is converted. The six hybrid barrels above them were promoted
+    to ``hybrid_facade`` next, and the package root has since become a
+    ``root_facade``, so no unconverted route is left at all.
 
     Pinned here, next to the leaf that did it, so a later batch that reintroduced
     a duplicated leaf -- or that quietly left this one behind -- has to say so.
@@ -6328,7 +6328,7 @@ def test_workspace_is_the_last_source_parity_leaf_to_convert() -> None:
     assert workspace.canonical_module == WORKSPACE_MODELS_CANONICAL
 
     unconverted = [route for route in manifest.routes if not route.is_converted]
-    assert [route.legacy_module for route in unconverted] == ["omnivia_memory"]
+    assert [route.legacy_module for route in unconverted] == []
 
 
 # ---------------------------------------------------------------------------
@@ -6805,10 +6805,10 @@ def _canonical(barrel: dict[str, Any]) -> str:
 
 
 def test_every_hybrid_barrel_is_a_converted_hybrid_facade() -> None:
-    """The registry's own record of this batch, pinned from this side too: the six
+    """The registry's own record of that batch, pinned from this side too: the six
     ``hybrid_barrel`` pairs are ``hybrid_facade`` and converted, nothing is left at
-    ``pending_hybrid``, and the package root is the only unconverted route in the
-    whole registry."""
+    ``pending_hybrid``, and -- now that the package root has become a
+    ``root_facade`` -- no unconverted route is left in the whole registry."""
     manifest = load_manifest()
     suffixes = {barrel["suffix"] for barrel in HYBRID_FACADE_BARRELS}
     assert suffixes == {
@@ -6822,7 +6822,7 @@ def test_every_hybrid_barrel_is_a_converted_hybrid_facade() -> None:
         assert route.canonical_module == _canonical(barrel)
     assert [
         route.legacy_module for route in manifest.routes if not route.is_converted
-    ] == ["omnivia_memory"]
+    ] == []
 
 
 def test_hybrid_facade_batch_partition_totals_are_exact() -> None:

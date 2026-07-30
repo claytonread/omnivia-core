@@ -16,13 +16,18 @@ from baseline.dependencies import (
     FACADE_COMPATIBILITY_DEPENDENCY,
     FACADE_COMPATIBILITY_IMPORTERS,
     FACADE_COMPATIBILITY_PACKAGE,
+    FACADE_ROOT_CANONICALIZED_BINDINGS,
+    FACADE_ROOT_FROZEN_RUNTIME_BINDINGS,
+    FACADE_ROOT_RUNTIME_BINDINGS,
     FACADE_STDLIB_IMPORT_MOVES,
     TRANSITIONAL_IMPORT_REASONS,
     ImportEdge,
     _canonical_module_imports_stdlib,
     _facade_dependency_problems,
+    _facade_root_runtime_problems,
     _facade_stdlib_import_problems,
     _normalize_expected_dependencies,
+    _root_canonical_from_imports,
     build_dependency_inventory,
     collect_import_edges,
     is_runtime_module,
@@ -459,3 +464,334 @@ def test_verify_fails_closed_on_an_undeclared_stdlib_import_removal(monkeypatch)
     problems = verify_dependency_inventory()
 
     assert any("uuid" in problem for problem in problems), problems
+
+
+# --------------------------------------------------------------------------
+# The converted compatibility root.
+#
+# Two things changed here, and only two. The root became an exact
+# ``omnivia_core`` importer, so it joined ``FACADE_COMPATIBILITY_IMPORTERS``. And
+# its transitional edge *moved*: it used to take ``MemoryCreate``,
+# ``MemoryService`` and ``MemoryUpdate`` together from ``omnivia_memory.memory``,
+# and now takes the two inputs from canonical Core while reaching
+# ``omnivia_memory.memory.service`` for the one object Core deliberately does not
+# own. That is a genuine frozen-vs-live difference in ``transitional_imports``
+# that no pre-existing normalization covered, so it is declared as two
+# exactly-known states and pinned in both directions below.
+# --------------------------------------------------------------------------
+
+#: The importer-set delta this batch is allowed to cause: the package root, and
+#: nothing else. Restated rather than derived so a widened importer allowance --
+#: another barrel, or a prefix match -- fails here.
+_EXPECTED_IMPORTER_DELTA = frozenset({CORE_PACKAGE})
+
+#: The 30 converted facade leaves, as the set that was there before the root
+#: joined. Together with the delta above this pins the whole importer tuple
+#: without restating 31 module paths.
+_LEAF_IMPORTERS = frozenset(FACADE_COMPATIBILITY_IMPORTERS) - _EXPECTED_IMPORTER_DELTA
+
+_EXPECTED_ROOT_RUNTIME_BINDINGS = {
+    f"{CORE_PACKAGE}.memory.service": ("MemoryService",),
+    f"{CORE_PACKAGE}.persistence": ("Database",),
+}
+_EXPECTED_ROOT_FROZEN_RUNTIME_BINDINGS = {
+    f"{CORE_PACKAGE}.memory": ("MemoryCreate", "MemoryService", "MemoryUpdate"),
+    f"{CORE_PACKAGE}.persistence": ("Database",),
+}
+_EXPECTED_ROOT_CANONICALIZED_BINDINGS = {
+    "MemoryCreate": f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models",
+    "MemoryUpdate": f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models",
+}
+
+
+def test_the_package_root_is_the_only_non_leaf_facade_importer() -> None:
+    """The importer set is 31 entries: the 30 converted leaves plus the root.
+
+    Pinned as an exact delta rather than as "contains the root", so adding another
+    barrel-or-root importer has to be a deliberate edit here. Every leaf entry is
+    a dotted submodule; the root is the one bare package name.
+    """
+    assert frozenset(FACADE_COMPATIBILITY_IMPORTERS) - _LEAF_IMPORTERS == (
+        _EXPECTED_IMPORTER_DELTA
+    )
+    assert CORE_PACKAGE in FACADE_COMPATIBILITY_IMPORTERS
+    assert len(FACADE_COMPATIBILITY_IMPORTERS) == 31
+    assert len(_LEAF_IMPORTERS) == 30
+    assert list(FACADE_COMPATIBILITY_IMPORTERS) == sorted(
+        FACADE_COMPATIBILITY_IMPORTERS
+    )
+    bare = [name for name in FACADE_COMPATIBILITY_IMPORTERS if "." not in name]
+    assert bare == [CORE_PACKAGE]
+    for name in _LEAF_IMPORTERS:
+        assert name.startswith(f"{CORE_PACKAGE}.")
+
+
+def test_facade_dependency_problems_rejects_dropping_the_root_importer() -> None:
+    """The importer set is compared exactly. With the root converted, omitting it
+    from the declaration must fail rather than be tolerated as a subset."""
+    problems = _facade_dependency_problems(
+        build_dependency_inventory(),
+        importers=tuple(sorted(_LEAF_IMPORTERS)),
+    )
+    assert any("importer set drifted" in problem for problem in problems), problems
+
+
+def test_root_runtime_binding_declarations_are_exact() -> None:
+    """The three declarations, restated here so a widened one fails this test
+    instead of licensing itself. Two runtime edges, four symbols across the frozen
+    pair, and exactly two symbols that moved to canonical Core."""
+    assert FACADE_ROOT_RUNTIME_BINDINGS == _EXPECTED_ROOT_RUNTIME_BINDINGS
+    assert FACADE_ROOT_FROZEN_RUNTIME_BINDINGS == (
+        _EXPECTED_ROOT_FROZEN_RUNTIME_BINDINGS
+    )
+    assert FACADE_ROOT_CANONICALIZED_BINDINGS == (
+        _EXPECTED_ROOT_CANONICALIZED_BINDINGS
+    )
+
+    # The converted edges reach runtime modules only, and every symbol they carry
+    # was already carried by the frozen pair: nothing new is introduced as a "move".
+    frozen_symbols = {
+        symbol
+        for symbols in FACADE_ROOT_FROZEN_RUNTIME_BINDINGS.values()
+        for symbol in symbols
+    }
+    for module, symbols in FACADE_ROOT_RUNTIME_BINDINGS.items():
+        assert is_runtime_module(module), module
+        assert set(symbols) <= frozen_symbols
+
+    # The two canonicalized bindings are exactly the frozen symbols that are no
+    # longer taken from the legacy runtime.
+    converted_symbols = {
+        symbol for symbols in FACADE_ROOT_RUNTIME_BINDINGS.values() for symbol in symbols
+    }
+    assert frozen_symbols - converted_symbols == set(
+        FACADE_ROOT_CANONICALIZED_BINDINGS
+    )
+    for canonical_module in FACADE_ROOT_CANONICALIZED_BINDINGS.values():
+        assert canonical_module.startswith(f"{FACADE_COMPATIBILITY_PACKAGE}.")
+
+
+def test_transitional_import_reasons_cover_the_converted_root_edges() -> None:
+    """Both converted root edges carry a stated reason, the superseded
+    ``omnivia_memory.memory`` key is gone, and the reason on the moved edge says
+    why the two inputs are no longer on it."""
+    keys = {
+        imported for importer, imported in TRANSITIONAL_IMPORT_REASONS if importer == CORE_PACKAGE
+    }
+    assert keys == set(FACADE_ROOT_RUNTIME_BINDINGS)
+    assert (CORE_PACKAGE, f"{CORE_PACKAGE}.memory") not in TRANSITIONAL_IMPORT_REASONS
+    for imported in FACADE_ROOT_RUNTIME_BINDINGS:
+        assert TRANSITIONAL_IMPORT_REASONS[(CORE_PACKAGE, imported)].strip()
+    service_reason = TRANSITIONAL_IMPORT_REASONS[
+        (CORE_PACKAGE, f"{CORE_PACKAGE}.memory.service")
+    ]
+    assert "MemoryCreate" in service_reason and "MemoryUpdate" in service_reason
+
+
+def test_facade_root_runtime_problems_accepts_the_declared_move() -> None:
+    assert _facade_root_runtime_problems(build_dependency_inventory()) == []
+
+
+def test_facade_root_runtime_problems_rejects_a_stale_frozen_declaration() -> None:
+    """The declaration names the state it was written for. Pointed at a frozen
+    baseline it does not describe, it must refuse rather than overwrite whatever it
+    finds."""
+    problems = _facade_root_runtime_problems(
+        build_dependency_inventory(),
+        frozen_bindings={f"{CORE_PACKAGE}.memory": ("MemoryService",)},
+    )
+    assert any(
+        "the frozen baseline records root runtime edges" in problem
+        for problem in problems
+    ), problems
+
+
+def test_facade_root_runtime_problems_rejects_an_extra_live_runtime_edge() -> None:
+    """A third runtime edge out of the root -- or a fifth symbol on an existing one
+    -- must fail rather than ride in behind this allowance."""
+    inventory = copy.deepcopy(build_dependency_inventory())
+    inventory["transitional_imports"] = [
+        *inventory["transitional_imports"],
+        {
+            "importer": CORE_PACKAGE,
+            "imported": f"{CORE_PACKAGE}.search.service",
+            "symbols": ["SearchService"],
+            "reason": None,
+        },
+    ]
+    problems = _facade_root_runtime_problems(inventory)
+    assert any(
+        "the checkout has root runtime edges" in problem for problem in problems
+    ), problems
+
+
+def test_facade_root_runtime_problems_rejects_a_non_runtime_owner() -> None:
+    """A declared root runtime edge must point at a module the layering rules
+    really call runtime; a contract module could not be a legacy-owned exception."""
+    problems = _facade_root_runtime_problems(
+        build_dependency_inventory(),
+        converted={f"{CORE_PACKAGE}.knowledge": ("MemoryService",)},
+    )
+    assert any("the checkout has root runtime edges" in problem for problem in problems)
+
+    # ...and when the live edges *are* the declared ones, the runtime-module check
+    # is what rejects a contract owner.
+    inventory = copy.deepcopy(build_dependency_inventory())
+    inventory["transitional_imports"] = [
+        entry
+        for entry in inventory["transitional_imports"]
+        if not (
+            entry["importer"] == CORE_PACKAGE
+            and entry["imported"] == f"{CORE_PACKAGE}.memory.service"
+        )
+    ] + [
+        {
+            "importer": CORE_PACKAGE,
+            "imported": f"{CORE_PACKAGE}.knowledge",
+            "symbols": ["MemoryService"],
+            "reason": None,
+        }
+    ]
+    problems = _facade_root_runtime_problems(
+        inventory,
+        converted={
+            f"{CORE_PACKAGE}.knowledge": ("MemoryService",),
+            f"{CORE_PACKAGE}.persistence": ("Database",),
+        },
+    )
+    assert any("is not a runtime module" in problem for problem in problems), problems
+
+
+def test_facade_root_runtime_problems_rejects_a_binding_that_did_not_move() -> None:
+    """A canonicalized binding has to be proved *moved*, not merely gone: the root's
+    source must really import it from the declared canonical owner. Naming a
+    plausible wrong owner -- the memory barrel rather than its models leaf -- fails.
+    """
+    problems = _facade_root_runtime_problems(
+        build_dependency_inventory(),
+        canonicalized={"MemoryCreate": f"{FACADE_COMPATIBILITY_PACKAGE}.memory"},
+    )
+    assert any(
+        "does not import it from" in problem and "rather than moved" in problem
+        for problem in problems
+    ), problems
+
+
+def test_facade_root_runtime_problems_rejects_a_stale_canonicalized_binding() -> None:
+    """An entry kept after the binding came back to the legacy edge would keep
+    excusing it. It must be reported as stale instead."""
+    problems = _facade_root_runtime_problems(
+        build_dependency_inventory(),
+        canonicalized={"MemoryService": f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models"},
+    )
+    assert any(
+        "still taken from a legacy runtime module" in problem for problem in problems
+    ), problems
+
+
+def test_facade_root_runtime_problems_requires_the_root_to_be_a_facade_importer() -> None:
+    """The move is only attributable to the sanctioned conversion if the root really
+    is a declared ``omnivia_core`` importer."""
+    problems = _facade_root_runtime_problems(
+        build_dependency_inventory(),
+        importers=tuple(sorted(_LEAF_IMPORTERS)),
+    )
+    assert problems == [
+        (f"compatibility root {CORE_PACKAGE!r}: not a declared compatibility-facade "
+        "importer, so its runtime edges cannot have moved with the root conversion")
+    ]
+
+
+def test_root_canonical_from_imports_reads_the_source_not_the_module() -> None:
+    """The proof reads the file with ``ast``, so a runtime-patched root cannot
+    satisfy it, and it records only canonical from-imports."""
+    found = _root_canonical_from_imports()
+    assert found[f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models"] == (
+        "MemoryCreate",
+        "MemoryUpdate",
+    )
+    assert f"{FACADE_COMPATIBILITY_PACKAGE}.provenance" in found
+    for module in found:
+        assert module.startswith(FACADE_COMPATIBILITY_PACKAGE)
+    # The legacy runtime owners are deliberately absent: this helper reports the
+    # canonical half only.
+    assert not any(module.startswith(f"{CORE_PACKAGE}.") for module in found)
+
+
+def test_normalize_expected_dependencies_replaces_only_the_root_edges() -> None:
+    """The normalization touches transitional edges whose importer *is* the package
+    root, and nothing else. Every other edge in the artifact still has to match."""
+    other = {
+        "importer": f"{CORE_PACKAGE}.memory_graph",
+        "imported": f"{CORE_PACKAGE}.memory_graph.store",
+        "symbols": ["MemoryGraphStore"],
+        "reason": "kept",
+    }
+    expected = {
+        "declared_dependencies": [],
+        "third_party_imports": [],
+        "transitional_imports": [
+            {
+                "importer": CORE_PACKAGE,
+                "imported": f"{CORE_PACKAGE}.memory",
+                "symbols": ["MemoryCreate", "MemoryService", "MemoryUpdate"],
+                "reason": "superseded",
+            },
+            {
+                "importer": CORE_PACKAGE,
+                "imported": f"{CORE_PACKAGE}.persistence",
+                "symbols": ["Database"],
+                "reason": "kept",
+            },
+            other,
+        ],
+    }
+    before = copy.deepcopy(expected)
+
+    normalized = _normalize_expected_dependencies(expected)
+
+    assert expected == before, "the frozen artifact must not be mutated in place"
+    assert [
+        (entry["importer"], entry["imported"], tuple(entry["symbols"]))
+        for entry in normalized["transitional_imports"]
+    ] == [
+        (CORE_PACKAGE, f"{CORE_PACKAGE}.memory.service", ("MemoryService",)),
+        (CORE_PACKAGE, f"{CORE_PACKAGE}.persistence", ("Database",)),
+        (f"{CORE_PACKAGE}.memory_graph", f"{CORE_PACKAGE}.memory_graph.store", ("MemoryGraphStore",)),
+    ]
+    # The untouched edge keeps its own reason; the replaced ones take theirs from
+    # the allowlist rather than from the superseded artifact text.
+    assert normalized["transitional_imports"][2] == other
+    assert normalized["transitional_imports"][0]["reason"] == (
+        TRANSITIONAL_IMPORT_REASONS[(CORE_PACKAGE, f"{CORE_PACKAGE}.memory.service")]
+    )
+
+
+def test_verify_dependency_inventory_refuses_to_normalize_an_unverified_root(
+    monkeypatch,
+) -> None:
+    """The normalization is gated on the proof. With the proof failing, the frozen
+    baseline is left alone and the failure says so by name."""
+    real_build = build_dependency_inventory
+
+    def _tampered():
+        inventory = copy.deepcopy(real_build())
+        inventory["transitional_imports"] = [
+            *inventory["transitional_imports"],
+            {
+                "importer": CORE_PACKAGE,
+                "imported": f"{CORE_PACKAGE}.search.service",
+                "symbols": ["SearchService"],
+                "reason": None,
+            },
+        ]
+        return inventory
+
+    monkeypatch.setattr("baseline.dependencies.build_dependency_inventory", _tampered)
+
+    problems = verify_dependency_inventory()
+
+    assert any(
+        "Compatibility root runtime-edge verification failed" in problem
+        for problem in problems
+    ), problems

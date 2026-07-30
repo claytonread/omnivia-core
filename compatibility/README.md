@@ -63,21 +63,26 @@ module and fails when the file contradicts its state:
   block left is a `transitive_facade` and must say so; one whose portable half
   has been canonicalised, rerouted at `omnivia_core`, or hidden behind a
   `__getattr__`/`__dir__` hook fails;
+- a `root_facade` root whose source is not one. This is the strictest of the
+  policies, because the root is the only module whose advertised surface spans
+  every domain at once and several of its names are published under the same
+  spelling by more than one domain — so "it imports the right names" is not the
+  contract, *which owner* each name comes from is. See *The package root* below;
 - a `source_parity` or `canonical_subset` leaf that has quietly become either
   kind of leaf facade without its state being moved forward.
 
 The `pending_*` states are **not** all blanket-skipped. `pending_direct_barrel`
-and `pending_root` assert nothing about source, so there is nothing there to
-contradict, and the loader skips them; what constrains them is the
-state/shape/`pair_kind` combination table — `pending_root` only on the package
-root. `pending_hybrid` (only ever valid on a hybrid barrel) is deliberately kept
-in the pending set *and* source-inspected, because a pending claim stops being
-truthful once the file has caught up with it: if every routed prerequisite child
-of the barrel is converted **and** its unchanged source already qualifies as an
-exact hybrid facade over those children and its declared runtime-only
-descendants, the registry is understating the file and the loader demands the
-state move forward. While either condition is unmet — an unconverted routed
-child, or a source that still has hybrid defects — the route is legitimately
+asserts nothing about source, so there is nothing there to contradict, and the
+loader skips it; what constrains it is the state/shape/`pair_kind` combination
+table. `pending_hybrid` (only ever valid on a hybrid barrel) and `pending_root`
+(only ever valid on the package root) are deliberately kept in the pending set
+*and* source-inspected, because a pending claim stops being truthful once the
+file has caught up with it: if every routed prerequisite child of a hybrid barrel
+is converted **and** its unchanged source already qualifies as an exact hybrid
+facade over those children and its declared runtime-only descendants — or if
+every non-root route is converted **and** the root source already satisfies the
+root policy — the registry is understating the file and the loader demands the
+state move forward. While either condition is unmet, the route is legitimately
 pending and nothing is reported.
 
 `graph.search_models` is a converted `split_facade`, not a duplicate: its three
@@ -104,13 +109,68 @@ routed children.
 completed the contract of the state it declares, not that every name it
 publishes is canonical.
 
-**Current status.** Every leaf and every barrel route is converted under its own
-accepted contract — `direct_facade`, `split_facade`, `transitive_facade`, or
-`hybrid_facade`. `source_parity`, `canonical_subset`, `pending_direct_barrel` and
-`pending_hybrid` are all empty. The package root `omnivia_memory` is the one
-route left, and it is still `pending_root`. `migration_state` remains the
-authority for this per route, and the checker prints the partition; read its
-output rather than trusting this paragraph after a change.
+## The package root
+
+`omnivia_memory` is a `root_facade`, and deliberately **not** a `direct_facade`.
+The canonical root `omnivia_core` advertises exactly one name — `__version__` —
+on purpose, so there is nothing a single re-export of it could have re-exported.
+The compatibility root instead aggregates its whole advertised contract from
+eleven approved canonical modules — some of them the owner that defines a name,
+some of them a barrel that re-exports it — plus two runtime bindings Core does
+not own. The identity guarantee is unchanged either way: importing through a
+barrel binds the same object the defining module binds, and
+`tests/compatibility/test_root_facade.py` compares each advertised name against
+the *leaf* that defines it, not against the module the root fetches it from.
+
+What the state asserts, all of it enforced by
+`baseline/facade_manifest.py`'s `root_facade_defects`:
+
+- **Every other route is converted first.** The root may not be declared terminal
+  on top of an unconverted leaf or barrel.
+- **183 advertised names, in a frozen order.** `ROOT_FACADE_ALL` is the exact
+  ordered literal `__all__` the source must declare: 182 portable contracts plus
+  `__version__`. Order is part of the contract, so a reordering fails.
+- **One approved owner per import block, with an exact name set.**
+  `ROOT_FACADE_CANONICAL_IMPORTS` names the eleven approved canonical modules —
+  each either the owner that defines a name or the barrel that re-exports it —
+  and exactly which names come from each; `ROOT_FACADE_RUNTIME_IMPORTS` names the
+  two legacy runtime owners and the one binding each supplies. Each owner is reached exactly
+  once. That table is what pins the six export collisions independently of import
+  order: `ValidationResult` from `omnivia_core._shared.validation`, `SourceRef`
+  from `omnivia_core.knowledge`, `ProvenanceRequirement` from
+  `omnivia_core.component_contract`, `LifecycleState` from
+  `omnivia_core.control_plane`, and `Source`/`SourceType` from
+  `omnivia_core.provenance` — never the other domain's same-named type.
+- **`__version__` is imported, not restated.** It comes from the canonical root;
+  the root's only assignment is `__all__`.
+- **Four non-advertised compatibility bindings, and no fifth.** `MemoryCreate`
+  and `MemoryUpdate` are canonical Core objects; `Database` and `MemoryService`
+  are the exact legacy objects owned by `omnivia_memory.persistence` and
+  `omnivia_memory.memory.service`, both declared `runtime_only` here. All four
+  stay importable and stay out of `__all__`. The imported binding set must be
+  exactly `__all__` plus those four, so no extra public binding — an
+  `annotations` future feature included — can appear.
+- **Nothing else.** Docstring, absolute unaliased non-star from-imports, one
+  literal `__all__` last. No relative or star import, no alias, no plain
+  `import x`, no definition, no second assignment, no module
+  `__getattr__`/`__dir__`, and no `sys.modules` routing.
+- **The canonical root is still version-only**, checked in the same pass, because
+  that fact is the state's whole justification.
+
+Converting the root moved no runtime code into Core: `Database` and
+`MemoryService` are still legacy-owned, still resolved out of
+`services/omnivia-memory`, and still absent from the Core wheel.
+
+**Current status.** Every route in the registry is converted under its own
+accepted contract — `direct_facade` (29), `split_facade` (1),
+`transitive_facade` (10), `hybrid_facade` (6), `root_facade` (1) — and every
+`pending_*` state, along with `source_parity` and `canonical_subset`, is empty.
+The checker's remaining-work line reads `0 leaves, 0 barrels and 0 roots`; the
+root is counted there rather than excluded from it, so the proof cannot read
+"nothing remaining" while the one route that publishes the whole advertised
+surface is still a duplicate. `migration_state` remains the authority for this
+per route, and the checker prints the partition; read its output rather than
+trusting this paragraph after a change.
 
 ## Updating the registry
 
@@ -192,7 +252,19 @@ encode are enforced by other gates in the same acceptance run:
   `tests/typing/hybrid_barrel_consumer.py`, audited against the six barrels'
   `__all__` surfaces: all 93 names (62 portable + 31 runtime), imported by legacy
   barrel path only, with nothing missing, nothing extra, no leaf or
-  `omnivia_core` path, and no alias.
+  `omnivia_core` path, and no alias. The package root is a module route too, so it
+  gets a third fixture on the same footing, `tests/typing/root_facade_consumer.py`,
+  audited against the frozen root contract: all 187 bindings (183 advertised, in
+  `__all__` order, plus the four hidden ones), imported by the legacy root path
+  only, with nothing missing, nothing extra, no canonical import and no alias.
+- **Root identity.** `tests/compatibility/test_root_facade.py` checks the root's
+  objects rather than its source, so a file that satisfies `root_facade_defects`
+  but does not actually resolve to the canonical identities still fails: each of
+  the 182 advertised names is compared against the *leaf* that owns it, the star
+  surface is exactly `__all__`, the six collisions are asserted to be the named
+  owner *and* not any plausible wrong domain's same-named type, both import orders
+  are re-checked in fresh subprocesses, and importing the root is proved to emit
+  no warning, log record, or output at all.
 - **Installed layout.** `tests/compatibility/test_facade_wheel_install.py` builds
   both wheels and installs them offline, so the bounded
   `compatibility_dependency` recorded above is checked as real packaging
@@ -203,13 +275,57 @@ encode are enforced by other gates in the same acceptance run:
   owners. The same run proves the canonical barrels import cleanly from a
   Core-only environment and that no runtime-owned module behind any of the six
   was packaged into the Core wheel at all — not the Graph, ingestion or workspace
-  runtime, and not the memory or memory-graph runtime either.
+  runtime, and not the memory or memory-graph runtime either. That Core-only
+  environment also checks the canonical package *root* in the installed wheel:
+  version-only `__all__`, none of the compatibility root's 186 advertised-or-hidden
+  names present, no dynamic hook, and no mention of the legacy package anywhere in
+  its source — with `omnivia_memory` not merely unimported but absent from the
+  environment.
+- **Deprecation metadata.**
+  `tests/compatibility/test_root_facade_distribution.py` checks the ADR-036
+  deprecation notice where it actually ships — the wheel's `Summary`, its
+  `Project-URL` migration link, and the README that travels as its description —
+  and that the packaged root still carries no import-time notice.
+- **A resolver and installed-root smoke.**
+  `scripts/check-root-facade-resolver.py` installs the compatibility wheel *with*
+  dependency resolution into an isolated environment, proves from pip's own
+  `--report` that the `omnivia-core` artifact it resolved is the wheel that run
+  built (content equality alone would not: a same-version wheel on an index could
+  match it byte for byte), then imports all 47 registered legacy route modules and
+  their 47 canonical counterparts out of the installed tree and re-runs the root
+  identity/export audit there. It is honestly labelled a **current-index resolver
+  smoke**, not a locked or reproducible supply-chain proof: this repository has no
+  lockfile, and its range pins are not one. It is also not evidence about
+  *published* artifacts.
 
-None of this says the conversion is finished — the package root remains
-`pending_root`. And "zero barrels remaining" does not mean Core has taken
-ownership of anything it had not already: the 31 runtime exports the six hybrid
-barrels publish are still legacy-owned, still resolved locally out of
-`services/omnivia-memory`, and still absent from the Core wheel. What the gates
-above say is that what has been converted is correct, under the contract it
-actually claims, and cannot silently stop being correct. For what is left, read
-the checker's output, not this file.
+  It is a script rather than a test on purpose. The acceptance workflow runs
+  `pytest tests/canonical_migration tests/compatibility` and `pytest` in the same
+  job, so a pytest module would execute the network smoke three times; keeping it
+  in `scripts/`, outside `testpaths`, makes "exactly once, in its own fail-closed
+  step with an explicit timeout" structural. The structural pins for that — and
+  unit tests of the provenance check against synthetic pip reports — are in
+  `tests/compatibility/test_root_facade_distribution.py`.
+
+## What this does *not* say
+
+Every route being converted is not the end of the migration.
+
+- **It is not consumer cutover.** Platform, Apps and Dev still import
+  `omnivia_memory`; rewriting those imports is separate, repo-specific work.
+- **It is not facade removal.** The compatibility distribution stays, for at
+  least two scheduled supported release trains, and can only be removed in a
+  major release. See `services/omnivia-memory/README.md`.
+- **It is not a transfer of runtime ownership.** The 31 runtime exports the six
+  hybrid barrels publish, and the root's `Database` and `MemoryService`, are still
+  legacy-owned, still resolved locally out of `services/omnivia-memory`, and still
+  absent from the Core wheel.
+- **It is not published-release acceptance.** Obtaining a real GitHub-hosted
+  `Core acceptance` result, making that check merge-blocking, and proving
+  resolution against published artifacts on a controlled staging index are all
+  external gates.
+
+What the gates above say is that what has been converted is correct, under the
+contract it actually claims, and cannot silently stop being correct. Stated
+exactly: all 47 compatibility routes are identity-preserving with deliberate
+runtime ownership and zero pending registry states. For anything beyond that,
+read the checker's output, not this file.

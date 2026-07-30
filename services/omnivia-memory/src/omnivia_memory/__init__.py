@@ -1,12 +1,139 @@
-"""Stable contract-level OmniVia Core exports.
+"""Deprecated compatibility root for the canonical ``omnivia_core`` package.
 
-The package root is intentionally small. It exposes only portable knowledge
-contracts, validators, and normalization helpers. Runtime scanners, caches,
-providers, search services, persistence layers, MCP surfaces, and installers
-remain outside the root public API.
+``omnivia-memory`` is a compatibility facade. Every name this root publishes is
+imported, unmodified, from its approved canonical owner or barrel -- the frozen
+root import table names eleven ``omnivia_core`` modules, and several of those are
+barrels that re-export a name rather than the module that defines it. There is no
+local definition, alias, wildcard, wrapper, or dynamic attribute hook here, so
+``omnivia_memory.X is <the approved module it is imported from>.X`` holds for
+every name below, and because that module re-exports rather than redefines, the
+object is also the one its defining module binds.
+
+The 182 advertised portable contracts and ``__version__`` come from
+``omnivia_core``. Four bindings stay out of ``__all__`` and remain importable
+for callers that ask for them explicitly: ``MemoryCreate`` and ``MemoryUpdate``
+are the canonical Core inputs, while ``Database`` and ``MemoryService`` are
+deliberately still owned by the legacy runtime modules imported below --
+``omnivia_memory.persistence`` and ``omnivia_memory.memory.service`` -- which
+Core does not own and does not package.
+
+New code should import from ``omnivia_core`` directly; see this distribution's
+README for the migration guidance. Importing this package emits no warning, by
+design (ADR-036): nothing here writes to stdout, stderr, or a logger.
 """
 
-from omnivia_memory.knowledge import (
+from omnivia_core import __version__
+from omnivia_core._shared.validation import ValidationResult
+from omnivia_core.app_manifest import (
+    AppManifest,
+    AppManifestValidationError,
+    AppState,
+    DataSource,
+    validate_app_manifest,
+)
+from omnivia_core.component_contract import (
+    AgentAction,
+    AgentBackedComponentContract,
+    AgentBehavior,
+    AgentRunRecord,
+    AgentRunStatus,
+    ApprovalPolicy,
+    AuditRequirement,
+    ComponentAIMode,
+    ComponentConnectorScope,
+    ComponentContract,
+    ComponentContractValidationError,
+    ComponentDataSource,
+    ComponentFamily,
+    ComponentGraphScope,
+    ComponentInput,
+    ComponentOutput,
+    ComponentOutputType,
+    ComponentPermission,
+    ComponentRunMode,
+    ComponentSafetyLevel,
+    PermissionPolicy,
+    ProvenanceBehavior,
+    ProvenanceRequirement,
+    validate_agent_run_record,
+    validate_component_contract,
+)
+from omnivia_core.control_plane import (
+    CONTROL_PLANE_CONTRACT_VERSION,
+    CONTROL_PLANE_SCHEMA_VERSION,
+    DANGEROUS_SIDE_EFFECTS,
+    Agent,
+    Approval,
+    AuditEvent,
+    Automation,
+    Capability,
+    CapabilityType,
+    CatalogueArtifactVerification,
+    Connection,
+    ConnectionKind,
+    ConsultantAccessGrant,
+    ConsultantGrantStatus,
+    ControlPlaneManifest,
+    ControlPlaneRunStatus,
+    ControlPlaneValidationError,
+    ExecutionMode,
+    ExecutionResult,
+    ImportedCandidateSet,
+    ImportRecord,
+    ImportSourceChange,
+    ImportSourceProtocol,
+    ImportSpecValidation,
+    LifecycleState,
+    LocalApprovalNotification,
+    LocalApprovalNotificationChannel,
+    LocalApprovalNotificationEvent,
+    LocalApprovalNotificationStatus,
+    LocalModelInvocationRecord,
+    LocalObservabilityLogRecord,
+    LocalUsageLedgerEntry,
+    Policy,
+    PolicyAttributeCondition,
+    PolicyAttributeExpression,
+    PolicyDecision,
+    PolicyDecisionReason,
+    PolicyDecisionRecord,
+    PolicyRulePack,
+    PolicyTemplate,
+    RunMode,
+    RunObservabilityMetrics,
+    RunRecord,
+    RunStepRecord,
+    RunStepStatus,
+    RunStepType,
+    SecretMetadata,
+    SecretReference,
+    SecretResolutionResult,
+    SecretStorageScope,
+    SideEffect,
+    SyncConflictStrategy,
+    SyncDirection,
+    SyncRule,
+    TenantIsolationRule,
+    Trigger,
+    TriggerEventEnvelope,
+    TriggerIngestionResult,
+    TriggerKind,
+    WorkspaceRef,
+    compile_policy_expression,
+    detect_import_source_change,
+    import_asyncapi_candidates,
+    import_catalogue_candidates,
+    import_catalogue_generated_candidates,
+    import_mcp_candidates,
+    import_openapi_candidates,
+    manifest_from_dict,
+    validate_asyncapi_import_spec,
+    validate_control_plane_manifest,
+    validate_mcp_import_spec,
+    validate_openapi_import_spec,
+    verify_catalogue_artifacts,
+)
+from omnivia_core.knowledge import (
     BUILTIN_GRAPH_NODE_KINDS,
     BUILTIN_GRAPH_RELATIONS,
     BUILTIN_OBJECT_KINDS,
@@ -33,7 +160,6 @@ from omnivia_memory.knowledge import (
     KnowledgeSource,
     KnowledgeSpace,
     SourceRef,
-    ValidationResult,
     check_contract_version_compatibility,
     normalize_graph_edge_id,
     normalize_graph_node_id,
@@ -62,134 +188,15 @@ from omnivia_memory.knowledge import (
     validate_knowledge_space,
     validate_source_ref,
 )
-from omnivia_memory.memory_graph import (
+from omnivia_core.memory.models import MemoryCreate, MemoryUpdate  # noqa: F401
+from omnivia_core.memory_graph import (
     EvidenceGraphResponse,
     GraphPreviewResponse,
     MemoryGraphFixture,
     RetrievalTrace,
     build_memory_graph_fixture,
 )
-
-# Compatibility re-exports for downstream consumers that import manifest
-# contracts, provenance primitives, and the memory runtime surface from the
-# package root. These are re-exported from their existing submodule paths only;
-# no code is moved. The runtime-heavy symbols (Database, MemoryService, the
-# MemoryCreate/MemoryUpdate inputs, and Source/SourceType) are intentionally
-# kept out of __all__ so the root's advertised public API stays contract-only,
-# while remaining importable for callers that request them explicitly.
-from .app_manifest import (
-    AppManifest,
-    AppManifestValidationError,
-    AppState,
-    DataSource,
-    validate_app_manifest,
-)
-from .component_contract import (
-    AgentAction,
-    AgentBackedComponentContract,
-    AgentBehavior,
-    AgentRunRecord,
-    AgentRunStatus,
-    ApprovalPolicy,
-    AuditRequirement,
-    ComponentAIMode,
-    ComponentConnectorScope,
-    ComponentContract,
-    ComponentContractValidationError,
-    ComponentDataSource,
-    ComponentFamily,
-    ComponentGraphScope,
-    ComponentInput,
-    ComponentOutput,
-    ComponentOutputType,
-    ComponentPermission,
-    ComponentRunMode,
-    ComponentSafetyLevel,
-    PermissionPolicy,
-    ProvenanceBehavior,
-    ProvenanceRequirement,
-    validate_agent_run_record,
-    validate_component_contract,
-)
-from .control_plane import (
-    CatalogueArtifactVerification,
-    ImportSourceChange,
-    ImportSpecValidation,
-    ImportedCandidateSet,
-    detect_import_source_change,
-    import_asyncapi_candidates,
-    import_catalogue_candidates,
-    import_catalogue_generated_candidates,
-    import_mcp_candidates,
-    import_openapi_candidates,
-    validate_asyncapi_import_spec,
-    validate_mcp_import_spec,
-    validate_openapi_import_spec,
-    verify_catalogue_artifacts,
-)
-from .control_plane import (
-    CONTROL_PLANE_CONTRACT_VERSION,
-    CONTROL_PLANE_SCHEMA_VERSION,
-    DANGEROUS_SIDE_EFFECTS,
-    Agent,
-    Approval,
-    AuditEvent,
-    Automation,
-    Capability,
-    CapabilityType,
-    Connection,
-    ConnectionKind,
-    ConsultantAccessGrant,
-    ConsultantGrantStatus,
-    ControlPlaneManifest,
-    ControlPlaneRunStatus,
-    ControlPlaneValidationError,
-    ExecutionMode,
-    ExecutionResult,
-    ImportRecord,
-    ImportSourceProtocol,
-    LifecycleState,
-    LocalApprovalNotification,
-    LocalApprovalNotificationChannel,
-    LocalApprovalNotificationEvent,
-    LocalApprovalNotificationStatus,
-    LocalModelInvocationRecord,
-    LocalObservabilityLogRecord,
-    LocalUsageLedgerEntry,
-    Policy,
-    PolicyAttributeCondition,
-    PolicyAttributeExpression,
-    PolicyDecision,
-    PolicyDecisionReason,
-    PolicyDecisionRecord,
-    PolicyRulePack,
-    PolicyTemplate,
-    RunMode,
-    RunObservabilityMetrics,
-    RunRecord,
-    RunStepRecord,
-    RunStepStatus,
-    RunStepType,
-    SecretResolutionResult,
-    SecretReference,
-    SecretMetadata,
-    SecretStorageScope,
-    SideEffect,
-    SyncConflictStrategy,
-    SyncDirection,
-    SyncRule,
-    TenantIsolationRule,
-    Trigger,
-    TriggerEventEnvelope,
-    TriggerIngestionResult,
-    TriggerKind,
-    WorkspaceRef,
-    compile_policy_expression,
-    manifest_from_dict,
-    validate_control_plane_manifest,
-)
-from .memory import MemoryCreate, MemoryService, MemoryUpdate  # noqa: F401
-from .module_manifest import (
+from omnivia_core.module_manifest import (
     Entrypoint,
     Integrity,
     ModuleKind,
@@ -199,9 +206,8 @@ from .module_manifest import (
     PublishedTarget,
     validate_module_manifest,
 )
-from .persistence import Database  # noqa: F401
-from .provenance import Source, SourceType
-from .run_ledger import (
+from omnivia_core.provenance import Source, SourceType
+from omnivia_core.run_ledger import (
     RUN_LEDGER_CONTRACT_VERSION,
     RUN_LEDGER_PATH_ENV,
     TERMINAL_RUN_STATUSES,
@@ -214,9 +220,12 @@ from .run_ledger import (
     validate_run_ledger_provenance,
 )
 
-__version__ = "0.1.0"
+from omnivia_memory.memory.service import MemoryService  # noqa: F401
+from omnivia_memory.persistence import Database  # noqa: F401
 
-__all__ = [
+# The frozen root export contract pins this exact order, so RUF022's sorted-
+# __all__ preference is suppressed here rather than the order being changed.
+__all__ = [  # noqa: RUF022
     "AgentGraphContext",
     "AppManifest",
     "AppManifestValidationError",

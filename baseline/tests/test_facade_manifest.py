@@ -18,18 +18,31 @@ import jsonschema
 import pytest
 
 from baseline.facade_manifest import (
+    CANONICAL_ROOT_ALL,
     MANIFEST_PATH,
     REPO_ROOT,
+    ROOT_FACADE_ALL,
+    ROOT_FACADE_CANONICAL_IMPORTS,
+    ROOT_FACADE_HIDDEN_BINDINGS,
+    ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS,
+    ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS,
+    ROOT_FACADE_RUNTIME_IMPORTS,
+    ROOT_FACADE_VERSION_BINDING,
+    ROOT_FACADE_VERSION_MODULE,
     SCHEMA_PATH,
     FacadeManifestError,
+    FacadeRoute,
     MigrationState,
     PairKind,
     Shape,
+    canonical_root_defects,
+    canonical_root_source_path,
     direct_facade_defects,
     discover_package_modules,
     hybrid_facade_defects,
     legacy_source_path,
     load_manifest,
+    root_facade_defects,
     split_facade_defects,
     transitive_facade_defects,
     validate_checkout,
@@ -198,11 +211,16 @@ EXPECTED_STATE_SUFFIXES = {
     # keeps asserting that nothing has quietly re-entered it.
     MigrationState.PENDING_DIRECT_BARREL: set(),
     # Empty on purpose, for the same reason: all six hybrid barrels are now
-    # ``hybrid_facade`` above, so nothing is pending conversion except the
-    # package root. The state stays listed so a walk-back is a partition
-    # failure here rather than a silent re-entry.
+    # ``hybrid_facade`` above, so nothing is pending conversion at all. The state
+    # stays listed so a walk-back is a partition failure here rather than a
+    # silent re-entry.
     MigrationState.PENDING_HYBRID: set(),
-    MigrationState.PENDING_ROOT: {""},
+    #: The package root, and the terminal state of the whole registry: every
+    #: route is now converted under its own contract.
+    MigrationState.ROOT_FACADE: {""},
+    # Empty on purpose, like the other two pending states. The root is the only
+    # route that could ever be in it, and it has moved forward.
+    MigrationState.PENDING_ROOT: set(),
 }
 #: Derived rather than listed, so it is whatever the sets above do not claim.
 #: It is empty now -- ``workspace.models`` was the last duplicated leaf -- which
@@ -3143,16 +3161,16 @@ def test_workspace_pair_states_and_shapes_are_exact() -> None:
             manifest.route_for_legacy(runtime_only)
 
 
-def test_no_duplicated_leaf_remains_in_the_registry() -> None:
-    """``workspace.models`` was the last of them, so both duplicated-source states
-    are now empty and every ``leaf`` route is converted -- and with the six hybrid
-    barrels promoted, every ``barrel`` route is too. The package root is the only
-    unconverted route left in the registry, and it is a separate future decision.
+def test_no_unconverted_route_remains_in_the_registry() -> None:
+    """``workspace.models`` was the last duplicated leaf, the six hybrid barrels
+    were promoted after it, and the package root has now followed: both
+    duplicated-source states are empty and every ``leaf``, ``barrel`` and ``root``
+    route is converted under its own contract.
 
     Pinned as its own fact rather than inferred from ``EXPECTED_STATE_SUFFIXES``:
     that map derives ``source_parity`` by subtraction, so it would stay satisfied
-    if a leaf were dropped from the registry altogether. This counts the leaves
-    and barrels instead."""
+    if a route were dropped from the registry altogether. This counts the leaves,
+    barrels and roots instead."""
     manifest = load_manifest()
     assert manifest.by_state(MigrationState.SOURCE_PARITY) == ()
     assert manifest.by_state(MigrationState.CANONICAL_SUBSET) == ()
@@ -3165,9 +3183,12 @@ def test_no_duplicated_leaf_remains_in_the_registry() -> None:
     assert len(barrels) == manifest.expected_counts.barrel == 16
     assert all(route.is_converted for route in barrels)
 
-    unconverted = [route for route in manifest.routes if not route.is_converted]
-    assert {route.shape for route in unconverted} == {Shape.ROOT}
-    assert [route.legacy_module for route in unconverted] == ["omnivia_memory"]
+    roots = manifest.by_shape(Shape.ROOT)
+    assert len(roots) == manifest.expected_counts.root == 1
+    assert all(route.is_converted for route in roots)
+
+    assert 30 + 16 + 1 == manifest.expected_counts.routes == 47
+    assert [route.legacy_module for route in manifest.routes if not route.is_converted] == []
 
 
 @pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
@@ -3608,25 +3629,29 @@ def test_checker_is_a_successful_executable_gate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
-    # The per-state counts this batch moved: all six hybrid barrels from
-    # ``pending_hybrid`` into the new ``hybrid_facade``, which empties
-    # ``pending_hybrid``. Nothing else moved -- no leaf changed state, so
-    # ``source_parity``, ``canonical_subset``, ``direct_facade``, ``split_facade``
-    # and ``transitive_facade`` all stay exactly where the previous batch left
-    # them. The six barrels were the last unconverted non-root routes, so the
-    # remaining-work line reaches zero on both halves and only the package root
-    # is left -- which the checker deliberately excludes from "remaining", because
-    # converting it is a separate decision.
+    # The per-state counts this batch moved: the package root from ``pending_root``
+    # into the new ``root_facade``, which empties ``pending_root`` and leaves every
+    # pending state at zero. Nothing else moved -- no leaf and no barrel changed
+    # state, so ``source_parity``, ``canonical_subset``, ``direct_facade``,
+    # ``split_facade``, ``transitive_facade`` and ``hybrid_facade`` all stay exactly
+    # where the previous batches left them.
     assert "canonical_subset: 0" in result.stdout
     assert "source_parity: 0" in result.stdout
     assert "direct_facade: 29" in result.stdout
     assert "split_facade: 1" in result.stdout
     assert "transitive_facade: 10" in result.stdout
     assert "hybrid_facade: 6" in result.stdout
+    assert "root_facade: 1" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
     assert "pending_hybrid: 0" in result.stdout
-    assert "pending_root: 1" in result.stdout
-    assert "remaining: 0 leaves and 0 barrels still to convert" in result.stdout
+    assert "pending_root: 0" in result.stdout
+    # The remaining-work line names all three shapes. The root is *not* excluded
+    # from it: 29 + 1 + 10 + 6 + 1 == 47 converted routes, so the proof a reviewer
+    # reads says zero leaves, zero barrels *and* zero roots are left, rather than
+    # printing "nothing remaining" while the one route that publishes the whole
+    # advertised surface sat outside the count.
+    assert "remaining: 0 leaves, 0 barrels and 0 roots still to convert" in result.stdout
+    assert 29 + 1 + 10 + 6 + 1 == 47
 
 
 def _checker_module() -> Any:
@@ -4803,6 +4828,874 @@ def test_hybrid_source_inspection_does_not_import_either_package() -> None:
             "validate_route_sources()",
             "assert not any(n == 'omnivia_core' or n.startswith('omnivia_core.') for n in sys.modules)",
             "assert not any(n == 'omnivia_memory' or n.startswith('omnivia_memory.') for n in sys.modules)",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# The ``root_facade`` package root.
+#
+# The root is the only route whose advertised surface spans every domain at
+# once, and several of the names it publishes are published under the same
+# spelling by more than one domain. So "it imports the right names" is not the
+# contract: *which owner* each name comes from is, which is why the state has a
+# frozen owner-by-owner import table
+# (``ROOT_FACADE_CANONICAL_IMPORTS`` / ``ROOT_FACADE_RUNTIME_IMPORTS``) and a
+# frozen ordered ``__all__`` (``ROOT_FACADE_ALL``) rather than a shape rule.
+#
+# It is deliberately not a ``direct_facade``: the canonical root advertises only
+# ``__version__``, so there is nothing a single re-export could have re-exported.
+# ---------------------------------------------------------------------------
+
+ROOT_SUFFIX = ""
+LEGACY_ROOT_MODULE = "omnivia_memory"
+CANONICAL_ROOT_MODULE = "omnivia_core"
+
+#: The two legacy runtime owners the converted root may still reach, and the one
+#: binding each supplies. Restated here rather than read from the loader, so a
+#: widened table in ``baseline.facade_manifest`` fails this test instead of
+#: agreeing with it.
+EXPECTED_ROOT_RUNTIME_IMPORTS = {
+    "omnivia_memory.memory.service": ("MemoryService",),
+    "omnivia_memory.persistence": ("Database",),
+}
+
+#: Every canonical owner the converted root may import from, with the number of
+#: names it must take from each. Counts rather than full name lists: the exact
+#: lists are the loader's frozen table, and this is the independent check that the
+#: table still describes the eleven-owner, 185-name shape the batch accepted --
+#: 182 advertised portable names, ``__version__``, and the two hidden canonical
+#: inputs.
+EXPECTED_ROOT_CANONICAL_OWNER_SIZES = {
+    "omnivia_core": 1,
+    "omnivia_core._shared.validation": 1,
+    "omnivia_core.app_manifest": 5,
+    "omnivia_core.component_contract": 25,
+    "omnivia_core.control_plane": 73,
+    "omnivia_core.knowledge": 53,
+    "omnivia_core.memory.models": 2,
+    "omnivia_core.memory_graph": 5,
+    "omnivia_core.module_manifest": 8,
+    "omnivia_core.provenance": 2,
+    "omnivia_core.run_ledger": 10,
+}
+
+
+def _root_route() -> FacadeRoute:
+    return load_manifest().root
+
+
+def _root_source() -> str:
+    return legacy_source_path(REPO_ROOT, _root_route()).read_text(encoding="utf-8")
+
+
+def _canonical_root_tree() -> ast.Module:
+    return ast.parse(
+        canonical_root_source_path(REPO_ROOT).read_text(encoding="utf-8")
+    )
+
+
+def _root_defects(source: str, **overrides: Any) -> list[str]:
+    """``root_facade_defects`` for ``source`` against the committed registry."""
+    manifest = load_manifest()
+    kwargs: dict[str, Any] = {
+        "route": manifest.root,
+        "routes": manifest.routes,
+        "runtime_only_modules": manifest.runtime_only_modules,
+        "canonical_root": _canonical_root_tree(),
+    }
+    kwargs.update(overrides)
+    return root_facade_defects(ast.parse(source), **kwargs)
+
+
+def test_root_facade_is_the_committed_terminal_state() -> None:
+    """The registry's own record: the root pair is ``root_facade``, it counts as
+    converted, and it is the only route that can be in that state."""
+    manifest = load_manifest()
+    root = manifest.root
+    assert root.legacy_module == LEGACY_ROOT_MODULE
+    assert root.canonical_module == CANONICAL_ROOT_MODULE
+    assert root.suffix == ROOT_SUFFIX
+    assert root.pair_kind is PairKind.ROOT
+    assert root.shape is Shape.ROOT
+    assert root.migration_state is MigrationState.ROOT_FACADE
+    assert root.is_converted
+    assert manifest.by_state(MigrationState.ROOT_FACADE) == (root,)
+    assert manifest.by_state(MigrationState.PENDING_ROOT) == ()
+
+
+def test_root_facade_is_a_converted_state_and_not_a_pending_one() -> None:
+    """``root_facade`` joins the four converted states, and stays out of the three
+    pending ones. Pinned from both sides so a future edit cannot make it a state
+    that counts as done while its source goes unchecked."""
+    converted = replace(
+        _root_route(), migration_state=MigrationState.ROOT_FACADE
+    )
+    assert converted.is_converted
+    for state in (
+        MigrationState.SOURCE_PARITY,
+        MigrationState.CANONICAL_SUBSET,
+        MigrationState.PENDING_DIRECT_BARREL,
+        MigrationState.PENDING_HYBRID,
+        MigrationState.PENDING_ROOT,
+    ):
+        assert not replace(_root_route(), migration_state=state).is_converted
+    for state in (
+        MigrationState.DIRECT_FACADE,
+        MigrationState.SPLIT_FACADE,
+        MigrationState.TRANSITIVE_FACADE,
+        MigrationState.HYBRID_FACADE,
+        MigrationState.ROOT_FACADE,
+    ):
+        assert replace(_root_route(), migration_state=state).is_converted
+
+
+def test_schema_and_loader_both_accept_root_facade_only_on_the_root() -> None:
+    """The schema knows the value; the loader's combination table is what confines
+    it to the ``root``/``root`` pair. Both halves are checked, because the schema
+    alone would let any route claim it."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert "root_facade" in (
+        schema["$defs"]["route"]["properties"]["migration_state"]["enum"]
+    )
+    validator = jsonschema.Draft202012Validator(schema)
+    validator.validate(_document())
+
+    for suffix in ("workspace.models", "graph", "knowledge", "memory"):
+        document = _document()
+        _route(document, suffix)["migration_state"] = "root_facade"
+        # The schema accepts the value anywhere -- that is the point of splitting
+        # the two gates -- and the loader is what rejects the combination.
+        assert not list(validator.iter_errors(document))
+        with pytest.raises(FacadeManifestError, match="valid combination"):
+            load_manifest(document)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "direct_facade",
+        "split_facade",
+        "transitive_facade",
+        "hybrid_facade",
+        "source_parity",
+        "canonical_subset",
+        "pending_direct_barrel",
+        "pending_hybrid",
+    ],
+)
+def test_root_admits_no_state_but_its_two_root_ones(state: str) -> None:
+    """``root_facade`` and ``pending_root`` are the only two states the root pair
+    may ever be in. In particular ``direct_facade`` is rejected structurally, not
+    merely discouraged: the root's contract is 13 owners, not one re-export."""
+    document = _document()
+    _route(document, ROOT_SUFFIX)["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="valid combination"):
+        load_manifest(document)
+
+
+def test_committed_root_source_has_no_defects() -> None:
+    """The defect-free base every adversary below is a mutation of."""
+    assert _root_defects(_root_source()) == []
+    assert canonical_root_defects(_canonical_root_tree()) == []
+
+
+def test_root_facade_frozen_tables_describe_the_accepted_shape() -> None:
+    """The frozen tables, pinned independently of the file they constrain.
+
+    They are hand-maintained data, so an edit that widened them would otherwise
+    make every source check below agree with the widening rather than catch it.
+    """
+    assert dict(ROOT_FACADE_RUNTIME_IMPORTS) == EXPECTED_ROOT_RUNTIME_IMPORTS
+    assert {
+        module: len(names) for module, names in ROOT_FACADE_CANONICAL_IMPORTS.items()
+    } == EXPECTED_ROOT_CANONICAL_OWNER_SIZES
+
+    canonical_names = [
+        name for names in ROOT_FACADE_CANONICAL_IMPORTS.values() for name in names
+    ]
+    runtime_names = [
+        name for names in ROOT_FACADE_RUNTIME_IMPORTS.values() for name in names
+    ]
+    assert len(canonical_names) == len(set(canonical_names)) == 185
+    assert sorted(runtime_names) == ["Database", "MemoryService"]
+    assert set(canonical_names) | set(runtime_names) == set(ROOT_FACADE_ALL) | set(
+        ROOT_FACADE_HIDDEN_BINDINGS
+    )
+
+    assert len(ROOT_FACADE_ALL) == len(set(ROOT_FACADE_ALL)) == 183
+    assert ROOT_FACADE_ALL.count("__version__") == 1
+    assert ROOT_FACADE_HIDDEN_BINDINGS == (
+        "Database",
+        "MemoryCreate",
+        "MemoryService",
+        "MemoryUpdate",
+    )
+    assert set(ROOT_FACADE_HIDDEN_BINDINGS).isdisjoint(ROOT_FACADE_ALL)
+    assert ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS == ("MemoryCreate", "MemoryUpdate")
+    assert ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS == ("Database", "MemoryService")
+    assert ROOT_FACADE_VERSION_MODULE == CANONICAL_ROOT_MODULE
+    assert ROOT_FACADE_VERSION_BINDING == "__version__"
+    assert CANONICAL_ROOT_ALL == ("__version__",)
+
+    # The two runtime owners must be modules the registry itself declares
+    # runtime-only, so the table cannot license a legacy import the registry has
+    # not accounted for.
+    manifest = load_manifest()
+    for module in ROOT_FACADE_RUNTIME_IMPORTS:
+        assert module in manifest.runtime_only_modules
+        assert module not in manifest.legacy_modules
+
+
+def test_state_only_edit_of_an_unchanged_root_is_rejected() -> None:
+    """The whole point of the source gate: moving the registry forward without
+    touching the file must fail. Checked against the *real* pre-conversion root,
+    read out of git rather than approximated, so this is the exact walk the batch
+    took."""
+    historical = subprocess.run(
+        ["git", "show", "f3774ae:services/omnivia-memory/src/omnivia_memory/__init__.py"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert historical.returncode == 0, historical.stderr
+    defects = _root_defects(historical.stdout)
+    assert defects, "the pre-conversion root must not satisfy root_facade_defects"
+    joined = "\n".join(defects)
+    # It relied on relative imports of its own subpackages, took its portable
+    # names from the legacy tree, and assigned its own version string.
+    assert "uses a relative import" in joined
+    assert "imports the legacy module 'omnivia_memory.knowledge'" in joined
+    assert "must import its version rather than restating it" in joined
+
+
+def test_root_facade_source_gate_is_wired_into_validate_checkout(tmp_path: Path) -> None:
+    """The gate runs from the ordinary checkout validation, not only when called
+    directly. Proven by editing the root in a copied tree: a state whose source is
+    not read would not have noticed."""
+    _copy_package_trees(tmp_path)
+    root = (
+        tmp_path
+        / "services"
+        / "omnivia-memory"
+        / "src"
+        / "omnivia_memory"
+        / "__init__.py"
+    )
+    root.write_text(
+        root.read_text(encoding="utf-8").replace(
+            "from omnivia_core.provenance import Source, SourceType",
+            "from omnivia_core.ingestion import Source, SourceType",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(FacadeManifestError, match="declared 'root_facade'"):
+        validate_checkout(tmp_path)
+
+
+def test_root_facade_state_cannot_be_walked_back_to_pending_root(tmp_path: Path) -> None:
+    """``pending_root`` is a state whose source is *inspected*, not skipped: the
+    moment every other route is converted and the root source is already an exact
+    root facade, declaring it pending understates the file and must fail.
+
+    Without this, the terminal state could be quietly reverted in the registry
+    while the file stayed converted, and the gate would stop checking the file at
+    all."""
+    _copy_package_trees(tmp_path)
+    document = _document()
+    _route(document, ROOT_SUFFIX)["migration_state"] = "pending_root"
+    with pytest.raises(FacadeManifestError, match="move the state forward"):
+        validate_checkout(tmp_path, document)
+
+    # ...and while a routed child is unconverted, ``pending_root`` is legitimate
+    # and nothing is reported: the walk-back check must not fire on a root that
+    # really is not eligible yet.
+    document = _document()
+    _route(document, ROOT_SUFFIX)["migration_state"] = "pending_root"
+    _route(document, "memory")["migration_state"] = "pending_hybrid"
+    with pytest.raises(FacadeManifestError) as caught:
+        validate_checkout(tmp_path, document)
+    assert not any("pending_root" in error for error in caught.value.errors), (
+        caught.value.errors
+    )
+
+
+def test_root_facade_requires_every_other_route_converted() -> None:
+    """The root may not be declared terminal on top of an unconverted child, even
+    though its own source would satisfy every other check."""
+    manifest = load_manifest()
+    routes = tuple(
+        replace(route, migration_state=MigrationState.PENDING_HYBRID)
+        if route.legacy_module == "omnivia_memory.memory"
+        else route
+        for route in manifest.routes
+    )
+    defects = _root_defects(_root_source(), routes=routes)
+    assert defects == [
+        ("is offered as terminal while these routes are still unconverted: "
+        "['omnivia_memory.memory']")
+    ]
+
+
+def test_root_facade_rejects_an_undeclared_runtime_owner() -> None:
+    """The two legacy modules the root reaches must be declared runtime-only by the
+    registry itself. Dropping either declaration -- which would make the root's
+    legacy import an unaccounted-for edge -- fails here."""
+    manifest = load_manifest()
+    trimmed = tuple(
+        module
+        for module in manifest.runtime_only_modules
+        if module != "omnivia_memory.persistence"
+    )
+    defects = _root_defects(_root_source(), runtime_only_modules=trimmed)
+    assert defects == [
+        ("would take a legacy-owned binding from 'omnivia_memory.persistence', "
+        "which the registry does not declare runtime-only")
+    ]
+
+
+def test_root_facade_requires_a_version_only_canonical_root() -> None:
+    """``root_facade`` exists because the canonical root advertises only
+    ``__version__``. If that stopped being true the state's whole justification
+    would change, so it is a checked precondition rather than a comment."""
+    widened = ast.parse(
+        '"""Canonical root."""\n\n'
+        "from __future__ import annotations\n\n"
+        '__version__ = "0.1.0"\n\n'
+        "CONTRACT = 1\n\n"
+        '__all__ = ["CONTRACT", "__version__"]\n'
+    )
+    defects = _root_defects(_root_source(), canonical_root=widened)
+    assert defects == [
+        ("pairs with a canonical root that assigns ['CONTRACT'] besides its version "
+        "and __all__"),
+        ("pairs with a canonical root that declares __all__ "
+        "['CONTRACT', '__version__'], expected ['__version__']"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "pattern"),
+    [
+        ('__version__ = "0.1.0"', "declares no literal __all__"),
+        ('__all__ = ["__version__"]', "does not assign '__version__'"),
+        (
+            '__version__ = "0.1.0"\n__version__ = "0.2.0"\n__all__ = ["__version__"]',
+            "assigns '__version__' more than once",
+        ),
+        ('__version__ = 1\n__all__ = ["__version__"]', "non-string"),
+        ('__version__ = "0.1.0"\n__all__ = ["__version__", "X"]', "expected"),
+        ('__version__ = "0.1.0"\nX = 1\n__all__ = ["__version__"]', "besides its"),
+        (
+            '__version__ = "0.1.0"\ndef __getattr__(name): ...\n__all__ = ["__version__"]',
+            "dynamic module hook",
+        ),
+        (
+            'import os\n__version__ = "0.1.0"\n__all__ = ["__version__"]',
+            "statements besides its version",
+        ),
+        (
+            ('from __future__ import annotations as ann\n__version__ = "0.1.0"\n'
+            '__all__ = ["__version__"]'),
+            "future feature",
+        ),
+        ('__version__ = __all__ = "x"', "not a single plain name"),
+    ],
+    ids=[
+        "no-all",
+        "no-version",
+        "duplicate-version",
+        "non-string-version",
+        "extra-all-entry",
+        "extra-assignment",
+        "getattr",
+        "plain-import",
+        "aliased-future",
+        "chained-target",
+    ],
+)
+def test_canonical_root_policy_is_fail_closed(source: str, pattern: str) -> None:
+    """The canonical-root half of the gate, attacked on its own. Every one of these
+    is version-only at a glance and none of them is version-only in fact."""
+    defects = canonical_root_defects(ast.parse(f'"""Canonical root."""\n\n{source}\n'))
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_canonical_root_policy_requires_a_docstring() -> None:
+    """A stray module-scope string is a statement of the module's own, and a module
+    with no docstring at all is not the accepted shape either."""
+    assert any(
+        "does not open with a module docstring" in defect
+        for defect in canonical_root_defects(
+            ast.parse('__version__ = "0.1.0"\n__all__ = ["__version__"]\n')
+        )
+    )
+    assert any(
+        "standalone string expression" in defect
+        for defect in canonical_root_defects(
+            ast.parse(
+                '"""Canonical root."""\n\n__version__ = "0.1.0"\n"stray"\n'
+                '__all__ = ["__version__"]\n'
+            )
+        )
+    )
+
+
+#: One mutation of the committed root source per attack: ``(id, old, new, defect
+#: fragment, resolvable)``.
+#:
+#: Each is a *plausible* edit -- it still declares an ``__all__``, still imports
+#: named objects from named modules, and changes only which object a consumer of
+#: the legacy path ends up holding, or what the advertised contract says. What is
+#: *not* claimed of all of them is that they would import cleanly at runtime, and
+#: the fifth field says which is which rather than leaving it to a comment:
+#:
+#: * ``resolvable=True`` -- the rerouted module really exists and really publishes
+#:   every name taken from it, so the edit would import successfully and only the
+#:   source gate stands between it and a silently wrong facade. That is the
+#:   stronger claim, so it is the one made for all but two of these, and
+#:   ``test_resolvable_root_mutations_really_import`` proves it by import rather
+#:   than asserting it in prose.
+#: * ``resolvable=False`` -- the target canonical module deliberately does not
+#:   exist, which is exactly the point of the attack: ``Database`` and
+#:   ``MemoryService`` are runtime-owned, Core packages no counterpart for either,
+#:   and an edit "moving" them into Core must be rejected by the source gate
+#:   rather than left to fail at import time in a consumer's environment.
+#:   ``test_unresolvable_root_mutations_target_absent_canonical_modules`` pins
+#:   that these are exactly two and that their targets really are absent.
+_ROOT_MUTATIONS: tuple[tuple[str, str, str, str, bool], ...] = (
+    # -- the collisions, each rerouted to a domain that really does publish a
+    #    same-named type ------------------------------------------------------
+    (
+        "collision-validation-result",
+        "from omnivia_core._shared.validation import ValidationResult",
+        "from omnivia_core.app_manifest import ValidationResult",
+        "imports the wrong names from 'omnivia_core.app_manifest'",
+        True,
+    ),
+    # Only ``Source`` is rerouted, and the import is split so ``SourceType`` keeps
+    # its real owner: the ingestion barrel publishes a rival ``Source`` but no
+    # ``SourceType`` at all, so rerouting the pair together would have been an
+    # edit that could not import -- a weaker attack than the one meant here, which
+    # is a consumer silently receiving ingestion's unrelated ``Source`` class.
+    (
+        "collision-source-rerouted-to-ingestion",
+        "from omnivia_core.provenance import Source, SourceType",
+        ("from omnivia_core.ingestion import Source\n"
+        "from omnivia_core.provenance import SourceType"),
+        ("imports the canonical module 'omnivia_core.ingestion', which is not an "
+        "approved root owner"),
+        True,
+    ),
+    # -- the two hidden runtime bindings, "moved" into Core -------------------
+    #    Neither target exists, and that is the attack: Core owns no persistence
+    #    module and no memory service, so these must fail the gate rather than
+    #    ship a root that only breaks once it is imported.
+    (
+        "database-from-core",
+        "from omnivia_memory.persistence import Database",
+        "from omnivia_core.persistence import Database",
+        ("imports the canonical module 'omnivia_core.persistence', which is not an "
+        "approved root owner"),
+        False,
+    ),
+    (
+        "memory-service-from-core",
+        "from omnivia_memory.memory.service import MemoryService",
+        "from omnivia_core.memory.service import MemoryService",
+        ("imports the canonical module 'omnivia_core.memory.service', which is not "
+        "an approved root owner"),
+        False,
+    ),
+    # -- the two hidden canonical inputs, rerouted back to the legacy tree ----
+    (
+        "memory-inputs-from-legacy",
+        "from omnivia_core.memory.models import MemoryCreate, MemoryUpdate",
+        "from omnivia_memory.memory.models import MemoryCreate, MemoryUpdate",
+        "imports the legacy module 'omnivia_memory.memory.models'",
+        True,
+    ),
+    # -- legacy imports the root's own table does not approve -----------------
+    #    Neither target is unregistered: ``omnivia_memory.persistence.database``
+    #    is a declared ``runtime_only`` module and ``omnivia_memory.memory`` is a
+    #    registered ``hybrid_facade`` barrel route. What makes each a defect is
+    #    that the root's import table approves exactly two legacy owners --
+    #    ``omnivia_memory.persistence`` and ``omnivia_memory.memory.service`` --
+    #    and neither of these is one of them.
+    (
+        "runtime-import-from-an-unapproved-runtime-only-submodule",
+        "from omnivia_memory.persistence import Database",
+        "from omnivia_memory.persistence.database import Database",
+        "does not import the approved owner 'omnivia_memory.persistence'",
+        True,
+    ),
+    # The pre-conversion shape: the frozen Phase 0 baseline recorded the root
+    # taking ``MemoryService`` from the ``omnivia_memory.memory`` barrel, which
+    # still publishes it. Reverting to that owner is the most plausible edit of
+    # the set, and it is not an approved root owner.
+    (
+        "runtime-import-from-the-pre-conversion-barrel",
+        "from omnivia_memory.memory.service import MemoryService",
+        "from omnivia_memory.memory import MemoryService",
+        "imports the legacy module 'omnivia_memory.memory'",
+        True,
+    ),
+    # -- import syntax -------------------------------------------------------
+    (
+        "alias",
+        "from omnivia_core.provenance import Source, SourceType",
+        "from omnivia_core.provenance import Source as Source, SourceType",
+        "aliases 'Source' as 'Source'",
+        True,
+    ),
+    (
+        "star",
+        "from omnivia_core.provenance import Source, SourceType",
+        "from omnivia_core.provenance import *",
+        "uses a star import",
+        True,
+    ),
+    (
+        "relative",
+        "from omnivia_memory.persistence import Database",
+        "from .persistence import Database",
+        "uses a relative import (level 1)",
+        True,
+    ),
+    (
+        "second-block-for-one-owner",
+        "from omnivia_core.provenance import Source, SourceType",
+        ("from omnivia_core.provenance import Source\n"
+        "from omnivia_core.provenance import SourceType"),
+        "imports from 'omnivia_core.provenance' in more than one block",
+        True,
+    ),
+    (
+        "future-import",
+        '"""\n\nfrom omnivia_core import __version__',
+        '"""\n\nfrom __future__ import annotations\n\nfrom omnivia_core import __version__',
+        "extra ['annotations']",
+        True,
+    ),
+    # -- statements of its own ------------------------------------------------
+    (
+        "plain-import",
+        "from omnivia_core import __version__",
+        "import sys\nfrom omnivia_core import __version__",
+        "has a top-level plain import of ['sys']",
+        True,
+    ),
+    (
+        "sys-modules-routing",
+        "from omnivia_core import __version__",
+        "from sys import modules\nfrom omnivia_core import __version__",
+        "imports 'sys', which is outside both packages",
+        True,
+    ),
+    (
+        "local-version",
+        "\n__all__ = [",
+        '\n__version__ = "0.1.0"\n\n__all__ = [',
+        "must import its version rather than restating it",
+        True,
+    ),
+    (
+        "extra-assignment",
+        "\n__all__ = [",
+        "\nDEPRECATED = True\n\n__all__ = [",
+        "assigns ['DEPRECATED'] of its own",
+        True,
+    ),
+)
+
+#: Mutations appended after the ``__all__`` assignment, so they also break the
+#: mandatory statement order.
+_ROOT_APPENDED_MUTATIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "getattr",
+        ("\n\ndef __getattr__(name: str) -> object:\n"
+        "    raise AttributeError(name)\n"),
+        "defines the dynamic module hook '__getattr__'",
+    ),
+    (
+        "dir",
+        "\n\ndef __dir__() -> list[str]:\n    return list(__all__)\n",
+        "defines the dynamic module hook '__dir__'",
+    ),
+    (
+        "class",
+        "\n\nclass DeprecationShim:\n    pass\n",
+        "has statements of its own (ClassDef)",
+    ),
+    (
+        "function",
+        "\n\ndef warn() -> None:\n    return None\n",
+        "has statements of its own (FunctionDef)",
+    ),
+)
+
+
+def _import_targets(source: str) -> list[tuple[str, tuple[str, ...]]]:
+    """``(absolute module, imported names)`` for every import statement in ``source``.
+
+    Relative imports are resolved against the compatibility root, which is the
+    package this source *is*, so ``from .persistence import Database`` reports
+    ``omnivia_memory.persistence``.
+    """
+    targets: list[tuple[str, tuple[str, ...]]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                module = node.module or ""
+            else:
+                module = ".".join(
+                    filter(None, (LEGACY_ROOT_MODULE, node.module))
+                )
+            targets.append((module, tuple(alias.name for alias in node.names)))
+        elif isinstance(node, ast.Import):
+            targets.extend((alias.name, ()) for alias in node.names)
+    return targets
+
+
+def _unresolvable_imports(source: str) -> list[str]:
+    """The import targets in ``source`` that do not exist in this checkout.
+
+    A name is resolvable if the module publishes it or is a package containing a
+    submodule of that name -- the two ways ``from x import y`` can succeed.
+    """
+    problems: list[str] = []
+    for module, names in _import_targets(source):
+        try:
+            imported = importlib.import_module(module)
+        except ImportError:
+            problems.append(module)
+            continue
+        for name in names:
+            if name == "*" or hasattr(imported, name):
+                continue
+            try:
+                importlib.import_module(f"{module}.{name}")
+            except ImportError:
+                problems.append(f"{module}.{name}")
+    return problems
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "pattern"),
+    [(old, new, pattern) for _id, old, new, pattern, _clean in _ROOT_MUTATIONS],
+    ids=[mutation_id for mutation_id, *_rest in _ROOT_MUTATIONS],
+)
+def test_root_facade_source_policy_is_fail_closed(
+    old: str, new: str, pattern: str
+) -> None:
+    """Each mutation still declares an ``__all__`` and still imports named objects
+    from named modules; only the owner, the syntax, or the statement set changes.
+    Whether the edited source would also *import* is a separate claim, made per
+    mutation by the ``resolvable`` flag and proved by the two tests below."""
+    source = _root_source()
+    assert source.count(old) == 1, old
+    defects = _root_defects(source.replace(old, new))
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("mutation_id", "old", "new"),
+    [
+        (mutation_id, old, new)
+        for mutation_id, old, new, _pattern, resolvable in _ROOT_MUTATIONS
+        if resolvable
+    ],
+    ids=[
+        mutation_id
+        for mutation_id, _old, _new, _pattern, resolvable in _ROOT_MUTATIONS
+        if resolvable
+    ],
+)
+def test_resolvable_root_mutations_really_import(
+    mutation_id: str, old: str, new: str
+) -> None:
+    """The mutations that claim to be import-clean are proved to be, by import.
+
+    This is what makes those attacks worth gating: the edited root would load
+    without error and hand consumers the wrong object, so nothing but the source
+    policy stands between it and a silently incorrect compatibility surface. Every
+    import statement in the whole mutated source is resolved, not only the changed
+    one, so a mutation cannot be import-clean at the edit and broken elsewhere.
+    """
+    mutated = _root_source().replace(old, new)
+    assert _unresolvable_imports(mutated) == [], mutation_id
+
+
+def test_unresolvable_root_mutations_target_absent_canonical_modules() -> None:
+    """The two mutations that do *not* import, named exactly, with the reason.
+
+    ``Database`` and ``MemoryService`` are runtime-owned; Core packages no
+    ``omnivia_core.persistence`` and no ``omnivia_core.memory.service`` to move
+    them to. An edit that pretends otherwise has to be rejected by the source gate
+    -- there is no import-clean version of it to write -- so these two are declared
+    ``resolvable=False`` rather than quietly counted with the rest, and the module
+    they name is checked to really be absent.
+    """
+    unresolvable = {
+        mutation_id: new
+        for mutation_id, _old, new, _pattern, resolvable in _ROOT_MUTATIONS
+        if not resolvable
+    }
+    assert sorted(unresolvable) == ["database-from-core", "memory-service-from-core"]
+    for mutation_id, new in sorted(unresolvable.items()):
+        (target,) = [module for module, _names in _import_targets(new)]
+        assert target in ("omnivia_core.persistence", "omnivia_core.memory.service")
+        with pytest.raises(ImportError):
+            importlib.import_module(target)
+        assert _unresolvable_imports(new) == [target], mutation_id
+
+
+@pytest.mark.parametrize(
+    ("appended", "pattern"),
+    [(appended, pattern) for _id, appended, pattern in _ROOT_APPENDED_MUTATIONS],
+    ids=[mutation_id for mutation_id, *_rest in _ROOT_APPENDED_MUTATIONS],
+)
+def test_root_facade_rejects_a_statement_after_its_all(
+    appended: str, pattern: str
+) -> None:
+    """A root that resolves every name correctly and *then* adds a definition, a
+    proxy hook or a stray expression is not a pure re-export: the extra statement
+    runs at import time."""
+    defects = _root_defects(_root_source() + appended)
+    assert any(pattern in defect for defect in defects), defects
+    assert any(
+        "expected the literal __all__ assignment" in defect for defect in defects
+    ), defects
+
+
+def test_root_facade_rejects_a_stray_string_expression() -> None:
+    """A trailing standalone string is a statement of the module's own, executed at
+    import time, and it is reported *as* a stray string rather than being absorbed
+    as a second docstring -- which a blanket docstring filter would have done."""
+    defects = _root_defects(_root_source() + '\n\n"a stray statement"\n')
+    assert len(defects) == 1
+    assert "1 standalone string expression(s) besides the module docstring" in defects[0]
+
+
+def test_root_facade_requires_a_leading_module_docstring() -> None:
+    """Positional, so it fails closed: dropping the docstring entirely is caught,
+    not silently accepted as "no strings at module scope"."""
+    source = _root_source()
+    docstring_end = source.index('"""', source.index('"""') + 3) + 4
+    defects = _root_defects(source[docstring_end:].lstrip("\n"))
+    assert any(
+        "does not open with a module docstring" in defect for defect in defects
+    ), defects
+
+
+def test_root_facade_rejects_an_import_after_the_all_assignment() -> None:
+    """Order is checked positionally: the same statements in the wrong sequence are
+    still not the accepted shape."""
+    source = _root_source()
+    moved = source.replace(
+        "from omnivia_memory.persistence import Database  # noqa: F401\n", ""
+    ) + "\nfrom omnivia_memory.persistence import Database  # noqa: F401\n"
+    defects = _root_defects(moved)
+    assert any(
+        "expected the literal __all__ assignment" in defect for defect in defects
+    ), defects
+
+
+@pytest.mark.parametrize(
+    ("mutate", "pattern"),
+    [
+        # An advertised name dropped from __all__ but still imported.
+        (
+            lambda names: [name for name in names if name != "AgentGraphContext"],
+            "missing ['AgentGraphContext']",
+        ),
+        # An extra name advertised that nothing supplies.
+        (lambda names: [*names, "NotAContract"], "extra ['NotAContract']"),
+        # A hidden binding advertised.
+        (lambda names: [*names, "Database"], "non-advertised binding(s) ['Database']"),
+        # A duplicate entry.
+        (lambda names: [*names, names[0]], "duplicate names"),
+        # The frozen set, reordered.
+        (lambda names: [names[1], names[0], *names[2:]], "different order"),
+    ],
+    ids=["omitted", "added", "advertises-hidden", "duplicated", "reordered"],
+)
+def test_root_facade_all_must_be_the_frozen_ordered_literal(
+    mutate: Callable[[list[str]], list[str]], pattern: str
+) -> None:
+    """``__all__`` is compared as an ordered literal, not as a set. Each of these
+    keeps it a list of plausible strings and changes what the root advertises."""
+    source = _root_source()
+    original = "__all__ = [  # noqa: RUF022\n" + "".join(
+        f'    "{name}",\n' for name in ROOT_FACADE_ALL
+    )
+    assert source.count(original) == 1
+    replacement = "__all__ = [  # noqa: RUF022\n" + "".join(
+        f'    "{name}",\n' for name in mutate(list(ROOT_FACADE_ALL))
+    )
+    defects = _root_defects(source.replace(original, replacement))
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_root_facade_rejects_an_undeclared_hidden_binding() -> None:
+    """A fifth non-advertised binding is not a free extension point: the imported
+    binding set has to be exactly ``__all__`` plus the four declared hidden names,
+    so smuggling one in through an approved owner fails."""
+    source = _root_source()
+    defects = _root_defects(
+        source.replace(
+            "from omnivia_core.memory.models import MemoryCreate, MemoryUpdate",
+            "from omnivia_core.memory.models import Memory, MemoryCreate, MemoryUpdate",
+        )
+    )
+    assert any("extra ['Memory']" in defect for defect in defects), defects
+
+
+def test_root_facade_rejects_dropping_an_approved_owner_entirely() -> None:
+    """Every owner in the table must be reached. A dropped block would leave its
+    names unbound at runtime, and the gate says which owner and which names."""
+    source = _root_source()
+    start = source.index("from omnivia_core.provenance import Source, SourceType")
+    end = source.index("\n", start) + 1
+    defects = _root_defects(source[:start] + source[end:])
+    assert "does not import the approved owner 'omnivia_core.provenance'" in defects
+    assert any(
+        "does not import ['Source', 'SourceType'] from a canonical owner" in defect
+        for defect in defects
+    ), defects
+
+
+def test_root_source_inspection_does_not_import_either_package() -> None:
+    """The gate reads files. A root facade whose identities only hold because a
+    stale copy of either package was already imported must not be able to satisfy
+    it."""
+    script = "\n".join(
+        [
+            "import ast, sys",
+            f"sys.path.insert(0, {str(REPO_ROOT)!r})",
+            "from baseline.facade_manifest import (",
+            "    REPO_ROOT, canonical_root_source_path, legacy_source_path,",
+            "    load_manifest, root_facade_defects,",
+            ")",
+            "manifest = load_manifest()",
+            "root = manifest.root",
+            "tree = ast.parse(legacy_source_path(REPO_ROOT, root).read_text())",
+            "canonical = ast.parse(canonical_root_source_path(REPO_ROOT).read_text())",
+            "assert root_facade_defects(",
+            "    tree, root, manifest.routes, manifest.runtime_only_modules, canonical",
+            ") == []",
+            ("assert not any(n == 'omnivia_core' or n.startswith('omnivia_core.')"
+            " for n in sys.modules)"),
+            ("assert not any(n == 'omnivia_memory' or n.startswith('omnivia_memory.')"
+            " for n in sys.modules)"),
         ]
     )
     result = subprocess.run(

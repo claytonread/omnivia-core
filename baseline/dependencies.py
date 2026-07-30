@@ -99,12 +99,21 @@ FACADE_COMPATIBILITY_PACKAGE = "omnivia_core"
 #: declare for the compatibility distribution to depend on Core.
 FACADE_COMPATIBILITY_DEPENDENCY = "omnivia-core>=0.1.0,<0.2.0"
 
-#: The exact, sorted set of legacy leaves that import ``omnivia_core``. A
-#: leaf added to or removed from this set without a matching update here must
+#: The exact, sorted set of legacy modules that import ``omnivia_core``. A
+#: module added to or removed from this set without a matching update here must
 #: fail, not silently pass through a widened importer allowance.
+#:
+#: Every entry but one is a converted facade *leaf*. The exception is the package
+#: root itself: the converted compatibility root imports each of its 182
+#: advertised names, and ``__version__``, straight from the approved canonical
+#: owner or barrel that publishes it, which makes it an exact ``omnivia_core``
+#: importer like any leaf.
+#: It is the only barrel-or-root entry, and deliberately named rather than
+#: matched by a prefix.
 FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
     sorted(
         (
+            CORE_PACKAGE,
             f"{CORE_PACKAGE}._shared.validation",
             f"{CORE_PACKAGE}.app_manifest.models",
             f"{CORE_PACKAGE}.app_manifest.validation",
@@ -168,12 +177,42 @@ FACADE_STDLIB_IMPORT_MOVES: dict[str, str] = {
     "unicodedata": f"{CORE_PACKAGE}.knowledge.normalize",
 }
 
+#: The compatibility root's runtime edges *after* conversion: the exact modules it
+#: may still reach into the legacy runtime for, and the exact symbols it may take
+#: from each. This is the whole of the root's legacy-owned half.
+FACADE_ROOT_RUNTIME_BINDINGS: dict[str, tuple[str, ...]] = {
+    f"{CORE_PACKAGE}.memory.service": ("MemoryService",),
+    f"{CORE_PACKAGE}.persistence": ("Database",),
+}
+
+#: The same edges as the *frozen* Phase 0 baseline recorded them, before the root
+#: was converted. Restated here rather than read out of the artifact, so the
+#: normalization below replaces one exactly-known state with another exactly-known
+#: state instead of overwriting whatever it happens to find.
+FACADE_ROOT_FROZEN_RUNTIME_BINDINGS: dict[str, tuple[str, ...]] = {
+    f"{CORE_PACKAGE}.memory": ("MemoryCreate", "MemoryService", "MemoryUpdate"),
+    f"{CORE_PACKAGE}.persistence": ("Database",),
+}
+
+#: The root bindings that left the legacy runtime edge above for a canonical
+#: owner, and the canonical module each one must now come from. These two are the
+#: entire difference between the frozen and converted edge sets: the root used to
+#: take them from ``omnivia_memory.memory`` alongside ``MemoryService``, and now
+#: takes them from Core, which is why the frozen edge cannot simply be kept.
+FACADE_ROOT_CANONICALIZED_BINDINGS: dict[str, str] = {
+    "MemoryCreate": f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models",
+    "MemoryUpdate": f"{FACADE_COMPATIBILITY_PACKAGE}.memory.models",
+}
+
 #: Why each contract -> runtime edge is tolerated for now. An observed edge with
 #: no entry here fails the check; an entry here with no observed edge is stale.
 TRANSITIONAL_IMPORT_REASONS: dict[tuple[str, str], str] = {
-    (CORE_PACKAGE, f"{CORE_PACKAGE}.memory"): (
-        "Documented compatibility re-export: downstream callers import MemoryService, "
-        "MemoryCreate, and MemoryUpdate from the package root. Kept out of __all__."
+    (CORE_PACKAGE, f"{CORE_PACKAGE}.memory.service"): (
+        "Documented compatibility re-export: downstream callers import MemoryService "
+        "from the package root. Kept out of __all__. The converted root reaches the "
+        "runtime-owned service module directly -- MemoryCreate and MemoryUpdate now "
+        "come from canonical omnivia_core.memory.models instead, so this edge carries "
+        "only the object Core deliberately does not own."
     ),
     (CORE_PACKAGE, f"{CORE_PACKAGE}.persistence"): (
         "Documented compatibility re-export: downstream callers import Database from "
@@ -433,6 +472,141 @@ def _facade_stdlib_import_problems(
     return problems
 
 
+def _root_transitional_edges(entries: Iterable[dict[str, Any]]) -> dict[str, tuple[str, ...]]:
+    """The ``imported -> symbols`` map of every transitional edge out of the root."""
+    return {
+        entry["imported"]: tuple(entry["symbols"])
+        for entry in entries
+        if entry["importer"] == CORE_PACKAGE
+    }
+
+
+def _facade_root_runtime_problems(
+    actual: dict[str, Any],
+    *,
+    converted: dict[str, tuple[str, ...]] = FACADE_ROOT_RUNTIME_BINDINGS,
+    frozen_bindings: dict[str, tuple[str, ...]] = FACADE_ROOT_FROZEN_RUNTIME_BINDINGS,
+    canonicalized: dict[str, str] = FACADE_ROOT_CANONICALIZED_BINDINGS,
+    importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
+    frozen: dict[str, Any] | None = None,
+) -> list[str]:
+    """Verify the compatibility root's runtime-edge delta before normalizing it.
+
+    Converting the root is the one change in this migration that *moves* a frozen
+    transitional import rather than only adding or removing one: the root used to
+    take ``MemoryCreate``, ``MemoryService`` and ``MemoryUpdate`` together from
+    ``omnivia_memory.memory``, and now takes the two inputs from canonical Core and
+    reaches ``omnivia_memory.memory.service`` for the one object Core deliberately
+    does not own. That is a genuine frozen-vs-live difference in
+    ``transitional_imports`` that no existing normalization covers, so it is
+    declared as two exactly-known states and proved here before either is applied.
+
+    Each of the following must hold, or the frozen baseline is left alone:
+
+    * the root is a declared ``omnivia_core`` importer, so the move is attributable
+      to the sanctioned conversion rather than to an unrelated edit;
+    * the frozen artifact's root edges are *exactly*
+      ``FACADE_ROOT_FROZEN_RUNTIME_BINDINGS``, so a stale declaration cannot
+      overwrite a state it was not written for;
+    * the live root edges are *exactly* ``FACADE_ROOT_RUNTIME_BINDINGS``, so the
+      root cannot acquire a third runtime edge, or a fifth runtime symbol, behind
+      this allowance;
+    * every declared runtime module really is a runtime module by
+      ``RUNTIME_MODULE_PREFIXES``, and every declared symbol really is one the
+      frozen edge set carried, so nothing new is being introduced as a "move";
+    * each canonicalized binding is really gone from the root's runtime edges and
+      really is imported by the root from its declared canonical owner, so the
+      import is proved to have *moved* rather than been dropped.
+    """
+    if frozen is None:
+        frozen = load_json(DEPENDENCIES_PATH)
+    problems: list[str] = []
+    where = f"compatibility root {CORE_PACKAGE!r}"
+
+    if CORE_PACKAGE not in importers:
+        problems.append(
+            f"{where}: not a declared compatibility-facade importer, so its runtime "
+            "edges cannot have moved with the root conversion"
+        )
+        return problems
+
+    frozen_edges = _root_transitional_edges(frozen.get("transitional_imports", []))
+    if frozen_edges != frozen_bindings:
+        problems.append(
+            f"{where}: the frozen baseline records root runtime edges "
+            f"{ {k: list(v) for k, v in sorted(frozen_edges.items())} }, not the "
+            f"declared { {k: list(v) for k, v in sorted(frozen_bindings.items())} }"
+        )
+        return problems
+
+    live_edges = _root_transitional_edges(actual.get("transitional_imports", []))
+    if live_edges != converted:
+        problems.append(
+            f"{where}: the checkout has root runtime edges "
+            f"{ {k: list(v) for k, v in sorted(live_edges.items())} }, not the "
+            f"declared { {k: list(v) for k, v in sorted(converted.items())} }"
+        )
+        return problems
+
+    frozen_symbols = {symbol for symbols in frozen_bindings.values() for symbol in symbols}
+    for module, symbols in sorted(converted.items()):
+        if not is_runtime_module(module):
+            problems.append(
+                f"{where}: {module} is not a runtime module, so it is not a legacy "
+                "runtime owner the root may keep reaching"
+            )
+        for symbol in symbols:
+            if symbol not in frozen_symbols:
+                problems.append(
+                    f"{where}: {module}.{symbol} was not one of the frozen root runtime "
+                    "symbols, so it is a new edge rather than a moved one"
+                )
+
+    root_from_imports = _root_canonical_from_imports()
+    for symbol, canonical_module in sorted(canonicalized.items()):
+        binding = f"{where}: canonicalized binding {symbol!r}"
+        if symbol not in frozen_symbols:
+            problems.append(f"{binding}: the frozen baseline never carried it")
+            continue
+        if any(symbol in symbols for symbols in converted.values()):
+            problems.append(
+                f"{binding}: still taken from a legacy runtime module, so the "
+                "declaration is stale and must be removed"
+            )
+            continue
+        if symbol not in root_from_imports.get(canonical_module, ()):
+            problems.append(
+                f"{binding}: {CORE_PACKAGE}'s root does not import it from "
+                f"{canonical_module}, so it was dropped rather than moved"
+            )
+    return problems
+
+
+def _root_canonical_from_imports() -> dict[str, tuple[str, ...]]:
+    """``module -> names`` for every canonical from-import in the legacy root's source.
+
+    Read with :mod:`ast` from the file, like the rest of this scan: nothing is
+    imported for effect, so a runtime-patched root cannot satisfy the proof above.
+    """
+    path = CORE_SRC / CORE_PACKAGE / "__init__.py"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):  # pragma: no cover - a broken tree fails earlier
+        return {}
+    found: dict[str, list[str]] = {}
+    for node in tree.body:
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module is not None
+            and _matches_prefix(node.module, FACADE_COMPATIBILITY_PACKAGE)
+        ):
+            found.setdefault(node.module, []).extend(
+                alias.name for alias in node.names if alias.asname is None
+            )
+    return {module: tuple(names) for module, names in found.items()}
+
+
 def _normalize_expected_dependencies(
     expected: dict[str, Any],
     *,
@@ -440,15 +614,21 @@ def _normalize_expected_dependencies(
     dependency: str = FACADE_COMPATIBILITY_DEPENDENCY,
     importers: tuple[str, ...] = FACADE_COMPATIBILITY_IMPORTERS,
     stdlib_moves: dict[str, str] = FACADE_STDLIB_IMPORT_MOVES,
+    root_runtime_bindings: dict[str, tuple[str, ...]] = FACADE_ROOT_RUNTIME_BINDINGS,
+    reasons: dict[tuple[str, str], str] = TRANSITIONAL_IMPORT_REASONS,
 ) -> dict[str, Any]:
     """Return a copy of ``expected`` with only the sanctioned facade dependency delta applied.
 
-    Three deltas, all caused directly by the facade conversions: the declared
-    ``omnivia-core`` dependency, that package's exact importer set, and the exact
+    Four deltas, all caused directly by the facade conversions: the declared
+    ``omnivia-core`` dependency, that package's exact importer set, the exact
     stdlib modules named by ``stdlib_moves`` -- each of which is dropped from the
     expected list only after ``_facade_stdlib_import_problems`` has proved the
-    import moved to the paired canonical module. Removal is by exact key, never by
-    prefix or substring.
+    import moved to the paired canonical module -- and the compatibility root's
+    own transitional edges, replaced whole by ``root_runtime_bindings`` only after
+    ``_facade_root_runtime_problems`` has proved both the frozen and the live state
+    exactly. Removal is by exact key, never by prefix or substring, and only edges
+    whose importer *is* the package root are touched: every other transitional
+    edge in the artifact is left alone and still has to match.
 
     The frozen artifact on disk is never touched; this operates on an
     in-memory copy so every other dependency difference still fails the
@@ -459,6 +639,27 @@ def _normalize_expected_dependencies(
     third_party = [entry for entry in normalized["third_party_imports"] if entry["module"] != package]
     third_party.append({"module": package, "imported_by": list(importers), "reason": None})
     normalized["third_party_imports"] = sorted(third_party, key=lambda entry: entry["module"])
+    if "transitional_imports" in normalized:
+        others = [
+            entry
+            for entry in normalized["transitional_imports"]
+            if entry["importer"] != CORE_PACKAGE
+        ]
+        normalized["transitional_imports"] = sorted(
+            [
+                *others,
+                *(
+                    {
+                        "importer": CORE_PACKAGE,
+                        "imported": imported,
+                        "symbols": list(symbols),
+                        "reason": reasons.get((CORE_PACKAGE, imported)),
+                    }
+                    for imported, symbols in root_runtime_bindings.items()
+                ),
+            ],
+            key=lambda entry: (entry["importer"], entry["imported"]),
+        )
     if "stdlib_imports" in normalized:
         normalized["stdlib_imports"] = [
             module
@@ -520,6 +721,20 @@ def verify_dependency_inventory() -> list[str]:
                 "baseline for an unverified move."
             ),
             format_differences(stdlib_problems),
+        ]
+
+    root_problems = _facade_root_runtime_problems(actual, frozen=expected)
+    if root_problems:
+        return [
+            *problems,
+            (
+                "Compatibility root runtime-edge verification failed against "
+                "baseline.dependencies' FACADE_ROOT_RUNTIME_BINDINGS / "
+                "FACADE_ROOT_FROZEN_RUNTIME_BINDINGS / "
+                "FACADE_ROOT_CANONICALIZED_BINDINGS; refusing to normalize the frozen "
+                "Phase 0 baseline for an unverified root conversion."
+            ),
+            format_differences(root_problems),
         ]
 
     normalized_expected = _normalize_expected_dependencies(expected)

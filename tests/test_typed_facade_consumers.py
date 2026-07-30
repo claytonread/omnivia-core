@@ -7,9 +7,16 @@ from pathlib import Path
 
 import pytest
 
+from baseline.facade_manifest import (
+    ROOT_FACADE_ALL,
+    ROOT_FACADE_HIDDEN_BINDINGS,
+    ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS,
+    ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS,
+)
 from baseline.inventory import FACADE_ROUTES
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_ROOT = "omnivia_memory"
 MODULE_MANIFEST_LEAVES = {
     "omnivia_memory.module_manifest.models",
     "omnivia_memory.module_manifest.validation",
@@ -59,6 +66,15 @@ CONSUMER_ROUTES = {
 #: registry does not declare. Their typed contract is the six ``__all__`` tuples
 #: instead, audited exactly by the tests at the end of this module.
 HYBRID_BARREL_CONSUMER = "tests/typing/hybrid_barrel_consumer.py"
+
+#: The converted package root's consumer, audited separately for the same reason
+#: the hybrid barrels' is: the root is a *module* route in
+#: ``compatibility/facade-routes.v1.json`` with no per-symbol ``FACADE_ROUTES``
+#: entry, so it cannot join the leaf partition above. Its oracle is the frozen
+#: ``__all__`` and hidden-binding tuples in ``baseline.facade_manifest`` -- the
+#: same data the source gate holds the root itself to -- rather than anything read
+#: off the module the fixture imports.
+ROOT_FACADE_CONSUMER = "tests/typing/root_facade_consumer.py"
 
 #: Each hybrid barrel's exact ordered ``__all__``. Restated here rather than read
 #: off the barrels: this is the oracle the fixture is audited against, and
@@ -648,3 +664,133 @@ def test_hybrid_barrel_consumer_never_reaches_a_leaf_or_canonical_path() -> None
     legacy = {module for module in modules if module.startswith("omnivia_")}
     assert legacy == set(HYBRID_BARREL_ALL)
     assert legacy.isdisjoint(FACADE_ROUTES)
+
+
+# ---------------------------------------------------------------------------
+# The root consumer, audited against the frozen root export contract.
+# ---------------------------------------------------------------------------
+
+
+def _root_consumer_imports() -> tuple[list[str], list[tuple[str, str | None]]]:
+    """The root consumer's ``omnivia_memory`` names, and every other import it makes.
+
+    Returns the ordered names of the single ``from omnivia_memory import ...``
+    block, and ``(module, asname)`` for every other import statement in the file,
+    so the caller can pin both what it imports from the root and that it reaches
+    nowhere near ``omnivia_core``.
+    """
+    source = (REPO_ROOT / ROOT_FACADE_CONSUMER).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    root_blocks: list[list[str]] = []
+    other: list[tuple[str, str | None]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            other.extend((alias.name, alias.asname) for alias in node.names)
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        assert node.level == 0, (
+            f"{ROOT_FACADE_CONSUMER} uses a relative import (level {node.level}) on "
+            f"line {node.lineno}; the legacy root must be named absolutely"
+        )
+        assert node.module is not None
+        if node.module != LEGACY_ROOT:
+            other.append((node.module, None))
+            continue
+        names: list[str] = []
+        for alias in node.names:
+            assert alias.name != "*", (
+                f"{ROOT_FACADE_CONSUMER} star-imports {LEGACY_ROOT}; a star import "
+                f"binds whatever the root happens to publish, not the frozen contract"
+            )
+            assert alias.asname is None, (
+                f"{ROOT_FACADE_CONSUMER} imports {alias.name!r} as {alias.asname!r}; "
+                f"the root consumer type-checks the published names, never an alias"
+            )
+            names.append(alias.name)
+        root_blocks.append(names)
+    assert len(root_blocks) == 1, (
+        f"{ROOT_FACADE_CONSUMER} has {len(root_blocks)} `from {LEGACY_ROOT} import` "
+        f"blocks, expected exactly one so the audited order is unambiguous"
+    )
+    return root_blocks[0], other
+
+
+def test_root_consumer_is_outside_the_leaf_and_hybrid_partitions() -> None:
+    """Three consumer families, kept disjoint on purpose. The leaf fixtures
+    partition ``FACADE_ROUTES``; the hybrid fixture covers the six barrels'
+    ``__all__``; this one covers the package root. Pinned in both directions so
+    none can absorb another -- adding the root to ``FACADE_ROUTES`` would invent
+    per-symbol routes the frozen registry does not declare, and adding this fixture
+    to ``CONSUMER_ROUTES`` would break the exact partition the leaves depend on.
+    """
+    assert ROOT_FACADE_CONSUMER not in CONSUMER_ROUTES
+    assert ROOT_FACADE_CONSUMER != HYBRID_BARREL_CONSUMER
+    assert LEGACY_ROOT not in FACADE_ROUTES
+    assert LEGACY_ROOT not in HYBRID_BARREL_ALL
+    assert (REPO_ROOT / ROOT_FACADE_CONSUMER).is_file()
+
+
+def test_root_consumer_imports_exactly_the_frozen_advertised_contract() -> None:
+    """The advertised half: the same 183 names as the root's frozen ``__all__``, in
+    the same order. Order is checked, not just membership -- it is part of the
+    contract the source gate holds the root itself to, and a fixture that agreed
+    only as a set would stop being able to catch a reordering there.
+    """
+    names, _other = _root_consumer_imports()
+    advertised = [name for name in names if name not in ROOT_FACADE_HIDDEN_BINDINGS]
+    assert advertised == list(ROOT_FACADE_ALL)
+    assert len(advertised) == 183
+    assert len(set(advertised)) == 183
+
+
+def test_root_consumer_imports_exactly_the_four_hidden_bindings() -> None:
+    """The non-advertised half: exactly four, no more and no fewer, and each one
+    really is outside the advertised set. A fifth hidden binding appearing here --
+    or one of these four being dropped -- has to be a deliberate edit to the frozen
+    tuples in ``baseline.facade_manifest``, not a quiet fixture change.
+    """
+    names, _other = _root_consumer_imports()
+    hidden = [name for name in names if name in ROOT_FACADE_HIDDEN_BINDINGS]
+    assert hidden == ["Database", "MemoryCreate", "MemoryService", "MemoryUpdate"]
+    assert tuple(hidden) == ROOT_FACADE_HIDDEN_BINDINGS
+    assert len(hidden) == 4
+    assert set(hidden).isdisjoint(ROOT_FACADE_ALL)
+    assert set(ROOT_FACADE_HIDDEN_CANONICAL_BINDINGS) == {"MemoryCreate", "MemoryUpdate"}
+    assert set(ROOT_FACADE_HIDDEN_RUNTIME_BINDINGS) == {"Database", "MemoryService"}
+
+
+def test_root_consumer_imports_nothing_missing_extra_or_canonical() -> None:
+    """The whole import block, as one exact set: 187 names, all of them either
+    advertised or one of the four hidden bindings, with no duplicate. And nothing
+    anywhere in the file reaches ``omnivia_core`` -- a canonical import would prove
+    nothing about the legacy path, which is the only thing this fixture exists to
+    check.
+    """
+    names, other = _root_consumer_imports()
+    expected = {*ROOT_FACADE_ALL, *ROOT_FACADE_HIDDEN_BINDINGS}
+    assert len(names) == len(expected) == 187
+    assert set(names) == expected, (
+        f"missing={sorted(expected - set(names))}, "
+        f"extra={sorted(set(names) - expected)}"
+    )
+    assert len(set(names)) == len(names), "the root consumer imports a name twice"
+
+    for module, _asname in other:
+        assert not _is_canonical_module(module), (
+            f"{ROOT_FACADE_CONSUMER} imports {module}; the root consumer must "
+            f"exercise the legacy path only"
+        )
+        assert not module.startswith("omnivia_memory"), (
+            f"{ROOT_FACADE_CONSUMER} also imports {module}; the root consumer covers "
+            f"the root path and nothing below it"
+        )
+
+
+def test_root_consumer_records_no_leaf_route_in_the_shared_audit() -> None:
+    """The shared syntax audit is reused for the fixture body deliberately, and it
+    must record *no* route for it: the root is ``omnivia_memory`` exactly, not
+    ``omnivia_memory.<something>``, so the leaf partition above stays untouched by
+    this file even though it imports a superset of what several leaves publish.
+    """
+    assert _legacy_imports(ROOT_FACADE_CONSUMER) == {}
