@@ -105,11 +105,12 @@
           "enum": ["leaf", "barrel", "root"]
         },
         "migration_state": {
-          "description": "source_parity: still a duplicated copy, symbol for symbol. canonical_subset: still a duplicated copy but a strict superset of the canonical module, because canonical Core deliberately omits runtime-owned symbols. direct_facade: re-exports canonical objects itself. transitive_facade: identity-preserving purely through converted children. pending_*: not yet converted.",
+          "description": "source_parity: still a duplicated copy, symbol for symbol. canonical_subset: still a duplicated copy but a strict superset of the canonical module, because canonical Core deliberately omits runtime-owned symbols. direct_facade: re-exports canonical objects itself. split_facade: imports its whole portable namespace from its exact canonical counterpart while retaining explicitly tested, legacy-owned synchronous function definitions Core deliberately excludes. transitive_facade: identity-preserving purely through converted children. pending_*: not yet converted.",
           "enum": [
             "source_parity",
             "canonical_subset",
             "direct_facade",
+            "split_facade",
             "transitive_facade",
             "pending_direct_barrel",
             "pending_hybrid",

@@ -52,7 +52,8 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 
 #: The legacy leaves converted into thin compatibility facades over
 #: ``omnivia_core`` (see ``tests/canonical_migration/_leaves.py``'s
-#: ``FACADE_CANONICAL_TO_LEGACY`` and ``tests/compatibility/test_facade_foundation.py``),
+#: ``FACADE_CANONICAL_TO_LEGACY`` and ``SPLIT_FACADE_CANONICAL_TO_LEGACY``, and
+#: ``tests/compatibility/test_facade_foundation.py``),
 #: and -- for each symbol the frozen inventory once recorded as *defined* by
 #: that leaf -- the canonical module that now owns the exact object it routes
 #: to. Only these exact, narrow routes are ever normalized away before
@@ -93,6 +94,14 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: that module, so there is no route delta to normalize. They are covered by
 #: ``tests/compatibility/test_facade_foundation.py``'s ``LEAF_SYMBOL_SOURCES``
 #: instead, which pins their exact owner and identity.
+#:
+#: A ``split_facade`` leaf routes only its *portable* half. ``graph.search_models``
+#: is the first: its three query/result records are routed, while the four
+#: relevance-scoring helpers stay defined on the legacy module and therefore keep
+#: their frozen ``defines`` entries where they always were. Their absence from
+#: this map is load-bearing, not an omission -- see that leaf's entry below and
+#: ``tests/compatibility/test_facade_foundation.py``'s
+#: ``SPLIT_LEAF_SYMBOL_SOURCES``.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -272,6 +281,30 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "manifest_from_dict": "omnivia_core.control_plane.validation",
         "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
     },
+    "omnivia_memory.graph.models": {
+        "ApprovalStatus": "omnivia_core.graph.models",
+        "Entity": "omnivia_core.graph.models",
+        "EntityCreate": "omnivia_core.graph.models",
+        "EntityMemoryLink": "omnivia_core.graph.models",
+        "EntityType": "omnivia_core.graph.models",
+        "Relationship": "omnivia_core.graph.models",
+        "RelationshipCreate": "omnivia_core.graph.models",
+        "RelationshipType": "omnivia_core.graph.models",
+    },
+    # The first ``split_facade`` leaf (see ``baseline.facade_manifest``): only the
+    # three query/result records below are canonicalized, so only they are routed.
+    # ``score_name_match``, ``score_relationship_count``,
+    # ``score_neighbor_overlap`` and ``compute_relevance_score`` stay *defined* in
+    # the legacy module -- they are search-runtime behaviour Core deliberately
+    # excludes, and ``omnivia_memory.graph.search_service`` still calls them -- so
+    # they keep their frozen ``defines`` entries on their historical owner and
+    # must never be added here. ``_facade_route_problems`` would reject a routed
+    # symbol that is still locally defined, which is exactly the distinction.
+    "omnivia_memory.graph.search_models": {
+        "GraphSearchQuery": "omnivia_core.graph.search_models",
+        "GraphSearchResult": "omnivia_core.graph.search_models",
+        "GraphSearchResultSet": "omnivia_core.graph.search_models",
+    },
     # The three ``BUILTIN_*`` bounded-vocabulary constants are ``frozenset``
     # instances, so ordinary ``__module__`` definition detection cannot see them
     # and they are routed explicitly -- exactly as ``SENSITIVE_KEYS`` and the
@@ -448,6 +481,34 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "CreatedBy": "omnivia_core.lifecycle.rules",
         "Source": "omnivia_core.provenance.models",
     },
+}
+
+
+#: Public symbols a routed leaf deliberately keeps *defining* itself, because
+#: canonical Core excludes them. Keys are the legacy module; values are the exact
+#: symbol names, sorted.
+#:
+#: A plain ``direct_facade`` leaf defines nothing after conversion, so its frozen
+#: ``defines`` entry becomes empty. A ``split_facade`` leaf (see
+#: ``baseline.facade_manifest``'s ``MigrationState.SPLIT_FACADE``) keeps a named
+#: set of legacy-owned definitions, so its ``defines`` entry shrinks to exactly
+#: that set instead. Declaring which names those are -- rather than accepting
+#: whatever survives -- is what keeps the delta a *named* one:
+#: ``_facade_retained_definition_problems`` proves every entry (it is really
+#: excluded from the routed canonical module, its frozen descriptor is unchanged,
+#: and the leaf's frozen ``defines`` is exactly its routes plus these names)
+#: before any of it may be normalized away.
+#:
+#: ``graph.search_models`` is the first and only entry: its four relevance-scoring
+#: helpers are search-runtime behaviour that ``omnivia_memory.graph.search_service``
+#: still calls, and they must never enter Core.
+FACADE_RETAINED_DEFINITIONS: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.graph.search_models": (
+        "compute_relevance_score",
+        "score_name_match",
+        "score_neighbor_overlap",
+        "score_relationship_count",
+    ),
 }
 
 
@@ -731,6 +792,92 @@ def _facade_route_problems(
     return problems
 
 
+def _facade_retained_definition_problems(
+    actual: dict[str, Any],
+    *,
+    routes: dict[str, dict[str, str]] = FACADE_ROUTES,
+    retained_definitions: dict[str, tuple[str, ...]] = FACADE_RETAINED_DEFINITIONS,
+    frozen: dict[str, Any] | None = None,
+) -> list[str]:
+    """Verify every declared retained definition before it may be normalized.
+
+    A ``split_facade`` leaf routes its portable half and keeps defining the rest.
+    Each declared name must (a) belong to a leaf that really has routes, (b) not
+    itself be routed, (c) have been recorded as a definition of that leaf by the
+    frozen baseline, (d) still be defined *there* live -- reported as a definition
+    of the legacy module, with an unchanged frozen descriptor -- and (e) really be
+    absent from the module the leaf's routes point at, so "Core excludes it" is a
+    checked fact rather than a claim. Finally the leaf's frozen ``defines`` must be
+    exactly its routes plus these names, so a symbol cannot be quietly dropped by
+    being in neither set.
+    """
+    if frozen is None:
+        frozen = load_json(PUBLIC_EXPORTS_PATH)
+    problems: list[str] = []
+    for legacy_module, names in sorted(retained_definitions.items()):
+        symbol_routes = routes.get(legacy_module)
+        if symbol_routes is None:
+            problems.append(
+                f"{legacy_module}: declares retained definitions but is not a routed leaf"
+            )
+            continue
+        if list(names) != sorted(names):
+            problems.append(f"{legacy_module}: retained definitions are not sorted")
+        try:
+            legacy = importlib.import_module(legacy_module)
+        except ImportError as exc:
+            problems.append(f"{legacy_module}: cannot import ({exc})")
+            continue
+        frozen_defines = frozen.get("modules", {}).get(legacy_module, {}).get("defines") or {}
+        actual_defines = actual.get("modules", {}).get(legacy_module, {}).get("defines") or {}
+        canonical_modules = sorted(set(symbol_routes.values()))
+        for name in names:
+            where = f"{legacy_module}.{name}"
+            if name in symbol_routes:
+                problems.append(f"{where}: declared retained but is also routed")
+                continue
+            if name not in frozen_defines:
+                problems.append(
+                    f"{where}: the frozen baseline never recorded it as a definition "
+                    "of this module"
+                )
+                continue
+            if name not in actual_defines:
+                problems.append(
+                    f"{where}: no longer defined by this module; a retained definition "
+                    "must stay legacy-owned"
+                )
+                continue
+            live = getattr(legacy, name, None)
+            if getattr(live, "__module__", None) != legacy_module:
+                problems.append(
+                    f"{where}: reports owner {getattr(live, '__module__', None)!r}; a "
+                    "retained definition must stay owned by the legacy module"
+                )
+            if actual_defines[name] != frozen_defines[name]:
+                problems.append(
+                    f"{where}: contract drifted from the frozen historical definition"
+                )
+            for canonical_module in canonical_modules:
+                try:
+                    canonical = importlib.import_module(canonical_module)
+                except ImportError as exc:
+                    problems.append(f"{canonical_module}: cannot import ({exc})")
+                    continue
+                if hasattr(canonical, name):
+                    problems.append(
+                        f"{where}: {canonical_module} now has this symbol, so it is no "
+                        "longer excluded from the canonical package"
+                    )
+        unaccounted = sorted(set(frozen_defines) - set(symbol_routes) - set(names))
+        if unaccounted:
+            problems.append(
+                f"{legacy_module}: frozen definitions {unaccounted} are neither routed "
+                "nor declared retained"
+            )
+    return problems
+
+
 def _facade_root_binding_problems(
     *,
     routes: dict[str, dict[str, str]] = FACADE_ROUTES,
@@ -796,15 +943,20 @@ def _normalize_expected_for_facade_routes(
     *,
     routes: dict[str, dict[str, str]] = FACADE_ROUTES,
     moves: dict[tuple[str, str], tuple[str, str]] = FACADE_ROOT_BINDING_OWNER_MOVES,
+    retained_definitions: dict[str, tuple[str, ...]] = FACADE_RETAINED_DEFINITIONS,
 ) -> dict[str, Any]:
     """Return a copy of ``expected`` with only the sanctioned facade deltas applied.
 
     Three, and only three, kinds of change are made, all caused directly by the
     routes in ``routes``:
 
-    - a routed leaf's ``defines`` becomes empty once every symbol the frozen
-      baseline recorded there is confirmed routed (the symbol is no longer
-      *defined* by the legacy module -- it is imported);
+    - a routed leaf's ``defines`` loses exactly the symbols the frozen baseline
+      recorded there and this leaf routes (they are no longer *defined* by the
+      legacy module -- they are imported), keeping exactly the names declared in
+      ``retained_definitions`` for a ``split_facade`` leaf. For a plain
+      ``direct_facade`` leaf nothing is retained, so the entry becomes empty. The
+      delta is applied only when the frozen ``defines`` is fully accounted for by
+      those two sets, so a symbol in neither still fails the comparison;
     - a root binding's ``defined_in`` moves from the legacy leaf to the
       routed canonical module, for exactly the routed names;
     - each root binding named by ``moves`` has its ``defined_in`` replaced, whole
@@ -826,8 +978,13 @@ def _normalize_expected_for_facade_routes(
         if module_entry is None:
             continue
         frozen_defines = module_entry.get("defines") or {}
-        if frozen_defines and set(frozen_defines) <= set(symbol_routes):
-            module_entry["defines"] = {}
+        retained = set(retained_definitions.get(legacy_module, ()))
+        if frozen_defines and set(frozen_defines) <= set(symbol_routes) | retained:
+            module_entry["defines"] = {
+                name: descriptor
+                for name, descriptor in frozen_defines.items()
+                if name in retained
+            }
         for name, canonical_module in symbol_routes.items():
             binding = normalized.get("root", {}).get("bindings", {}).get(name)
             if binding is not None and binding.get("defined_in") == legacy_module:
@@ -849,11 +1006,23 @@ def verify_public_export_inventory() -> list[str]:
         return [
             (
                 "Compatibility-facade route verification failed for one or more of the "
-                "leaves converted in tests/canonical_migration/_leaves.py's "
-                "FACADE_CANONICAL_TO_LEGACY; refusing to normalize the frozen Phase 0 "
-                "baseline for an unverified delta."
+                "routes pinned by baseline.inventory's FACADE_ROUTES, which covers "
+                "both the direct and the split converted leaves; refusing to normalize "
+                "the frozen Phase 0 baseline for an unverified delta."
             ),
             format_differences(route_problems),
+        ]
+
+    retained_problems = _facade_retained_definition_problems(actual, frozen=expected)
+    if retained_problems:
+        return [
+            (
+                "Compatibility-facade retained-definition verification failed for one or "
+                "more entries in baseline.inventory's FACADE_RETAINED_DEFINITIONS; "
+                "refusing to normalize the frozen Phase 0 baseline for an unverified "
+                "split facade."
+            ),
+            format_differences(retained_problems),
         ]
 
     root_binding_problems = _facade_root_binding_problems(frozen=expected)

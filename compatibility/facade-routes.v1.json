@@ -137,14 +137,14 @@
       "canonical_module": "omnivia_core.graph.models",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.graph.search_models",
       "canonical_module": "omnivia_core.graph.search_models",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "canonical_subset"
+      "migration_state": "split_facade"
     },
     {
       "legacy_module": "omnivia_memory.ingestion",

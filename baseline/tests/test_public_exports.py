@@ -11,10 +11,12 @@ import pytest
 from baseline import CORE_PACKAGE, REPO_ROOT
 from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
+    FACADE_RETAINED_DEFINITIONS,
     FACADE_ROOT_BINDING_OWNER_MOVES,
     FACADE_ROUTES,
     PUBLIC_EXPORTS_PATH,
     _expected_facade_descriptor,
+    _facade_retained_definition_problems,
     _facade_root_binding_problems,
     _facade_route_problems,
     _normalize_expected_for_facade_routes,
@@ -418,12 +420,110 @@ def test_normalize_expected_for_facade_routes_does_not_mutate_its_argument() -> 
 
 
 def test_normalize_expected_for_facade_routes_empties_defines_for_routed_leaves() -> None:
+    """A routed leaf's frozen ``defines`` keeps exactly its declared retained
+    definitions and nothing else -- empty for every plain direct facade, and the
+    four legacy-owned scoring helpers for the one split facade."""
     expected = load_json(PUBLIC_EXPORTS_PATH)
 
     normalized = _normalize_expected_for_facade_routes(expected)
 
     for legacy_module in FACADE_ROUTES:
-        assert normalized["modules"][legacy_module]["defines"] == {}
+        retained = FACADE_RETAINED_DEFINITIONS.get(legacy_module, ())
+        assert set(normalized["modules"][legacy_module]["defines"]) == set(retained)
+        for name in retained:
+            assert (
+                normalized["modules"][legacy_module]["defines"][name]
+                == expected["modules"][legacy_module]["defines"][name]
+            ), f"{legacy_module}.{name} descriptor was rewritten, not retained"
+
+
+def test_retained_definitions_are_declared_only_for_routed_split_leaves() -> None:
+    """Every declared retained definition must belong to a routed leaf, must not
+    itself be routed, and -- together with that leaf's routes -- must account for
+    the leaf's whole frozen ``defines`` set. The verifier proves the same facts at
+    runtime; this pins the declaration itself so a stale entry cannot survive by
+    coincidence."""
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+
+    assert set(FACADE_RETAINED_DEFINITIONS) == {"omnivia_memory.graph.search_models"}
+    for legacy_module, names in FACADE_RETAINED_DEFINITIONS.items():
+        assert legacy_module in FACADE_ROUTES
+        assert list(names) == sorted(names)
+        assert set(names).isdisjoint(FACADE_ROUTES[legacy_module])
+        frozen_defines = set(expected["modules"][legacy_module]["defines"])
+        assert frozen_defines == set(FACADE_ROUTES[legacy_module]) | set(names)
+
+
+def test_retained_definition_verification_passes_and_is_fail_closed() -> None:
+    """The live gate must accept the real declaration and reject each way an
+    entry could be wrong: a leaf with no routes, a name that is also routed, a
+    name the frozen baseline never recorded, and a name Core has since acquired.
+    """
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+    actual = build_public_export_inventory()
+    assert _facade_retained_definition_problems(actual, frozen=expected) == []
+
+    problems = _facade_retained_definition_problems(
+        actual,
+        retained_definitions={"omnivia_memory.workspace.models": ("Workspace",)},
+        frozen=expected,
+    )
+    assert any("is not a routed leaf" in problem for problem in problems), problems
+
+    problems = _facade_retained_definition_problems(
+        actual,
+        retained_definitions={"omnivia_memory.graph.search_models": ("GraphSearchQuery",)},
+        frozen=expected,
+    )
+    assert any("is also routed" in problem for problem in problems), problems
+
+    problems = _facade_retained_definition_problems(
+        actual,
+        retained_definitions={
+            "omnivia_memory.graph.search_models": ("never_existed",),
+        },
+        frozen=expected,
+    )
+    assert any("never recorded it as a definition" in problem for problem in problems), problems
+
+    # A name Core does own, planted into both the frozen and the built inventory
+    # so the declaration gets as far as the exclusion check: it must still fail,
+    # because "Core excludes it" is the whole content of the declaration. The
+    # planted name is imported rather than defined here, so the owner check fires
+    # too -- both diagnostics are expected.
+    descriptor = {"kind": "class", "fields": [], "frozen": False, "methods": []}
+    frozen_with_entity = copy.deepcopy(expected)
+    frozen_with_entity["modules"]["omnivia_memory.graph.search_models"]["defines"]["Entity"] = (
+        descriptor
+    )
+    actual_with_entity = copy.deepcopy(actual)
+    actual_with_entity["modules"]["omnivia_memory.graph.search_models"]["defines"]["Entity"] = (
+        descriptor
+    )
+    problems = _facade_retained_definition_problems(
+        actual_with_entity,
+        retained_definitions={"omnivia_memory.graph.search_models": ("Entity",)},
+        frozen=frozen_with_entity,
+    )
+    assert any("no longer excluded from the canonical package" in problem for problem in problems), (
+        problems
+    )
+    assert any("must stay owned by the legacy module" in problem for problem in problems), problems
+
+    # A retained helper whose frozen contract no longer describes the live one.
+    frozen_drifted = copy.deepcopy(expected)
+    frozen_drifted["modules"]["omnivia_memory.graph.search_models"]["defines"][
+        "score_name_match"
+    ] = {"kind": "function", "signature": "(query: 'str') -> 'float'"}
+    problems = _facade_retained_definition_problems(actual, frozen=frozen_drifted)
+    assert any("contract drifted" in problem for problem in problems), problems
+
+    problems = _facade_retained_definition_problems(
+        actual,
+        retained_definitions={"omnivia_memory.graph.search_models": ("score_name_match",)},
+        frozen=expected,
+    )
+    assert any("neither routed nor declared retained" in problem for problem in problems), problems
 
 
 def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() -> None:

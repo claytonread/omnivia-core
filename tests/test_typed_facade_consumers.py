@@ -19,13 +19,34 @@ KNOWLEDGE_LEAVES = {
     "omnivia_memory.knowledge.normalize",
     "omnivia_memory.knowledge.validation",
 }
-DEDICATED_LEAVES = MODULE_MANIFEST_LEAVES | KNOWLEDGE_LEAVES
+GRAPH_LEAVES = {
+    "omnivia_memory.graph.models",
+    "omnivia_memory.graph.search_models",
+}
+DEDICATED_LEAVES = MODULE_MANIFEST_LEAVES | KNOWLEDGE_LEAVES | GRAPH_LEAVES
 CONSUMER_ROUTES = {
     "tests/typing/accepted_legacy_facade_consumer.py": (
         set(FACADE_ROUTES) - DEDICATED_LEAVES
     ),
+    "tests/typing/graph_facade_consumer.py": GRAPH_LEAVES,
     "tests/typing/knowledge_facade_consumer.py": KNOWLEDGE_LEAVES,
     "tests/typing/module_manifest_facade_consumer.py": MODULE_MANIFEST_LEAVES,
+}
+
+#: Definitions a split facade keeps owning: they are not routes, so a consumer
+#: must not name them in a legacy ``from`` import, and the exact-route audit below
+#: would reject it if one did. The Graph consumer exercises them through
+#: ``import omnivia_memory.graph.search_models as runtime_search_models`` instead,
+#: which the audit records as no route at all.
+NON_ROUTED_RETAINED_HELPERS: dict[str, frozenset[str]] = {
+    "omnivia_memory.graph.search_models": frozenset(
+        {
+            "compute_relevance_score",
+            "score_name_match",
+            "score_neighbor_overlap",
+            "score_relationship_count",
+        }
+    ),
 }
 
 
@@ -91,7 +112,12 @@ def test_typed_consumers_cover_every_accepted_facade_route_exactly() -> None:
     # The fixtures must *partition* the routes, not merely cover them: a leaf
     # named by two consumers would let one of them drop its imports unnoticed.
     assert sum(len(routes) for routes in CONSUMER_ROUTES.values()) == len(FACADE_ROUTES)
-    assert MODULE_MANIFEST_LEAVES.isdisjoint(KNOWLEDGE_LEAVES)
+    for first, second in (
+        (MODULE_MANIFEST_LEAVES, KNOWLEDGE_LEAVES),
+        (MODULE_MANIFEST_LEAVES, GRAPH_LEAVES),
+        (KNOWLEDGE_LEAVES, GRAPH_LEAVES),
+    ):
+        assert first.isdisjoint(second)
 
     for relative_path, expected_modules in CONSUMER_ROUTES.items():
         imports = _legacy_imports(relative_path)
@@ -102,3 +128,21 @@ def test_typed_consumers_cover_every_accepted_facade_route_exactly() -> None:
             f"{relative_path} legacy imports drifted from FACADE_ROUTES: "
             f"actual={imports!r}, expected={expected!r}"
         )
+
+
+def test_typed_consumers_never_from_import_a_non_routed_retained_helper() -> None:
+    """A split facade's retained definitions are not routes. A consumer that named
+    one in a legacy ``from`` import would break the exact-route audit above, so the
+    only way to exercise them is through a module import -- which that audit records
+    as no route at all. Pin both halves of that arrangement: the helpers really are
+    absent from the route map, and no consumer ``from``-imports one.
+    """
+    for legacy_module, helpers in NON_ROUTED_RETAINED_HELPERS.items():
+        assert legacy_module in FACADE_ROUTES
+        assert helpers.isdisjoint(FACADE_ROUTES[legacy_module])
+        for relative_path in CONSUMER_ROUTES:
+            imported = _legacy_imports(relative_path).get(legacy_module, set())
+            assert imported.isdisjoint(helpers), (
+                f"{relative_path} from-imports the non-routed {legacy_module} helpers "
+                f"{sorted(imported & helpers)}; use a module import instead"
+            )

@@ -26,8 +26,10 @@ from baseline.facade_manifest import (
     Shape,
     discover_package_modules,
     load_manifest,
+    split_facade_defects,
     transitive_facade_defects,
     validate_checkout,
+    validate_route_sources,
 )
 
 EXPECTED_SUFFIXES = (
@@ -114,7 +116,13 @@ EXPECTED_HYBRID_SUFFIXES = {
 }
 
 EXPECTED_STATE_SUFFIXES = {
-    MigrationState.CANONICAL_SUBSET: {"graph.search_models"},
+    # Empty on purpose: ``graph.search_models`` was the last leaf whose canonical
+    # counterpart was a strict subset of it, and it is now the first
+    # ``split_facade``. The state stays listed rather than dropped so the partition
+    # below keeps asserting that nothing has quietly re-entered it.
+    MigrationState.CANONICAL_SUBSET: set(),
+    #: The one split facade: canonical records, four legacy-owned scoring helpers.
+    MigrationState.SPLIT_FACADE: {"graph.search_models"},
     MigrationState.DIRECT_FACADE: {
         "_shared.validation",
         "app_manifest.models",
@@ -126,6 +134,9 @@ EXPECTED_STATE_SUFFIXES = {
         "control_plane.imports",
         "control_plane.models",
         "control_plane.validation",
+        # The models half of the Graph pair. Its sibling ``search_models`` is a
+        # ``split_facade`` above, and their barrel stays a hybrid below.
+        "graph.models",
         "knowledge.models",
         "knowledge.normalize",
         "knowledge.validation",
@@ -228,7 +239,14 @@ def test_manifest_partitions_and_current_states_are_exact() -> None:
     split = manifest.route_for_legacy("omnivia_memory.graph.search_models")
     assert split.pair_kind is PairKind.DIRECT
     assert split.shape is Shape.LEAF
-    assert split.migration_state is MigrationState.CANONICAL_SUBSET
+    assert split.migration_state is MigrationState.SPLIT_FACADE
+    assert split.is_converted
+
+    models = manifest.route_for_legacy("omnivia_memory.graph.models")
+    assert models.pair_kind is PairKind.DIRECT
+    assert models.shape is Shape.LEAF
+    assert models.migration_state is MigrationState.DIRECT_FACADE
+    assert models.is_converted
 
 
 def test_manifest_views_are_immutable_and_deterministic() -> None:
@@ -1623,6 +1641,686 @@ def test_component_contract_barrel_transitive_form_accepts_its_historical_source
     assert transitive_facade_defects(ast.parse(source), route, children) == []
 
 
+# ---------------------------------------------------------------------------
+# The ``graph`` pair: one direct facade leaf, one split facade leaf, under a
+# barrel that stays a hybrid.
+#
+# ``graph.search_models`` is the first ``split_facade``: it re-exports the three
+# canonicalized query/result records (and their incidental bindings) from
+# ``omnivia_core.graph.search_models`` while keeping the four relevance-scoring
+# helpers defined locally, because Core deliberately excludes them and the
+# legacy-owned ``graph.search_service`` still calls them. That is a source shape
+# no other state describes, so it gets its own fail-closed policy
+# (``split_facade_defects``) and its own adversaries here.
+# ---------------------------------------------------------------------------
+
+#: The exact portable names the split leaf re-exports, restated here rather than
+#: read off the module: this fixture must not be derived from the very file whose
+#: mutations it is proving get rejected.
+_GRAPH_SEARCH_MODELS_IMPORTS: tuple[str, ...] = (
+    "Any",
+    "Entity",
+    "EntityType",
+    "GraphSearchQuery",
+    "GraphSearchResult",
+    "GraphSearchResultSet",
+    "RelationshipType",
+    "dataclass",
+    "field",
+)
+
+#: The four retained, legacy-owned helpers, in the module's historical order.
+_GRAPH_SEARCH_MODELS_HELPERS: tuple[str, ...] = (
+    "score_name_match",
+    "score_relationship_count",
+    "score_neighbor_overlap",
+    "compute_relevance_score",
+)
+
+_GRAPH_SEARCH_MODELS_CANONICAL = "omnivia_core.graph.search_models"
+
+
+def _split_source(
+    *,
+    docstring: str = '"""Docstring."""\n\n',
+    imports: tuple[str, ...] = _GRAPH_SEARCH_MODELS_IMPORTS,
+    helpers: tuple[str, ...] = _GRAPH_SEARCH_MODELS_HELPERS,
+    future: str = "from __future__ import annotations\n",
+    canonical_module: str = _GRAPH_SEARCH_MODELS_CANONICAL,
+    extra_source: str = "",
+    helpers_before_route: bool = False,
+) -> str:
+    """The split leaf's shape: docstring, future import, one canonical import,
+    then one synchronous ``def`` per retained helper. Bodies are irrelevant to
+    the source policy, so they are stubbed.
+
+    ``docstring`` and ``helpers_before_route`` exist so the *sequence* can be
+    attacked as well as the statement kinds: the policy is an exact ordered
+    shape, not a multiset of permitted statements.
+    """
+    body = "".join(f"    {name},\n" for name in imports)
+    route = f"from {canonical_module} import (\n{body})\n" if imports else ""
+    definitions = "".join(
+        f"\n\ndef {name}() -> float:\n    return 0.0\n" for name in helpers
+    )
+    source = f"{docstring}{future}"
+    if helpers_before_route:
+        source += f"{definitions}\n\n{route}"
+    else:
+        source += f"{route}{definitions}"
+    return source + extra_source
+
+
+def _split_defects(source: str) -> list[str]:
+    return split_facade_defects(ast.parse(source), _GRAPH_SEARCH_MODELS_CANONICAL)
+
+
+def test_graph_pair_states_and_shapes_are_exact() -> None:
+    """The registry's own record of the split: a direct/leaf pair per module, one
+    ``direct_facade`` and one ``split_facade``, both converted, under a
+    ``hybrid_barrel`` that is not. Pinned exactly, because every other gate in
+    this section is about what may *not* happen to those states."""
+    manifest = load_manifest()
+
+    models = manifest.route_for_legacy("omnivia_memory.graph.models")
+    assert (models.pair_kind, models.shape, models.migration_state) == (
+        PairKind.DIRECT,
+        Shape.LEAF,
+        MigrationState.DIRECT_FACADE,
+    )
+    assert models.is_converted
+
+    split = manifest.route_for_legacy("omnivia_memory.graph.search_models")
+    assert (split.pair_kind, split.shape, split.migration_state) == (
+        PairKind.DIRECT,
+        Shape.LEAF,
+        MigrationState.SPLIT_FACADE,
+    )
+    assert split.is_converted
+    assert split.canonical_module == _GRAPH_SEARCH_MODELS_CANONICAL
+
+    barrel = manifest.route_for_legacy("omnivia_memory.graph")
+    assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
+        PairKind.HYBRID_BARREL,
+        Shape.BARREL,
+        MigrationState.PENDING_HYBRID,
+    )
+    assert not barrel.is_converted
+
+    for runtime_only in (
+        "omnivia_memory.graph.repository",
+        "omnivia_memory.graph.search_service",
+        "omnivia_memory.graph.service",
+    ):
+        assert runtime_only in manifest.runtime_only_modules
+        with pytest.raises(KeyError):
+            manifest.route_for_legacy(runtime_only)
+
+
+def test_split_facade_is_a_converted_state_but_not_a_pending_one() -> None:
+    """``split_facade`` counts as converted -- its portable half really is the
+    canonical objects -- which is what lets a barrel above it eventually become
+    transitive. It is not pending, so its source *is* checked."""
+    manifest = load_manifest()
+    converted = {route.suffix for route in manifest.routes if route.is_converted}
+    assert "graph.search_models" in converted
+    assert "graph.models" in converted
+
+    # A pending state is one whose source is not checked at all. Relabelling the
+    # split leaf as any barrel/root state is rejected by the combination table, so
+    # there is no pending state a leaf can hide in.
+    for state in ("pending_direct_barrel", "pending_hybrid", "pending_root"):
+        document = _document()
+        _route(document, "graph.search_models")["migration_state"] = state
+        with pytest.raises(FacadeManifestError, match="valid combination"):
+            load_manifest(document)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "kind", "shape"),
+    [
+        ("graph.search_models", "hybrid_barrel", "leaf"),
+        ("graph.search_models", "root", "leaf"),
+        ("graph.search_models", "direct", "barrel"),
+        ("graph.search_models", "direct", "root"),
+        ("graph", "hybrid_barrel", "barrel"),
+    ],
+    ids=[
+        "hybrid-kind-leaf",
+        "root-kind-leaf",
+        "direct-kind-barrel",
+        "direct-kind-root",
+        "hybrid-barrel-declared-split",
+    ],
+)
+def test_split_facade_is_only_valid_for_a_direct_leaf(
+    suffix: str, kind: str, shape: str
+) -> None:
+    """``split_facade`` describes one module's symbol set, so only a
+    ``direct``/``leaf`` pair may be in it. Every other kind/shape combination --
+    including relabelling the hybrid barrel itself -- is rejected at load time."""
+    document = _document()
+    route = _route(document, suffix)
+    route["pair_kind"] = kind
+    route["shape"] = shape
+    route["migration_state"] = "split_facade"
+    with pytest.raises(FacadeManifestError, match="valid combination|exactly one root"):
+        load_manifest(document)
+
+
+def test_split_source_shape_is_the_defect_free_adversary_base() -> None:
+    """The real shape must be defect-free, so each rejection below is proven to
+    fail on what it injects rather than on the split shape itself."""
+    assert (
+        split_facade_defects(
+            ast.parse(_split_source()), _GRAPH_SEARCH_MODELS_CANONICAL
+        )
+        == []
+    )
+    # One retained helper is enough; four is what this leaf happens to have.
+    assert (
+        split_facade_defects(
+            ast.parse(_split_source(helpers=("score_name_match",))),
+            _GRAPH_SEARCH_MODELS_CANONICAL,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "pattern"),
+    [
+        # A plain top-level import. ``import math`` is the plausible one here: the
+        # real module has exactly that import *inside* ``score_relationship_count``,
+        # and hoisting it to module scope would change what the module publishes.
+        (_split_source(extra_source="import math\n"), "plain import"),
+        # A second from-import, at the canonical package and elsewhere. Either
+        # would make the portable namespace come from more than one place.
+        (
+            _split_source(
+                extra_source="from omnivia_core.graph.models import Relationship\n"
+            ),
+            "from-imports besides '__future__', expected exactly one",
+        ),
+        (
+            _split_source(
+                extra_source="from omnivia_memory.graph.models import Relationship\n"
+            ),
+            "from-imports besides '__future__', expected exactly one",
+        ),
+        # The wrong canonical module, a relative form of the right one, a star
+        # import, and an alias.
+        (
+            _split_source(canonical_module="omnivia_core.graph.models"),
+            "imports from 'omnivia_core.graph.models'",
+        ),
+        (
+            _split_source(imports=())
+            + "from .search_models import GraphSearchQuery\n",
+            "uses a relative import (level 1)",
+        ),
+        (
+            (
+                f'"""Docstring."""\n\nfrom __future__ import annotations\n'
+                f"from {_GRAPH_SEARCH_MODELS_CANONICAL} import *\n\n\n"
+                f"def score_name_match() -> float:\n    return 0.0\n"
+            ),
+            "uses a star import",
+        ),
+        (
+            (
+                f'"""Docstring."""\n\nfrom __future__ import annotations\n'
+                f"from {_GRAPH_SEARCH_MODELS_CANONICAL} import GraphSearchQuery as Query"
+                f"\n\n\ndef score_name_match() -> float:\n    return 0.0\n"
+            ),
+            "aliases 'GraphSearchQuery' as 'Query'",
+        ),
+        # The future import: missing, doubled, aliased, starred, relative, and
+        # carrying a second feature. The real statement is load-bearing -- the
+        # retained signatures are compared as postponed string annotations -- so an
+        # ``annotations`` binding imported from the canonical module is not a
+        # substitute for it.
+        (_split_source(future=""), "has 0 '__future__' imports"),
+        (
+            _split_source(
+                future=(
+                    "from __future__ import annotations\n"
+                    "from __future__ import annotations\n"
+                )
+            ),
+            "has 2 '__future__' imports",
+        ),
+        (
+            _split_source(future="from __future__ import annotations as ann\n"),
+            "aliases future feature 'annotations' as 'ann'",
+        ),
+        (_split_source(future="from __future__ import *\n"), "star __future__ import"),
+        (
+            _split_source(future="from . import annotations\n"),
+            "from-imports besides '__future__', expected exactly one",
+        ),
+        (
+            _split_source(
+                future="from __future__ import annotations, generator_stop\n"
+            ),
+            "imports future feature 'generator_stop'",
+        ),
+        # Async definitions, classes, assignments and annotated assignments.
+        (
+            _split_source(
+                extra_source="\n\nasync def score_async() -> float:\n    return 0.0\n"
+            ),
+            "defines the async function 'score_async'",
+        ),
+        (
+            _split_source(extra_source="\n\nclass LocalRecord:\n    pass\n"),
+            "has statements of its own (ClassDef)",
+        ),
+        (
+            _split_source(extra_source='__all__ = ["score_name_match"]\n'),
+            "has statements of its own (Assign)",
+        ),
+        (
+            _split_source(extra_source="WEIGHT: float = 0.5\n"),
+            "has statements of its own (AnnAssign)",
+        ),
+        # Dynamic hooks, whether installed as a module ``__getattr__``/``__dir__``
+        # or by writing to ``sys.modules``.
+        (
+            _split_source(
+                extra_source=(
+                    "\n\ndef __getattr__(name: str) -> float:\n"
+                    "    raise AttributeError(name)\n"
+                )
+            ),
+            "dynamic module hook '__getattr__'",
+        ),
+        (
+            _split_source(
+                extra_source="\n\ndef __dir__() -> list[str]:\n    return []\n"
+            ),
+            "dynamic module hook '__dir__'",
+        ),
+        (
+            _split_source(
+                extra_source="import sys\nsys.modules[__name__].__dict__['probe'] = 1\n"
+            ),
+            "plain import",
+        ),
+        # A decorated retained definition: the object published would be whatever
+        # the decorator returns, not the preserved function.
+        (
+            _split_source()
+            + "\n\n@staticmethod\ndef score_extra() -> float:\n    return 0.0\n",
+            "decorates the retained definition 'score_extra'",
+        ),
+        # Duplicate imported and duplicate defined names, and a definition that
+        # shadows an imported one.
+        (
+            _split_source(
+                imports=(*_GRAPH_SEARCH_MODELS_IMPORTS, "GraphSearchQuery")
+            ),
+            "imports the same name twice: ['GraphSearchQuery']",
+        ),
+        (
+            _split_source(
+                helpers=(*_GRAPH_SEARCH_MODELS_HELPERS, "score_name_match")
+            ),
+            "defines the same name twice: ['score_name_match']",
+        ),
+        (
+            _split_source(helpers=(*_GRAPH_SEARCH_MODELS_HELPERS, "GraphSearchQuery")),
+            "defines ['GraphSearchQuery'], which it also imports",
+        ),
+    ],
+)
+def test_split_facade_source_policy_is_fail_closed(source: str, pattern: str) -> None:
+    defects = split_facade_defects(ast.parse(source), _GRAPH_SEARCH_MODELS_CANONICAL)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # Rule 1, absent. Every *kind* of statement below the (missing) docstring
+        # is permitted and correctly ordered, so nothing but the docstring rule
+        # itself can reject this.
+        (_split_source(docstring=""), ("does not open with a module docstring",)),
+        # Rule 1, doubled. A second standalone string expression is a statement
+        # of the module's own -- before the future import, or trailing after the
+        # last retained def, where it reads as a stray editing artefact.
+        (
+            _split_source(docstring='"""Docstring."""\n\n"""Second."""\n\n'),
+            ("has 1 standalone string expression(s) besides the module docstring",),
+        ),
+        (
+            _split_source(extra_source='\n\n"""Trailing."""\n'),
+            ("has 1 standalone string expression(s) besides the module docstring",),
+        ),
+        (
+            _split_source(
+                docstring='"""Docstring."""\n\n"""Second."""\n\n',
+                extra_source='\n\n"""Trailing."""\n',
+            ),
+            ("has 2 standalone string expression(s) besides the module docstring",),
+        ),
+        # The order of rules 3 and 4. The statements are exactly the accepted
+        # ones, in exactly the accepted quantities -- only the sequence differs,
+        # so every count-based check passes and only the positional walk rejects.
+        (
+            _split_source(helpers=("score_name_match",), helpers_before_route=True),
+            (
+                "has FunctionDef as top-level statement 2",
+                "has ImportFrom as top-level statement 3",
+            ),
+        ),
+        # Rule 2, naming the one permitted feature twice. Neither the star, alias
+        # nor unexpected-feature check sees anything wrong with this.
+        (
+            _split_source(future="from __future__ import annotations, annotations\n"),
+            ("names 'annotations' 2 times in its '__future__' import",),
+        ),
+    ],
+    ids=[
+        "no-module-docstring",
+        "second-string-expression",
+        "trailing-string-expression",
+        "multiple-string-expressions",
+        "helper-before-route-import",
+        "duplicated-annotations-feature",
+    ],
+)
+def test_split_facade_sequence_is_exact(
+    source: str, expected: tuple[str, ...]
+) -> None:
+    """The split policy is an exact ordered shape, not a multiset of permitted
+    statement kinds. Each source here injects one defect into the shape
+    ``test_split_source_shape_is_the_defect_free_adversary_base`` proves is
+    otherwise accepted, and the *whole* defect list is asserted -- so a rejection
+    that came from some other malformed detail of the fixture would fail here
+    rather than pass as proof of the rule under test.
+    """
+    defects = _split_defects(source)
+    assert len(defects) == len(expected), defects
+    for defect, fragment in zip(defects, expected, strict=True):
+        assert fragment in defect, defects
+
+
+def test_split_facade_rejects_a_module_with_no_retained_helpers() -> None:
+    """A split facade with nothing legacy-owned is a plain direct facade wearing
+    the wrong label: the whole point of the state is the helpers Core excludes.
+    Without them the module has no reason not to be ``direct_facade``, so the
+    source policy rejects it rather than accepting a state that describes nothing.
+    """
+    defects = split_facade_defects(
+        ast.parse(_split_source(helpers=())), _GRAPH_SEARCH_MODELS_CANONICAL
+    )
+    assert any("defines no synchronous top-level function" in defect for defect in defects), (
+        defects
+    )
+
+
+def test_a_direct_wrapper_is_not_a_split_facade() -> None:
+    """The real ``graph.models`` wrapper -- one import, nothing else -- must fail
+    the split policy on both counts: it has no future import (its canonical
+    counterpart supplies the ``annotations`` binding) and it defines nothing."""
+    document = _document()
+    _route(document, "graph.models")["migration_state"] = "split_facade"
+    with pytest.raises(FacadeManifestError, match="declared 'split_facade'") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert "'__future__' imports" in joined
+    assert "defines no synchronous top-level function" in joined
+
+
+def test_a_split_source_is_not_a_direct_facade() -> None:
+    """The mirror direction: the real ``graph.search_models`` source may not be
+    declared ``direct_facade`` either. It has statements of its own (the four
+    retained ``def``\\ s) and a second from-import (``__future__``), so the direct
+    policy rejects it."""
+    document = _document()
+    _route(document, "graph.search_models")["migration_state"] = "direct_facade"
+    with pytest.raises(FacadeManifestError, match="declared 'direct_facade'") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert "statements of its own (FunctionDef)" in joined
+    assert "from-imports, expected exactly one" in joined
+
+
+@pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
+def test_split_facade_state_cannot_be_walked_back(state: str) -> None:
+    """Neither duplicated-source state may be re-declared over a leaf that is now
+    a split facade: the source no longer duplicates the canonical module at all.
+    ``canonical_subset`` is the specific temptation -- it is the state this leaf
+    just left, and it is the one that would silently stop the leaf being checked
+    as converted."""
+    document = _document()
+    _route(document, "graph.search_models")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert f"declared {state!r} but the source is an exact split facade" in joined
+
+
+@pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
+def test_graph_models_direct_facade_state_cannot_be_walked_back(state: str) -> None:
+    """The same for its sibling, which is a plain direct facade: a duplicated-source
+    state over an exact single-import wrapper is rejected by the pre-existing
+    direct branch, not the split one."""
+    document = _document()
+    _route(document, "graph.models")["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_checkout(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert f"declared {state!r} but the source is an exact facade" in joined
+
+
+@pytest.mark.parametrize(
+    ("suffix", "state", "pattern"),
+    [
+        ("graph.search_models", "direct_facade", "declared 'direct_facade'"),
+        ("graph.search_models", "canonical_subset", "move the state forward"),
+        ("graph.search_models", "source_parity", "move the state forward"),
+        ("graph.models", "split_facade", "declared 'split_facade'"),
+        ("graph.models", "canonical_subset", "move the state forward"),
+        ("graph.models", "source_parity", "move the state forward"),
+    ],
+    ids=[
+        "split-as-direct",
+        "split-as-canonical-subset",
+        "split-as-source-parity",
+        "direct-as-split",
+        "direct-as-canonical-subset",
+        "direct-as-source-parity",
+    ],
+)
+def test_validate_route_sources_enforces_the_graph_states(
+    suffix: str, state: str, pattern: str
+) -> None:
+    """``validate_route_sources`` is the source half of the gate on its own -- no
+    checkout rediscovery, no shape agreement, just each route's declared state
+    against its file. It must reach the same verdicts as ``validate_checkout``:
+    accept the real registry, and reject every mislabelling of either Graph leaf.
+    """
+    validate_route_sources()
+    document = _document()
+    _route(document, suffix)["migration_state"] = state
+    with pytest.raises(FacadeManifestError, match=pattern):
+        validate_route_sources(manifest=document)
+
+
+def test_graph_barrel_cannot_be_promoted_now_that_both_leaves_are_converted() -> None:
+    """Both portable children are converted, so ``transitive_facade`` looks
+    tempting -- and it is exactly wrong: the barrel also re-exports
+    ``GraphSearchError``/``GraphSearchService`` from the runtime-only
+    ``search_service`` leaf, which is not a route and can never be a converted
+    child. ``pending_hybrid`` stays the only state it may be in."""
+    for state in (
+        "transitive_facade",
+        "pending_direct_barrel",
+        "direct_facade",
+        "split_facade",
+        "source_parity",
+        "canonical_subset",
+        "pending_root",
+    ):
+        document = _document()
+        _route(document, "graph")["migration_state"] = state
+        with pytest.raises(FacadeManifestError, match="valid combination"):
+            load_manifest(document)
+
+
+#: The legacy graph barrel's exact historical import blocks, in source order.
+#: Restated rather than read off the barrel, because this is the file whose edits
+#: it exists to reject.
+_GRAPH_BARREL_HISTORICAL_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "models",
+        (
+            "ApprovalStatus",
+            "Entity",
+            "EntityType",
+            "Relationship",
+            "RelationshipType",
+        ),
+    ),
+    (
+        "search_models",
+        ("GraphSearchQuery", "GraphSearchResult", "GraphSearchResultSet"),
+    ),
+    ("search_service", ("GraphSearchError", "GraphSearchService")),
+)
+
+#: The two portable blocks -- the shape a *hypothetical* promoted barrel would
+#: have, which is defect-free and therefore the honest adversary base.
+_GRAPH_BARREL_PORTABLE_BLOCKS: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+    block for block in _GRAPH_BARREL_HISTORICAL_BLOCKS if block[0] != "search_service"
+)
+
+
+def _graph_barrel_source(
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    extra_source: str = "",
+) -> str:
+    source = ""
+    exported: list[str] = []
+    for module, names in blocks:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from omnivia_memory.graph.{module} import (\n{body})\n"
+        exported.extend(names)
+    all_body = "".join(f'    "{name}",\n' for name in sorted(exported))
+    return source + f"__all__ = [\n{all_body}]\n" + extra_source
+
+
+def _graph_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.graph"),
+        [
+            manifest.route_for_legacy("omnivia_memory.graph.models"),
+            manifest.route_for_legacy("omnivia_memory.graph.search_models"),
+        ],
+    )
+
+
+def test_graph_barrel_historical_source_is_not_a_transitive_facade() -> None:
+    """Even with the state gate bypassed, the barrel's own unmodified historical
+    source cannot pass the transitive-facade check: its ``search_service`` block is
+    not a converted child, and that is the *only* defect -- so the failure is
+    attributable to the runtime-owned half specifically, not to the barrel's shape
+    or its ten-name ``__all__``."""
+    route, children = _graph_barrel_route_and_children()
+    source = _graph_barrel_source(_GRAPH_BARREL_HISTORICAL_BLOCKS)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert len(defects) == 1, defects
+    assert "unapproved module" in defects[0]
+    assert "omnivia_memory.graph.search_service" in defects[0]
+
+
+def test_graph_barrel_portable_only_shape_is_the_defect_free_adversary_base() -> None:
+    route, children = _graph_barrel_route_and_children()
+    source = _graph_barrel_source(_GRAPH_BARREL_PORTABLE_BLOCKS)
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # A direct reroute at the canonical package: the barrel's identity
+        # preservation would become direct rather than transitive.
+        (
+            "from omnivia_core.graph.models import Entity\n",
+            "unapproved module",
+        ),
+        # The runtime-only sibling the *real* barrel imports, absolutely and
+        # relatively. It is still not an approved child, which is the whole reason
+        # the barrel stays a hybrid.
+        (
+            "from omnivia_memory.graph.search_service import GraphSearchService\n",
+            "unapproved module",
+        ),
+        ("from .search_service import GraphSearchError\n", "unapproved module"),
+        # The other two runtime-only graph leaves, which the barrel has never
+        # re-exported and must not start to.
+        (
+            "from omnivia_memory.graph.repository import EntityRepository\n",
+            "unapproved module",
+        ),
+        ("from ..persistence import Database\n", "unapproved module"),
+        # A relative form of one of its own children. The resolver approves the
+        # module, so what rejects this is the binding/``__all__`` mismatch it
+        # creates -- pinned so the two branches are not confused for each other.
+        (
+            "from .models import EntityCreate\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        # The four retained scoring helpers are *not* part of the barrel's surface.
+        # Re-exporting one from the approved split leaf still fails, on the
+        # ``__all__`` mismatch rather than the module gate.
+        (
+            "from omnivia_memory.graph.search_models import compute_relevance_score\n",
+            "the imported binding set does not exactly match the literal __all__",
+        ),
+        ("Entity = object()\n", "assignments"),
+        (
+            "def compute_relevance_score(query):\n    return query\n",
+            "statements of its own",
+        ),
+        ("class Entity:\n    pass\n", "statements of its own"),
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_graph_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    route, children = _graph_barrel_route_and_children()
+    source = _graph_barrel_source(
+        _GRAPH_BARREL_PORTABLE_BLOCKS, extra_source=extra_source
+    )
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_graph_barrel_transitive_form_requires_both_children() -> None:
+    """Dropping either portable block must fail: a barrel could keep a perfectly
+    valid one-block shape and still have stopped re-exporting a converted leaf."""
+    route, children = _graph_barrel_route_and_children()
+    for dropped, _names in _GRAPH_BARREL_PORTABLE_BLOCKS:
+        source = _graph_barrel_source(
+            tuple(block for block in _GRAPH_BARREL_PORTABLE_BLOCKS if block[0] != dropped)
+        )
+        defects = transitive_facade_defects(ast.parse(source), route, children)
+        assert any(
+            "does not import converted children" in defect
+            and f"omnivia_memory.graph.{dropped}" in defect
+            for defect in defects
+        ), (dropped, defects)
+
+
 def test_validate_checkout_revalidates_public_dataclass_instances() -> None:
     manifest = load_manifest()
     forged = replace(manifest, routes=(manifest.routes[0], manifest.routes[0]))
@@ -1682,15 +2380,18 @@ def test_checker_is_a_successful_executable_gate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
-    assert "canonical_subset: 1" in result.stdout
-    # The per-state counts this batch moved: the four memory-graph leaves from
-    # ``source_parity`` into ``direct_facade``, and nothing else. Their barrel is a
-    # hybrid, so -- unlike every previous batch -- no barrel changed state with
+    # The per-state counts this batch moved: ``graph.models`` from
+    # ``source_parity`` into ``direct_facade``, and ``graph.search_models`` out of
+    # ``canonical_subset`` -- which empties that state -- into the new
+    # ``split_facade``. Their barrel is a hybrid, so no barrel changed state with
     # them: ``transitive_facade`` and ``pending_hybrid`` both stay where they were.
-    assert "source_parity: 4" in result.stdout
-    assert "direct_facade: 25" in result.stdout
+    # Both leaves are converted, so two come off the remaining-leaf count.
+    assert "canonical_subset: 0" in result.stdout
+    assert "source_parity: 3" in result.stdout
+    assert "direct_facade: 26" in result.stdout
+    assert "split_facade: 1" in result.stdout
     assert "transitive_facade: 10" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
     assert "pending_hybrid: 6" in result.stdout
     assert "pending_root: 1" in result.stdout
-    assert "remaining: 5 leaves and 6 barrels still to convert" in result.stdout
+    assert "remaining: 3 leaves and 6 barrels still to convert" in result.stdout

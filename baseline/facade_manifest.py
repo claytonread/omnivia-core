@@ -22,10 +22,12 @@ Three independent things are checked:
 3. **Source agreement.** :func:`validate_checkout` also parses each legacy
    module it routes and fails if the source contradicts the declared
    ``migration_state``: a ``direct_facade`` leaf that is not an exact
-   single-source re-export of its paired canonical module, a
-   ``transitive_facade`` barrel that still has unconverted children or reaches
-   into the canonical package itself, or a still-duplicated leaf that has
-   quietly become a facade without its state being moved forward.
+   single-source re-export of its paired canonical module, a ``split_facade``
+   leaf that is not an exact re-export *plus* an explicitly legacy-owned set of
+   synchronous function definitions, a ``transitive_facade`` barrel that still
+   has unconverted children or reaches into the canonical package itself, or a
+   still-duplicated leaf that has quietly become either kind of facade without
+   its state being moved forward.
 
 A ``FacadeManifest`` handed to :func:`validate_checkout` is revalidated before
 it is trusted: the public dataclass constructor cannot be used to smuggle a
@@ -37,9 +39,10 @@ affected by -- or accidentally validate against -- a stale installed copy of
 either package. The module is standard-library only for the same reason the
 rest of ``baseline`` is: it must run before anything is installed.
 
-This checkpoint freezes module-level facts only. Per-symbol namespaces, symbol
-owners, collision pins, source policies, and consumer migration are deliberately
-absent and belong to the next checkpoint.
+The registry stays module-level: a route names a module pair, never a symbol.
+Per-symbol ownership, export collisions, and typed-consumer coverage of the
+facade are enforced by separate baselines and tests in this repository rather
+than encoded as fields here.
 """
 
 from __future__ import annotations
@@ -154,6 +157,13 @@ class MigrationState(str, Enum):
     CANONICAL_SUBSET = "canonical_subset"
     #: Re-exports the exact canonical objects itself.
     DIRECT_FACADE = "direct_facade"
+    #: Imports its whole *portable* namespace from its exact canonical
+    #: counterpart while keeping a small set of explicitly tested,
+    #: legacy-owned synchronous function definitions that Core deliberately
+    #: excludes. Converted -- every portable name is the canonical object --
+    #: but not a pure single-statement re-export, so it has its own source
+    #: policy (:func:`split_facade_defects`) rather than the direct one.
+    SPLIT_FACADE = "split_facade"
     #: Identity-preserving only through already-converted children.
     TRANSITIVE_FACADE = "transitive_facade"
     #: A direct barrel awaiting conversion.
@@ -168,14 +178,15 @@ class MigrationState(str, Enum):
 #: table is a bookkeeping mistake, not a state the migration can be in: a leaf
 #: cannot be "transitively" converted (it has no children to convert), a barrel
 #: cannot be a ``direct_facade`` while its leaves are still copies, and
-#: ``canonical_subset`` describes one module's symbol set, so only a leaf whose
-#: pair is direct can be in it.
+#: ``canonical_subset``/``split_facade`` describe one module's symbol set, so
+#: only a leaf whose pair is direct can be in either.
 _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] = (
     frozenset(
         {
             (PairKind.DIRECT, Shape.LEAF, MigrationState.SOURCE_PARITY),
             (PairKind.DIRECT, Shape.LEAF, MigrationState.CANONICAL_SUBSET),
             (PairKind.DIRECT, Shape.LEAF, MigrationState.DIRECT_FACADE),
+            (PairKind.DIRECT, Shape.LEAF, MigrationState.SPLIT_FACADE),
             (PairKind.DIRECT, Shape.BARREL, MigrationState.TRANSITIVE_FACADE),
             (PairKind.DIRECT, Shape.BARREL, MigrationState.PENDING_DIRECT_BARREL),
             (PairKind.HYBRID_BARREL, Shape.BARREL, MigrationState.PENDING_HYBRID),
@@ -216,6 +227,7 @@ class FacadeRoute:
         """Whether this route already resolves to canonical objects."""
         return self.migration_state in (
             MigrationState.DIRECT_FACADE,
+            MigrationState.SPLIT_FACADE,
             MigrationState.TRANSITIVE_FACADE,
         )
 
@@ -922,6 +934,193 @@ def direct_facade_defects(tree: ast.Module, canonical_module: str) -> list[str]:
     return defects
 
 
+#: Module-level attribute hooks. A split facade must resolve every name it
+#: publishes at import time, so defining either would turn it into a proxy.
+_MODULE_DYNAMIC_HOOKS: Final[frozenset[str]] = frozenset({"__dir__", "__getattr__"})
+
+
+def split_facade_defects(tree: ast.Module, canonical_module: str) -> list[str]:
+    """Why ``tree`` is not an exact *split* facade over ``canonical_module``.
+
+    An empty list means it is one, and a split facade is an exact *sequence* of
+    top-level statements rather than a bag of permitted kinds:
+
+    1. exactly one module docstring, and it is the first statement. No other
+       standalone string expression appears at module scope (comments, which
+       :mod:`ast` cannot see, remain free);
+    2. exactly one ``from __future__ import annotations`` -- absolute,
+       unaliased, no star, naming ``annotations`` exactly once and no other
+       future feature. The real statement is required rather than an
+       ``annotations`` binding imported from the canonical module: the retained
+       definitions below are annotated with postponed string annotations, and
+       only the real future import makes that so;
+    3. exactly one absolute, unaliased, non-star
+       ``from <canonical_module> import ...`` naming every portable name the
+       module republishes;
+    4. one or more synchronous, undecorated top-level ``def``\\ s -- the
+       runtime-owned definitions Core deliberately excludes.
+
+    That order is mandatory. Counting kinds is not enough to fail closed: a
+    module with no docstring at all, a second string expression bolted on at the
+    end, or a retained helper hoisted above the route import all have exactly
+    the permitted kinds in the permitted quantities, and none of them is the
+    accepted shape.
+
+    Anything else fails too: a plain ``import x``, a second import from any
+    other module, an ``async def``, a class, an assignment (``__all__``
+    included), a module ``__getattr__``/``__dir__``, a decorated definition, a
+    duplicated imported or defined name, or a definition shadowing an imported
+    one. Imports *inside* a retained function are invisible here and stay
+    allowed: they are part of that function's preserved body, not the module's
+    surface.
+    """
+    defects: list[str] = []
+
+    # Rule 1. Only the *leading* string expression is a docstring; every other
+    # one is a statement of the module's own that ``_is_docstring`` would
+    # otherwise make invisible everywhere below.
+    body = list(tree.body)
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    else:
+        defects.append("does not open with a module docstring")
+    strays = [node for node in body if _is_docstring(node)]
+    if strays:
+        defects.append(
+            f"has {len(strays)} standalone string expression(s) besides the module "
+            f"docstring, at line(s) {sorted(node.lineno for node in strays)}"
+        )
+        body = [node for node in body if not _is_docstring(node)]
+
+    future_imports: list[ast.ImportFrom] = []
+    portable_imports: list[ast.ImportFrom] = []
+    plain_imports: list[ast.Import] = []
+    functions: list[ast.FunctionDef] = []
+    coroutines: list[ast.AsyncFunctionDef] = []
+    others: list[ast.stmt] = []
+    for node in body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                future_imports.append(node)
+            else:
+                portable_imports.append(node)
+        elif isinstance(node, ast.Import):
+            plain_imports.append(node)
+        elif isinstance(node, ast.FunctionDef):
+            functions.append(node)
+        elif isinstance(node, ast.AsyncFunctionDef):
+            coroutines.append(node)
+        else:
+            others.append(node)
+
+    if others:
+        kinds = sorted({type(node).__name__ for node in others})
+        defects.append(f"has statements of its own ({', '.join(kinds)})")
+    for node in plain_imports:
+        names = sorted(alias.name for alias in node.names)
+        defects.append(
+            f"has a top-level plain import of {names}; only from-imports are allowed"
+        )
+    for coroutine in sorted(coroutines, key=lambda item: item.name):
+        defects.append(
+            f"defines the async function {coroutine.name!r}; retained definitions "
+            f"must be synchronous"
+        )
+
+    if len(future_imports) != 1:
+        defects.append(
+            f"has {len(future_imports)} '__future__' imports, expected exactly one "
+            f"'from __future__ import annotations'"
+        )
+    for node in future_imports:
+        if node.level != 0:
+            defects.append(f"uses a relative __future__ import (level {node.level})")
+        accepted: list[str] = []
+        for alias in sorted(node.names, key=lambda item: item.name):
+            if alias.name == "*":
+                defects.append("uses a star __future__ import")
+            elif alias.asname is not None:
+                defects.append(
+                    f"aliases future feature {alias.name!r} as {alias.asname!r}"
+                )
+            elif alias.name != "annotations":
+                defects.append(
+                    f"imports future feature {alias.name!r}, expected only 'annotations'"
+                )
+            else:
+                accepted.append(alias.name)
+        # ``from __future__ import annotations, annotations`` names nothing this
+        # module may not name, and is still not the accepted statement.
+        if len(accepted) != 1:
+            defects.append(
+                f"names 'annotations' {len(accepted)} times in its '__future__' "
+                f"import, expected exactly once"
+            )
+
+    if len(portable_imports) != 1:
+        defects.append(
+            f"has {len(portable_imports)} from-imports besides '__future__', "
+            f"expected exactly one"
+        )
+    imported: list[str] = []
+    for node in portable_imports:
+        if node.level != 0:
+            defects.append(f"uses a relative import (level {node.level})")
+        elif node.module != canonical_module:
+            defects.append(f"imports from {node.module!r}, not {canonical_module!r}")
+        for alias in sorted(node.names, key=lambda item: item.name):
+            if alias.name == "*":
+                defects.append("uses a star import")
+            elif alias.asname is not None:
+                defects.append(f"aliases {alias.name!r} as {alias.asname!r}")
+            else:
+                imported.append(alias.name)
+
+    if not functions:
+        defects.append(
+            "defines no synchronous top-level function, so nothing is legacy-owned "
+            "and it is a plain direct facade"
+        )
+    defined: list[str] = []
+    for function in functions:
+        if function.name in _MODULE_DYNAMIC_HOOKS:
+            defects.append(f"defines the dynamic module hook {function.name!r}")
+        if function.decorator_list:
+            defects.append(f"decorates the retained definition {function.name!r}")
+        defined.append(function.name)
+
+    for label, names in (("imports", imported), ("defines", defined)):
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            defects.append(f"{label} the same name twice: {duplicates}")
+    shadowed = sorted(set(imported) & set(defined))
+    if shadowed:
+        defects.append(
+            f"defines {shadowed}, which it also imports from {canonical_module!r}"
+        )
+
+    # The mandatory order, checked positionally so a source with exactly the
+    # right statements in the wrong sequence is still rejected. Kind identity
+    # only: *which* module the second statement imports from, and whether the
+    # first names only ``annotations``, are the checks above.
+    for position, node in enumerate(body):
+        if position == 0:
+            expected = "'from __future__ import annotations'"
+            correct = isinstance(node, ast.ImportFrom) and node.module == "__future__"
+        elif position == 1:
+            expected = f"the single from-import of {canonical_module!r}"
+            correct = isinstance(node, ast.ImportFrom) and node.module != "__future__"
+        else:
+            expected = "a retained synchronous 'def'"
+            correct = isinstance(node, ast.FunctionDef)
+        if not correct:
+            defects.append(
+                f"has {type(node).__name__} as top-level statement "
+                f"{position + 1}, expected {expected}"
+            )
+    return defects
+
+
 def canonical_imports(tree: ast.Module) -> list[str]:
     """Canonical-package modules ``tree`` imports directly, sorted and deduped."""
     found: set[str] = set()
@@ -1059,6 +1258,11 @@ def _collect_source_state_errors(
                 errors.append(
                     f"{where}: declared 'direct_facade' but the source {defect}"
                 )
+        elif state is MigrationState.SPLIT_FACADE:
+            for defect in split_facade_defects(tree, route.canonical_module):
+                errors.append(
+                    f"{where}: declared 'split_facade' but the source {defect}"
+                )
         elif state is MigrationState.TRANSITIVE_FACADE:
             routed_children = children.get(route.suffix, ())
             unconverted = sorted(
@@ -1082,6 +1286,12 @@ def _collect_source_state_errors(
             errors.append(
                 f"{where}: declared {state.value!r} but the source is an exact "
                 f"facade over {route.canonical_module!r}; move the state forward"
+            )
+        elif not split_facade_defects(tree, route.canonical_module):
+            errors.append(
+                f"{where}: declared {state.value!r} but the source is an exact split "
+                f"facade over {route.canonical_module!r}, keeping only legacy-owned "
+                f"function definitions of its own; move the state forward"
             )
 
 
@@ -1222,6 +1432,7 @@ __all__ = [
     "discover_package_modules",
     "legacy_source_path",
     "load_manifest",
+    "split_facade_defects",
     "transitive_facade_defects",
     "validate_checkout",
     "validate_route_sources",

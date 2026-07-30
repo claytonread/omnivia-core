@@ -22,6 +22,16 @@ Its legacy and canonical ``__all__`` are therefore different sizes, so it is
 deliberately excluded from ``BARREL_ALL_ORDER`` and every gate built on it, and
 gets its own section at the end of this module instead.
 
+``graph`` is the second hybrid barrel, and its ``search_models`` leaf is the first
+**split** facade: it routes its whole portable namespace to the canonical objects
+like any other facade, but additionally keeps the four relevance-scoring helpers
+Core deliberately excludes defined locally, because the unconverted, legacy-owned
+``omnivia_memory.graph.search_service`` still calls them. Its body is therefore
+not a *single* import, so it is held out of ``LEAF_SYMBOL_SOURCES`` -- and every
+gate keyed on it -- and declared in ``SPLIT_LEAF_SYMBOL_SOURCES`` /
+``SPLIT_LEAF_RETAINED_HELPERS`` instead. Both halves get their own gates in the
+final section of this module.
+
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
 converted leaf via ``FACADE_CANONICAL_TO_LEGACY`` -- see
@@ -32,13 +42,31 @@ converted leaf via ``FACADE_CANONICAL_TO_LEGACY`` -- see
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import importlib.util
+import inspect
+import json
+import math
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
+
+from baseline.facade_manifest import (
+    MigrationState,
+    canonical_imports,
+    load_manifest,
+    split_facade_defects,
+)
+from baseline.inventory import (
+    FACADE_DESCRIPTOR_REWRITES,
+    FACADE_ROOT_BINDING_OWNER_MOVES,
+    FACADE_ROUTES,
+    describe_symbol,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORE_SRC = REPO_ROOT / "src"
@@ -61,7 +89,12 @@ def _load_leaves_manifest():
     return module
 
 
-FACADE_CANONICAL_TO_LEGACY = _load_leaves_manifest().FACADE_CANONICAL_TO_LEGACY
+_LEAVES_MANIFEST = _load_leaves_manifest()
+FACADE_CANONICAL_TO_LEGACY = _LEAVES_MANIFEST.FACADE_CANONICAL_TO_LEGACY
+SPLIT_FACADE_CANONICAL_TO_LEGACY = _LEAVES_MANIFEST.SPLIT_FACADE_CANONICAL_TO_LEGACY
+SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL = (
+    _LEAVES_MANIFEST.SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL
+)
 MEMORY_SRC = REPO_ROOT / "services" / "omnivia-memory" / "src"
 PYTHON = sys.executable
 
@@ -412,6 +445,29 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
     # Every name in this leaf's historical namespace resolves from its canonical
     # counterpart, incidental bindings included: the knowledge models leaf imports
     # nothing from another Core leaf.
+    # Every name in this leaf's historical namespace resolves from its canonical
+    # counterpart, incidental bindings and the plain ``uuid`` module binding
+    # included: the graph models leaf imports nothing from another Core leaf. Its
+    # sibling ``search_models`` is a *split* facade and lives in
+    # ``SPLIT_LEAF_SYMBOL_SOURCES`` instead; their barrel stays a hybrid.
+    "omnivia_memory.graph.models": {
+        "Any": "omnivia_core.graph.models",
+        "ApprovalStatus": "omnivia_core.graph.models",
+        "Entity": "omnivia_core.graph.models",
+        "EntityCreate": "omnivia_core.graph.models",
+        "EntityMemoryLink": "omnivia_core.graph.models",
+        "EntityType": "omnivia_core.graph.models",
+        "Enum": "omnivia_core.graph.models",
+        "Relationship": "omnivia_core.graph.models",
+        "RelationshipCreate": "omnivia_core.graph.models",
+        "RelationshipType": "omnivia_core.graph.models",
+        "annotations": "omnivia_core.graph.models",
+        "dataclass": "omnivia_core.graph.models",
+        "datetime": "omnivia_core.graph.models",
+        "field": "omnivia_core.graph.models",
+        "timezone": "omnivia_core.graph.models",
+        "uuid": "omnivia_core.graph.models",
+    },
     "omnivia_memory.knowledge.models": {
         "AgentGraphContext": "omnivia_core.knowledge.models",
         "Any": "omnivia_core.knowledge.models",
@@ -797,6 +853,7 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     "omnivia_memory.control_plane.validation": (
         "omnivia_core.control_plane.validation"
     ),
+    "omnivia_memory.graph.models": "omnivia_core.graph.models",
     "omnivia_memory.knowledge.models": "omnivia_core.knowledge.models",
     "omnivia_memory.knowledge.normalize": "omnivia_core.knowledge.normalize",
     "omnivia_memory.knowledge.validation": "omnivia_core.knowledge.validation",
@@ -1428,6 +1485,7 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.control_plane.validation": (
         "omnivia_memory.control_plane.validation"
     ),
+    "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
     "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
     "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
@@ -1448,6 +1506,141 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
+
+#: The same, for the leaves converted into a *split* facade. Declared
+#: independently of ``_leaves.py``'s ``SPLIT_FACADE_CANONICAL_TO_LEGACY`` so this
+#: module also catches that manifest drifting, and kept separate from the map
+#: above because the two carry different source policies: a plain facade's whole
+#: body is one import, a split facade additionally keeps a named set of
+#: legacy-owned definitions.
+EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
+    "omnivia_core.graph.search_models": "omnivia_memory.graph.search_models",
+}
+
+#: For each split leaf, the *portable* half of its historical module-scope
+#: namespace: the names that must now be the exact canonical objects, and the
+#: canonical module that owns each. The retained half is
+#: ``SPLIT_LEAF_RETAINED_HELPERS`` below; together the two must be exactly what a
+#: star import of the leaf exposes, which is what proves neither enumeration has
+#: quietly lost or gained a name.
+#:
+#: ``Entity``, ``EntityType`` and ``RelationshipType`` are owned by the sibling
+#: ``omnivia_core.graph.models`` leaf, which the canonical records import them
+#: from; they were bound at this leaf's module scope historically too.
+#: ``annotations`` is the one name here whose owner is *not* a canonical module:
+#: see ``SPLIT_LEAF_FUTURE_BINDING``.
+SPLIT_LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
+    "omnivia_memory.graph.search_models": {
+        "Any": "omnivia_core.graph.search_models",
+        "Entity": "omnivia_core.graph.models",
+        "EntityType": "omnivia_core.graph.models",
+        "GraphSearchQuery": "omnivia_core.graph.search_models",
+        "GraphSearchResult": "omnivia_core.graph.search_models",
+        "GraphSearchResultSet": "omnivia_core.graph.search_models",
+        "RelationshipType": "omnivia_core.graph.models",
+        "dataclass": "omnivia_core.graph.search_models",
+        "field": "omnivia_core.graph.search_models",
+    },
+}
+
+#: The name each split leaf binds from its own ``from __future__ import
+#: annotations`` statement, and the exact object it must be. This is deliberately
+#: *not* in ``SPLIT_LEAF_SYMBOL_SOURCES``: the split leaf must carry the real
+#: future statement rather than import an ``annotations`` binding from its
+#: canonical counterpart, because its retained definitions' signatures are
+#: postponed string annotations and only the real statement makes them so. The
+#: object is the same ``__future__._Feature`` either way, which is why the source
+#: policy in ``baseline.facade_manifest.split_facade_defects`` -- not an identity
+#: check -- is what actually holds the statement in place.
+SPLIT_LEAF_FUTURE_BINDING: dict[str, str] = {
+    "omnivia_memory.graph.search_models": "annotations",
+}
+
+#: For each split leaf, the definitions it deliberately keeps owning, in the
+#: module's historical source order, with the exact frozen signature each must
+#: still have. These are the whole reason the leaf is a split facade rather than a
+#: plain one: canonical Core excludes them, and the unconverted, legacy-owned
+#: ``omnivia_memory.graph.search_service`` still calls them.
+#:
+#: The signatures are spelled as postponed string annotations because the module
+#: carries ``from __future__ import annotations``; pinning them here is what
+#: catches a "helpful" rewrite that resolved or modernized them.
+SPLIT_LEAF_RETAINED_HELPERS: dict[str, tuple[tuple[str, str], ...]] = {
+    "omnivia_memory.graph.search_models": (
+        ("score_name_match", "(query: 'str', entity_name: 'str') -> 'float'"),
+        ("score_relationship_count", "(outgoing: 'int', incoming: 'int') -> 'float'"),
+        (
+            "score_neighbor_overlap",
+            "(neighbors: 'list[str]', query_keywords: 'list[str]') -> 'float'",
+        ),
+        (
+            "compute_relevance_score",
+            (
+                "(query: 'str', entity_name: 'str', outgoing_relationships: 'int' = 0, "
+                "incoming_relationships: 'int' = 0, "
+                "neighbor_names: 'list[str] | None' = None, "
+                "name_weight: 'float' = 0.5, relationship_weight: 'float' = 0.25, "
+                "neighbor_weight: 'float' = 0.25) -> 'float'"
+            ),
+        ),
+    ),
+}
+
+#: SHA-256 of the exact accepted source segment of each retained helper, per split
+#: leaf. Every other gate on the retained half checks a *property* of it -- owner,
+#: signature, source order, descriptor shape, sampled behavior -- and a preserved
+#: runtime body can drift in ways none of those can see: a reworded docstring, a
+#: dropped explanatory comment, a reflowed expression, a rewritten branch that
+#: happens to agree on the sampled inputs. This mapping is the byte-level pin that
+#: closes that gap.
+#:
+#: Derivation (done once, by hand, and deliberately *not* repeated at runtime --
+#: this test invokes no Git and reads no history, so it holds in an exported
+#: tarball or a shallow clone as much as in this repository):
+#:
+#: 1. ``git show d3c959b:services/omnivia-memory/src/omnivia_memory/graph/\
+#:    search_models.py`` -- the accepted checkpoint, i.e. the leaf *before* the
+#:    split-facade conversion, so the expected values cannot have been taken from
+#:    an edited working tree;
+#: 2. ``ast.parse`` that text and, for each top-level ``FunctionDef``, take
+#:    ``ast.get_source_segment(text, node)``;
+#: 3. ``hashlib.sha256(segment.encode("utf-8")).hexdigest()``.
+#:
+#: The segment spans ``def`` through the function's last line, so it covers the
+#: signature and its defaults, the docstring, the body, the comments *inside* the
+#: body, and the exact whitespace of all of it. It deliberately does not cover the
+#: comments *between* helpers, which are module-level furniture rather than part of
+#: any preserved definition.
+SPLIT_LEAF_RETAINED_HELPER_SOURCE_SHA256: dict[str, dict[str, str]] = {
+    "omnivia_memory.graph.search_models": {
+        "score_name_match": (
+            "417a2689b164eec49293a372dbb45368f03961504804f722c13bb290b22473b2"
+        ),
+        "score_relationship_count": (
+            "92661a26612a2cafe6dc5d32d872fe93a4b0f0b6aa6007a75346e60bec2ac83a"
+        ),
+        "score_neighbor_overlap": (
+            "49407a7d674d034dd559128071607dac4ffcedb753f0bcb6c156696ac8f91ec7"
+        ),
+        "compute_relevance_score": (
+            "4fbb82857919e631bb65cfafc6f44430f13273427a6c3deea9b9b770cbfff358"
+        ),
+    },
+}
+
+#: Each split leaf's single canonical import source -- the exact module its one
+#: non-``__future__`` from-import must name. Separate from
+#: ``SPLIT_LEAF_SYMBOL_SOURCES`` for the same reason ``LEAF_IMPORT_SOURCE`` is
+#: separate from ``LEAF_SYMBOL_SOURCES``: a name's *owner* may be a sibling
+#: canonical leaf while the leaf still imports it from only one place.
+SPLIT_LEAF_IMPORT_SOURCE: dict[str, str] = {
+    "omnivia_memory.graph.search_models": "omnivia_core.graph.search_models",
+}
+
+#: The one split leaf and its canonical counterpart, named once for the gates that
+#: assert about it directly rather than parametrizing over the maps above.
+SPLIT_LEAF = "omnivia_memory.graph.search_models"
+SPLIT_CANONICAL = "omnivia_core.graph.search_models"
 
 
 #: Contract names that collide across independent domains, and the canonical
@@ -2263,13 +2456,36 @@ def test_knowledge_barrel_publishes_a_subset_of_its_children_routed_surface() ->
 
 
 def test_facade_canonical_to_legacy_manifest_matches_the_expected_pairs() -> None:
-    """``FACADE_CANONICAL_TO_LEGACY`` (imported from the migration-test
-    manifest) must be exactly the pairs declared here -- neither manifest may drift
-    (grow, shrink, or repoint) without this dedicated test noticing, since
-    that shared constant is also what excludes these leaves from the
-    canonical_migration source-parity gates."""
+    """``FACADE_CANONICAL_TO_LEGACY`` and ``SPLIT_FACADE_CANONICAL_TO_LEGACY``
+    (imported from the migration-test manifest) must be exactly the pairs declared
+    here -- no manifest may drift (grow, shrink, or repoint) without this dedicated
+    test noticing, since those shared constants are also what excludes these leaves
+    from the canonical_migration source-parity gates. The two must stay disjoint:
+    a leaf filed under both would be asserted to be a single-import facade *and* a
+    split one, so one of the two source gates could only pass vacuously."""
     assert FACADE_CANONICAL_TO_LEGACY == EXPECTED_FACADE_CANONICAL_TO_LEGACY
     assert set(LEAF_SYMBOL_SOURCES) == set(EXPECTED_FACADE_CANONICAL_TO_LEGACY.values())
+
+    assert SPLIT_FACADE_CANONICAL_TO_LEGACY == EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY
+    assert set(SPLIT_LEAF_SYMBOL_SOURCES) == set(
+        EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY.values()
+    )
+    # The migration-test manifest's record of what Core excludes must be exactly the
+    # retained half declared here -- the same set, reached from the other side.
+    assert SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL == frozenset(
+        name for name, _signature in SPLIT_LEAF_RETAINED_HELPERS[SPLIT_LEAF]
+    )
+    assert set(SPLIT_LEAF_RETAINED_HELPERS) == set(SPLIT_LEAF_SYMBOL_SOURCES)
+    assert set(SPLIT_LEAF_IMPORT_SOURCE) == set(SPLIT_LEAF_SYMBOL_SOURCES)
+    assert set(SPLIT_LEAF_FUTURE_BINDING) == set(SPLIT_LEAF_SYMBOL_SOURCES)
+    assert set(SPLIT_LEAF_RETAINED_HELPER_SOURCE_SHA256) == set(
+        SPLIT_LEAF_SYMBOL_SOURCES
+    )
+
+    assert set(EXPECTED_FACADE_CANONICAL_TO_LEGACY).isdisjoint(
+        EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY
+    )
+    assert set(LEAF_SYMBOL_SOURCES).isdisjoint(SPLIT_LEAF_SYMBOL_SOURCES)
 
 
 def _run_isolated(script: str) -> None:
@@ -2291,7 +2507,9 @@ def test_canonical_core_imports_independently_of_omnivia_memory() -> None:
     with only ``src`` on ``sys.path`` -- ``services/omnivia-memory/src`` is
     never added, so an accidental ``import omnivia_memory`` anywhere in the
     canonical chain would surface as a hard failure here, not a silent pass."""
-    canonical_modules = sorted(EXPECTED_FACADE_CANONICAL_TO_LEGACY)
+    canonical_modules = sorted(
+        {*EXPECTED_FACADE_CANONICAL_TO_LEGACY, *EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY}
+    )
     script = "\n".join(
         [
             "import sys",
@@ -2304,7 +2522,9 @@ def test_canonical_core_imports_independently_of_omnivia_memory() -> None:
 
 
 def _fresh_process_identity_script(*, canonical_first: bool) -> str:
-    canonical_modules = sorted(EXPECTED_FACADE_CANONICAL_TO_LEGACY)
+    canonical_modules = sorted(
+        {*EXPECTED_FACADE_CANONICAL_TO_LEGACY, *EXPECTED_SPLIT_FACADE_CANONICAL_TO_LEGACY}
+    )
     # The legacy side is more than the converted leaves: the hybrid
     # ``memory_graph`` barrel and the legacy package root resolve their
     # ``SourceRef`` through unedited legacy import order, so they must be imported
@@ -2312,6 +2532,7 @@ def _fresh_process_identity_script(*, canonical_first: bool) -> str:
     # in incidentally as a parent package of some leaf.
     legacy_modules = sorted(
         set(LEAF_SYMBOL_SOURCES)
+        | set(SPLIT_LEAF_SYMBOL_SOURCES)
         | {
             module
             for modules in SOURCE_REF_LEGACY_OWNERS.values()
@@ -2335,11 +2556,30 @@ def _fresh_process_identity_script(*, canonical_first: bool) -> str:
         - set(canonical_modules)
     )
     lines.extend(f"import {module}" for module in collision_modules)
-    for legacy_module, symbols in LEAF_SYMBOL_SOURCES.items():
+    for legacy_module, symbols in (
+        *LEAF_SYMBOL_SOURCES.items(),
+        *SPLIT_LEAF_SYMBOL_SOURCES.items(),
+    ):
         for symbol, canonical_module in symbols.items():
             lines.append(
                 f"assert {legacy_module}.{symbol} is {canonical_module}.{symbol}, "
                 f"'{legacy_module}.{symbol} is not {canonical_module}.{symbol} "
+                f"(canonical_first={canonical_first})'"
+            )
+    # A split leaf's retained half must stay owned by the leaf itself, in either
+    # order: an import order that let the canonical module supply one of these
+    # would satisfy every identity assertion above and still be wrong.
+    for legacy_module, helpers in SPLIT_LEAF_RETAINED_HELPERS.items():
+        canonical_module = SPLIT_LEAF_IMPORT_SOURCE[legacy_module]
+        for helper, _signature in helpers:
+            lines.append(
+                f"assert {legacy_module}.{helper}.__module__ == {legacy_module!r}, "
+                f"'{legacy_module}.{helper} is no longer legacy-owned "
+                f"(canonical_first={canonical_first})'"
+            )
+            lines.append(
+                f"assert not hasattr({canonical_module}, {helper!r}), "
+                f"'{canonical_module} acquired {helper} "
                 f"(canonical_first={canonical_first})'"
             )
     # The colliding owners must stay distinct in a fresh process too: every
@@ -2842,3 +3082,1032 @@ def test_canonical_memory_graph_does_not_load_the_runtime_only_leaves() -> None:
         ]
     )
     _run_isolated(script)
+
+
+# ---------------------------------------------------------------------------
+# The ``graph`` pair: one direct facade, one split facade, one hybrid barrel.
+#
+# ``graph.search_models`` is the first *split* facade in the migration. Its three
+# query/result records are canonicalized, so the whole portable half of its
+# historical namespace is now the exact ``omnivia_core`` objects -- but the four
+# relevance-scoring helpers stay defined here, because they are search-runtime
+# behaviour Core deliberately excludes and the unconverted, legacy-owned
+# ``omnivia_memory.graph.search_service`` still calls them.
+#
+# That makes it the one converted leaf whose body is *not* a single import, so it
+# is held out of ``LEAF_SYMBOL_SOURCES`` and every gate keyed on it, and gets the
+# equivalent set here instead: exact source shape, portable identity and owner,
+# complete namespace, retained-half ownership/signature/behavior, and the barrel
+# above it -- which stays a hybrid, because two of its ten exports come from the
+# runtime-only ``search_service`` leaf.
+# ---------------------------------------------------------------------------
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy ``graph``
+#: barrel must still have: ``(absolute module, imported names in source order)``.
+#: Three blocks, in the barrel's own historical order. Restated here rather than
+#: read off the barrel, because this is the file whose edits it exists to reject.
+GRAPH_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.graph.models",
+        (
+            "ApprovalStatus",
+            "Entity",
+            "EntityType",
+            "Relationship",
+            "RelationshipType",
+        ),
+    ),
+    (
+        "omnivia_memory.graph.search_models",
+        (
+            "GraphSearchQuery",
+            "GraphSearchResult",
+            "GraphSearchResultSet",
+        ),
+    ),
+    (
+        "omnivia_memory.graph.search_service",
+        (
+            "GraphSearchError",
+            "GraphSearchService",
+        ),
+    ),
+)
+
+#: The barrel's exact ordered ten-name ``__all__`` literal, restated rather than
+#: derived: it is sorted, so it interleaves all three blocks' names and matches
+#: none of them.
+GRAPH_BARREL_ALL: tuple[str, ...] = (
+    "ApprovalStatus",
+    "Entity",
+    "EntityType",
+    "GraphSearchError",
+    "GraphSearchQuery",
+    "GraphSearchResult",
+    "GraphSearchResultSet",
+    "GraphSearchService",
+    "Relationship",
+    "RelationshipType",
+)
+
+#: The barrel's one runtime-only child, declared runtime-only in the frozen route
+#: registry and deliberately not a facade. ``repository`` and ``service`` are
+#: runtime-only too, but the barrel has never re-exported them.
+GRAPH_RUNTIME_ONLY_LEAF = "omnivia_memory.graph.search_service"
+
+#: The barrel's exact two runtime-only exports: they must stay legacy-owned and
+#: must never appear on the canonical barrel.
+GRAPH_RUNTIME_EXPORTS: frozenset[str] = frozenset(
+    {
+        "GraphSearchError",
+        "GraphSearchService",
+    }
+)
+
+#: The barrel's exact eight portable exports: everything else, all of which must
+#: hop through a converted child to a canonical object.
+GRAPH_PORTABLE_EXPORTS: frozenset[str] = frozenset(GRAPH_BARREL_ALL) - GRAPH_RUNTIME_EXPORTS
+
+#: The graph runtime modules that stay legacy-owned and unedited by this batch.
+#: ``search_service`` is the one the barrel re-exports from; all three consume the
+#: converted models leaf, so all three now hold canonical objects.
+GRAPH_RUNTIME_MODULES: tuple[str, ...] = (
+    "omnivia_memory.graph.repository",
+    "omnivia_memory.graph.search_service",
+    "omnivia_memory.graph.service",
+)
+
+#: The exact canonical closure a canonical-only Graph import may produce. Anything
+#: else -- a sibling domain, a runtime leaf -- is a leak.
+GRAPH_CANONICAL_MODULE_CLOSURE: frozenset[str] = frozenset(
+    {
+        "omnivia_core",
+        "omnivia_core.graph",
+        "omnivia_core.graph.models",
+        "omnivia_core.graph.search_models",
+    }
+)
+
+#: Module roots a canonical-only Graph import must never load. The graph runtime
+#: reaches SQLite through ``omnivia_memory.persistence``, so its absence is part of
+#: what "the canonical contract layer stands alone" means here.
+GRAPH_FORBIDDEN_MODULE_ROOTS: tuple[str, ...] = (
+    "omnivia_cloud",
+    "omnivia_core_cli",
+    "omnivia_core_mcp",
+    "omnivia_core_runtime",
+    "omnivia_dev",
+    "omnivia_memory",
+    "omnivia_platform",
+    "sqlalchemy",
+    "sqlite3",
+)
+
+def _split_leaf_helper_names(leaf_name: str) -> tuple[str, ...]:
+    return tuple(name for name, _signature in SPLIT_LEAF_RETAINED_HELPERS[leaf_name])
+
+
+def _split_leaf_symbol_cases() -> list[tuple[str, str, str]]:
+    return [
+        (legacy_module, symbol, canonical_module)
+        for legacy_module, symbols in SPLIT_LEAF_SYMBOL_SOURCES.items()
+        for symbol, canonical_module in symbols.items()
+    ]
+
+
+def _graph_barrel_block(module: str) -> tuple[str, ...]:
+    (names,) = [names for name, names in GRAPH_BARREL_ABSOLUTE_IMPORTS if name == module]
+    return names
+
+
+@pytest.mark.parametrize(
+    "legacy_module,symbol,canonical_module",
+    _split_leaf_symbol_cases(),
+    ids=[f"{m}.{s}" for m, s, _ in _split_leaf_symbol_cases()],
+)
+def test_split_leaf_portable_symbol_is_exact_canonical_object(
+    legacy_module: str, symbol: str, canonical_module: str
+) -> None:
+    """The portable half of a split facade is held to exactly the same standard as
+    a plain facade's whole surface: the *exact* canonical object, not a
+    structurally equal lookalike."""
+    legacy = importlib.import_module(legacy_module)
+    canonical = importlib.import_module(canonical_module)
+    assert getattr(legacy, symbol) is getattr(canonical, symbol), (
+        f"{legacy_module}.{symbol} is not the exact same object as "
+        f"{canonical_module}.{symbol}"
+    )
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_SYMBOL_SOURCES))
+def test_split_leaf_has_no_all(leaf_name: str) -> None:
+    module = importlib.import_module(leaf_name)
+    assert not hasattr(module, "__all__"), (
+        f"{leaf_name} must not define __all__ -- it never did before becoming a facade"
+    )
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_SYMBOL_SOURCES))
+def test_split_leaf_star_import_exposes_the_portable_and_retained_halves(
+    leaf_name: str,
+) -> None:
+    """A split leaf declares no ``__all__``, so ``from <leaf> import *`` exposes
+    exactly its non-underscore module-scope bindings -- which must be exactly the
+    portable half plus the retained half plus its ``annotations`` binding, and
+    nothing else. Checking the star surface directly is what proves those
+    enumerations are *complete* rather than merely correct: a leaf that dropped an
+    incidental name, kept a fifth helper, or picked up a binding of its own passes
+    every per-symbol check above and fails here.
+    """
+    exported = _star_import_namespace(leaf_name)
+    expected = (
+        set(SPLIT_LEAF_SYMBOL_SOURCES[leaf_name])
+        | set(_split_leaf_helper_names(leaf_name))
+        | {SPLIT_LEAF_FUTURE_BINDING[leaf_name]}
+    )
+    assert exported == expected, (
+        f"star import of {leaf_name} exposed {sorted(exported)}, expected exactly "
+        f"{sorted(expected)}"
+    )
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_SYMBOL_SOURCES))
+def test_split_leaf_future_binding_is_the_real_future_feature(leaf_name: str) -> None:
+    """``annotations`` must be the ``__future__`` feature object, and it must come
+    from this module's own future statement rather than from the canonical module.
+    The identity is the same object either way -- which is exactly why the source
+    gate below, not this assertion, is what holds the statement in place."""
+    module = importlib.import_module(leaf_name)
+    binding = SPLIT_LEAF_FUTURE_BINDING[leaf_name]
+    assert getattr(module, binding) is getattr(__import__("__future__"), binding)
+    assert binding not in SPLIT_LEAF_SYMBOL_SOURCES[leaf_name], (
+        f"{binding!r} must not be declared as a routed portable name: the split "
+        "leaf carries the real future statement"
+    )
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_RETAINED_HELPERS))
+def test_split_leaf_retained_helpers_stay_legacy_owned(leaf_name: str) -> None:
+    """The retained half is the whole reason the leaf is a split facade, so its
+    *non*-conversion is as much a contract as the portable half's conversion. Each
+    helper must be a real function whose ``__module__`` is this legacy module,
+    backed by a file in the compatibility tree, and absent from the canonical
+    module and its barrel."""
+    module = importlib.import_module(leaf_name)
+    canonical = importlib.import_module(SPLIT_LEAF_IMPORT_SOURCE[leaf_name])
+    canonical_barrel = importlib.import_module(
+        SPLIT_LEAF_IMPORT_SOURCE[leaf_name].rpartition(".")[0]
+    )
+    leaf_path = Path(module.__file__ or "").resolve()
+    assert leaf_path.is_relative_to(MEMORY_SRC), (
+        f"{leaf_name} resolved to {leaf_path}, outside the legacy tree"
+    )
+
+    for helper, signature in SPLIT_LEAF_RETAINED_HELPERS[leaf_name]:
+        function = getattr(module, helper)
+        assert isinstance(function, types.FunctionType), (
+            f"{leaf_name}.{helper} must stay a plain function, not "
+            f"{type(function).__name__}"
+        )
+        assert not inspect.iscoroutinefunction(function)
+        assert function.__module__ == leaf_name, (
+            f"{leaf_name}.{helper} reports owner {function.__module__!r}; the "
+            "retained helpers must stay legacy-owned"
+        )
+        assert str(inspect.signature(function)) == signature, (
+            f"{leaf_name}.{helper} signature drifted:\n"
+            f"actual:   {inspect.signature(function)}\nexpected: {signature}"
+        )
+        assert not hasattr(canonical, helper), (
+            f"{SPLIT_LEAF_IMPORT_SOURCE[leaf_name]} must not define {helper!r}; "
+            "relevance scoring stays runtime-owned"
+        )
+        assert not hasattr(canonical_barrel, helper), (
+            f"{canonical_barrel.__name__} must not expose {helper!r}"
+        )
+        assert helper not in getattr(canonical_barrel, "__all__", ())
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_RETAINED_HELPERS))
+def test_split_leaf_retained_helpers_keep_their_historical_source_order(
+    leaf_name: str,
+) -> None:
+    """The retained definitions must appear in the module in their declared
+    historical order. Reordering them changes nothing any identity or signature
+    check can see, and it is precisely the kind of "tidy-up" a preserved runtime
+    half must not receive."""
+    body = _module_body_after_docstring(leaf_name)
+    defined = tuple(
+        node.name for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    assert defined == _split_leaf_helper_names(leaf_name)
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_RETAINED_HELPER_SOURCE_SHA256))
+def test_split_leaf_retained_helper_source_is_the_accepted_bytes(leaf_name: str) -> None:
+    """The retained half must be the *accepted source*, not merely a working
+    equivalent of it.
+
+    Every other retained-half gate checks a property: the owner, the signature,
+    the source order, the frozen descriptor, a handful of sampled scores. A
+    preserved runtime body can drift past all of them -- a reworded docstring, a
+    deleted "why" comment, a reflowed expression, a rewritten branch that agrees
+    on the inputs the behavior tests happen to try. So each helper's exact source
+    segment is hashed and compared against the value frozen in
+    ``SPLIT_LEAF_RETAINED_HELPER_SOURCE_SHA256``, which was derived from the
+    accepted checkpoint rather than from this working tree (see that constant for
+    the derivation).
+
+    No Git at runtime: the pin is a literal, so this gate is as valid in an
+    exported tarball as in a full clone. ``Path.read_text`` normalizes line
+    endings, so a CRLF checkout hashes the same as an LF one.
+    """
+    pinned = SPLIT_LEAF_RETAINED_HELPER_SOURCE_SHA256[leaf_name]
+    declared = {name for name, _signature in SPLIT_LEAF_RETAINED_HELPERS[leaf_name]}
+    assert set(pinned) == declared, (
+        f"{leaf_name}: the pinned source set {sorted(pinned)} is not exactly the "
+        f"declared retained helpers {sorted(declared)}"
+    )
+
+    # The file this gate hashes must be the one in this checkout's compatibility
+    # tree, exactly as ``test_split_leaf_retained_helpers_stay_legacy_owned``
+    # requires. Without this a shadowing installed copy of ``omnivia_memory``
+    # would be hashed instead, and a byte-level pin that can silently pin the
+    # wrong bytes is worse than none.
+    path = Path(importlib.import_module(leaf_name).__file__ or "").resolve()
+    assert path.is_relative_to(MEMORY_SRC), (
+        f"{leaf_name} resolved to {path}, outside the legacy tree ({MEMORY_SRC}); "
+        "the retained-source pin would be hashing a shadowing installed copy"
+    )
+    text = path.read_text(encoding="utf-8")
+    segments = {
+        node.name: ast.get_source_segment(text, node)
+        for node in ast.parse(text, filename=leaf_name).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # All *and only* the four declared helpers: a fifth retained definition would
+    # be unpinned source shipping in the compatibility tree.
+    assert set(segments) == set(pinned), (
+        f"{leaf_name} defines {sorted(segments)} at top level, but exactly "
+        f"{sorted(pinned)} are pinned"
+    )
+
+    for helper in sorted(pinned):
+        segment = segments[helper]
+        assert segment is not None, f"{leaf_name}.{helper} has no source segment"
+        digest = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+        assert digest == pinned[helper], (
+            f"{leaf_name}.{helper} is no longer the accepted source: its segment "
+            f"hashes to {digest}, pinned {pinned[helper]}. The retained helpers are "
+            "preserved legacy bodies -- docstring, comments and formatting "
+            "included -- so any edit to one has to land as its own reviewed change "
+            "to the runtime-owned half, with this pin updated in the same commit."
+        )
+
+
+@pytest.mark.parametrize("leaf_name", sorted(SPLIT_LEAF_SYMBOL_SOURCES))
+def test_split_leaf_source_is_exactly_a_future_import_one_route_and_the_helpers(
+    leaf_name: str,
+) -> None:
+    """A split leaf's body (after its docstring) must be exactly: one
+    ``from __future__ import annotations``, one absolute
+    ``from <canonical route> import (<exact expected portable name set>)``, and one
+    synchronous ``def`` per retained helper. No plain ``import``, no third
+    from-import, no class, no assignment (``__all__`` included), no
+    ``__getattr__``, no decorator, no ``async def`` -- and within the route
+    statement no wildcard, no relative import, no alias, and no name outside the
+    exact expected set.
+
+    This is the local restatement of ``baseline.facade_manifest``'s
+    ``split_facade_defects``, which the frozen route registry enforces for the
+    declared ``split_facade`` state. Asserting it here too means the shape is
+    pinned by the test suite even for a leaf the registry had not yet reached.
+    """
+    body = _module_body_after_docstring(leaf_name)
+    helpers = _split_leaf_helper_names(leaf_name)
+    assert len(body) == 2 + len(helpers), (
+        f"{leaf_name}: expected a future import, one route import and "
+        f"{len(helpers)} retained defs, found {[ast.dump(node) for node in body]}"
+    )
+
+    future_node, route_node = body[0], body[1]
+    assert isinstance(future_node, ast.ImportFrom)
+    assert future_node.level == 0 and future_node.module == "__future__"
+    assert [alias.name for alias in future_node.names] == [
+        SPLIT_LEAF_FUTURE_BINDING[leaf_name]
+    ]
+    assert all(alias.asname is None for alias in future_node.names)
+
+    assert isinstance(route_node, ast.ImportFrom), (
+        f"{leaf_name}: expected the route import second, found {ast.dump(route_node)}"
+    )
+    assert route_node.level == 0, f"{leaf_name}: relative import is not allowed"
+    expected_source = SPLIT_LEAF_IMPORT_SOURCE[leaf_name]
+    assert route_node.module == expected_source, (
+        f"{leaf_name}: imports from {route_node.module!r}, expected exactly "
+        f"{expected_source!r}"
+    )
+    names: set[str] = set()
+    for alias in route_node.names:
+        assert alias.name != "*", f"{leaf_name}: star import is not allowed"
+        assert alias.asname is None, (
+            f"{leaf_name}: {alias.name!r} uses a rename/dynamic alias, not a plain import"
+        )
+        names.add(alias.name)
+    assert names == set(SPLIT_LEAF_SYMBOL_SOURCES[leaf_name]), (
+        f"{leaf_name}: imports {sorted(names)} from {expected_source!r}, expected "
+        f"exactly {sorted(SPLIT_LEAF_SYMBOL_SOURCES[leaf_name])}"
+    )
+
+    for node, helper in zip(body[2:], helpers, strict=True):
+        assert isinstance(node, ast.FunctionDef), (
+            f"{leaf_name}: expected the retained def {helper!r}, found {ast.dump(node)}"
+        )
+        assert node.name == helper
+        assert not node.decorator_list, f"{leaf_name}: {helper!r} must not be decorated"
+
+    module = importlib.import_module(leaf_name)
+    assert "__getattr__" not in vars(module)
+
+
+def test_split_leaf_source_satisfies_the_frozen_registry_source_policy() -> None:
+    """The registry's own fail-closed policy, run against the real file: the state
+    declared in ``compatibility/facade-routes.v1.json`` and the shape asserted
+    above must be the same claim, checked by the same code the acceptance gate
+    runs."""
+    manifest = load_manifest()
+    for leaf_name in sorted(SPLIT_LEAF_SYMBOL_SOURCES):
+        route = manifest.route_for_legacy(leaf_name)
+        assert route.migration_state is MigrationState.SPLIT_FACADE
+        assert route.is_converted
+        assert route.canonical_module == SPLIT_LEAF_IMPORT_SOURCE[leaf_name]
+        source = Path(importlib.import_module(leaf_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            split_facade_defects(ast.parse(source), route.canonical_module) == []
+        ), split_facade_defects(ast.parse(source), route.canonical_module)
+
+
+def test_split_leaf_descriptors_match_the_frozen_baseline_exactly() -> None:
+    """Frozen descriptor comparison, both halves at once. Every routed portable
+    definition must describe identically to the frozen Phase 0 baseline once the
+    ownership move is applied, and every retained helper must describe identically
+    on its unchanged legacy owner -- so a structural contract change cannot hide
+    behind either half of the split.
+    """
+    frozen = json.loads(
+        (REPO_ROOT / "baseline" / "inventories" / "public-exports.json").read_text(
+            encoding="utf-8"
+        )
+    )["modules"]
+
+    for legacy_module, routed in sorted(FACADE_ROUTES.items()):
+        if not legacy_module.startswith("omnivia_memory.graph."):
+            continue
+        frozen_defines = frozen[legacy_module]["defines"]
+        for symbol, canonical_module in sorted(routed.items()):
+            canonical = importlib.import_module(canonical_module)
+            assert describe_symbol(getattr(canonical, symbol)) == frozen_defines[symbol], (
+                f"{canonical_module}.{symbol} no longer describes as the frozen "
+                f"{legacy_module}.{symbol} did"
+            )
+
+    for leaf_name, helpers in sorted(SPLIT_LEAF_RETAINED_HELPERS.items()):
+        module = importlib.import_module(leaf_name)
+        frozen_defines = frozen[leaf_name]["defines"]
+        for helper, _signature in helpers:
+            assert describe_symbol(getattr(module, helper)) == frozen_defines[helper], (
+                f"{leaf_name}.{helper} drifted from its frozen historical definition"
+            )
+        # The frozen leaf recorded exactly the routed records plus these helpers.
+        assert set(frozen_defines) == set(FACADE_ROUTES[leaf_name]) | {
+            helper for helper, _signature in helpers
+        }
+
+
+def test_graph_routes_cover_exactly_the_portable_owned_definitions() -> None:
+    """The eleven routed names, restated: eight on the models leaf and three on the
+    split leaf. The four retained helpers must be absent from the route map -- a
+    routed symbol is one the legacy module no longer defines, and these four still
+    do."""
+    assert FACADE_ROUTES["omnivia_memory.graph.models"] == {
+        name: "omnivia_core.graph.models"
+        for name in (
+            "ApprovalStatus",
+            "Entity",
+            "EntityCreate",
+            "EntityMemoryLink",
+            "EntityType",
+            "Relationship",
+            "RelationshipCreate",
+            "RelationshipType",
+        )
+    }
+    assert FACADE_ROUTES[SPLIT_LEAF] == {
+        name: SPLIT_CANONICAL
+        for name in ("GraphSearchQuery", "GraphSearchResult", "GraphSearchResultSet")
+    }
+    routed = {*FACADE_ROUTES["omnivia_memory.graph.models"], *FACADE_ROUTES[SPLIT_LEAF]}
+    assert len(routed) == 11
+    assert routed.isdisjoint(_split_leaf_helper_names(SPLIT_LEAF))
+
+
+def test_graph_hybrid_barrel_is_held_out_of_the_equal_all_gates() -> None:
+    """The barrel's two trees advertise *different* surfaces -- the legacy one adds
+    the two ``search_service`` exports -- so every gate keyed on
+    ``BARREL_ALL_ORDER`` (which asserts ``legacy.__all__ == canonical.__all__``)
+    would be wrong for it. Pin that it is absent from those gates, and pin the
+    inequality that is the reason.
+    """
+    assert "graph" not in BARREL_ALL_ORDER
+    assert "graph" not in ABSOLUTE_IMPORT_BARRELS
+    assert "graph" not in ABSOLUTE_IMPORT_BARREL_IMPORTS
+    assert "graph" not in RELATIVE_IMPORT_BARREL_IMPORTS
+
+    legacy = importlib.import_module("omnivia_memory.graph")
+    canonical = importlib.import_module("omnivia_core.graph")
+    assert tuple(legacy.__all__) == GRAPH_BARREL_ALL
+    assert len(legacy.__all__) == 10
+    assert len(canonical.__all__) == 8
+    assert set(canonical.__all__) == GRAPH_PORTABLE_EXPORTS
+    assert len(GRAPH_PORTABLE_EXPORTS) == 8
+    assert len(GRAPH_RUNTIME_EXPORTS) == 2
+
+
+def test_graph_hybrid_barrel_source_is_unchanged_reexport() -> None:
+    """The hybrid barrel is *source-unchanged* by this batch: its portable half
+    becomes identity-preserving transitively, through its two converted leaves, and
+    its runtime half keeps resolving locally. Pin its exact historical shape --
+    three absolute ``from omnivia_memory.graph.<leaf> import (...)`` statements in
+    source order with their exact ordered name lists, then the ``__all__`` literal
+    -- so an edit that reroutes it at ``omnivia_core``, drops the runtime block,
+    adds a ``__getattr__``, or reorders its re-exports fails here.
+    """
+    module_name = "omnivia_memory.graph"
+    body = _module_body_after_docstring(module_name)
+    assert len(body) == len(GRAPH_BARREL_ABSOLUTE_IMPORTS) + 1, (
+        f"{module_name}: expected exactly {len(GRAPH_BARREL_ABSOLUTE_IMPORTS)} absolute "
+        f"imports plus __all__, found {[ast.dump(node) for node in body]}"
+    )
+    for node, (module, names) in zip(body, GRAPH_BARREL_ABSOLUTE_IMPORTS, strict=False):
+        assert isinstance(node, ast.ImportFrom), f"expected an import, found {node!r}"
+        assert node.level == 0, f"{module_name}: the {module} import must stay absolute"
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        for alias in node.names:
+            assert alias.name != "*", "star import is not allowed"
+            assert alias.asname is None, f"{alias.name!r} uses a rename/dynamic alias"
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign), f"expected __all__, found {all_node!r}"
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert tuple(
+        elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
+    ) == GRAPH_BARREL_ALL
+
+    # Every name the three imports bind is exactly what ``__all__`` advertises: the
+    # barrel adds nothing of its own and hides nothing it imported. In particular
+    # it never re-exported the four retained scoring helpers.
+    imported = sorted(name for _, names in GRAPH_BARREL_ABSOLUTE_IMPORTS for name in names)
+    assert imported == sorted(GRAPH_BARREL_ALL)
+    assert set(imported).isdisjoint(_split_leaf_helper_names(SPLIT_LEAF))
+    assert "__getattr__" not in vars(importlib.import_module(module_name))
+
+
+def test_graph_hybrid_barrel_portable_exports_hop_through_their_facades() -> None:
+    """The barrel's eight portable exports must each be the exact object bound at
+    the *legacy child* it re-exports from, and that object must in turn be the
+    canonical one. A barrel that started sourcing a name from somewhere else would
+    still pass the canonical-identity check alone; requiring the leaf hop too is
+    what pins the transitive route through both converted children -- one a plain
+    facade, one a split facade.
+    """
+    barrel = importlib.import_module("omnivia_memory.graph")
+    canonical_barrel = importlib.import_module("omnivia_core.graph")
+    owners_by_leaf = {
+        "omnivia_memory.graph.models": LEAF_SYMBOL_SOURCES["omnivia_memory.graph.models"],
+        SPLIT_LEAF: SPLIT_LEAF_SYMBOL_SOURCES[SPLIT_LEAF],
+    }
+    covered: set[str] = set()
+    for legacy_leaf_name, names in GRAPH_BARREL_ABSOLUTE_IMPORTS:
+        if legacy_leaf_name == GRAPH_RUNTIME_ONLY_LEAF:
+            continue
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        owners = owners_by_leaf[legacy_leaf_name]
+        for name in names:
+            canonical_owner = importlib.import_module(owners[name])
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.graph.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            assert getattr(barrel, name) is getattr(canonical_owner, name), (
+                f"omnivia_memory.graph.{name} is not the exact object bound at "
+                f"{owners[name]}.{name}"
+            )
+            assert getattr(barrel, name) is getattr(canonical_barrel, name), (
+                f"omnivia_memory.graph.{name} is not the object the canonical barrel "
+                "advertises"
+            )
+            covered.add(name)
+    assert covered == GRAPH_PORTABLE_EXPORTS
+
+
+def test_graph_hybrid_barrel_runtime_exports_stay_legacy_owned() -> None:
+    """The other two exports are the whole reason this barrel is a hybrid. Each must
+    still be the exact object bound at its legacy ``search_service`` owner, and that
+    owner must still be a real legacy module backed by a file in the compatibility
+    tree -- not a facade that quietly acquired a canonical counterpart.
+    """
+    barrel = importlib.import_module("omnivia_memory.graph")
+    assert GRAPH_RUNTIME_ONLY_LEAF not in LEAF_SYMBOL_SOURCES
+    assert GRAPH_RUNTIME_ONLY_LEAF not in SPLIT_LEAF_SYMBOL_SOURCES
+    legacy_leaf = importlib.import_module(GRAPH_RUNTIME_ONLY_LEAF)
+    leaf_path = Path(legacy_leaf.__file__ or "").resolve()
+    assert leaf_path.is_relative_to(MEMORY_SRC), (
+        f"{GRAPH_RUNTIME_ONLY_LEAF} resolved to {leaf_path}, outside the legacy tree"
+    )
+    covered: set[str] = set()
+    for name in _graph_barrel_block(GRAPH_RUNTIME_ONLY_LEAF):
+        assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+            f"omnivia_memory.graph.{name} no longer comes from "
+            f"{GRAPH_RUNTIME_ONLY_LEAF}.{name}"
+        )
+        assert getattr(barrel, name).__module__ == GRAPH_RUNTIME_ONLY_LEAF
+        covered.add(name)
+    assert covered == set(GRAPH_RUNTIME_EXPORTS)
+
+
+def test_graph_runtime_exports_and_helpers_are_absent_from_the_canonical_barrel() -> None:
+    """Neither the two runtime exports nor the four retained helpers may leak into
+    Core -- not into its ``__all__`` and not as an attribute. This is what keeps the
+    runtime-owned half out of the canonical package rather than merely
+    un-advertised there.
+    """
+    canonical = importlib.import_module("omnivia_core.graph")
+    for name in sorted(GRAPH_RUNTIME_EXPORTS | set(_split_leaf_helper_names(SPLIT_LEAF))):
+        assert name not in canonical.__all__, (
+            f"{name} is runtime-owned and must not be in omnivia_core.graph.__all__"
+        )
+        assert not hasattr(canonical, name), (
+            f"{name} is runtime-owned and must not be an attribute of omnivia_core.graph"
+        )
+
+
+def test_graph_runtime_modules_hold_canonical_objects_and_legacy_helpers() -> None:
+    """``graph.repository``, ``graph.service`` and ``graph.search_service`` are
+    unconverted runtime leaves that import their contracts *from the converted
+    facades*. Pin both halves of that hop: every model and record they hold is the
+    canonical object, and the four scoring helpers the search service calls are
+    still the legacy module's own.
+    """
+    repository = importlib.import_module("omnivia_memory.graph.repository")
+    service = importlib.import_module("omnivia_memory.graph.service")
+    search_service = importlib.import_module("omnivia_memory.graph.search_service")
+    canonical_models = importlib.import_module("omnivia_core.graph.models")
+    canonical_records = importlib.import_module(SPLIT_CANONICAL)
+    split_leaf = importlib.import_module(SPLIT_LEAF)
+
+    for name in ("ApprovalStatus", "Entity", "EntityType", "Relationship", "RelationshipType"):
+        assert getattr(repository, name) is getattr(canonical_models, name)
+    for name in ("Entity", "EntityType", "Relationship", "RelationshipType"):
+        assert getattr(service, name) is getattr(canonical_models, name)
+    for name in ("ApprovalStatus", "Entity", "EntityType"):
+        assert getattr(search_service, name) is getattr(canonical_models, name)
+    for name in ("GraphSearchQuery", "GraphSearchResult", "GraphSearchResultSet"):
+        assert getattr(search_service, name) is getattr(canonical_records, name)
+
+    for helper in ("compute_relevance_score", "score_name_match"):
+        assert getattr(search_service, helper) is getattr(split_leaf, helper), (
+            f"omnivia_memory.graph.search_service.{helper} is no longer the legacy "
+            "module's own helper"
+        )
+        assert getattr(search_service, helper).__module__ == SPLIT_LEAF
+
+    # Their source is unchanged: each still reaches only its own legacy siblings and
+    # never the canonical package directly.
+    for module_name in GRAPH_RUNTIME_MODULES:
+        source = Path(importlib.import_module(module_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        assert canonical_imports(ast.parse(source)) == [], (
+            f"{module_name} now imports omnivia_core directly; the runtime must keep "
+            "reaching its contracts through the legacy facades"
+        )
+
+
+def test_graph_helper_name_match_scoring_edges() -> None:
+    """The exact-match, substring-coverage, word-overlap and empty-input branches
+    of ``score_name_match``, reached through the legacy module that still owns it.
+    """
+    module = importlib.import_module(SPLIT_LEAF)
+    assert module.score_name_match("Alice", "alice") == 1.0
+    assert module.score_name_match("ALICE", "Alice") == 1.0
+    # Substring: coverage of the query within the name.
+    assert module.score_name_match("ali", "alice") == 3 / 5
+    # Word overlap: neither exact nor a substring, but one of two query words hits.
+    assert module.score_name_match("alice bob", "carol alice") == 0.5
+    assert module.score_name_match("alice bob", "carol dave") == 0.0
+    for query, name in (("", "alice"), ("alice", ""), ("", "")):
+        assert module.score_name_match(query, name) == 0.0
+
+
+def test_graph_helper_relationship_count_scoring_edges() -> None:
+    """``score_relationship_count`` is zero at and below zero total, positive and
+    logarithmic above it, capped at 1.0, and keeps its function-local ``import
+    math`` -- which is part of the preserved body, not the module's surface."""
+    module = importlib.import_module(SPLIT_LEAF)
+    assert module.score_relationship_count(0, 0) == 0.0
+    assert module.score_relationship_count(-1, 0) == 0.0
+    assert module.score_relationship_count(1, 0) == pytest.approx(0.1)
+    assert module.score_relationship_count(0, 1) == pytest.approx(0.1)
+    ten = module.score_relationship_count(6, 4)
+    assert 0.3 < ten < 0.4
+    assert ten == pytest.approx(math.log2(11) / 10.0)
+    assert module.score_relationship_count(10**40, 0) == 1.0
+    assert "math" not in vars(module), (
+        "the `import math` inside score_relationship_count must stay function-local"
+    )
+
+
+def test_graph_helper_neighbor_overlap_scoring_edges() -> None:
+    """``score_neighbor_overlap`` is zero when either side is empty, and otherwise
+    the case-insensitive overlap as a fraction of the *keywords*."""
+    module = importlib.import_module(SPLIT_LEAF)
+    assert module.score_neighbor_overlap([], ["alice"]) == 0.0
+    assert module.score_neighbor_overlap(["alice"], []) == 0.0
+    assert module.score_neighbor_overlap(["Alice", "Bob"], ["alice", "carol"]) == 0.5
+    assert module.score_neighbor_overlap(["Alice"], ["ALICE"]) == 1.0
+    # Denominator is the keyword set, so duplicate keywords collapse.
+    assert module.score_neighbor_overlap(["alice"], ["alice", "Alice"]) == 1.0
+
+
+def test_graph_helper_composite_score_weighting_and_rounding() -> None:
+    """``compute_relevance_score`` normalizes its weights, returns 0.0 on a
+    non-positive total weight, rounds to four places, and composes exactly the three
+    component helpers -- so a reweighting or a dropped signal is visible."""
+    module = importlib.import_module(SPLIT_LEAF)
+
+    # Weights are normalized, so scaling them all changes nothing.
+    default = module.compute_relevance_score("alice", "Alice Smith", 3, 2, ["bob"])
+    assert default == module.compute_relevance_score(
+        "alice",
+        "Alice Smith",
+        3,
+        2,
+        ["bob"],
+        name_weight=5.0,
+        relationship_weight=2.5,
+        neighbor_weight=2.5,
+    )
+
+    # ...and it is exactly the weighted combination of the three helpers, rounded.
+    name = module.score_name_match("alice", "Alice Smith")
+    relationships = module.score_relationship_count(3, 2)
+    neighbors = module.score_neighbor_overlap(["bob"], ["alice"])
+    assert default == round(0.5 * name + 0.25 * relationships + 0.25 * neighbors, 4)
+    assert default == round(default, 4)
+
+    # A single signal can be isolated by zeroing the other two weights.
+    assert module.compute_relevance_score(
+        "alice",
+        "Alice",
+        name_weight=1.0,
+        relationship_weight=0.0,
+        neighbor_weight=0.0,
+    ) == 1.0
+
+    # A non-positive total weight short-circuits to 0.0 rather than dividing by it.
+    for weights in ((0.0, 0.0, 0.0), (-1.0, 0.5, 0.5), (-1.0, 0.0, 0.0)):
+        name_weight, relationship_weight, neighbor_weight = weights
+        assert module.compute_relevance_score(
+            "alice",
+            "Alice",
+            name_weight=name_weight,
+            relationship_weight=relationship_weight,
+            neighbor_weight=neighbor_weight,
+        ) == 0.0
+
+    # Neighbour names default to none, and the query's own words are the keywords.
+    assert module.compute_relevance_score("alice", "Alice") == round(0.5 * 1.0, 4)
+    assert module.compute_relevance_score("alice", "Alice", neighbor_names=["alice"]) == (
+        round(0.5 * 1.0 + 0.25 * 1.0, 4)
+    )
+
+
+def test_graph_records_behave_identically_through_both_import_paths() -> None:
+    """The routed records are the same objects, so this is not a cross-tree
+    comparison: it is proof that those exact objects still round-trip and validate
+    correctly when reached through the legacy split leaf and the hybrid barrel --
+    the two paths no per-symbol identity check exercises."""
+    barrel = importlib.import_module("omnivia_memory.graph")
+    leaf = importlib.import_module(SPLIT_LEAF)
+    models = importlib.import_module("omnivia_memory.graph.models")
+
+    entity = models.Entity(id="e1", name="Alice", entity_type=models.EntityType.PERSON)
+    query = barrel.GraphSearchQuery(query="alice", depth=2, limit=5)
+    result = leaf.GraphSearchResult(entity=entity, score=0.5, matched_on="name")
+    result_set = barrel.GraphSearchResultSet(results=[result], total_count=1, query=query)
+
+    payload = result_set.to_dict()
+    assert leaf.GraphSearchResultSet.from_dict(payload).to_dict() == payload
+    assert payload["query"] == {
+        "query": "alice",
+        "entity_types": [],
+        "relationship_types": [],
+        "depth": 2,
+        "limit": 5,
+    }
+
+    with pytest.raises(ValueError, match="Depth must be non-negative"):
+        barrel.GraphSearchQuery(query="alice", depth=-1)
+    with pytest.raises(ValueError, match="Limit must be at least 1"):
+        leaf.GraphSearchQuery(query="alice", limit=0)
+    with pytest.raises(ValueError, match="Score must be between 0.0 and 1.0"):
+        barrel.GraphSearchResult(entity=entity, score=1.5, matched_on="name")
+
+
+#: Fresh-process import orders for the Graph pair. Each is a full order, not a
+#: prefix: whichever module is named first is the one that gets to define the
+#: shared objects, so an order that only works because something else was imported
+#: earlier fails here.
+GRAPH_IMPORT_ORDERS: dict[str, tuple[str, ...]] = {
+    "canonical-first": (
+        "omnivia_core.graph.models",
+        "omnivia_core.graph.search_models",
+        "omnivia_memory.graph.models",
+        SPLIT_LEAF,
+    ),
+    "legacy-leaf-first": (
+        "omnivia_memory.graph.models",
+        SPLIT_LEAF,
+        "omnivia_core.graph.models",
+        "omnivia_core.graph.search_models",
+    ),
+    "canonical-barrel-first": (
+        "omnivia_core.graph",
+        "omnivia_memory.graph",
+    ),
+    "legacy-barrel-first": (
+        "omnivia_memory.graph",
+        "omnivia_core.graph",
+    ),
+    "search-service-first": (
+        "omnivia_memory.graph.search_service",
+        "omnivia_core.graph",
+        "omnivia_core.graph.search_models",
+    ),
+    "reverse": (
+        SPLIT_LEAF,
+        "omnivia_memory.graph.models",
+        "omnivia_memory.graph",
+        "omnivia_core.graph",
+        "omnivia_core.graph.search_models",
+        "omnivia_core.graph.models",
+    ),
+    "repeated": (
+        "omnivia_core.graph.search_models",
+        SPLIT_LEAF,
+        "omnivia_core.graph.search_models",
+        SPLIT_LEAF,
+        "omnivia_memory.graph",
+        "omnivia_core.graph",
+        "omnivia_memory.graph",
+        "omnivia_core.graph",
+    ),
+}
+
+
+def _graph_identity_script(import_order: tuple[str, ...]) -> str:
+    lines = [
+        "import importlib",
+        "import sys",
+        f"sys.path.insert(0, {str(MEMORY_SRC)!r})",
+        f"sys.path.insert(0, {str(CORE_SRC)!r})",
+        f"for module_name in {import_order!r}:",
+        "    importlib.import_module(module_name)",
+        # Everything asserted below must be reachable regardless of the order under
+        # test, so pull in whatever that order did not name.
+        "for module_name in (",
+        "    'omnivia_core.graph',",
+        "    'omnivia_core.graph.models',",
+        "    'omnivia_core.graph.search_models',",
+        "    'omnivia_memory.graph',",
+        "    'omnivia_memory.graph.models',",
+        f"    {SPLIT_LEAF!r},",
+        "):",
+        "    importlib.import_module(module_name)",
+        "import omnivia_core.graph",
+        "import omnivia_core.graph.models",
+        "import omnivia_core.graph.search_models",
+        "import omnivia_memory.graph",
+        "import omnivia_memory.graph.models",
+        f"import {SPLIT_LEAF}",
+    ]
+    for legacy_module, symbols in (
+        ("omnivia_memory.graph.models", LEAF_SYMBOL_SOURCES["omnivia_memory.graph.models"]),
+        (SPLIT_LEAF, SPLIT_LEAF_SYMBOL_SOURCES[SPLIT_LEAF]),
+    ):
+        for symbol, canonical_module in symbols.items():
+            lines.append(
+                f"assert {legacy_module}.{symbol} is {canonical_module}.{symbol}, "
+                f"'{legacy_module}.{symbol} is not {canonical_module}.{symbol}'"
+            )
+    for name in sorted(GRAPH_PORTABLE_EXPORTS):
+        lines.append(
+            f"assert omnivia_memory.graph.{name} is omnivia_core.graph.{name}, "
+            f"'the hybrid barrel stopped publishing the canonical {name}'"
+        )
+    for name in sorted(GRAPH_RUNTIME_EXPORTS):
+        lines.append(
+            f"assert not hasattr(omnivia_core.graph, {name!r}), "
+            f"'{name} leaked into the canonical barrel'"
+        )
+    for helper in _split_leaf_helper_names(SPLIT_LEAF):
+        lines.append(
+            f"assert {SPLIT_LEAF}.{helper}.__module__ == {SPLIT_LEAF!r}, "
+            f"'{helper} is no longer legacy-owned'"
+        )
+        lines.append(
+            f"assert not hasattr({SPLIT_CANONICAL}, {helper!r}), "
+            f"'{SPLIT_CANONICAL} acquired {helper}'"
+        )
+    # No duplicate class or helper objects anywhere in the loaded closure: exactly
+    # one object per contract name across both trees, and exactly one per helper.
+    lines.extend(
+        [
+            "records = {}",
+            "for module_name, module in sorted(sys.modules.items()):",
+            "    if not (module_name == 'omnivia_core' or module_name.startswith('omnivia_')):",
+            "        continue",
+            f"    for name in {sorted(GRAPH_PORTABLE_EXPORTS)!r}:",
+            "        value = getattr(module, name, None)",
+            "        if value is None or getattr(value, '__module__', '').startswith('omnivia_') is False:",
+            "            continue",
+            "        records.setdefault(name, set()).add(id(value))",
+            "duplicated = sorted(name for name, ids in records.items() if len(ids) != 1)",
+            "assert not duplicated, f'duplicate objects for {duplicated}'",
+            f"assert set(records) == set({sorted(GRAPH_PORTABLE_EXPORTS)!r})",
+            "helpers = {}",
+            f"for name in {list(_split_leaf_helper_names(SPLIT_LEAF))!r}:",
+            "    for module_name, module in sorted(sys.modules.items()):",
+            "        if not (module_name == 'omnivia_core' or module_name.startswith('omnivia_')):",
+            "            continue",
+            "        value = getattr(module, name, None)",
+            "        if value is None:",
+            "            continue",
+            "        helpers.setdefault(name, set()).add(id(value))",
+            "duplicated = sorted(name for name, ids in helpers.items() if len(ids) != 1)",
+            "assert not duplicated, f'duplicate helper objects for {duplicated}'",
+            f"assert set(helpers) == set({list(_split_leaf_helper_names(SPLIT_LEAF))!r})",
+        ]
+    )
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    "order_name", sorted(GRAPH_IMPORT_ORDERS), ids=sorted(GRAPH_IMPORT_ORDERS)
+)
+def test_graph_fresh_process_import_orders_preserve_identity(order_name: str) -> None:
+    """Seven fresh processes, one per order. A shared process would hide an order
+    that only works because an earlier test's imports had already settled which
+    module defines what -- which is exactly the failure mode a split facade over a
+    hybrid barrel could introduce.
+    """
+    _run_isolated(_graph_identity_script(GRAPH_IMPORT_ORDERS[order_name]))
+
+
+def test_canonical_graph_closure_loads_neither_the_runtime_nor_omnivia_memory() -> None:
+    """A canonical-only Graph import must reach ``omnivia_memory`` not at all --
+    and in particular not the three graph runtime leaves, whose repository reaches
+    SQLite through ``omnivia_memory.persistence``. The exact canonical closure is
+    pinned too, so a canonical leaf that started importing a sibling domain fails
+    here rather than growing the closure quietly. Only ``src`` goes on the path.
+    """
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            "import omnivia_core.graph",
+            "import omnivia_core.graph.models",
+            "import omnivia_core.graph.search_models",
+            "assert 'omnivia_memory' not in sys.modules",
+            "loaded = {",
+            "    name for name in sys.modules",
+            "    if name == 'omnivia_core' or name.startswith('omnivia_core.')",
+            "}",
+            f"expected = set({sorted(GRAPH_CANONICAL_MODULE_CLOSURE)!r})",
+            "assert loaded == expected, sorted(loaded ^ expected)",
+            f"forbidden = set({list(GRAPH_FORBIDDEN_MODULE_ROOTS)!r})",
+            "leaked = sorted(forbidden & {name.split('.')[0] for name in sys.modules})",
+            "assert not leaked, leaked",
+            "runtime = sorted(",
+            "    name for name in sys.modules",
+            "    if name.endswith(('.repository', '.service', '.search_service'))",
+            ")",
+            "assert not runtime, runtime",
+        ]
+    )
+    _run_isolated(script)
+
+
+def test_neither_package_root_exposes_any_graph_symbol() -> None:
+    """Both roots are deliberately unedited by this batch, and neither has ever
+    re-exported a Graph name -- the legacy root imports from the ``knowledge`` and
+    ``memory_graph`` barrels, not ``graph``. That is what makes this the first
+    converted leaf set that moves *no* frozen root binding, so it is pinned rather
+    than left implicit: a root that started re-exporting one of these would need a
+    declared root-binding owner move, and there is none.
+    """
+    graph_names = sorted(
+        set(GRAPH_BARREL_ALL)
+        | {"EntityCreate", "EntityMemoryLink", "RelationshipCreate"}
+        | set(_split_leaf_helper_names(SPLIT_LEAF))
+    )
+    assert len(graph_names) == 17
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        root = importlib.import_module(root_name)
+        present = [name for name in graph_names if hasattr(root, name)]
+        assert present == [], f"{root_name} now re-exports Graph symbols {present}"
+        advertised = [name for name in graph_names if name in getattr(root, "__all__", ())]
+        assert advertised == []
+
+    # ...and the graph barrel is not one of the packages either root imports from.
+    for root_name in ("omnivia_memory", "omnivia_core"):
+        source = Path(importlib.import_module(root_name).__file__ or "").read_text(
+            encoding="utf-8"
+        )
+        reached = {
+            node.module
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.ImportFrom) and node.module is not None
+        }
+        assert f"{root_name}.graph" not in reached
+
+
+def test_graph_conversion_declares_no_descriptor_rewrite_or_root_owner_move() -> None:
+    """Both Graph leaves use ``from __future__ import annotations``, so every frozen
+    signature they recorded is already a string forward reference that never named a
+    package -- there is no descriptor text for the ownership move to change. And
+    neither leaf owns a root binding (see the test above), so no root-binding owner
+    move follows either. Pin that the two declaration maps carry nothing for Graph,
+    and that the two unrelated entries they do carry are untouched.
+    """
+    assert not any(
+        legacy_module.startswith("omnivia_memory.graph")
+        for legacy_module, _symbol in FACADE_DESCRIPTOR_REWRITES
+    )
+    assert not any(
+        legacy_module.startswith("omnivia_memory.graph")
+        for _binding, legacy_module in FACADE_ROOT_BINDING_OWNER_MOVES
+    )
+    assert set(FACADE_ROOT_BINDING_OWNER_MOVES) == {
+        ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"),
+        ("CONTROL_PLANE_CONTRACT_VERSION", "omnivia_memory.control_plane.models"),
+    }
+    assert set(FACADE_DESCRIPTOR_REWRITES) == {
+        ("omnivia_memory.app_manifest.validation", "validate_app_manifest"),
+        ("omnivia_memory.module_manifest.validation", "validate_module_manifest"),
+    }

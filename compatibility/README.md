@@ -31,7 +31,8 @@ stays reviewable leaf by leaf if the *set* of paths involved is frozen first.
 
 ## What v1 freezes
 
-Module-level facts only:
+Module-level facts only. This file is a route registry, not a per-symbol
+namespace manifest:
 
 - 47 routes — one per module suffix present in **both** package trees, plus the
   package root — each carrying its `pair_kind`, `shape`, and `migration_state`.
@@ -39,15 +40,35 @@ Module-level facts only:
   recorded so they cannot be mistaken for missing routes.
 - The pinned partition sizes in `expected_counts`.
 
-Deliberately **not** frozen at this checkpoint: per-symbol namespaces, symbol
-owners, collision pins, source policies, and consumer migration. Canonical-only
-modules (the contract layer) are reported by the checker but not pinned.
+What the registry does **not** carry as fields: per-symbol namespaces, symbol
+owners, and collision pins. Those are not unchecked — they are enforced as
+repository invariants by `baseline/inventory.py` and the baseline and
+canonical-migration suites rather than encoded here; see *Related acceptance
+coverage* below. Canonical-only modules (the contract layer) sit outside the
+route set entirely, and the checker counts them separately instead of pinning
+them.
+
+The source policy each declared `migration_state` implies *is* enforced — by the
+loader rather than by the JSON. `validate_checkout` parses every routed legacy
+module and fails when the file contradicts its state: a `direct_facade`,
+`split_facade`, or `transitive_facade` whose source is not one, and equally a
+`source_parity` or `canonical_subset` leaf that has quietly become either kind of
+facade without its state being moved forward. The `pending_*` states assert
+nothing about source, so there is nothing there to contradict; what constrains
+them is the state/shape/`pair_kind` combination table — `pending_hybrid` only on
+a hybrid barrel, `pending_root` only on the package root.
 
 Do not read the registry as a claim that every route is converted.
-`migration_state` records how far each route has actually moved; most routes are
-still duplicated. `graph.search_models` is explicitly `canonical_subset`
-because its legacy leaf retains four runtime-owned scoring helpers that
-canonical Core deliberately omits.
+`migration_state` records how far each route has actually moved, and the checker
+prints what remains; read that, not this paragraph, for the current count.
+
+`graph.search_models` is a converted `split_facade`, not a duplicate: its three
+portable query/result records resolve to the exact
+`omnivia_core.graph.search_models` identities, while the four runtime-owned
+scoring helpers canonical Core deliberately omits stay defined on the legacy
+leaf. That is the whole difference between `split_facade` and `canonical_subset`
+— the latter is a leaf still duplicating its canonical counterpart while holding
+extra runtime-owned symbols, and this leaf has left it.
 
 ## Updating the registry
 
@@ -90,14 +111,40 @@ pins the expected route and runtime-only sets as literals rather than deriving
 them from the registry, so a change to the JSON and a matching change to the
 loader cannot agree with each other unnoticed.
 
-## Next checkpoint
+## Related acceptance coverage
 
-Per-symbol ownership and consumer migration:
+The registry answers "this import path exists and pairs with that one", and the
+loader adds "and its source matches the state it claims". The facts it does not
+encode are enforced by other gates in the same acceptance run:
 
-- which symbol each legacy module re-exports, and which package owns it;
-- collision pins where both trees define the same name;
-- source policy per symbol;
-- and the migration of consumers off the legacy import paths.
+- **Per-symbol ownership and collisions.** `baseline/inventory.py` holds
+  `FACADE_ROUTES` — per legacy module, which canonical module owns the exact
+  object behind each routed symbol — plus the exact, named descriptor and
+  root-binding ownership rewrites a conversion is permitted to cause. Anything
+  outside those narrow rewrites still fails the frozen Phase 0 export baseline.
+  `baseline/tests/test_public_exports.py` attacks the collision cases directly:
+  routing a name two domains both define to the wrong domain's owner must be
+  rejected, not normalized away.
+- **Converted-leaf and barrel identity.** `tests/canonical_migration` and
+  `tests/compatibility/test_facade_foundation.py` check that a converted leaf
+  exposes the exact canonical objects and declares no `__all__` of its own. What
+  the leaf's own source is allowed to be depends on which kind it is: a *direct*
+  facade must be a pure re-export at the AST level, while a *split* facade —
+  `graph.search_models` today — must route its whole portable namespace to those
+  same exact canonical identities and may keep only an explicitly pinned set of
+  legacy-owned definitions, whose ownership, signatures, and behavior are checked
+  in place. Under either shape, barrels stay identity-preserving through the
+  legacy leaves they route.
+- **Typed consumers.** `tests/test_typed_facade_consumers.py` keeps the
+  strict-mypy fixtures in `tests/typing/*_facade_consumer.py` a partition of
+  `FACADE_ROUTES`, so an accepted route always has a real typed caller importing
+  it by its legacy path — and a split facade's retained helpers, not being
+  routes, are kept out of legacy `from` imports.
+- **Installed layout.** `tests/compatibility/test_facade_wheel_install.py` builds
+  both wheels and installs them offline, so the bounded
+  `compatibility_dependency` recorded above is checked as real packaging
+  metadata, and the Graph split is re-verified against the installed artifacts.
 
-Until that lands, "this import path exists and pairs with that one" is the only
-question this directory answers.
+None of this says the conversion is finished — leaves, barrels, and the root
+remain. It says that what has been converted is correct and cannot silently stop
+being correct. For what is left, read the checker's output, not this file.

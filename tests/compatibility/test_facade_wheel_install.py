@@ -17,7 +17,14 @@ built artifacts:
    wheels out of the wheelhouse with ``--no-index --no-deps``;
 4. inside that environment, use ``importlib.metadata`` to confirm both
    distributions are installed at 0.1.0 and that the *installed*
-   ``omnivia-memory`` metadata still carries the exact Core requirement.
+   ``omnivia-memory`` metadata still carries the exact Core requirement;
+5. read the Core wheel's own file list and confirm the runtime-owned Graph
+   modules were never packaged into it;
+6. in a second child process inside that environment, import the Graph facade
+   leaves out of the *installed* artifacts and confirm the split holds there:
+   the eleven portable definitions are the exact canonical objects, the four
+   relevance-scoring helpers still work and are still owned by the legacy
+   module, and Core has neither those helpers nor the Graph runtime.
 
 Scope limits, stated explicitly so this evidence is not over-read:
 
@@ -27,11 +34,13 @@ Scope limits, stated explicitly so this evidence is not over-read:
   ``omnivia-core`` for a user installing ``omnivia-memory`` from an index.
   The test asserts that SQLAlchemy is absent from the environment to keep
   that boundary visible rather than implied.
-* This is **not** a full runtime-root import proof. Nothing is imported from
-  the installed environment, precisely because ``--no-deps`` leaves the
-  SQLAlchemy dependency uninstalled. Facade import behaviour and exact
-  canonical object identity are covered by
-  ``tests/compatibility/test_facade_foundation.py``.
+* Step 6 is **not** a full runtime-root import proof either. It imports the
+  Graph compatibility leaves and their canonical counterparts, which is
+  possible precisely because that closure needs no third-party package -- the
+  Graph runtime reaches SQLite through the standard library. Nothing that
+  would need the uninstalled SQLAlchemy dependency is imported. Broader facade
+  import behaviour and the rest of the canonical object identities are covered
+  by ``tests/compatibility/test_facade_foundation.py``, in the source tree.
 
 Every step is offline and fail-closed: no index access, no pip cache
 dependency, no ``pytest.skip`` path. All work happens outside the repository,
@@ -175,6 +184,119 @@ print(json.dumps({
 }))
 """
 
+#: The eight portable definitions the ``graph.models`` facade routes, and the
+#: three the ``graph.search_models`` split facade routes. Restated here rather
+#: than imported from ``baseline.inventory``: this file checks *installed
+#: artifacts*, and reading the expectation out of the source tree it is meant to
+#: be independent of would weaken the check.
+GRAPH_MODELS_ROUTED = (
+    "ApprovalStatus",
+    "Entity",
+    "EntityCreate",
+    "EntityMemoryLink",
+    "EntityType",
+    "Relationship",
+    "RelationshipCreate",
+    "RelationshipType",
+)
+GRAPH_SEARCH_MODELS_ROUTED = (
+    "GraphSearchQuery",
+    "GraphSearchResult",
+    "GraphSearchResultSet",
+)
+#: The four relevance-scoring helpers that stay owned by the legacy module and
+#: must never be packaged into the Core wheel.
+GRAPH_RETAINED_HELPERS = (
+    "compute_relevance_score",
+    "score_name_match",
+    "score_neighbor_overlap",
+    "score_relationship_count",
+)
+#: Graph modules that are runtime-owned: legacy-only, never in the Core wheel.
+GRAPH_RUNTIME_WHEEL_PATHS = (
+    "omnivia_core/graph/repository.py",
+    "omnivia_core/graph/search_service.py",
+    "omnivia_core/graph/service.py",
+)
+
+#: Run inside the throwaway environment, against the installed wheels only:
+#: ``-I`` strips ``PYTHONPATH``, user site and the cwd, so every import below
+#: resolves out of site-packages. Any failure raises and exits non-zero.
+INSTALLED_GRAPH_FACADE_SCRIPT = f"""
+import math
+import sys
+
+import omnivia_core.graph
+import omnivia_core.graph.models
+import omnivia_core.graph.search_models
+import omnivia_memory.graph.models
+import omnivia_memory.graph.search_models
+
+legacy_models = sys.modules["omnivia_memory.graph.models"]
+legacy_records = sys.modules["omnivia_memory.graph.search_models"]
+canonical_models = sys.modules["omnivia_core.graph.models"]
+canonical_records = sys.modules["omnivia_core.graph.search_models"]
+
+for name in {GRAPH_MODELS_ROUTED!r}:
+    assert getattr(legacy_models, name) is getattr(canonical_models, name), name
+for name in {GRAPH_SEARCH_MODELS_ROUTED!r}:
+    assert getattr(legacy_records, name) is getattr(canonical_records, name), name
+
+# Every module resolved from the installed distributions, not a source tree.
+for module in (legacy_models, legacy_records, canonical_models, canonical_records):
+    assert "site-packages" in module.__file__, module.__file__
+
+# The retained half is still legacy-owned, still absent from Core, and still works.
+for name in {GRAPH_RETAINED_HELPERS!r}:
+    helper = getattr(legacy_records, name)
+    assert helper.__module__ == "omnivia_memory.graph.search_models", name
+    assert not hasattr(canonical_records, name), name
+    assert not hasattr(omnivia_core.graph, name), name
+    assert name not in omnivia_core.graph.__all__, name
+
+assert legacy_records.score_name_match("alice", "Alice") == 1.0
+assert legacy_records.score_name_match("ali", "alice") == 3 / 5
+assert legacy_records.score_name_match("", "alice") == 0.0
+assert legacy_records.score_relationship_count(0, 0) == 0.0
+assert legacy_records.score_relationship_count(6, 4) == min(1.0, math.log2(11) / 10.0)
+assert legacy_records.score_neighbor_overlap(["Alice", "Bob"], ["alice", "carol"]) == 0.5
+assert legacy_records.score_neighbor_overlap([], ["alice"]) == 0.0
+assert legacy_records.compute_relevance_score("alice", "Alice Smith", 3, 2, ["bob"]) == (
+    0.2919
+)
+
+# The routed records still round-trip through the canonical objects.
+entity = canonical_models.Entity(
+    id="e1", name="Alice", entity_type=canonical_models.EntityType.PERSON
+)
+query = legacy_records.GraphSearchQuery(query="alice", depth=2, limit=5)
+result = legacy_records.GraphSearchResult(entity=entity, score=0.5, matched_on="name")
+payload = legacy_records.GraphSearchResultSet(
+    results=[result], total_count=1, query=query
+).to_dict()
+assert canonical_records.GraphSearchResultSet.from_dict(payload).to_dict() == payload
+
+# The Graph runtime is legacy-only: importable from the compatibility
+# distribution, absent from Core.
+import omnivia_memory.graph.repository
+import omnivia_memory.graph.search_service
+import omnivia_memory.graph.service
+
+for name in ("repository", "search_service", "service"):
+    assert f"omnivia_core.graph.{{name}}" not in sys.modules, name
+    try:
+        __import__(f"omnivia_core.graph.{{name}}")
+    except ImportError:
+        pass
+    else:
+        raise AssertionError(f"omnivia_core.graph.{{name}} is importable")
+
+search_service = sys.modules["omnivia_memory.graph.search_service"]
+assert search_service.compute_relevance_score is legacy_records.compute_relevance_score
+assert search_service.GraphSearchQuery is canonical_records.GraphSearchQuery
+print("OK")
+"""
+
 
 def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_offline() -> None:
     with tempfile.TemporaryDirectory(prefix="omnivia-facade-wheel-") as raw_workdir:
@@ -236,6 +358,37 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
         )
 
         # Explicitly not a resolution proof: --no-deps left the declared
-        # SQLAlchemy dependency uninstalled, which is why this test stops at
-        # metadata and does not import from the installed environment.
+        # SQLAlchemy dependency uninstalled, which is why the import check
+        # below stays inside the Graph closure, which needs no third-party
+        # package at all.
         assert installed["sqlalchemy_installed"] is False
+
+        # The runtime-owned Graph modules were never packaged into Core.
+        with zipfile.ZipFile(core_wheel) as core_archive:
+            core_names = set(core_archive.namelist())
+            for path in GRAPH_RUNTIME_WHEEL_PATHS:
+                assert path not in core_names, (
+                    f"{core_wheel.name} packages the runtime-owned {path}"
+                )
+            canonical_records = core_archive.read(
+                "omnivia_core/graph/search_models.py"
+            ).decode("utf-8")
+        for helper in GRAPH_RETAINED_HELPERS:
+            assert f"def {helper}" not in canonical_records, (
+                f"{core_wheel.name} packages the runtime-owned helper {helper}"
+            )
+
+        # The split facade holds in the installed artifacts, not only in the
+        # source tree: exact portable identities, working legacy helpers, and no
+        # helper or Graph runtime module inside Core.
+        graph = subprocess.run(
+            [str(venv_python), "-I", "-c", INSTALLED_GRAPH_FACADE_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(workdir),
+            check=False,
+            env=_child_env(),
+        )
+        assert graph.returncode == 0, f"{graph.stdout}\n{graph.stderr}"
+        assert graph.stdout.strip() == "OK"

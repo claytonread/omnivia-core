@@ -48,7 +48,8 @@ A subset of once-duplicated leaves (``_shared.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
 ``control_plane.imports``, ``control_plane.models``,
-``control_plane.validation``, ``knowledge.models``, ``knowledge.normalize``,
+``control_plane.validation``, ``graph.models``, ``knowledge.models``,
+``knowledge.normalize``,
 ``knowledge.validation``, ``lifecycle.models``, ``lifecycle.rules``,
 ``memory_graph.assembly``, ``memory_graph.fixtures``, ``memory_graph.models``,
 ``memory_graph.validation``,
@@ -64,14 +65,19 @@ legacy counterpart by design, so they are held out of
 ``FACADE_CANONICAL_TO_LEGACY`` -- and verified for exact symbol identity, not
 source sameness, by ``tests/compatibility/test_facade_foundation.py``.
 
+``graph.search_models`` is converted too, as a *split* facade: it routes its
+portable namespace to the canonical objects while keeping the four
+relevance-scoring helpers Core deliberately excludes defined locally. It is
+listed in ``SPLIT_FACADE_CANONICAL_TO_LEGACY`` and covered by the same
+facade-foundation module, which pins its exact source shape, its portable half's
+identity, and the retained half's ownership, signatures and behavior. It used to
+be the one leaf held out of every map here, with a purpose-built copied-source
+AST gate of its own; that gate went with the duplication it was comparing.
+
 Neither the structural nor the AST layer normalizes annotation spellings
 away: a canonical leaf that "modernizes" a legacy ``typing.List``/
 ``typing.Optional`` annotation, or a legacy ``datetime.now(timezone.utc)``
 call, fails here -- by design.
-
-``omnivia_core.graph.search_models`` is the one deliberate exception to the
-AST gate, and it gets a purpose-built version of it rather than a waiver:
-see ``test_graph_search_models_canonicalizes_only_query_and_result_records``.
 """
 
 from __future__ import annotations
@@ -89,7 +95,7 @@ from _leaves import (
     CANONICAL_LEAF_MODULES,
     CANONICAL_TO_LEGACY,
     FACADE_CANONICAL_TO_LEGACY,
-    SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL,
+    SPLIT_FACADE_CANONICAL_TO_LEGACY,
 )
 
 from baseline.inventory import describe_symbol as loose_describe_symbol
@@ -310,16 +316,22 @@ def test_canonical_leaf_is_an_exact_ast_port(canonical_name: str, legacy_name: s
     )
 
 
-def test_ast_gate_covers_every_leaf_but_the_one_documented_exception() -> None:
+def test_ast_gate_covers_every_leaf_but_the_declared_split_facades() -> None:
     """The gates above are parametrized over ``CANONICAL_TO_LEGACY``, so a
     leaf added to that manifest is covered automatically. Assert here that
-    the manifests leave nothing else uncovered: every leaf is either a
-    copied-leaf pair in ``CANONICAL_TO_LEGACY`` (covered by the generic AST
-    gate above) or a facade-leaf pair in ``FACADE_CANONICAL_TO_LEGACY``
-    (covered by tests/compatibility/test_facade_foundation.py instead), with
-    ``search_models`` as the sole documented exception -- held out of both
-    maps and covered by its own stricter test rather than waived -- so the
-    exception cannot quietly grow to a second module.
+    the manifests leave nothing else uncovered: every leaf is a copied-leaf
+    pair in ``CANONICAL_TO_LEGACY`` (covered by the generic AST gate above),
+    a facade-leaf pair in ``FACADE_CANONICAL_TO_LEGACY``, or a split-facade
+    pair in ``SPLIT_FACADE_CANONICAL_TO_LEGACY`` -- the last two covered by
+    tests/compatibility/test_facade_foundation.py instead. Nothing may be held
+    out of all three, so a leaf cannot lose its gate by being dropped from a
+    manifest, and the three maps must stay disjoint so a leaf cannot be filed
+    under two policies at once.
+
+    ``graph.search_models`` used to be the one documented exception here,
+    held out of both maps while its canonical counterpart was a strict subset
+    of a still-duplicated legacy copy. It is now the declared split facade,
+    so the exception is a manifest entry rather than a waiver.
     """
     # ``omnivia_core._shared`` is a re-export barrel with no definitions of
     # its own; it is covered by test_shared_barrel_matches_legacy_all_and_bindings.
@@ -329,11 +341,22 @@ def test_ast_gate_covers_every_leaf_but_the_one_documented_exception() -> None:
         if name != "omnivia_core._shared"
         and name not in CANONICAL_TO_LEGACY
         and name not in FACADE_CANONICAL_TO_LEGACY
+        and name not in SPLIT_FACADE_CANONICAL_TO_LEGACY
     }
-    assert held_out == {"omnivia_core.graph.search_models"}, (
-        "graph.search_models is the only leaf that may be held out of both the "
-        f"copied-leaf and facade-leaf maps; found {sorted(held_out)}"
+    assert held_out == set(), (
+        "every canonical leaf must be covered by exactly one of the copied-leaf, "
+        f"facade-leaf or split-facade maps; found {sorted(held_out)} in none"
     )
+    assert SPLIT_FACADE_CANONICAL_TO_LEGACY == {
+        "omnivia_core.graph.search_models": "omnivia_memory.graph.search_models",
+    }
+    for first, second in (
+        (CANONICAL_TO_LEGACY, FACADE_CANONICAL_TO_LEGACY),
+        (CANONICAL_TO_LEGACY, SPLIT_FACADE_CANONICAL_TO_LEGACY),
+        (FACADE_CANONICAL_TO_LEGACY, SPLIT_FACADE_CANONICAL_TO_LEGACY),
+    ):
+        assert set(first).isdisjoint(second)
+        assert set(first.values()).isdisjoint(second.values())
 
 
 def test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once() -> None:
@@ -389,101 +412,6 @@ def test_alias_identity(module_name: str, alias_name: str, target_name: str) -> 
         f"{legacy_module_name}.{alias_name} is not an identity alias for "
         f"{legacy_module_name}.{target_name} -- ALIAS_IDENTITY expectation is stale"
     )
-
-
-def _search_models_ast_without_scoring_helpers(source: str) -> tuple[str, str]:
-    """Split ``search_models`` source into (module docstring, body dump).
-
-    The scoring helpers are removed from the *legacy* body so the remaining
-    statements can be compared as an exact port. The module docstring is
-    returned separately because the canonical module deliberately extends
-    it with a paragraph documenting that exclusion -- the only prose Slice A
-    is allowed to add anywhere, and checked on its own terms below.
-    """
-    module = ast.parse(source)
-    docstring = ast.get_docstring(module, clean=False) or ""
-    body = [
-        node
-        for node in module.body
-        if not (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name in SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL
-        )
-    ]
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        body = body[1:]
-    return docstring, _dump(ast.Module(body=body, type_ignores=[]))
-
-
-def test_graph_search_models_canonicalizes_only_query_and_result_records() -> None:
-    """omnivia_core.graph.search_models == legacy search_models minus the
-    relevance-scoring helpers, which stay runtime-owned (see _leaves.py).
-
-    This is the one leaf held out of the generic AST gate, so it carries a
-    purpose-built equivalent: the legacy scoring helpers are removed from the
-    legacy tree, the module docstring is compared separately (the canonical
-    module extends it to document the exclusion), and everything that
-    remains must still be an exact AST port.
-    """
-
-    canonical = importlib.import_module("omnivia_core.graph.search_models")
-    legacy = importlib.import_module("omnivia_memory.graph.search_models")
-
-    canonical_namespace = _public_namespace(canonical)
-    legacy_namespace = _public_namespace(legacy) - SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL
-    assert canonical_namespace == legacy_namespace, (
-        "omnivia_core.graph.search_models namespace drifted from legacy minus the "
-        f"scoring helpers:\nonly in canonical: {sorted(canonical_namespace - legacy_namespace)}\n"
-        f"only in legacy: {sorted(legacy_namespace - canonical_namespace)}"
-    )
-
-    canonical_defs = _public_definitions(canonical, strict=True)
-    legacy_defs = _public_definitions(legacy, strict=True)
-    for missing in SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL:
-        legacy_defs.pop(missing, None)
-
-    assert set(canonical_defs) == set(legacy_defs), (
-        f"omnivia_core.graph.search_models public definitions {sorted(canonical_defs)} do not "
-        f"match expected {sorted(legacy_defs)} (legacy search_models minus "
-        f"{sorted(SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL)})"
-    )
-    for name in canonical_defs:
-        assert canonical_defs[name] == legacy_defs[name], (
-            f"omnivia_core.graph.search_models.{name} contract drifted:\n"
-            f"canonical: {canonical_defs[name]}\nlegacy: {legacy_defs[name]}"
-        )
-
-    canonical_doc, canonical_body = _search_models_ast_without_scoring_helpers(
-        _module_source(canonical)
-    )
-    legacy_doc, legacy_body = _search_models_ast_without_scoring_helpers(
-        _canonicalize_legacy_source(_module_source(legacy))
-    )
-    assert canonical_body == legacy_body, _ast_mismatch_message(
-        "omnivia_core.graph.search_models",
-        "omnivia_memory.graph.search_models (minus scoring helpers)",
-        legacy_body,
-        canonical_body,
-    )
-
-    # The only sanctioned prose divergence: the canonical docstring keeps the
-    # legacy text verbatim and appends a note naming every excluded helper.
-    assert canonical_doc.startswith(legacy_doc.rstrip() + "\n"), (
-        "omnivia_core.graph.search_models must keep the legacy module docstring "
-        "verbatim and only append to it"
-    )
-    for banned in SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL:
-        assert banned in canonical_doc, (
-            f"the canonical search_models docstring must name {banned!r} as "
-            "deliberately left runtime-owned"
-        )
-
-    # The scoring helpers are runtime-owned and must never enter Core.
-    for banned in SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL:
-        assert not hasattr(canonical, banned), (
-            f"omnivia_core.graph.search_models must not define {banned!r}; "
-            "relevance scoring stays runtime-owned"
-        )
 
 
 def test_shared_barrel_matches_legacy_all_and_bindings() -> None:

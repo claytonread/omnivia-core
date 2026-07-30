@@ -49,7 +49,6 @@ CANONICAL_LEAF_MODULES: tuple[str, ...] = (
 #: canonical module -> matching legacy module, for the modules that are a
 #: direct 1:1 port (compared symbol-for-symbol by test_parity.py).
 CANONICAL_TO_LEGACY: dict[str, str] = {
-    "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
     "omnivia_core.ingestion.watcher.models": "omnivia_memory.ingestion.watcher.models",
     "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
@@ -65,9 +64,15 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
 #: asserts symbol identity rather than source-level sameness.
 #:
 #: A converted leaf's *barrel* is not necessarily converted with it: the four
-#: ``memory_graph`` leaves are facades while ``omnivia_memory.memory_graph``
-#: stays a hybrid barrel, because seven of its exports are owned by the
-#: runtime-only ``ingestion_adapter``/``store`` leaves that never enter Core.
+#: ``memory_graph`` leaves and ``graph.models`` are facades while
+#: ``omnivia_memory.memory_graph`` and ``omnivia_memory.graph`` stay hybrid
+#: barrels, because some of their exports are owned by runtime-only leaves
+#: (``ingestion_adapter``/``store``, and ``search_service``) that never enter
+#: Core.
+#:
+#: A leaf that keeps *some* definitions of its own is a ``split_facade`` and lives
+#: in ``SPLIT_FACADE_CANONICAL_TO_LEGACY`` below instead, not here: this map is
+#: for leaves whose whole body is a single re-export.
 FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core._shared.validation": "omnivia_memory._shared.validation",
     "omnivia_core.app_manifest.models": "omnivia_memory.app_manifest.models",
@@ -79,6 +84,7 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.control_plane.imports": "omnivia_memory.control_plane.imports",
     "omnivia_core.control_plane.models": "omnivia_memory.control_plane.models",
     "omnivia_core.control_plane.validation": "omnivia_memory.control_plane.validation",
+    "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.knowledge.models": "omnivia_memory.knowledge.models",
     "omnivia_core.knowledge.normalize": "omnivia_memory.knowledge.normalize",
     "omnivia_core.knowledge.validation": "omnivia_memory.knowledge.validation",
@@ -96,9 +102,29 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
 
+#: canonical module -> matching legacy module, for the leaves converted into a
+#: *split* compatibility facade: the legacy leaf routes its whole portable
+#: namespace to the exact canonical objects, exactly as a facade in
+#: ``FACADE_CANONICAL_TO_LEGACY`` does, but additionally keeps a named set of
+#: synchronous function definitions that canonical Core deliberately excludes
+#: (``SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL`` below).
+#:
+#: These leaves are held out of both maps above for the same reason: a facade's
+#: source is an import, not a port, so the source-parity oracle
+#: ``CANONICAL_TO_LEGACY`` exists to enforce cannot apply -- and their body is not
+#: a *single* import either, so the pure-facade gates keyed on
+#: ``FACADE_CANONICAL_TO_LEGACY`` cannot apply. They are covered instead by
+#: tests/compatibility/test_facade_foundation.py, which pins the exact split
+#: source shape, the portable half's symbol identity, and the retained half's
+#: ownership, signatures and behavior.
+SPLIT_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
+    "omnivia_core.graph.search_models": "omnivia_memory.graph.search_models",
+}
+
 #: omnivia_core.graph.search_models canonicalizes only the query/result record
 #: definitions. The relevance-scoring helpers stay runtime-owned and must not
-#: enter Core.
+#: enter Core: they are the retained, legacy-owned half of that leaf's split
+#: facade, still called by ``omnivia_memory.graph.search_service``.
 SEARCH_MODELS_EXPECTED_MISSING_FROM_CANONICAL: frozenset[str] = frozenset(
     {
         "score_name_match",
