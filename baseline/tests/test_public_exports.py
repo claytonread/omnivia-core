@@ -261,6 +261,99 @@ def test_facade_descriptor_rewrite_is_exact_and_symbol_specific() -> None:
     )
 
 
+def test_module_manifest_descriptor_rewrite_is_exact_and_symbol_specific() -> None:
+    """The second sanctioned rewrite gets its own direct regression.
+
+    ``validate_module_manifest``'s frozen signature annotates a resolved class
+    from its own domain's models leaf, so the rendered return annotation named
+    ``omnivia_memory.module_manifest.models.ModuleManifest`` and now names the
+    canonical owner. That one exact substitution is all the rewrite may do: it
+    must apply only to the exact frozen descriptor, under the exact route *and*
+    the exact symbol, and it must leave package-looking text that is contract
+    data rather than ownership metadata completely alone.
+    """
+    actual = build_public_export_inventory()
+    frozen = copy.deepcopy(load_json(PUBLIC_EXPORTS_PATH))
+    descriptor = frozen["modules"]["omnivia_memory.module_manifest.validation"][
+        "defines"
+    ]["validate_module_manifest"]
+
+    # The exact historical descriptor gets the one sanctioned owner rename, so
+    # the converted leaf reports no contract drift.
+    assert _facade_route_problems(actual, frozen=frozen) == []
+
+    exact_old = copy.deepcopy(descriptor)
+    assert (
+        "omnivia_memory.module_manifest.models.ModuleManifest"
+        in exact_old["signature"]
+    )
+
+    # A near miss: package-looking text in a default is contract data. A broad
+    # recursive replacement would rewrite it too and hide this mutation.
+    descriptor["signature"] = (
+        "(data: Dict[str, Any] = "
+        "'omnivia_memory.module_manifest.models.ModuleManifest') -> "
+        "omnivia_memory.module_manifest.models.ModuleManifest"
+    )
+    problems = _facade_route_problems(actual, frozen=frozen)
+    assert any(
+        "contract drifted" in problem
+        and "module_manifest.validation.validate_module_manifest" in problem
+        for problem in problems
+    ), problems
+
+    # The helper leaves that near miss untouched -- the same object back, with
+    # both of its package-looking substrings intact.
+    near_miss = copy.deepcopy(descriptor)
+    assert (
+        _expected_facade_descriptor(
+            "omnivia_memory.module_manifest.validation",
+            "validate_module_manifest",
+            near_miss,
+        )
+        is near_miss
+    )
+    assert near_miss["signature"].count("omnivia_memory") == 2
+
+    # Right route, wrong symbol: no rewrite.
+    assert (
+        _expected_facade_descriptor(
+            "omnivia_memory.module_manifest.validation",
+            "ModuleManifestValidationError",
+            exact_old,
+        )
+        is exact_old
+    )
+
+    # Right symbol, wrong route: no rewrite either. The two frozen rewrites are
+    # keyed by the pair, so neither route may borrow the other's substitution.
+    assert (
+        _expected_facade_descriptor(
+            "omnivia_memory.module_manifest.models",
+            "validate_module_manifest",
+            exact_old,
+        )
+        is exact_old
+    )
+
+    # The exact route+symbol on the exact frozen descriptor does rewrite, and
+    # only the return annotation's owner changes.
+    rewritten = _expected_facade_descriptor(
+        "omnivia_memory.module_manifest.validation",
+        "validate_module_manifest",
+        exact_old,
+    )
+    assert rewritten is not exact_old
+    assert rewritten == {
+        **exact_old,
+        "signature": exact_old["signature"].replace(
+            "omnivia_memory.module_manifest.models.ModuleManifest",
+            "omnivia_core.module_manifest.models.ModuleManifest",
+        ),
+    }
+    assert "omnivia_memory" not in rewritten["signature"]
+
+
 def test_normalize_expected_for_facade_routes_does_not_mutate_its_argument() -> None:
     expected = load_json(PUBLIC_EXPORTS_PATH)
     before = copy.deepcopy(expected)
@@ -319,9 +412,16 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ComponentRunMode": "omnivia_core.component_contract.models",
         "ComponentSafetyLevel": "omnivia_core.component_contract.models",
         "DataSource": "omnivia_core.app_manifest.models",
+        "Entrypoint": "omnivia_core.module_manifest.models",
+        "Integrity": "omnivia_core.module_manifest.models",
         "MemoryCreate": "omnivia_core.memory.models",
         "MemoryUpdate": "omnivia_core.memory.models",
+        "ModuleKind": "omnivia_core.module_manifest.models",
+        "ModuleManifest": "omnivia_core.module_manifest.models",
+        "ModuleManifestValidationError": "omnivia_core.module_manifest.validation",
+        "Permission": "omnivia_core.module_manifest.models",
         "PermissionPolicy": "omnivia_core.component_contract.models",
+        "PublishedTarget": "omnivia_core.module_manifest.models",
         "ProvenanceBehavior": "omnivia_core.component_contract.models",
         "ProvenanceRequirement": "omnivia_core.component_contract.models",
         "Source": "omnivia_core.provenance.models",
@@ -330,6 +430,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_app_manifest": "omnivia_core.app_manifest.validation",
         "validate_component_contract": "omnivia_core.component_contract.validation",
+        "validate_module_manifest": "omnivia_core.module_manifest.validation",
     }
 
 

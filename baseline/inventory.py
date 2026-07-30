@@ -139,6 +139,18 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "LifecycleRules": "omnivia_core.lifecycle.rules",
         "LifecycleState": "omnivia_core.lifecycle.models",
     },
+    "omnivia_memory.module_manifest.models": {
+        "Entrypoint": "omnivia_core.module_manifest.models",
+        "Integrity": "omnivia_core.module_manifest.models",
+        "ModuleKind": "omnivia_core.module_manifest.models",
+        "ModuleManifest": "omnivia_core.module_manifest.models",
+        "Permission": "omnivia_core.module_manifest.models",
+        "PublishedTarget": "omnivia_core.module_manifest.models",
+    },
+    "omnivia_memory.module_manifest.validation": {
+        "ModuleManifestValidationError": "omnivia_core.module_manifest.validation",
+        "validate_module_manifest": "omnivia_core.module_manifest.validation",
+    },
     "omnivia_memory.provenance.models": {
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
@@ -164,7 +176,11 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
 #: with different text, which is why most converted leaves need no entry here.
 #: The Component Contract validators, for instance, annotate their return types
 #: as string forward references (``-> "ComponentContract"``), so their frozen
-#: signatures never named ``omnivia_memory`` and are unchanged by the move.
+#: signatures never named ``omnivia_memory`` and are unchanged by the move. The
+#: two entries that do exist are the two validators whose frozen signature
+#: annotates a *resolved* class from its own domain's models leaf, so the
+#: rendered signature names the owning package and nothing else about the
+#: contract changes.
 FACADE_DESCRIPTOR_REWRITES: dict[
     tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
 ] = {
@@ -184,6 +200,25 @@ FACADE_DESCRIPTOR_REWRITES: dict[
             "signature": (
                 "(data: Dict[str, Any]) -> "
                 "omnivia_core.app_manifest.models.AppManifest"
+            ),
+        },
+    ),
+    (
+        "omnivia_memory.module_manifest.validation",
+        "validate_module_manifest",
+    ): (
+        {
+            "kind": "function",
+            "signature": (
+                "(data: Dict[str, Any]) -> "
+                "omnivia_memory.module_manifest.models.ModuleManifest"
+            ),
+        },
+        {
+            "kind": "function",
+            "signature": (
+                "(data: Dict[str, Any]) -> "
+                "omnivia_core.module_manifest.models.ModuleManifest"
             ),
         },
     ),

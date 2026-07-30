@@ -126,6 +126,8 @@ EXPECTED_STATE_SUFFIXES = {
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
+        "module_manifest.models",
+        "module_manifest.validation",
         "provenance.models",
     },
     MigrationState.TRANSITIVE_FACADE: {
@@ -134,12 +136,12 @@ EXPECTED_STATE_SUFFIXES = {
         "app_shell_bridge",
         "component_contract",
         "lifecycle",
+        "module_manifest",
         "provenance",
     },
     MigrationState.PENDING_DIRECT_BARREL: {
         "control_plane",
         "knowledge",
-        "module_manifest",
         "run_ledger",
     },
     MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
@@ -340,7 +342,11 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("app_manifest.validation", "source_parity", "move the state forward"),
         ("component_contract.models", "source_parity", "move the state forward"),
         ("component_contract.validation", "source_parity", "move the state forward"),
-        ("module_manifest.models", "direct_facade", "declared 'direct_facade'"),
+        ("module_manifest.models", "source_parity", "move the state forward"),
+        ("module_manifest.validation", "source_parity", "move the state forward"),
+        # The mirror direction: a leaf that is still a duplicated source-parity
+        # copy may not be declared as a converted facade either.
+        ("knowledge.models", "direct_facade", "declared 'direct_facade'"),
     ],
 )
 def test_checkout_rejects_source_state_swaps(
@@ -393,6 +399,8 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
         "app_manifest.validation",
         "component_contract.models",
         "component_contract.validation",
+        "module_manifest.models",
+        "module_manifest.validation",
     ],
 )
 def test_transitive_facade_rejects_an_unconverted_child(child_suffix: str) -> None:
@@ -451,6 +459,91 @@ def test_app_manifest_barrel_transitive_form_rejects_a_reroute_or_local_definiti
     )
     defects = transitive_facade_defects(ast.parse(source), route, children)
     assert any(pattern in defect for defect in defects), defects
+
+
+#: The legacy module-manifest barrel's exact historical export sets, per child,
+#: restated here rather than read off the barrel: the fixture below must not be
+#: derived from the very file whose mutations it is proving get rejected. Like
+#: the app-manifest barrel (and unlike the component-contract one) it re-exports
+#: through *absolute* ``omnivia_memory.module_manifest.<leaf>`` imports.
+_MODULE_MANIFEST_MODELS_EXPORTS: tuple[str, ...] = (
+    "Entrypoint",
+    "Integrity",
+    "ModuleKind",
+    "ModuleManifest",
+    "Permission",
+    "PublishedTarget",
+)
+_MODULE_MANIFEST_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "ModuleManifestValidationError",
+    "validate_module_manifest",
+)
+
+
+def _module_manifest_barrel_source(extra_source: str) -> str:
+    def block(module: str, names: tuple[str, ...]) -> str:
+        body = "".join(f"    {name},\n" for name in names)
+        return f"from omnivia_memory.module_manifest.{module} import (\n{body})\n"
+
+    exported = sorted(
+        _MODULE_MANIFEST_MODELS_EXPORTS + _MODULE_MANIFEST_VALIDATION_EXPORTS
+    )
+    all_body = "".join(f'    "{name}",\n' for name in exported)
+    return (
+        block("models", _MODULE_MANIFEST_MODELS_EXPORTS)
+        + block("validation", _MODULE_MANIFEST_VALIDATION_EXPORTS)
+        + f"__all__ = [\n{all_body}]\n"
+        + extra_source
+    )
+
+
+def _module_manifest_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.module_manifest"),
+        [
+            manifest.route_for_legacy("omnivia_memory.module_manifest.models"),
+            manifest.route_for_legacy("omnivia_memory.module_manifest.validation"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.module_manifest.models import ModuleManifest\n",
+            "unapproved module",
+        ),
+        ("from omnivia_memory.knowledge import ValidationResult\n", "unapproved module"),
+        ("from .persistence import Database\n", "unapproved module"),
+        ("ModuleKind = object()\n", "assignments"),
+        ("def validate_module_manifest(data):\n    return data\n", "statements of its own"),
+    ],
+)
+def test_module_manifest_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The module-manifest barrel earns ``transitive_facade`` by re-exporting only
+    its two converted children. Reaching into ``omnivia_core`` itself, pulling a
+    third module by either an absolute or a relative path, or defining anything
+    of its own must be rejected -- each of those would make the barrel's identity
+    preservation direct or local rather than transitive, while still exporting
+    the same eight names."""
+    route, children = _module_manifest_barrel_route_and_children()
+    source = _module_manifest_barrel_source(extra_source)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_module_manifest_barrel_transitive_form_accepts_its_historical_source() -> None:
+    """The same fixture with nothing added must be defect-free, so the rejection
+    cases above are proven to fail on what they inject rather than on the
+    barrel's absolute-import shape itself."""
+    route, children = _module_manifest_barrel_route_and_children()
+    source = _module_manifest_barrel_source("")
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
 
 
 #: The legacy component-contract barrel's exact historical export sets, per
@@ -615,3 +708,9 @@ def test_checker_is_a_successful_executable_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
     assert "canonical_subset: 1" in result.stdout
+    # The per-state counts this batch moved: the two module-manifest leaves into
+    # ``direct_facade``, their barrel from ``pending_direct_barrel`` into
+    # ``transitive_facade``.
+    assert "direct_facade: 13" in result.stdout
+    assert "transitive_facade: 7" in result.stdout
+    assert "pending_direct_barrel: 3" in result.stdout

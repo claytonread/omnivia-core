@@ -136,6 +136,8 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
             services/omnivia-memory/src/omnivia_memory/memory/models.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
             services/omnivia-memory/src/omnivia_memory/provenance/models.py
 
       - name: Run strict mypy
@@ -146,7 +148,10 @@ jobs:
             packages/omnivia-core-mcp/src/omnivia_core_mcp \
             packages/omnivia-core-cli/src/omnivia_core_cli \
             baseline/facade_manifest.py \
-            scripts/check-facade-routes.py
+            scripts/check-facade-routes.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
+            tests/typing/module_manifest_facade_consumer.py
 
       - name: Check pull-request diff for whitespace errors
         if: github.event_name == 'pull_request'

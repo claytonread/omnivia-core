@@ -86,6 +86,8 @@ REQUIRED_RUFF_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/lifecycle/models.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py",
     "services/omnivia-memory/src/omnivia_memory/memory/models.py",
+    "services/omnivia-memory/src/omnivia_memory/module_manifest/models.py",
+    "services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py",
     "services/omnivia-memory/src/omnivia_memory/provenance/models.py",
 )
 
@@ -96,6 +98,13 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-cli/src/omnivia_core_cli",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
+    # The converted Module Manifest facade wrappers, plus the strict-mypy
+    # consumer fixture that imports them through their legacy paths: together
+    # they pin that `omnivia-memory`'s `py.typed` surface still re-exports these
+    # names explicitly and without `Any` leakage.
+    "services/omnivia-memory/src/omnivia_memory/module_manifest/models.py",
+    "services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py",
+    "tests/typing/module_manifest_facade_consumer.py",
 )
 
 # Pinned tooling and test-only dependencies, quoted exactly as the workflow

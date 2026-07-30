@@ -59,8 +59,6 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.memory_graph.fixtures": "omnivia_memory.memory_graph.fixtures",
     "omnivia_core.memory_graph.models": "omnivia_memory.memory_graph.models",
     "omnivia_core.memory_graph.validation": "omnivia_memory.memory_graph.validation",
-    "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
-    "omnivia_core.module_manifest.validation": "omnivia_memory.module_manifest.validation",
     "omnivia_core.graph.models": "omnivia_memory.graph.models",
     "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
     "omnivia_core.ingestion.watcher.models": "omnivia_memory.ingestion.watcher.models",
@@ -87,6 +85,8 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.component_contract.validation": "omnivia_memory.component_contract.validation",
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
+    "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
+    "omnivia_core.module_manifest.validation": "omnivia_memory.module_manifest.validation",
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
 }

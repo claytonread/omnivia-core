@@ -115,6 +115,8 @@ FACADE_COMPATIBILITY_IMPORTERS: tuple[str, ...] = tuple(
             f"{CORE_PACKAGE}.lifecycle.models",
             f"{CORE_PACKAGE}.lifecycle.rules",
             f"{CORE_PACKAGE}.memory.models",
+            f"{CORE_PACKAGE}.module_manifest.models",
+            f"{CORE_PACKAGE}.module_manifest.validation",
             f"{CORE_PACKAGE}.provenance.models",
         )
     )

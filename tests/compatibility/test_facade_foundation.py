@@ -9,9 +9,9 @@ canonical objects (``omnivia_memory.X.Symbol is omnivia_core.X.Symbol``), not
 structurally equal lookalikes. The barrels above them (``BARREL_ALL_ORDER``)
 already delegated to their sibling leaves and need no source change, but their
 re-exported objects are now canonical too as a result -- the ``app_manifest``,
-``app_shell_bridge``, and ``component_contract`` barrels become
-identity-preserving purely transitively, through their two converted leaves
-each.
+``app_shell_bridge``, ``component_contract``, and ``module_manifest`` barrels
+become identity-preserving purely transitively, through their two converted
+leaves each.
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -196,6 +196,36 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "Enum": "omnivia_core.lifecycle.rules",
         "annotations": "omnivia_core.lifecycle.rules",
     },
+    "omnivia_memory.module_manifest.models": {
+        "Entrypoint": "omnivia_core.module_manifest.models",
+        "Enum": "omnivia_core.module_manifest.models",
+        "Integrity": "omnivia_core.module_manifest.models",
+        "List": "omnivia_core.module_manifest.models",
+        "ModuleKind": "omnivia_core.module_manifest.models",
+        "ModuleManifest": "omnivia_core.module_manifest.models",
+        # No cross-domain collision is known in this batch: these Module
+        # Manifest contract names have no alternate owner that a route could
+        # silently select.
+        "Permission": "omnivia_core.module_manifest.models",
+        "PublishedTarget": "omnivia_core.module_manifest.models",
+        "dataclass": "omnivia_core.module_manifest.models",
+        "field": "omnivia_core.module_manifest.models",
+    },
+    "omnivia_memory.module_manifest.validation": {
+        "Any": "omnivia_core.module_manifest.validation",
+        "Dict": "omnivia_core.module_manifest.validation",
+        # The validation leaf historically imported the six contract classes it
+        # constructs from its sibling models leaf, so they are part of its own
+        # module-scope namespace too and must route to that same owner.
+        "Entrypoint": "omnivia_core.module_manifest.models",
+        "Integrity": "omnivia_core.module_manifest.models",
+        "ModuleKind": "omnivia_core.module_manifest.models",
+        "ModuleManifest": "omnivia_core.module_manifest.models",
+        "ModuleManifestValidationError": "omnivia_core.module_manifest.validation",
+        "Permission": "omnivia_core.module_manifest.models",
+        "PublishedTarget": "omnivia_core.module_manifest.models",
+        "validate_module_manifest": "omnivia_core.module_manifest.validation",
+    },
     "omnivia_memory.provenance.models": {
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
@@ -240,6 +270,10 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     ),
     "omnivia_memory.lifecycle.models": "omnivia_core.lifecycle.models",
     "omnivia_memory.lifecycle.rules": "omnivia_core.lifecycle.rules",
+    "omnivia_memory.module_manifest.models": "omnivia_core.module_manifest.models",
+    "omnivia_memory.module_manifest.validation": (
+        "omnivia_core.module_manifest.validation"
+    ),
     "omnivia_memory.provenance.models": "omnivia_core.provenance.models",
     "omnivia_memory.memory.models": "omnivia_core.memory.models",
 }
@@ -305,6 +339,16 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
         "validate_component_contract",
     ],
     "lifecycle": ["LifecycleState", "LifecycleRules", "CreatedBy"],
+    "module_manifest": [
+        "Entrypoint",
+        "Integrity",
+        "ModuleKind",
+        "ModuleManifest",
+        "ModuleManifestValidationError",
+        "Permission",
+        "PublishedTarget",
+        "validate_module_manifest",
+    ],
     "provenance": ["Source", "SourceType"],
 }
 
@@ -320,6 +364,7 @@ ABSOLUTE_IMPORT_BARRELS: tuple[str, ...] = (
     "_shared",
     "app_manifest",
     "lifecycle",
+    "module_manifest",
     "provenance",
 )
 
@@ -350,6 +395,45 @@ APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = 
         ),
     ),
 )
+
+#: The same, for the unchanged legacy module-manifest barrel. Its name order is
+#: its own historical source order -- which here happens to match the canonical
+#: barrel's, unlike the app-manifest pair.
+MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.module_manifest.models",
+        (
+            "Entrypoint",
+            "Integrity",
+            "ModuleKind",
+            "ModuleManifest",
+            "Permission",
+            "PublishedTarget",
+        ),
+    ),
+    (
+        "omnivia_memory.module_manifest.validation",
+        (
+            "ModuleManifestValidationError",
+            "validate_module_manifest",
+        ),
+    ),
+)
+
+#: The absolute-import barrels that additionally get the stricter, shape-exact
+#: gate below, and the exact shape each must keep. Keyed by barrel suffix so the
+#: shape gate and the transitive-identity gate both run over the same declared
+#: set -- a barrel cannot be dropped from one without also leaving the other.
+#: This is a subset of ``ABSOLUTE_IMPORT_BARRELS`` -- these barrels sit directly
+#: above a converted leaf pair, which is what the transitive route has to be
+#: pinned for. It grows batch by batch as further barrels get an exact declared
+#: shape, so it is not expected to cover every such barrel yet.
+ABSOLUTE_IMPORT_BARREL_IMPORTS: dict[
+    str, tuple[tuple[str, tuple[str, ...]], ...]
+] = {
+    "app_manifest": APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
+    "module_manifest": MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
+}
 
 #: The exact, ordered relative re-export shape the unchanged legacy app-shell
 #: barrel must still have: ``(relative module, imported names in source order)``.
@@ -441,6 +525,10 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     ),
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
+    "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
+    "omnivia_core.module_manifest.validation": (
+        "omnivia_memory.module_manifest.validation"
+    ),
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
 }
@@ -539,6 +627,53 @@ def test_leaf_wrapper_has_no_all(leaf_name: str) -> None:
     assert not hasattr(module, "__all__"), (
         f"{leaf_name} must not define __all__ -- it never did before becoming a facade"
     )
+
+
+def _star_import_namespace(module_name: str) -> set[str]:
+    namespace: dict[str, object] = {}
+    exec(f"from {module_name} import *", namespace)  # noqa: S102
+    return {name for name in namespace if name != "__builtins__"}
+
+
+@pytest.mark.parametrize("leaf_name", sorted(LEAF_SYMBOL_SOURCES))
+def test_leaf_star_import_exposes_exactly_the_routed_namespace(leaf_name: str) -> None:
+    """A converted leaf declares no ``__all__`` (``test_leaf_wrapper_has_no_all``),
+    so ``from <leaf> import *`` exposes exactly its non-underscore module-scope
+    bindings -- which is precisely the historical surface
+    ``LEAF_SYMBOL_SOURCES`` enumerates. Checking the star surface directly is
+    what proves that enumeration is *complete* rather than merely correct: a
+    facade that dropped an incidental name, or picked up an extra binding of its
+    own, passes every per-symbol identity check above and fails here.
+    """
+    exported = _star_import_namespace(leaf_name)
+    assert exported == set(LEAF_SYMBOL_SOURCES[leaf_name]), (
+        f"star import of {leaf_name} exposed {sorted(exported)}, expected exactly "
+        f"{sorted(LEAF_SYMBOL_SOURCES[leaf_name])}"
+    )
+
+
+@pytest.mark.parametrize("barrel,expected_all", sorted(BARREL_ALL_ORDER.items()))
+def test_barrel_star_import_exposes_exactly_advertised_names_in_both_trees(
+    barrel: str, expected_all: list[str]
+) -> None:
+    """Both trees' barrels advertise ``__all__``, so their star surface must be
+    exactly that set -- and each starred name must be the exact canonical
+    object, so a star-importing caller of the legacy path gets the same objects
+    a direct canonical importer does."""
+    canonical_module = importlib.import_module(f"omnivia_core.{barrel}")
+    for package in ("omnivia_core", "omnivia_memory"):
+        module_name = f"{package}.{barrel}"
+        exported = _star_import_namespace(module_name)
+        assert exported == set(expected_all), (
+            f"star import of {module_name} exposed {sorted(exported)}, expected "
+            f"exactly {sorted(expected_all)}"
+        )
+        module = importlib.import_module(module_name)
+        for name in expected_all:
+            assert getattr(module, name) is getattr(canonical_module, name), (
+                f"{module_name}.{name} is not the exact same object as "
+                f"omnivia_core.{barrel}.{name}"
+            )
 
 
 def _module_body_after_docstring(module_name: str) -> list[ast.stmt]:
@@ -659,30 +794,64 @@ def test_absolute_import_barrels_cover_every_barrel_but_the_relative_exceptions(
     assert set(ABSOLUTE_IMPORT_BARRELS).isdisjoint(RELATIVE_IMPORT_BARREL_IMPORTS)
 
 
-def test_app_manifest_barrel_source_is_unchanged_absolute_reexport() -> None:
-    """The legacy app-manifest barrel is *source-unchanged* by this slice: it
-    becomes identity-preserving transitively, through its two converted leaves,
-    not by being rewritten itself. Pin its exact historical shape -- two
-    absolute ``from omnivia_memory.app_manifest.<leaf> import (...)`` statements
-    in source order with their exact ordered name lists, then the seven-name
-    ``__all__`` literal -- so a future edit that reroutes the barrel directly at
+def test_absolute_import_barrel_imports_only_names_barrels_in_the_absolute_gate() -> None:
+    """``ABSOLUTE_IMPORT_BARREL_IMPORTS`` holds the absolute-import barrels that
+    additionally get the stricter, shape-exact gate. Which barrels carry a
+    declared exact shape grows batch by batch, so there is no derivable coverage
+    rule to assert here; what must hold is that each declared shape belongs to
+    the gate it is filed under.
+
+    A barrel listed here but not in ``ABSOLUTE_IMPORT_BARRELS`` would be
+    shape-checked as absolute while the shared absolute AST gate never ran on
+    it. A barrel listed in both shape dicts would be asserted to have relative
+    *and* absolute imports, so one of the two gates could only pass vacuously.
+    And a shape filed under the wrong barrel key would pin the wrong module's
+    source while reading as coverage for this one.
+    """
+    assert set(ABSOLUTE_IMPORT_BARREL_IMPORTS) <= set(ABSOLUTE_IMPORT_BARRELS), (
+        "shape-checked absolute barrels must also be in ABSOLUTE_IMPORT_BARRELS; "
+        f"stray={sorted(set(ABSOLUTE_IMPORT_BARREL_IMPORTS) - set(ABSOLUTE_IMPORT_BARRELS))}"
+    )
+    assert set(ABSOLUTE_IMPORT_BARREL_IMPORTS).isdisjoint(RELATIVE_IMPORT_BARREL_IMPORTS)
+
+    for barrel, expected_imports in ABSOLUTE_IMPORT_BARREL_IMPORTS.items():
+        assert barrel in BARREL_ALL_ORDER, (
+            f"ABSOLUTE_IMPORT_BARREL_IMPORTS[{barrel!r}] is not a declared barrel"
+        )
+        # Each declared shape must re-export from the converted leaves of its own
+        # barrel, so a shape cannot be attached to the wrong barrel key.
+        for module, _names in expected_imports:
+            assert module.startswith(f"omnivia_memory.{barrel}."), (
+                f"ABSOLUTE_IMPORT_BARREL_IMPORTS[{barrel!r}] re-exports from {module}, "
+                "which is not one of its own leaves"
+            )
+            assert module in LEAF_SYMBOL_SOURCES, (
+                f"{module} is declared as a barrel source but is not a converted leaf"
+            )
+
+
+@pytest.mark.parametrize("barrel", sorted(ABSOLUTE_IMPORT_BARREL_IMPORTS))
+def test_absolute_import_barrel_source_is_unchanged_reexport(barrel: str) -> None:
+    """These legacy barrels are *source-unchanged* by this slice: each becomes
+    identity-preserving transitively, through its two converted leaves, not by
+    being rewritten itself. Pin each one's exact historical shape -- two
+    absolute ``from omnivia_memory.<barrel>.<leaf> import (...)`` statements in
+    source order with their exact ordered name lists, then the ``__all__``
+    literal -- so a future edit that reroutes a barrel directly at
     ``omnivia_core``, adds a ``__getattr__``, or reorders its re-exports fails
     here rather than only shifting which module the identity happens to come
     from.
     """
-    body = _module_body_after_docstring("omnivia_memory.app_manifest")
-    assert len(body) == len(APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS) + 1, (
-        "omnivia_memory.app_manifest: expected exactly "
-        f"{len(APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS)} absolute imports plus __all__, found "
-        f"{[ast.dump(node) for node in body]}"
+    expected_imports = ABSOLUTE_IMPORT_BARREL_IMPORTS[barrel]
+    module_name = f"omnivia_memory.{barrel}"
+    body = _module_body_after_docstring(module_name)
+    assert len(body) == len(expected_imports) + 1, (
+        f"{module_name}: expected exactly {len(expected_imports)} absolute imports plus "
+        f"__all__, found {[ast.dump(node) for node in body]}"
     )
-    for node, (module, names) in zip(
-        body, APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS, strict=False
-    ):
+    for node, (module, names) in zip(body, expected_imports, strict=False):
         assert isinstance(node, ast.ImportFrom), f"expected an import, found {ast.dump(node)}"
-        assert node.level == 0, (
-            f"omnivia_memory.app_manifest: the {module} import must stay absolute"
-        )
+        assert node.level == 0, f"{module_name}: the {module} import must stay absolute"
         assert node.module == module
         assert tuple(alias.name for alias in node.names) == names
         for alias in node.names:
@@ -696,36 +865,35 @@ def test_app_manifest_barrel_source_is_unchanged_absolute_reexport() -> None:
     assert isinstance(all_node.value, ast.List)
     assert [
         elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
-    ] == BARREL_ALL_ORDER["app_manifest"]
+    ] == BARREL_ALL_ORDER[barrel]
 
     # Every name the two imports bind is exactly what ``__all__`` advertises:
     # the barrel adds nothing of its own and hides nothing it imported.
-    imported = sorted(
-        name for _, names in APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS for name in names
-    )
-    assert imported == sorted(BARREL_ALL_ORDER["app_manifest"])
+    imported = sorted(name for _, names in expected_imports for name in names)
+    assert imported == sorted(BARREL_ALL_ORDER[barrel])
 
 
-def test_app_manifest_barrel_identity_is_transitive_through_its_leaves() -> None:
-    """Each of the barrel's seven exports must be the exact object bound at the
-    *legacy leaf* it re-exports from, and that object must in turn be the
-    canonical one. A barrel that started sourcing a name from somewhere else
-    would still pass the canonical-identity check alone; requiring the leaf hop
-    too is what pins the transitive route.
+@pytest.mark.parametrize("barrel", sorted(ABSOLUTE_IMPORT_BARREL_IMPORTS))
+def test_absolute_import_barrel_identity_is_transitive_through_its_leaves(
+    barrel: str,
+) -> None:
+    """Each export must be the exact object bound at the *legacy leaf* it
+    re-exports from, and that object must in turn be the canonical one. A barrel
+    that started sourcing a name from somewhere else would still pass the
+    canonical-identity check alone; requiring the leaf hop too is what pins the
+    transitive route.
     """
-    barrel = importlib.import_module("omnivia_memory.app_manifest")
-    for legacy_leaf_name, names in APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS:
+    barrel_module = importlib.import_module(f"omnivia_memory.{barrel}")
+    for legacy_leaf_name, names in ABSOLUTE_IMPORT_BARREL_IMPORTS[barrel]:
         legacy_leaf = importlib.import_module(legacy_leaf_name)
-        canonical_leaf = importlib.import_module(
-            LEAF_IMPORT_SOURCE[legacy_leaf_name]
-        )
+        canonical_leaf = importlib.import_module(LEAF_IMPORT_SOURCE[legacy_leaf_name])
         for name in names:
-            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
-                f"omnivia_memory.app_manifest.{name} no longer comes from "
+            assert getattr(barrel_module, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.{barrel}.{name} no longer comes from "
                 f"{legacy_leaf_name}.{name}"
             )
-            assert getattr(barrel, name) is getattr(canonical_leaf, name), (
-                f"omnivia_memory.app_manifest.{name} is not the exact object bound at "
+            assert getattr(barrel_module, name) is getattr(canonical_leaf, name), (
+                f"omnivia_memory.{barrel}.{name} is not the exact object bound at "
                 f"{LEAF_IMPORT_SOURCE[legacy_leaf_name]}.{name}"
             )
 

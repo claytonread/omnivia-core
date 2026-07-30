@@ -1,21 +1,21 @@
 """``omnivia_core.component_contract`` and ``omnivia_core.module_manifest``
 barrel acceptance coverage.
 
-``test_parity.py`` proves the ``module_manifest`` owner leaves
-(``module_manifest.models``, ``module_manifest.validation``) are exact ports of
-their legacy counterparts, while ``test_facade_foundation.py`` proves the
-``component_contract`` owner leaves are identity-preserving compatibility
-facades. The legacy suites in ``services/omnivia-memory/tests`` already cover
+``test_facade_foundation.py`` proves all four owner leaves
+(``component_contract.models``, ``component_contract.validation``,
+``module_manifest.models``, ``module_manifest.validation``) are
+identity-preserving compatibility facades rather than duplicated ports -- which
+is why ``test_parity.py`` holds every one of them out of its source-parity
+gates. The legacy suites in ``services/omnivia-memory/tests`` already cover
 the substantive valid/invalid matrices for both validators. This module is only
 concerned with what those leave uncovered: the barrels' own re-export
 contract (exact historical ``__all__`` order, owner bindings, star-import
 surface, no ``__getattr__``/lazy escape hatch, and isolated-import module
 closure), and one compact canonical-vs-legacy behavioral smoke per validator.
 
-For ``component_contract`` those smokes now compare a canonical engine against a
-legacy path that routes to that same engine, so they read as a live guarantee
-that the legacy import path still behaves identically rather than as a
-two-implementation comparison.
+Those smokes now compare a canonical engine against a legacy path that routes to
+that same engine, so they read as a live guarantee that the legacy import path
+still behaves identically rather than as a two-implementation comparison.
 """
 
 from __future__ import annotations
