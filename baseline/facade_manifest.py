@@ -25,9 +25,12 @@ Three independent things are checked:
    single-source re-export of its paired canonical module, a ``split_facade``
    leaf that is not an exact re-export *plus* an explicitly legacy-owned set of
    synchronous function definitions, a ``transitive_facade`` barrel that still
-   has unconverted children or reaches into the canonical package itself, or a
-   still-duplicated leaf that has quietly become either kind of facade without
-   its state being moved forward.
+   has unconverted children or reaches into the canonical package itself, a
+   ``hybrid_facade`` barrel that reaches anything but its converted routed
+   children and its declared runtime-only descendants, a still-duplicated leaf
+   that has quietly become either kind of facade without its state being moved
+   forward, or a ``pending_hybrid`` barrel that already qualifies as a
+   ``hybrid_facade`` and is therefore understating what it is.
 
 A ``FacadeManifest`` handed to :func:`validate_checkout` is revalidated before
 it is trusted: the public dataclass constructor cannot be used to smuggle a
@@ -166,6 +169,21 @@ class MigrationState(str, Enum):
     SPLIT_FACADE = "split_facade"
     #: Identity-preserving only through already-converted children.
     TRANSITIVE_FACADE = "transitive_facade"
+    #: A *source-unchanged* hybrid barrel that is nonetheless converted for
+    #: compatibility accounting. Every portable name it publishes resolves
+    #: transitively, through an already-converted routed child, to the exact
+    #: canonical Core object; every remaining name it publishes is the exact
+    #: legacy object imported from a descendant module named in the registry's
+    #: own ``runtime_only_modules``, which Core deliberately does not own.
+    #:
+    #: It is *not* a ``transitive_facade``: those runtime-only descendants are
+    #: not routes, can never become converted children, and are still resolved
+    #: locally at import time. Nothing about this state moves runtime code into
+    #: Core -- it records that the barrel's portable half has finished
+    #: converting and that its runtime half is exactly, and only, the declared
+    #: runtime-only surface. Its source policy is
+    #: :func:`hybrid_facade_defects`.
+    HYBRID_FACADE = "hybrid_facade"
     #: A direct barrel awaiting conversion.
     PENDING_DIRECT_BARREL = "pending_direct_barrel"
     #: A hybrid barrel awaiting conversion.
@@ -179,7 +197,9 @@ class MigrationState(str, Enum):
 #: cannot be "transitively" converted (it has no children to convert), a barrel
 #: cannot be a ``direct_facade`` while its leaves are still copies, and
 #: ``canonical_subset``/``split_facade`` describe one module's symbol set, so
-#: only a leaf whose pair is direct can be in either.
+#: only a leaf whose pair is direct can be in either, and ``hybrid_facade``
+#: describes a barrel that publishes a declared runtime-only half, so only a
+#: ``hybrid_barrel`` pair can be in it.
 _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] = (
     frozenset(
         {
@@ -189,6 +209,7 @@ _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] 
             (PairKind.DIRECT, Shape.LEAF, MigrationState.SPLIT_FACADE),
             (PairKind.DIRECT, Shape.BARREL, MigrationState.TRANSITIVE_FACADE),
             (PairKind.DIRECT, Shape.BARREL, MigrationState.PENDING_DIRECT_BARREL),
+            (PairKind.HYBRID_BARREL, Shape.BARREL, MigrationState.HYBRID_FACADE),
             (PairKind.HYBRID_BARREL, Shape.BARREL, MigrationState.PENDING_HYBRID),
             (PairKind.ROOT, Shape.ROOT, MigrationState.PENDING_ROOT),
         }
@@ -196,8 +217,21 @@ _ALLOWED_COMBINATIONS: Final[frozenset[tuple[PairKind, Shape, MigrationState]]] 
 )
 
 
-#: States that declare a route has *not* moved yet, so its source is whatever it
-#: always was and there is nothing about it to contradict.
+#: States that declare a route has *not* moved yet. Membership here is not a
+#: blanket exemption from source checking, and the three members are not treated
+#: alike:
+#:
+#: * ``PENDING_DIRECT_BARREL`` and ``PENDING_ROOT`` have no source shape to
+#:   contradict -- the file is whatever it always was, and neither state claims
+#:   anything about it -- so :func:`_collect_source_state_errors` skips them.
+#: * ``PENDING_HYBRID`` stays in this set because it really does declare an
+#:   unmoved route, but it is *retained and specially inspected* rather than
+#:   skipped: the moment every routed prerequisite child of a hybrid barrel is
+#:   converted *and* its unchanged source already qualifies as an exact hybrid
+#:   facade over those children and its declared runtime-only descendants, the
+#:   registry is understating the file and the state must move forward. Until
+#:   both conditions hold the route is legitimately pending and nothing is
+#:   reported.
 _PENDING_STATES: Final[frozenset[MigrationState]] = frozenset(
     {
         MigrationState.PENDING_DIRECT_BARREL,
@@ -224,11 +258,32 @@ class FacadeRoute:
 
     @property
     def is_converted(self) -> bool:
-        """Whether this route already resolves to canonical objects."""
+        """Whether this route has completed its accepted migration-state contract.
+
+        "Converted" is per-state, and it is *not* a claim that every name the
+        route publishes is a canonical Core object. Each converted state has its
+        own contract and this property only says the route has finished it:
+
+        * ``direct_facade`` and ``transitive_facade`` do resolve their whole
+          surface to canonical objects, directly or through converted children.
+        * ``split_facade`` resolves its whole *portable* namespace to canonical
+          objects while keeping an explicitly pinned set of legacy-owned
+          function definitions Core deliberately excludes.
+        * ``hybrid_facade`` resolves its portable half to canonical objects
+          through converted children while *deliberately keeping the exact
+          legacy runtime identities* -- 31 exports across the six hybrid
+          barrels today -- imported from descendants the registry declares
+          runtime-only. Those identities are legacy on purpose and converting
+          the barrel does not move them into Core.
+
+        So a true value means "this route is done under its own contract", not
+        "everything here is canonical".
+        """
         return self.migration_state in (
             MigrationState.DIRECT_FACADE,
             MigrationState.SPLIT_FACADE,
             MigrationState.TRANSITIVE_FACADE,
+            MigrationState.HYBRID_FACADE,
         )
 
 
@@ -1257,17 +1312,236 @@ def transitive_facade_defects(
     return defects
 
 
+def _literal_all(
+    assignments: Sequence[ast.Assign], defects: list[str]
+) -> list[str] | None:
+    """The names in a single literal ``__all__`` assignment, or ``None``.
+
+    ``None`` means the assignment was not the accepted shape and a defect has
+    already been recorded, so the caller must not go on to compare a bogus
+    export set against the imported bindings.
+    """
+    if len(assignments) != 1:
+        defects.append(
+            f"has {len(assignments)} assignments, expected exactly one literal __all__"
+        )
+        return None
+    assignment = assignments[0]
+    target_names = [
+        target.id for target in assignment.targets if isinstance(target, ast.Name)
+    ]
+    if len(assignment.targets) != 1 or target_names != ["__all__"]:
+        defects.append("assigns a name other than the single __all__ target")
+        return None
+    value = assignment.value
+    if not isinstance(value, (ast.List, ast.Tuple)) or any(
+        not isinstance(element, ast.Constant) or not isinstance(element.value, str)
+        for element in value.elts
+    ):
+        defects.append("__all__ is not a literal list/tuple of strings")
+        return None
+    exported: list[str] = []
+    for element in value.elts:
+        assert isinstance(element, ast.Constant)
+        assert isinstance(element.value, str)
+        exported.append(element.value)
+    return exported
+
+
+def hybrid_facade_defects(
+    tree: ast.Module,
+    route: FacadeRoute,
+    routed_children: Sequence[FacadeRoute],
+    runtime_only_modules: Sequence[str],
+) -> list[str]:
+    """Why ``tree`` is not an exact *hybrid* facade for ``route``.
+
+    An empty list means it is one. A hybrid facade is a **source-unchanged**
+    legacy barrel that is nonetheless converted for compatibility accounting:
+    its portable bindings resolve transitively through already-converted routed
+    children to the exact canonical objects, while its runtime-only bindings
+    stay the exact legacy objects imported from descendant modules the registry
+    explicitly declares runtime-only. Nothing moves into Core; what is asserted
+    is that the barrel reaches *nothing else*.
+
+    The accepted top-level form is:
+
+    1. an optional module docstring (comments are invisible to :mod:`ast` and
+       are therefore free);
+    2. two or more absolute, unaliased, non-star ``from ... import ...``
+       statements, each naming a distinct module that is either an immediate
+       routed child of the barrel that is already converted, or a legacy
+       descendant of the barrel named exactly in the registry's
+       ``runtime_only_modules``;
+    3. exactly one assignment, of a literal list/tuple of strings to
+       ``__all__``;
+    4. nothing else.
+
+    At least one import of each classification is required: a barrel that
+    reaches only converted children is a ``transitive_facade``, and one that
+    reaches only runtime-only modules has no portable half to have converted.
+    Every routed *leaf* child must be reached, so a barrel cannot quietly stop
+    re-exporting a converted leaf and still count as converted. A routed child
+    that is itself a barrel is a separately routed subtree with its own
+    contract, and a parent is not required to re-export it -- ``ingestion``
+    deliberately does not re-export ``ingestion.watcher``.
+
+    Anything else fails: an unconverted routed child, a canonical import, a
+    relative import, a module outside the barrel's own subtree, an undeclared
+    runtime module, a plain ``import x``, an alias, a star, two import blocks
+    naming the same module, a duplicated binding or ``__all__`` entry, any
+    other statement of the module's own (a definition, a second assignment, an
+    annotation, control flow, or a module ``__getattr__``/``__dir__``), or an
+    imported binding set that is not exactly the literal ``__all__``.
+    """
+    defects: list[str] = []
+
+    body = list(tree.body)
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+
+    imports = [node for node in body if isinstance(node, ast.ImportFrom)]
+    assignments = [node for node in body if isinstance(node, ast.Assign)]
+    plain_imports = [node for node in body if isinstance(node, ast.Import)]
+    others = [
+        node
+        for node in body
+        if not isinstance(node, (ast.ImportFrom, ast.Assign, ast.Import))
+    ]
+    for node in others:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in _MODULE_DYNAMIC_HOOKS
+        ):
+            defects.append(f"defines the dynamic module hook {node.name!r}")
+    if others:
+        kinds = sorted({type(node).__name__ for node in others})
+        defects.append(f"has statements of its own ({', '.join(kinds)})")
+    for node in plain_imports:
+        names = sorted(alias.name for alias in node.names)
+        defects.append(
+            f"has a top-level plain import of {names}; only from-imports are allowed"
+        )
+
+    children_by_module = {child.legacy_module: child for child in routed_children}
+    declared_runtime = {
+        module
+        for module in runtime_only_modules
+        if module != route.legacy_module
+        and _module_is_under(module, route.legacy_module)
+    }
+
+    reached_children: set[str] = set()
+    reached_runtime: set[str] = set()
+    seen_modules: set[str] = set()
+    imported_names: list[str] = []
+    for node in imports:
+        if node.level != 0:
+            defects.append(
+                f"uses a relative import (level {node.level}) of {node.module!r}"
+            )
+            module = None
+        else:
+            module = node.module
+        if module is not None:
+            if module in seen_modules:
+                defects.append(f"imports from {module!r} in more than one block")
+            seen_modules.add(module)
+            child = children_by_module.get(module)
+            if child is not None and child.is_converted:
+                reached_children.add(module)
+            elif child is not None:
+                defects.append(
+                    f"imports the routed child {module!r}, which is not converted "
+                    f"(migration_state {child.migration_state.value!r})"
+                )
+            elif module in declared_runtime:
+                reached_runtime.add(module)
+            elif _module_is_under(module, CANONICAL_PACKAGE):
+                defects.append(
+                    f"imports the canonical module {module!r} directly; a hybrid "
+                    f"facade routes its portable half through its converted children"
+                )
+            elif module == route.legacy_module:
+                defects.append(f"imports itself ({module!r})")
+            elif not _module_is_under(module, route.legacy_module):
+                defects.append(
+                    f"imports {module!r}, which is outside the "
+                    f"{route.legacy_module!r} subtree"
+                )
+            else:
+                defects.append(
+                    f"imports {module!r}, a descendant module that is neither a "
+                    f"routed child nor declared runtime-only"
+                )
+        for alias in node.names:
+            if alias.name == "*":
+                defects.append("uses a star import")
+            elif alias.asname is not None:
+                defects.append(f"aliases {alias.name!r} as {alias.asname!r}")
+            else:
+                imported_names.append(alias.name)
+
+    required_children = {
+        child.legacy_module
+        for child in routed_children
+        if child.shape is not Shape.BARREL
+    }
+    missing_children = sorted(required_children - reached_children)
+    if missing_children:
+        defects.append(f"does not import routed children {missing_children}")
+    if not reached_children:
+        defects.append(
+            "imports no converted routed child, so nothing about it is a facade"
+        )
+    if not reached_runtime:
+        defects.append(
+            "imports no declared runtime-only descendant, so it is not a hybrid; "
+            "a barrel that reaches only converted children is a transitive facade"
+        )
+
+    duplicate_bindings = sorted(
+        {name for name in imported_names if imported_names.count(name) > 1}
+    )
+    if duplicate_bindings:
+        defects.append(f"binds the same imported name twice: {duplicate_bindings}")
+
+    exported_names = _literal_all(assignments, defects)
+    if exported_names is not None:
+        duplicate_exports = sorted(
+            {name for name in exported_names if exported_names.count(name) > 1}
+        )
+        if duplicate_exports:
+            defects.append(f"__all__ contains duplicate names: {duplicate_exports}")
+        if sorted(set(imported_names)) != sorted(set(exported_names)):
+            defects.append(
+                "the imported binding set does not exactly match the literal __all__"
+            )
+    return defects
+
+
 def _collect_source_state_errors(
     repo_root: Path,
     routes: Sequence[FacadeRoute],
     all_routes: Sequence[FacadeRoute],
+    runtime_only_modules: Sequence[str],
     errors: list[str],
 ) -> None:
     """Fail every route in ``routes`` whose source contradicts its state.
 
-    ``all_routes`` supplies the routed children a ``transitive_facade`` barrel is
-    judged against, so a subset of routes can be checked without losing the
-    topology they sit in.
+    ``all_routes`` supplies the routed children a ``transitive_facade`` or
+    ``hybrid_facade`` barrel is judged against, so a subset of routes can be
+    checked without losing the topology they sit in.
+    ``runtime_only_modules`` supplies the legacy-only modules a
+    ``hybrid_facade`` barrel is allowed to reach.
+
+    ``pending_hybrid`` is deliberately *not* skipped with the other pending
+    states. A pending state means "the source is whatever it always was, so
+    there is nothing to contradict", and that stops being true the moment a
+    hybrid barrel's routed children are all converted and its source already
+    satisfies :func:`hybrid_facade_defects`: the barrel is then a converted
+    hybrid facade understating itself, which is exactly the drift this gate
+    exists to catch.
     """
     children: dict[str, list[FacadeRoute]] = {}
     for route in all_routes:
@@ -1276,7 +1550,7 @@ def _collect_source_state_errors(
 
     for route in sorted(routes, key=lambda item: item.legacy_module):
         state = route.migration_state
-        if state in _PENDING_STATES:
+        if state in _PENDING_STATES and state is not MigrationState.PENDING_HYBRID:
             continue
         where = f"route {route.legacy_module!r}"
         tree = _parse_module(legacy_source_path(repo_root, route), where, errors)
@@ -1312,6 +1586,37 @@ def _collect_source_state_errors(
                 errors.append(
                     f"{where}: declared 'transitive_facade' but the source {defect}"
                 )
+        elif state is MigrationState.HYBRID_FACADE:
+            routed_children = children.get(route.suffix, ())
+            unconverted = sorted(
+                child.legacy_module
+                for child in routed_children
+                if not child.is_converted
+            )
+            if unconverted:
+                errors.append(
+                    f"{where}: declared 'hybrid_facade' but these routed children "
+                    f"are not converted: {unconverted}"
+                )
+            for defect in hybrid_facade_defects(
+                tree, route, routed_children, runtime_only_modules
+            ):
+                errors.append(
+                    f"{where}: declared 'hybrid_facade' but the source {defect}"
+                )
+        elif state is MigrationState.PENDING_HYBRID:
+            routed_children = children.get(route.suffix, ())
+            if all(child.is_converted for child in routed_children) and not (
+                hybrid_facade_defects(
+                    tree, route, routed_children, runtime_only_modules
+                )
+            ):
+                errors.append(
+                    f"{where}: declared 'pending_hybrid' but every routed child is "
+                    f"converted and the source is an exact hybrid facade over them "
+                    f"and its declared runtime-only descendants; move the state "
+                    f"forward"
+                )
         elif not direct_facade_defects(tree, route.canonical_module):
             errors.append(
                 f"{where}: declared {state.value!r} but the source is an exact "
@@ -1336,7 +1641,13 @@ def validate_route_sources(
     """
     resolved = _resolve_manifest(manifest)
     errors: list[str] = []
-    _collect_source_state_errors(repo_root, resolved.routes, resolved.routes, errors)
+    _collect_source_state_errors(
+        repo_root,
+        resolved.routes,
+        resolved.routes,
+        resolved.runtime_only_modules,
+        errors,
+    )
     if errors:
         raise FacadeManifestError(errors)
 
@@ -1407,7 +1718,9 @@ def validate_checkout(
 
     # Only routes whose shape agreed: reading a barrel's source at a leaf's path
     # would report a missing file rather than the shape mismatch already above.
-    _collect_source_state_errors(repo_root, agreed, resolved.routes, errors)
+    _collect_source_state_errors(
+        repo_root, agreed, resolved.routes, resolved.runtime_only_modules, errors
+    )
 
     declared_runtime_only = set(resolved.runtime_only_suffixes)
     missing_runtime_only = sorted(set(modules.legacy_only) - declared_runtime_only)
@@ -1460,6 +1773,7 @@ __all__ = [
     "direct_facade_defects",
     "discover_checkout",
     "discover_package_modules",
+    "hybrid_facade_defects",
     "legacy_source_path",
     "load_manifest",
     "split_facade_defects",

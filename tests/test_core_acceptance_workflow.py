@@ -117,10 +117,13 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-cli/src/omnivia_core_cli",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
-    # Every converted facade wrapper, plus the seven strict-mypy consumer
-    # fixtures that import them through their legacy paths: together they pin
-    # that `omnivia-memory`'s `py.typed` surface still re-exports these names
-    # explicitly and without `Any` leakage.
+    # Every converted facade wrapper, plus the eight strict-mypy consumer
+    # fixtures that import them through their legacy paths: seven keyed on the
+    # leaf routes in `baseline.inventory.FACADE_ROUTES`, and
+    # `hybrid_barrel_consumer.py` keyed on the six hybrid barrels' `__all__`
+    # tuples instead (they are module routes, not symbol routes). Together they
+    # pin that `omnivia-memory`'s `py.typed` surface still re-exports these
+    # names explicitly and without `Any` leakage.
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py",
@@ -153,6 +156,7 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/workspace/models.py",
     "tests/typing/accepted_legacy_facade_consumer.py",
     "tests/typing/graph_facade_consumer.py",
+    "tests/typing/hybrid_barrel_consumer.py",
     "tests/typing/ingestion_models_facade_consumer.py",
     "tests/typing/knowledge_facade_consumer.py",
     "tests/typing/module_manifest_facade_consumer.py",

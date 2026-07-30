@@ -50,9 +50,10 @@ exports (``WorkspaceRepository`` and ``WorkspaceService``) are owned by the
 runtime-only ``repository``/``service`` leaves, which reach SQLite and the
 ingestion pipeline and never enter Core. That barrel therefore stays out of
 ``BARREL_ALL_ORDER`` too and gets its own section at the end of this module. It
-is the sixth and last of the six barrels the registry holds at
-``pending_hybrid`` -- ``graph``, ``ingestion``, ``ingestion.watcher``,
-``memory``, ``memory_graph``, ``workspace``.
+is the sixth and last of the six barrels the registry records as
+``hybrid_facade`` -- ``graph``, ``ingestion``, ``ingestion.watcher``,
+``memory``, ``memory_graph``, ``workspace``. Those six are gated together in a
+final batch section of their own, after the per-domain ones.
 
 Unlike every other hybrid here it brings no *cross-domain* name collision with
 it: no other domain owns a distinct contract under any of its five routed
@@ -84,12 +85,14 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from baseline.facade_manifest import (
     MigrationState,
     canonical_imports,
+    hybrid_facade_defects,
     load_manifest,
     split_facade_defects,
 )
@@ -2762,8 +2765,8 @@ def test_fresh_process_import_order_preserves_identity(canonical_first: bool) ->
 # not -- ``memory``, converted before it, is the earlier counterexample: seven of
 # its thirty-eight exports are owned by the runtime-only
 # ``ingestion_adapter``/``store`` leaves, which never enter Core, so the barrel
-# cannot become a pure re-export of the canonical package and stays
-# ``pending_hybrid`` in ``compatibility/facade-routes.v1.json``. Its legacy and
+# cannot become a pure re-export of the canonical package and is recorded as a
+# ``hybrid_facade`` in ``compatibility/facade-routes.v1.json``. Its legacy and
 # canonical ``__all__`` are different sizes as a result, which is exactly why it
 # must stay out of ``BARREL_ALL_ORDER`` and the equal-``__all__`` gates above.
 #
@@ -4255,8 +4258,8 @@ def test_graph_conversion_declares_no_descriptor_rewrite_or_root_owner_move() ->
 # follow. Fourteen of the ``ingestion`` barrel's nineteen exports are owned by
 # the runtime-only ``chunker``/``extractors``/``pipeline``/``repositories``/
 # ``scanner`` leaves, and two of the ``ingestion.watcher`` barrel's twelve by the
-# runtime-only ``debouncer``/``tracker``. Both stay ``pending_hybrid`` in
-# ``compatibility/facade-routes.v1.json``, both trees' ``__all__`` are different
+# runtime-only ``debouncer``/``tracker``. Both are recorded as ``hybrid_facade``
+# in ``compatibility/facade-routes.v1.json``, both trees' ``__all__`` differ in
 # sizes as a result, and both barrels therefore stay out of ``BARREL_ALL_ORDER``
 # and every gate built on it.
 #
@@ -5453,7 +5456,7 @@ def test_ingestion_conversion_declares_no_descriptor_rewrite_or_root_owner_move(
 # exports (``WorkspaceRepository`` and ``WorkspaceService``) are owned by the
 # runtime-only ``repository``/``service`` leaves, which reach SQLite through
 # ``omnivia_memory.persistence`` and files through the ingestion pipeline, so
-# ``workspace`` stays ``pending_hybrid`` in
+# ``workspace`` is recorded as a ``hybrid_facade`` in
 # ``compatibility/facade-routes.v1.json``, the two trees' ``__all__`` are
 # different sizes, and the barrel stays out of ``BARREL_ALL_ORDER`` and every
 # gate built on it.
@@ -6309,9 +6312,10 @@ def test_workspace_conversion_declares_no_descriptor_rewrite_or_root_owner_move(
 
 
 def test_workspace_is_the_last_source_parity_leaf_to_convert() -> None:
-    """This batch empties ``source_parity``: every routed leaf in the frozen
-    registry is now converted, and the only unconverted routes left are the six
-    hybrid barrels and the package root.
+    """The workspace batch emptied ``source_parity``: every routed leaf in the
+    frozen registry is converted. The six hybrid barrels above them have since
+    been promoted to ``hybrid_facade`` too, so the package root is now the only
+    unconverted route left.
 
     Pinned here, next to the leaf that did it, so a later batch that reintroduced
     a duplicated leaf -- or that quietly left this one behind -- has to say so.
@@ -6324,12 +6328,1006 @@ def test_workspace_is_the_last_source_parity_leaf_to_convert() -> None:
     assert workspace.canonical_module == WORKSPACE_MODELS_CANONICAL
 
     unconverted = [route for route in manifest.routes if not route.is_converted]
-    assert [route.legacy_module for route in unconverted] == [
-        "omnivia_memory",
-        "omnivia_memory.graph",
+    assert [route.legacy_module for route in unconverted] == ["omnivia_memory"]
+
+
+# ---------------------------------------------------------------------------
+# The ``memory`` pair: the first converted leaf set under a hybrid barrel, and
+# the one hybrid barrel that never got a section of its own.
+#
+# ``memory.models`` is a plain direct facade. Its barrel cannot follow, because
+# four of its seven exports (``MemoryService`` and its three error types) are
+# owned by the runtime-only ``memory.service`` leaf, which drives SQLite through
+# ``omnivia_memory.persistence`` and the legacy search service. The barrel is
+# therefore a ``hybrid_facade``: portable half canonical, runtime half legacy.
+#
+# It is the one barrel whose import-block order and ``__all__`` order disagree in
+# a way neither sorting nor source order explains: the service block imports its
+# four names alphabetically, and ``__all__`` advertises them in the historical
+# order ``MemoryService, MemoryServiceError, MemoryNotFoundError,
+# InvalidTransitionError``. Both are pinned separately below, on purpose.
+# ---------------------------------------------------------------------------
+
+MEMORY_MODELS_LEAF = "omnivia_memory.memory.models"
+MEMORY_MODELS_CANONICAL = "omnivia_core.memory.models"
+
+#: The exact, ordered *absolute* re-export shape the unchanged legacy ``memory``
+#: barrel must still have: ``(absolute module, imported names in source order)``.
+#: Restated here rather than read off the barrel, because this is the file whose
+#: edits it exists to reject.
+MEMORY_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (MEMORY_MODELS_LEAF, ("Memory", "MemoryCreate", "MemoryUpdate")),
+    (
+        "omnivia_memory.memory.service",
+        (
+            "InvalidTransitionError",
+            "MemoryNotFoundError",
+            "MemoryService",
+            "MemoryServiceError",
+        ),
+    ),
+)
+
+#: The barrel's exact ordered seven-name ``__all__`` literal. Not sorted, and not
+#: the import order either -- see the section note above.
+MEMORY_BARREL_ALL: tuple[str, ...] = (
+    "Memory",
+    "MemoryCreate",
+    "MemoryUpdate",
+    "MemoryService",
+    "MemoryServiceError",
+    "MemoryNotFoundError",
+    "InvalidTransitionError",
+)
+
+#: The barrel's one runtime-only child, declared runtime-only in the frozen route
+#: registry and deliberately not a facade.
+MEMORY_RUNTIME_ONLY_LEAVES: tuple[str, ...] = ("omnivia_memory.memory.service",)
+
+#: The barrel's exact four runtime-only exports: they must stay legacy-owned and
+#: must never appear on the canonical barrel.
+MEMORY_RUNTIME_EXPORTS: frozenset[str] = frozenset(
+    {
+        "InvalidTransitionError",
+        "MemoryNotFoundError",
+        "MemoryService",
+        "MemoryServiceError",
+    }
+)
+
+#: The barrel's exact three portable exports.
+MEMORY_PORTABLE_EXPORTS: frozenset[str] = frozenset(MEMORY_BARREL_ALL) - (
+    MEMORY_RUNTIME_EXPORTS
+)
+
+#: The memory runtime module that stays legacy-owned and unedited, and the
+#: canonical names it must now hold. It reaches lifecycle and memory contracts
+#: through their converted facades, so all five are canonical objects.
+MEMORY_RUNTIME_CONSUMERS: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.memory.service": ("Memory", "MemoryCreate", "MemoryUpdate"),
+}
+
+#: The exact canonical closure a canonical-only memory import may produce. The
+#: memory record composes lifecycle and provenance contracts, so those two
+#: canonical domains are part of it -- and nothing else is.
+MEMORY_CANONICAL_MODULE_CLOSURE: frozenset[str] = frozenset(
+    {
+        "omnivia_core",
+        "omnivia_core.memory",
+        "omnivia_core.memory.models",
+        "omnivia_core.lifecycle",
+        "omnivia_core.lifecycle.models",
+        "omnivia_core.lifecycle.rules",
+        "omnivia_core.provenance",
+        "omnivia_core.provenance.models",
+    }
+)
+
+#: Module roots a canonical-only memory import must never load. The memory
+#: service reaches SQLite through ``omnivia_memory.persistence`` and the legacy
+#: search service, so their absence is part of what "the canonical contract layer
+#: stands alone" means here.
+MEMORY_FORBIDDEN_MODULE_ROOTS: tuple[str, ...] = (
+    "omnivia_cloud",
+    "omnivia_core_cli",
+    "omnivia_core_mcp",
+    "omnivia_core_runtime",
+    "omnivia_dev",
+    "omnivia_memory",
+    "omnivia_platform",
+    "sqlalchemy",
+    "sqlite3",
+)
+
+
+def test_memory_hybrid_barrel_is_held_out_of_the_equal_all_gates() -> None:
+    """The barrel's two trees advertise *different* surfaces, so every gate keyed
+    on ``BARREL_ALL_ORDER`` (which asserts ``legacy.__all__ == canonical.__all__``)
+    would be wrong for it. Pin that it is absent from those gates, and pin the
+    inequality that is the reason.
+    """
+    assert "memory" not in BARREL_ALL_ORDER
+    assert "memory" not in ABSOLUTE_IMPORT_BARRELS
+    assert "memory" not in ABSOLUTE_IMPORT_BARREL_IMPORTS
+    assert "memory" not in RELATIVE_IMPORT_BARREL_IMPORTS
+
+    legacy = importlib.import_module("omnivia_memory.memory")
+    canonical = importlib.import_module("omnivia_core.memory")
+    assert tuple(legacy.__all__) == MEMORY_BARREL_ALL
+    assert len(legacy.__all__) == 7
+    assert len(canonical.__all__) == 3
+    assert set(canonical.__all__) == set(MEMORY_BARREL_ALL) - MEMORY_RUNTIME_EXPORTS
+
+
+def test_memory_hybrid_barrel_source_is_unchanged_reexport() -> None:
+    """The hybrid barrel is *source-unchanged*: its portable half is identity
+    preserving transitively, through its converted ``models`` child, and its
+    runtime half keeps resolving locally. Pin its exact historical shape -- the two
+    absolute import statements in source order with their exact ordered name lists,
+    then the ``__all__`` literal in its own, different order -- so an edit that
+    reroutes it at ``omnivia_core``, drops the runtime block, adds a
+    ``__getattr__``, or sorts either list fails here.
+    """
+    body = _module_body_after_docstring("omnivia_memory.memory")
+    assert len(body) == len(MEMORY_BARREL_ABSOLUTE_IMPORTS) + 1, (
+        "omnivia_memory.memory: expected exactly "
+        f"{len(MEMORY_BARREL_ABSOLUTE_IMPORTS)} absolute imports plus __all__, "
+        f"found {[ast.dump(node) for node in body]}"
+    )
+    for node, (module, names) in zip(
+        body, MEMORY_BARREL_ABSOLUTE_IMPORTS, strict=False
+    ):
+        assert isinstance(node, ast.ImportFrom), f"expected an import, found {node!r}"
+        assert node.level == 0, f"the {module} import must stay absolute"
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        for alias in node.names:
+            assert alias.name != "*", "star import is not allowed"
+            assert alias.asname is None, f"{alias.name!r} uses a rename/dynamic alias"
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign), f"expected __all__, found {all_node!r}"
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert tuple(
+        elt.value for elt in all_node.value.elts if isinstance(elt, ast.Constant)
+    ) == MEMORY_BARREL_ALL
+
+    imported = sorted(
+        name for _, names in MEMORY_BARREL_ABSOLUTE_IMPORTS for name in names
+    )
+    assert imported == sorted(MEMORY_BARREL_ALL)
+    # ...and the two orders really are different, which is the fact the two
+    # separate pins above exist to keep.
+    assert tuple(
+        name for _, names in MEMORY_BARREL_ABSOLUTE_IMPORTS for name in names
+    ) != MEMORY_BARREL_ALL
+    assert MEMORY_BARREL_ALL != tuple(sorted(MEMORY_BARREL_ALL))
+    assert "__getattr__" not in vars(importlib.import_module("omnivia_memory.memory"))
+
+
+def test_memory_hybrid_barrel_portable_exports_hop_through_their_facade() -> None:
+    """The barrel's three portable exports must be the exact object bound at the
+    *legacy child facade* it re-exports from, and that object must in turn be the
+    canonical one. Requiring the leaf hop as well as the canonical identity is what
+    pins the transitive route through the converted child.
+    """
+    barrel = importlib.import_module("omnivia_memory.memory")
+    legacy_leaf = importlib.import_module(MEMORY_MODELS_LEAF)
+    owners = LEAF_SYMBOL_SOURCES[MEMORY_MODELS_LEAF]
+    portable = 0
+    for name in sorted(MEMORY_PORTABLE_EXPORTS):
+        canonical_owner = importlib.import_module(owners[name])
+        assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+            f"omnivia_memory.memory.{name} no longer comes from "
+            f"{MEMORY_MODELS_LEAF}.{name}"
+        )
+        assert getattr(barrel, name) is getattr(canonical_owner, name), (
+            f"omnivia_memory.memory.{name} is not the exact object bound at "
+            f"{owners[name]}.{name}"
+        )
+        portable += 1
+    assert portable == 3
+
+
+def test_memory_hybrid_barrel_runtime_exports_stay_legacy_owned() -> None:
+    """The four service exports are the whole reason this barrel is a hybrid, so
+    their *non*-conversion is as much a contract as the portable half's conversion.
+    Each must still be the exact object bound at ``memory.service``, and that owner
+    must still be a real legacy module backed by a file in the compatibility tree.
+    """
+    barrel = importlib.import_module("omnivia_memory.memory")
+    by_module = dict(MEMORY_BARREL_ABSOLUTE_IMPORTS)
+    covered: set[str] = set()
+    for legacy_leaf_name in MEMORY_RUNTIME_ONLY_LEAVES:
+        assert legacy_leaf_name not in LEAF_SYMBOL_SOURCES, (
+            f"{legacy_leaf_name} is runtime-owned and must not become a facade"
+        )
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        leaf_path = Path(legacy_leaf.__file__ or "").resolve()
+        assert leaf_path.is_relative_to(MEMORY_SRC), (
+            f"{legacy_leaf_name} resolved to {leaf_path}, outside the legacy tree"
+        )
+        for name in by_module[legacy_leaf_name]:
+            assert getattr(barrel, name) is getattr(legacy_leaf, name), (
+                f"omnivia_memory.memory.{name} no longer comes from "
+                f"{legacy_leaf_name}.{name}"
+            )
+            covered.add(name)
+    assert covered == set(MEMORY_RUNTIME_EXPORTS)
+
+
+def test_memory_runtime_exports_are_absent_from_the_canonical_barrel() -> None:
+    """None of the four runtime-owned names may leak into Core -- not into its
+    ``__all__`` and not as an attribute -- and Core must not have grown a
+    ``memory.service`` module for them to come from either.
+    """
+    canonical = importlib.import_module("omnivia_core.memory")
+    for name in sorted(MEMORY_RUNTIME_EXPORTS):
+        assert name not in canonical.__all__, (
+            f"{name} is runtime-owned and must not be in omnivia_core.memory.__all__"
+        )
+        assert not hasattr(canonical, name), (
+            f"{name} is runtime-owned and must not be an attribute of "
+            "omnivia_core.memory"
+        )
+    assert not (CORE_SRC / "omnivia_core" / "memory" / "service.py").exists()
+
+
+def test_memory_barrel_publishes_exactly_its_models_leaf_routed_surface() -> None:
+    """The barrel advertises every symbol its models child routes -- all three, no
+    leaf-only names. Pin that equality: an edit that dropped one from the barrel,
+    or added a routed-looking name the barrel never had, would leave every identity
+    check in this section passing.
+    """
+    leaf = importlib.import_module(MEMORY_MODELS_LEAF)
+    routed = set(FACADE_ROUTES[MEMORY_MODELS_LEAF])
+    # The leaf routes six names; the barrel advertises the three the memory
+    # domain owns. ``LifecycleState``, ``CreatedBy`` and ``Source`` are the
+    # sibling domains' contracts the memory record composes with -- routed at the
+    # leaf because the leaf binds them, deliberately not barrel exports.
+    assert set(MEMORY_PORTABLE_EXPORTS) < routed
+    assert sorted(routed - set(MEMORY_PORTABLE_EXPORTS)) == [
+        "CreatedBy",
+        "LifecycleState",
+        "Source",
+    ]
+    for name in sorted(routed):
+        assert hasattr(leaf, name)
+    for barrel_name in ("omnivia_memory.memory", "omnivia_core.memory"):
+        barrel = importlib.import_module(barrel_name)
+        assert set(MEMORY_PORTABLE_EXPORTS) <= set(barrel.__all__)
+        assert set(barrel.__all__).isdisjoint(routed - set(MEMORY_PORTABLE_EXPORTS))
+        for name in sorted(MEMORY_PORTABLE_EXPORTS):
+            assert hasattr(barrel, name)
+
+
+def test_memory_runtime_consumers_hold_the_canonical_objects() -> None:
+    """``memory.service`` is an unconverted module that imports its contracts *from
+    the converted facade*, so it now holds canonical model objects while staying
+    legacy-owned itself. Pin that hop, and pin that its source does not reach
+    ``omnivia_core`` directly.
+    """
+    canonical = importlib.import_module(MEMORY_MODELS_CANONICAL)
+    for module_name, names in MEMORY_RUNTIME_CONSUMERS.items():
+        module = importlib.import_module(module_name)
+        for name in names:
+            assert getattr(module, name) is getattr(canonical, name), (
+                f"{module_name}.{name} is not the exact canonical object"
+            )
+        source = Path(module.__file__ or "").read_text(encoding="utf-8")
+        assert canonical_imports(ast.parse(source)) == [], (
+            f"{module_name} now imports omnivia_core directly; the runtime must keep "
+            "reaching its contracts through the legacy facade"
+        )
+
+    # ...and the lifecycle contracts the service composes with are canonical too,
+    # through their own converted facades.
+    service = importlib.import_module("omnivia_memory.memory.service")
+    assert service.LifecycleState is importlib.import_module(
+        "omnivia_core.lifecycle.models"
+    ).LifecycleState
+    assert service.LifecycleRules is importlib.import_module(
+        "omnivia_core.lifecycle.rules"
+    ).LifecycleRules
+
+
+def test_canonical_memory_closure_loads_neither_the_runtime_nor_omnivia_memory() -> None:
+    """A canonical-only memory import must reach ``omnivia_memory`` not at all --
+    and in particular not the memory service, the persistence layer it drives, or
+    the legacy search service. The exact canonical closure is pinned too, so a
+    canonical leaf that started importing a sibling domain fails here rather than
+    growing the closure quietly. Only ``src`` goes on the path.
+    """
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            "import omnivia_core.memory",
+            "import omnivia_core.memory.models",
+            "assert 'omnivia_memory' not in sys.modules",
+            "loaded = {",
+            "    name for name in sys.modules",
+            "    if name == 'omnivia_core' or name.startswith('omnivia_core.')",
+            "}",
+            f"expected = set({sorted(MEMORY_CANONICAL_MODULE_CLOSURE)!r})",
+            "assert loaded == expected, sorted(loaded ^ expected)",
+            f"forbidden = set({list(MEMORY_FORBIDDEN_MODULE_ROOTS)!r})",
+            "leaked = sorted(forbidden & {name.split('.')[0] for name in sys.modules})",
+            "assert not leaked, leaked",
+            "runtime = sorted(",
+            "    name for name in sys.modules",
+            "    if name.endswith(('.repository', '.repositories', '.service',",
+            "                      '.pipeline', '.database'))",
+            ")",
+            "assert not runtime, runtime",
+        ]
+    )
+    _run_isolated(script)
+
+
+# ---------------------------------------------------------------------------
+# The six ``hybrid_facade`` barrels, as one batch.
+#
+# Each of the six is a *source-unchanged* legacy barrel whose portable bindings
+# resolve transitively -- through already-converted routed children -- to exact
+# canonical Core objects, while its remaining bindings stay the exact legacy
+# objects imported from the descendant modules the frozen registry declares
+# runtime-only. The registry now says so: all six moved from ``pending_hybrid``
+# to ``hybrid_facade`` together, because they are structurally the same thing and
+# promoting some but not others would make the state mean "whichever hybrids were
+# looked at".
+#
+# The per-domain sections above already gate each barrel's own domain in depth.
+# This section is the batch-level view: one table, the same gates for all six, so
+# a barrel cannot be quietly held to a weaker standard than its peers -- and the
+# cross-domain import orders, which no single-domain section can express.
+# ---------------------------------------------------------------------------
+
+#: The six barrels: legacy path, canonical path, ordered import blocks, ordered
+#: ``__all__``, and the exact portable/runtime partition of that ``__all__``.
+#: Every value is one of the independently restated constants above, never read
+#: off the barrels themselves.
+HYBRID_FACADE_BARRELS: tuple[dict[str, Any], ...] = (
+    {
+        "suffix": "graph",
+        "blocks": GRAPH_BARREL_ABSOLUTE_IMPORTS,
+        "all": GRAPH_BARREL_ALL,
+        "portable": GRAPH_PORTABLE_EXPORTS,
+        "runtime": GRAPH_RUNTIME_EXPORTS,
+        "runtime_only_leaves": (GRAPH_RUNTIME_ONLY_LEAF,),
+    },
+    {
+        "suffix": "ingestion",
+        "blocks": INGESTION_BARREL_ABSOLUTE_IMPORTS,
+        "all": INGESTION_BARREL_ALL,
+        "portable": INGESTION_PORTABLE_EXPORTS,
+        "runtime": INGESTION_RUNTIME_EXPORTS,
+        "runtime_only_leaves": INGESTION_RUNTIME_ONLY_LEAVES,
+    },
+    {
+        "suffix": "ingestion.watcher",
+        "blocks": WATCHER_BARREL_ABSOLUTE_IMPORTS,
+        "all": WATCHER_BARREL_ALL,
+        "portable": WATCHER_PORTABLE_EXPORTS,
+        "runtime": WATCHER_RUNTIME_EXPORTS,
+        "runtime_only_leaves": WATCHER_RUNTIME_ONLY_LEAVES,
+    },
+    {
+        "suffix": "memory",
+        "blocks": MEMORY_BARREL_ABSOLUTE_IMPORTS,
+        "all": MEMORY_BARREL_ALL,
+        "portable": MEMORY_PORTABLE_EXPORTS,
+        "runtime": MEMORY_RUNTIME_EXPORTS,
+        "runtime_only_leaves": MEMORY_RUNTIME_ONLY_LEAVES,
+    },
+    {
+        "suffix": "memory_graph",
+        "blocks": MEMORY_GRAPH_BARREL_ABSOLUTE_IMPORTS,
+        "all": MEMORY_GRAPH_BARREL_ALL,
+        "portable": frozenset(MEMORY_GRAPH_BARREL_ALL) - MEMORY_GRAPH_RUNTIME_EXPORTS,
+        "runtime": MEMORY_GRAPH_RUNTIME_EXPORTS,
+        "runtime_only_leaves": MEMORY_GRAPH_RUNTIME_ONLY_LEAVES,
+    },
+    {
+        "suffix": "workspace",
+        "blocks": WORKSPACE_BARREL_ABSOLUTE_IMPORTS,
+        "all": WORKSPACE_BARREL_ALL,
+        "portable": WORKSPACE_PORTABLE_EXPORTS,
+        "runtime": WORKSPACE_RUNTIME_EXPORTS,
+        "runtime_only_leaves": WORKSPACE_RUNTIME_ONLY_LEAVES,
+    },
+)
+
+#: The aggregate exact partition: 93 legacy barrel exports, 62 portable canonical
+#: identities and 31 runtime legacy ones.
+HYBRID_FACADE_TOTALS: tuple[int, int, int] = (93, 62, 31)
+
+#: The byte-exact identity of each of the six legacy hybrid barrels: legacy
+#: module name -> (path components below ``services/omnivia-memory/src``, SHA-256
+#: of the file's bytes as accepted when the six were promoted to
+#: ``hybrid_facade``).
+#:
+#: "Source-unchanged" is the load-bearing claim of the whole state: the barrels
+#: became converted without a single edit, purely because their children did. The
+#: AST gates above prove the *shape* is still right, which is the useful
+#: diagnostic; this table proves the *file* is still the exact file that claim was
+#: accepted for, which the AST gates cannot -- they are deliberately blind to
+#: comments, to module-docstring wording, and to whitespace. Both module names and
+#: paths are written out literally rather than resolved from the registry or from
+#: ``importlib``: an expectation derived from the tree it constrains would agree
+#: with any move of these files, and one derived from the registry would agree
+#: with any reroute of them.
+#:
+#: Updating a hash is a deliberate act. If one of these barrels is genuinely
+#: edited, that edit changes what "source-unchanged" means for its
+#: ``hybrid_facade`` state, so the new bytes must be reviewed on their own terms
+#: and the new digest recorded here in the same commit.
+HYBRID_BARREL_SOURCE_SHA256: dict[str, tuple[tuple[str, ...], str]] = {
+    "omnivia_memory.graph": (
+        ("omnivia_memory", "graph", "__init__.py"),
+        "6c707416f1172d3eae44684bf87b66f13effc0210e352ee6fca58e7e51a9cfe4",
+    ),
+    "omnivia_memory.ingestion": (
+        ("omnivia_memory", "ingestion", "__init__.py"),
+        "f50de2755fd3edc845cae5b905cde804908c80a72c6610bd0460c7248b6e4fb8",
+    ),
+    "omnivia_memory.ingestion.watcher": (
+        ("omnivia_memory", "ingestion", "watcher", "__init__.py"),
+        "81f463a0723cf308d1904f995dcbf6a8bff285bef64ca71da461e021b826d52b",
+    ),
+    "omnivia_memory.memory": (
+        ("omnivia_memory", "memory", "__init__.py"),
+        "3e797ccd47b7b8e5cedc82e9a5a2959d4f43b57e719ea6d6b1189c8bc3f15c8c",
+    ),
+    "omnivia_memory.memory_graph": (
+        ("omnivia_memory", "memory_graph", "__init__.py"),
+        "34db1978794dd15c13849f5954aa20240849cae1da812cb8f42288671e2c4aff",
+    ),
+    "omnivia_memory.workspace": (
+        ("omnivia_memory", "workspace", "__init__.py"),
+        "c4ae8323fc5ff50e05a2d8e71b25c30a7e843f7d40819709ee63c818c2a35512",
+    ),
+}
+
+
+def _hybrid_barrel_id(barrel: dict[str, Any]) -> str:
+    return str(barrel["suffix"])
+
+
+def _legacy(barrel: dict[str, Any]) -> str:
+    return f"omnivia_memory.{barrel['suffix']}"
+
+
+def _canonical(barrel: dict[str, Any]) -> str:
+    return f"omnivia_core.{barrel['suffix']}"
+
+
+def test_every_hybrid_barrel_is_a_converted_hybrid_facade() -> None:
+    """The registry's own record of this batch, pinned from this side too: the six
+    ``hybrid_barrel`` pairs are ``hybrid_facade`` and converted, nothing is left at
+    ``pending_hybrid``, and the package root is the only unconverted route in the
+    whole registry."""
+    manifest = load_manifest()
+    suffixes = {barrel["suffix"] for barrel in HYBRID_FACADE_BARRELS}
+    assert suffixes == {
+        route.suffix for route in manifest.by_state(MigrationState.HYBRID_FACADE)
+    }
+    assert manifest.by_state(MigrationState.PENDING_HYBRID) == ()
+    for barrel in HYBRID_FACADE_BARRELS:
+        route = manifest.route_for_legacy(_legacy(barrel))
+        assert route.migration_state is MigrationState.HYBRID_FACADE
+        assert route.is_converted
+        assert route.canonical_module == _canonical(barrel)
+    assert [
+        route.legacy_module for route in manifest.routes if not route.is_converted
+    ] == ["omnivia_memory"]
+
+
+def test_hybrid_facade_batch_partition_totals_are_exact() -> None:
+    """93 legacy exports across the six barrels: 62 portable canonical identities
+    and 31 runtime legacy ones. The per-barrel constants are restated
+    independently, so this aggregate is the one place a name that moved from one
+    half to the other -- keeping both per-barrel counts intact -- is caught."""
+    total = sum(len(barrel["all"]) for barrel in HYBRID_FACADE_BARRELS)
+    portable = sum(len(barrel["portable"]) for barrel in HYBRID_FACADE_BARRELS)
+    runtime = sum(len(barrel["runtime"]) for barrel in HYBRID_FACADE_BARRELS)
+    assert (total, portable, runtime) == HYBRID_FACADE_TOTALS
+    for barrel in HYBRID_FACADE_BARRELS:
+        assert set(barrel["portable"]).isdisjoint(barrel["runtime"])
+        assert set(barrel["portable"]) | set(barrel["runtime"]) == set(barrel["all"])
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_all_and_star_surface_are_exact(barrel: dict[str, Any]) -> None:
+    """The legacy barrel's ordered ``__all__`` and its star-import surface are the
+    same 93-name contract seen two ways. ``__all__`` order is pinned because it is
+    the historical source order; the star namespace is pinned because ``__all__``
+    alone would not catch a name that stopped being bound."""
+    legacy = importlib.import_module(_legacy(barrel))
+    assert isinstance(legacy.__all__, list)
+    assert tuple(legacy.__all__) == barrel["all"]
+    assert len(legacy.__all__) == len(set(legacy.__all__))
+
+    namespace: dict[str, object] = {}
+    exec(f"from {_legacy(barrel)} import *", namespace)  # noqa: S102
+    exported = {name for name in namespace if name != "__builtins__"}
+    assert exported == set(barrel["all"])
+    for name in barrel["all"]:
+        assert namespace[name] is getattr(legacy, name)
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_has_no_getattr_or_dir_widening(barrel: dict[str, Any]) -> None:
+    """Neither tree may resolve a name lazily. Every export has to be a real,
+    statically visible binding decided at import time, or the identity gates below
+    would be asserting about whatever the hook chose to return this time."""
+    for module_name in (_legacy(barrel), _canonical(barrel)):
+        module_vars = vars(importlib.import_module(module_name))
+        assert "__getattr__" not in module_vars, module_name
+        assert "__dir__" not in module_vars, module_name
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_static_source_matches_its_frozen_block_table(
+    barrel: dict[str, Any],
+) -> None:
+    """Every one of the six is held to the same static shape: a docstring, its
+    import blocks in exactly the frozen order with exactly the frozen names in
+    order, then the ordered ``__all__`` literal, and nothing else. This is what
+    "source-unchanged" means as a checked fact rather than a claim."""
+    body = _module_body_after_docstring(_legacy(barrel))
+    assert len(body) == len(barrel["blocks"]) + 1, [ast.dump(node) for node in body]
+    for node, (module, names) in zip(body, barrel["blocks"], strict=False):
+        assert isinstance(node, ast.ImportFrom), ast.dump(node)
+        assert node.level == 0
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        assert all(alias.asname is None for alias in node.names)
+        assert all(alias.name != "*" for alias in node.names)
+
+    all_node = body[-1]
+    assert isinstance(all_node, ast.Assign)
+    (target,) = all_node.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(all_node.value, ast.List)
+    assert (
+        tuple(
+            element.value
+            for element in all_node.value.elts
+            if isinstance(element, ast.Constant)
+        )
+        == barrel["all"]
+    )
+    assert sorted(name for _module, names in barrel["blocks"] for name in names) == (
+        sorted(barrel["all"])
+    )
+
+
+def test_hybrid_barrel_source_table_covers_exactly_the_six_barrels() -> None:
+    """The hash table and the batch table are two independently written constants
+    naming the same six barrels, so neither can be extended -- or quietly trimmed
+    -- without the other. A seventh hybrid barrel that skipped the hash pin, or a
+    pinned path that no longer belongs to the batch, fails here."""
+    assert set(HYBRID_BARREL_SOURCE_SHA256) == {
+        _legacy(barrel) for barrel in HYBRID_FACADE_BARRELS
+    }
+    assert len(HYBRID_BARREL_SOURCE_SHA256) == 6
+    digests = [digest for _parts, digest in HYBRID_BARREL_SOURCE_SHA256.values()]
+    assert len(set(digests)) == 6
+    for module_name, (parts, digest) in HYBRID_BARREL_SOURCE_SHA256.items():
+        assert parts[0] == "omnivia_memory"
+        assert parts[-1] == "__init__.py"
+        assert ".".join(parts[:-1]) == module_name
+        assert len(digest) == 64
+        assert digest == digest.lower()
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_source_bytes_match_their_accepted_digest(
+    barrel: dict[str, Any],
+) -> None:
+    """The strictest form of "source-unchanged": the exact bytes of each legacy
+    barrel, hashed and compared to the digest accepted when the six were promoted
+    to ``hybrid_facade``.
+
+    This is not a duplicate of the AST gates. Those are blind to everything the
+    parser discards -- a reworded module docstring, an added comment, reflowed
+    whitespace -- and a barrel whose *documentation* now describes a different
+    contract than the one its state was accepted for has changed, even though its
+    shape has not. Anything at all touching these six files has to come past this
+    test and be reviewed as the deliberate change it is.
+    """
+    module_name = _legacy(barrel)
+    parts, expected_digest = HYBRID_BARREL_SOURCE_SHA256[module_name]
+    path = MEMORY_SRC.joinpath(*parts)
+    assert path.is_file(), path
+    source_bytes = path.read_bytes()
+    assert hashlib.sha256(source_bytes).hexdigest() == expected_digest, (
+        f"{module_name}: {path} no longer has its accepted bytes. If the edit is "
+        f"deliberate, review what it does to the barrel's 'hybrid_facade' "
+        f"contract and record the new digest in HYBRID_BARREL_SOURCE_SHA256."
+    )
+
+    # The pin really is byte-level, and really does cover what the AST gates
+    # cannot: a comment-only and a docstring-only edit each change the digest
+    # while leaving the parsed body the gates check identical.
+    parsed = ast.parse(source_bytes)
+    for mutated_bytes in (
+        source_bytes + b"\n# a trailing comment the AST never sees\n",
+        source_bytes.replace(b'"""', b'"""Reworded. ', 1),
+    ):
+        assert hashlib.sha256(mutated_bytes).hexdigest() != expected_digest
+        mutated = ast.parse(mutated_bytes)
+        assert [ast.dump(node) for node in mutated.body[1:]] == [
+            ast.dump(node) for node in parsed.body[1:]
+        ]
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_source_satisfies_the_frozen_registry_source_policy(
+    barrel: dict[str, Any],
+) -> None:
+    """The same file, judged by the registry's own generic policy rather than by
+    this module's table. Zero defects is what earns the ``hybrid_facade`` state, so
+    the two independent descriptions of "unchanged and correct" must agree."""
+    manifest = load_manifest()
+    route = manifest.route_for_legacy(_legacy(barrel))
+    children = [
+        item
+        for item in manifest.routes
+        if item.suffix and item.suffix.rpartition(".")[0] == route.suffix
+    ]
+    path = Path(importlib.import_module(_legacy(barrel)).__file__ or "")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assert (
+        hybrid_facade_defects(tree, route, children, manifest.runtime_only_modules)
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "barrel", HYBRID_FACADE_BARRELS, ids=_hybrid_barrel_id
+)
+def test_hybrid_barrel_portable_exports_are_canonical_and_runtime_exports_are_not(
+    barrel: dict[str, Any],
+) -> None:
+    """The partition, asserted as identities rather than as name sets. Every
+    portable export is the exact object the canonical barrel binds; every runtime
+    export is the exact object its declared legacy owner binds, is absent from the
+    canonical barrel entirely, and has no canonical module to have come from."""
+    legacy = importlib.import_module(_legacy(barrel))
+    canonical = importlib.import_module(_canonical(barrel))
+    by_module = dict(barrel["blocks"])
+
+    for name in sorted(barrel["portable"]):
+        assert getattr(legacy, name) is getattr(canonical, name), (
+            f"{_legacy(barrel)}.{name} is not the canonical object"
+        )
+
+    covered: set[str] = set()
+    for legacy_leaf_name in barrel["runtime_only_leaves"]:
+        owner = importlib.import_module(legacy_leaf_name)
+        assert Path(owner.__file__ or "").resolve().is_relative_to(MEMORY_SRC)
+        canonical_twin = legacy_leaf_name.replace("omnivia_memory", "omnivia_core", 1)
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(canonical_twin)
+        for name in by_module[legacy_leaf_name]:
+            assert getattr(legacy, name) is getattr(owner, name)
+            assert not hasattr(canonical, name), (
+                f"{name} is runtime-owned and leaked into {_canonical(barrel)}"
+            )
+            assert name not in canonical.__all__
+            covered.add(name)
+    assert covered == set(barrel["runtime"])
+
+
+def test_no_hybrid_runtime_export_is_reachable_anywhere_in_core() -> None:
+    """The 31 runtime-owned names, checked against the whole canonical package
+    rather than one barrel at a time: none of them is bound at any ``omnivia_core``
+    module already loaded, and no canonical module file defines one. A name that
+    was quietly ported into a *different* canonical module would pass every
+    per-barrel gate above and fail here."""
+    runtime_names = {
+        name for barrel in HYBRID_FACADE_BARRELS for name in barrel["runtime"]
+    }
+    assert len(runtime_names) == HYBRID_FACADE_TOTALS[2]
+
+    for barrel in HYBRID_FACADE_BARRELS:
+        importlib.import_module(_canonical(barrel))
+    for module_name, module in sorted(sys.modules.items()):
+        if module_name != "omnivia_core" and not module_name.startswith("omnivia_core."):
+            continue
+        present = sorted(name for name in runtime_names if hasattr(module, name))
+        assert present == [], f"{module_name} exposes runtime-owned {present}"
+
+    defined: dict[str, list[str]] = {}
+    for path in sorted((CORE_SRC / "omnivia_core").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if (
+                isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in runtime_names
+            ):
+                defined.setdefault(node.name, []).append(str(path))
+    assert defined == {}, defined
+
+
+#: Cross-domain fresh-process import orders. The runtime halves of these barrels
+#: cross domains -- the workspace service drives the ingestion pipeline and the
+#: memory graph adapter, and the memory service drives persistence and search --
+#: so an order that settles one domain first can settle objects another domain
+#: then re-imports. Each entry is a *full* order: whichever module is named first
+#: is the one that gets to define the shared objects.
+HYBRID_CROSS_DOMAIN_ORDERS: dict[str, tuple[str, ...]] = {
+    "forward": (
         "omnivia_memory.ingestion",
-        "omnivia_memory.ingestion.watcher",
+        "omnivia_memory.memory_graph",
+        "omnivia_memory.memory",
+        "omnivia_memory.workspace",
+    ),
+    "reverse": (
+        "omnivia_memory.workspace",
         "omnivia_memory.memory",
         "omnivia_memory.memory_graph",
+        "omnivia_memory.ingestion",
+    ),
+    "canonical-first": (
+        "omnivia_core.ingestion",
+        "omnivia_core.memory_graph",
+        "omnivia_core.memory",
+        "omnivia_core.workspace",
+        "omnivia_memory.ingestion",
+        "omnivia_memory.memory_graph",
+        "omnivia_memory.memory",
         "omnivia_memory.workspace",
+    ),
+    "runtime-first": (
+        "omnivia_memory.workspace.service",
+        "omnivia_memory.memory.service",
+        "omnivia_memory.memory_graph.store",
+        "omnivia_memory.ingestion.pipeline",
+    ),
+    "watcher-and-parent": (
+        "omnivia_memory.ingestion.watcher",
+        "omnivia_memory.ingestion",
+        "omnivia_memory.graph",
+        "omnivia_memory.memory_graph",
+    ),
+    "repeated": (
+        "omnivia_memory.memory",
+        "omnivia_memory.memory",
+        "omnivia_core.memory",
+        "omnivia_memory.memory",
+        "omnivia_memory.workspace",
+        "omnivia_core.workspace",
+        "omnivia_memory.workspace",
+    ),
+}
+
+
+#: The modules the cross-domain duplicate-object scan looks at: the six barrels,
+#: their canonical counterparts, every module they import from, and the canonical
+#: counterpart of each portable one. Scoped deliberately -- a scan over every
+#: loaded ``omnivia_*`` module would sweep in sibling domains that legitimately
+#: own a same-named contract and turn the check into a list of exemptions.
+HYBRID_IDENTITY_SCAN_SCOPE: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *(f"omnivia_memory.{barrel['suffix']}" for barrel in HYBRID_FACADE_BARRELS),
+            *(f"omnivia_core.{barrel['suffix']}" for barrel in HYBRID_FACADE_BARRELS),
+            *(
+                module
+                for barrel in HYBRID_FACADE_BARRELS
+                for module, _names in barrel["blocks"]
+            ),
+            *(
+                module.replace("omnivia_memory", "omnivia_core", 1)
+                for barrel in HYBRID_FACADE_BARRELS
+                for module, _names in barrel["blocks"]
+                if module not in barrel["runtime_only_leaves"]
+            ),
+        }
+    )
+)
+
+#: Portable barrel-export names that resolve to more than one object *within that
+#: scope*, with the exact number of distinct objects each must have. Both are
+#: long-standing, deliberate separations, not drift:
+#:
+#: * ``Source`` -- the ingestion domain's ingested-file record and the provenance
+#:   domain's source record are independent contracts sharing a name. The
+#:   ``ingestion`` barrel publishes the first; ``memory.models``, a routed child in
+#:   this scope, binds the second.
+#: * ``SourceReference`` -- the watcher models record the ``ingestion.watcher``
+#:   barrel publishes, and the distinct dataclass the runtime-only
+#:   ``watcher.tracker`` defines for its own use. The tracker's must never replace
+#:   the barrel's export, which is what pinning two objects (rather than skipping
+#:   the name) keeps true in both directions.
+HYBRID_CROSS_DOMAIN_COLLISIONS: dict[str, int] = {
+    "Source": 2,
+    "SourceReference": 2,
+}
+
+
+def _hybrid_cross_domain_script(import_order: tuple[str, ...]) -> str:
+    always = tuple(
+        module
+        for barrel in HYBRID_FACADE_BARRELS
+        for module in (_legacy(barrel), _canonical(barrel))
+    )
+    portable_pairs = sorted(
+        (barrel["suffix"], name)
+        for barrel in HYBRID_FACADE_BARRELS
+        for name in barrel["portable"]
+    )
+    runtime_pairs = sorted(
+        (barrel["suffix"], name, owner)
+        for barrel in HYBRID_FACADE_BARRELS
+        for owner in barrel["runtime_only_leaves"]
+        for name in dict(barrel["blocks"])[owner]
+    )
+    lines = [
+        "import importlib",
+        "import sys",
+        f"sys.path.insert(0, {str(MEMORY_SRC)!r})",
+        f"sys.path.insert(0, {str(CORE_SRC)!r})",
+        f"for module_name in {import_order!r}:",
+        "    importlib.import_module(module_name)",
+        f"for module_name in {always!r}:",
+        "    importlib.import_module(module_name)",
+        f"portable = {portable_pairs!r}",
+        "for suffix, name in portable:",
+        "    legacy = sys.modules['omnivia_memory.' + suffix]",
+        "    canonical = sys.modules['omnivia_core.' + suffix]",
+        "    assert getattr(legacy, name) is getattr(canonical, name), (suffix, name)",
+        f"runtime = {runtime_pairs!r}",
+        "for suffix, name, owner_name in runtime:",
+        "    legacy = sys.modules['omnivia_memory.' + suffix]",
+        "    canonical = sys.modules['omnivia_core.' + suffix]",
+        "    owner = importlib.import_module(owner_name)",
+        "    assert getattr(legacy, name) is getattr(owner, name), (suffix, name)",
+        "    assert not hasattr(canonical, name), (suffix, name)",
+        # Exactly one object per portable contract name across the six barrels,
+        # their routed children in both trees, and their runtime owners: an order
+        # that produced a second class object for any of them would satisfy every
+        # pairwise identity above and still be a duplicate. The two documented
+        # collisions are pinned at exactly two objects rather than skipped, so a
+        # future order that *collapsed* them would fail here too.
+        f"scope = {HYBRID_IDENTITY_SCAN_SCOPE!r}",
+        "for module_name in scope:",
+        "    importlib.import_module(module_name)",
+        "records = {}",
+        "for module_name in scope:",
+        "    module = sys.modules[module_name]",
+        "    for _suffix, name in portable:",
+        "        value = getattr(module, name, None)",
+        "        if value is None:",
+        "            continue",
+        "        records.setdefault(name, set()).add(id(value))",
+        f"expected_objects = {HYBRID_CROSS_DOMAIN_COLLISIONS!r}",
+        "wrong = sorted(",
+        "    name for name, ids in records.items()",
+        "    if len(ids) != expected_objects.get(name, 1)",
+        ")",
+        "assert not wrong, wrong",
+        "assert set(records) == {name for _suffix, name in portable}",
     ]
+    return "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    "order_name",
+    sorted(HYBRID_CROSS_DOMAIN_ORDERS),
+    ids=sorted(HYBRID_CROSS_DOMAIN_ORDERS),
+)
+def test_hybrid_barrels_preserve_identity_across_domains_in_fresh_processes(
+    order_name: str,
+) -> None:
+    """One fresh process per order. The per-domain sections already cover each
+    barrel's own leaf/barrel/runtime orders; these cross the four domains whose
+    runtime services and adapters reach into each other, in both directions, plus
+    the runtime-first and canonical-first variants of the same sweep.
+    """
+    _run_isolated(_hybrid_cross_domain_script(HYBRID_CROSS_DOMAIN_ORDERS[order_name]))
+
+
+def test_canonical_hybrid_barrels_load_no_legacy_or_runtime_module() -> None:
+    """All six canonical barrels together, in one fresh process with only ``src``
+    on the path: no ``omnivia_memory``, no persistence or SQLite, no HTTP runtime,
+    none of Core's runtime/CLI/MCP siblings, no Platform/Dev/Cloud/Apps/Pro, and
+    none of the twenty-one declared legacy runtime-only modules -- which cannot
+    even be present, since the legacy tree is not on the path at all.
+    """
+    canonical_barrels = [_canonical(barrel) for barrel in HYBRID_FACADE_BARRELS]
+    forbidden = sorted(
+        {
+            "docx",
+            "fitz",
+            "httpx",
+            "fastapi",
+            "starlette",
+            "requests",
+            "omnivia_apps",
+            "omnivia_cloud",
+            "omnivia_core_cli",
+            "omnivia_core_mcp",
+            "omnivia_core_runtime",
+            "omnivia_dev",
+            "omnivia_memory",
+            "omnivia_platform",
+            "omnivia_pro",
+            "sqlalchemy",
+            "sqlite3",
+        }
+    )
+    runtime_only = sorted(load_manifest().runtime_only_modules)
+    script = "\n".join(
+        [
+            "import importlib",
+            "import sys",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            f"for module_name in {canonical_barrels!r}:",
+            "    importlib.import_module(module_name)",
+            f"forbidden = set({forbidden!r})",
+            "leaked = sorted(forbidden & {name.split('.')[0] for name in sys.modules})",
+            "assert not leaked, leaked",
+            f"runtime_only = {runtime_only!r}",
+            "present = sorted(name for name in runtime_only if name in sys.modules)",
+            "assert not present, present",
+            "assert not any(name.startswith('omnivia_core.persistence') for name in sys.modules)",
+        ]
+    )
+    _run_isolated(script)
+
+
+def test_legacy_hybrid_barrels_load_exactly_their_declared_runtime_modules() -> None:
+    """The other side of the same fact. A legacy hybrid import *does* load its
+    exact historical runtime modules -- that is what makes it a hybrid -- so pin
+    that each required one loads, and that importing all six brings in no legacy
+    module beyond the declared runtime-only set and the routes themselves. This
+    state-only batch must not have widened the runtime surface by a single module.
+    """
+    manifest = load_manifest()
+    declared = set(manifest.runtime_only_modules)
+    routed = set(manifest.legacy_modules)
+    legacy_barrels = [_legacy(barrel) for barrel in HYBRID_FACADE_BARRELS]
+    required = sorted(
+        {
+            owner
+            for barrel in HYBRID_FACADE_BARRELS
+            for owner in barrel["runtime_only_leaves"]
+        }
+    )
+    script = "\n".join(
+        [
+            "import importlib",
+            "import sys",
+            f"sys.path.insert(0, {str(MEMORY_SRC)!r})",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            f"for module_name in {legacy_barrels!r}:",
+            "    importlib.import_module(module_name)",
+            f"required = {required!r}",
+            "missing = sorted(name for name in required if name not in sys.modules)",
+            "assert not missing, missing",
+            f"allowed = set({sorted(declared | routed)!r})",
+            "loaded = {",
+            "    name for name in sys.modules",
+            "    if name == 'omnivia_memory' or name.startswith('omnivia_memory.')",
+            "}",
+            "unexpected = sorted(loaded - allowed)",
+            "assert not unexpected, unexpected",
+        ]
+    )
+    _run_isolated(script)

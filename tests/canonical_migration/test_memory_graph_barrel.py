@@ -16,8 +16,9 @@ than its source-parity map, and identity -- not source sameness -- is what
 
 The legacy barrel itself stays a *hybrid*: its other seven exports are owned by
 the runtime-only ``ingestion_adapter``/``store`` leaves, which never enter Core,
-so it is source-unchanged and stays ``pending_hybrid`` in
-``compatibility/facade-routes.v1.json`` rather than becoming a transitive facade.
+so it is source-unchanged and is recorded as a ``hybrid_facade`` in
+``compatibility/facade-routes.v1.json`` rather than as a transitive facade: its
+portable half really is canonical, and its runtime half really is not.
 This module is only concerned with the canonical barrel's own re-export contract
 and the generated-fixture/assembly behavior that sits on top of it, neither of
 which any per-leaf gate observes.

@@ -9,7 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,8 @@ from baseline.facade_manifest import (
     Shape,
     direct_facade_defects,
     discover_package_modules,
+    hybrid_facade_defects,
+    legacy_source_path,
     load_manifest,
     split_facade_defects,
     transitive_facade_defects,
@@ -151,8 +153,11 @@ EXPECTED_STATE_SUFFIXES = {
         "lifecycle.rules",
         "memory.models",
         # The second converted leaf set whose barrel stays a hybrid, after
-        # ``memory.models`` above: ``memory_graph`` is still ``pending_hybrid``
-        # below, because its other two children are runtime-only.
+        # ``memory.models`` above: ``memory_graph`` is an accepted
+        # ``hybrid_facade`` below -- its portable exports are canonical through
+        # these four converted children, while the exports owned by its two
+        # runtime-only children stay legacy, so it is not a pure transitive
+        # facade.
         "memory_graph.assembly",
         "memory_graph.fixtures",
         "memory_graph.models",
@@ -179,13 +184,24 @@ EXPECTED_STATE_SUFFIXES = {
         "provenance",
         "run_ledger",
     },
+    #: All six hybrid barrels, promoted together. Each is source-unchanged: its
+    #: portable half now hops through converted children to canonical objects
+    #: while its runtime half still resolves at the declared runtime-only
+    #: descendants. They move as one set because they are structurally the same
+    #: thing -- promoting some and not others would make the state mean
+    #: "whichever hybrids happened to be looked at".
+    MigrationState.HYBRID_FACADE: EXPECTED_HYBRID_SUFFIXES,
     # Empty on purpose: ``knowledge`` was the last barrel pending direct
     # conversion, so every ``direct`` barrel is now a ``transitive_facade`` and
     # only the six ``hybrid_barrel`` barrels and the package root are still
     # pending. The state stays listed rather than dropped so the partition below
     # keeps asserting that nothing has quietly re-entered it.
     MigrationState.PENDING_DIRECT_BARREL: set(),
-    MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
+    # Empty on purpose, for the same reason: all six hybrid barrels are now
+    # ``hybrid_facade`` above, so nothing is pending conversion except the
+    # package root. The state stays listed so a walk-back is a partition
+    # failure here rather than a silent re-entry.
+    MigrationState.PENDING_HYBRID: set(),
     MigrationState.PENDING_ROOT: {""},
 }
 #: Derived rather than listed, so it is whatever the sets above do not claim.
@@ -1269,7 +1285,11 @@ def test_knowledge_barrel_state_cannot_be_walked_back_to_a_pending_barrel() -> N
 #: barrel with *converted children and a hybrid state*: four of its six children
 #: are now ``direct_facade`` leaves, while ``ingestion_adapter`` and ``store`` are
 #: runtime-only and are not routes at all. It therefore cannot become a pure
-#: re-export of the canonical package, and stays ``pending_hybrid``.
+#: re-export of the canonical package -- and it does not have to: the registry
+#: now records it as an accepted ``hybrid_facade``. Its portable exports are the
+#: canonical objects, reached through those four converted children, while the
+#: exports the two runtime-only children own stay the exact legacy objects. That
+#: mixed surface is precisely why it is not a ``transitive_facade``.
 #:
 #: The order below is the barrel's own historical source order -- the two
 #: runtime-only blocks sit *between* ``fixtures`` and ``models``, so it is neither
@@ -1379,20 +1399,22 @@ def _memory_graph_barrel_route_and_children() -> tuple[Any, list[Any]]:
     )
 
 
-def test_memory_graph_barrel_stays_a_pending_hybrid_over_converted_children() -> None:
+def test_memory_graph_barrel_is_a_hybrid_facade_over_converted_children() -> None:
     """The registry's own record of the split: a ``hybrid_barrel`` pair whose four
     portable children are converted and whose two runtime-only children are not
-    routes at all. Pinned exactly, because every other gate in this section is
-    about what may *not* happen to that state."""
+    routes at all. That is exactly what ``hybrid_facade`` means, and the state now
+    says so. Pinned exactly, because every other gate in this section is about what
+    may *not* happen to it."""
     manifest = load_manifest()
     route = manifest.route_for_legacy("omnivia_memory.memory_graph")
     assert route.pair_kind is PairKind.HYBRID_BARREL
     assert route.shape is Shape.BARREL
-    assert route.migration_state is MigrationState.PENDING_HYBRID
-    assert not route.is_converted
+    assert route.migration_state is MigrationState.HYBRID_FACADE
+    assert route.is_converted
     assert "memory_graph" in {
-        item.suffix for item in manifest.by_state(MigrationState.PENDING_HYBRID)
+        item.suffix for item in manifest.by_state(MigrationState.HYBRID_FACADE)
     }
+    assert manifest.by_state(MigrationState.PENDING_HYBRID) == ()
 
     for suffix in ("assembly", "fixtures", "models", "validation"):
         child = manifest.route_for_legacy(f"omnivia_memory.memory_graph.{suffix}")
@@ -1418,20 +1440,37 @@ def test_memory_graph_barrel_stays_a_pending_hybrid_over_converted_children() ->
         "pending_root",
     ],
 )
-def test_memory_graph_barrel_cannot_be_promoted_out_of_pending_hybrid(
+def test_memory_graph_barrel_admits_no_state_but_its_two_hybrid_ones(
     state: str,
 ) -> None:
     """Now that all four portable children are converted, ``transitive_facade``
     looks tempting -- and it is exactly wrong: the barrel would stop being
     source-checked against its two runtime-only children, which are not routes and
-    can never be converted children. ``pending_hybrid`` is the only state a
-    ``hybrid_barrel``/``barrel`` pair may be in, so every other value (including
-    the two leaf-only states and the root's) is rejected at load time by the
-    combination rule rather than needing a state-specific waiver."""
+    can never be converted children. ``hybrid_facade`` and ``pending_hybrid`` are
+    the only two states a ``hybrid_barrel``/``barrel`` pair may be in at all, so
+    every other value (including the two leaf-only states and the root's) is
+    rejected at load time by the combination rule rather than needing a
+    state-specific waiver."""
     document = _document()
     _route(document, "memory_graph")["migration_state"] = state
     with pytest.raises(FacadeManifestError, match="valid combination"):
         load_manifest(document)
+
+
+def test_memory_graph_barrel_cannot_be_walked_back_to_pending_hybrid() -> None:
+    """The one state that *is* still a valid combination for this pair is the one
+    it just left, so the combination rule cannot be what stops the walk-back. The
+    source gate is: every routed child is converted and the barrel's own unchanged
+    source is already an exact hybrid facade, so declaring it pending would be the
+    registry understating what the file does."""
+    document = _document()
+    _route(document, "memory_graph")["migration_state"] = "pending_hybrid"
+    load_manifest(document)
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_route_sources(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert "omnivia_memory.memory_graph" in joined
+    assert "declared 'pending_hybrid'" in joined
 
 
 def test_memory_graph_barrel_historical_source_is_not_a_transitive_facade() -> None:
@@ -1750,8 +1789,10 @@ def _split_defects(source: str) -> list[str]:
 def test_graph_pair_states_and_shapes_are_exact() -> None:
     """The registry's own record of the split: a direct/leaf pair per module, one
     ``direct_facade`` and one ``split_facade``, both converted, under a
-    ``hybrid_barrel`` that is not. Pinned exactly, because every other gate in
-    this section is about what may *not* happen to those states."""
+    ``hybrid_barrel`` that is now a converted ``hybrid_facade`` too -- its two
+    portable blocks hop through those leaves, its ``search_service`` block stays
+    legacy. Pinned exactly, because every other gate in this section is about what
+    may *not* happen to those states."""
     manifest = load_manifest()
 
     models = manifest.route_for_legacy("omnivia_memory.graph.models")
@@ -1775,9 +1816,9 @@ def test_graph_pair_states_and_shapes_are_exact() -> None:
     assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
         PairKind.HYBRID_BARREL,
         Shape.BARREL,
-        MigrationState.PENDING_HYBRID,
+        MigrationState.HYBRID_FACADE,
     )
-    assert not barrel.is_converted
+    assert barrel.is_converted
 
     for runtime_only in (
         "omnivia_memory.graph.repository",
@@ -2181,12 +2222,13 @@ def test_validate_route_sources_enforces_the_graph_states(
         validate_route_sources(manifest=document)
 
 
-def test_graph_barrel_cannot_be_promoted_now_that_both_leaves_are_converted() -> None:
+def test_graph_barrel_cannot_become_a_transitive_facade_or_any_leaf_state() -> None:
     """Both portable children are converted, so ``transitive_facade`` looks
     tempting -- and it is exactly wrong: the barrel also re-exports
     ``GraphSearchError``/``GraphSearchService`` from the runtime-only
     ``search_service`` leaf, which is not a route and can never be a converted
-    child. ``pending_hybrid`` stays the only state it may be in."""
+    child. ``hybrid_facade`` is what it is instead, and no other state is even a
+    valid combination for the pair."""
     for state in (
         "transitive_facade",
         "pending_direct_barrel",
@@ -2358,10 +2400,14 @@ def test_graph_barrel_transitive_form_requires_both_children() -> None:
 #:
 #: ``ingestion.models`` and ``ingestion.watcher.models`` are plain
 #: ``direct_facade`` leaves -- one import each, nothing retained -- but neither
-#: barrel above them can follow: fourteen of the ``ingestion`` barrel's nineteen
-#: exports come from the runtime-only chunker/extractor/pipeline/repository/
-#: scanner leaves, and two of the ``ingestion.watcher`` barrel's twelve come from
-#: the runtime-only ``debouncer``/``tracker``. Both stay ``pending_hybrid``.
+#: barrel above them can become a pure re-export of the canonical package:
+#: fourteen of the ``ingestion`` barrel's nineteen exports come from the
+#: runtime-only chunker/extractor/pipeline/repository/scanner leaves, and two of
+#: the ``ingestion.watcher`` barrel's twelve come from the runtime-only
+#: ``debouncer``/``tracker``. Both are accepted ``hybrid_facade`` routes instead:
+#: portable exports canonical through the converted child leaf, runtime exports
+#: still the exact legacy objects, and therefore neither is a
+#: ``transitive_facade``.
 #: --------------------------------------------------------------------------
 
 _INGESTION_MODELS_CANONICAL = "omnivia_core.ingestion.models"
@@ -2462,9 +2508,9 @@ def test_ingestion_pair_states_and_shapes_are_exact() -> None:
         assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
             PairKind.HYBRID_BARREL,
             Shape.BARREL,
-            MigrationState.PENDING_HYBRID,
+            MigrationState.HYBRID_FACADE,
         )
-        assert not barrel.is_converted
+        assert barrel.is_converted
 
     for runtime_only in (
         "omnivia_memory.ingestion.chunker",
@@ -2549,15 +2595,16 @@ def test_validate_route_sources_enforces_the_ingestion_states(
         "pending_root",
     ],
 )
-def test_ingestion_barrels_cannot_be_promoted_out_of_pending_hybrid(
+def test_ingestion_barrels_admit_no_state_but_their_two_hybrid_ones(
     suffix: str, state: str
 ) -> None:
-    """Each barrel's one portable child is converted, so ``transitive_facade``
+    """Each barrel's portable children are converted, so ``transitive_facade``
     looks tempting -- and it is exactly wrong: both barrels also re-export from
     runtime-only leaves that are not routes and can never be converted children.
-    ``pending_hybrid`` is the only state a ``hybrid_barrel``/``barrel`` pair may
-    be in, so every other value is rejected at load time by the combination rule
-    rather than needing a state-specific waiver."""
+    ``hybrid_facade`` and ``pending_hybrid`` are the only two states a
+    ``hybrid_barrel``/``barrel`` pair may be in at all, so every other value is
+    rejected at load time by the combination rule rather than needing a
+    state-specific waiver."""
     document = _document()
     _route(document, suffix)["migration_state"] = state
     with pytest.raises(FacadeManifestError, match="valid combination"):
@@ -3030,9 +3077,12 @@ def test_ingestion_barrel_transitive_form_requires_its_converted_child(
 #: ``workspace.models`` is a plain ``direct_facade`` leaf -- one import, nothing
 #: retained -- and converting it empties ``source_parity`` entirely: no
 #: duplicated leaf remains anywhere in the registry. Its barrel still cannot
-#: follow, because two of its seven exports (``WorkspaceRepository`` and
-#: ``WorkspaceService``) come from the runtime-only ``repository``/``service``
-#: leaves. It stays ``pending_hybrid``.
+#: become a pure re-export of the canonical package, because two of its seven
+#: exports (``WorkspaceRepository`` and ``WorkspaceService``) come from the
+#: runtime-only ``repository``/``service`` leaves. It is an accepted
+#: ``hybrid_facade`` route instead: its five portable exports are canonical
+#: through the converted ``workspace.models`` leaf while those two stay the exact
+#: legacy objects, which is why it is not a ``transitive_facade``.
 #: --------------------------------------------------------------------------
 
 _WORKSPACE_MODELS_CANONICAL = "omnivia_core.workspace.models"
@@ -3080,9 +3130,9 @@ def test_workspace_pair_states_and_shapes_are_exact() -> None:
     assert (barrel.pair_kind, barrel.shape, barrel.migration_state) == (
         PairKind.HYBRID_BARREL,
         Shape.BARREL,
-        MigrationState.PENDING_HYBRID,
+        MigrationState.HYBRID_FACADE,
     )
-    assert not barrel.is_converted
+    assert barrel.is_converted
 
     for runtime_only in (
         "omnivia_memory.workspace.repository",
@@ -3095,12 +3145,14 @@ def test_workspace_pair_states_and_shapes_are_exact() -> None:
 
 def test_no_duplicated_leaf_remains_in_the_registry() -> None:
     """``workspace.models`` was the last of them, so both duplicated-source states
-    are now empty and every ``leaf`` route is converted.
+    are now empty and every ``leaf`` route is converted -- and with the six hybrid
+    barrels promoted, every ``barrel`` route is too. The package root is the only
+    unconverted route left in the registry, and it is a separate future decision.
 
     Pinned as its own fact rather than inferred from ``EXPECTED_STATE_SUFFIXES``:
     that map derives ``source_parity`` by subtraction, so it would stay satisfied
     if a leaf were dropped from the registry altogether. This counts the leaves
-    instead."""
+    and barrels instead."""
     manifest = load_manifest()
     assert manifest.by_state(MigrationState.SOURCE_PARITY) == ()
     assert manifest.by_state(MigrationState.CANONICAL_SUBSET) == ()
@@ -3109,17 +3161,13 @@ def test_no_duplicated_leaf_remains_in_the_registry() -> None:
     assert len(leaves) == manifest.expected_counts.leaf == 30
     assert all(route.is_converted for route in leaves)
 
+    barrels = manifest.by_shape(Shape.BARREL)
+    assert len(barrels) == manifest.expected_counts.barrel == 16
+    assert all(route.is_converted for route in barrels)
+
     unconverted = [route for route in manifest.routes if not route.is_converted]
-    assert {route.shape for route in unconverted} == {Shape.BARREL, Shape.ROOT}
-    assert [route.legacy_module for route in unconverted] == [
-        "omnivia_memory",
-        "omnivia_memory.graph",
-        "omnivia_memory.ingestion",
-        "omnivia_memory.ingestion.watcher",
-        "omnivia_memory.memory",
-        "omnivia_memory.memory_graph",
-        "omnivia_memory.workspace",
-    ]
+    assert {route.shape for route in unconverted} == {Shape.ROOT}
+    assert [route.legacy_module for route in unconverted] == ["omnivia_memory"]
 
 
 @pytest.mark.parametrize("state", ["canonical_subset", "source_parity"])
@@ -3175,13 +3223,14 @@ def test_validate_route_sources_enforces_the_workspace_state(
         "pending_root",
     ],
 )
-def test_workspace_barrel_cannot_be_promoted_out_of_pending_hybrid(state: str) -> None:
+def test_workspace_barrel_admits_no_state_but_its_two_hybrid_ones(state: str) -> None:
     """The barrel's one portable child is converted, so ``transitive_facade`` looks
     tempting -- and it is exactly wrong: the barrel also re-exports from two
     runtime-only leaves that are not routes and can never be converted children.
-    ``pending_hybrid`` is the only state a ``hybrid_barrel``/``barrel`` pair may be
-    in, so every other value is rejected at load time by the combination rule
-    rather than needing a state-specific waiver."""
+    ``hybrid_facade`` and ``pending_hybrid`` are the only two states a
+    ``hybrid_barrel``/``barrel`` pair may be in at all, so every other value is
+    rejected at load time by the combination rule rather than needing a
+    state-specific waiver."""
     document = _document()
     _route(document, "workspace")["migration_state"] = state
     with pytest.raises(FacadeManifestError, match="valid combination"):
@@ -3559,22 +3608,25 @@ def test_checker_is_a_successful_executable_gate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
-    # The per-state counts this batch moved: ``workspace.models`` from
-    # ``source_parity`` into ``direct_facade``, which empties ``source_parity``.
-    # Nothing else moved: its barrel is a hybrid, so no barrel changed state with
-    # it (``transitive_facade`` and ``pending_hybrid`` both stay where they were),
-    # and neither ``canonical_subset`` nor ``split_facade`` is touched. It was the
-    # last unconverted leaf, so the remaining-leaf count reaches zero and only the
-    # six hybrid barrels and the package root are left.
+    # The per-state counts this batch moved: all six hybrid barrels from
+    # ``pending_hybrid`` into the new ``hybrid_facade``, which empties
+    # ``pending_hybrid``. Nothing else moved -- no leaf changed state, so
+    # ``source_parity``, ``canonical_subset``, ``direct_facade``, ``split_facade``
+    # and ``transitive_facade`` all stay exactly where the previous batch left
+    # them. The six barrels were the last unconverted non-root routes, so the
+    # remaining-work line reaches zero on both halves and only the package root
+    # is left -- which the checker deliberately excludes from "remaining", because
+    # converting it is a separate decision.
     assert "canonical_subset: 0" in result.stdout
     assert "source_parity: 0" in result.stdout
     assert "direct_facade: 29" in result.stdout
     assert "split_facade: 1" in result.stdout
     assert "transitive_facade: 10" in result.stdout
+    assert "hybrid_facade: 6" in result.stdout
     assert "pending_direct_barrel: 0" in result.stdout
-    assert "pending_hybrid: 6" in result.stdout
+    assert "pending_hybrid: 0" in result.stdout
     assert "pending_root: 1" in result.stdout
-    assert "remaining: 0 leaves and 6 barrels still to convert" in result.stdout
+    assert "remaining: 0 leaves and 0 barrels still to convert" in result.stdout
 
 
 def _checker_module() -> Any:
@@ -3596,3 +3648,1167 @@ def test_checker_pluralizes_its_remaining_counts(count: int, expected: str) -> N
     and the counts walk down through one to none as leaves are converted. Only one
     is singular."""
     assert _checker_module()._counted(count, "leaf", "leaves") == expected
+
+
+# ---------------------------------------------------------------------------
+# The six ``hybrid_facade`` barrels.
+#
+# A hybrid facade is a *source-unchanged* legacy barrel that is nonetheless
+# converted for compatibility accounting: its portable bindings resolve
+# transitively, through already-converted routed children, to the exact
+# canonical Core objects, while its remaining bindings stay the exact legacy
+# objects imported from descendant modules the registry declares runtime-only.
+# Nothing moves into Core. What ``hybrid_facade_defects`` asserts is that the
+# barrel reaches *nothing else*, and that the two halves really are both there:
+# a barrel reaching only converted children is a ``transitive_facade``, and one
+# reaching only runtime-only modules never had a portable half to convert.
+#
+# The six barrels were promoted in one batch because they are structurally the
+# same thing. Splitting them would leave structurally equivalent converted
+# hybrids in different states, which is exactly what the state exists to stop.
+# ---------------------------------------------------------------------------
+
+#: Each barrel's exact source shape: the ordered import blocks
+#: ``(absolute legacy module, imported names in source order)`` and the exact
+#: ordered ``__all__`` literal. Restated here rather than read off the six
+#: files, because these are the files whose edits these fixtures exist to
+#: reject. ``portable`` and ``runtime`` partition the barrel's exports by
+#: whether they hop through a converted child or stay legacy-owned.
+_HYBRID_BARREL_SOURCES: tuple[dict[str, Any], ...] = (
+    {
+        "suffix": "graph",
+        "blocks": (
+            (
+                "omnivia_memory.graph.models",
+                (
+                    "ApprovalStatus",
+                    "Entity",
+                    "EntityType",
+                    "Relationship",
+                    "RelationshipType",
+                ),
+            ),
+            (
+                "omnivia_memory.graph.search_models",
+                ("GraphSearchQuery", "GraphSearchResult", "GraphSearchResultSet"),
+            ),
+            (
+                "omnivia_memory.graph.search_service",
+                ("GraphSearchError", "GraphSearchService"),
+            ),
+        ),
+        "all": (
+            "ApprovalStatus",
+            "Entity",
+            "EntityType",
+            "GraphSearchError",
+            "GraphSearchQuery",
+            "GraphSearchResult",
+            "GraphSearchResultSet",
+            "GraphSearchService",
+            "Relationship",
+            "RelationshipType",
+        ),
+        "portable": (
+            "ApprovalStatus",
+            "Entity",
+            "EntityType",
+            "GraphSearchQuery",
+            "GraphSearchResult",
+            "GraphSearchResultSet",
+            "Relationship",
+            "RelationshipType",
+        ),
+        "runtime": ("GraphSearchError", "GraphSearchService"),
+    },
+    {
+        "suffix": "ingestion",
+        "blocks": (
+            (
+                "omnivia_memory.ingestion.chunker",
+                ("BaseChunker", "CharacterChunker", "ChunkConfig", "ParagraphChunker"),
+            ),
+            (
+                "omnivia_memory.ingestion.extractors",
+                ("BaseExtractor", "DOCXExtractor", "MarkdownExtractor", "PDFExtractor"),
+            ),
+            (
+                "omnivia_memory.ingestion.models",
+                ("Chunk", "ExtractionResult", "FileType", "ParseStatus", "Source"),
+            ),
+            (
+                "omnivia_memory.ingestion.pipeline",
+                ("IngestResult", "IngestionPipeline"),
+            ),
+            ("omnivia_memory.ingestion.repositories", ("ChunkRepository",)),
+            (
+                "omnivia_memory.ingestion.scanner",
+                ("FileInfo", "FileScanner", "ScanOptions"),
+            ),
+        ),
+        "all": (
+            "BaseChunker",
+            "BaseExtractor",
+            "CharacterChunker",
+            "Chunk",
+            "ChunkConfig",
+            "ChunkRepository",
+            "DOCXExtractor",
+            "ExtractionResult",
+            "FileInfo",
+            "FileScanner",
+            "FileType",
+            "IngestResult",
+            "IngestionPipeline",
+            "MarkdownExtractor",
+            "PDFExtractor",
+            "ParagraphChunker",
+            "ParseStatus",
+            "ScanOptions",
+            "Source",
+        ),
+        "portable": ("Chunk", "ExtractionResult", "FileType", "ParseStatus", "Source"),
+        "runtime": (
+            "BaseChunker",
+            "BaseExtractor",
+            "CharacterChunker",
+            "ChunkConfig",
+            "ChunkRepository",
+            "DOCXExtractor",
+            "FileInfo",
+            "FileScanner",
+            "IngestResult",
+            "IngestionPipeline",
+            "MarkdownExtractor",
+            "PDFExtractor",
+            "ParagraphChunker",
+            "ScanOptions",
+        ),
+    },
+    {
+        "suffix": "ingestion.watcher",
+        "blocks": (
+            ("omnivia_memory.ingestion.watcher.debouncer", ("Debouncer",)),
+            (
+                "omnivia_memory.ingestion.watcher.models",
+                (
+                    "DebounceConfig",
+                    "FileChange",
+                    "FileChangeBatch",
+                    "FileChangeType",
+                    "IndexerScheduler",
+                    "IndexerState",
+                    "IndexerStatus",
+                    "ScheduledJob",
+                    "SourceReference",
+                    "WatchedPath",
+                ),
+            ),
+            ("omnivia_memory.ingestion.watcher.tracker", ("SourceTracker",)),
+        ),
+        "all": (
+            "Debouncer",
+            "DebounceConfig",
+            "FileChange",
+            "FileChangeBatch",
+            "FileChangeType",
+            "IndexerScheduler",
+            "IndexerState",
+            "IndexerStatus",
+            "ScheduledJob",
+            "SourceReference",
+            "SourceTracker",
+            "WatchedPath",
+        ),
+        "portable": (
+            "DebounceConfig",
+            "FileChange",
+            "FileChangeBatch",
+            "FileChangeType",
+            "IndexerScheduler",
+            "IndexerState",
+            "IndexerStatus",
+            "ScheduledJob",
+            "SourceReference",
+            "WatchedPath",
+        ),
+        "runtime": ("Debouncer", "SourceTracker"),
+    },
+    {
+        "suffix": "memory",
+        "blocks": (
+            (
+                "omnivia_memory.memory.models",
+                ("Memory", "MemoryCreate", "MemoryUpdate"),
+            ),
+            (
+                "omnivia_memory.memory.service",
+                (
+                    "InvalidTransitionError",
+                    "MemoryNotFoundError",
+                    "MemoryService",
+                    "MemoryServiceError",
+                ),
+            ),
+        ),
+        # Not sorted, and not the import order either: the service block's four
+        # names are imported alphabetically but advertised in their historical
+        # order. Both orders are pinned, separately, on purpose.
+        "all": (
+            "Memory",
+            "MemoryCreate",
+            "MemoryUpdate",
+            "MemoryService",
+            "MemoryServiceError",
+            "MemoryNotFoundError",
+            "InvalidTransitionError",
+        ),
+        "portable": ("Memory", "MemoryCreate", "MemoryUpdate"),
+        "runtime": (
+            "MemoryService",
+            "MemoryServiceError",
+            "MemoryNotFoundError",
+            "InvalidTransitionError",
+        ),
+    },
+    {
+        "suffix": "memory_graph",
+        "blocks": (
+            (
+                "omnivia_memory.memory_graph.assembly",
+                (
+                    "assemble_evidence_graph",
+                    "assemble_graph_preview",
+                    "redact_segment_preview",
+                ),
+            ),
+            (
+                "omnivia_memory.memory_graph.fixtures",
+                ("FIXTURE_TIME", "MemoryGraphFixture", "build_memory_graph_fixture"),
+            ),
+            (
+                "omnivia_memory.memory_graph.ingestion_adapter",
+                (
+                    "IngestionGraphAdapterError",
+                    "IngestionGraphWriteResult",
+                    "chunk_to_memory_segment",
+                    "source_to_memory_source",
+                    "write_ingestion_records_to_graph",
+                ),
+            ),
+            (
+                "omnivia_memory.memory_graph.store",
+                ("MemoryGraphStore", "MemoryGraphStoreError"),
+            ),
+            (
+                "omnivia_memory.memory_graph.models",
+                (
+                    "Confidence",
+                    "EvidenceGraphResponse",
+                    "GraphPreviewEdge",
+                    "GraphPreviewKind",
+                    "GraphPreviewNode",
+                    "GraphPreviewResponse",
+                    "GraphPreviewState",
+                    "MemoryEntity",
+                    "MemoryFact",
+                    "MemoryFactStatus",
+                    "MemorySegment",
+                    "MemorySegmentKind",
+                    "MemorySource",
+                    "MemorySourceFreshness",
+                    "MemorySourceStatus",
+                    "MemorySourceType",
+                    "RetrievalTrace",
+                    "SourceRef",
+                ),
+            ),
+            (
+                "omnivia_memory.memory_graph.validation",
+                (
+                    "ValidationResult",
+                    "validate_evidence_graph_response",
+                    "validate_graph_preview_response",
+                    "validate_memory_entity",
+                    "validate_memory_fact",
+                    "validate_memory_segment",
+                    "validate_memory_source",
+                ),
+            ),
+        ),
+        "all": (
+            "Confidence",
+            "EvidenceGraphResponse",
+            "FIXTURE_TIME",
+            "GraphPreviewEdge",
+            "GraphPreviewKind",
+            "GraphPreviewNode",
+            "GraphPreviewResponse",
+            "GraphPreviewState",
+            "IngestionGraphAdapterError",
+            "IngestionGraphWriteResult",
+            "MemoryEntity",
+            "MemoryFact",
+            "MemoryFactStatus",
+            "MemoryGraphFixture",
+            "MemoryGraphStore",
+            "MemoryGraphStoreError",
+            "MemorySegment",
+            "MemorySegmentKind",
+            "MemorySource",
+            "MemorySourceFreshness",
+            "MemorySourceStatus",
+            "MemorySourceType",
+            "RetrievalTrace",
+            "SourceRef",
+            "ValidationResult",
+            "assemble_evidence_graph",
+            "assemble_graph_preview",
+            "build_memory_graph_fixture",
+            "chunk_to_memory_segment",
+            "redact_segment_preview",
+            "source_to_memory_source",
+            "validate_evidence_graph_response",
+            "validate_graph_preview_response",
+            "validate_memory_entity",
+            "validate_memory_fact",
+            "validate_memory_segment",
+            "validate_memory_source",
+            "write_ingestion_records_to_graph",
+        ),
+        "portable": (
+            "Confidence",
+            "EvidenceGraphResponse",
+            "FIXTURE_TIME",
+            "GraphPreviewEdge",
+            "GraphPreviewKind",
+            "GraphPreviewNode",
+            "GraphPreviewResponse",
+            "GraphPreviewState",
+            "MemoryEntity",
+            "MemoryFact",
+            "MemoryFactStatus",
+            "MemoryGraphFixture",
+            "MemorySegment",
+            "MemorySegmentKind",
+            "MemorySource",
+            "MemorySourceFreshness",
+            "MemorySourceStatus",
+            "MemorySourceType",
+            "RetrievalTrace",
+            "SourceRef",
+            "ValidationResult",
+            "assemble_evidence_graph",
+            "assemble_graph_preview",
+            "build_memory_graph_fixture",
+            "redact_segment_preview",
+            "validate_evidence_graph_response",
+            "validate_graph_preview_response",
+            "validate_memory_entity",
+            "validate_memory_fact",
+            "validate_memory_segment",
+            "validate_memory_source",
+        ),
+        "runtime": (
+            "IngestionGraphAdapterError",
+            "IngestionGraphWriteResult",
+            "MemoryGraphStore",
+            "MemoryGraphStoreError",
+            "chunk_to_memory_segment",
+            "source_to_memory_source",
+            "write_ingestion_records_to_graph",
+        ),
+    },
+    {
+        "suffix": "workspace",
+        "blocks": (
+            (
+                "omnivia_memory.workspace.models",
+                (
+                    "ImportSummary",
+                    "Workspace",
+                    "WorkspaceCreate",
+                    "WorkspaceIndexStatus",
+                    "WorkspaceUpdate",
+                ),
+            ),
+            ("omnivia_memory.workspace.repository", ("WorkspaceRepository",)),
+            ("omnivia_memory.workspace.service", ("WorkspaceService",)),
+        ),
+        "all": (
+            "ImportSummary",
+            "Workspace",
+            "WorkspaceCreate",
+            "WorkspaceIndexStatus",
+            "WorkspaceRepository",
+            "WorkspaceService",
+            "WorkspaceUpdate",
+        ),
+        "portable": (
+            "ImportSummary",
+            "Workspace",
+            "WorkspaceCreate",
+            "WorkspaceIndexStatus",
+            "WorkspaceUpdate",
+        ),
+        "runtime": ("WorkspaceRepository", "WorkspaceService"),
+    },
+)
+
+#: The aggregate partition the six barrels advertise: 93 legacy exports, 62 of
+#: them portable canonical identities and 31 runtime legacy ones.
+_HYBRID_TOTALS = (93, 62, 31)
+
+
+def _hybrid_id(barrel: dict[str, Any]) -> str:
+    return str(barrel["suffix"])
+
+
+def _hybrid_source(
+    blocks: tuple[tuple[str, tuple[str, ...]], ...],
+    exported: tuple[str, ...],
+    extra_source: str = "",
+    *,
+    docstring: str = '"""Barrel."""\n',
+) -> str:
+    """A synthetic hybrid barrel: docstring, the import blocks, one ``__all__``."""
+    source = docstring
+    for module, names in blocks:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from {module} import (\n{body})\n"
+    all_body = "".join(f'    "{name}",\n' for name in exported)
+    return source + f"__all__ = [\n{all_body}]\n" + extra_source
+
+
+def _hybrid_route_and_children(suffix: str) -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    route = manifest.route_for_legacy(f"omnivia_memory.{suffix}")
+    children = [
+        item
+        for item in manifest.routes
+        if item.suffix and item.suffix.rpartition(".")[0] == suffix
+    ]
+    return route, children
+
+
+def _hybrid_defects(
+    barrel: dict[str, Any],
+    blocks: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+    exported: tuple[str, ...] | None = None,
+    extra_source: str = "",
+    *,
+    docstring: str = '"""Barrel."""\n',
+    children: list[Any] | None = None,
+) -> list[str]:
+    route, routed_children = _hybrid_route_and_children(barrel["suffix"])
+    source = _hybrid_source(
+        barrel["blocks"] if blocks is None else blocks,
+        barrel["all"] if exported is None else exported,
+        extra_source,
+        docstring=docstring,
+    )
+    return hybrid_facade_defects(
+        ast.parse(source),
+        route,
+        routed_children if children is None else children,
+        load_manifest().runtime_only_modules,
+    )
+
+
+def _portable_blocks(barrel: dict[str, Any]) -> tuple[str, ...]:
+    """The barrel's import blocks that name a routed child, by module."""
+    _route, children = _hybrid_route_and_children(barrel["suffix"])
+    routed = {child.legacy_module for child in children}
+    return tuple(module for module, _names in barrel["blocks"] if module in routed)
+
+
+def _runtime_blocks(barrel: dict[str, Any]) -> tuple[str, ...]:
+    """The barrel's import blocks that name a declared runtime-only module."""
+    portable = set(_portable_blocks(barrel))
+    return tuple(module for module, _names in barrel["blocks"] if module not in portable)
+
+
+def test_all_six_hybrid_barrels_are_converted_hybrid_facades() -> None:
+    """The registry's own record of this batch, pinned exactly: the same six
+    ``hybrid_barrel``/``barrel`` pairs the previous checkpoint held at
+    ``pending_hybrid`` are now ``hybrid_facade`` and converted, ``pending_hybrid``
+    is empty, and no count moved -- this batch changes six state strings and
+    nothing else."""
+    manifest = load_manifest()
+    assert {route.suffix for route in manifest.by_state(MigrationState.HYBRID_FACADE)} == (
+        EXPECTED_HYBRID_SUFFIXES
+    )
+    assert {barrel["suffix"] for barrel in _HYBRID_BARREL_SOURCES} == (
+        EXPECTED_HYBRID_SUFFIXES
+    )
+    assert manifest.by_state(MigrationState.PENDING_HYBRID) == ()
+    for route in manifest.by_state(MigrationState.HYBRID_FACADE):
+        assert route.pair_kind is PairKind.HYBRID_BARREL
+        assert route.shape is Shape.BARREL
+        assert route.is_converted
+    assert manifest.observed_counts().as_dict() == {
+        "routes": 47,
+        "direct": 40,
+        "hybrid_barrel": 6,
+        "root": 1,
+        "leaf": 30,
+        "barrel": 16,
+        "runtime_only_modules": 21,
+    }
+
+
+def test_hybrid_facade_partition_totals_are_exact() -> None:
+    """93 legacy barrel exports across the six: 62 portable and 31 runtime. The
+    per-barrel tuples are restated independently above, so this is the one place
+    the aggregate is asserted -- a name that moved from one half to the other
+    inside a barrel would keep every per-barrel count and fail here."""
+    total = sum(len(barrel["all"]) for barrel in _HYBRID_BARREL_SOURCES)
+    portable = sum(len(barrel["portable"]) for barrel in _HYBRID_BARREL_SOURCES)
+    runtime = sum(len(barrel["runtime"]) for barrel in _HYBRID_BARREL_SOURCES)
+    assert (total, portable, runtime) == _HYBRID_TOTALS
+    for barrel in _HYBRID_BARREL_SOURCES:
+        assert set(barrel["portable"]).isdisjoint(barrel["runtime"])
+        assert set(barrel["portable"]) | set(barrel["runtime"]) == set(barrel["all"])
+        imported = [name for _module, names in barrel["blocks"] for name in names]
+        assert sorted(imported) == sorted(barrel["all"])
+        assert len(imported) == len(set(imported))
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_barrel_source_matches_its_frozen_import_table(
+    barrel: dict[str, Any],
+) -> None:
+    """Each barrel's real, unchanged file must be exactly the table above:
+    a docstring, the import blocks in that order with those names in that order,
+    then the ordered ``__all__`` literal, and nothing else. This is the gate that
+    makes the state honest -- reordering a block, renaming an import, or reordering
+    ``__all__`` fails here even though every identity check would still pass."""
+    route, _children = _hybrid_route_and_children(barrel["suffix"])
+    path = legacy_source_path(REPO_ROOT, route)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assert ast.get_docstring(tree) is not None
+    body = tree.body[1:]
+    assert len(body) == len(barrel["blocks"]) + 1, [ast.dump(node) for node in body]
+
+    for node, (module, names) in zip(body, barrel["blocks"], strict=False):
+        assert isinstance(node, ast.ImportFrom), ast.dump(node)
+        assert node.level == 0
+        assert node.module == module
+        assert tuple(alias.name for alias in node.names) == names
+        assert all(alias.asname is None for alias in node.names)
+
+    assignment = body[-1]
+    assert isinstance(assignment, ast.Assign)
+    (target,) = assignment.targets
+    assert isinstance(target, ast.Name) and target.id == "__all__"
+    assert isinstance(assignment.value, ast.List)
+    assert (
+        tuple(
+            element.value
+            for element in assignment.value.elts
+            if isinstance(element, ast.Constant)
+        )
+        == barrel["all"]
+    )
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_barrel_real_source_has_no_defects(barrel: dict[str, Any]) -> None:
+    """The unchanged file itself, not a fixture: zero defects. Read from disk so a
+    fixture that had drifted from the real barrel could not make this pass."""
+    route, children = _hybrid_route_and_children(barrel["suffix"])
+    manifest = load_manifest()
+    path = legacy_source_path(REPO_ROOT, route)
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    assert (
+        hybrid_facade_defects(tree, route, children, manifest.runtime_only_modules) == []
+    )
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_fixture_shape_is_the_defect_free_adversary_base(
+    barrel: dict[str, Any],
+) -> None:
+    """The synthetic fixture built from the table must also be defect-free, so every
+    rejection below is proven to fail on the mutation it injects rather than on the
+    fixture's shape. A missing docstring is accepted too: the policy is about what
+    the module *executes*, and a barrel without one is still an exact hybrid."""
+    assert _hybrid_defects(barrel) == []
+    assert _hybrid_defects(barrel, docstring="") == []
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_barrel_source_is_not_a_transitive_or_direct_facade(
+    barrel: dict[str, Any],
+) -> None:
+    """The state is not interchangeable with the ones next to it. Mislabelled
+    ``transitive_facade``, the barrel's runtime blocks are unapproved modules;
+    mislabelled ``direct_facade``, it is not a single canonical re-export at all.
+    Both are rejected on source shape, independently of the combination table."""
+    route, children = _hybrid_route_and_children(barrel["suffix"])
+    tree = ast.parse(
+        legacy_source_path(REPO_ROOT, route).read_text(encoding="utf-8")
+    )
+    converted = [child for child in children if child.is_converted]
+    transitive = transitive_facade_defects(tree, route, converted)
+    assert any("unapproved module" in defect for defect in transitive), transitive
+    for module in _runtime_blocks(barrel):
+        assert any(
+            "unapproved module" in defect and module in defect
+            for defect in transitive
+        ), (module, transitive)
+    assert direct_facade_defects(tree, route.canonical_module) != []
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_barrel_cannot_be_walked_back_to_pending_hybrid(
+    barrel: dict[str, Any],
+) -> None:
+    """``pending_hybrid`` is still a valid *combination* for these pairs, so the
+    load-time table cannot be what stops a walk-back. The source gate is: a pending
+    hybrid whose routed children are all converted and whose source already has no
+    hybrid defects is understating itself, and must say so."""
+    document = _document()
+    _route(document, barrel["suffix"])["migration_state"] = "pending_hybrid"
+    load_manifest(document)
+    with pytest.raises(FacadeManifestError, match="move the state forward") as error:
+        validate_route_sources(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert f"route 'omnivia_memory.{barrel['suffix']}'" in joined
+    assert "declared 'pending_hybrid'" in joined
+
+
+def _errors_by_route(errors: Sequence[str]) -> dict[str, list[str]]:
+    """Group diagnostics by the exact ``route '<module>'`` prefix they carry.
+
+    Substring matching is not safe across this topology: ``ingestion`` is a
+    prefix of ``ingestion.watcher``, so ``"omnivia_memory.ingestion" in joined``
+    is true whenever *either* route is reported. Splitting on the prefix the
+    validator itself emits keeps the two attributable separately.
+    """
+    grouped: dict[str, list[str]] = {}
+    for message in errors:
+        where, separator, detail = message.partition(": ")
+        assert separator, message
+        grouped.setdefault(where, []).append(detail)
+    return grouped
+
+
+def test_pending_hybrid_is_left_alone_while_a_routed_child_is_unconverted() -> None:
+    """The other half of the ``pending_hybrid`` gate: it must not fire on a route
+    that really is still pending.
+
+    ``ingestion`` is the only barrel in the registry with a routed *barrel* child,
+    so it is the only place this can be exercised through the public API. Walk both
+    ``ingestion`` and its nested child ``ingestion.watcher`` back to
+    ``pending_hybrid`` -- a valid combination for either -- and the parent's
+    prerequisite is no longer met: one of its two routed children is unconverted,
+    so nothing about its source is being understated yet and no diagnostic may name
+    it. The deliberately pending watcher does report itself, because *its* own
+    child is converted; the assertions below are keyed on the exact route prefix so
+    that the parent's silence is what is actually proven.
+
+    This is the regression for the ``all(child.is_converted ...)`` half of that
+    gate specifically. The parent barrel does not re-export ``ingestion.watcher``
+    and is not required to (a routed barrel child is a separately routed subtree),
+    so its unchanged source has zero hybrid defects here -- asserted below. Drop
+    the conversion prerequisite and the parent would immediately be told to move
+    its state forward on the strength of that empty defect list, which is exactly
+    what this test forbids.
+    """
+    parent = "route 'omnivia_memory.ingestion'"
+    child = "route 'omnivia_memory.ingestion.watcher'"
+
+    document = _document()
+    _route(document, "ingestion")["migration_state"] = "pending_hybrid"
+    _route(document, "ingestion.watcher")["migration_state"] = "pending_hybrid"
+    manifest = load_manifest(document)
+
+    parent_route = manifest.route_for_legacy("omnivia_memory.ingestion")
+    routed_children = [
+        item
+        for item in manifest.routes
+        if item.suffix and item.suffix.rpartition(".")[0] == "ingestion"
+    ]
+    assert parent_route.migration_state is MigrationState.PENDING_HYBRID
+    assert sorted(
+        (item.legacy_module, item.is_converted) for item in routed_children
+    ) == [
+        ("omnivia_memory.ingestion.models", True),
+        ("omnivia_memory.ingestion.watcher", False),
+    ]
+    tree = ast.parse(
+        legacy_source_path(REPO_ROOT, parent_route).read_text(encoding="utf-8")
+    )
+    assert (
+        hybrid_facade_defects(
+            tree, parent_route, routed_children, manifest.runtime_only_modules
+        )
+        == []
+    )
+
+    for validate in (validate_route_sources, validate_checkout):
+        with pytest.raises(FacadeManifestError) as error:
+            validate(manifest=document)
+        grouped = _errors_by_route(error.value.errors)
+        # Nothing at all is said about the parent -- in particular not the
+        # "move the state forward" verdict its converted sibling topology would
+        # otherwise have earned it.
+        assert parent not in grouped, grouped
+        assert [
+            detail for detail in grouped[child] if "move the state forward" in detail
+        ], grouped
+        assert grouped[child][0].startswith("declared 'pending_hybrid'")
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_facade_accepts_the_committed_registry(barrel: dict[str, Any]) -> None:
+    """The whole registry, checked end to end, accepts all six -- both through the
+    source-only gate and through the full checkout gate."""
+    validate_route_sources()
+    validate_checkout()
+    assert (
+        load_manifest()
+        .route_for_legacy(f"omnivia_memory.{barrel['suffix']}")
+        .migration_state
+        is MigrationState.HYBRID_FACADE
+    )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "kind", "shape"),
+    [
+        ("graph.models", "direct", "leaf"),
+        ("knowledge", "direct", "barrel"),
+        ("", "root", "root"),
+        ("graph", "hybrid_barrel", "leaf"),
+        ("graph", "direct", "barrel"),
+    ],
+    ids=[
+        "direct-leaf",
+        "direct-barrel",
+        "root",
+        "hybrid-kind-wrong-shape",
+        "barrel-wrong-kind",
+    ],
+)
+def test_hybrid_facade_is_only_valid_for_a_hybrid_barrel(
+    suffix: str, kind: str, shape: str
+) -> None:
+    """``hybrid_facade`` describes a barrel that publishes a declared runtime-only
+    half, so only a ``hybrid_barrel``/``barrel`` pair may be in it. A direct leaf, a
+    direct barrel, the package root, and either half of the pair changed on its own
+    are all rejected at load time by the combination rule."""
+    document = _document()
+    route = _route(document, suffix)
+    route["pair_kind"] = kind
+    route["shape"] = shape
+    route["migration_state"] = "hybrid_facade"
+    with pytest.raises(
+        FacadeManifestError, match="valid combination|exactly one root|shape 'root'"
+    ):
+        load_manifest(document)
+
+
+def test_hybrid_facade_is_a_converted_state_whose_source_is_checked(
+    tmp_path: Path,
+) -> None:
+    """The whole point of the state: ``is_converted`` is true for it exactly as it
+    is for the three facade states before it, and -- unlike a pending state -- its
+    source really is read. Proven by editing the barrel in a copied checkout: a
+    pending state would not have noticed."""
+    manifest = load_manifest()
+    converted = {route.suffix for route in manifest.routes if route.is_converted}
+    assert EXPECTED_HYBRID_SUFFIXES <= converted
+    pending = {
+        MigrationState.PENDING_DIRECT_BARREL,
+        MigrationState.PENDING_HYBRID,
+        MigrationState.PENDING_ROOT,
+    }
+    assert EXPECTED_HYBRID_SUFFIXES.isdisjoint(
+        {route.suffix for route in manifest.routes if route.migration_state in pending}
+    )
+
+    _copy_package_trees(tmp_path)
+    barrel = (
+        tmp_path
+        / "services"
+        / "omnivia-memory"
+        / "src"
+        / "omnivia_memory"
+        / "workspace"
+        / "__init__.py"
+    )
+    barrel.write_text(
+        barrel.read_text(encoding="utf-8") + "\n\ndef __getattr__(name):\n"
+        "    raise AttributeError(name)\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(FacadeManifestError, match="dynamic module hook") as error:
+        validate_checkout(tmp_path)
+    assert "declared 'hybrid_facade'" in "; ".join(error.value.errors)
+
+
+def test_hybrid_facade_rejects_a_barrel_with_one_unconverted_child() -> None:
+    """A hybrid facade's portable half is only canonical because its children are.
+    One unconverted routed child and the claim is false -- both at the validator,
+    which refuses the import, and at the registry gate, which refuses the state."""
+    barrel = _HYBRID_BARREL_SOURCES[0]
+    route, children = _hybrid_route_and_children("graph")
+    downgraded = [
+        replace(child, migration_state=MigrationState.SOURCE_PARITY)
+        if child.suffix == "graph.models"
+        else child
+        for child in children
+    ]
+    defects = _hybrid_defects(barrel, children=downgraded)
+    assert any(
+        "routed child 'omnivia_memory.graph.models'" in defect
+        and "not converted" in defect
+        for defect in defects
+    ), defects
+    assert route.migration_state is MigrationState.HYBRID_FACADE
+
+    document = _document()
+    _route(document, "graph.models")["migration_state"] = "source_parity"
+    with pytest.raises(FacadeManifestError) as error:
+        validate_route_sources(manifest=document)
+    joined = "; ".join(error.value.errors)
+    assert "declared 'hybrid_facade' but these routed children are not converted" in (
+        joined
+    )
+    assert "omnivia_memory.graph.models" in joined
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_facade_requires_every_routed_leaf_child(barrel: dict[str, Any]) -> None:
+    """Dropping a portable block -- and the names it bound, so the ``__all__``
+    still matches -- must fail. Without this a barrel could quietly stop
+    re-exporting a converted leaf and keep a perfectly consistent shape.
+
+    ``ingestion`` is the documented exception in the other direction: its routed
+    child ``ingestion.watcher`` is a separately routed barrel with its own contract
+    and has never been re-exported by its parent, so barrel children are not
+    required to be reached."""
+    for dropped in _portable_blocks(barrel):
+        blocks = tuple(block for block in barrel["blocks"] if block[0] != dropped)
+        kept = {name for _module, names in blocks for name in names}
+        exported = tuple(name for name in barrel["all"] if name in kept)
+        defects = _hybrid_defects(barrel, blocks=blocks, exported=exported)
+        assert any(
+            "does not import routed children" in defect and dropped in defect
+            for defect in defects
+        ), (dropped, defects)
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_facade_requires_both_halves(barrel: dict[str, Any]) -> None:
+    """Neither half may vanish. With no runtime block left the barrel is a
+    transitive facade and must be declared one; with no converted child left there
+    is nothing about it that has converted at all."""
+    runtime_modules = set(_runtime_blocks(barrel))
+    portable_modules = set(_portable_blocks(barrel))
+
+    blocks = tuple(block for block in barrel["blocks"] if block[0] not in runtime_modules)
+    kept = {name for _module, names in blocks for name in names}
+    defects = _hybrid_defects(
+        barrel,
+        blocks=blocks,
+        exported=tuple(name for name in barrel["all"] if name in kept),
+    )
+    assert any(
+        "imports no declared runtime-only descendant" in defect for defect in defects
+    ), defects
+
+    blocks = tuple(block for block in barrel["blocks"] if block[0] not in portable_modules)
+    kept = {name for _module, names in blocks for name in names}
+    defects = _hybrid_defects(
+        barrel,
+        blocks=blocks,
+        exported=tuple(name for name in barrel["all"] if name in kept),
+    )
+    assert any(
+        "imports no converted routed child" in defect for defect in defects
+    ), defects
+
+
+@pytest.mark.parametrize("barrel", _HYBRID_BARREL_SOURCES, ids=_hybrid_id)
+def test_hybrid_facade_rejects_canonicalising_either_half(
+    barrel: dict[str, Any],
+) -> None:
+    """Rerouting *any* block at ``omnivia_core`` is rejected, portable or runtime.
+    Canonicalising the portable half would make the barrel a direct facade rather
+    than a transitive one; canonicalising the runtime half would claim Core owns a
+    module it deliberately does not, and the import would not even resolve."""
+    for module, _names in barrel["blocks"]:
+        canonical = module.replace("omnivia_memory", "omnivia_core", 1)
+        blocks = tuple(
+            (canonical if block[0] == module else block[0], block[1])
+            for block in barrel["blocks"]
+        )
+        defects = _hybrid_defects(barrel, blocks=blocks)
+        assert any(
+            "imports the canonical module" in defect and canonical in defect
+            for defect in defects
+        ), (module, defects)
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        # A legacy descendant of the barrel that is not a route and is not in
+        # ``runtime_only_modules``: the exact module a future runtime split would
+        # add, and it may not enter the barrel without being declared first.
+        (
+            "from omnivia_memory.graph.undeclared import Helper\n",
+            "neither a routed child nor declared runtime-only",
+        ),
+        # An unrelated sibling domain, converted or not.
+        (
+            "from omnivia_memory.knowledge.models import KnowledgeItem\n",
+            "outside the 'omnivia_memory.graph' subtree",
+        ),
+        (
+            "from omnivia_core.knowledge.models import KnowledgeItem\n",
+            "imports the canonical module",
+        ),
+        # An unrelated runtime-only package: declared runtime-only, but not a
+        # descendant of *this* barrel.
+        (
+            "from omnivia_memory.persistence import Database\n",
+            "outside the 'omnivia_memory.graph' subtree",
+        ),
+        # The package root, and the barrel itself.
+        ("from omnivia_memory import Entity\n", "outside the"),
+        ("from omnivia_memory.graph import Entity\n", "imports itself"),
+        # Relative forms: the policy accepts absolute imports only, so a relative
+        # path is rejected before it is even resolved.
+        ("from .models import Entity\n", "relative import"),
+        ("from .search_service import GraphSearchError\n", "relative import"),
+        ("from ..persistence import Database\n", "relative import"),
+        # Aliases and stars, on an otherwise approved module.
+        (
+            "from omnivia_memory.graph.models import Entity as GraphEntity\n",
+            "aliases 'Entity' as 'GraphEntity'",
+        ),
+        ("from omnivia_memory.graph.models import *\n", "star import"),
+        # A plain import, of an approved module and of anything else.
+        ("import omnivia_memory.graph.models\n", "plain import"),
+        ("import sys\n", "plain import"),
+        # A second block naming a module the barrel already imports.
+        (
+            "from omnivia_memory.graph.models import Entity\n",
+            "in more than one block",
+        ),
+        # Statements of its own, of every kind the policy forbids.
+        ("Entity = object()\n", "assignments"),
+        ("VERSION: str = '1'\n", "statements of its own (AnnAssign)"),
+        ("def helper():\n    return None\n", "statements of its own (FunctionDef)"),
+        (
+            "async def helper():\n    return None\n",
+            "statements of its own (AsyncFunctionDef)",
+        ),
+        ("class Entity:\n    pass\n", "statements of its own (ClassDef)"),
+        (
+            "if True:\n    Entity = object()\n",
+            "statements of its own (If)",
+        ),
+        (
+            "for name in ():\n    pass\n",
+            "statements of its own (For)",
+        ),
+        (
+            "try:\n    pass\nexcept Exception:\n    pass\n",
+            "statements of its own (Try)",
+        ),
+        ('"""A second string."""\n', "statements of its own (Expr)"),
+        # The two dynamic hooks, named specifically: every export must be a real,
+        # statically visible binding decided at import time.
+        (
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "dynamic module hook '__getattr__'",
+        ),
+        ("def __dir__():\n    return []\n", "dynamic module hook '__dir__'"),
+    ],
+)
+def test_hybrid_facade_rejects_a_reroute_or_local_statement(
+    extra_source: str, pattern: str
+) -> None:
+    """Every way a hybrid barrel could stop being exactly its two declared halves,
+    injected into the defect-free ``graph`` fixture so the pattern asserted is the
+    one the mutation causes."""
+    defects = _hybrid_defects(_HYBRID_BARREL_SOURCES[0], extra_source=extra_source)
+    assert any(pattern in defect for defect in defects), defects
+
+
+@pytest.mark.parametrize(
+    ("exported", "pattern"),
+    [
+        # A name the barrel does not bind, and one it binds but hides.
+        (
+            (
+                "ApprovalStatus",
+                "Entity",
+                "EntityType",
+                "GraphSearchError",
+                "GraphSearchQuery",
+                "GraphSearchResult",
+                "GraphSearchResultSet",
+                "GraphSearchService",
+                "Relationship",
+                "RelationshipType",
+                "EntityRepository",
+            ),
+            "does not exactly match the literal __all__",
+        ),
+        (
+            (
+                "ApprovalStatus",
+                "Entity",
+                "EntityType",
+                "GraphSearchError",
+                "GraphSearchQuery",
+                "GraphSearchResult",
+                "GraphSearchResultSet",
+                "GraphSearchService",
+                "Relationship",
+            ),
+            "does not exactly match the literal __all__",
+        ),
+        # A duplicated entry: the same surface, advertised twice.
+        (
+            (
+                "ApprovalStatus",
+                "ApprovalStatus",
+                "Entity",
+                "EntityType",
+                "GraphSearchError",
+                "GraphSearchQuery",
+                "GraphSearchResult",
+                "GraphSearchResultSet",
+                "GraphSearchService",
+                "Relationship",
+                "RelationshipType",
+            ),
+            "__all__ contains duplicate names",
+        ),
+    ],
+    ids=["extra-name", "missing-name", "duplicate-name"],
+)
+def test_hybrid_facade_requires_all_to_equal_the_bound_names(
+    exported: tuple[str, ...], pattern: str
+) -> None:
+    defects = _hybrid_defects(_HYBRID_BARREL_SOURCES[0], exported=exported)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_hybrid_facade_rejects_a_duplicated_binding() -> None:
+    """The same name imported from two different approved modules. Both modules are
+    allowed and ``__all__`` still lists the name once, so only the duplicate-binding
+    rule catches it -- and it must, because the second import silently wins."""
+    barrel = _HYBRID_BARREL_SOURCES[0]
+    blocks = (
+        *barrel["blocks"],
+        ("omnivia_memory.graph.repository", ("Entity",)),
+    )
+    defects = _hybrid_defects(barrel, blocks=blocks)
+    assert any(
+        "binds the same imported name twice: ['Entity']" in defect for defect in defects
+    ), defects
+
+
+@pytest.mark.parametrize(
+    ("all_source", "pattern"),
+    [
+        ("__all__ = list(__all__)\n", "not a literal list/tuple of strings"),
+        ("__all__ = ['Entity', 1]\n", "not a literal list/tuple of strings"),
+        ("__all__ = __EXPORTS__ = ['Entity']\n", "assigns a name other than"),
+        ("EXPORTS = ['Entity']\n", "assigns a name other than"),
+    ],
+    ids=["nonliteral", "non-string-element", "two-targets", "wrong-name"],
+)
+def test_hybrid_facade_requires_one_literal_all(all_source: str, pattern: str) -> None:
+    """``__all__`` has to be readable statically: a computed value, a non-string
+    element, a chained target, or a differently named list all fail."""
+    barrel = _HYBRID_BARREL_SOURCES[0]
+    route, children = _hybrid_route_and_children("graph")
+    source = ""
+    for module, names in barrel["blocks"]:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from {module} import (\n{body})\n"
+    defects = hybrid_facade_defects(
+        ast.parse(source + all_source),
+        route,
+        children,
+        load_manifest().runtime_only_modules,
+    )
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_hybrid_facade_requires_exactly_one_all_assignment() -> None:
+    barrel = _HYBRID_BARREL_SOURCES[0]
+    defects = _hybrid_defects(barrel, extra_source='__all__ = ["Entity"]\n')
+    assert any("has 2 assignments" in defect for defect in defects), defects
+
+    route, children = _hybrid_route_and_children("graph")
+    source = ""
+    for module, names in barrel["blocks"]:
+        body = "".join(f"    {name},\n" for name in names)
+        source += f"from {module} import (\n{body})\n"
+    defects = hybrid_facade_defects(
+        ast.parse(source),
+        route,
+        children,
+        load_manifest().runtime_only_modules,
+    )
+    assert any("has 0 assignments" in defect for defect in defects), defects
+
+
+def test_hybrid_facade_rejects_an_undeclared_runtime_module_at_the_registry() -> None:
+    """The runtime half is only legitimate because ``runtime_only_modules`` names
+    it. Drop a barrel's runtime module from that list and the same unchanged source
+    stops being a hybrid facade -- which is what makes the declaration load-bearing
+    rather than descriptive.
+
+    Removing it from the list alone would also fail the checkout gate (the module
+    is still on disk and legacy-only), so this exercises the source policy directly
+    with a shortened list."""
+    manifest = load_manifest()
+    route, children = _hybrid_route_and_children("workspace")
+    tree = ast.parse(
+        legacy_source_path(REPO_ROOT, route).read_text(encoding="utf-8")
+    )
+    shortened = tuple(
+        module
+        for module in manifest.runtime_only_modules
+        if module != "omnivia_memory.workspace.service"
+    )
+    defects = hybrid_facade_defects(tree, route, children, shortened)
+    assert any(
+        "omnivia_memory.workspace.service" in defect
+        and "neither a routed child nor declared runtime-only" in defect
+        for defect in defects
+    ), defects
+
+
+def test_hybrid_source_inspection_does_not_import_either_package() -> None:
+    """The same standard-library-only guarantee the loader has: reading the six
+    barrels' sources and judging them must not pull either package into the
+    process, so a stale installed copy cannot satisfy or break this gate."""
+    script = "\n".join(
+        [
+            "import sys",
+            f"sys.path.insert(0, {str(REPO_ROOT)!r})",
+            "from baseline.facade_manifest import validate_route_sources",
+            "validate_route_sources()",
+            "assert not any(n == 'omnivia_core' or n.startswith('omnivia_core.') for n in sys.modules)",
+            "assert not any(n == 'omnivia_memory' or n.startswith('omnivia_memory.') for n in sys.modules)",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

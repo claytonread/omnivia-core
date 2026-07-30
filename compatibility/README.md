@@ -50,17 +50,35 @@ them.
 
 The source policy each declared `migration_state` implies *is* enforced — by the
 loader rather than by the JSON. `validate_checkout` parses every routed legacy
-module and fails when the file contradicts its state: a `direct_facade`,
-`split_facade`, or `transitive_facade` whose source is not one, and equally a
-`source_parity` or `canonical_subset` leaf that has quietly become either kind of
-facade without its state being moved forward. The `pending_*` states assert
-nothing about source, so there is nothing there to contradict; what constrains
-them is the state/shape/`pair_kind` combination table — `pending_hybrid` only on
-a hybrid barrel, `pending_root` only on the package root.
+module and fails when the file contradicts its state:
 
-Do not read the registry as a claim that every route is converted.
-`migration_state` records how far each route has actually moved, and the checker
-prints what remains; read that, not this paragraph, for the current count.
+- a `direct_facade`, `split_facade`, or `transitive_facade` whose source is not
+  one;
+- a `hybrid_facade` whose source is not one. This state has *mixed* semantics on
+  purpose: the barrel is source-unchanged, every portable name it publishes must
+  resolve transitively — through an already-converted routed child — to the exact
+  canonical Core object, and every remaining name it publishes must be the exact
+  *legacy* object imported from a descendant module named in the registry's own
+  `runtime_only_modules`. Both halves are required. A barrel with no runtime
+  block left is a `transitive_facade` and must say so; one whose portable half
+  has been canonicalised, rerouted at `omnivia_core`, or hidden behind a
+  `__getattr__`/`__dir__` hook fails;
+- a `source_parity` or `canonical_subset` leaf that has quietly become either
+  kind of leaf facade without its state being moved forward.
+
+The `pending_*` states are **not** all blanket-skipped. `pending_direct_barrel`
+and `pending_root` assert nothing about source, so there is nothing there to
+contradict, and the loader skips them; what constrains them is the
+state/shape/`pair_kind` combination table — `pending_root` only on the package
+root. `pending_hybrid` (only ever valid on a hybrid barrel) is deliberately kept
+in the pending set *and* source-inspected, because a pending claim stops being
+truthful once the file has caught up with it: if every routed prerequisite child
+of the barrel is converted **and** its unchanged source already qualifies as an
+exact hybrid facade over those children and its declared runtime-only
+descendants, the registry is understating the file and the loader demands the
+state move forward. While either condition is unmet — an unconverted routed
+child, or a source that still has hybrid defects — the route is legitimately
+pending and nothing is reported.
 
 `graph.search_models` is a converted `split_facade`, not a duplicate: its three
 portable query/result records resolve to the exact
@@ -69,6 +87,30 @@ scoring helpers canonical Core deliberately omits stay defined on the legacy
 leaf. That is the whole difference between `split_facade` and `canonical_subset`
 — the latter is a leaf still duplicating its canonical counterpart while holding
 extra runtime-owned symbols, and this leaf has left it.
+
+The six hybrid barrels — `graph`, `ingestion`, `ingestion.watcher`, `memory`,
+`memory_graph`, `workspace` — are recorded as `hybrid_facade`, which makes them
+accepted and `is_converted` **for compatibility accounting**, and nothing more
+than that. It does not move their runtime halves into Core. Read it as: "the
+portable half of this barrel has finished converting, and its runtime half is
+exactly, and only, the declared runtime-only surface." Those runtime-owned
+descendants are not routes, can never become converted children, and are still
+resolved locally at import time from `services/omnivia-memory`; Core does not own
+them and does not package them. That is also why these six are not
+`transitive_facade`s — a transitive facade may reach nothing but its converted
+routed children.
+
+`is_converted` should be read the same way generally: it means a route has
+completed the contract of the state it declares, not that every name it
+publishes is canonical.
+
+**Current status.** Every leaf and every barrel route is converted under its own
+accepted contract — `direct_facade`, `split_facade`, `transitive_facade`, or
+`hybrid_facade`. `source_parity`, `canonical_subset`, `pending_direct_barrel` and
+`pending_hybrid` are all empty. The package root `omnivia_memory` is the one
+route left, and it is still `pending_root`. `migration_state` remains the
+authority for this per route, and the checker prints the partition; read its
+output rather than trusting this paragraph after a change.
 
 ## Updating the registry
 
@@ -134,19 +176,40 @@ encode are enforced by other gates in the same acceptance run:
   same exact canonical identities and may keep only an explicitly pinned set of
   legacy-owned definitions, whose ownership, signatures, and behavior are checked
   in place. Under either shape, barrels stay identity-preserving through the
-  legacy leaves they route.
+  legacy leaves they route. The six `hybrid_facade` barrels are gated as a batch
+  of their own in that module: each is pinned byte-for-byte by SHA-256 against
+  its accepted source, held to its frozen import-block table and ordered
+  `__all__` at the AST level, run through the loader's own
+  `hybrid_facade_defects` policy, and checked export by export — portable names
+  are the exact canonical objects, runtime names the exact legacy ones.
 - **Typed consumers.** `tests/test_typed_facade_consumers.py` keeps the
-  strict-mypy fixtures in `tests/typing/*_facade_consumer.py` a partition of
-  `FACADE_ROUTES`, so an accepted route always has a real typed caller importing
-  it by its legacy path — and a split facade's retained helpers, not being
-  routes, are kept out of legacy `from` imports.
+  strict-mypy leaf fixtures in `tests/typing/*_facade_consumer.py` an exact
+  partition of `FACADE_ROUTES`, so an accepted route always has a real typed
+  caller importing it by its legacy path — and a split facade's retained helpers,
+  not being routes, are kept out of legacy `from` imports. The six hybrid barrels
+  are *module* routes with no per-symbol `FACADE_ROUTES` entry, so they are
+  deliberately outside that partition and get a separate fixture,
+  `tests/typing/hybrid_barrel_consumer.py`, audited against the six barrels'
+  `__all__` surfaces: all 93 names (62 portable + 31 runtime), imported by legacy
+  barrel path only, with nothing missing, nothing extra, no leaf or
+  `omnivia_core` path, and no alias.
 - **Installed layout.** `tests/compatibility/test_facade_wheel_install.py` builds
   both wheels and installs them offline, so the bounded
   `compatibility_dependency` recorded above is checked as real packaging
   metadata, and the Graph split, the ingestion pair and the workspace leaf are
-  re-verified against the installed artifacts — including that none of the
-  Graph, ingestion or workspace runtime was ever packaged into the Core wheel.
+  re-verified against the installed artifacts — as are all six hybrid barrels,
+  whose 62 portable exports must be the exact canonical identities and whose 31
+  runtime exports must be the exact legacy identities of their named legacy
+  owners. The same run proves the canonical barrels import cleanly from a
+  Core-only environment and that no runtime-owned module behind any of the six
+  was packaged into the Core wheel at all — not the Graph, ingestion or workspace
+  runtime, and not the memory or memory-graph runtime either.
 
-None of this says the conversion is finished — the six hybrid barrels and the
-root remain. It says that what has been converted is correct and cannot silently
-stop being correct. For what is left, read the checker's output, not this file.
+None of this says the conversion is finished — the package root remains
+`pending_root`. And "zero barrels remaining" does not mean Core has taken
+ownership of anything it had not already: the 31 runtime exports the six hybrid
+barrels publish are still legacy-owned, still resolved locally out of
+`services/omnivia-memory`, and still absent from the Core wheel. What the gates
+above say is that what has been converted is correct, under the contract it
+actually claims, and cannot silently stop being correct. For what is left, read
+the checker's output, not this file.

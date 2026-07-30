@@ -198,6 +198,7 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/workspace/models.py \
             tests/typing/accepted_legacy_facade_consumer.py \
             tests/typing/graph_facade_consumer.py \
+            tests/typing/hybrid_barrel_consumer.py \
             tests/typing/ingestion_models_facade_consumer.py \
             tests/typing/knowledge_facade_consumer.py \
             tests/typing/module_manifest_facade_consumer.py \

@@ -52,6 +52,126 @@ CONSUMER_ROUTES = {
     "tests/typing/workspace_models_facade_consumer.py": WORKSPACE_MODELS_LEAVES,
 }
 
+#: The one consumer that is *not* keyed on ``FACADE_ROUTES``. The six hybrid
+#: barrels are module routes in ``compatibility/facade-routes.v1.json``, not
+#: symbol routes, so they have no entry in ``FACADE_ROUTES`` and cannot join the
+#: partition above -- adding them there would invent per-symbol routes the
+#: registry does not declare. Their typed contract is the six ``__all__`` tuples
+#: instead, audited exactly by the tests at the end of this module.
+HYBRID_BARREL_CONSUMER = "tests/typing/hybrid_barrel_consumer.py"
+
+#: Each hybrid barrel's exact ordered ``__all__``. Restated here rather than read
+#: off the barrels: this is the oracle the fixture is audited against, and
+#: deriving it from the very modules the fixture imports would make the audit
+#: agree with any drift instead of catching it.
+HYBRID_BARREL_ALL: dict[str, tuple[str, ...]] = {
+    "omnivia_memory.graph": (
+        "ApprovalStatus",
+        "Entity",
+        "EntityType",
+        "GraphSearchError",
+        "GraphSearchQuery",
+        "GraphSearchResult",
+        "GraphSearchResultSet",
+        "GraphSearchService",
+        "Relationship",
+        "RelationshipType",
+    ),
+    "omnivia_memory.ingestion": (
+        "BaseChunker",
+        "BaseExtractor",
+        "CharacterChunker",
+        "Chunk",
+        "ChunkConfig",
+        "ChunkRepository",
+        "DOCXExtractor",
+        "ExtractionResult",
+        "FileInfo",
+        "FileScanner",
+        "FileType",
+        "IngestResult",
+        "IngestionPipeline",
+        "MarkdownExtractor",
+        "PDFExtractor",
+        "ParagraphChunker",
+        "ParseStatus",
+        "ScanOptions",
+        "Source",
+    ),
+    "omnivia_memory.ingestion.watcher": (
+        "Debouncer",
+        "DebounceConfig",
+        "FileChange",
+        "FileChangeBatch",
+        "FileChangeType",
+        "IndexerScheduler",
+        "IndexerState",
+        "IndexerStatus",
+        "ScheduledJob",
+        "SourceReference",
+        "SourceTracker",
+        "WatchedPath",
+    ),
+    "omnivia_memory.memory": (
+        "Memory",
+        "MemoryCreate",
+        "MemoryUpdate",
+        "MemoryService",
+        "MemoryServiceError",
+        "MemoryNotFoundError",
+        "InvalidTransitionError",
+    ),
+    "omnivia_memory.memory_graph": (
+        "Confidence",
+        "EvidenceGraphResponse",
+        "FIXTURE_TIME",
+        "GraphPreviewEdge",
+        "GraphPreviewKind",
+        "GraphPreviewNode",
+        "GraphPreviewResponse",
+        "GraphPreviewState",
+        "IngestionGraphAdapterError",
+        "IngestionGraphWriteResult",
+        "MemoryEntity",
+        "MemoryFact",
+        "MemoryFactStatus",
+        "MemoryGraphFixture",
+        "MemoryGraphStore",
+        "MemoryGraphStoreError",
+        "MemorySegment",
+        "MemorySegmentKind",
+        "MemorySource",
+        "MemorySourceFreshness",
+        "MemorySourceStatus",
+        "MemorySourceType",
+        "RetrievalTrace",
+        "SourceRef",
+        "ValidationResult",
+        "assemble_evidence_graph",
+        "assemble_graph_preview",
+        "build_memory_graph_fixture",
+        "chunk_to_memory_segment",
+        "redact_segment_preview",
+        "source_to_memory_source",
+        "validate_evidence_graph_response",
+        "validate_graph_preview_response",
+        "validate_memory_entity",
+        "validate_memory_fact",
+        "validate_memory_segment",
+        "validate_memory_source",
+        "write_ingestion_records_to_graph",
+    ),
+    "omnivia_memory.workspace": (
+        "ImportSummary",
+        "Workspace",
+        "WorkspaceCreate",
+        "WorkspaceIndexStatus",
+        "WorkspaceRepository",
+        "WorkspaceService",
+        "WorkspaceUpdate",
+    ),
+}
+
 #: Definitions a split facade keeps owning: they are not routes, so a consumer
 #: must not name them in a legacy ``from`` import, and the exact-route audit below
 #: would reject it if one did. The Graph consumer exercises them through
@@ -444,3 +564,87 @@ def test_typed_consumers_never_from_import_a_non_routed_retained_helper() -> Non
                 f"{relative_path} from-imports the non-routed {legacy_module} helpers "
                 f"{sorted(imported & helpers)}; use a module import instead"
             )
+
+
+# ---------------------------------------------------------------------------
+# The hybrid-barrel consumer, audited against the six ``__all__`` tuples.
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_barrel_consumer_is_outside_the_facade_routes_partition() -> None:
+    """The six barrels are module routes, not symbol routes: they have no
+    ``FACADE_ROUTES`` entry, and their consumer is deliberately not part of the
+    partition above. Pinned in both directions so neither side can absorb the
+    other -- adding the barrels to ``FACADE_ROUTES`` would invent per-symbol
+    routes the frozen registry does not declare, and adding this fixture to
+    ``CONSUMER_ROUTES`` would break the exact partition the leaves depend on.
+    """
+    assert HYBRID_BARREL_CONSUMER not in CONSUMER_ROUTES
+    for barrel in HYBRID_BARREL_ALL:
+        assert barrel not in FACADE_ROUTES
+    assert (REPO_ROOT / HYBRID_BARREL_CONSUMER).is_file()
+
+
+def test_hybrid_barrel_consumer_imports_exactly_the_six_advertised_surfaces() -> None:
+    """The fixture's legacy imports are exactly the six barrels, and exactly each
+    barrel's whole ``__all__`` -- no leaf path, no canonical path, nothing missing
+    and nothing extra. The same syntax audit the leaf consumers get applies, so a
+    star import, an alias, a relative import, or a duplicated name is rejected
+    before the set comparison is even reached.
+    """
+    imports = _legacy_imports(HYBRID_BARREL_CONSUMER)
+    assert imports == {
+        barrel: set(names) for barrel, names in HYBRID_BARREL_ALL.items()
+    }
+    total = sum(len(names) for names in HYBRID_BARREL_ALL.values())
+    assert total == 93
+    assert sum(len(names) for names in imports.values()) == total
+
+
+def test_hybrid_barrel_all_tuples_are_pairwise_disjoint() -> None:
+    """Why the fixture needs no ``as`` rename at all, stated as a checked fact
+    rather than left to luck: no name is advertised by two of the six barrels, so
+    one module scope can bind all ninety-three unaliased. A future export that
+    collided would make this fail here -- and the alias audit above would then
+    have to be extended deliberately, rather than a shadowed binding silently
+    type-checking nothing."""
+    seen: dict[str, str] = {}
+    for barrel, names in HYBRID_BARREL_ALL.items():
+        assert len(names) == len(set(names)), barrel
+        for name in names:
+            assert name not in seen, (name, seen.get(name), barrel)
+            seen[name] = barrel
+    assert len(seen) == 93
+
+    tree = ast.parse((REPO_ROOT / HYBRID_BARREL_CONSUMER).read_text(encoding="utf-8"))
+    aliased = [
+        (node.module, alias.name, alias.asname)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.asname is not None
+    ]
+    assert aliased == []
+
+
+def test_hybrid_barrel_consumer_never_reaches_a_leaf_or_canonical_path() -> None:
+    """The whole point of this fixture: it type-checks the *barrel* paths. An
+    import that dropped down to a converted leaf would exercise a route the leaf
+    consumers already cover and stop proving the barrel republishes it usefully
+    typed; one that reached ``omnivia_core`` would prove nothing about the legacy
+    surface at all (and the shared audit rejects it outright).
+    """
+    tree = ast.parse((REPO_ROOT / HYBRID_BARREL_CONSUMER).read_text(encoding="utf-8"))
+    modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    legacy = {module for module in modules if module.startswith("omnivia_")}
+    assert legacy == set(HYBRID_BARREL_ALL)
+    assert legacy.isdisjoint(FACADE_ROUTES)

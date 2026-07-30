@@ -35,7 +35,17 @@ built artifacts:
    its hybrid barrel: the five routed definitions are the exact canonical
    objects, the barrel's ``WorkspaceRepository``/``WorkspaceService`` exports
    are still legacy-only, the repository and service hold the canonical models,
-   and Core packages neither of them.
+   and Core packages neither of them;
+9. in a fifth child process, import all six ``hybrid_facade`` barrels together
+   and confirm the whole accounting the state claims: 62 portable exports are
+   the exact canonical objects, 31 runtime exports are the exact legacy objects
+   of their declared owners, no runtime name reaches a canonical barrel, and no
+   runtime owner has a canonical twin to have come from;
+10. install the Core wheel alone into a *second* throwaway environment and
+    confirm the canonical barrels stand up with ``omnivia-memory`` absent
+    entirely, exposing every portable name and no runtime one -- and that the
+    Core wheel declares no reverse dependency on the compatibility
+    distribution.
 
 Scope limits, stated explicitly so this evidence is not over-read:
 
@@ -594,6 +604,214 @@ print("OK")
 """
 
 
+#: The six ``hybrid_facade`` barrels as the installed artifacts must present
+#: them: for each, the portable exports that must be the exact canonical objects,
+#: and the runtime exports that must be the exact legacy objects of a named
+#: legacy owner. Restated here rather than imported from ``baseline`` or from
+#: ``tests/compatibility/test_facade_foundation.py``, for the same reason every
+#: other expectation in this file is: it checks *installed artifacts*, and
+#: reading the expectation out of the source tree it is meant to be independent
+#: of would weaken the check. 62 portable identities, 31 runtime ones.
+HYBRID_BARREL_PORTABLE: dict[str, tuple[str, ...]] = {
+    "graph": (
+        "ApprovalStatus",
+        "Entity",
+        "EntityType",
+        "GraphSearchQuery",
+        "GraphSearchResult",
+        "GraphSearchResultSet",
+        "Relationship",
+        "RelationshipType",
+    ),
+    "ingestion": ("Chunk", "ExtractionResult", "FileType", "ParseStatus", "Source"),
+    "ingestion.watcher": WATCHER_MODELS_ROUTED,
+    "memory": ("Memory", "MemoryCreate", "MemoryUpdate"),
+    "memory_graph": (
+        "Confidence",
+        "EvidenceGraphResponse",
+        "FIXTURE_TIME",
+        "GraphPreviewEdge",
+        "GraphPreviewKind",
+        "GraphPreviewNode",
+        "GraphPreviewResponse",
+        "GraphPreviewState",
+        "MemoryEntity",
+        "MemoryFact",
+        "MemoryFactStatus",
+        "MemoryGraphFixture",
+        "MemorySegment",
+        "MemorySegmentKind",
+        "MemorySource",
+        "MemorySourceFreshness",
+        "MemorySourceStatus",
+        "MemorySourceType",
+        "RetrievalTrace",
+        "SourceRef",
+        "ValidationResult",
+        "assemble_evidence_graph",
+        "assemble_graph_preview",
+        "build_memory_graph_fixture",
+        "redact_segment_preview",
+        "validate_evidence_graph_response",
+        "validate_graph_preview_response",
+        "validate_memory_entity",
+        "validate_memory_fact",
+        "validate_memory_segment",
+        "validate_memory_source",
+    ),
+    "workspace": WORKSPACE_MODELS_ROUTED,
+}
+HYBRID_BARREL_RUNTIME: dict[str, dict[str, tuple[str, ...]]] = {
+    "graph": {
+        "omnivia_memory.graph.search_service": (
+            "GraphSearchError",
+            "GraphSearchService",
+        )
+    },
+    "ingestion": {
+        "omnivia_memory.ingestion.chunker": (
+            "BaseChunker",
+            "CharacterChunker",
+            "ChunkConfig",
+            "ParagraphChunker",
+        ),
+        "omnivia_memory.ingestion.extractors": (
+            "BaseExtractor",
+            "DOCXExtractor",
+            "MarkdownExtractor",
+            "PDFExtractor",
+        ),
+        "omnivia_memory.ingestion.pipeline": ("IngestResult", "IngestionPipeline"),
+        "omnivia_memory.ingestion.repositories": ("ChunkRepository",),
+        "omnivia_memory.ingestion.scanner": ("FileInfo", "FileScanner", "ScanOptions"),
+    },
+    "ingestion.watcher": {
+        "omnivia_memory.ingestion.watcher.debouncer": ("Debouncer",),
+        "omnivia_memory.ingestion.watcher.tracker": ("SourceTracker",),
+    },
+    "memory": {
+        "omnivia_memory.memory.service": (
+            "InvalidTransitionError",
+            "MemoryNotFoundError",
+            "MemoryService",
+            "MemoryServiceError",
+        )
+    },
+    "memory_graph": {
+        "omnivia_memory.memory_graph.ingestion_adapter": (
+            "IngestionGraphAdapterError",
+            "IngestionGraphWriteResult",
+            "chunk_to_memory_segment",
+            "source_to_memory_source",
+            "write_ingestion_records_to_graph",
+        ),
+        "omnivia_memory.memory_graph.store": (
+            "MemoryGraphStore",
+            "MemoryGraphStoreError",
+        ),
+    },
+    "workspace": {
+        "omnivia_memory.workspace.repository": ("WorkspaceRepository",),
+        "omnivia_memory.workspace.service": ("WorkspaceService",),
+    },
+}
+HYBRID_PORTABLE_COUNT = 62
+HYBRID_RUNTIME_COUNT = 31
+
+#: Every runtime-owned module behind the six barrels, as the path it would have
+#: in the Core wheel if it had wrongly been packaged there. The graph, ingestion
+#: and workspace halves are already pinned above; these are the three the memory
+#: and memory-graph barrels add.
+HYBRID_RUNTIME_WHEEL_PATHS = (
+    "omnivia_core/memory/service.py",
+    "omnivia_core/memory_graph/ingestion_adapter.py",
+    "omnivia_core/memory_graph/store.py",
+)
+
+#: Run inside the throwaway environment, against the installed wheels only. Same
+#: ``-I`` isolation as the scripts above; the whole hybrid closure is
+#: standard-library only, so no uninstalled third-party dependency is reached.
+INSTALLED_HYBRID_BARRELS_SCRIPT = f"""
+import importlib
+import sys
+
+portable = {HYBRID_BARREL_PORTABLE!r}
+runtime = {HYBRID_BARREL_RUNTIME!r}
+
+portable_checked = 0
+runtime_checked = 0
+for suffix, names in sorted(portable.items()):
+    legacy = importlib.import_module("omnivia_memory." + suffix)
+    canonical = importlib.import_module("omnivia_core." + suffix)
+    assert "site-packages" in legacy.__file__, legacy.__file__
+    assert "site-packages" in canonical.__file__, canonical.__file__
+    for name in names:
+        assert getattr(legacy, name) is getattr(canonical, name), (suffix, name)
+        assert name in legacy.__all__ and name in canonical.__all__, (suffix, name)
+        portable_checked += 1
+    assert "__getattr__" not in vars(legacy) and "__getattr__" not in vars(canonical)
+    assert "__dir__" not in vars(legacy) and "__dir__" not in vars(canonical)
+
+for suffix, owners in sorted(runtime.items()):
+    legacy = importlib.import_module("omnivia_memory." + suffix)
+    canonical = importlib.import_module("omnivia_core." + suffix)
+    for owner_name, names in sorted(owners.items()):
+        owner = importlib.import_module(owner_name)
+        assert "site-packages" in owner.__file__, owner.__file__
+        canonical_twin = owner_name.replace("omnivia_memory", "omnivia_core", 1)
+        try:
+            importlib.import_module(canonical_twin)
+        except ImportError:
+            pass
+        else:
+            raise AssertionError(canonical_twin + " is importable from Core")
+        for name in names:
+            assert getattr(legacy, name) is getattr(owner, name), (suffix, name)
+            assert name in legacy.__all__, (suffix, name)
+            assert not hasattr(canonical, name), (suffix, name)
+            assert name not in canonical.__all__, (suffix, name)
+            runtime_checked += 1
+
+assert portable_checked == {HYBRID_PORTABLE_COUNT}, portable_checked
+assert runtime_checked == {HYBRID_RUNTIME_COUNT}, runtime_checked
+print("OK")
+"""
+
+#: Run inside a *second* throwaway environment that has only the Core wheel
+#: installed. Nothing here may need ``omnivia-memory`` to exist at all.
+CORE_ONLY_BARRELS_SCRIPT = f"""
+import importlib
+import sys
+
+try:
+    importlib.import_module("omnivia_memory")
+except ImportError:
+    pass
+else:
+    raise AssertionError("omnivia_memory is installed in the Core-only environment")
+
+runtime_names = set()
+for owners in {HYBRID_BARREL_RUNTIME!r}.values():
+    for names in owners.values():
+        runtime_names.update(names)
+assert len(runtime_names) == {HYBRID_RUNTIME_COUNT}, sorted(runtime_names)
+
+for suffix, names in sorted({HYBRID_BARREL_PORTABLE!r}.items()):
+    canonical = importlib.import_module("omnivia_core." + suffix)
+    assert "site-packages" in canonical.__file__, canonical.__file__
+    for name in names:
+        assert hasattr(canonical, name), (suffix, name)
+        assert name in canonical.__all__, (suffix, name)
+    leaked = sorted(name for name in runtime_names if hasattr(canonical, name))
+    assert not leaked, (suffix, leaked)
+
+assert "omnivia_memory" not in sys.modules
+for name in sorted(sys.modules):
+    assert not name.startswith("omnivia_memory"), name
+print("OK")
+"""
+
+
 def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_offline() -> None:
     with tempfile.TemporaryDirectory(prefix="omnivia-facade-wheel-") as raw_workdir:
         workdir = Path(raw_workdir)
@@ -667,6 +885,7 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
                 *GRAPH_RUNTIME_WHEEL_PATHS,
                 *INGESTION_RUNTIME_WHEEL_PATHS,
                 *WORKSPACE_RUNTIME_WHEEL_PATHS,
+                *HYBRID_RUNTIME_WHEEL_PATHS,
             ):
                 assert path not in core_names, (
                     f"{core_wheel.name} packages the runtime-owned {path}"
@@ -733,3 +952,62 @@ def test_compatibility_wheel_declares_core_requirement_and_both_wheels_install_o
         )
         assert workspace.returncode == 0, f"{workspace.stdout}\n{workspace.stderr}"
         assert workspace.stdout.strip() == "OK"
+
+        # All six hybrid barrels at once, in the installed artifacts: 62 portable
+        # identities are the exact canonical objects and 31 runtime identities are
+        # the exact legacy ones, with no runtime name on any canonical barrel and
+        # no canonical twin for any runtime owner. This is the accounting the
+        # ``hybrid_facade`` state claims, checked where it actually ships.
+        hybrid = subprocess.run(
+            [str(venv_python), "-I", "-c", INSTALLED_HYBRID_BARRELS_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(workdir),
+            check=False,
+            env=_child_env(),
+        )
+        assert hybrid.returncode == 0, f"{hybrid.stdout}\n{hybrid.stderr}"
+        assert hybrid.stdout.strip() == "OK"
+
+        # ...and the canonical half stands on its own. A second environment with
+        # only the Core wheel installed: every canonical barrel imports, every
+        # portable name is there, no runtime name is, and ``omnivia_memory`` is
+        # not merely unimported but absent. The bounded
+        # ``omnivia-memory -> omnivia-core`` dependency has no reverse.
+        core_only_dir = workdir / "core-only-venv"
+        venv.EnvBuilder(with_pip=True).create(core_only_dir)
+        core_only_python = core_only_dir / "bin" / "python"
+        core_install = subprocess.run(
+            [
+                str(core_only_python), "-m", "pip", "install",
+                "--no-index", "--no-deps", str(core_wheel),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=_child_env(),
+        )
+        assert core_install.returncode == 0, (
+            f"{core_install.stdout}\n{core_install.stderr}"
+        )
+        core_only = subprocess.run(
+            [str(core_only_python), "-I", "-c", CORE_ONLY_BARRELS_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(workdir),
+            check=False,
+            env=_child_env(),
+        )
+        assert core_only.returncode == 0, f"{core_only.stdout}\n{core_only.stderr}"
+        assert core_only.stdout.strip() == "OK"
+
+        # The Core wheel declares no dependency on the compatibility distribution.
+        core_requires = [
+            Requirement(raw) for raw in _requires_dist(_wheel_metadata(core_wheel))
+        ]
+        assert not any(req.name == "omnivia-memory" for req in core_requires), (
+            f"{core_wheel.name} declares a reverse dependency on omnivia-memory"
+        )

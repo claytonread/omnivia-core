@@ -130,7 +130,7 @@
       "canonical_module": "omnivia_core.graph",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.graph.models",
@@ -151,7 +151,7 @@
       "canonical_module": "omnivia_core.ingestion",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.ingestion.models",
@@ -165,7 +165,7 @@
       "canonical_module": "omnivia_core.ingestion.watcher",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.ingestion.watcher.models",
@@ -228,7 +228,7 @@
       "canonical_module": "omnivia_core.memory",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.memory.models",
@@ -242,7 +242,7 @@
       "canonical_module": "omnivia_core.memory_graph",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.memory_graph.assembly",
@@ -333,7 +333,7 @@
       "canonical_module": "omnivia_core.workspace",
       "pair_kind": "hybrid_barrel",
       "shape": "barrel",
-      "migration_state": "pending_hybrid"
+      "migration_state": "hybrid_facade"
     },
     {
       "legacy_module": "omnivia_memory.workspace.models",
