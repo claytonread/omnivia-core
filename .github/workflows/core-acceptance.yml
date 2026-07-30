@@ -132,6 +132,9 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
             services/omnivia-memory/src/omnivia_memory/component_contract/models.py \
             services/omnivia-memory/src/omnivia_memory/component_contract/validation.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
@@ -158,6 +161,9 @@ jobs:
             services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
             services/omnivia-memory/src/omnivia_memory/component_contract/models.py \
             services/omnivia-memory/src/omnivia_memory/component_contract/validation.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/imports.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/models.py \
+            services/omnivia-memory/src/omnivia_memory/control_plane/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
             services/omnivia-memory/src/omnivia_memory/memory/models.py \

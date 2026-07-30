@@ -102,28 +102,28 @@
       "canonical_module": "omnivia_core.control_plane",
       "pair_kind": "direct",
       "shape": "barrel",
-      "migration_state": "pending_direct_barrel"
+      "migration_state": "transitive_facade"
     },
     {
       "legacy_module": "omnivia_memory.control_plane.imports",
       "canonical_module": "omnivia_core.control_plane.imports",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.control_plane.models",
       "canonical_module": "omnivia_core.control_plane.models",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.control_plane.validation",
       "canonical_module": "omnivia_core.control_plane.validation",
       "pair_kind": "direct",
       "shape": "leaf",
-      "migration_state": "source_parity"
+      "migration_state": "direct_facade"
     },
     {
       "legacy_module": "omnivia_memory.graph",

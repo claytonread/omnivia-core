@@ -1,12 +1,17 @@
 """Focused adversarial acceptance coverage for ``omnivia_core.control_plane``.
 
-``omnivia_core.control_plane`` is a canonical port of the barrel at
-``omnivia_memory.control_plane`` (imports + models + validation). Its owner
-leaves are registered in the shared ``_leaves.py`` migration gates and their
-AST/behavior parity is already covered by ``test_parity.py``; this module
-adds focused adversarial coverage for the exact barrel contract -- literal
-order, owner provenance, static shape, and isolated-process import closure --
-and does not re-derive owner-leaf behavior.
+``omnivia_core.control_plane`` is now the sole implementation of the barrel at
+``omnivia_memory.control_plane`` (imports + models + validation). It began as a
+canonical port of it; all three legacy owner leaves have since been converted
+into thin compatibility facades, so they are registered in ``_leaves.py``'s
+``FACADE_CANONICAL_TO_LEGACY`` rather than its source-parity map, and the legacy
+barrel -- itself source-unchanged -- became identity-preserving transitively
+through them. Identity, not source sameness, is what
+``tests/compatibility/test_facade_foundation.py`` proves for that hop.
+
+This module adds focused adversarial coverage for the exact barrel contract --
+literal order, owner provenance, static shape, and isolated-process import
+closure -- and does not re-derive owner-leaf behavior.
 """
 
 from __future__ import annotations

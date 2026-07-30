@@ -63,20 +63,24 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: ``omnivia_memory._shared.validation`` routes to the shared primitive, while
 #: ``omnivia_memory.app_shell_bridge.models``,
 #: ``omnivia_memory.app_manifest.models``, and
-#: ``omnivia_memory.component_contract.models`` each route to their own domain's
+#: ``omnivia_memory.component_contract.models``, and
+#: ``omnivia_memory.control_plane.models`` each route to their own domain's
 #: same-named dataclass. They are distinct objects and each leaf must keep its
 #: historical one. ``ProvenanceRequirement`` collides the same way between the
-#: App Manifest contract and the Component Contract. The legacy *root* binds
-#: ``ProvenanceRequirement`` from the Component Contract and ``ValidationResult``
-#: from the shared primitive, so only those two routes ever move a root binding
-#: for the colliding names -- the other same-named owners are leaf-local.
+#: App Manifest contract and the Component Contract, and ``LifecycleState``
+#: between the lifecycle domain and the control plane's own registry lifecycle
+#: enum. The legacy *root* binds ``ProvenanceRequirement`` from the Component
+#: Contract, ``ValidationResult`` from the shared primitive, and
+#: ``LifecycleState`` from the control plane, so only those three routes ever
+#: move a root binding for the colliding names -- the other same-named owners are
+#: leaf-local.
 #:
 #: A route's value is the module that owns the exact *object*, which is not
-#: always the module that defines its type. ``RUN_LEDGER_CONTRACT_VERSION`` is a
-#: ``ContractVersion`` instance the run-ledger models leaf builds, so the leaf
-#: owns the object while the knowledge leaf owns the class; see
-#: ``FACADE_ROOT_BINDING_OWNER_MOVES`` for the separate, exact root-binding
-#: delta that follows from it.
+#: always the module that defines its type. ``RUN_LEDGER_CONTRACT_VERSION`` and
+#: ``CONTROL_PLANE_CONTRACT_VERSION`` are ``ContractVersion`` instances their own
+#: models leaf builds, so the leaf owns the object while the knowledge leaf owns
+#: the class; see ``FACADE_ROOT_BINDING_OWNER_MOVES`` for the separate, exact
+#: root-binding deltas that follow from them.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -137,6 +141,124 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "ComponentContractValidationError": "omnivia_core.component_contract.validation",
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_component_contract": "omnivia_core.component_contract.validation",
+    },
+    "omnivia_memory.control_plane.imports": {
+        "CatalogueArtifactVerification": "omnivia_core.control_plane.imports",
+        "ImportSourceChange": "omnivia_core.control_plane.imports",
+        "ImportSpecValidation": "omnivia_core.control_plane.imports",
+        "ImportedCandidateSet": "omnivia_core.control_plane.imports",
+        "detect_import_source_change": "omnivia_core.control_plane.imports",
+        "import_asyncapi_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_generated_candidates": "omnivia_core.control_plane.imports",
+        "import_mcp_candidates": "omnivia_core.control_plane.imports",
+        "import_openapi_candidates": "omnivia_core.control_plane.imports",
+        "validate_asyncapi_import_spec": "omnivia_core.control_plane.imports",
+        "validate_mcp_import_spec": "omnivia_core.control_plane.imports",
+        "validate_openapi_import_spec": "omnivia_core.control_plane.imports",
+        "verify_catalogue_artifacts": "omnivia_core.control_plane.imports",
+    },
+    # ``CONTROL_PLANE_CONTRACT_VERSION`` and ``CONTROL_PLANE_SCHEMA_VERSION`` are
+    # the two public constants this leaf owns that ordinary ``__module__``
+    # definition detection cannot see (a ``ContractVersion`` instance and a
+    # ``str``), so they are routed explicitly -- exactly as ``SENSITIVE_KEYS`` and
+    # the run-ledger constants already are.
+    "omnivia_memory.control_plane.models": {
+        "Agent": "omnivia_core.control_plane.models",
+        "Approval": "omnivia_core.control_plane.models",
+        "AuditEvent": "omnivia_core.control_plane.models",
+        "Automation": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_CONTRACT_VERSION": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_SCHEMA_VERSION": "omnivia_core.control_plane.models",
+        "Capability": "omnivia_core.control_plane.models",
+        "CapabilityType": "omnivia_core.control_plane.models",
+        "Connection": "omnivia_core.control_plane.models",
+        "ConnectionKind": "omnivia_core.control_plane.models",
+        "ConsultantAccessGrant": "omnivia_core.control_plane.models",
+        "ConsultantGrantStatus": "omnivia_core.control_plane.models",
+        "ControlPlaneManifest": "omnivia_core.control_plane.models",
+        "ControlPlaneRunStatus": "omnivia_core.control_plane.models",
+        "ExecutionMode": "omnivia_core.control_plane.models",
+        "ExecutionResult": "omnivia_core.control_plane.models",
+        "ImportRecord": "omnivia_core.control_plane.models",
+        "ImportSourceProtocol": "omnivia_core.control_plane.models",
+        "LifecycleState": "omnivia_core.control_plane.models",
+        "LocalApprovalNotification": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationChannel": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationEvent": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationStatus": "omnivia_core.control_plane.models",
+        "LocalModelInvocationRecord": "omnivia_core.control_plane.models",
+        "LocalObservabilityLogRecord": "omnivia_core.control_plane.models",
+        "LocalUsageLedgerEntry": "omnivia_core.control_plane.models",
+        "Policy": "omnivia_core.control_plane.models",
+        "PolicyAttributeCondition": "omnivia_core.control_plane.models",
+        "PolicyAttributeExpression": "omnivia_core.control_plane.models",
+        "PolicyDecision": "omnivia_core.control_plane.models",
+        "PolicyDecisionReason": "omnivia_core.control_plane.models",
+        "PolicyDecisionRecord": "omnivia_core.control_plane.models",
+        "PolicyRulePack": "omnivia_core.control_plane.models",
+        "PolicyTemplate": "omnivia_core.control_plane.models",
+        "RunMode": "omnivia_core.control_plane.models",
+        "RunObservabilityMetrics": "omnivia_core.control_plane.models",
+        "RunRecord": "omnivia_core.control_plane.models",
+        "RunStepRecord": "omnivia_core.control_plane.models",
+        "RunStepStatus": "omnivia_core.control_plane.models",
+        "RunStepType": "omnivia_core.control_plane.models",
+        "SecretMetadata": "omnivia_core.control_plane.models",
+        "SecretReference": "omnivia_core.control_plane.models",
+        "SecretResolutionResult": "omnivia_core.control_plane.models",
+        "SecretStorageScope": "omnivia_core.control_plane.models",
+        "SideEffect": "omnivia_core.control_plane.models",
+        "SyncConflictStrategy": "omnivia_core.control_plane.models",
+        "SyncDirection": "omnivia_core.control_plane.models",
+        "SyncRule": "omnivia_core.control_plane.models",
+        "TenantIsolationRule": "omnivia_core.control_plane.models",
+        "Trigger": "omnivia_core.control_plane.models",
+        "TriggerEventEnvelope": "omnivia_core.control_plane.models",
+        "TriggerIngestionResult": "omnivia_core.control_plane.models",
+        "TriggerKind": "omnivia_core.control_plane.models",
+        "ValidationResult": "omnivia_core.control_plane.models",
+        "WorkspaceRef": "omnivia_core.control_plane.models",
+    },
+    # ``T`` is a frozen ``TypeVar`` definition this leaf owns even though the
+    # barrel above it never re-exported it. The 23 remaining constants are the
+    # public bounded-policy constants ``tests/canonical_migration/_strict.py``'s
+    # ``EXTRA_MODULE_CONSTANTS`` already tracks for this leaf: ``frozenset``,
+    # ``dict``, ``int`` and compiled-pattern values whose runtime ``__module__``
+    # does not resolve back to the defining module.
+    "omnivia_memory.control_plane.validation": {
+        "APPROVAL_ESCALATION_STATES": "omnivia_core.control_plane.validation",
+        "ControlPlaneValidationError": "omnivia_core.control_plane.validation",
+        "DANGEROUS_SIDE_EFFECTS": "omnivia_core.control_plane.validation",
+        "EXTRA_SENSITIVE_KEYS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_NUMERIC_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_PRESENCE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_SCOPES": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_SINGLE_VALUE_OPERATORS": (
+            "omnivia_core.control_plane.validation"
+        ),
+        "POLICY_ATTRIBUTE_VALUES_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_VALUE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_BOOLEAN_OPS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_COMPARISON_OPERATORS": (
+            "omnivia_core.control_plane.validation"
+        ),
+        "POLICY_EXPRESSION_MAX_DEPTH": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_MAX_NODES": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_NUMERIC_COMPARISONS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_OPS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_PARSE_MAX_DEPTH": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_RAW_FIELDS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_SECRET_MARKERS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_SOURCE_MAX_LENGTH": "omnivia_core.control_plane.validation",
+        "RRULE_FREQUENCIES": "omnivia_core.control_plane.validation",
+        "RRULE_WEEKDAYS": "omnivia_core.control_plane.validation",
+        "STABLE_ID_PATTERN": "omnivia_core.control_plane.validation",
+        "T": "omnivia_core.control_plane.validation",
+        "compile_policy_expression": "omnivia_core.control_plane.validation",
+        "manifest_from_dict": "omnivia_core.control_plane.validation",
+        "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
     },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
@@ -201,11 +323,12 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
 #: two entries that do exist are the two validators whose frozen signature
 #: annotates a *resolved* class from its own domain's models leaf, so the
 #: rendered signature names the owning package and nothing else about the
-#: contract changes. The run-ledger validators need no entry for the same reason
-#: the Component Contract's do not: their module uses
-#: ``from __future__ import annotations``, so their frozen signatures spell the
-#: return type as the string forward reference ``'ValidationResult'`` and never
-#: named a package at all.
+#: contract changes. The run-ledger and control-plane validators need no entry for
+#: the same reason the Component Contract's do not: their modules use
+#: ``from __future__ import annotations``, so their frozen signatures spell every
+#: annotation as a string forward reference (``'ValidationResult'``,
+#: ``'ControlPlaneManifest | Mapping[str, Any]'``) and never named a package at
+#: all.
 FACADE_DESCRIPTOR_REWRITES: dict[
     tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
 ] = {
@@ -258,14 +381,23 @@ FACADE_DESCRIPTOR_REWRITES: dict[
 #: leaf to that route's canonical module, which covers every routed symbol the
 #: leaf itself defines. A routed *instance* is the exception: the leaf owns the
 #: object, but ``defined_in`` reports the module that owns its ``type``.
-#: ``RUN_LEDGER_CONTRACT_VERSION`` is the one such root binding -- a
-#: ``ContractVersion`` the run-ledger models leaf builds -- so converting that
-#: leaf moves its recorded owner from the legacy knowledge leaf to the canonical
-#: one even though ``knowledge.models`` is not itself converted and appears in no
-#: route. That single, named delta is declared here rather than derived, and
-#: ``_facade_root_binding_problems`` proves it before it may be normalized away.
+#: ``RUN_LEDGER_CONTRACT_VERSION`` and ``CONTROL_PLANE_CONTRACT_VERSION`` are the
+#: two such root bindings -- each a ``ContractVersion`` its own models leaf
+#: builds -- so converting either leaf moves that binding's recorded owner from
+#: the legacy knowledge leaf to the canonical one even though ``knowledge.models``
+#: is not itself converted and appears in no route. Each delta is named and
+#: declared here rather than derived, and ``_facade_root_binding_problems`` proves
+#: every entry before any of them may be normalized away.
+#:
+#: The two entries are independent: each is keyed by its own ``(binding, routed
+#: leaf)`` pair and applied by whole-string equality on that binding alone, so
+#: they neither depend on declaration order nor on each other.
 FACADE_ROOT_BINDING_OWNER_MOVES: dict[tuple[str, str], tuple[str, str]] = {
     ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"): (
+        "omnivia_memory.knowledge.models",
+        "omnivia_core.knowledge.models",
+    ),
+    ("CONTROL_PLANE_CONTRACT_VERSION", "omnivia_memory.control_plane.models"): (
         "omnivia_memory.knowledge.models",
         "omnivia_core.knowledge.models",
     ),
@@ -514,13 +646,14 @@ def _normalize_expected_for_facade_routes(
       *defined* by the legacy module -- it is imported);
     - a root binding's ``defined_in`` moves from the legacy leaf to the
       routed canonical module, for exactly the routed names;
-    - a root binding named by ``moves`` has its ``defined_in`` replaced, whole
+    - each root binding named by ``moves`` has its ``defined_in`` replaced, whole
       and exactly, when it still holds that entry's declared frozen owner. This
       covers the routed *instance* case, where the new owner is the module that
       owns the object's ``type`` rather than the routed leaf itself. The
       replacement is a whole-string equality test and a whole-string
       substitution: no package-prefix rewriting, and no other binding is
-      consulted or touched.
+      consulted or touched. Entries are therefore independent of each other and
+      of declaration order.
 
     The frozen artifact on disk is never touched; this operates on an
     in-memory copy so every other difference still fails the comparison in

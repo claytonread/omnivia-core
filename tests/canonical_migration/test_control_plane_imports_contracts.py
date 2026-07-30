@@ -1,18 +1,23 @@
 """Focused acceptance for ``omnivia_core.control_plane.imports``.
 
-The shared migration gates (``_leaves.py``, ``_strict.py``, ``test_parity.py``,
-``test_fresh_process_imports.py``) already cover AST shape, namespace purity,
-per-symbol parity against the legacy module, and isolated-import cleanliness
-for every registered leaf, including this one. This module adds the
-behavioral and boundary acceptance the task package calls out by name,
-adapted from ``services/omnivia-memory/tests/test_control_plane_imports.py``
-to exercise the owner leaves directly: ``omnivia_core.control_plane.imports``
-and ``omnivia_core.control_plane.models``. ``omnivia_core.control_plane.
-validation`` and the package barrel do not exist yet, so the legacy helper's
-``validate_control_plane_manifest`` dependency is replaced below with direct
-structural candidate invariants. The legacy activation/release validator
-cases are explicitly deferred to the validation slice, where the enforcing
-manifest validator will exist.
+``omnivia_core.control_plane.imports`` is now the sole implementation of the
+control-plane import adapters. It began as a source-parity port of
+``omnivia_memory.control_plane.imports``; that legacy leaf has since been
+converted into a thin compatibility facade, so it is registered in
+``_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY`` rather than its source-parity
+map, and identity -- not source sameness -- is what
+``tests/compatibility/test_facade_foundation.py`` proves for it.
+``test_fresh_process_imports.py`` still covers isolated-import cleanliness.
+
+This module adds the behavioral and boundary acceptance the task package calls
+out by name, adapted from
+``services/omnivia-memory/tests/test_control_plane_imports.py`` to exercise the
+owner leaves directly: ``omnivia_core.control_plane.imports`` and
+``omnivia_core.control_plane.models``. The legacy helper's
+``validate_control_plane_manifest`` dependency stays replaced below with direct
+structural candidate invariants -- the enforcing manifest validator has its own
+focused module (``test_control_plane_validation_contracts.py``), so the
+activation/release validator cases live there rather than being duplicated here.
 """
 
 from __future__ import annotations

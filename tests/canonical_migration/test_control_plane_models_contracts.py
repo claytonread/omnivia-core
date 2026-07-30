@@ -1,10 +1,21 @@
 """Focused acceptance for ``omnivia_core.control_plane.models``.
 
-The shared migration gates (``_leaves.py``, ``_strict.py``, ``test_parity.py``,
-``test_fresh_process_imports.py``) already cover AST shape, namespace purity,
-per-symbol annotation/enum/dataclass-description parity against the legacy
-module, and isolated-import cleanliness for every registered leaf, including
-this one. This module adds the narrow assertions the task package calls out
+``omnivia_core.control_plane.models`` is now the sole implementation of the
+control-plane contract models. It began as a source-parity port of
+``omnivia_memory.control_plane.models``; that legacy leaf has since been
+converted into a thin compatibility facade, so it is registered in
+``_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY`` rather than its source-parity
+map, and identity -- not source sameness -- is what
+``tests/compatibility/test_facade_foundation.py`` proves for it.
+``test_fresh_process_imports.py`` still covers isolated-import cleanliness.
+
+Converting this leaf is also what moves one frozen *root* binding:
+``CONTROL_PLANE_CONTRACT_VERSION`` is a ``ContractVersion`` instance this leaf
+builds, so the recorded owner of the root binding follows its *type* into
+``omnivia_core.knowledge.models``. That exact delta is declared in
+``baseline.inventory``'s ``FACADE_ROOT_BINDING_OWNER_MOVES``.
+
+This module adds the narrow assertions the task package calls out
 by name: the two module-level constants, the ``ContractVersion`` identity of
 ``CONTROL_PLANE_CONTRACT_VERSION``, the control-plane ``LifecycleState``'s
 distinctness from ``omnivia_core.lifecycle.models.LifecycleState``, full

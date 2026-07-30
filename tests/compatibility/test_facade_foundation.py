@@ -9,9 +9,10 @@ canonical objects (``omnivia_memory.X.Symbol is omnivia_core.X.Symbol``), not
 structurally equal lookalikes. The barrels above them (``BARREL_ALL_ORDER``)
 already delegated to their sibling leaves and need no source change, but their
 re-exported objects are now canonical too as a result -- the ``app_manifest``,
-``app_shell_bridge``, ``component_contract``, ``module_manifest``, and
-``run_ledger`` barrels become identity-preserving purely transitively, through
-their two converted leaves each.
+``app_shell_bridge``, ``component_contract``, ``control_plane``,
+``module_manifest``, and ``run_ledger`` barrels become identity-preserving purely
+transitively, through their converted leaves (two each, except
+``control_plane``'s three).
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -184,6 +185,222 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_component_contract": "omnivia_core.component_contract.validation",
     },
+    "omnivia_memory.control_plane.imports": {
+        "Any": "omnivia_core.control_plane.imports",
+        # The ten contract classes the canonical imports leaf imports from its
+        # sibling ``models`` to build candidate resources. They are part of this
+        # leaf's own historical module-scope namespace too, so their identity is
+        # checked against their real owner rather than against this leaf.
+        "Capability": "omnivia_core.control_plane.models",
+        "CapabilityType": "omnivia_core.control_plane.models",
+        "CatalogueArtifactVerification": "omnivia_core.control_plane.imports",
+        "Connection": "omnivia_core.control_plane.models",
+        "ConnectionKind": "omnivia_core.control_plane.models",
+        "ImportRecord": "omnivia_core.control_plane.models",
+        "ImportSourceChange": "omnivia_core.control_plane.imports",
+        "ImportSourceProtocol": "omnivia_core.control_plane.models",
+        "ImportSpecValidation": "omnivia_core.control_plane.imports",
+        "ImportedCandidateSet": "omnivia_core.control_plane.imports",
+        # The control plane's *own* registry lifecycle enum, not the lifecycle
+        # domain's same-named class. See
+        # ``test_control_plane_collision_names_keep_their_historical_owners``.
+        "LifecycleState": "omnivia_core.control_plane.models",
+        "SideEffect": "omnivia_core.control_plane.models",
+        "Trigger": "omnivia_core.control_plane.models",
+        "TriggerKind": "omnivia_core.control_plane.models",
+        "annotations": "omnivia_core.control_plane.imports",
+        "dataclass": "omnivia_core.control_plane.imports",
+        "detect_import_source_change": "omnivia_core.control_plane.imports",
+        "field": "omnivia_core.control_plane.imports",
+        # Plain module bindings an ``import`` statement leaves behind. They were
+        # importable from this leaf before conversion, so they still must be.
+        "hashlib": "omnivia_core.control_plane.imports",
+        "import_asyncapi_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_generated_candidates": "omnivia_core.control_plane.imports",
+        "import_mcp_candidates": "omnivia_core.control_plane.imports",
+        "import_openapi_candidates": "omnivia_core.control_plane.imports",
+        "json": "omnivia_core.control_plane.imports",
+        "re": "omnivia_core.control_plane.imports",
+        "validate_asyncapi_import_spec": "omnivia_core.control_plane.imports",
+        "validate_mcp_import_spec": "omnivia_core.control_plane.imports",
+        "validate_openapi_import_spec": "omnivia_core.control_plane.imports",
+        "verify_catalogue_artifacts": "omnivia_core.control_plane.imports",
+    },
+    "omnivia_memory.control_plane.models": {
+        "Agent": "omnivia_core.control_plane.models",
+        "Any": "omnivia_core.control_plane.models",
+        "Approval": "omnivia_core.control_plane.models",
+        "AuditEvent": "omnivia_core.control_plane.models",
+        "Automation": "omnivia_core.control_plane.models",
+        # A ``ContractVersion`` *instance*, built by (and owned by) the canonical
+        # control-plane models leaf even though its type lives in the knowledge
+        # domain. That split is why converting this leaf also moves one frozen
+        # root binding -- see ``baseline.inventory``'s
+        # ``FACADE_ROOT_BINDING_OWNER_MOVES``.
+        "CONTROL_PLANE_CONTRACT_VERSION": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_SCHEMA_VERSION": "omnivia_core.control_plane.models",
+        "Capability": "omnivia_core.control_plane.models",
+        "CapabilityType": "omnivia_core.control_plane.models",
+        "Connection": "omnivia_core.control_plane.models",
+        "ConnectionKind": "omnivia_core.control_plane.models",
+        "ConsultantAccessGrant": "omnivia_core.control_plane.models",
+        "ConsultantGrantStatus": "omnivia_core.control_plane.models",
+        # The routed ``ContractVersion`` class is owned by the knowledge domain,
+        # not by this leaf's canonical counterpart: the canonical control-plane
+        # models module imports it to build the version constant above. Its
+        # identity is therefore checked against its real owner.
+        "ContractVersion": "omnivia_core.knowledge.models",
+        "ControlPlaneManifest": "omnivia_core.control_plane.models",
+        "ControlPlaneRunStatus": "omnivia_core.control_plane.models",
+        "Enum": "omnivia_core.control_plane.models",
+        "ExecutionMode": "omnivia_core.control_plane.models",
+        "ExecutionResult": "omnivia_core.control_plane.models",
+        "ImportRecord": "omnivia_core.control_plane.models",
+        "ImportSourceProtocol": "omnivia_core.control_plane.models",
+        # The control plane's own registry lifecycle enum, not the lifecycle
+        # domain's same-named class -- and it is the one the legacy root binds.
+        "LifecycleState": "omnivia_core.control_plane.models",
+        "LocalApprovalNotification": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationChannel": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationEvent": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationStatus": "omnivia_core.control_plane.models",
+        "LocalModelInvocationRecord": "omnivia_core.control_plane.models",
+        "LocalObservabilityLogRecord": "omnivia_core.control_plane.models",
+        "LocalUsageLedgerEntry": "omnivia_core.control_plane.models",
+        "Policy": "omnivia_core.control_plane.models",
+        "PolicyAttributeCondition": "omnivia_core.control_plane.models",
+        "PolicyAttributeExpression": "omnivia_core.control_plane.models",
+        "PolicyDecision": "omnivia_core.control_plane.models",
+        "PolicyDecisionReason": "omnivia_core.control_plane.models",
+        "PolicyDecisionRecord": "omnivia_core.control_plane.models",
+        "PolicyRulePack": "omnivia_core.control_plane.models",
+        "PolicyTemplate": "omnivia_core.control_plane.models",
+        "RunMode": "omnivia_core.control_plane.models",
+        "RunObservabilityMetrics": "omnivia_core.control_plane.models",
+        "RunRecord": "omnivia_core.control_plane.models",
+        "RunStepRecord": "omnivia_core.control_plane.models",
+        "RunStepStatus": "omnivia_core.control_plane.models",
+        "RunStepType": "omnivia_core.control_plane.models",
+        "SecretMetadata": "omnivia_core.control_plane.models",
+        "SecretReference": "omnivia_core.control_plane.models",
+        "SecretResolutionResult": "omnivia_core.control_plane.models",
+        "SecretStorageScope": "omnivia_core.control_plane.models",
+        "SideEffect": "omnivia_core.control_plane.models",
+        "SyncConflictStrategy": "omnivia_core.control_plane.models",
+        "SyncDirection": "omnivia_core.control_plane.models",
+        "SyncRule": "omnivia_core.control_plane.models",
+        "TenantIsolationRule": "omnivia_core.control_plane.models",
+        "Trigger": "omnivia_core.control_plane.models",
+        "TriggerEventEnvelope": "omnivia_core.control_plane.models",
+        "TriggerIngestionResult": "omnivia_core.control_plane.models",
+        "TriggerKind": "omnivia_core.control_plane.models",
+        # Not the ``_shared.validation`` primitive, nor the App Manifest's / App
+        # Shell bridge's / Component Contract's same-named class: the control
+        # plane historically defined its own ``ValidationResult`` dataclass and
+        # this leaf must keep routing to that one.
+        "ValidationResult": "omnivia_core.control_plane.models",
+        "WorkspaceRef": "omnivia_core.control_plane.models",
+        "annotations": "omnivia_core.control_plane.models",
+        "dataclass": "omnivia_core.control_plane.models",
+        "field": "omnivia_core.control_plane.models",
+    },
+    "omnivia_memory.control_plane.validation": {
+        "APPROVAL_ESCALATION_STATES": "omnivia_core.control_plane.validation",
+        # The 41 contract names below are owned by this leaf's sibling ``models``,
+        # which the canonical validator imports them from; they were bound at
+        # this leaf's module scope historically too.
+        "Agent": "omnivia_core.control_plane.models",
+        "Any": "omnivia_core.control_plane.validation",
+        "Approval": "omnivia_core.control_plane.models",
+        "AuditEvent": "omnivia_core.control_plane.models",
+        "Automation": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_CONTRACT_VERSION": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_SCHEMA_VERSION": "omnivia_core.control_plane.models",
+        "Capability": "omnivia_core.control_plane.models",
+        "CapabilityType": "omnivia_core.control_plane.models",
+        "Connection": "omnivia_core.control_plane.models",
+        "ConnectionKind": "omnivia_core.control_plane.models",
+        "ConsultantAccessGrant": "omnivia_core.control_plane.models",
+        "ConsultantGrantStatus": "omnivia_core.control_plane.models",
+        "ControlPlaneManifest": "omnivia_core.control_plane.models",
+        "ControlPlaneRunStatus": "omnivia_core.control_plane.models",
+        "ControlPlaneValidationError": "omnivia_core.control_plane.validation",
+        "DANGEROUS_SIDE_EFFECTS": "omnivia_core.control_plane.validation",
+        "EXTRA_SENSITIVE_KEYS": "omnivia_core.control_plane.validation",
+        "Enum": "omnivia_core.control_plane.validation",
+        "ImportRecord": "omnivia_core.control_plane.models",
+        "ImportSourceProtocol": "omnivia_core.control_plane.models",
+        "LifecycleState": "omnivia_core.control_plane.models",
+        "LocalApprovalNotification": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationChannel": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationEvent": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationStatus": "omnivia_core.control_plane.models",
+        "Mapping": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_NUMERIC_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_PRESENCE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_SCOPES": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_SINGLE_VALUE_OPERATORS": (
+            "omnivia_core.control_plane.validation"
+        ),
+        "POLICY_ATTRIBUTE_VALUES_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_ATTRIBUTE_VALUE_OPERATORS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_BOOLEAN_OPS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_COMPARISON_OPERATORS": (
+            "omnivia_core.control_plane.validation"
+        ),
+        "POLICY_EXPRESSION_MAX_DEPTH": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_MAX_NODES": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_NUMERIC_COMPARISONS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_OPS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_PARSE_MAX_DEPTH": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_RAW_FIELDS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_SECRET_MARKERS": "omnivia_core.control_plane.validation",
+        "POLICY_EXPRESSION_SOURCE_MAX_LENGTH": "omnivia_core.control_plane.validation",
+        "Policy": "omnivia_core.control_plane.models",
+        "PolicyAttributeCondition": "omnivia_core.control_plane.models",
+        "PolicyAttributeExpression": "omnivia_core.control_plane.models",
+        "PolicyDecision": "omnivia_core.control_plane.models",
+        "PolicyRulePack": "omnivia_core.control_plane.models",
+        "PolicyTemplate": "omnivia_core.control_plane.models",
+        "RRULE_FREQUENCIES": "omnivia_core.control_plane.validation",
+        "RRULE_WEEKDAYS": "omnivia_core.control_plane.validation",
+        "RunMode": "omnivia_core.control_plane.models",
+        "RunRecord": "omnivia_core.control_plane.models",
+        "STABLE_ID_PATTERN": "omnivia_core.control_plane.validation",
+        "SecretMetadata": "omnivia_core.control_plane.models",
+        "SecretReference": "omnivia_core.control_plane.models",
+        "SecretStorageScope": "omnivia_core.control_plane.models",
+        "SideEffect": "omnivia_core.control_plane.models",
+        "SyncConflictStrategy": "omnivia_core.control_plane.models",
+        "SyncDirection": "omnivia_core.control_plane.models",
+        "SyncRule": "omnivia_core.control_plane.models",
+        # A frozen ``TypeVar`` definition this leaf owns. The barrel above it
+        # never re-exported it, but it has always been importable from here.
+        "T": "omnivia_core.control_plane.validation",
+        "TenantIsolationRule": "omnivia_core.control_plane.models",
+        "Trigger": "omnivia_core.control_plane.models",
+        "TriggerKind": "omnivia_core.control_plane.models",
+        "TypeVar": "omnivia_core.control_plane.validation",
+        # The control plane's own dataclass, which its sibling ``models`` owns --
+        # deliberately not the shared primitive the run-ledger validator routes
+        # to, nor any of the other three domain classes of the same name.
+        "ValidationResult": "omnivia_core.control_plane.models",
+        "WorkspaceRef": "omnivia_core.control_plane.models",
+        "annotations": "omnivia_core.control_plane.validation",
+        # Owned by the knowledge domain's validation leaf, which the canonical
+        # control-plane validator imports it from.
+        "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
+        "compile_policy_expression": "omnivia_core.control_plane.validation",
+        "datetime": "omnivia_core.control_plane.validation",
+        "manifest_from_dict": "omnivia_core.control_plane.validation",
+        "re": "omnivia_core.control_plane.validation",
+        # Owned by the shared validation primitive, which the canonical
+        # control-plane validator imports it from.
+        "scan_sensitive_fields": "omnivia_core._shared.validation",
+        "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
+    },
     "omnivia_memory.lifecycle.models": {
         "LifecycleState": "omnivia_core.lifecycle.models",
         "Enum": "omnivia_core.lifecycle.models",
@@ -313,6 +530,11 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     "omnivia_memory.component_contract.validation": (
         "omnivia_core.component_contract.validation"
     ),
+    "omnivia_memory.control_plane.imports": "omnivia_core.control_plane.imports",
+    "omnivia_memory.control_plane.models": "omnivia_core.control_plane.models",
+    "omnivia_memory.control_plane.validation": (
+        "omnivia_core.control_plane.validation"
+    ),
     "omnivia_memory.lifecycle.models": "omnivia_core.lifecycle.models",
     "omnivia_memory.lifecycle.rules": "omnivia_core.lifecycle.rules",
     "omnivia_memory.module_manifest.models": "omnivia_core.module_manifest.models",
@@ -385,6 +607,82 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
         "validate_agent_run_record",
         "validate_component_contract",
     ],
+    "control_plane": [
+        "CONTROL_PLANE_CONTRACT_VERSION",
+        "CONTROL_PLANE_SCHEMA_VERSION",
+        "DANGEROUS_SIDE_EFFECTS",
+        "CatalogueArtifactVerification",
+        "ImportSourceChange",
+        "ImportSpecValidation",
+        "ImportedCandidateSet",
+        "detect_import_source_change",
+        "Agent",
+        "Approval",
+        "AuditEvent",
+        "Automation",
+        "Capability",
+        "CapabilityType",
+        "Connection",
+        "ConnectionKind",
+        "ConsultantAccessGrant",
+        "ConsultantGrantStatus",
+        "ControlPlaneManifest",
+        "ControlPlaneRunStatus",
+        "ControlPlaneValidationError",
+        "compile_policy_expression",
+        "ExecutionMode",
+        "ExecutionResult",
+        "ImportRecord",
+        "ImportSourceProtocol",
+        "LifecycleState",
+        "LocalApprovalNotification",
+        "LocalApprovalNotificationChannel",
+        "LocalApprovalNotificationEvent",
+        "LocalApprovalNotificationStatus",
+        "LocalModelInvocationRecord",
+        "LocalObservabilityLogRecord",
+        "LocalUsageLedgerEntry",
+        "Policy",
+        "PolicyAttributeCondition",
+        "PolicyAttributeExpression",
+        "PolicyDecision",
+        "PolicyDecisionReason",
+        "PolicyDecisionRecord",
+        "PolicyRulePack",
+        "PolicyTemplate",
+        "RunMode",
+        "RunObservabilityMetrics",
+        "RunRecord",
+        "RunStepRecord",
+        "RunStepStatus",
+        "RunStepType",
+        "SecretResolutionResult",
+        "SecretReference",
+        "SecretMetadata",
+        "SecretStorageScope",
+        "SideEffect",
+        "SyncConflictStrategy",
+        "SyncDirection",
+        "SyncRule",
+        "TenantIsolationRule",
+        "Trigger",
+        "TriggerEventEnvelope",
+        "TriggerIngestionResult",
+        "TriggerKind",
+        "ValidationResult",
+        "WorkspaceRef",
+        "import_asyncapi_candidates",
+        "import_catalogue_candidates",
+        "import_catalogue_generated_candidates",
+        "import_mcp_candidates",
+        "import_openapi_candidates",
+        "manifest_from_dict",
+        "validate_asyncapi_import_spec",
+        "validate_control_plane_manifest",
+        "validate_mcp_import_spec",
+        "validate_openapi_import_spec",
+        "verify_catalogue_artifacts",
+    ],
     "lifecycle": ["LifecycleState", "LifecycleRules", "CreatedBy"],
     "module_manifest": [
         "Entrypoint",
@@ -422,6 +720,7 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
 ABSOLUTE_IMPORT_BARRELS: tuple[str, ...] = (
     "_shared",
     "app_manifest",
+    "control_plane",
     "lifecycle",
     "module_manifest",
     "provenance",
@@ -507,6 +806,104 @@ RUN_LEDGER_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
+#: The same, for the unchanged legacy control-plane barrel -- the first barrel in
+#: this set with *three* converted children rather than two, and the only one
+#: whose ``__all__`` is neither alphabetized nor a concatenation of its import
+#: blocks: it leads with the three constants, then interleaves each child's names
+#: in its own historical order. Both the block order/name order below and that
+#: ``__all__`` order are restated exactly rather than derived.
+CONTROL_PLANE_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.control_plane.imports",
+        (
+            "CatalogueArtifactVerification",
+            "ImportSourceChange",
+            "ImportSpecValidation",
+            "ImportedCandidateSet",
+            "detect_import_source_change",
+            "import_asyncapi_candidates",
+            "import_catalogue_candidates",
+            "import_catalogue_generated_candidates",
+            "import_mcp_candidates",
+            "import_openapi_candidates",
+            "validate_asyncapi_import_spec",
+            "validate_mcp_import_spec",
+            "validate_openapi_import_spec",
+            "verify_catalogue_artifacts",
+        ),
+    ),
+    (
+        "omnivia_memory.control_plane.models",
+        (
+            "CONTROL_PLANE_CONTRACT_VERSION",
+            "CONTROL_PLANE_SCHEMA_VERSION",
+            "Agent",
+            "Approval",
+            "AuditEvent",
+            "Automation",
+            "Capability",
+            "CapabilityType",
+            "Connection",
+            "ConnectionKind",
+            "ConsultantAccessGrant",
+            "ConsultantGrantStatus",
+            "ControlPlaneManifest",
+            "ControlPlaneRunStatus",
+            "ExecutionMode",
+            "ExecutionResult",
+            "ImportRecord",
+            "ImportSourceProtocol",
+            "LifecycleState",
+            "LocalApprovalNotification",
+            "LocalApprovalNotificationChannel",
+            "LocalApprovalNotificationEvent",
+            "LocalApprovalNotificationStatus",
+            "LocalModelInvocationRecord",
+            "LocalObservabilityLogRecord",
+            "LocalUsageLedgerEntry",
+            "Policy",
+            "PolicyAttributeCondition",
+            "PolicyAttributeExpression",
+            "PolicyDecision",
+            "PolicyDecisionReason",
+            "PolicyDecisionRecord",
+            "PolicyRulePack",
+            "PolicyTemplate",
+            "RunMode",
+            "RunObservabilityMetrics",
+            "RunRecord",
+            "RunStepRecord",
+            "RunStepStatus",
+            "RunStepType",
+            "SecretResolutionResult",
+            "SecretReference",
+            "SecretMetadata",
+            "SecretStorageScope",
+            "SideEffect",
+            "SyncConflictStrategy",
+            "SyncDirection",
+            "SyncRule",
+            "TenantIsolationRule",
+            "Trigger",
+            "TriggerEventEnvelope",
+            "TriggerIngestionResult",
+            "TriggerKind",
+            "ValidationResult",
+            "WorkspaceRef",
+        ),
+    ),
+    (
+        "omnivia_memory.control_plane.validation",
+        (
+            "DANGEROUS_SIDE_EFFECTS",
+            "ControlPlaneValidationError",
+            "compile_policy_expression",
+            "manifest_from_dict",
+            "validate_control_plane_manifest",
+        ),
+    ),
+)
+
 #: The absolute-import barrels that additionally get the stricter, shape-exact
 #: gate below, and the exact shape each must keep. Keyed by barrel suffix so the
 #: shape gate and the transitive-identity gate both run over the same declared
@@ -519,6 +916,7 @@ ABSOLUTE_IMPORT_BARREL_IMPORTS: dict[
     str, tuple[tuple[str, tuple[str, ...]], ...]
 ] = {
     "app_manifest": APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
+    "control_plane": CONTROL_PLANE_BARREL_ABSOLUTE_IMPORTS,
     "module_manifest": MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
     "run_ledger": RUN_LEDGER_BARREL_ABSOLUTE_IMPORTS,
 }
@@ -611,6 +1009,11 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.component_contract.validation": (
         "omnivia_memory.component_contract.validation"
     ),
+    "omnivia_core.control_plane.imports": "omnivia_memory.control_plane.imports",
+    "omnivia_core.control_plane.models": "omnivia_memory.control_plane.models",
+    "omnivia_core.control_plane.validation": (
+        "omnivia_memory.control_plane.validation"
+    ),
     "omnivia_core.lifecycle.models": "omnivia_memory.lifecycle.models",
     "omnivia_core.lifecycle.rules": "omnivia_memory.lifecycle.rules",
     "omnivia_core.module_manifest.models": "omnivia_memory.module_manifest.models",
@@ -641,16 +1044,30 @@ COLLIDING_OWNERS: dict[str, tuple[str, ...]] = {
         "omnivia_core.app_manifest.models",
         "omnivia_core.component_contract.models",
     ),
+    # The control plane defines its own registry lifecycle enum, distinct from
+    # the lifecycle domain's state machine. Three converted leaves route this
+    # name to the lifecycle owner and three to the control-plane owner, and the
+    # legacy root binds the control-plane one, so the separation is pinned here.
+    "LifecycleState": (
+        "omnivia_core.lifecycle.models",
+        "omnivia_core.control_plane.models",
+    ),
 }
 
 #: For each colliding name, the single owner the *legacy package root* has always
 #: re-exported it from. The root itself is deliberately unedited by this slice:
-#: these two bindings move to the canonical objects transitively, through the
+#: these three bindings move to the canonical objects transitively, through the
 #: converted leaves, and which owner each lands on must not change. See
 #: ``test_legacy_root_keeps_its_historical_owner_for_each_colliding_name``.
 ROOT_OWNERS: dict[str, str] = {
     "ValidationResult": "omnivia_core._shared.validation",
     "ProvenanceRequirement": "omnivia_core.component_contract.models",
+    # The root's ``LifecycleState`` has always been the control plane's registry
+    # enum, not the lifecycle domain's -- which is why converting the control
+    # plane moves that frozen root binding's owner (see
+    # ``baseline.inventory.FACADE_ROUTES``) while the three lifecycle-domain
+    # routes for the same name move nothing at the root.
+    "LifecycleState": "omnivia_core.control_plane.models",
 }
 
 
@@ -923,11 +1340,11 @@ def test_absolute_import_barrel_imports_only_names_barrels_in_the_absolute_gate(
 @pytest.mark.parametrize("barrel", sorted(ABSOLUTE_IMPORT_BARREL_IMPORTS))
 def test_absolute_import_barrel_source_is_unchanged_reexport(barrel: str) -> None:
     """These legacy barrels are *source-unchanged* by this slice: each becomes
-    identity-preserving transitively, through its two converted leaves, not by
-    being rewritten itself. Pin each one's exact historical shape -- two
-    absolute ``from omnivia_memory.<barrel>.<leaf> import (...)`` statements in
-    source order with their exact ordered name lists, then the ``__all__``
-    literal -- so a future edit that reroutes a barrel directly at
+    identity-preserving transitively, through its converted leaves, not by
+    being rewritten itself. Pin each one's exact historical shape -- one
+    absolute ``from omnivia_memory.<barrel>.<leaf> import (...)`` statement per
+    declared leaf, in source order with their exact ordered name lists, then the
+    ``__all__`` literal -- so a future edit that reroutes a barrel directly at
     ``omnivia_core``, adds a ``__getattr__``, or reorders its re-exports fails
     here rather than only shifting which module the identity happens to come
     from.
@@ -971,7 +1388,8 @@ def test_absolute_import_barrel_identity_is_transitive_through_its_leaves(
     re-exports from, and that object must in turn be the canonical one. A barrel
     that started sourcing a name from somewhere else would still pass the
     canonical-identity check alone; requiring the leaf hop too is what pins the
-    transitive route.
+    transitive route -- for ``control_plane`` that means all three hops, one per
+    converted child.
     """
     barrel_module = importlib.import_module(f"omnivia_memory.{barrel}")
     for legacy_leaf_name, names in ABSOLUTE_IMPORT_BARREL_IMPORTS[barrel]:
@@ -1166,17 +1584,81 @@ def test_component_contract_collision_names_keep_their_historical_owners() -> No
             )
 
 
+def test_control_plane_collision_names_keep_their_historical_owners() -> None:
+    """``ValidationResult`` and ``LifecycleState`` are name collisions across
+    independent domains. The control plane's own dataclass and its own registry
+    lifecycle enum are the ones these three leaves historically exposed -- and its
+    ``LifecycleState`` is additionally the one the legacy package root binds -- so
+    routing either to another domain's same-named class would be a silent contract
+    swap that every "is the exact canonical object" check above would still pass.
+    Pin the owners on all three converted leaves and the barrel, and pin that they
+    are *not* the others.
+    """
+    canonical_leaf = importlib.import_module("omnivia_core.control_plane.models")
+    legacy_barrel = importlib.import_module("omnivia_memory.control_plane")
+
+    # ``imports`` binds only ``LifecycleState`` of the two; the other two leaves
+    # bind both.
+    for legacy_leaf_name, names in (
+        ("omnivia_memory.control_plane.imports", ("LifecycleState",)),
+        (
+            "omnivia_memory.control_plane.models",
+            ("ValidationResult", "LifecycleState"),
+        ),
+        (
+            "omnivia_memory.control_plane.validation",
+            ("ValidationResult", "LifecycleState"),
+        ),
+    ):
+        legacy_leaf = importlib.import_module(legacy_leaf_name)
+        for name in names:
+            assert getattr(legacy_leaf, name) is getattr(canonical_leaf, name), (
+                f"{legacy_leaf_name}.{name} is not the exact object bound at "
+                f"omnivia_core.control_plane.models.{name}"
+            )
+    for name in ("ValidationResult", "LifecycleState"):
+        assert getattr(legacy_barrel, name) is getattr(canonical_leaf, name)
+
+    for other_module in (
+        "omnivia_core._shared.validation",
+        "omnivia_memory._shared.validation",
+        "omnivia_core.app_manifest.models",
+        "omnivia_memory.app_manifest.models",
+        "omnivia_core.app_shell_bridge.models",
+        "omnivia_memory.app_shell_bridge.models",
+        "omnivia_core.component_contract.models",
+        "omnivia_memory.component_contract.models",
+        "omnivia_core.lifecycle.models",
+        "omnivia_memory.lifecycle.models",
+        "omnivia_core.lifecycle.rules",
+        "omnivia_memory.lifecycle.rules",
+        "omnivia_core.memory.models",
+        "omnivia_memory.memory.models",
+        "omnivia_core.run_ledger.validation",
+        "omnivia_memory.run_ledger.validation",
+    ):
+        other = importlib.import_module(other_module)
+        for name in ("ValidationResult", "LifecycleState"):
+            if not hasattr(other, name):
+                continue
+            assert getattr(canonical_leaf, name) is not getattr(other, name), (
+                f"omnivia_core.control_plane.models.{name} must stay the control "
+                f"plane's own class, not {other_module}.{name}"
+            )
+
+
 def test_legacy_root_keeps_its_historical_owner_for_each_colliding_name() -> None:
-    """The legacy package root re-exports both colliding names, but from only one
-    owner each: ``ProvenanceRequirement`` from the Component Contract (via
-    ``from .component_contract import ...``) and ``ValidationResult`` from the
-    shared primitive (via the knowledge barrel's re-export of it). The root is
-    *not* edited by this slice, so those two bindings must still resolve to the
+    """The legacy package root re-exports all three colliding names, but from only
+    one owner each: ``ProvenanceRequirement`` from the Component Contract (via
+    ``from .component_contract import ...``), ``ValidationResult`` from the
+    shared primitive (via the knowledge barrel's re-export of it), and
+    ``LifecycleState`` from the control plane. The root is
+    *not* edited by this slice, so those three bindings must still resolve to the
     same objects they always did -- now the canonical ones, reached transitively
     through the converted leaves.
 
     This is the invariant the leaf-level checks cannot see. ``ROOT_OWNERS``
-    below pins one owner per name out of the five/two candidates, and the
+    below pins one owner per name out of the five/two/two candidates, and the
     negative half pins that the root did not silently pick up a *different*
     domain's same-named class -- which is exactly what a converted leaf routed
     to the wrong owner would cause, several import hops away from the leaf.

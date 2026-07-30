@@ -123,6 +123,9 @@ EXPECTED_STATE_SUFFIXES = {
         "app_shell_bridge.validation",
         "component_contract.models",
         "component_contract.validation",
+        "control_plane.imports",
+        "control_plane.models",
+        "control_plane.validation",
         "lifecycle.models",
         "lifecycle.rules",
         "memory.models",
@@ -137,13 +140,13 @@ EXPECTED_STATE_SUFFIXES = {
         "app_manifest",
         "app_shell_bridge",
         "component_contract",
+        "control_plane",
         "lifecycle",
         "module_manifest",
         "provenance",
         "run_ledger",
     },
     MigrationState.PENDING_DIRECT_BARREL: {
-        "control_plane",
         "knowledge",
     },
     MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
@@ -344,6 +347,9 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("app_manifest.validation", "source_parity", "move the state forward"),
         ("component_contract.models", "source_parity", "move the state forward"),
         ("component_contract.validation", "source_parity", "move the state forward"),
+        ("control_plane.imports", "source_parity", "move the state forward"),
+        ("control_plane.models", "source_parity", "move the state forward"),
+        ("control_plane.validation", "source_parity", "move the state forward"),
         ("module_manifest.models", "source_parity", "move the state forward"),
         ("module_manifest.validation", "source_parity", "move the state forward"),
         ("run_ledger.models", "source_parity", "move the state forward"),
@@ -403,6 +409,9 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
         "app_manifest.validation",
         "component_contract.models",
         "component_contract.validation",
+        "control_plane.imports",
+        "control_plane.models",
+        "control_plane.validation",
         "module_manifest.models",
         "module_manifest.validation",
         "run_ledger.models",
@@ -645,6 +654,287 @@ def test_run_ledger_barrel_transitive_form_accepts_its_historical_source() -> No
     assert transitive_facade_defects(ast.parse(source), route, children) == []
 
 
+#: The legacy control-plane barrel's exact historical export sets, per child,
+#: restated here rather than read off the barrel: the fixture below must not be
+#: derived from the very file whose mutations it is proving get rejected. Unlike
+#: every other barrel in this module it has *three* converted children, and its
+#: ``__all__`` is neither alphabetized nor a concatenation of its three import
+#: blocks -- it leads with the three constants, then interleaves each child's
+#: names -- so the literal order is restated here too.
+_CONTROL_PLANE_IMPORTS_EXPORTS: tuple[str, ...] = (
+    "CatalogueArtifactVerification",
+    "ImportSourceChange",
+    "ImportSpecValidation",
+    "ImportedCandidateSet",
+    "detect_import_source_change",
+    "import_asyncapi_candidates",
+    "import_catalogue_candidates",
+    "import_catalogue_generated_candidates",
+    "import_mcp_candidates",
+    "import_openapi_candidates",
+    "validate_asyncapi_import_spec",
+    "validate_mcp_import_spec",
+    "validate_openapi_import_spec",
+    "verify_catalogue_artifacts",
+)
+_CONTROL_PLANE_MODELS_EXPORTS: tuple[str, ...] = (
+    "CONTROL_PLANE_CONTRACT_VERSION",
+    "CONTROL_PLANE_SCHEMA_VERSION",
+    "Agent",
+    "Approval",
+    "AuditEvent",
+    "Automation",
+    "Capability",
+    "CapabilityType",
+    "Connection",
+    "ConnectionKind",
+    "ConsultantAccessGrant",
+    "ConsultantGrantStatus",
+    "ControlPlaneManifest",
+    "ControlPlaneRunStatus",
+    "ExecutionMode",
+    "ExecutionResult",
+    "ImportRecord",
+    "ImportSourceProtocol",
+    "LifecycleState",
+    "LocalApprovalNotification",
+    "LocalApprovalNotificationChannel",
+    "LocalApprovalNotificationEvent",
+    "LocalApprovalNotificationStatus",
+    "LocalModelInvocationRecord",
+    "LocalObservabilityLogRecord",
+    "LocalUsageLedgerEntry",
+    "Policy",
+    "PolicyAttributeCondition",
+    "PolicyAttributeExpression",
+    "PolicyDecision",
+    "PolicyDecisionReason",
+    "PolicyDecisionRecord",
+    "PolicyRulePack",
+    "PolicyTemplate",
+    "RunMode",
+    "RunObservabilityMetrics",
+    "RunRecord",
+    "RunStepRecord",
+    "RunStepStatus",
+    "RunStepType",
+    "SecretResolutionResult",
+    "SecretReference",
+    "SecretMetadata",
+    "SecretStorageScope",
+    "SideEffect",
+    "SyncConflictStrategy",
+    "SyncDirection",
+    "SyncRule",
+    "TenantIsolationRule",
+    "Trigger",
+    "TriggerEventEnvelope",
+    "TriggerIngestionResult",
+    "TriggerKind",
+    "ValidationResult",
+    "WorkspaceRef",
+)
+_CONTROL_PLANE_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "DANGEROUS_SIDE_EFFECTS",
+    "ControlPlaneValidationError",
+    "compile_policy_expression",
+    "manifest_from_dict",
+    "validate_control_plane_manifest",
+)
+#: The barrel's own literal ``__all__`` order, which matches none of the three
+#: import blocks: three constants first, then the imports leaf's contract names,
+#: then the models block with the validation leaf's error/compiler spliced in.
+_CONTROL_PLANE_ALL_ORDER: tuple[str, ...] = (
+    "CONTROL_PLANE_CONTRACT_VERSION",
+    "CONTROL_PLANE_SCHEMA_VERSION",
+    "DANGEROUS_SIDE_EFFECTS",
+    "CatalogueArtifactVerification",
+    "ImportSourceChange",
+    "ImportSpecValidation",
+    "ImportedCandidateSet",
+    "detect_import_source_change",
+    "Agent",
+    "Approval",
+    "AuditEvent",
+    "Automation",
+    "Capability",
+    "CapabilityType",
+    "Connection",
+    "ConnectionKind",
+    "ConsultantAccessGrant",
+    "ConsultantGrantStatus",
+    "ControlPlaneManifest",
+    "ControlPlaneRunStatus",
+    "ControlPlaneValidationError",
+    "compile_policy_expression",
+    "ExecutionMode",
+    "ExecutionResult",
+    "ImportRecord",
+    "ImportSourceProtocol",
+    "LifecycleState",
+    "LocalApprovalNotification",
+    "LocalApprovalNotificationChannel",
+    "LocalApprovalNotificationEvent",
+    "LocalApprovalNotificationStatus",
+    "LocalModelInvocationRecord",
+    "LocalObservabilityLogRecord",
+    "LocalUsageLedgerEntry",
+    "Policy",
+    "PolicyAttributeCondition",
+    "PolicyAttributeExpression",
+    "PolicyDecision",
+    "PolicyDecisionReason",
+    "PolicyDecisionRecord",
+    "PolicyRulePack",
+    "PolicyTemplate",
+    "RunMode",
+    "RunObservabilityMetrics",
+    "RunRecord",
+    "RunStepRecord",
+    "RunStepStatus",
+    "RunStepType",
+    "SecretResolutionResult",
+    "SecretReference",
+    "SecretMetadata",
+    "SecretStorageScope",
+    "SideEffect",
+    "SyncConflictStrategy",
+    "SyncDirection",
+    "SyncRule",
+    "TenantIsolationRule",
+    "Trigger",
+    "TriggerEventEnvelope",
+    "TriggerIngestionResult",
+    "TriggerKind",
+    "ValidationResult",
+    "WorkspaceRef",
+    "import_asyncapi_candidates",
+    "import_catalogue_candidates",
+    "import_catalogue_generated_candidates",
+    "import_mcp_candidates",
+    "import_openapi_candidates",
+    "manifest_from_dict",
+    "validate_asyncapi_import_spec",
+    "validate_control_plane_manifest",
+    "validate_mcp_import_spec",
+    "validate_openapi_import_spec",
+    "verify_catalogue_artifacts",
+)
+
+
+def _control_plane_barrel_source(extra_source: str) -> str:
+    def block(module: str, names: tuple[str, ...]) -> str:
+        body = "".join(f"    {name},\n" for name in names)
+        return f"from omnivia_memory.control_plane.{module} import (\n{body})\n"
+
+    all_body = "".join(f'    "{name}",\n' for name in _CONTROL_PLANE_ALL_ORDER)
+    return (
+        block("imports", _CONTROL_PLANE_IMPORTS_EXPORTS)
+        + block("models", _CONTROL_PLANE_MODELS_EXPORTS)
+        + block("validation", _CONTROL_PLANE_VALIDATION_EXPORTS)
+        + f"__all__ = [\n{all_body}]\n"
+        + extra_source
+    )
+
+
+def _control_plane_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.control_plane"),
+        [
+            manifest.route_for_legacy("omnivia_memory.control_plane.imports"),
+            manifest.route_for_legacy("omnivia_memory.control_plane.models"),
+            manifest.route_for_legacy("omnivia_memory.control_plane.validation"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.control_plane.models import ControlPlaneManifest\n",
+            "unapproved module",
+        ),
+        # The control plane's own validation leaf reaches the knowledge domain for
+        # ``check_contract_version_compatibility``, so a knowledge import is the
+        # most plausible accidental extra module here -- and still not one of its
+        # three children.
+        (
+            (
+                "from omnivia_memory.knowledge import "
+                "check_contract_version_compatibility\n"
+            ),
+            "unapproved module",
+        ),
+        # ``control_plane.registry`` is this barrel's own runtime-only sibling, so
+        # a relative reach into it is the sharpest local-reroute case: it is a real
+        # module of the same package that is deliberately not a route at all.
+        ("from .registry import ControlPlaneRegistry\n", "unapproved module"),
+        ("LifecycleState = object()\n", "assignments"),
+        (
+            "def validate_control_plane_manifest(manifest):\n    return manifest\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_control_plane_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The control-plane barrel earns ``transitive_facade`` by re-exporting only
+    its three converted children. Reaching into ``omnivia_core`` itself, pulling a
+    fourth module by either an absolute or a relative path, or defining anything
+    of its own must be rejected -- each of those would make the barrel's identity
+    preservation direct or local rather than transitive, while still exporting the
+    same 74 names."""
+    route, children = _control_plane_barrel_route_and_children()
+    source = _control_plane_barrel_source(extra_source)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_control_plane_barrel_transitive_form_accepts_its_historical_source() -> None:
+    """The same fixture with nothing added must be defect-free, so the rejection
+    cases above are proven to fail on what they inject rather than on the barrel's
+    three-child absolute-import shape or its interleaved ``__all__`` itself."""
+    route, children = _control_plane_barrel_route_and_children()
+    source = _control_plane_barrel_source("")
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+def test_control_plane_barrel_transitive_form_requires_all_three_children() -> None:
+    """Dropping any one child's import block must fail. With three children the
+    "does not import converted children" branch is reachable in a way the
+    two-child barrels never exercise: a barrel could keep a perfectly valid
+    two-block shape and still have stopped re-exporting a converted leaf."""
+    route, children = _control_plane_barrel_route_and_children()
+    blocks = {
+        "imports": _CONTROL_PLANE_IMPORTS_EXPORTS,
+        "models": _CONTROL_PLANE_MODELS_EXPORTS,
+        "validation": _CONTROL_PLANE_VALIDATION_EXPORTS,
+    }
+    for dropped in blocks:
+        source = ""
+        exported: list[str] = []
+        for module, names in blocks.items():
+            if module == dropped:
+                continue
+            body = "".join(f"    {name},\n" for name in names)
+            source += (
+                f"from omnivia_memory.control_plane.{module} import (\n{body})\n"
+            )
+            exported.extend(names)
+        all_body = "".join(f'    "{name}",\n' for name in exported)
+        source += f"__all__ = [\n{all_body}]\n"
+        defects = transitive_facade_defects(ast.parse(source), route, children)
+        assert any(
+            "does not import converted children" in defect
+            and f"omnivia_memory.control_plane.{dropped}" in defect
+            for defect in defects
+        ), (dropped, defects)
+
+
 #: The legacy component-contract barrel's exact historical export sets, per
 #: child, restated here rather than read off the barrel: the fixture below must
 #: not be derived from the very file whose mutations it is proving get rejected.
@@ -807,9 +1097,12 @@ def test_checker_is_a_successful_executable_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
     assert "canonical_subset: 1" in result.stdout
-    # The per-state counts this batch moved: the two run-ledger leaves into
+    # The per-state counts this batch moved: the three control-plane leaves into
     # ``direct_facade``, their barrel from ``pending_direct_barrel`` into
-    # ``transitive_facade``.
-    assert "direct_facade: 15" in result.stdout
-    assert "transitive_facade: 8" in result.stdout
-    assert "pending_direct_barrel: 2" in result.stdout
+    # ``transitive_facade``. ``knowledge`` is now the only barrel left pending
+    # direct conversion.
+    assert "source_parity: 11" in result.stdout
+    assert "direct_facade: 18" in result.stdout
+    assert "transitive_facade: 9" in result.stdout
+    assert "pending_direct_barrel: 1" in result.stdout
+    assert "remaining: 12 leaves and 7 barrels still to convert" in result.stdout

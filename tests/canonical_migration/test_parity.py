@@ -21,9 +21,10 @@ Four layers of comparison run here, from loosest to strictest:
   is not.
 - *Normalized AST* parity -- ``ast.dump`` of the canonical module against
   ``ast.dump`` of the legacy module with only its ``omnivia_memory`` package
-  references rewritten to ``omnivia_core`` (and, for the one leaf listed in
-  ``SANCTIONED_IMPORT_REWRITES``, that leaf's single named, exact import
-  rewrite applied first). Nothing else is normalized, so this pins the whole
+  references rewritten to ``omnivia_core`` (and, for any leaf listed in
+  ``SANCTIONED_IMPORT_REWRITES``, that leaf's named, exact import rewrites
+  applied first -- no leaf needs one at present). Nothing else is normalized,
+  so this pins the whole
   module: function and method *bodies*, constant values, enum member aliases,
   ``field(default_factory=...)`` expressions, the delegation each
   ``to_dict``/``from_dict`` performs, docstring text, and import placement
@@ -39,15 +40,18 @@ Four layers of comparison run here, from loosest to strictest:
   module it applies to and the exact old/new source fragments, and every
   rule must match its leaf's legacy source exactly once
   (``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once``
-  rejects a stale or unused rule).
+  rejects a stale or unused rule -- which is what emptied the map: every leaf
+  that ever needed a rule has since become a facade).
 
 A subset of once-duplicated leaves (``_shared.validation``,
 ``app_manifest.models``, ``app_manifest.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
-``lifecycle.models``, ``lifecycle.rules``, ``module_manifest.models``,
-``module_manifest.validation``, ``provenance.models``, ``memory.models``,
-``run_ledger.models``, and ``run_ledger.validation``) has since been converted
+``control_plane.imports``, ``control_plane.models``,
+``control_plane.validation``, ``lifecycle.models``, ``lifecycle.rules``,
+``module_manifest.models``, ``module_manifest.validation``,
+``provenance.models``, ``memory.models``, ``run_ledger.models``, and
+``run_ledger.validation``) has since been converted
 into thin compatibility facades:
 the legacy leaf now imports its supported symbols directly from the canonical
 owner (``legacy.Foo is canonical.Foo``) instead of holding a duplicated,
@@ -94,36 +98,26 @@ CANONICAL_PACKAGE = "omnivia_core"
 #: source -- before the generic ``omnivia_memory`` -> ``omnivia_core`` rename
 #: below -- so the AST comparison stays an equality check rather than a
 #: fuzzy one. Keyed by the exact ``(canonical, legacy)`` module pair; each
-#: rule is an (old, new) source-fragment pair. Control-plane validation
-#: reroutes its compatibility helper from the legacy knowledge barrel directly
-#: to the canonical knowledge-validation owner leaf. That exact change -- and
-#: nothing else -- is rewritten here before comparison.
+#: rule is an (old, new) source-fragment pair.
 #:
-#: ``run_ledger.validation`` used to carry a rule here too, splitting a combined
-#: legacy knowledge-barrel import across the canonical shared-validation and
-#: knowledge-validation owner leaves. Its legacy leaf is now a compatibility
-#: facade, so it has left ``CANONICAL_TO_LEGACY`` and there is no legacy source
-#: left to rewrite: identity, not source sameness, is what
-#: ``tests/compatibility/test_facade_foundation.py`` now proves for it. Keeping
-#: the rule would fail
+#: No leaf needs a rule at present, and the map is deliberately kept (rather than
+#: deleted) because the mechanism -- and the staleness gate over it -- still has
+#: to exist for the batches still to come.
+#:
+#: ``run_ledger.validation`` and ``control_plane.validation`` each used to carry
+#: one: the former split a combined legacy knowledge-barrel import across the
+#: canonical shared-validation and knowledge-validation owner leaves, the latter
+#: rerouted its compatibility helper from the legacy knowledge barrel directly to
+#: the canonical knowledge-validation owner leaf. Both legacy leaves are now
+#: compatibility facades, so they have left ``CANONICAL_TO_LEGACY`` and there is
+#: no legacy source left to rewrite: identity, not source sameness, is what
+#: ``tests/compatibility/test_facade_foundation.py`` now proves for them. Keeping
+#: either rule would fail
 #: ``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once`` as
 #: stale, which is exactly that gate working.
 SANCTIONED_IMPORT_REWRITES: dict[
     tuple[str, str], tuple[tuple[str, str], ...]
-] = {
-    (
-        "omnivia_core.control_plane.validation",
-        "omnivia_memory.control_plane.validation",
-    ): (
-        (
-            "from omnivia_memory.knowledge import check_contract_version_compatibility",
-            (
-                "from omnivia_core.knowledge.validation import "
-                "check_contract_version_compatibility"
-            ),
-        ),
-    ),
-}
+] = {}
 
 
 def _public_definitions(module: ModuleType, *, strict: bool) -> dict[str, Any]:

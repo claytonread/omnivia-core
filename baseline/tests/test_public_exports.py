@@ -6,6 +6,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from baseline import CORE_PACKAGE, REPO_ROOT
 from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
@@ -384,18 +386,24 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         for name, binding in normalized["root"]["bindings"].items()
         if binding["defined_in"] != expected["root"]["bindings"][name]["defined_in"]
     }
-    # ``ProvenanceRequirement`` and ``ValidationResult`` are routed by more than
-    # one leaf, but each moves for exactly the one route whose legacy module the
-    # root actually bound it from: the Component Contract for the former, the
-    # shared primitive for the latter. The App Manifest's and App Shell bridge's
-    # same-named classes are leaf-local and must move no root binding at all.
+    # ``ProvenanceRequirement``, ``ValidationResult`` and ``LifecycleState`` are
+    # routed by more than one leaf, but each moves for exactly the one route whose
+    # legacy module the root actually bound it from: the Component Contract for the
+    # first, the shared primitive for the second, the control plane for the third.
+    # The App Manifest's and App Shell bridge's same-named result classes, and the
+    # lifecycle domain's own ``LifecycleState``, are leaf-local here and must move
+    # no root binding at all.
     #
-    # ``RUN_LEDGER_CONTRACT_VERSION`` is the one binding that does not land on
-    # its own route's canonical module: it is a ``ContractVersion`` *instance*,
-    # so ``defined_in`` names the module owning its type. Its move is declared
-    # exactly in ``FACADE_ROOT_BINDING_OWNER_MOVES`` and proved by
-    # ``_facade_root_binding_problems`` before it may be applied.
+    # ``RUN_LEDGER_CONTRACT_VERSION`` and ``CONTROL_PLANE_CONTRACT_VERSION`` are the
+    # two bindings that do not land on their own route's canonical module: each is a
+    # ``ContractVersion`` *instance*, so ``defined_in`` names the module owning its
+    # type. Both moves are declared exactly in
+    # ``FACADE_ROOT_BINDING_OWNER_MOVES`` and proved by
+    # ``_facade_root_binding_problems`` before either may be applied -- and they
+    # land on the same new owner without interfering, which is what makes the
+    # mechanism's independence visible here.
     assert moved == {
+        "Agent": "omnivia_core.control_plane.models",
         "AgentAction": "omnivia_core.component_contract.models",
         "AgentBackedComponentContract": "omnivia_core.component_contract.models",
         "AgentBehavior": "omnivia_core.component_contract.models",
@@ -404,8 +412,15 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "AppManifest": "omnivia_core.app_manifest.models",
         "AppManifestValidationError": "omnivia_core.app_manifest.validation",
         "AppState": "omnivia_core.app_manifest.models",
+        "Approval": "omnivia_core.control_plane.models",
         "ApprovalPolicy": "omnivia_core.component_contract.models",
+        "AuditEvent": "omnivia_core.control_plane.models",
         "AuditRequirement": "omnivia_core.component_contract.models",
+        "Automation": "omnivia_core.control_plane.models",
+        "CONTROL_PLANE_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "Capability": "omnivia_core.control_plane.models",
+        "CapabilityType": "omnivia_core.control_plane.models",
+        "CatalogueArtifactVerification": "omnivia_core.control_plane.imports",
         "ComponentAIMode": "omnivia_core.component_contract.models",
         "ComponentConnectorScope": "omnivia_core.component_contract.models",
         "ComponentContract": "omnivia_core.component_contract.models",
@@ -419,10 +434,32 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ComponentPermission": "omnivia_core.component_contract.models",
         "ComponentRunMode": "omnivia_core.component_contract.models",
         "ComponentSafetyLevel": "omnivia_core.component_contract.models",
+        "Connection": "omnivia_core.control_plane.models",
+        "ConnectionKind": "omnivia_core.control_plane.models",
+        "ConsultantAccessGrant": "omnivia_core.control_plane.models",
+        "ConsultantGrantStatus": "omnivia_core.control_plane.models",
+        "ControlPlaneManifest": "omnivia_core.control_plane.models",
+        "ControlPlaneRunStatus": "omnivia_core.control_plane.models",
+        "ControlPlaneValidationError": "omnivia_core.control_plane.validation",
         "DataSource": "omnivia_core.app_manifest.models",
         "Entrypoint": "omnivia_core.module_manifest.models",
         "EvidenceFileRef": "omnivia_core.run_ledger.models",
+        "ExecutionMode": "omnivia_core.control_plane.models",
+        "ExecutionResult": "omnivia_core.control_plane.models",
+        "ImportRecord": "omnivia_core.control_plane.models",
+        "ImportSourceChange": "omnivia_core.control_plane.imports",
+        "ImportSourceProtocol": "omnivia_core.control_plane.models",
+        "ImportSpecValidation": "omnivia_core.control_plane.imports",
+        "ImportedCandidateSet": "omnivia_core.control_plane.imports",
         "Integrity": "omnivia_core.module_manifest.models",
+        "LifecycleState": "omnivia_core.control_plane.models",
+        "LocalApprovalNotification": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationChannel": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationEvent": "omnivia_core.control_plane.models",
+        "LocalApprovalNotificationStatus": "omnivia_core.control_plane.models",
+        "LocalModelInvocationRecord": "omnivia_core.control_plane.models",
+        "LocalObservabilityLogRecord": "omnivia_core.control_plane.models",
+        "LocalUsageLedgerEntry": "omnivia_core.control_plane.models",
         "MemoryCreate": "omnivia_core.memory.models",
         "MemoryUpdate": "omnivia_core.memory.models",
         "ModuleKind": "omnivia_core.module_manifest.models",
@@ -430,23 +467,64 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ModuleManifestValidationError": "omnivia_core.module_manifest.validation",
         "Permission": "omnivia_core.module_manifest.models",
         "PermissionPolicy": "omnivia_core.component_contract.models",
-        "PublishedTarget": "omnivia_core.module_manifest.models",
+        "Policy": "omnivia_core.control_plane.models",
+        "PolicyAttributeCondition": "omnivia_core.control_plane.models",
+        "PolicyAttributeExpression": "omnivia_core.control_plane.models",
+        "PolicyDecision": "omnivia_core.control_plane.models",
+        "PolicyDecisionReason": "omnivia_core.control_plane.models",
+        "PolicyDecisionRecord": "omnivia_core.control_plane.models",
+        "PolicyRulePack": "omnivia_core.control_plane.models",
+        "PolicyTemplate": "omnivia_core.control_plane.models",
         "ProvenanceBehavior": "omnivia_core.component_contract.models",
         "ProvenanceRequirement": "omnivia_core.component_contract.models",
+        "PublishedTarget": "omnivia_core.module_manifest.models",
         "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.knowledge.models",
         "RunLedgerEntry": "omnivia_core.run_ledger.models",
         "RunLedgerProvenance": "omnivia_core.run_ledger.models",
         "RunLedgerStatus": "omnivia_core.run_ledger.models",
+        "RunMode": "omnivia_core.control_plane.models",
+        "RunObservabilityMetrics": "omnivia_core.control_plane.models",
+        "RunRecord": "omnivia_core.control_plane.models",
+        "RunStepRecord": "omnivia_core.control_plane.models",
+        "RunStepStatus": "omnivia_core.control_plane.models",
+        "RunStepType": "omnivia_core.control_plane.models",
+        "SecretMetadata": "omnivia_core.control_plane.models",
+        "SecretReference": "omnivia_core.control_plane.models",
+        "SecretResolutionResult": "omnivia_core.control_plane.models",
+        "SecretStorageScope": "omnivia_core.control_plane.models",
+        "SideEffect": "omnivia_core.control_plane.models",
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
+        "SyncConflictStrategy": "omnivia_core.control_plane.models",
+        "SyncDirection": "omnivia_core.control_plane.models",
+        "SyncRule": "omnivia_core.control_plane.models",
+        "TenantIsolationRule": "omnivia_core.control_plane.models",
+        "Trigger": "omnivia_core.control_plane.models",
+        "TriggerEventEnvelope": "omnivia_core.control_plane.models",
+        "TriggerIngestionResult": "omnivia_core.control_plane.models",
+        "TriggerKind": "omnivia_core.control_plane.models",
         "ValidationResult": "omnivia_core._shared.validation",
+        "WorkspaceRef": "omnivia_core.control_plane.models",
+        "compile_policy_expression": "omnivia_core.control_plane.validation",
+        "detect_import_source_change": "omnivia_core.control_plane.imports",
+        "import_asyncapi_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_candidates": "omnivia_core.control_plane.imports",
+        "import_catalogue_generated_candidates": "omnivia_core.control_plane.imports",
+        "import_mcp_candidates": "omnivia_core.control_plane.imports",
+        "import_openapi_candidates": "omnivia_core.control_plane.imports",
+        "manifest_from_dict": "omnivia_core.control_plane.validation",
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_app_manifest": "omnivia_core.app_manifest.validation",
+        "validate_asyncapi_import_spec": "omnivia_core.control_plane.imports",
         "validate_component_contract": "omnivia_core.component_contract.validation",
+        "validate_control_plane_manifest": "omnivia_core.control_plane.validation",
         "validate_evidence_file_ref": "omnivia_core.run_ledger.validation",
+        "validate_mcp_import_spec": "omnivia_core.control_plane.imports",
         "validate_module_manifest": "omnivia_core.module_manifest.validation",
+        "validate_openapi_import_spec": "omnivia_core.control_plane.imports",
         "validate_run_ledger_entry": "omnivia_core.run_ledger.validation",
         "validate_run_ledger_provenance": "omnivia_core.run_ledger.validation",
+        "verify_catalogue_artifacts": "omnivia_core.control_plane.imports",
     }
 
 
@@ -492,46 +570,74 @@ def test_verify_public_export_inventory_fails_closed_on_unrelated_drift(monkeypa
 # FACADE_ROOT_BINDING_OWNER_MOVES: the exact root-binding owner-move mechanism.
 # ---------------------------------------------------------------------------
 
-#: The single declared move, restated here rather than read off the declaration,
-#: so the tests below fail if the declaration itself is repointed.
+#: The declared moves, restated here rather than read off the declaration, so the
+#: tests below fail if the declaration itself is repointed. Both routed instances
+#: are ``ContractVersion`` values, so both share one frozen and one canonical
+#: owner -- which is exactly why their independence has to be proved rather than
+#: assumed.
+_INSTANCE_FROZEN_OWNER = "omnivia_memory.knowledge.models"
+_INSTANCE_CANONICAL_OWNER = "omnivia_core.knowledge.models"
 _RUN_LEDGER_VERSION_MOVE_KEY = (
     "RUN_LEDGER_CONTRACT_VERSION",
     "omnivia_memory.run_ledger.models",
 )
-_RUN_LEDGER_VERSION_FROZEN_OWNER = "omnivia_memory.knowledge.models"
-_RUN_LEDGER_VERSION_CANONICAL_OWNER = "omnivia_core.knowledge.models"
+_CONTROL_PLANE_VERSION_MOVE_KEY = (
+    "CONTROL_PLANE_CONTRACT_VERSION",
+    "omnivia_memory.control_plane.models",
+)
+#: ``(move key, the canonical module its own route points at)``. The second
+#: element is the *plausible wrong destination* for that move: the leaf owns the
+#: object but not its type, so declaring it would look right and be wrong.
+_DECLARED_MOVES: tuple[tuple[tuple[str, str], str], ...] = (
+    (_RUN_LEDGER_VERSION_MOVE_KEY, "omnivia_core.run_ledger.models"),
+    (_CONTROL_PLANE_VERSION_MOVE_KEY, "omnivia_core.control_plane.models"),
+)
+_MOVE_IDS = [name for (name, _legacy), _routed in _DECLARED_MOVES]
 
 
-def test_root_binding_owner_moves_declaration_is_exactly_the_one_instance_route() -> None:
-    """Only one routed symbol is an *instance* whose type another leaf owns, so
-    only one root binding may need a declared owner move. A second entry
+def test_root_binding_owner_moves_declaration_is_exactly_the_instance_routes() -> None:
+    """Exactly two routed symbols are *instances* whose type another leaf owns, so
+    exactly two root bindings may need a declared owner move. A third entry
     appearing here without its own coverage would be normalized away silently."""
     assert FACADE_ROOT_BINDING_OWNER_MOVES == {
         _RUN_LEDGER_VERSION_MOVE_KEY: (
-            _RUN_LEDGER_VERSION_FROZEN_OWNER,
-            _RUN_LEDGER_VERSION_CANONICAL_OWNER,
-        )
+            _INSTANCE_FROZEN_OWNER,
+            _INSTANCE_CANONICAL_OWNER,
+        ),
+        _CONTROL_PLANE_VERSION_MOVE_KEY: (
+            _INSTANCE_FROZEN_OWNER,
+            _INSTANCE_CANONICAL_OWNER,
+        ),
     }
     # The declared frozen owner is a module that is *not* itself converted and
-    # appears in no route: that is precisely why the move has to be declared
+    # appears in no route: that is precisely why the moves have to be declared
     # rather than derived from FACADE_ROUTES.
-    assert _RUN_LEDGER_VERSION_FROZEN_OWNER not in FACADE_ROUTES
-    name, legacy_module = _RUN_LEDGER_VERSION_MOVE_KEY
-    assert FACADE_ROUTES[legacy_module][name] == "omnivia_core.run_ledger.models"
+    assert _INSTANCE_FROZEN_OWNER not in FACADE_ROUTES
+    for (name, legacy_module), routed_canonical in _DECLARED_MOVES:
+        assert FACADE_ROUTES[legacy_module][name] == routed_canonical
+    # Both moves are declared, and both land on the same new owner. Declaring one
+    # must not be mistaken for covering the other.
+    assert len({key for key, _routed in _DECLARED_MOVES}) == 2
 
 
-def test_facade_root_binding_problems_accepts_the_declared_move() -> None:
+def test_facade_root_binding_problems_accepts_the_declared_moves() -> None:
     assert _facade_root_binding_problems() == []
 
 
-def test_facade_root_binding_problems_rejects_a_name_that_route_does_not_carry() -> None:
+@pytest.mark.parametrize(
+    "move_key", [key for key, _routed in _DECLARED_MOVES], ids=_MOVE_IDS
+)
+def test_facade_root_binding_problems_rejects_a_name_that_route_does_not_carry(
+    move_key: tuple[str, str],
+) -> None:
     """A move may only be declared for a symbol the named legacy module really
     routes, so a renamed or dropped route cannot leave a live rewrite behind."""
+    name, _legacy_module = move_key
     problems = _facade_root_binding_problems(
         moves={
-            ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.memory.models"): (
-                _RUN_LEDGER_VERSION_FROZEN_OWNER,
-                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
+            (name, "omnivia_memory.memory.models"): (
+                _INSTANCE_FROZEN_OWNER,
+                _INSTANCE_CANONICAL_OWNER,
             )
         }
     )
@@ -540,50 +646,60 @@ def test_facade_root_binding_problems_rejects_a_name_that_route_does_not_carry()
     ), problems
 
 
-def test_facade_root_binding_problems_rejects_a_misdeclared_frozen_owner() -> None:
+@pytest.mark.parametrize(
+    "move_key", [key for key, _routed in _DECLARED_MOVES], ids=_MOVE_IDS
+)
+def test_facade_root_binding_problems_rejects_a_misdeclared_frozen_owner(
+    move_key: tuple[str, str],
+) -> None:
     """The declared frozen owner must match the baseline exactly. Declaring the
     *post*-move owner would make the entry a no-op rewrite that silently
     tolerated whatever the baseline actually recorded."""
     problems = _facade_root_binding_problems(
-        moves={
-            _RUN_LEDGER_VERSION_MOVE_KEY: (
-                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
-                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
-            )
-        }
+        moves={move_key: (_INSTANCE_CANONICAL_OWNER, _INSTANCE_CANONICAL_OWNER)}
     )
     assert any("the frozen baseline records owner" in p for p in problems), problems
 
 
-def test_facade_root_binding_problems_rejects_a_wrong_destination() -> None:
+@pytest.mark.parametrize(
+    ("move_key", "routed_canonical"), _DECLARED_MOVES, ids=_MOVE_IDS
+)
+def test_facade_root_binding_problems_rejects_a_wrong_destination(
+    move_key: tuple[str, str],
+    routed_canonical: str,
+) -> None:
     """The declared new owner must be where the object's owner really moved. The
-    routed leaf is the plausible wrong answer here -- it owns the *object* but
-    not its type -- and it must still be rejected."""
+    routed leaf is the plausible wrong answer for each move -- it owns the
+    *object* but not its type -- and it must still be rejected."""
     problems = _facade_root_binding_problems(
-        moves={
-            _RUN_LEDGER_VERSION_MOVE_KEY: (
-                _RUN_LEDGER_VERSION_FROZEN_OWNER,
-                "omnivia_core.run_ledger.models",
-            )
-        }
+        moves={move_key: (_INSTANCE_FROZEN_OWNER, routed_canonical)}
     )
     assert any(
-        "owner moved to 'omnivia_core.knowledge.models', not the declared "
-        "'omnivia_core.run_ledger.models'" in problem
+        f"owner moved to {_INSTANCE_CANONICAL_OWNER!r}, not the declared "
+        f"{routed_canonical!r}" in problem
         for problem in problems
     ), problems
 
 
-def test_facade_root_binding_problems_rejects_a_missing_root_binding() -> None:
+@pytest.mark.parametrize(
+    "move_key", [key for key, _routed in _DECLARED_MOVES], ids=_MOVE_IDS
+)
+def test_facade_root_binding_problems_rejects_a_missing_root_binding(
+    move_key: tuple[str, str],
+) -> None:
     """A declared move for a name the baseline never bound at the root is stale:
     there is nothing to normalize, and pretending otherwise would let a real
     root binding disappear unnoticed."""
+    name, _legacy_module = move_key
     frozen = copy.deepcopy(load_json(PUBLIC_EXPORTS_PATH))
-    del frozen["root"]["bindings"]["RUN_LEDGER_CONTRACT_VERSION"]
+    del frozen["root"]["bindings"][name]
 
     problems = _facade_root_binding_problems(frozen=frozen)
 
-    assert any("has no such root binding" in problem for problem in problems), problems
+    assert any(
+        "has no such root binding" in problem and name in problem
+        for problem in problems
+    ), problems
 
 
 def test_facade_root_binding_problems_rejects_a_non_identical_routed_object() -> None:
@@ -634,56 +750,101 @@ def test_verify_public_export_inventory_fails_closed_on_an_unverified_owner_move
     assert any("synthetic owner-move defect" in problem for problem in problems)
 
 
-def test_normalize_applies_the_owner_move_by_whole_string_equality_only() -> None:
-    """The move is a whole-value equality test and a whole-value substitution --
-    never a package-prefix rewrite. Bindings whose ``defined_in`` merely *contains*
-    the frozen owner (as a prefix or a suffix), and package-looking text elsewhere
-    in the very binding that does move, must come through untouched.
+def _decoy_document() -> dict:
+    """Both moved bindings side by side, plus every near-miss shape.
+
+    The two entries share a frozen owner, so this is also where their
+    coexistence is proved: each has to move on its own account, and neither may
+    be reached by the other's substitution.
     """
-    expected = {
+    return {
         "root": {
             "bindings": {
                 "RUN_LEDGER_CONTRACT_VERSION": {
-                    "defined_in": _RUN_LEDGER_VERSION_FROZEN_OWNER,
+                    "defined_in": _INSTANCE_FROZEN_OWNER,
                     # Contract data that happens to name the frozen owner. A
                     # recursive or substring rewrite would corrupt it.
-                    "exported_by": [_RUN_LEDGER_VERSION_FROZEN_OWNER],
+                    "exported_by": [_INSTANCE_FROZEN_OWNER],
                 },
-                "SuffixDecoy": {
-                    "defined_in": f"{_RUN_LEDGER_VERSION_FROZEN_OWNER}.inner"
+                "CONTROL_PLANE_CONTRACT_VERSION": {
+                    "defined_in": _INSTANCE_FROZEN_OWNER,
+                    "exported_by": [_INSTANCE_FROZEN_OWNER],
                 },
-                "PrefixDecoy": {
-                    "defined_in": f"x{_RUN_LEDGER_VERSION_FROZEN_OWNER}"
-                },
+                "SuffixDecoy": {"defined_in": f"{_INSTANCE_FROZEN_OWNER}.inner"},
+                "PrefixDecoy": {"defined_in": f"x{_INSTANCE_FROZEN_OWNER}"},
                 "SiblingDecoy": {"defined_in": "omnivia_memory.knowledge.validation"},
+                # A name neither move declares, sitting on the very owner both
+                # moves rewrite. It must not be carried along.
+                "UndeclaredSameOwner": {"defined_in": _INSTANCE_FROZEN_OWNER},
             }
         },
         "modules": {},
     }
 
-    normalized = _normalize_expected_for_facade_routes(expected)
+
+def test_normalize_applies_the_owner_moves_by_whole_string_equality_only() -> None:
+    """Each move is a whole-value equality test and a whole-value substitution --
+    never a package-prefix rewrite. Bindings whose ``defined_in`` merely *contains*
+    the frozen owner (as a prefix or a suffix), an undeclared binding that happens
+    to sit on the same owner, and package-looking text elsewhere in the very
+    bindings that do move, must all come through untouched.
+    """
+    normalized = _normalize_expected_for_facade_routes(_decoy_document())
     bindings = normalized["root"]["bindings"]
 
-    assert bindings["RUN_LEDGER_CONTRACT_VERSION"]["defined_in"] == (
-        _RUN_LEDGER_VERSION_CANONICAL_OWNER
-    )
-    assert bindings["RUN_LEDGER_CONTRACT_VERSION"]["exported_by"] == [
-        _RUN_LEDGER_VERSION_FROZEN_OWNER
-    ]
-    assert bindings["SuffixDecoy"]["defined_in"] == (
-        f"{_RUN_LEDGER_VERSION_FROZEN_OWNER}.inner"
-    )
-    assert bindings["PrefixDecoy"]["defined_in"] == (
-        f"x{_RUN_LEDGER_VERSION_FROZEN_OWNER}"
-    )
+    for name in ("RUN_LEDGER_CONTRACT_VERSION", "CONTROL_PLANE_CONTRACT_VERSION"):
+        assert bindings[name]["defined_in"] == _INSTANCE_CANONICAL_OWNER
+        assert bindings[name]["exported_by"] == [_INSTANCE_FROZEN_OWNER]
+
+    assert bindings["SuffixDecoy"]["defined_in"] == f"{_INSTANCE_FROZEN_OWNER}.inner"
+    assert bindings["PrefixDecoy"]["defined_in"] == f"x{_INSTANCE_FROZEN_OWNER}"
     assert bindings["SiblingDecoy"]["defined_in"] == "omnivia_memory.knowledge.validation"
+    assert bindings["UndeclaredSameOwner"]["defined_in"] == _INSTANCE_FROZEN_OWNER
+
+
+def test_normalize_owner_moves_are_order_independent() -> None:
+    """Reversing the declaration order must produce a byte-identical result: the
+    two entries neither chain (one's output feeding the other's input) nor race
+    for the same binding."""
+    forward = _normalize_expected_for_facade_routes(_decoy_document())
+    reversed_moves = dict(reversed(list(FACADE_ROOT_BINDING_OWNER_MOVES.items())))
+    assert list(reversed_moves) != list(FACADE_ROOT_BINDING_OWNER_MOVES)
+    backward = _normalize_expected_for_facade_routes(
+        _decoy_document(), moves=reversed_moves
+    )
+
+    assert forward == backward
+
+
+def test_normalize_owner_moves_apply_independently_of_each_other() -> None:
+    """Declaring only one move must move only that binding. With both entries
+    sharing a frozen owner, a substitution that keyed off the owner rather than
+    the name would move both -- and pass every other test in this section."""
+    for (name, legacy_module), _routed in _DECLARED_MOVES:
+        other = next(
+            key[0] for key, _r in _DECLARED_MOVES if key[0] != name
+        )
+        normalized = _normalize_expected_for_facade_routes(
+            _decoy_document(),
+            moves={
+                (name, legacy_module): (
+                    _INSTANCE_FROZEN_OWNER,
+                    _INSTANCE_CANONICAL_OWNER,
+                )
+            },
+        )
+        bindings = normalized["root"]["bindings"]
+        assert bindings[name]["defined_in"] == _INSTANCE_CANONICAL_OWNER
+        assert bindings[other]["defined_in"] == _INSTANCE_FROZEN_OWNER, (
+            f"declaring {name} also moved {other}"
+        )
 
 
 def test_normalize_leaves_the_unconverted_frozen_owner_leaf_intact() -> None:
-    """``knowledge.models`` supplies the moved binding's new owner but is not
+    """``knowledge.models`` supplies both moved bindings' new owner but is not
     itself converted: its own frozen module entry -- ``defines`` included -- must
     survive normalization completely unchanged, and no other knowledge-domain
-    root binding may move with it."""
+    root binding may move with them."""
     expected = load_json(PUBLIC_EXPORTS_PATH)
 
     normalized = _normalize_expected_for_facade_routes(expected)
@@ -691,11 +852,12 @@ def test_normalize_leaves_the_unconverted_frozen_owner_leaf_intact() -> None:
     for leaf in ("omnivia_memory.knowledge.models", "omnivia_memory.knowledge.validation"):
         assert normalized["modules"][leaf] == expected["modules"][leaf]
 
+    declared = {name for (name, _legacy), _routed in _DECLARED_MOVES}
     frozen_bindings = expected["root"]["bindings"]
     for name, binding in normalized["root"]["bindings"].items():
-        if name == "RUN_LEDGER_CONTRACT_VERSION":
+        if name in declared:
             continue
-        if frozen_bindings[name]["defined_in"] == _RUN_LEDGER_VERSION_FROZEN_OWNER:
-            assert binding["defined_in"] == _RUN_LEDGER_VERSION_FROZEN_OWNER, (
+        if frozen_bindings[name]["defined_in"] == _INSTANCE_FROZEN_OWNER:
+            assert binding["defined_in"] == _INSTANCE_FROZEN_OWNER, (
                 f"{name} moved owner without a declared entry"
             )
