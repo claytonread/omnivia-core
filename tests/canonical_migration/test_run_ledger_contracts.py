@@ -1,20 +1,29 @@
 """Focused adversarial acceptance coverage for ``omnivia_core.run_ledger``.
 
-``omnivia_core.run_ledger`` is a fresh canonical port of
-``omnivia_memory.run_ledger`` (models + validation + barrel). Its owner leaves
-are registered in the shared ``_leaves.py`` migration gates; this module adds
-focused adversarial coverage for the exact barrel contract, isolated import
+``omnivia_core.run_ledger`` is now the sole implementation of the run-ledger
+contract (models + validation + barrel). It began as a canonical port of
+``omnivia_memory.run_ledger``; both legacy owner leaves have since been
+converted into thin compatibility facades, so they are registered in
+``_leaves.py``'s ``FACADE_CANONICAL_TO_LEGACY`` rather than its source-parity
+map, and identity -- not source sameness -- is what
+``tests/compatibility/test_facade_foundation.py`` proves for them. This module
+adds focused adversarial coverage for the exact barrel contract, isolated import
 closure, and run-ledger behavior.
 
-The one deliberate departure from a plain ``omnivia_memory`` -> ``omnivia_core``
-rename is ``validation.py``'s single legacy import of
+``validation.py``'s one deliberate departure from a plain ``omnivia_memory`` ->
+``omnivia_core`` rename was splitting a single legacy import of
 ``omnivia_memory.knowledge`` (``ValidationResult`` and
-``check_contract_version_compatibility`` together), which the task package
-requires to split into two exact canonical owner-leaf imports:
-``omnivia_core._shared.validation.ValidationResult`` and
-``omnivia_core.knowledge.validation.check_contract_version_compatibility``.
-The shared ``test_parity.py`` sanctioned-rewrite gate performs exactly that
-split and nothing else.
+``check_contract_version_compatibility`` together) into two exact canonical
+owner-leaf imports: ``omnivia_core._shared.validation.ValidationResult`` and
+``omnivia_core.knowledge.validation.check_contract_version_compatibility``. That
+split is now simply the canonical source's shape: with the legacy leaf a facade
+there is no legacy source left to rewrite, so ``test_parity.py`` no longer
+carries a sanctioned-rewrite rule for it -- and would reject one as stale.
+
+The Layer 7 comparisons below are still worth running, but they now read as a
+live guarantee that the legacy import path continues to behave identically
+rather than as a two-implementation comparison: ``legacy.RunLedgerEntry`` *is*
+``canonical.RunLedgerEntry``.
 """
 
 from __future__ import annotations

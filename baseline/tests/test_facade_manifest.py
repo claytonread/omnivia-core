@@ -129,6 +129,8 @@ EXPECTED_STATE_SUFFIXES = {
         "module_manifest.models",
         "module_manifest.validation",
         "provenance.models",
+        "run_ledger.models",
+        "run_ledger.validation",
     },
     MigrationState.TRANSITIVE_FACADE: {
         "_shared",
@@ -138,11 +140,11 @@ EXPECTED_STATE_SUFFIXES = {
         "lifecycle",
         "module_manifest",
         "provenance",
+        "run_ledger",
     },
     MigrationState.PENDING_DIRECT_BARREL: {
         "control_plane",
         "knowledge",
-        "run_ledger",
     },
     MigrationState.PENDING_HYBRID: EXPECTED_HYBRID_SUFFIXES,
     MigrationState.PENDING_ROOT: {""},
@@ -344,6 +346,8 @@ def test_checkout_and_route_source_validation_pass() -> None:
         ("component_contract.validation", "source_parity", "move the state forward"),
         ("module_manifest.models", "source_parity", "move the state forward"),
         ("module_manifest.validation", "source_parity", "move the state forward"),
+        ("run_ledger.models", "source_parity", "move the state forward"),
+        ("run_ledger.validation", "source_parity", "move the state forward"),
         # The mirror direction: a leaf that is still a duplicated source-parity
         # copy may not be declared as a converted facade either.
         ("knowledge.models", "direct_facade", "declared 'direct_facade'"),
@@ -401,6 +405,8 @@ def test_transitive_facade_rejects_local_or_unapproved_source(
         "component_contract.validation",
         "module_manifest.models",
         "module_manifest.validation",
+        "run_ledger.models",
+        "run_ledger.validation",
     ],
 )
 def test_transitive_facade_rejects_an_unconverted_child(child_suffix: str) -> None:
@@ -543,6 +549,99 @@ def test_module_manifest_barrel_transitive_form_accepts_its_historical_source() 
     barrel's absolute-import shape itself."""
     route, children = _module_manifest_barrel_route_and_children()
     source = _module_manifest_barrel_source("")
+    assert transitive_facade_defects(ast.parse(source), route, children) == []
+
+
+#: The legacy run-ledger barrel's exact historical export sets, per child,
+#: restated here rather than read off the barrel: the fixture below must not be
+#: derived from the very file whose mutations it is proving get rejected. Like
+#: the app-manifest and module-manifest barrels it re-exports through *absolute*
+#: ``omnivia_memory.run_ledger.<leaf>`` imports -- but unlike either of them its
+#: ``__all__`` is not alphabetized: the two constants lead the models block, so
+#: the fixture below restates that literal order rather than sorting.
+_RUN_LEDGER_MODELS_EXPORTS: tuple[str, ...] = (
+    "RUN_LEDGER_CONTRACT_VERSION",
+    "RUN_LEDGER_PATH_ENV",
+    "EvidenceFileRef",
+    "RunLedgerEntry",
+    "RunLedgerProvenance",
+    "RunLedgerStatus",
+)
+_RUN_LEDGER_VALIDATION_EXPORTS: tuple[str, ...] = (
+    "TERMINAL_RUN_STATUSES",
+    "validate_evidence_file_ref",
+    "validate_run_ledger_entry",
+    "validate_run_ledger_provenance",
+)
+
+
+def _run_ledger_barrel_source(extra_source: str) -> str:
+    def block(module: str, names: tuple[str, ...]) -> str:
+        body = "".join(f"    {name},\n" for name in names)
+        return f"from omnivia_memory.run_ledger.{module} import (\n{body})\n"
+
+    exported = _RUN_LEDGER_MODELS_EXPORTS + _RUN_LEDGER_VALIDATION_EXPORTS
+    all_body = "".join(f'    "{name}",\n' for name in exported)
+    return (
+        block("models", _RUN_LEDGER_MODELS_EXPORTS)
+        + block("validation", _RUN_LEDGER_VALIDATION_EXPORTS)
+        + f"__all__ = [\n{all_body}]\n"
+        + extra_source
+    )
+
+
+def _run_ledger_barrel_route_and_children() -> tuple[Any, list[Any]]:
+    manifest = load_manifest()
+    return (
+        manifest.route_for_legacy("omnivia_memory.run_ledger"),
+        [
+            manifest.route_for_legacy("omnivia_memory.run_ledger.models"),
+            manifest.route_for_legacy("omnivia_memory.run_ledger.validation"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_source", "pattern"),
+    [
+        (
+            "from omnivia_core.run_ledger.models import RunLedgerEntry\n",
+            "unapproved module",
+        ),
+        # The barrel's own domain reaches the knowledge leaf for
+        # ``ContractVersion``, so a knowledge import is the most plausible
+        # accidental third module here -- and still not one of its two children.
+        ("from omnivia_memory.knowledge import ContractVersion\n", "unapproved module"),
+        ("from .persistence import Database\n", "unapproved module"),
+        ("RunLedgerStatus = object()\n", "assignments"),
+        (
+            "def validate_run_ledger_entry(entry):\n    return entry\n",
+            "statements of its own",
+        ),
+    ],
+)
+def test_run_ledger_barrel_transitive_form_rejects_a_reroute_or_local_definition(
+    extra_source: str,
+    pattern: str,
+) -> None:
+    """The run-ledger barrel earns ``transitive_facade`` by re-exporting only its
+    two converted children. Reaching into ``omnivia_core`` itself, pulling a
+    third module by either an absolute or a relative path, or defining anything
+    of its own must be rejected -- each of those would make the barrel's identity
+    preservation direct or local rather than transitive, while still exporting
+    the same ten names."""
+    route, children = _run_ledger_barrel_route_and_children()
+    source = _run_ledger_barrel_source(extra_source)
+    defects = transitive_facade_defects(ast.parse(source), route, children)
+    assert any(pattern in defect for defect in defects), defects
+
+
+def test_run_ledger_barrel_transitive_form_accepts_its_historical_source() -> None:
+    """The same fixture with nothing added must be defect-free, so the rejection
+    cases above are proven to fail on what they inject rather than on the
+    barrel's absolute-import shape or its unsorted ``__all__`` itself."""
+    route, children = _run_ledger_barrel_route_and_children()
+    source = _run_ledger_barrel_source("")
     assert transitive_facade_defects(ast.parse(source), route, children) == []
 
 
@@ -708,9 +807,9 @@ def test_checker_is_a_successful_executable_gate() -> None:
     assert result.returncode == 0, result.stderr
     assert "routes: 47 (40 direct, 6 hybrid_barrel, 1 root)" in result.stdout
     assert "canonical_subset: 1" in result.stdout
-    # The per-state counts this batch moved: the two module-manifest leaves into
+    # The per-state counts this batch moved: the two run-ledger leaves into
     # ``direct_facade``, their barrel from ``pending_direct_barrel`` into
     # ``transitive_facade``.
-    assert "direct_facade: 13" in result.stdout
-    assert "transitive_facade: 7" in result.stdout
-    assert "pending_direct_barrel: 3" in result.stdout
+    assert "direct_facade: 15" in result.stdout
+    assert "transitive_facade: 8" in result.stdout
+    assert "pending_direct_barrel: 2" in result.stdout

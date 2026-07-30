@@ -2,9 +2,11 @@
 
 ``omnivia-memory`` ships ``py.typed``, so a downstream package running
 ``mypy --strict`` type-checks against these legacy import paths. This module is
-that consumer for the eleven facade leaves converted before the Module Manifest
-batch (that batch has its own fixture,
-``tests/typing/module_manifest_facade_consumer.py``).
+that consumer for every accepted facade leaf except the two Module Manifest
+leaves, which keep their own fixture
+(``tests/typing/module_manifest_facade_consumer.py``).
+``tests/test_typed_facade_consumers.py`` enforces that split and that the two
+fixtures together cover ``baseline.inventory.FACADE_ROUTES`` exactly.
 
 It imports every domain/API symbol those leaves route -- exactly the
 ``baseline.inventory.FACADE_ROUTES`` entry for each -- and only ever through the
@@ -111,6 +113,20 @@ from omnivia_memory.memory.models import (
 )
 from omnivia_memory.memory.models import Source as MemorySource
 from omnivia_memory.provenance.models import Source, SourceType
+from omnivia_memory.run_ledger.models import (
+    RUN_LEDGER_CONTRACT_VERSION,
+    RUN_LEDGER_PATH_ENV,
+    EvidenceFileRef,
+    RunLedgerEntry,
+    RunLedgerProvenance,
+    RunLedgerStatus,
+)
+from omnivia_memory.run_ledger.validation import (
+    TERMINAL_RUN_STATUSES,
+    validate_evidence_file_ref,
+    validate_run_ledger_entry,
+    validate_run_ledger_provenance,
+)
 
 # ---------------------------------------------------------------------------
 # omnivia_memory._shared.validation
@@ -387,6 +403,101 @@ def memory_write_shapes() -> tuple[MemoryCreate, MemoryUpdate]:
     return create, update
 
 
+# ---------------------------------------------------------------------------
+# omnivia_memory.run_ledger.{models,validation}
+# ---------------------------------------------------------------------------
+
+
+def build_run_ledger_entry() -> RunLedgerEntry:
+    """Typed construction through the leaf's own classes.
+
+    ``contract_version`` is deliberately left to its default: the default *is*
+    ``RUN_LEDGER_CONTRACT_VERSION``, so accepting it here is what proves the
+    routed constant still types as the run-ledger entry's declared field type
+    rather than as ``Any``.
+    """
+    assert_type(RUN_LEDGER_PATH_ENV, str)
+    # A `ContractVersion` instance, not a `str` wire alias. Its type is owned by
+    # the knowledge domain, which is why converting this leaf moves one frozen
+    # root binding; the fields are checked rather than the class, so this fixture
+    # stays inside the run-ledger routes the meta-test pins it to.
+    assert_type(RUN_LEDGER_CONTRACT_VERSION.major, int)
+    assert_type(RUN_LEDGER_CONTRACT_VERSION.minor, int)
+    version_label: str = str(RUN_LEDGER_CONTRACT_VERSION)
+
+    return RunLedgerEntry(
+        run_id="run-001",
+        task_id="T-0103",
+        target_repo="omnivia-core",
+        lane_id="L2",
+        status=RunLedgerStatus.RUNNING,
+        started_at="2026-07-30T00:00:00+00:00",
+        updated_at="2026-07-30T00:05:00+00:00",
+        evidence_file_refs=[
+            EvidenceFileRef(
+                path="artifacts/runs/run-001/summary.md",
+                kind="summary",
+                description=version_label,
+            )
+        ],
+        provenance=RunLedgerProvenance(
+            producer="omnivia-pm",
+            source_ref="runs/run-001.json",
+            producer_version="1.0.0",
+        ),
+    )
+
+
+def consume_run_ledger_entry() -> SharedValidationResult:
+    """The three validators compose without a cast or an ignore.
+
+    They return the *shared* ``ValidationResult`` primitive -- not one of the
+    four domain classes of the same name -- so pinning that here is what would
+    catch this leaf being rerouted to a same-named lookalike.
+    """
+    entry = build_run_ledger_entry()
+
+    assert_type(entry.run_id, str)
+    assert_type(entry.status, RunLedgerStatus)
+    assert_type(entry.started_at, str)
+    assert_type(entry.completed_at, str | None)
+    assert_type(entry.evidence_file_refs, list[EvidenceFileRef])
+    assert_type(entry.provenance, RunLedgerProvenance)
+
+    assert_type(TERMINAL_RUN_STATUSES, frozenset[RunLedgerStatus])
+    terminal: bool = entry.status in TERMINAL_RUN_STATUSES
+
+    evidence_result = validate_evidence_file_ref(entry.evidence_file_refs[0])
+    provenance_result = validate_run_ledger_provenance(entry.provenance)
+    entry_result = validate_run_ledger_entry(entry)
+
+    assert_type(evidence_result, SharedValidationResult)
+    assert_type(provenance_result, SharedValidationResult)
+    assert_type(entry_result, SharedValidationResult)
+    assert_type(entry_result.valid, bool)
+    assert_type(entry_result.errors, list[str])
+    assert_type(entry_result.warnings, list[str])
+
+    payload = entry.to_dict()
+    assert_type(payload, dict[str, object])
+    restored = RunLedgerEntry.from_dict(payload)
+    assert_type(restored, RunLedgerEntry)
+
+    evidence = entry.evidence_file_refs[0]
+    assert_type(evidence.path, str)
+    assert_type(evidence.kind, str)
+    assert_type(evidence.description, str | None)
+    assert_type(evidence.checksum, str | None)
+    assert_type(evidence.to_dict(), dict[str, str | None])
+    assert_type(entry.provenance.producer, str)
+    assert_type(entry.provenance.source_ref, str | None)
+    assert_type(entry.provenance.producer_version, str | None)
+
+    if terminal and not entry_result.valid:
+        return provenance_result
+    return entry_result
+
+
 def roundtrip() -> str:
     """The leaves compose with each other, not only individually."""
     manifest = build_app_manifest()
@@ -409,5 +520,7 @@ def roundtrip() -> str:
             update.content or "",
             lifecycle_transitions().value,
             str(shared_validation().valid),
+            str(consume_run_ledger_entry().valid),
+            build_run_ledger_entry().status.value,
         ]
     )

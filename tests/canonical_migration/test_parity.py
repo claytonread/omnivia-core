@@ -46,8 +46,9 @@ A subset of once-duplicated leaves (``_shared.validation``,
 ``app_shell_bridge.models``, ``app_shell_bridge.validation``,
 ``component_contract.models``, ``component_contract.validation``,
 ``lifecycle.models``, ``lifecycle.rules``, ``module_manifest.models``,
-``module_manifest.validation``, ``provenance.models``, and
-``memory.models``) has since been converted into thin compatibility facades:
+``module_manifest.validation``, ``provenance.models``, ``memory.models``,
+``run_ledger.models``, and ``run_ledger.validation``) has since been converted
+into thin compatibility facades:
 the legacy leaf now imports its supported symbols directly from the canonical
 owner (``legacy.Foo is canonical.Foo``) instead of holding a duplicated,
 source-parity copy. Those leaves are no longer source-identical to their
@@ -93,33 +94,23 @@ CANONICAL_PACKAGE = "omnivia_core"
 #: source -- before the generic ``omnivia_memory`` -> ``omnivia_core`` rename
 #: below -- so the AST comparison stays an equality check rather than a
 #: fuzzy one. Keyed by the exact ``(canonical, legacy)`` module pair; each
-#: rule is an (old, new) source-fragment pair. Run ledger splits a combined
+#: rule is an (old, new) source-fragment pair. Control-plane validation
+#: reroutes its compatibility helper from the legacy knowledge barrel directly
+#: to the canonical knowledge-validation owner leaf. That exact change -- and
+#: nothing else -- is rewritten here before comparison.
+#:
+#: ``run_ledger.validation`` used to carry a rule here too, splitting a combined
 #: legacy knowledge-barrel import across the canonical shared-validation and
-#: knowledge-validation owner leaves. Control-plane validation reroutes its
-#: compatibility helper from the legacy knowledge barrel directly to the
-#: canonical knowledge-validation owner leaf. Those exact changes -- and
-#: nothing else -- are rewritten here before comparison.
+#: knowledge-validation owner leaves. Its legacy leaf is now a compatibility
+#: facade, so it has left ``CANONICAL_TO_LEGACY`` and there is no legacy source
+#: left to rewrite: identity, not source sameness, is what
+#: ``tests/compatibility/test_facade_foundation.py`` now proves for it. Keeping
+#: the rule would fail
+#: ``test_sanctioned_import_rewrites_apply_to_a_known_leaf_exactly_once`` as
+#: stale, which is exactly that gate working.
 SANCTIONED_IMPORT_REWRITES: dict[
     tuple[str, str], tuple[tuple[str, str], ...]
 ] = {
-    (
-        "omnivia_core.run_ledger.validation",
-        "omnivia_memory.run_ledger.validation",
-    ): (
-        (
-            (
-                "from omnivia_memory.knowledge import (\n"
-                "    ValidationResult,\n"
-                "    check_contract_version_compatibility,\n"
-                ")"
-            ),
-            (
-                "from omnivia_core._shared.validation import ValidationResult\n"
-                "from omnivia_core.knowledge.validation import "
-                "check_contract_version_compatibility"
-            ),
-        ),
-    ),
     (
         "omnivia_core.control_plane.validation",
         "omnivia_memory.control_plane.validation",

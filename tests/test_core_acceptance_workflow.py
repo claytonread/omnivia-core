@@ -89,6 +89,8 @@ REQUIRED_RUFF_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/module_manifest/models.py",
     "services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py",
     "services/omnivia-memory/src/omnivia_memory/provenance/models.py",
+    "services/omnivia-memory/src/omnivia_memory/run_ledger/models.py",
+    "services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py",
 )
 
 REQUIRED_MYPY_TARGETS = (
@@ -115,6 +117,8 @@ REQUIRED_MYPY_TARGETS = (
     "services/omnivia-memory/src/omnivia_memory/module_manifest/models.py",
     "services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py",
     "services/omnivia-memory/src/omnivia_memory/provenance/models.py",
+    "services/omnivia-memory/src/omnivia_memory/run_ledger/models.py",
+    "services/omnivia-memory/src/omnivia_memory/run_ledger/validation.py",
     "tests/typing/accepted_legacy_facade_consumer.py",
     "tests/typing/module_manifest_facade_consumer.py",
 )

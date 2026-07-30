@@ -9,9 +9,11 @@ from pathlib import Path
 from baseline import CORE_PACKAGE, REPO_ROOT
 from baseline.determinism import diff_json, load_json
 from baseline.inventory import (
+    FACADE_ROOT_BINDING_OWNER_MOVES,
     FACADE_ROUTES,
     PUBLIC_EXPORTS_PATH,
     _expected_facade_descriptor,
+    _facade_root_binding_problems,
     _facade_route_problems,
     _normalize_expected_for_facade_routes,
     build_public_export_inventory,
@@ -387,6 +389,12 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
     # root actually bound it from: the Component Contract for the former, the
     # shared primitive for the latter. The App Manifest's and App Shell bridge's
     # same-named classes are leaf-local and must move no root binding at all.
+    #
+    # ``RUN_LEDGER_CONTRACT_VERSION`` is the one binding that does not land on
+    # its own route's canonical module: it is a ``ContractVersion`` *instance*,
+    # so ``defined_in`` names the module owning its type. Its move is declared
+    # exactly in ``FACADE_ROOT_BINDING_OWNER_MOVES`` and proved by
+    # ``_facade_root_binding_problems`` before it may be applied.
     assert moved == {
         "AgentAction": "omnivia_core.component_contract.models",
         "AgentBackedComponentContract": "omnivia_core.component_contract.models",
@@ -413,6 +421,7 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "ComponentSafetyLevel": "omnivia_core.component_contract.models",
         "DataSource": "omnivia_core.app_manifest.models",
         "Entrypoint": "omnivia_core.module_manifest.models",
+        "EvidenceFileRef": "omnivia_core.run_ledger.models",
         "Integrity": "omnivia_core.module_manifest.models",
         "MemoryCreate": "omnivia_core.memory.models",
         "MemoryUpdate": "omnivia_core.memory.models",
@@ -424,13 +433,20 @@ def test_normalize_expected_for_facade_routes_moves_only_routed_root_bindings() 
         "PublishedTarget": "omnivia_core.module_manifest.models",
         "ProvenanceBehavior": "omnivia_core.component_contract.models",
         "ProvenanceRequirement": "omnivia_core.component_contract.models",
+        "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.knowledge.models",
+        "RunLedgerEntry": "omnivia_core.run_ledger.models",
+        "RunLedgerProvenance": "omnivia_core.run_ledger.models",
+        "RunLedgerStatus": "omnivia_core.run_ledger.models",
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
         "ValidationResult": "omnivia_core._shared.validation",
         "validate_agent_run_record": "omnivia_core.component_contract.validation",
         "validate_app_manifest": "omnivia_core.app_manifest.validation",
         "validate_component_contract": "omnivia_core.component_contract.validation",
+        "validate_evidence_file_ref": "omnivia_core.run_ledger.validation",
         "validate_module_manifest": "omnivia_core.module_manifest.validation",
+        "validate_run_ledger_entry": "omnivia_core.run_ledger.validation",
+        "validate_run_ledger_provenance": "omnivia_core.run_ledger.validation",
     }
 
 
@@ -470,3 +486,216 @@ def test_verify_public_export_inventory_fails_closed_on_unrelated_drift(monkeypa
     problems = verify_public_export_inventory()
 
     assert any("KnowledgeSpace" in problem for problem in problems)
+
+
+# ---------------------------------------------------------------------------
+# FACADE_ROOT_BINDING_OWNER_MOVES: the exact root-binding owner-move mechanism.
+# ---------------------------------------------------------------------------
+
+#: The single declared move, restated here rather than read off the declaration,
+#: so the tests below fail if the declaration itself is repointed.
+_RUN_LEDGER_VERSION_MOVE_KEY = (
+    "RUN_LEDGER_CONTRACT_VERSION",
+    "omnivia_memory.run_ledger.models",
+)
+_RUN_LEDGER_VERSION_FROZEN_OWNER = "omnivia_memory.knowledge.models"
+_RUN_LEDGER_VERSION_CANONICAL_OWNER = "omnivia_core.knowledge.models"
+
+
+def test_root_binding_owner_moves_declaration_is_exactly_the_one_instance_route() -> None:
+    """Only one routed symbol is an *instance* whose type another leaf owns, so
+    only one root binding may need a declared owner move. A second entry
+    appearing here without its own coverage would be normalized away silently."""
+    assert FACADE_ROOT_BINDING_OWNER_MOVES == {
+        _RUN_LEDGER_VERSION_MOVE_KEY: (
+            _RUN_LEDGER_VERSION_FROZEN_OWNER,
+            _RUN_LEDGER_VERSION_CANONICAL_OWNER,
+        )
+    }
+    # The declared frozen owner is a module that is *not* itself converted and
+    # appears in no route: that is precisely why the move has to be declared
+    # rather than derived from FACADE_ROUTES.
+    assert _RUN_LEDGER_VERSION_FROZEN_OWNER not in FACADE_ROUTES
+    name, legacy_module = _RUN_LEDGER_VERSION_MOVE_KEY
+    assert FACADE_ROUTES[legacy_module][name] == "omnivia_core.run_ledger.models"
+
+
+def test_facade_root_binding_problems_accepts_the_declared_move() -> None:
+    assert _facade_root_binding_problems() == []
+
+
+def test_facade_root_binding_problems_rejects_a_name_that_route_does_not_carry() -> None:
+    """A move may only be declared for a symbol the named legacy module really
+    routes, so a renamed or dropped route cannot leave a live rewrite behind."""
+    problems = _facade_root_binding_problems(
+        moves={
+            ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.memory.models"): (
+                _RUN_LEDGER_VERSION_FROZEN_OWNER,
+                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
+            )
+        }
+    )
+    assert any(
+        "is not a declared route of that module" in problem for problem in problems
+    ), problems
+
+
+def test_facade_root_binding_problems_rejects_a_misdeclared_frozen_owner() -> None:
+    """The declared frozen owner must match the baseline exactly. Declaring the
+    *post*-move owner would make the entry a no-op rewrite that silently
+    tolerated whatever the baseline actually recorded."""
+    problems = _facade_root_binding_problems(
+        moves={
+            _RUN_LEDGER_VERSION_MOVE_KEY: (
+                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
+                _RUN_LEDGER_VERSION_CANONICAL_OWNER,
+            )
+        }
+    )
+    assert any("the frozen baseline records owner" in p for p in problems), problems
+
+
+def test_facade_root_binding_problems_rejects_a_wrong_destination() -> None:
+    """The declared new owner must be where the object's owner really moved. The
+    routed leaf is the plausible wrong answer here -- it owns the *object* but
+    not its type -- and it must still be rejected."""
+    problems = _facade_root_binding_problems(
+        moves={
+            _RUN_LEDGER_VERSION_MOVE_KEY: (
+                _RUN_LEDGER_VERSION_FROZEN_OWNER,
+                "omnivia_core.run_ledger.models",
+            )
+        }
+    )
+    assert any(
+        "owner moved to 'omnivia_core.knowledge.models', not the declared "
+        "'omnivia_core.run_ledger.models'" in problem
+        for problem in problems
+    ), problems
+
+
+def test_facade_root_binding_problems_rejects_a_missing_root_binding() -> None:
+    """A declared move for a name the baseline never bound at the root is stale:
+    there is nothing to normalize, and pretending otherwise would let a real
+    root binding disappear unnoticed."""
+    frozen = copy.deepcopy(load_json(PUBLIC_EXPORTS_PATH))
+    del frozen["root"]["bindings"]["RUN_LEDGER_CONTRACT_VERSION"]
+
+    problems = _facade_root_binding_problems(frozen=frozen)
+
+    assert any("has no such root binding" in problem for problem in problems), problems
+
+
+def test_facade_root_binding_problems_rejects_a_non_identical_routed_object() -> None:
+    """The root's object must be the exact object bound at the route's canonical
+    module. ``ValidationResult`` is the sharpest case: the App Manifest contract
+    really does route a ``ValidationResult``, and the root really does bind one,
+    but they are different domains' classes -- so the owner check alone would
+    pass while the binding silently changed contract.
+    """
+    problems = _facade_root_binding_problems(
+        moves={
+            ("ValidationResult", "omnivia_memory.app_manifest.models"): (
+                "omnivia_memory._shared.validation",
+                "omnivia_core.app_manifest.models",
+            )
+        }
+    )
+    assert any(
+        "is not the exact object bound at omnivia_core.app_manifest.models."
+        "ValidationResult" in problem
+        for problem in problems
+    ), problems
+
+
+def test_verify_public_export_inventory_fails_closed_on_an_unverified_owner_move(
+    monkeypatch,
+) -> None:
+    """The owner-move check runs *before* normalization and refuses outright, so
+    an unverified move can never be applied to the frozen baseline."""
+    monkeypatch.setattr(
+        "baseline.inventory._facade_root_binding_problems",
+        lambda **_kwargs: ["synthetic owner-move defect"],
+    )
+
+    def _must_not_run(*_args, **_kwargs):  # pragma: no cover - asserted unreachable
+        raise AssertionError("normalization ran despite an unverified owner move")
+
+    monkeypatch.setattr(
+        "baseline.inventory._normalize_expected_for_facade_routes", _must_not_run
+    )
+
+    problems = verify_public_export_inventory()
+
+    assert any(
+        "root-binding owner-move verification failed" in problem
+        for problem in problems
+    ), problems
+    assert any("synthetic owner-move defect" in problem for problem in problems)
+
+
+def test_normalize_applies_the_owner_move_by_whole_string_equality_only() -> None:
+    """The move is a whole-value equality test and a whole-value substitution --
+    never a package-prefix rewrite. Bindings whose ``defined_in`` merely *contains*
+    the frozen owner (as a prefix or a suffix), and package-looking text elsewhere
+    in the very binding that does move, must come through untouched.
+    """
+    expected = {
+        "root": {
+            "bindings": {
+                "RUN_LEDGER_CONTRACT_VERSION": {
+                    "defined_in": _RUN_LEDGER_VERSION_FROZEN_OWNER,
+                    # Contract data that happens to name the frozen owner. A
+                    # recursive or substring rewrite would corrupt it.
+                    "exported_by": [_RUN_LEDGER_VERSION_FROZEN_OWNER],
+                },
+                "SuffixDecoy": {
+                    "defined_in": f"{_RUN_LEDGER_VERSION_FROZEN_OWNER}.inner"
+                },
+                "PrefixDecoy": {
+                    "defined_in": f"x{_RUN_LEDGER_VERSION_FROZEN_OWNER}"
+                },
+                "SiblingDecoy": {"defined_in": "omnivia_memory.knowledge.validation"},
+            }
+        },
+        "modules": {},
+    }
+
+    normalized = _normalize_expected_for_facade_routes(expected)
+    bindings = normalized["root"]["bindings"]
+
+    assert bindings["RUN_LEDGER_CONTRACT_VERSION"]["defined_in"] == (
+        _RUN_LEDGER_VERSION_CANONICAL_OWNER
+    )
+    assert bindings["RUN_LEDGER_CONTRACT_VERSION"]["exported_by"] == [
+        _RUN_LEDGER_VERSION_FROZEN_OWNER
+    ]
+    assert bindings["SuffixDecoy"]["defined_in"] == (
+        f"{_RUN_LEDGER_VERSION_FROZEN_OWNER}.inner"
+    )
+    assert bindings["PrefixDecoy"]["defined_in"] == (
+        f"x{_RUN_LEDGER_VERSION_FROZEN_OWNER}"
+    )
+    assert bindings["SiblingDecoy"]["defined_in"] == "omnivia_memory.knowledge.validation"
+
+
+def test_normalize_leaves_the_unconverted_frozen_owner_leaf_intact() -> None:
+    """``knowledge.models`` supplies the moved binding's new owner but is not
+    itself converted: its own frozen module entry -- ``defines`` included -- must
+    survive normalization completely unchanged, and no other knowledge-domain
+    root binding may move with it."""
+    expected = load_json(PUBLIC_EXPORTS_PATH)
+
+    normalized = _normalize_expected_for_facade_routes(expected)
+
+    for leaf in ("omnivia_memory.knowledge.models", "omnivia_memory.knowledge.validation"):
+        assert normalized["modules"][leaf] == expected["modules"][leaf]
+
+    frozen_bindings = expected["root"]["bindings"]
+    for name, binding in normalized["root"]["bindings"].items():
+        if name == "RUN_LEDGER_CONTRACT_VERSION":
+            continue
+        if frozen_bindings[name]["defined_in"] == _RUN_LEDGER_VERSION_FROZEN_OWNER:
+            assert binding["defined_in"] == _RUN_LEDGER_VERSION_FROZEN_OWNER, (
+                f"{name} moved owner without a declared entry"
+            )

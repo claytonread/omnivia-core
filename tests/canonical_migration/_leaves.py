@@ -63,8 +63,6 @@ CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.ingestion.models": "omnivia_memory.ingestion.models",
     "omnivia_core.ingestion.watcher.models": "omnivia_memory.ingestion.watcher.models",
     "omnivia_core.workspace.models": "omnivia_memory.workspace.models",
-    "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
-    "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
 
 #: canonical module -> matching legacy module, for the modules where the
@@ -89,6 +87,8 @@ FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     "omnivia_core.module_manifest.validation": "omnivia_memory.module_manifest.validation",
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
+    "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
+    "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
 
 #: omnivia_core.graph.search_models canonicalizes only the query/result record

@@ -70,6 +70,13 @@ _OBJECT_ADDRESS = re.compile(r"0x[0-9a-fA-F]+")
 #: ``ProvenanceRequirement`` from the Component Contract and ``ValidationResult``
 #: from the shared primitive, so only those two routes ever move a root binding
 #: for the colliding names -- the other same-named owners are leaf-local.
+#:
+#: A route's value is the module that owns the exact *object*, which is not
+#: always the module that defines its type. ``RUN_LEDGER_CONTRACT_VERSION`` is a
+#: ``ContractVersion`` instance the run-ledger models leaf builds, so the leaf
+#: owns the object while the knowledge leaf owns the class; see
+#: ``FACADE_ROOT_BINDING_OWNER_MOVES`` for the separate, exact root-binding
+#: delta that follows from it.
 FACADE_ROUTES: dict[str, dict[str, str]] = {
     "omnivia_memory._shared.validation": {
         "SENSITIVE_KEYS": "omnivia_core._shared.validation",
@@ -155,6 +162,20 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
         "Source": "omnivia_core.provenance.models",
         "SourceType": "omnivia_core.provenance.models",
     },
+    "omnivia_memory.run_ledger.models": {
+        "EvidenceFileRef": "omnivia_core.run_ledger.models",
+        "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.run_ledger.models",
+        "RUN_LEDGER_PATH_ENV": "omnivia_core.run_ledger.models",
+        "RunLedgerEntry": "omnivia_core.run_ledger.models",
+        "RunLedgerProvenance": "omnivia_core.run_ledger.models",
+        "RunLedgerStatus": "omnivia_core.run_ledger.models",
+    },
+    "omnivia_memory.run_ledger.validation": {
+        "TERMINAL_RUN_STATUSES": "omnivia_core.run_ledger.validation",
+        "validate_evidence_file_ref": "omnivia_core.run_ledger.validation",
+        "validate_run_ledger_entry": "omnivia_core.run_ledger.validation",
+        "validate_run_ledger_provenance": "omnivia_core.run_ledger.validation",
+    },
     "omnivia_memory.memory.models": {
         "Memory": "omnivia_core.memory.models",
         "MemoryCreate": "omnivia_core.memory.models",
@@ -180,7 +201,11 @@ FACADE_ROUTES: dict[str, dict[str, str]] = {
 #: two entries that do exist are the two validators whose frozen signature
 #: annotates a *resolved* class from its own domain's models leaf, so the
 #: rendered signature names the owning package and nothing else about the
-#: contract changes.
+#: contract changes. The run-ledger validators need no entry for the same reason
+#: the Component Contract's do not: their module uses
+#: ``from __future__ import annotations``, so their frozen signatures spell the
+#: return type as the string forward reference ``'ValidationResult'`` and never
+#: named a package at all.
 FACADE_DESCRIPTOR_REWRITES: dict[
     tuple[str, str], tuple[dict[str, Any], dict[str, Any]]
 ] = {
@@ -221,6 +246,28 @@ FACADE_DESCRIPTOR_REWRITES: dict[
                 "omnivia_core.module_manifest.models.ModuleManifest"
             ),
         },
+    ),
+}
+
+
+#: Exact root-binding owner moves caused solely by a sanctioned ownership move
+#: whose new owner is *not* the routed leaf. Keys are ``(root binding name,
+#: routed legacy module)`` and values are ``(frozen owner, normalized owner)``.
+#:
+#: ``_normalize_expected_for_facade_routes`` moves a root binding from the routed
+#: leaf to that route's canonical module, which covers every routed symbol the
+#: leaf itself defines. A routed *instance* is the exception: the leaf owns the
+#: object, but ``defined_in`` reports the module that owns its ``type``.
+#: ``RUN_LEDGER_CONTRACT_VERSION`` is the one such root binding -- a
+#: ``ContractVersion`` the run-ledger models leaf builds -- so converting that
+#: leaf moves its recorded owner from the legacy knowledge leaf to the canonical
+#: one even though ``knowledge.models`` is not itself converted and appears in no
+#: route. That single, named delta is declared here rather than derived, and
+#: ``_facade_root_binding_problems`` proves it before it may be normalized away.
+FACADE_ROOT_BINDING_OWNER_MOVES: dict[tuple[str, str], tuple[str, str]] = {
+    ("RUN_LEDGER_CONTRACT_VERSION", "omnivia_memory.run_ledger.models"): (
+        "omnivia_memory.knowledge.models",
+        "omnivia_core.knowledge.models",
     ),
 }
 
@@ -391,21 +438,89 @@ def _facade_route_problems(
     return problems
 
 
+def _facade_root_binding_problems(
+    *,
+    routes: dict[str, dict[str, str]] = FACADE_ROUTES,
+    moves: dict[tuple[str, str], tuple[str, str]] = FACADE_ROOT_BINDING_OWNER_MOVES,
+    frozen: dict[str, Any] | None = None,
+) -> list[str]:
+    """Verify every declared root-binding owner move before normalizing it.
+
+    Each entry must (a) name a symbol that really is routed by that legacy
+    module, (b) match the frozen baseline's recorded owner for that root binding
+    exactly, (c) still be the exact object the route points at, and (d) actually
+    report the declared new owner. A stale entry, a mis-declared owner, or an
+    owner that moved somewhere other than where the entry says fails here rather
+    than being normalized away.
+    """
+    if frozen is None:
+        frozen = load_json(PUBLIC_EXPORTS_PATH)
+    problems: list[str] = []
+    try:
+        root = importlib.import_module(CORE_PACKAGE)
+    except ImportError as exc:  # pragma: no cover - the root import fails earlier
+        return [f"{CORE_PACKAGE}: cannot import ({exc})"]
+    for (name, legacy_module), (frozen_owner, canonical_owner) in sorted(moves.items()):
+        where = f"root binding {name!r} via {legacy_module}"
+        canonical_module = routes.get(legacy_module, {}).get(name)
+        if canonical_module is None:
+            problems.append(f"{where}: {name} is not a declared route of that module")
+            continue
+        binding = frozen.get("root", {}).get("bindings", {}).get(name)
+        if binding is None:
+            problems.append(f"{where}: the frozen baseline has no such root binding")
+            continue
+        if binding.get("defined_in") != frozen_owner:
+            problems.append(
+                f"{where}: the frozen baseline records owner "
+                f"{binding.get('defined_in')!r}, not the declared {frozen_owner!r}"
+            )
+            continue
+        if not hasattr(root, name):
+            problems.append(f"{where}: not found on {CORE_PACKAGE}")
+            continue
+        live = getattr(root, name)
+        try:
+            canonical = importlib.import_module(canonical_module)
+        except ImportError as exc:
+            problems.append(f"{canonical_module}: cannot import ({exc})")
+            continue
+        if getattr(canonical, name, None) is not live:
+            problems.append(
+                f"{where} is not the exact object bound at {canonical_module}.{name}"
+            )
+            continue
+        if _defining_module(live) != canonical_owner:
+            problems.append(
+                f"{where}: owner moved to {_defining_module(live)!r}, not the "
+                f"declared {canonical_owner!r}"
+            )
+    return problems
+
+
 def _normalize_expected_for_facade_routes(
     expected: dict[str, Any],
     *,
     routes: dict[str, dict[str, str]] = FACADE_ROUTES,
+    moves: dict[tuple[str, str], tuple[str, str]] = FACADE_ROOT_BINDING_OWNER_MOVES,
 ) -> dict[str, Any]:
     """Return a copy of ``expected`` with only the sanctioned facade deltas applied.
 
-    Two, and only two, kinds of change are made, both caused directly by the
+    Three, and only three, kinds of change are made, all caused directly by the
     routes in ``routes``:
 
     - a routed leaf's ``defines`` becomes empty once every symbol the frozen
       baseline recorded there is confirmed routed (the symbol is no longer
       *defined* by the legacy module -- it is imported);
     - a root binding's ``defined_in`` moves from the legacy leaf to the
-      routed canonical module, for exactly the routed names.
+      routed canonical module, for exactly the routed names;
+    - a root binding named by ``moves`` has its ``defined_in`` replaced, whole
+      and exactly, when it still holds that entry's declared frozen owner. This
+      covers the routed *instance* case, where the new owner is the module that
+      owns the object's ``type`` rather than the routed leaf itself. The
+      replacement is a whole-string equality test and a whole-string
+      substitution: no package-prefix rewriting, and no other binding is
+      consulted or touched.
 
     The frozen artifact on disk is never touched; this operates on an
     in-memory copy so every other difference still fails the comparison in
@@ -423,6 +538,10 @@ def _normalize_expected_for_facade_routes(
             binding = normalized.get("root", {}).get("bindings", {}).get(name)
             if binding is not None and binding.get("defined_in") == legacy_module:
                 binding["defined_in"] = canonical_module
+    for (name, _legacy_module), (frozen_owner, canonical_owner) in moves.items():
+        binding = normalized.get("root", {}).get("bindings", {}).get(name)
+        if binding is not None and binding.get("defined_in") == frozen_owner:
+            binding["defined_in"] = canonical_owner
     return normalized
 
 
@@ -441,6 +560,18 @@ def verify_public_export_inventory() -> list[str]:
                 "baseline for an unverified delta."
             ),
             format_differences(route_problems),
+        ]
+
+    root_binding_problems = _facade_root_binding_problems(frozen=expected)
+    if root_binding_problems:
+        return [
+            (
+                "Compatibility-facade root-binding owner-move verification failed for "
+                "one or more entries in baseline.inventory's "
+                "FACADE_ROOT_BINDING_OWNER_MOVES; refusing to normalize the frozen "
+                "Phase 0 baseline for an unverified owner move."
+            ),
+            format_differences(root_binding_problems),
         ]
 
     normalized_expected = _normalize_expected_for_facade_routes(expected)

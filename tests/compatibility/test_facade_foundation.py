@@ -9,9 +9,9 @@ canonical objects (``omnivia_memory.X.Symbol is omnivia_core.X.Symbol``), not
 structurally equal lookalikes. The barrels above them (``BARREL_ALL_ORDER``)
 already delegated to their sibling leaves and need no source change, but their
 re-exported objects are now canonical too as a result -- the ``app_manifest``,
-``app_shell_bridge``, ``component_contract``, and ``module_manifest`` barrels
-become identity-preserving purely transitively, through their two converted
-leaves each.
+``app_shell_bridge``, ``component_contract``, ``module_manifest``, and
+``run_ledger`` barrels become identity-preserving purely transitively, through
+their two converted leaves each.
 
 This module is the dedicated verification for that transition, independent
 of the ``tests/canonical_migration`` source-parity gates (which exclude every
@@ -233,6 +233,51 @@ LEAF_SYMBOL_SOURCES: dict[str, dict[str, str]] = {
         "Enum": "omnivia_core.provenance.models",
         "annotations": "omnivia_core.provenance.models",
     },
+    "omnivia_memory.run_ledger.models": {
+        # The routed ``ContractVersion`` class is owned by the knowledge domain,
+        # not by this leaf's canonical counterpart: the canonical run-ledger
+        # models module imports it to build the version constant below. Its
+        # identity is therefore checked against its real owner.
+        "ContractVersion": "omnivia_core.knowledge.models",
+        "Enum": "omnivia_core.run_ledger.models",
+        "EvidenceFileRef": "omnivia_core.run_ledger.models",
+        "Mapping": "omnivia_core.run_ledger.models",
+        # A ``ContractVersion`` *instance*, built by (and owned by) the canonical
+        # run-ledger models leaf even though its type lives in the knowledge
+        # domain. That split is why converting this leaf also moves one frozen
+        # root binding -- see ``baseline.inventory``'s
+        # ``FACADE_ROOT_BINDING_OWNER_MOVES``.
+        "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.run_ledger.models",
+        "RUN_LEDGER_PATH_ENV": "omnivia_core.run_ledger.models",
+        "RunLedgerEntry": "omnivia_core.run_ledger.models",
+        "RunLedgerProvenance": "omnivia_core.run_ledger.models",
+        "RunLedgerStatus": "omnivia_core.run_ledger.models",
+        "annotations": "omnivia_core.run_ledger.models",
+        "cast": "omnivia_core.run_ledger.models",
+        "dataclass": "omnivia_core.run_ledger.models",
+        "field": "omnivia_core.run_ledger.models",
+    },
+    "omnivia_memory.run_ledger.validation": {
+        "EvidenceFileRef": "omnivia_core.run_ledger.models",
+        "RUN_LEDGER_CONTRACT_VERSION": "omnivia_core.run_ledger.models",
+        "RunLedgerEntry": "omnivia_core.run_ledger.models",
+        "RunLedgerProvenance": "omnivia_core.run_ledger.models",
+        "RunLedgerStatus": "omnivia_core.run_ledger.models",
+        "TERMINAL_RUN_STATUSES": "omnivia_core.run_ledger.validation",
+        # This leaf never had a ``ValidationResult`` of its own: it historically
+        # imported the shared primitive (through the legacy knowledge barrel's
+        # re-export of it), so it must keep routing to that one and not to any of
+        # the four domain classes of the same name.
+        "ValidationResult": "omnivia_core._shared.validation",
+        "annotations": "omnivia_core.run_ledger.validation",
+        # Owned by the knowledge domain's validation leaf, which the canonical
+        # run-ledger validator imports it from.
+        "check_contract_version_compatibility": "omnivia_core.knowledge.validation",
+        "datetime": "omnivia_core.run_ledger.validation",
+        "validate_evidence_file_ref": "omnivia_core.run_ledger.validation",
+        "validate_run_ledger_entry": "omnivia_core.run_ledger.validation",
+        "validate_run_ledger_provenance": "omnivia_core.run_ledger.validation",
+    },
     "omnivia_memory.memory.models": {
         "Memory": "omnivia_core.memory.models",
         "MemoryCreate": "omnivia_core.memory.models",
@@ -276,6 +321,8 @@ LEAF_IMPORT_SOURCE: dict[str, str] = {
     ),
     "omnivia_memory.provenance.models": "omnivia_core.provenance.models",
     "omnivia_memory.memory.models": "omnivia_core.memory.models",
+    "omnivia_memory.run_ledger.models": "omnivia_core.run_ledger.models",
+    "omnivia_memory.run_ledger.validation": "omnivia_core.run_ledger.validation",
 }
 
 #: The barrels above the converted leaves, all source-unchanged, and the exact
@@ -350,6 +397,18 @@ BARREL_ALL_ORDER: dict[str, list[str]] = {
         "validate_module_manifest",
     ],
     "provenance": ["Source", "SourceType"],
+    "run_ledger": [
+        "RUN_LEDGER_CONTRACT_VERSION",
+        "RUN_LEDGER_PATH_ENV",
+        "EvidenceFileRef",
+        "RunLedgerEntry",
+        "RunLedgerProvenance",
+        "RunLedgerStatus",
+        "TERMINAL_RUN_STATUSES",
+        "validate_evidence_file_ref",
+        "validate_run_ledger_entry",
+        "validate_run_ledger_provenance",
+    ],
 }
 
 #: The barrels whose legacy source is a pure *absolute*-import re-export body,
@@ -366,6 +425,7 @@ ABSOLUTE_IMPORT_BARRELS: tuple[str, ...] = (
     "lifecycle",
     "module_manifest",
     "provenance",
+    "run_ledger",
 )
 
 #: The exact, ordered *absolute* re-export shape the unchanged legacy
@@ -420,6 +480,33 @@ MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...]
     ),
 )
 
+#: The same, for the unchanged legacy run-ledger barrel. Its name order is its
+#: own historical source order -- which here matches the canonical barrel's,
+#: including the two constants leading the models block ahead of the classes
+#: rather than being alphabetized.
+RUN_LEDGER_BARREL_ABSOLUTE_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "omnivia_memory.run_ledger.models",
+        (
+            "RUN_LEDGER_CONTRACT_VERSION",
+            "RUN_LEDGER_PATH_ENV",
+            "EvidenceFileRef",
+            "RunLedgerEntry",
+            "RunLedgerProvenance",
+            "RunLedgerStatus",
+        ),
+    ),
+    (
+        "omnivia_memory.run_ledger.validation",
+        (
+            "TERMINAL_RUN_STATUSES",
+            "validate_evidence_file_ref",
+            "validate_run_ledger_entry",
+            "validate_run_ledger_provenance",
+        ),
+    ),
+)
+
 #: The absolute-import barrels that additionally get the stricter, shape-exact
 #: gate below, and the exact shape each must keep. Keyed by barrel suffix so the
 #: shape gate and the transitive-identity gate both run over the same declared
@@ -433,6 +520,7 @@ ABSOLUTE_IMPORT_BARREL_IMPORTS: dict[
 ] = {
     "app_manifest": APP_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
     "module_manifest": MODULE_MANIFEST_BARREL_ABSOLUTE_IMPORTS,
+    "run_ledger": RUN_LEDGER_BARREL_ABSOLUTE_IMPORTS,
 }
 
 #: The exact, ordered relative re-export shape the unchanged legacy app-shell
@@ -531,6 +619,8 @@ EXPECTED_FACADE_CANONICAL_TO_LEGACY: dict[str, str] = {
     ),
     "omnivia_core.provenance.models": "omnivia_memory.provenance.models",
     "omnivia_core.memory.models": "omnivia_memory.memory.models",
+    "omnivia_core.run_ledger.models": "omnivia_memory.run_ledger.models",
+    "omnivia_core.run_ledger.validation": "omnivia_memory.run_ledger.validation",
 }
 
 
