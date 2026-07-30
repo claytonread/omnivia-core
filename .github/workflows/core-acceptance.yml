@@ -98,6 +98,9 @@ jobs:
       - name: Check generated TypeScript contracts
         run: npm run check:application-contracts
 
+      - name: Check compatibility facade routes
+        run: python scripts/check-facade-routes.py
+
       - name: Run canonical migration and compatibility tests
         run: python -m pytest tests/canonical_migration tests/compatibility -q
 
@@ -122,6 +125,8 @@ jobs:
             tests \
             scripts \
             services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
             services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
@@ -134,7 +139,9 @@ jobs:
             src/omnivia_core \
             packages/omnivia-core-runtime/src/omnivia_core_runtime \
             packages/omnivia-core-mcp/src/omnivia_core_mcp \
-            packages/omnivia-core-cli/src/omnivia_core_cli
+            packages/omnivia-core-cli/src/omnivia_core_cli \
+            baseline/facade_manifest.py \
+            scripts/check-facade-routes.py
 
       - name: Check pull-request diff for whitespace errors
         if: github.event_name == 'pull_request'

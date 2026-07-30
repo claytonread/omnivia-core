@@ -50,6 +50,7 @@ GATE_STEPS = (
     ("Check application contracts", "python scripts/check-application-contracts.py"),
     ("Run application contract tests", "python -m pytest tests/contracts -q"),
     ("Check generated TypeScript contracts", "npm run check:application-contracts"),
+    ("Check compatibility facade routes", "python scripts/check-facade-routes.py"),
     (
         "Run canonical migration and compatibility tests",
         "python -m pytest tests/canonical_migration tests/compatibility -q",
@@ -64,7 +65,7 @@ GATE_STEPS = (
 # below, so they appear here only to pin their place in the gate order.
 SCOPED_STEPS = ("Run Ruff", "Run strict mypy")
 
-# Ruff's currently accepted clean scope: the canonical trees plus the six
+# Ruff's currently accepted clean scope: the canonical trees plus the eight
 # converted legacy facade/barrel files.
 REQUIRED_RUFF_TARGETS = (
     "src",
@@ -73,6 +74,8 @@ REQUIRED_RUFF_TARGETS = (
     "tests",
     "scripts",
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
+    "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py",
+    "services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/models.py",
     "services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py",
@@ -85,6 +88,8 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-runtime/src/omnivia_core_runtime",
     "packages/omnivia-core-mcp/src/omnivia_core_mcp",
     "packages/omnivia-core-cli/src/omnivia_core_cli",
+    "baseline/facade_manifest.py",
+    "scripts/check-facade-routes.py",
 )
 
 # Pinned tooling and test-only dependencies, quoted exactly as the workflow

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnivia.dev/schemas/compatibility/facade-routes.schema.json",
+  "title": "Compatibility facade route registry",
+  "description": "Structural schema for compatibility/facade-routes.v1.json: the frozen module-level route registry pairing legacy omnivia_memory modules with their canonical omnivia_core counterparts. This schema checks shape, types, enums and object-level uniqueness only. Cross-field invariants (suffix agreement, count agreement, root uniqueness, state/shape/kind consistency, route ordering, parent/child topology, and checkout drift) are enforced by baseline/facade_manifest.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "legacy_package",
+    "canonical_package",
+    "compatibility_dependency",
+    "expected_counts",
+    "routes",
+    "runtime_only_modules"
+  ],
+  "properties": {
+    "format_version": {
+      "description": "Registry format version. Bump when the on-disk shape changes.",
+      "const": 1
+    },
+    "legacy_package": {
+      "description": "Import package that keeps serving deprecated import paths.",
+      "const": "omnivia_memory"
+    },
+    "canonical_package": {
+      "description": "Import package that owns the canonical implementations.",
+      "const": "omnivia_core"
+    },
+    "compatibility_dependency": {
+      "description": "Bounded requirement the legacy distribution declares on the canonical one for its facades to resolve.",
+      "const": "omnivia-core>=0.1.0,<0.2.0"
+    },
+    "expected_counts": {
+      "description": "Pinned partition sizes. Any drift in the routes array fails the loader.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "routes",
+        "direct",
+        "hybrid_barrel",
+        "root",
+        "leaf",
+        "barrel",
+        "runtime_only_modules"
+      ],
+      "properties": {
+        "routes": { "type": "integer", "minimum": 0 },
+        "direct": { "type": "integer", "minimum": 0 },
+        "hybrid_barrel": { "type": "integer", "minimum": 0 },
+        "root": { "type": "integer", "minimum": 0 },
+        "leaf": { "type": "integer", "minimum": 0 },
+        "barrel": { "type": "integer", "minimum": 0 },
+        "runtime_only_modules": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "routes": {
+      "description": "One entry per module suffix shared by both package trees, plus the package root. Ordered by legacy_module ascending.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/route" }
+    },
+    "runtime_only_modules": {
+      "description": "Fully qualified legacy modules with no canonical counterpart. Deliberately not routed at this checkpoint.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/legacyModule" }
+    }
+  },
+  "$defs": {
+    "legacyModule": {
+      "type": "string",
+      "pattern": "^omnivia_memory(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "canonicalModule": {
+      "type": "string",
+      "pattern": "^omnivia_core(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legacy_module",
+        "canonical_module",
+        "pair_kind",
+        "shape",
+        "migration_state"
+      ],
+      "properties": {
+        "legacy_module": {
+          "description": "Deprecated import path callers may still use.",
+          "$ref": "#/$defs/legacyModule"
+        },
+        "canonical_module": {
+          "description": "Canonical import path the legacy path routes to. Shares the legacy path's suffix.",
+          "$ref": "#/$defs/canonicalModule"
+        },
+        "pair_kind": {
+          "description": "direct: nothing in the legacy module's own exported surface blocks conversion -- a runtime-only descendant does not count, so control_plane stays direct despite control_plane.registry. hybrid_barrel: a barrel whose own exported surface mixes portable canonical exports with runtime-owned ones. root: the package root itself.",
+          "enum": ["direct", "hybrid_barrel", "root"]
+        },
+        "shape": {
+          "description": "leaf: a plain module. barrel: a package __init__ re-exporting its subtree. root: the package root __init__.",
+          "enum": ["leaf", "barrel", "root"]
+        },
+        "migration_state": {
+          "description": "source_parity: still a duplicated copy, symbol for symbol. canonical_subset: still a duplicated copy but a strict superset of the canonical module, because canonical Core deliberately omits runtime-owned symbols. direct_facade: re-exports canonical objects itself. transitive_facade: identity-preserving purely through converted children. pending_*: not yet converted.",
+          "enum": [
+            "source_parity",
+            "canonical_subset",
+            "direct_facade",
+            "transitive_facade",
+            "pending_direct_barrel",
+            "pending_hybrid",
+            "pending_root"
+          ]
+        }
+      }
+    }
+  }
+}
