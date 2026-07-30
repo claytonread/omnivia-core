@@ -149,8 +149,20 @@ jobs:
             packages/omnivia-core-cli/src/omnivia_core_cli \
             baseline/facade_manifest.py \
             scripts/check-facade-routes.py \
+            services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/models.py \
+            services/omnivia-memory/src/omnivia_memory/app_shell_bridge/validation.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/models.py \
+            services/omnivia-memory/src/omnivia_memory/component_contract/validation.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/models.py \
+            services/omnivia-memory/src/omnivia_memory/lifecycle/rules.py \
+            services/omnivia-memory/src/omnivia_memory/memory/models.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/models.py \
             services/omnivia-memory/src/omnivia_memory/module_manifest/validation.py \
+            services/omnivia-memory/src/omnivia_memory/provenance/models.py \
+            tests/typing/accepted_legacy_facade_consumer.py \
             tests/typing/module_manifest_facade_consumer.py
 
       - name: Check pull-request diff for whitespace errors

@@ -5,8 +5,15 @@ Deprecated: import ``AppShellBridgeValidationError`` /
 from ``omnivia_core.app_shell_bridge.validation`` instead.
 """
 # ruff: noqa: F401 -- names below are re-exported, not used in this module
+# This facade *is* the re-export: strict consumers must see every name below as
+# explicitly exported from this module, exactly as they did before conversion.
+# mypy: implicit_reexport = True
 
-from omnivia_core.app_shell_bridge.validation import (
+# The `attr-defined` ignore covers only the intentionally preserved incidental
+# bindings (`TYPE_CHECKING`, `Any`, `Dict`, `List`) -- names the canonical
+# module's own imports left at its module scope and that this leaf's historical
+# namespace still has to resolve. No other error code is suppressed.
+from omnivia_core.app_shell_bridge.validation import (  # type: ignore[attr-defined]
     TYPE_CHECKING,
     Any,
     AppShellBridgeValidationError,
