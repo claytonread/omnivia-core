@@ -113,3 +113,22 @@ def test_v1_exposes_the_operation_semantics_submodule_and_its_functions() -> Non
 def test_the_operation_catalogue_is_reachable_from_the_v1_barrel() -> None:
     assert "OPERATION_CATALOGUE" in v1.__all__
     assert v1.OPERATION_CATALOGUE is generated.OPERATION_CATALOGUE
+
+
+def test_v1_exposes_the_adapter_seam_and_the_conformance_runner() -> None:
+    """A2.6's surface is reachable from the barrel, not just from its own modules.
+
+    Like the semantics modules, `adapter` and `conformance` are re-exported name
+    by name rather than by a loop over their `__all__`, so the names are pinned
+    here explicitly.
+    """
+    from omnivia_core.contracts.v1 import adapter, conformance
+
+    assert v1.adapter is adapter
+    assert v1.conformance is conformance
+    for name in ("adapter", "conformance"):
+        assert name in v1.__all__
+    for module in (adapter, conformance):
+        for name in module.__all__:
+            assert name in v1.__all__, f"v1.__all__ is missing {name!r}"
+            assert getattr(v1, name) is getattr(module, name)

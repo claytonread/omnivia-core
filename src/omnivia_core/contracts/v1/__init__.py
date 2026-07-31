@@ -6,8 +6,9 @@ version/capability compatibility semantics, all re-exported from one place so
 a caller does not need to know which submodule a given name lives in. The
 submodules themselves (:mod:`generated`, :mod:`codec`, :mod:`compatibility`,
 :mod:`semantics`, :mod:`semantics_evidence`, :mod:`semantics_jobs`,
-:mod:`semantics_knowledge`, :mod:`semantics_operations`) remain importable
-directly for callers that prefer explicit provenance.
+:mod:`semantics_knowledge`, :mod:`semantics_operations`, :mod:`adapter`,
+:mod:`conformance`) remain importable directly for callers that prefer
+explicit provenance.
 
 Standard library only. Nothing under ``omnivia_core.contracts.v1`` may depend
 on runtime, storage, HTTP, MCP, CLI, Platform, Dev, or a validation framework.
@@ -16,8 +17,10 @@ on runtime, storage, HTTP, MCP, CLI, Platform, Dev, or a validation framework.
 from __future__ import annotations
 
 from . import (
+    adapter,
     codec,
     compatibility,
+    conformance,
     generated,
     resources,
     semantics,
@@ -25,6 +28,10 @@ from . import (
     semantics_jobs,
     semantics_knowledge,
     semantics_operations,
+)
+from .adapter import (
+    ApplicationWireAdapter,
+    InProcessFakeAdapter,
 )
 from .codec import (
     RetryClassMismatchError,
@@ -62,6 +69,15 @@ from .compatibility import (
     validate_version_capability_envelope,
     validate_version_window,
     version_in_window,
+)
+from .conformance import (
+    ADAPTER_CONFORMANCE_CORPUS_FILE,
+    ADAPTER_CONFORMANCE_CORPUS_FORMAT,
+    AdapterConformanceCase,
+    AdapterConformanceError,
+    load_adapter_conformance_corpus,
+    run_adapter_conformance,
+    validate_case_collection,
 )
 from .generated import (
     AUDIT_REFERENCE_PATTERN,
@@ -600,6 +616,8 @@ from .semantics_operations import (
 )
 
 __all__ = [
+    "ADAPTER_CONFORMANCE_CORPUS_FILE",
+    "ADAPTER_CONFORMANCE_CORPUS_FORMAT",
     "AUDIT_REFERENCE_PATTERN",
     "AUTHORITY_LEVELS_IMPLYING_ACCEPTED",
     "AUTHORITY_LEVELS_REQUIRING_REVIEWER",
@@ -825,7 +843,10 @@ __all__ = [
     "UPGRADE_STATE_REQUIRED",
     "WORKSPACE_ID_PATTERN",
     "WORKSPACE_STATUS_PATTERN",
+    "AdapterConformanceCase",
+    "AdapterConformanceError",
     "ApiError",
+    "ApplicationWireAdapter",
     "AuditReference",
     "CandidateApproveInput",
     "CandidateApproveResult",
@@ -905,6 +926,7 @@ __all__ = [
     "ImportSourceDescriptor",
     "ImportStartInput",
     "ImportStartResult",
+    "InProcessFakeAdapter",
     "JobAttempt",
     "JobCancelInput",
     "JobCancelResult",
@@ -1022,6 +1044,7 @@ __all__ = [
     "WorkspaceListInput",
     "WorkspaceListResult",
     "WorkspaceStatus",
+    "adapter",
     "capability_key",
     "classify_idempotent_replay",
     "classify_version_compatibility",
@@ -1030,6 +1053,7 @@ __all__ = [
     "compatibility",
     "compute_authorized_candidate_set_checksum",
     "compute_context_pack_artifact_digest",
+    "conformance",
     "context_pack_authorized_candidate_from_wire",
     "context_pack_authorized_candidate_to_wire",
     "context_pack_citation_from_wire",
@@ -1070,6 +1094,7 @@ __all__ = [
     "job_terminal_result_to_wire",
     "list_fixture_files",
     "list_schema_names",
+    "load_adapter_conformance_corpus",
     "parse_contract_version",
     "permits_cancellation",
     "permits_recovery",
@@ -1088,6 +1113,7 @@ __all__ = [
     "response_result",
     "retry_after_ms",
     "retry_class_for",
+    "run_adapter_conformance",
     "semantics",
     "semantics_evidence",
     "semantics_jobs",
@@ -1100,6 +1126,7 @@ __all__ = [
     "validate_candidate_reject_input",
     "validate_candidate_reject_result",
     "validate_capability_set",
+    "validate_case_collection",
     "validate_context_pack_build_input",
     "validate_context_pack_build_result",
     "validate_context_pack_build_result_document",

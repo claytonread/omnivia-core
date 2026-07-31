@@ -206,7 +206,11 @@ Canonical source and generated artifacts:
   of an additive unknown field, an unrecognized open vocabulary value, a
   duplicate capability id, a response carrying both `result` and `error`, a
   response carrying neither, and a pattern-compatible but calendar-invalid
-  RFC 3339 timestamp.
+  RFC 3339 timestamp. The same directory also ships
+  `application-wire-adapter-conformance-v1.json`, the adapter conformance
+  corpus, which is a transcript of many exchanges rather than a single wire
+  document and is governed separately from the manifest — see
+  `conformance.py` below.
 - `src/omnivia_core/contracts/v1/generated.py` — generated frozen dataclasses,
   type aliases, and frozen vocabulary constants. Standard library only.
 - `src/omnivia_core/contracts/v1/codec.py` — tolerant production wire codec
@@ -770,6 +774,78 @@ Canonical source and generated artifacts:
   function is a direct entry point and type-guards what it is handed, so a
   hand-built value raises `ContractSemanticError`, never a raw
   `TypeError`/`AttributeError`/`KeyError`.
+- `src/omnivia_core/contracts/v1/adapter.py` — the provider-neutral wire seam
+  (A2.6). `ApplicationWireAdapter` is one method wide: an encoded request
+  envelope goes out, an encoded response envelope comes back. It is stated in
+  *wire mappings* rather than decoded dataclasses because that is the only thing
+  an in-process caller, a local IPC client, and an HTTP client actually have in
+  common — a protocol phrased in decoded envelopes would assume the codec runs on
+  the caller's side of the wire, which for a real transport it does not. Either
+  response branch is a normal return: `not_found` is something this contract says
+  an operation may answer with, so turning it into an exception would put it
+  outside the envelope that defines it. Raising is reserved for the seam itself
+  failing.
+
+  `InProcessFakeAdapter` replays recorded exchanges, keyed by request id, and
+  decides nothing: no dispatch, no storage, no authorization, no computed
+  results. Whether a replay is honest or a token still binds is a fact *stated in
+  the corpus*, so the conformance runner is checking the contract rather than a
+  second implementation of the thing under test. An unrecorded request is refused
+  rather than improvised, and every call returns a fresh copy so a caller cannot
+  rewrite the transcript mid-run.
+- `src/omnivia_core/contracts/v1/conformance.py` — the shared corpus and its
+  runner (A2.6). `load_adapter_conformance_corpus()` reads the packaged
+  `application-wire-adapter-conformance-v1.json`; `run_adapter_conformance()`
+  drives every recorded exchange through any `ApplicationWireAdapter` and returns
+  the number verified, raising `AdapterConformanceError` — which names the case —
+  at the first divergence.
+
+  The runner restates no *per-value* semantics. Whether an error code is one the
+  operation may raise, whether the retry class is right, whether a job's state
+  may move as it did, whether a governed transition is attributed to the right
+  actor: each was frozen in an earlier slice and is *called* here. What it adds
+  is what no single-operation validator can see — that a recorded exchange is
+  coherent end to end, and that the values survive the trip in both directions
+  unchanged, request as well as response.
+
+  It does state a few rules of its own, and they are all *relational*: what an
+  honest replay must answer with and what an idempotency conflict must be refused
+  with, that a continuation token still binds the query that produced it, that
+  every workspace-scoped identifier in a result is the one the request selected,
+  and that a case's declared principal is the one its response attests. Each
+  concerns two exchanges, or an exchange and the request that provoked it, which
+  is precisely what a validator taking a single decoded value cannot express.
+  They are named here rather than described as "called, never restated", because
+  claiming to own no semantics while owning several is how a reader stops
+  checking.
+
+  Which relationships those rules apply to is read from the exchanges, not from
+  what a case declares: two requests carrying the same idempotency key under one
+  principal and workspace are a repeat whether or not the corpus says so, and a
+  request presenting a token an earlier result issued is a continuation of it. A
+  declaration is kept as an assertion and checked against what was derived.
+
+  The corpus holds 73 exchanges: one primary success for each of the 20
+  operations, an honest replay and an idempotency conflict for each of the 9
+  mutations, a second page for each of the 7 paginated operations, one case for
+  each of the 26 frozen error codes on an operation the catalogue permits to
+  raise it, and two further readings of one job — failed, then succeeded — so
+  that a job's life is observed across several exchanges rather than asserted
+  once, and so that the frozen terminal-result and attempt-history rules have
+  something to run against. It ships beside the canonical wire fixtures so every
+  adapter can read it from an installed wheel, but it is deliberately **not**
+  registered in
+  `fixtures/manifest.json`: that manifest describes one wire envelope per entry —
+  which branch, whether it is schema-valid, which semantic it carries — and a
+  transcript of many exchanges has no single answer to any of those. It is
+  governed instead by its own coverage gate in
+  `scripts/check-application-contracts.py`, which asserts the coverage above
+  against the catalogue rather than against however the corpus happened to be
+  written.
+
+  This is a contract fixture, not a service. The same corpus will be driven
+  through the real HTTP adapter when it exists, and "both adapters pass" will
+  then mean something stronger than "both adapters have tests".
 - `src/omnivia_core/contracts/v1/canonical_json.py` — the RFC 8785 JSON
   Canonicalization Scheme the Context Pack digest is defined over, kept separate
   from the contract semantics so it can be audited on its own. Standard library
@@ -884,7 +960,8 @@ its tests — the `format` extra provides the RFC 3339 calendar validation
 `jsonschema.FormatChecker` needs. The contract package itself (`generated.py`,
 `codec.py`, `compatibility.py`, `semantics.py`, `semantics_evidence.py`,
 `semantics_jobs.py`, `semantics_knowledge.py`, `semantics_operations.py`,
-`canonical_json.py`, `resources.py`) has zero runtime
+`adapter.py`, `conformance.py`, `canonical_json.py`, `resources.py`) has zero
+runtime
 dependencies, including on `jsonschema` and on any third-party canonicalizer.
 
 The generated TypeScript module is regenerated and checked for drift the same

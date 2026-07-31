@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import shutil
 import sys
 from collections.abc import Callable
@@ -1568,3 +1569,294 @@ def test_the_fixture_comparison_survives_a_non_object_entry(
         checks=("check_operation_catalogue_fixture_matches",),
     )
     assert any("'index 3'" in finding for finding in findings), findings
+
+
+# --------------------------------------------------------------------------
+# Adapter conformance corpus: the coverage gate must notice a corpus that has
+# quietly stopped exercising part of the contract.
+# --------------------------------------------------------------------------
+
+CorpusMutation = Callable[[dict[str, Any]], None]
+
+
+def _with_corpus(
+    monkeypatch: pytest.MonkeyPatch, mutate: CorpusMutation, tmp_path: Path
+) -> list[str]:
+    """Run the corpus check against a mutated copy, leaving the repo untouched."""
+    source = checker.FIXTURES_DIR / checker.ADAPTER_CONFORMANCE_CORPUS
+    document = json.loads(source.read_text(encoding="utf-8"))
+    mutate(document)
+
+    fixtures = tmp_path / "fixtures"
+    shutil.copytree(checker.FIXTURES_DIR, fixtures)
+    (fixtures / checker.ADAPTER_CONFORMANCE_CORPUS).write_text(
+        json.dumps(document, indent=2), encoding="utf-8"
+    )
+    monkeypatch.setattr(checker, "FIXTURES_DIR", fixtures)
+    return cast("Check", checker.check_adapter_conformance_corpus)()
+
+
+def _corpus_case(document: dict[str, Any], case_id: str) -> dict[str, Any]:
+    return next(case for case in document["cases"] if case["id"] == case_id)
+
+
+CORPUS_MUTATIONS: dict[str, tuple[CorpusMutation, str]] = {
+    "wrong-format": (
+        lambda d: d.__setitem__("format", "omnivia.something-else"),
+        "'format' must be",
+    ),
+    "cases-not-an-array": (lambda d: d.__setitem__("cases", {}), "'cases' must be an array"),
+    "duplicate-case-id": (
+        lambda d: d["cases"].append(copy.deepcopy(d["cases"][0])),
+        "duplicate case id",
+    ),
+    "duplicate-request-id": (
+        lambda d: d["cases"][1]["request"]["metadata"].__setitem__(
+            "request_id", d["cases"][0]["request"]["metadata"]["request_id"]
+        ),
+        "duplicate request id",
+    ),
+    "non-catalogue-operation": (
+        lambda d: d["cases"][0].__setitem__("operation", "service.health"),
+        "non-catalogue operation",
+    ),
+    "missing-primary-success": (
+        lambda d: d["cases"].remove(_corpus_case(d, "graph.traverse/primary-success")),
+        "no primary success case",
+    ),
+    "missing-replay": (
+        lambda d: d["cases"].remove(_corpus_case(d, "memory.create/honest-replay")),
+        "needs an honest-replay case",
+    ),
+    "missing-conflict": (
+        lambda d: d["cases"].remove(_corpus_case(d, "job.cancel/idempotency-conflict")),
+        "needs an idempotency-conflict case",
+    ),
+    "missing-second-page": (
+        lambda d: d["cases"].remove(_corpus_case(d, "memory.list/page-2")),
+        "needs a two-page scenario",
+    ),
+    "uncovered-error-code": (
+        lambda d: d["cases"].remove(_corpus_case(d, "error/token_limit_exceeded")),
+        "no case exercises error code",
+    ),
+    "error-on-an-operation-that-forbids-it": (
+        lambda d: _corpus_case(d, "error/token_limit_exceeded").__setitem__(
+            "operation", "memory.get"
+        ),
+        "does not permit to raise it",
+    ),
+    "conflict-on-job-cancel": (
+        lambda d: _corpus_case(d, "job.cancel/idempotency-conflict")["expect"].__setitem__(
+            "error_code", "conflict"
+        ),
+        "a state-based refusal is a successful disposition",
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(CORPUS_MUTATIONS), ids=sorted(CORPUS_MUTATIONS))
+def test_the_corpus_gate_detects_every_category_of_coverage_loss(
+    label: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mutate, expected = CORPUS_MUTATIONS[label]
+    findings = _with_corpus(monkeypatch, mutate, tmp_path)
+    assert findings, f"{label}: coverage loss went undetected"
+    assert any(expected in finding for finding in findings), (
+        f"{label}: expected a finding containing {expected!r}, got {findings}"
+    )
+
+
+def test_the_corpus_gate_passes_on_the_real_corpus() -> None:
+    assert cast("Check", checker.check_adapter_conformance_corpus)() == []
+
+
+def test_a_missing_corpus_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fixtures = tmp_path / "fixtures"
+    shutil.copytree(checker.FIXTURES_DIR, fixtures)
+    (fixtures / checker.ADAPTER_CONFORMANCE_CORPUS).unlink()
+    monkeypatch.setattr(checker, "FIXTURES_DIR", fixtures)
+    findings = cast("Check", checker.check_adapter_conformance_corpus)()
+    assert len(findings) == 1
+    assert "missing adapter conformance corpus" in findings[0]
+
+
+def test_the_corpus_is_exempt_from_the_wire_fixture_manifest_rule() -> None:
+    """It ships in the fixtures directory but is not a canonical wire document.
+
+    The exemption is narrow and named: only the manifest itself and the corpus.
+    Any *other* unlisted file must still be reported, or the manifest would stop
+    being the complete account of the wire fixtures it is meant to be.
+    """
+    assert checker.ADAPTER_CONFORMANCE_CORPUS in checker._NON_WIRE_FIXTURE_FILES
+    assert checker._NON_WIRE_FIXTURE_FILES == frozenset(
+        {"manifest.json", checker.ADAPTER_CONFORMANCE_CORPUS}
+    )
+    assert cast("Check", checker.check_fixture_manifest_is_complete)() == []
+
+
+def test_an_unlisted_wire_fixture_is_still_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixtures = tmp_path / "fixtures"
+    shutil.copytree(checker.FIXTURES_DIR, fixtures)
+    (fixtures / "rogue-fixture.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(checker, "FIXTURES_DIR", fixtures)
+    findings = cast("Check", checker.check_fixture_manifest_is_complete)()
+    assert any("rogue-fixture.json" in finding for finding in findings)
+
+
+# --------------------------------------------------------------------------
+# Corpus hostile-shape sweep, checked in.
+#
+# A gate that can be crashed is a gate that can be bypassed, so every field the
+# corpus checker consumes is driven with every JSON shape a corpus file could
+# carry. This is deliberately a permanent parametrized suite rather than a
+# one-off probe: an earlier repair reported a sweep of this scope as evidence
+# while only nominal coverage mutations were actually checked in, which is
+# exactly the kind of claim a reviewer cannot verify after the fact.
+# --------------------------------------------------------------------------
+
+#: Every field `check_adapter_conformance_corpus` reads, as a path into one case.
+CORPUS_CONSUMED_FIELDS: tuple[tuple[str, ...], ...] = (
+    ("id",),
+    ("operation",),
+    ("description",),
+    ("request",),
+    ("response",),
+    ("request", "metadata"),
+    ("response", "metadata"),
+    ("request", "metadata", "request_id"),
+    ("expect",),
+    ("expect", "branch"),
+    ("expect", "error_code"),
+    ("expect", "retry_class"),
+    ("expect", "replay_of"),
+    ("expect", "idempotency"),
+    ("expect", "page_of"),
+    ("trusted",),
+)
+
+#: Every JSON shape a value can take, plus the blank strings that read as values.
+HOSTILE_SHAPES: tuple[Any, ...] = (
+    [], {}, 0, 1.5, True, False, None, "", "  ", "\n", [{"nested": 1}], {"k": [1]},
+)
+
+#: Fields whose *contents* the checker deliberately does not judge: response
+#: metadata is the runner's business via decode, and `trusted` is open-keyed
+#: because different frozen validators need different facts.
+#:
+#: Open-keyed means open about *keys*, not about shape. Only an object value is
+#: unjudged here; a list, a number or a blank string in one of these fields is
+#: still the wrong kind of thing and must be reported. Exempting the whole field
+#: waved through 48 combinations, and the checker in fact reports 40 of them --
+#: so the sweep was claiming far less coverage than it had, and would not have
+#: noticed the other 40 going quiet.
+_CORPUS_UNJUDGED_CONTENTS: frozenset[tuple[str, ...]] = frozenset(
+    {("response", "metadata"), ("trusted",)}
+)
+
+
+def _contents_are_unjudged(path: tuple[str, ...], shape: Any) -> bool:
+    return path in _CORPUS_UNJUDGED_CONTENTS and isinstance(shape, dict)
+
+
+def _corpus_with(document: dict[str, Any], tmp_path: Path) -> Path:
+    fixtures = tmp_path / "fixtures"
+    shutil.rmtree(fixtures, ignore_errors=True)
+    shutil.copytree(checker.FIXTURES_DIR, fixtures)
+    (fixtures / checker.ADAPTER_CONFORMANCE_CORPUS).write_text(
+        json.dumps(document), encoding="utf-8"
+    )
+    return fixtures
+
+
+def _real_corpus() -> dict[str, Any]:
+    source = checker.FIXTURES_DIR / checker.ADAPTER_CONFORMANCE_CORPUS
+    document: dict[str, Any] = json.loads(source.read_text(encoding="utf-8"))
+    return document
+
+
+@pytest.mark.parametrize("path", CORPUS_CONSUMED_FIELDS, ids=[".".join(p) for p in CORPUS_CONSUMED_FIELDS])
+@pytest.mark.parametrize("shape", HOSTILE_SHAPES, ids=[repr(s) for s in HOSTILE_SHAPES])
+@pytest.mark.parametrize("case_index", [0, -1], ids=["first-case", "last-case"])
+def test_the_corpus_checker_is_total_over_hostile_shapes(
+    path: tuple[str, ...],
+    shape: Any,
+    case_index: int,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No consumed field may crash the checker, whatever a corpus file contains.
+
+    The first and last cases are both driven because they differ in kind: the
+    corpus opens with a success exchange and ends with an error one, and several
+    rules only apply to one of the two.
+    """
+    document = _real_corpus()
+    node: Any = document["cases"][case_index]
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = shape
+
+    monkeypatch.setattr(checker, "FIXTURES_DIR", _corpus_with(document, tmp_path))
+    check = cast("Check", checker.check_adapter_conformance_corpus)
+    findings = check()  # must not raise, whatever the shape
+
+    if not _contents_are_unjudged(path, shape):
+        assert findings, f"{'.'.join(path)} = {shape!r} was accepted in silence"
+        assert all(isinstance(finding, str) and finding for finding in findings)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (lambda c: c.__setitem__("operation", ["memory.get"]), "non-blank string"),
+        (lambda c: c.__setitem__("operation", {"name": "memory.get"}), "non-blank string"),
+        (lambda c: c.__setitem__("id", ["x"]), "non-blank string"),
+        (lambda c: c.__setitem__("request", [1, 2]), "must be an object"),
+        (lambda c: c.__setitem__("expect", ["success"]), "must be an object"),
+    ],
+    ids=["operation-array", "operation-object", "id-array", "request-array", "expect-array"],
+)
+def test_the_five_originally_reported_hostile_shapes_stay_reported(
+    mutate: Callable[[dict[str, Any]], None],
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The exact shapes that once crashed the checker or passed unnoticed.
+
+    Two of these raised `TypeError: unhashable type` and three produced no
+    finding at all. They are pinned individually so a regression names the shape
+    rather than showing up as one row of a sweep.
+    """
+    document = _real_corpus()
+    mutate(document["cases"][0])
+    monkeypatch.setattr(checker, "FIXTURES_DIR", _corpus_with(document, tmp_path))
+    findings = cast("Check", checker.check_adapter_conformance_corpus)()
+    assert any(expected in finding for finding in findings), findings
+
+
+@pytest.mark.parametrize(
+    "shape",
+    # Not an object with a non-string key: JSON has no such thing, and
+    # `json.dumps` would quietly render it as one that is.
+    [["not", "a", "case"], "a-case-id", 7, None, True],
+    ids=["array", "string", "int", "null", "bool"],
+)
+def test_a_case_that_is_not_an_object_is_reported(
+    shape: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The whole-case type guard, which no test observed.
+
+    Every hostile-shape probe replaced a *field* of a case, so the guard on the
+    case itself ran on every corpus and was never asked a question: deleting it
+    left the suite green. Without it the checker reaches for `raw.get("id")` on
+    whatever arrives.
+    """
+    document = _real_corpus()
+    document["cases"][0] = shape
+    monkeypatch.setattr(checker, "FIXTURES_DIR", _corpus_with(document, tmp_path))
+    findings = cast("Check", checker.check_adapter_conformance_corpus)()
+    assert any("cases[0]: must be an object" in finding for finding in findings), findings

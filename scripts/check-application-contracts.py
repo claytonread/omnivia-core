@@ -63,6 +63,23 @@ GENERATOR_SCRIPT = REPO_ROOT / "scripts" / "generate-application-contracts.py"
 OPERATION_CATALOGUE_FIXTURE = (
     REPO_ROOT / "tests" / "contracts" / "fixtures" / "operation-catalogue-v1.json"
 )
+ADAPTER_CONFORMANCE_CORPUS = "application-wire-adapter-conformance-v1.json"
+
+#: Packaged fixture files that are deliberately *not* canonical example wire
+#: documents, and so are not governed by ``fixtures/manifest.json``.
+#:
+#: The manifest describes one wire envelope per entry -- which envelope, which
+#: response branch, whether it is schema-valid, which semantic expectation it
+#: carries. The adapter conformance corpus is a different kind of artifact: a
+#: transcript of many recorded exchanges, with no single envelope, branch, or
+#: semantic of its own. Registering it there would mean answering those questions
+#: about a document they do not apply to. It ships in the same directory because
+#: every adapter must be able to read it from an installed wheel, and it is
+#: governed instead by ``check_adapter_conformance_corpus`` below -- so it is
+#: checked as strictly as any manifest entry, just against the right rules.
+_NON_WIRE_FIXTURE_FILES: frozenset[str] = frozenset(
+    {"manifest.json", ADAPTER_CONFORMANCE_CORPUS}
+)
 
 SOURCE_SCHEMAS: tuple[str, ...] = (
     "common",
@@ -441,7 +458,9 @@ def check_fixture_manifest_is_complete() -> list[str]:
             findings.append(f"{manifest_path}: listed fixture file is missing: {file_name}")
 
     on_disk = {
-        path.name for path in FIXTURES_DIR.glob("*.json") if path.name != "manifest.json"
+        path.name
+        for path in FIXTURES_DIR.glob("*.json")
+        if path.name not in _NON_WIRE_FIXTURE_FILES
     }
     orphaned = sorted(on_disk - listed_files)
     if orphaned:
@@ -1601,6 +1620,312 @@ def check_operation_catalogue_fixture_matches() -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Adapter conformance corpus checks
+# --------------------------------------------------------------------------
+
+_CORPUS_FORMAT = "omnivia.adapter-conformance.v1"
+#: The frozen A2.4 replay classifications a corpus case may declare.
+_CORPUS_IDEMPOTENCY_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {"replay", "idempotency_conflict", "distinct"}
+)
+
+
+def _corpus_document() -> tuple[dict[str, Any], list[str]]:
+    path = FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS
+    if not path.is_file():
+        return {}, [f"{path}: missing adapter conformance corpus"]
+    with path.open(encoding="utf-8") as handle:
+        document = json.load(handle)
+    if not isinstance(document, dict):
+        return {}, [f"{path}: expected a JSON object at the document root"]
+    if document.get("format") != _CORPUS_FORMAT:
+        return {}, [
+            f"{path}: 'format' must be {_CORPUS_FORMAT!r}, found {document.get('format')!r}"
+        ]
+    cases = document.get("cases")
+    if not isinstance(cases, list):
+        return {}, [f"{path}: 'cases' must be an array"]
+    return document, []
+
+
+class CorpusCase(NamedTuple):
+    """One corpus case, after every consumed field has been type-checked.
+
+    Coverage analysis runs over these rather than over raw JSON. A checker that
+    reached into unvalidated documents could be crashed by a hostile shape -- an
+    ``operation`` given as an array is unhashable, and a set membership test on it
+    raises ``TypeError`` rather than reporting a finding -- and a gate that can be
+    crashed is a gate that can be bypassed.
+    """
+
+    id: str
+    operation: str
+    request_id: str
+    branch: str
+    error_code: str | None
+    replay_of: str | None
+    idempotency: str | None
+    page_of: str | None
+
+
+def _corpus_str(
+    container: dict[str, Any], key: str, label: str, findings: list[str], *, required: bool = True
+) -> str | None:
+    """Read one string field, reporting rather than raising on any other shape."""
+    if key not in container:
+        if required:
+            findings.append(f"{label}: missing required field {key!r}")
+        return None
+    value = container[key]
+    if not isinstance(value, str) or isinstance(value, bool) or not value.strip():
+        findings.append(
+            f"{label}.{key}: must be a non-empty, non-blank string, found {value!r}"
+        )
+        return None
+    return value
+
+
+def _validated_corpus_cases(
+    cases: list[Any], path: Path
+) -> tuple[list[CorpusCase], list[str]]:
+    """Type-check every case, returning the well-formed ones and every finding.
+
+    Every case is reported on, not just the first bad one: a corpus with three
+    malformed entries should say so once rather than across three runs.
+    """
+    findings: list[str] = []
+    validated: list[CorpusCase] = []
+
+    for index, raw in enumerate(cases):
+        label = f"{path}: cases[{index}]"
+        if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
+            findings.append(f"{label}: must be an object, found {type(raw).__name__}")
+            continue
+
+        case_id = _corpus_str(raw, "id", label, findings)
+        label = f"{path}: case {case_id!r}" if case_id else label
+        operation = _corpus_str(raw, "operation", label, findings)
+        _corpus_str(raw, "description", label, findings)
+
+        request_id: str | None = None
+        for key in ("request", "response"):
+            envelope = raw.get(key)
+            if not isinstance(envelope, dict) or not all(
+                isinstance(name, str) for name in envelope
+            ):
+                findings.append(
+                    f"{label}.{key}: must be an object, found {type(raw.get(key)).__name__}"
+                )
+                continue
+            metadata = envelope.get("metadata")
+            if not isinstance(metadata, dict) or not all(
+                isinstance(name, str) for name in metadata
+            ):
+                findings.append(
+                    f"{label}.{key}.metadata: must be an object, found "
+                    f"{type(metadata).__name__}"
+                )
+                continue
+            if key == "request":
+                request_id = _corpus_str(metadata, "request_id", f"{label}.request.metadata",
+                                         findings)
+
+        expect = raw.get("expect")
+        if not isinstance(expect, dict) or not all(isinstance(name, str) for name in expect):
+            findings.append(
+                f"{label}.expect: must be an object, found {type(expect).__name__}"
+            )
+            continue
+        branch = _corpus_str(expect, "branch", f"{label}.expect", findings)
+        if branch is not None and branch not in {"success", "error"}:
+            findings.append(f"{label}.expect.branch: must be 'success' or 'error', found {branch!r}")
+            branch = None
+        optionals: dict[str, str | None] = {}
+        for key in ("error_code", "retry_class", "replay_of", "idempotency", "page_of"):
+            optionals[key] = (
+                None if key not in expect
+                else _corpus_str(expect, key, f"{label}.expect", findings)
+            )
+
+        idempotency = optionals["idempotency"]
+        if idempotency is not None and idempotency not in _CORPUS_IDEMPOTENCY_CLASSIFICATIONS:
+            findings.append(
+                f"{label}.expect.idempotency: must be one of "
+                f"{sorted(_CORPUS_IDEMPOTENCY_CLASSIFICATIONS)}, found {idempotency!r}"
+            )
+            optionals["idempotency"] = None
+        if (optionals["replay_of"] is None) != (optionals["idempotency"] is None):
+            findings.append(
+                f"{label}.expect: 'replay_of' and 'idempotency' state one fact together and "
+                "must both be present or both absent"
+            )
+        if branch == "success" and (
+            optionals["error_code"] is not None or optionals["retry_class"] is not None
+        ):
+            findings.append(
+                f"{label}.expect: a success case must not declare an error code or retry class"
+            )
+        if branch == "error" and optionals["error_code"] is None:
+            findings.append(f"{label}.expect: an error case must declare its error code")
+
+        trusted = raw.get("trusted", {})
+        if not isinstance(trusted, dict) or not all(isinstance(name, str) for name in trusted):
+            findings.append(
+                f"{label}.trusted: must be an object, found {type(trusted).__name__}"
+            )
+
+        if None in (case_id, operation, request_id, branch):
+            continue
+        assert case_id is not None and operation is not None
+        assert request_id is not None and branch is not None
+        validated.append(
+            CorpusCase(
+                id=case_id,
+                operation=operation,
+                request_id=request_id,
+                branch=branch,
+                error_code=optionals["error_code"],
+                replay_of=optionals["replay_of"],
+                idempotency=optionals["idempotency"],
+                page_of=optionals["page_of"],
+            )
+        )
+    return validated, findings
+
+
+def check_adapter_conformance_corpus() -> list[str]:
+    """The corpus must actually cover what A2.6 requires it to cover.
+
+    Coverage is asserted against the *catalogue*, not against however the corpus
+    happened to be written. A corpus that quietly stopped exercising an operation,
+    an error code, or a replay pair would still let every adapter pass -- and the
+    pass would mean less than it appeared to, which is the failure mode a shared
+    conformance corpus exists to prevent.
+
+    Shape is validated before coverage, and every field this reads is
+    type-checked first: the check has to be total over any JSON a corpus file
+    could contain, because a crash is not a finding.
+    """
+    document, findings = _corpus_document()
+    if findings:
+        return findings
+
+    path = FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS
+    cases, findings = _validated_corpus_cases(
+        cast("list[Any]", document["cases"]), path
+    )
+    catalogue = FROZEN_OPERATIONS
+
+    ids = [case.id for case in cases]
+    duplicate_ids = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicate_ids:
+        findings.append(f"{path}: duplicate case id(s) {duplicate_ids}")
+
+    request_ids = [case.request_id for case in cases]
+    duplicates = sorted({r for r in request_ids if request_ids.count(r) > 1})
+    if duplicates:
+        findings.append(
+            f"{path}: duplicate request id(s) {duplicates} -- an adapter keyed by "
+            "request id could not tell the exchanges apart"
+        )
+
+    unknown = sorted({case.operation for case in cases if case.operation not in catalogue})
+    if unknown:
+        findings.append(f"{path}: case(s) name non-catalogue operation(s) {unknown}")
+
+    by_id = {case.id: case for case in cases}
+    for case in cases:
+        for link, target_id in (("replay_of", case.replay_of), ("page_of", case.page_of)):
+            if target_id is None:
+                continue
+            target = by_id.get(target_id)
+            if target is None:
+                findings.append(f"{path}: case {case.id!r} {link} names unknown case {target_id!r}")
+            elif target.operation != case.operation:
+                findings.append(
+                    f"{path}: case {case.id!r} {link} names {target_id!r}, which is a "
+                    f"{target.operation!r} exchange"
+                )
+
+    known = {case.operation for case in cases if case.operation in catalogue}
+    successes = {
+        case.operation
+        for case in cases
+        if case.branch == "success" and case.replay_of is None and case.page_of is None
+    }
+    missing_successes = sorted(set(catalogue) - successes)
+    if missing_successes:
+        findings.append(f"{path}: no primary success case for operation(s) {missing_successes}")
+
+    mutations = sorted(n for n, f in catalogue.items() if f.side_effect != "none")
+    # Exact triples, not label counts: a replay must be a success answering a
+    # primary case, and a conflict must be an error carrying the conflict code.
+    replayed = sorted({
+        case.operation for case in cases
+        if case.idempotency == "replay"
+        and case.branch == "success"
+        and case.replay_of is not None
+    })
+    conflicted = sorted({
+        case.operation for case in cases
+        if case.idempotency == "idempotency_conflict"
+        and case.branch == "error"
+        and case.error_code == "idempotency_conflict"
+        and case.replay_of is not None
+    })
+    if replayed != mutations:
+        findings.append(
+            f"{path}: every mutation needs an honest-replay case answering a primary "
+            f"exchange on the success branch; expected {mutations}, found {replayed}"
+        )
+    if conflicted != mutations:
+        findings.append(
+            f"{path}: every mutation needs an idempotency-conflict case refused on the "
+            f"error branch with 'idempotency_conflict'; expected {mutations}, found "
+            f"{conflicted}"
+        )
+
+    paginated = sorted(n for n, f in catalogue.items() if f.paginated)
+    second_pages = sorted({
+        case.operation for case in cases if case.page_of is not None and case.branch == "success"
+    })
+    if second_pages != paginated:
+        findings.append(
+            f"{path}: every paginated operation needs a two-page scenario; expected "
+            f"{paginated}, found {second_pages}"
+        )
+
+    covered_errors: dict[str, str] = {}
+    for case in cases:
+        if case.error_code is not None and case.branch == "error":
+            covered_errors.setdefault(case.error_code, case.operation)
+    error_catalogue = _load_schema("errors").get("x-omnivia-error-catalogue")
+    expected_codes = sorted(error_catalogue) if isinstance(error_catalogue, dict) else []
+    uncovered = sorted(set(expected_codes) - set(covered_errors))
+    if uncovered:
+        findings.append(f"{path}: no case exercises error code(s) {uncovered}")
+
+    for code, operation in sorted(covered_errors.items()):
+        frozen = catalogue.get(operation)
+        if frozen is not None and code not in ERROR_PROFILES[frozen.errors]:
+            findings.append(
+                f"{path}: error {code!r} is exercised on {operation!r}, which the catalogue "
+                "does not permit to raise it"
+            )
+
+    # The one negative the corpus must never state, restated where it is cheap to check.
+    for case in cases:
+        if case.operation in {"job.cancel", "job.retry"} and case.error_code == "conflict":
+            findings.append(
+                f"{path}: case {case.id!r} has {case.operation!r} failing with 'conflict'; "
+                "a state-based refusal is a successful disposition"
+            )
+    if not known:
+        findings.append(f"{path}: the corpus names no catalogue operation at all")
+    return findings
+
+
+# --------------------------------------------------------------------------
 # Dependency-boundary checks
 # --------------------------------------------------------------------------
 
@@ -1966,6 +2291,7 @@ def run_checks() -> list[str]:
     findings += check_operation_catalogue_postures()
     findings += check_operation_catalogue_errors()
     findings += check_operation_catalogue_fixture_matches()
+    findings += check_adapter_conformance_corpus()
     findings += check_contract_package_has_no_forbidden_imports()
     findings += check_generated_artifacts_match_schemas()
     return findings
