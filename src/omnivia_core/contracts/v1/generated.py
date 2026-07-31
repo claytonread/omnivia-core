@@ -109,6 +109,7 @@ __all__ = [
     "MEMORY_SEARCH_ORDER_PATTERN",
     "OPAQUE_TOKEN_PATTERN",
     "OPEN_CODE_PATTERN",
+    "OPERATION_CATALOGUE",
     "OPERATION_COMPATIBILITY_STATE_PATTERN",
     "OPERATION_COMPLETION_MODE_PATTERN",
     "OPERATION_NAME_PATTERN",
@@ -747,8 +748,11 @@ ProjectionVersion: TypeAlias = str
 """An opaque per-projection version marker used to reason about read staleness."""
 
 JsonObject: TypeAlias = Mapping[str, Any]
-"""An opaque JSON object. The application contract carries domain payloads without inspecting them;
-per-operation payload schemas are out of scope for v1 foundations.
+"""An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a
+statement about the envelope rather than about the payload: an operation's `input` and `result`
+are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-
+catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that
+binding is a separate step from decoding the envelope carrying it.
 """
 
 PageLimit: TypeAlias = int
@@ -805,8 +809,13 @@ are admitted.
 """
 
 OperationName: TypeAlias = str
-"""Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue is
-out of scope for v1 foundations; only the name is contractual here.
+"""Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what
+each name binds to -- its input and result schemas, and its scope, capability, completion,
+pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published
+per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits
+any well-formed name, including ones no catalogue entry defines: whether a name is a v1
+application operation is a semantic question (see
+`omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.
 """
 
 ErrorCode: TypeAlias = str
@@ -1716,8 +1725,11 @@ class PageMetadata:
 
 @dataclass(frozen=True, slots=True)
 class JobReference:
-    """Reference to asynchronous work started by an operation. Job lifecycle, polling, and
-    cancellation are later phases; v1 carries the identifier only.
+    """Reference to asynchronous work started by an operation. The reference carries the
+    identifier only, deliberately: the job's own lifecycle -- its states, progress, attempts,
+    events, cancellation and retry -- is published separately in `jobs.schema.json`, and is
+    read and controlled through the `job.get`, `job.events`, `job.cancel` and `job.retry`
+    operations rather than by widening the handle a response hands back.
     """
 
     job_id: OpaqueToken
@@ -5545,11 +5557,12 @@ class MemorySearchInput:
 class OperationMetadata:
     """The full declared contract characteristics of one operation: its scope, payload schemas,
     required capability, side effects, and
-    job/pagination/idempotency/precondition/audit/error posture. This is the complete shape a
-    future per-operation catalogue entry will carry, so publishing that catalogue is additive
-    rather than requiring later required-field breaks. Binding this to a concrete
-    request/result payload and publishing a catalogue of operations is out of scope for this
-    document.
+    job/pagination/idempotency/precondition/audit/error posture. Every entry of this
+    document's `x-omnivia-operation-catalogue` is exactly one of these, so the catalogue is
+    metadata a caller can read rather than behaviour it has to discover. `allowed_errors` is
+    materialized per operation: reusable error postures exist in the specification that froze
+    this catalogue, but never on the wire, so no decoder has to resolve a profile name to
+    know what an operation may fail with.
     """
 
     name: OperationName
@@ -6477,10 +6490,12 @@ class JobTerminalSuccess:
     frozen result shape `result` carries, so a caller reads a success payload by matching a
     declared kind instead of guessing from the job kind. `result` stays an opaque JSON object
     in this document because JSON Schema cannot bind it to a per-kind shape within the subset
-    the generator supports; the binding is a semantic rule
-    (`omnivia_core.contracts.v1.semantics_jobs`) until the A2.5 operation catalogue publishes
-    `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is
-    `import_completion`, whose `result` is an `ImportCompletionResult`.
+    the generator supports; `result_kind` and `semantics_jobs`
+    (`omnivia_core.contracts.v1.semantics_jobs`) still validate the frozen result-kind
+    mapping. The operation catalogue additionally binds a job-starting operation to its
+    terminal result schema through `OperationJobMetadata.terminal_result_schema_ref`. The one
+    kind frozen in v1 is `import_completion`: `import.start` binds it to
+    `ImportCompletionResult`.
     """
 
     identity: JobIdentity
@@ -9075,3 +9090,1078 @@ class GraphTraversalResult:
             ordering_basis=field_ordering_basis,
             page=field_page,
         )
+
+
+# --- operation catalogue ---------------------------------------------------
+
+OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
+    OperationMetadata(
+        name="candidate.approve",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateApproveInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateApproveResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.govern",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=True,
+            required=True,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="candidate.reject",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateRejectInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/CandidateRejectResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.govern",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=True,
+            required=True,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="context_pack.build",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/context-pack.schema.json"
+            "#/$defs/ContextPackBuildInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/conte"
+            "xt-pack.schema.json#/$defs/ContextPackBuildResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="context_pack.build",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "token_limit_exceeded",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="evidence.search",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceSearchInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/evidence.schema.json"
+            "#/$defs/EvidenceSearchResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="evidence.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="graph.traverse",
+        scope=OperationScope(
+            required_scopes=("graph:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/graph.schema.json"
+            "#/$defs/GraphTraversalInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/graph.schema.json"
+            "#/$defs/GraphTraversalResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="graph.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="import.start",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/ImportStartInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/ImportStartResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="ingestion.import",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(
+            completion_mode="always_returns_job",
+            job_kind="ingestion.import",
+            terminal_result_schema_ref=(
+                "https://contracts.omnivia.dev/application/v1/j"
+                "obs.schema.json#/$defs/ImportCompletionResult"
+            ),
+        ),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="job.cancel",
+        scope=OperationScope(
+            required_scopes=("job:control",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobCancelInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobCancelResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="job.control",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="job.events",
+        scope=OperationScope(
+            required_scopes=("job:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobEventsInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobEventsResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="job.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="job.get",
+        scope=OperationScope(
+            required_scopes=("job:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="job.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="job.retry",
+        scope=OperationScope(
+            required_scopes=("job:control",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobRetryInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/jobs.schema.json"
+            "#/$defs/JobRetryResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="job.control",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.propose",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeProposeInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeProposeResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.govern",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=True,
+            required=True,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="knowledge.search",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeSearchInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/KnowledgeSearchResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="memory.create",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryCreateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryCreateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="memory.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="memory.get",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryGetInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryGetResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="memory.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="memory.list",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryListInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemoryListResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="memory.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="memory.search",
+        scope=OperationScope(
+            required_scopes=("memory:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemorySearchInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/memory.schema.json"
+            "#/$defs/MemorySearchResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="memory.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "projection_unavailable",
+            "rate_limited",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="record.supersede",
+        scope=OperationScope(
+            required_scopes=("memory:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/RecordSupersedeInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/knowledge.schema.json"
+            "#/$defs/RecordSupersedeResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="knowledge.govern",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=True,
+            required=True,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workspace.create",
+        scope=OperationScope(
+            required_scopes=("workspace:write",),
+            side_effect="create",
+            scope_kind="installation",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceCreateInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceCreateResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workspace.write",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "bootstrap_in_progress",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+        ),
+    ),
+    OperationMetadata(
+        name="workspace.inspect",
+        scope=OperationScope(
+            required_scopes=("workspace:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceInspectInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceInspectResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workspace.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workspace.list",
+        scope=OperationScope(
+            required_scopes=("workspace:read",),
+            side_effect="none",
+            scope_kind="installation",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceListInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/workspace.schema.json"
+            "#/$defs/WorkspaceListResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workspace.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=True, max_page_size=1000),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "bootstrap_in_progress",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "rate_limited",
+            "upgrade_required",
+        ),
+    ),
+)
+"""The canonical v1 application operation catalogue, in the canonical order. Generated from
+`x-omnivia-operation-catalogue`, so this is contract metadata a caller can read, not a dispatch
+table: nothing here routes, authorizes, or executes anything.
+"""

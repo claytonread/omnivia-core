@@ -91,3 +91,25 @@ def test_contract_semantic_error_is_a_value_error() -> None:
 
 def test_retry_class_mismatch_error_is_a_contract_decode_error() -> None:
     assert issubclass(codec.RetryClassMismatchError, generated.ContractDecodeError)
+
+
+def test_v1_exposes_the_operation_semantics_submodule_and_its_functions() -> None:
+    """The A2.5 catalogue helpers are part of the supported surface.
+
+    `semantics_operations` is not covered by the generated/codec/compatibility
+    re-export loops above -- those iterate a module's own `__all__`, and the
+    semantics modules are re-exported name by name -- so the three public
+    functions and the submodule itself are pinned here explicitly.
+    """
+    from omnivia_core.contracts.v1 import semantics_operations
+
+    assert v1.semantics_operations is semantics_operations
+    assert "semantics_operations" in v1.__all__
+    for name in semantics_operations.__all__:
+        assert name in v1.__all__, f"v1.__all__ is missing {name!r}"
+        assert getattr(v1, name) is getattr(semantics_operations, name)
+
+
+def test_the_operation_catalogue_is_reachable_from_the_v1_barrel() -> None:
+    assert "OPERATION_CATALOGUE" in v1.__all__
+    assert v1.OPERATION_CATALOGUE is generated.OPERATION_CATALOGUE

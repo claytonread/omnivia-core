@@ -81,6 +81,10 @@ REGISTRY_SCHEMA = "application-v1"
 #: The opaque JSON object definition, handled specially by both emitters.
 JSON_OBJECT_DEFINITION = "JsonObject"
 
+#: The canonical operation catalogue, and the definition every entry materializes.
+OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
+OPERATION_METADATA_DEFINITION = "OperationMetadata"
+
 _REF_RE = re.compile(rf"^{re.escape(BASE_URI)}(?P<file>[a-z0-9-]+)\.schema\.json#/\$defs/(?P<name>\w+)$")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<!^)(?=[A-Z])")
 
@@ -142,6 +146,24 @@ class Definition:
 
 
 @dataclass(frozen=True)
+class CatalogueValue:
+    """One validated value from the canonical operation catalogue annotation.
+
+    The annotation is ordinary JSON, so it has to be checked against the very
+    definitions it claims to materialize before either emitter renders it.
+    Parsing it into this shape once means both emitters walk the same validated
+    tree and reject the same drift, rather than each re-deciding what a
+    catalogue entry is allowed to contain.
+    """
+
+    kind: str
+    name: str | None = None
+    scalar: str | int | bool | None = None
+    items: tuple[CatalogueValue, ...] = ()
+    fields: tuple[tuple[str, CatalogueValue], ...] = ()
+
+
+@dataclass(frozen=True)
 class Contract:
     """Everything the emitters need, derived from the checked-in schemas."""
 
@@ -152,6 +174,7 @@ class Contract:
     error_catalogue: tuple[tuple[str, str], ...]
     compatibility_statuses: tuple[str, ...]
     upgrade_states: tuple[str, ...]
+    operation_catalogue: tuple[CatalogueValue, ...]
 
 
 # --------------------------------------------------------------------------
@@ -428,6 +451,124 @@ def topological_order(definitions: list[Definition]) -> tuple[Definition, ...]:
     return tuple(ordered)
 
 
+def parse_catalogue_value(
+    type_ref: TypeRef, value: object, by_name: dict[str, Definition], location: str
+) -> CatalogueValue:
+    """Validate one annotation value against the type the contract declares for it.
+
+    The catalogue annotation is the canonical source, but it is hand-authored
+    JSON sitting in a schema document that does not validate it. Walking it
+    against the definitions it materializes is what makes emission safe: a
+    field the contract does not declare, a missing required field, or a value
+    of the wrong JSON type fails here rather than becoming wrong generated
+    code.
+    """
+    kind = type_ref.kind
+    if kind == "definition":
+        assert type_ref.name is not None
+        definition = by_name[type_ref.name]
+        if definition.kind == "object":
+            return _parse_catalogue_object(definition, value, by_name, location)
+        if definition.kind not in {"string", "integer"}:
+            raise UnsupportedSchemaError(
+                f"{location}: a catalogue value cannot be a {definition.kind!r} definition"
+            )
+        kind = definition.kind
+
+    if kind == "string":
+        if not isinstance(value, str):
+            raise UnsupportedSchemaError(
+                f"{location}: expected a string, got {type(value).__name__}"
+            )
+        return CatalogueValue("string", scalar=value)
+    if kind == "boolean":
+        if not isinstance(value, bool):
+            raise UnsupportedSchemaError(
+                f"{location}: expected a boolean, got {type(value).__name__}"
+            )
+        return CatalogueValue("boolean", scalar=value)
+    if kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise UnsupportedSchemaError(
+                f"{location}: expected an integer, got {type(value).__name__}"
+            )
+        return CatalogueValue("integer", scalar=value)
+    if kind == "array":
+        if not isinstance(value, list):
+            raise UnsupportedSchemaError(
+                f"{location}: expected an array, got {type(value).__name__}"
+            )
+        return CatalogueValue(
+            "array",
+            items=tuple(
+                parse_catalogue_value(type_ref.inner, item, by_name, f"{location}[{index}]")
+                for index, item in enumerate(value)
+            ),
+        )
+    raise UnsupportedSchemaError(f"{location}: a catalogue value cannot be of kind {kind!r}")
+
+
+def _parse_catalogue_object(
+    definition: Definition, value: object, by_name: dict[str, Definition], location: str
+) -> CatalogueValue:
+    """Validate one annotation object against the object definition it materializes."""
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise UnsupportedSchemaError(
+            f"{location}: expected a {definition.name} object, got {type(value).__name__}"
+        )
+    unknown = sorted(set(value) - {prop.name for prop in definition.properties})
+    if unknown:
+        raise UnsupportedSchemaError(f"{location}: {definition.name} declares no field(s) {unknown}")
+
+    fields: list[tuple[str, CatalogueValue]] = []
+    for prop in definition.properties:
+        if prop.name not in value:
+            if prop.required:
+                raise UnsupportedSchemaError(
+                    f"{location}: {definition.name} is missing required field {prop.name!r}"
+                )
+            continue
+        fields.append(
+            (
+                prop.name,
+                parse_catalogue_value(
+                    prop.type, value[prop.name], by_name, f"{location}.{prop.name}"
+                ),
+            )
+        )
+    return CatalogueValue("object", name=definition.name, fields=tuple(fields))
+
+
+def parse_operation_catalogue(
+    document: dict[str, Any], by_name: dict[str, Definition]
+) -> tuple[CatalogueValue, ...]:
+    """Parse the canonical ``x-omnivia-operation-catalogue`` annotation.
+
+    Catalogue order is the annotation's own order and is preserved verbatim, so
+    the generated artifacts state the same sequence the canonical document
+    does. Whether that order is the frozen sorted one, and whether the entries
+    say the right things, is the conformance gate's job
+    (``scripts/check-application-contracts.py``); this only has to make sure
+    what it emits is a faithful, well typed rendering of what is there.
+    """
+    entries = document.get(OPERATION_CATALOGUE_ANNOTATION)
+    if not isinstance(entries, list):
+        raise UnsupportedSchemaError(
+            f"operations.schema.json: {OPERATION_CATALOGUE_ANNOTATION!r} must be an array"
+        )
+    if OPERATION_METADATA_DEFINITION not in by_name:
+        raise UnsupportedSchemaError(
+            f"the contract must define {OPERATION_METADATA_DEFINITION!r} to carry a catalogue"
+        )
+    metadata_ref = TypeRef("definition", name=OPERATION_METADATA_DEFINITION)
+    return tuple(
+        parse_catalogue_value(
+            metadata_ref, entry, by_name, f"{OPERATION_CATALOGUE_ANNOTATION}[{index}]"
+        )
+        for index, entry in enumerate(entries)
+    )
+
+
 def build_contract() -> Contract:
     """Read the canonical schemas and build the emitter-facing model."""
     definitions: list[Definition] = []
@@ -466,6 +607,8 @@ def build_contract() -> Contract:
         for definition in definitions
     ]
 
+    operation_catalogue = parse_operation_catalogue(load_schema("operations"), by_name)
+
     errors = load_schema("errors")
     compatibility = load_schema("compatibility")
     registry = load_schema(REGISTRY_SCHEMA)
@@ -497,6 +640,7 @@ def build_contract() -> Contract:
         error_catalogue=catalogue,
         compatibility_statuses=_string_list(compatibility, "x-omnivia-compatibility-statuses"),
         upgrade_states=_string_list(compatibility, "x-omnivia-upgrade-states"),
+        operation_catalogue=operation_catalogue,
     )
 
 
@@ -910,6 +1054,103 @@ def emit_python_dataclass(definition: Definition, by_name: dict[str, Definition]
     return lines
 
 
+def python_string_lines(value: str, indent: int) -> list[str]:
+    """Render a string literal, splitting to implicit concatenation when it is too long.
+
+    A schema reference is split at its ``#`` fragment boundary when both halves
+    fit, so the emitted document and the definition it names each stay readable
+    on their own line. Anything else falls back to fixed-width pieces.
+    """
+    single = json.dumps(value)
+    if indent + len(single) <= MAX_LINE_LENGTH:
+        return [single]
+    document, separator, fragment = value.partition("#")
+    pieces = (document, f"{separator}{fragment}")
+    if not separator or any(indent + 4 + len(json.dumps(piece)) > MAX_LINE_LENGTH for piece in pieces):
+        pieces = chunk_string(value, 72)
+    return ["(", *[f"    {json.dumps(piece)}" for piece in pieces], ")"]
+
+
+def python_catalogue_lines(value: CatalogueValue, indent: int) -> list[str]:
+    """Render one validated catalogue value as Python source lines.
+
+    Line 0 opens the expression at column ``indent``; every later line is
+    already indented relative to it. Collections render on one line when the
+    whole thing fits the shared line budget and one element per line otherwise,
+    which is the same rule :func:`call_lines` applies and keeps the output
+    stable rather than dependent on how deeply a value happens to nest.
+    """
+    if value.kind == "boolean":
+        return ["True" if value.scalar else "False"]
+    if value.kind == "integer":
+        return [str(value.scalar)]
+    if value.kind == "string":
+        assert isinstance(value.scalar, str)
+        return python_string_lines(value.scalar, indent)
+
+    if value.kind == "array":
+        if not value.items:
+            return ["()"]
+        rendered = [python_catalogue_lines(item, indent + 4) for item in value.items]
+        if all(len(lines) == 1 for lines in rendered):
+            inner = ", ".join(lines[0] for lines in rendered)
+            # A one-element tuple needs its trailing comma to stay a tuple.
+            single = f"({inner},)" if len(rendered) == 1 else f"({inner})"
+            if indent + len(single) <= MAX_LINE_LENGTH:
+                return [single]
+        body: list[str] = []
+        for lines in rendered:
+            body += [f"    {lines[0]}", *[f"    {line}" for line in lines[1:-1]]]
+            if len(lines) > 1:
+                body.append(f"    {lines[-1]},")
+            else:
+                body[-1] += ","
+        return ["(", *body, ")"]
+
+    assert value.name is not None
+    rendered_fields = [
+        (name, python_catalogue_lines(item, indent + 4 + len(name) + 1))
+        for name, item in value.fields
+    ]
+    if all(len(lines) == 1 for _, lines in rendered_fields):
+        inner = ", ".join(f"{name}={lines[0]}" for name, lines in rendered_fields)
+        single = f"{value.name}({inner})"
+        if indent + len(single) <= MAX_LINE_LENGTH:
+            return [single]
+    field_lines: list[str] = []
+    for name, lines in rendered_fields:
+        field_lines.append(f"    {name}={lines[0]}")
+        field_lines += [f"    {line}" for line in lines[1:-1]]
+        if len(lines) > 1:
+            field_lines.append(f"    {lines[-1]},")
+        else:
+            field_lines[-1] += ","
+    return [f"{value.name}(", *field_lines, ")"]
+
+
+def emit_python_catalogue(contract: Contract) -> list[str]:
+    """Emit the generated operation catalogue constant."""
+    lines = [
+        f"OPERATION_CATALOGUE: Final[tuple[{OPERATION_METADATA_DEFINITION}, ...]] = ("
+    ]
+    for entry in contract.operation_catalogue:
+        rendered = python_catalogue_lines(entry, 4)
+        lines += [f"    {rendered[0]}", *[f"    {line}" for line in rendered[1:-1]]]
+        if len(rendered) > 1:
+            lines.append(f"    {rendered[-1]},")
+        else:
+            lines[-1] += ","
+    lines.append(")")
+    lines += docstring(
+        "The canonical v1 application operation catalogue, in the canonical order. "
+        "Generated from `x-omnivia-operation-catalogue`, so this is contract metadata "
+        "a caller can read, not a dispatch table: nothing here routes, authorizes, or "
+        "executes anything.",
+        "",
+    )
+    return lines
+
+
 def emit_python_union(definition: Definition) -> list[str]:
     """Emit a union alias plus its discriminating codec functions."""
     alias = " | ".join(definition.members)
@@ -1127,6 +1368,13 @@ def emit_python(contract: Contract) -> str:
             body.append("")
             body.append("")
 
+    # The catalogue instantiates the generated dataclasses, so it can only be
+    # emitted once every one of them exists.
+    body.append("# --- operation catalogue ---------------------------------------------------")
+    body.append("")
+    body += emit_python_catalogue(contract)
+    exported.append("OPERATION_CATALOGUE")
+
     lines.append("__all__ = [")
     for name in sort_all_exports(exported):
         lines.append(f'    "{name}",')
@@ -1165,6 +1413,82 @@ def typescript_doc(description: str, indent: str) -> list[str]:
     """Render a TSDoc block at a fixed indent."""
     wrapped = wrap(description, f"{indent} * ")
     return [f"{indent}/**", *wrapped, f"{indent} */"]
+
+
+def typescript_catalogue_lines(value: CatalogueValue, indent: int) -> list[str]:
+    """Render one validated catalogue value as TypeScript source lines.
+
+    Line 0 opens the expression at column ``indent``; later lines are already
+    indented relative to it, in the two-space style the rest of this module
+    uses. Property names come from the contract's own definitions, which the
+    generator already requires to be valid identifiers in every emitted
+    language, so they never need quoting here.
+    """
+    if value.kind == "boolean":
+        return ["true" if value.scalar else "false"]
+    if value.kind == "integer":
+        return [str(value.scalar)]
+    if value.kind == "string":
+        return [json.dumps(value.scalar)]
+
+    if value.kind == "array":
+        if not value.items:
+            return ["[]"]
+        rendered = [typescript_catalogue_lines(item, indent + 2) for item in value.items]
+        if all(len(lines) == 1 for lines in rendered):
+            single = f"[{', '.join(lines[0] for lines in rendered)}]"
+            if indent + len(single) <= MAX_LINE_LENGTH:
+                return [single]
+        body: list[str] = []
+        for lines in rendered:
+            body += [f"  {lines[0]}", *[f"  {line}" for line in lines[1:-1]]]
+            if len(lines) > 1:
+                body.append(f"  {lines[-1]},")
+            else:
+                body[-1] += ","
+        return ["[", *body, "]"]
+
+    rendered_fields = [
+        (name, typescript_catalogue_lines(item, indent + 2 + len(name) + 2))
+        for name, item in value.fields
+    ]
+    if all(len(lines) == 1 for _, lines in rendered_fields):
+        inner = ", ".join(f"{name}: {lines[0]}" for name, lines in rendered_fields)
+        single = f"{{ {inner} }}"
+        if indent + len(single) <= MAX_LINE_LENGTH:
+            return [single]
+    field_lines: list[str] = []
+    for name, lines in rendered_fields:
+        field_lines.append(f"  {name}: {lines[0]}")
+        field_lines += [f"  {line}" for line in lines[1:-1]]
+        if len(lines) > 1:
+            field_lines.append(f"  {lines[-1]},")
+        else:
+            field_lines[-1] += ","
+    return ["{", *field_lines, "}"]
+
+
+def emit_typescript_catalogue(contract: Contract) -> list[str]:
+    """Emit the generated operation catalogue constant."""
+    lines = typescript_doc(
+        "The canonical v1 application operation catalogue, in the canonical order. "
+        "Generated from `x-omnivia-operation-catalogue`, so this is contract metadata "
+        "a caller can read, not a dispatch table: nothing here routes, authorizes, or "
+        "executes anything.",
+        "",
+    )
+    lines.append(
+        f"export const OPERATION_CATALOGUE: readonly {OPERATION_METADATA_DEFINITION}[] = ["
+    )
+    for entry in contract.operation_catalogue:
+        rendered = typescript_catalogue_lines(entry, 2)
+        lines += [f"  {rendered[0]}", *[f"  {line}" for line in rendered[1:-1]]]
+        if len(rendered) > 1:
+            lines.append(f"  {rendered[-1]},")
+        else:
+            lines[-1] += ","
+    lines.append("] as const;")
+    return lines
 
 
 def emit_typescript(contract: Contract) -> str:
@@ -1300,6 +1624,11 @@ def emit_typescript(contract: Contract) -> str:
     for value in contract.upgrade_states:
         lines.append(f'  "{value}",')
     lines.append("] as const;")
+    lines.append("")
+
+    # The catalogue's values are typed by the interfaces above, so it can only
+    # be emitted once every one of them exists.
+    lines += emit_typescript_catalogue(contract)
 
     while lines and not lines[-1].strip():
         lines.pop()

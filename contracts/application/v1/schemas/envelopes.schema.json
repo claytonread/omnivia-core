@@ -6,7 +6,7 @@
   "$defs": {
     "OperationName": {
       "title": "OperationName",
-      "description": "Dot-namespaced operation identifier such as `memory.get`. The per-operation payload catalogue is out of scope for v1 foundations; only the name is contractual here.",
+      "description": "Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what each name binds to -- its input and result schemas, and its scope, capability, completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits any well-formed name, including ones no catalogue entry defines: whether a name is a v1 application operation is a semantic question (see `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.",
       "type": "string",
       "minLength": 3,
       "maxLength": 128,

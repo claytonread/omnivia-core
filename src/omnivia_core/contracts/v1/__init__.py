@@ -6,8 +6,8 @@ version/capability compatibility semantics, all re-exported from one place so
 a caller does not need to know which submodule a given name lives in. The
 submodules themselves (:mod:`generated`, :mod:`codec`, :mod:`compatibility`,
 :mod:`semantics`, :mod:`semantics_evidence`, :mod:`semantics_jobs`,
-:mod:`semantics_knowledge`) remain importable directly for callers that prefer
-explicit provenance.
+:mod:`semantics_knowledge`, :mod:`semantics_operations`) remain importable
+directly for callers that prefer explicit provenance.
 
 Standard library only. Nothing under ``omnivia_core.contracts.v1`` may depend
 on runtime, storage, HTTP, MCP, CLI, Platform, Dev, or a validation framework.
@@ -24,6 +24,7 @@ from . import (
     semantics_evidence,
     semantics_jobs,
     semantics_knowledge,
+    semantics_operations,
 )
 from .codec import (
     RetryClassMismatchError,
@@ -130,6 +131,7 @@ from .generated import (
     MEMORY_SEARCH_ORDER_PATTERN,
     OPAQUE_TOKEN_PATTERN,
     OPEN_CODE_PATTERN,
+    OPERATION_CATALOGUE,
     OPERATION_COMPATIBILITY_STATE_PATTERN,
     OPERATION_COMPLETION_MODE_PATTERN,
     OPERATION_NAME_PATTERN,
@@ -591,6 +593,11 @@ from .semantics_knowledge import (
     validate_record_supersede_result,
     verify_context_pack_artifact_document,
 )
+from .semantics_operations import (
+    get_operation_metadata,
+    validate_operation_error,
+    validate_operation_request_metadata,
+)
 
 __all__ = [
     "AUDIT_REFERENCE_PATTERN",
@@ -781,6 +788,7 @@ __all__ = [
     "MIN_PAGE_LIMIT",
     "OPAQUE_TOKEN_PATTERN",
     "OPEN_CODE_PATTERN",
+    "OPERATION_CATALOGUE",
     "OPERATION_COMPATIBILITY_STATE_PATTERN",
     "OPERATION_COMPLETION_MODE_PATTERN",
     "OPERATION_NAME_PATTERN",
@@ -1051,6 +1059,7 @@ __all__ = [
     "encode_response",
     "encode_success_response",
     "generated",
+    "get_operation_metadata",
     "idempotency_equivalence",
     "is_accepted_cancellation_disposition",
     "is_accepted_recovery_disposition",
@@ -1083,6 +1092,7 @@ __all__ = [
     "semantics_evidence",
     "semantics_jobs",
     "semantics_knowledge",
+    "semantics_operations",
     "to_canonical_json",
     "to_canonical_json_document",
     "validate_candidate_approve_input",
@@ -1134,7 +1144,9 @@ __all__ = [
     "validate_knowledge_search_result",
     "validate_memory_create_input",
     "validate_memory_create_result",
+    "validate_operation_error",
     "validate_operation_idempotency_metadata",
+    "validate_operation_request_metadata",
     "validate_operation_scope_workspace_id",
     "validate_page_limit",
     "validate_projection_freshness",

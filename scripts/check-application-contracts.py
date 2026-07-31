@@ -23,6 +23,13 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   exists, matches its declared schema-validity, and satisfies its declared
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
+- the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
+  frozen 20 application operations, in the frozen order, each strictly valid
+  against ``OperationMetadata``, binding resolvable in-contract payload
+  references, and carrying exactly the frozen scope, capability, completion,
+  pagination, idempotency, precondition, audit and allowed-error posture -- with
+  the independent ``tests/contracts/fixtures/operation-catalogue-v1.json``
+  regression oracle agreeing with it entry for entry;
 - ``src/omnivia_core/contracts`` has no import outside the standard library
   or its own package -- no runtime, storage, HTTP, MCP, CLI, Platform, Dev,
   or validation-framework dependency;
@@ -37,10 +44,11 @@ import ast
 import importlib.util
 import json
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -52,6 +60,9 @@ FIXTURES_DIR = REPO_ROOT / "contracts" / "application" / "v1" / "fixtures"
 CONTRACTS_SRC = REPO_ROOT / "src" / "omnivia_core" / "contracts"
 SRC_ROOT = REPO_ROOT / "src"
 GENERATOR_SCRIPT = REPO_ROOT / "scripts" / "generate-application-contracts.py"
+OPERATION_CATALOGUE_FIXTURE = (
+    REPO_ROOT / "tests" / "contracts" / "fixtures" / "operation-catalogue-v1.json"
+)
 
 SOURCE_SCHEMAS: tuple[str, ...] = (
     "common",
@@ -870,6 +881,726 @@ def check_fixture_semantics() -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Operation-catalogue checks
+# --------------------------------------------------------------------------
+
+#: The reusable allowed-error profiles A2.5 freezes. The names are specification
+#: shorthand only -- each catalogue entry carries its profile fully materialized,
+#: so nothing on the wire ever refers to one of these by name.
+_BASE_INSTALL: tuple[str, ...] = (
+    "authentication_required",
+    "authorization_denied",
+    "cancelled",
+    "capability_not_granted",
+    "deadline_exceeded",
+    "dependency_unavailable",
+    "incompatible_version",
+    "internal_non_recoverable",
+    "internal_recoverable",
+    "invalid_purpose",
+    "invalid_request",
+    "rate_limited",
+    "upgrade_required",
+)
+_BASE_WORKSPACE: tuple[str, ...] = tuple(
+    sorted((*_BASE_INSTALL, "workspace_migration_required", "workspace_not_granted"))
+)
+_INSTALL_READ: tuple[str, ...] = tuple(sorted((*_BASE_INSTALL, "bootstrap_in_progress")))
+_INSTALL_CREATE: tuple[str, ...] = tuple(
+    sorted((*_INSTALL_READ, "conflict", "idempotency_conflict"))
+)
+_POINT_READ: tuple[str, ...] = tuple(sorted((*_BASE_WORKSPACE, "not_found")))
+_PROJECTION_READ: tuple[str, ...] = tuple(
+    sorted((*_BASE_WORKSPACE, "projection_unavailable", "stale_projection"))
+)
+_GRAPH_READ: tuple[str, ...] = tuple(sorted((*_PROJECTION_READ, "not_found", "size_limit_exceeded")))
+_CONTEXT_READ: tuple[str, ...] = tuple(
+    sorted((*_PROJECTION_READ, "size_limit_exceeded", "token_limit_exceeded"))
+)
+_CREATE_MUT: tuple[str, ...] = tuple(
+    sorted(
+        (
+            *_BASE_WORKSPACE,
+            "idempotency_conflict",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+        )
+    )
+)
+_GOV_MUT: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "mutation_precondition_failed", "not_found"))
+)
+_IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceeded")))
+#: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
+#: successful explicit disposition returning the unchanged handle, not an error.
+_JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+_JOB_EVENTS: tuple[str, ...] = tuple(
+    sorted((*_BASE_WORKSPACE, "not_found", "size_limit_exceeded"))
+)
+
+ERROR_PROFILES: dict[str, tuple[str, ...]] = {
+    "BASE_INSTALL": _BASE_INSTALL,
+    "BASE_WORKSPACE": _BASE_WORKSPACE,
+    "INSTALL_READ": _INSTALL_READ,
+    "INSTALL_CREATE": _INSTALL_CREATE,
+    "WORKSPACE_READ": _BASE_WORKSPACE,
+    "POINT_READ": _POINT_READ,
+    "PROJECTION_READ": _PROJECTION_READ,
+    "GRAPH_READ": _GRAPH_READ,
+    "CONTEXT_READ": _CONTEXT_READ,
+    "CREATE_MUT": _CREATE_MUT,
+    "GOV_MUT": _GOV_MUT,
+    "IMPORT_START": _IMPORT_START,
+    "JOB_CONTROL": _JOB_CONTROL,
+    "JOB_EVENTS": _JOB_EVENTS,
+}
+
+OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
+OPERATION_METADATA_DEFINITION = "OperationMetadata"
+FROZEN_PAGE_SIZE = 1000
+CANONICAL_INVALID_REQUEST = "invalid_request"
+
+
+class FrozenOperation(NamedTuple):
+    """The part of one catalogue entry A2.5 states directly.
+
+    Everything else an entry carries -- its idempotency, precondition and audit
+    posture, its capability version, its pagination page size -- follows from the
+    freeze's *common* rules, so it is derived in :func:`_expected_entry` rather
+    than restated twenty times. A common rule that drifts therefore fails for
+    every operation it governs at once, which is the point: those rules are the
+    invariant, not a coincidence twenty entries happen to share.
+    """
+
+    scope_kind: str
+    required_scopes: tuple[str, ...]
+    side_effect: str
+    capability: str
+    document: str
+    definition: str
+    errors: str
+    paginated: bool
+    job_kind: str | None = None
+    terminal_result: str | None = None
+
+
+#: The exact 20 application operations, in the frozen code-point order. Runtime
+#: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
+#: separate contract and are absent by construction; there is no ``job.resume``.
+FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
+    "candidate.approve": FrozenOperation(
+        "workspace", ("memory:write",), "update", "knowledge.govern",
+        "knowledge", "CandidateApprove", "GOV_MUT", False,
+    ),
+    "candidate.reject": FrozenOperation(
+        "workspace", ("memory:write",), "update", "knowledge.govern",
+        "knowledge", "CandidateReject", "GOV_MUT", False,
+    ),
+    "context_pack.build": FrozenOperation(
+        "workspace", ("memory:read",), "none", "context_pack.build",
+        "context-pack", "ContextPackBuild", "CONTEXT_READ", False,
+    ),
+    "evidence.search": FrozenOperation(
+        "workspace", ("memory:read",), "none", "evidence.read",
+        "evidence", "EvidenceSearch", "PROJECTION_READ", True,
+    ),
+    "graph.traverse": FrozenOperation(
+        "workspace", ("graph:read",), "none", "graph.read",
+        "graph", "GraphTraversal", "GRAPH_READ", True,
+    ),
+    "import.start": FrozenOperation(
+        "workspace", ("memory:write",), "create", "ingestion.import",
+        "jobs", "ImportStart", "IMPORT_START", False,
+        job_kind="ingestion.import", terminal_result="ImportCompletionResult",
+    ),
+    "job.cancel": FrozenOperation(
+        "workspace", ("job:control",), "update", "job.control",
+        "jobs", "JobCancel", "JOB_CONTROL", False,
+    ),
+    "job.events": FrozenOperation(
+        "workspace", ("job:read",), "none", "job.read",
+        "jobs", "JobEvents", "JOB_EVENTS", True,
+    ),
+    "job.get": FrozenOperation(
+        "workspace", ("job:read",), "none", "job.read",
+        "jobs", "JobGet", "POINT_READ", False,
+    ),
+    "job.retry": FrozenOperation(
+        "workspace", ("job:control",), "update", "job.control",
+        "jobs", "JobRetry", "JOB_CONTROL", False,
+    ),
+    "knowledge.propose": FrozenOperation(
+        "workspace", ("memory:write",), "update", "knowledge.govern",
+        "knowledge", "KnowledgePropose", "GOV_MUT", False,
+    ),
+    "knowledge.search": FrozenOperation(
+        "workspace", ("memory:read",), "none", "knowledge.read",
+        "knowledge", "KnowledgeSearch", "PROJECTION_READ", True,
+    ),
+    "memory.create": FrozenOperation(
+        "workspace", ("memory:write",), "create", "memory.write",
+        "memory", "MemoryCreate", "CREATE_MUT", False,
+    ),
+    "memory.get": FrozenOperation(
+        "workspace", ("memory:read",), "none", "memory.read",
+        "memory", "MemoryGet", "POINT_READ", False,
+    ),
+    "memory.list": FrozenOperation(
+        "workspace", ("memory:read",), "none", "memory.read",
+        "memory", "MemoryList", "WORKSPACE_READ", True,
+    ),
+    "memory.search": FrozenOperation(
+        "workspace", ("memory:read",), "none", "memory.read",
+        "memory", "MemorySearch", "PROJECTION_READ", True,
+    ),
+    "record.supersede": FrozenOperation(
+        "workspace", ("memory:write",), "update", "knowledge.govern",
+        "knowledge", "RecordSupersede", "GOV_MUT", False,
+    ),
+    "workspace.create": FrozenOperation(
+        "installation", ("workspace:write",), "create", "workspace.write",
+        "workspace", "WorkspaceCreate", "INSTALL_CREATE", False,
+    ),
+    "workspace.inspect": FrozenOperation(
+        "workspace", ("workspace:read",), "none", "workspace.read",
+        "workspace", "WorkspaceInspect", "POINT_READ", False,
+    ),
+    "workspace.list": FrozenOperation(
+        "installation", ("workspace:read",), "none", "workspace.read",
+        "workspace", "WorkspaceList", "INSTALL_READ", True,
+    ),
+}
+
+#: The four governance transitions that support and require a mutation
+#: precondition. Every other operation sets both precondition booleans false.
+FROZEN_PRECONDITION_OPERATIONS: frozenset[str] = frozenset(
+    {"candidate.approve", "candidate.reject", "knowledge.propose", "record.supersede"}
+)
+
+
+def _expected_entry(name: str, frozen: FrozenOperation) -> dict[str, Any]:
+    """Materialize the complete entry the freeze requires for ``name``.
+
+    The common rules live here once. A read is idempotency-key-free and safe to
+    retry because it changes nothing; a mutation requires a key and is unsafe
+    without one because a network-level repeat would otherwise become a second
+    mutation. Audit category follows the side effect for the same reason: it is
+    not an independent choice an entry gets to make.
+    """
+    read = frozen.side_effect == "none"
+    job: dict[str, Any] = {"completion_mode": "synchronous"}
+    if frozen.job_kind is not None:
+        job = {
+            "completion_mode": "always_returns_job",
+            "job_kind": frozen.job_kind,
+            "terminal_result_schema_ref": (
+                f"{BASE_URI}{frozen.document}.schema.json#/$defs/{frozen.terminal_result}"
+            ),
+        }
+    pagination: dict[str, Any] = {"paginated": frozen.paginated}
+    if frozen.paginated:
+        pagination["max_page_size"] = FROZEN_PAGE_SIZE
+    return {
+        "name": name,
+        "scope": {
+            "required_scopes": list(frozen.required_scopes),
+            "side_effect": frozen.side_effect,
+            "scope_kind": frozen.scope_kind,
+        },
+        "input_schema_ref": (
+            f"{BASE_URI}{frozen.document}.schema.json#/$defs/{frozen.definition}Input"
+        ),
+        "result_schema_ref": (
+            f"{BASE_URI}{frozen.document}.schema.json#/$defs/{frozen.definition}Result"
+        ),
+        "required_capability": {
+            "id": frozen.capability,
+            "minimum_version": "1.0",
+            "required": True,
+        },
+        "job": job,
+        "pagination": pagination,
+        "idempotency": {
+            "supports_idempotency_key": not read,
+            "required": not read,
+            "safe_to_retry": read,
+        },
+        "precondition": {
+            "supports_mutation_precondition": name in FROZEN_PRECONDITION_OPERATIONS,
+            "required": name in FROZEN_PRECONDITION_OPERATIONS,
+        },
+        "audit": {"audited": True, "audit_category": "read" if read else "mutation"},
+        "allowed_errors": list(ERROR_PROFILES[frozen.errors]),
+    }
+
+
+def _catalogue_entries() -> tuple[list[Any], list[str]]:
+    """Return the raw annotation entries, plus any finding about its own shape."""
+    document = _load_schema("operations")
+    entries = document.get(OPERATION_CATALOGUE_ANNOTATION)
+    path = SCHEMA_DIR / "operations.schema.json"
+    if not isinstance(entries, list):
+        finding = (
+            f"{path}: {OPERATION_CATALOGUE_ANNOTATION} must be an array, "
+            f"found {type(entries).__name__}"
+        )
+        return [], [finding]
+    return entries, []
+
+
+def _entry_names(entries: list[Any]) -> list[Any]:
+    """Return each object entry's ``name`` *as written*, well formed or not.
+
+    The annotation is ordinary JSON, so a ``name`` can be absent, null, a number, a
+    list, or an object. Those values are kept rather than filtered out here: a check
+    that silently dropped them would report a catalogue as merely incomplete when it
+    is actually malformed. Narrowing to the strings happens at each use, against
+    :func:`_string_names`, so nothing downstream ever sorts, hashes, or looks up a
+    value that cannot take part in those operations.
+    """
+    return [entry.get("name") for entry in entries if isinstance(entry, dict)]
+
+
+def _string_names(names: list[Any]) -> list[str]:
+    """The subset of ``names`` that are strings, in order."""
+    return [name for name in names if isinstance(name, str)]
+
+
+def check_operation_catalogue_shape() -> list[str]:
+    """The annotation exists, is an array, and names exactly the frozen operations.
+
+    Order is part of the freeze, not a formatting detail: the generated Python and
+    TypeScript catalogues are emitted in annotation order, so a reordered
+    annotation silently reorders two public artifacts.
+    """
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    if len(entries) != len(FROZEN_OPERATIONS):
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: must hold exactly "
+            f"{len(FROZEN_OPERATIONS)} entries, found {len(entries)}"
+        )
+    non_objects = [index for index, entry in enumerate(entries) if not isinstance(entry, dict)]
+    if non_objects:
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: entrie(s) at index {non_objects} are not objects"
+        )
+        return findings
+
+    # A name that is absent, null, or not a string is reported as its own defect and
+    # then left out of every set operation below. Sorting or hashing it would raise a
+    # `TypeError` out of the gate instead of a finding, and a crashed gate reports
+    # nothing at all -- including the defects it had already found.
+    raw_names = _entry_names(entries)
+    malformed = [
+        f"index {index} ({name!r})"
+        for index, name in enumerate(raw_names)
+        if not isinstance(name, str)
+    ]
+    if malformed:
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: entrie(s) at {malformed} have a missing or "
+            "non-string name"
+        )
+
+    names = _string_names(raw_names)
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        findings.append(f"{OPERATION_CATALOGUE_ANNOTATION}: duplicate operation name(s) {duplicates}")
+
+    expected = list(FROZEN_OPERATIONS)
+    missing = sorted(set(expected) - set(names))
+    unknown = sorted(set(names) - set(expected))
+    if missing:
+        findings.append(f"{OPERATION_CATALOGUE_ANNOTATION}: missing operation(s) {missing}")
+    if unknown:
+        findings.append(f"{OPERATION_CATALOGUE_ANNOTATION}: unknown operation(s) {unknown}")
+    if not malformed and not missing and not unknown and names != expected:
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: entries must be sorted by name; "
+            f"expected {expected}, found {names}"
+        )
+
+    forbidden = sorted(
+        name for name in names if name.startswith("service.") or name == "job.resume"
+    )
+    if forbidden:
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: {forbidden} are not application operations "
+            "(runtime probes and job.resume are outside this catalogue)"
+        )
+    return findings
+
+
+def check_operation_catalogue_entries_are_valid() -> list[str]:
+    """Every entry must validate strictly against ``OperationMetadata`` itself.
+
+    The annotation lives in a schema document, which means nothing validates it
+    by default: it is data sitting beside the definition it claims to
+    materialize.
+    """
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    documents = {name: _load_schema(name) for name in ALL_SCHEMAS}
+    registry = _build_registry(documents)
+    validator = Draft202012Validator(
+        {"$ref": f"{BASE_URI}operations.schema.json#/$defs/{OPERATION_METADATA_DEFINITION}"},
+        registry=registry,
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    )
+    for index, entry in enumerate(entries):
+        label = entry.get("name") if isinstance(entry, dict) else f"index {index}"
+        for error in validator.iter_errors(entry):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{label}]: not a valid "
+                f"{OPERATION_METADATA_DEFINITION}: {error.message}"
+            )
+    return findings
+
+
+def check_operation_catalogue_schema_refs() -> list[str]:
+    """Every payload reference is an absolute in-contract reference that resolves.
+
+    A relative or foreign reference would still *look* like a binding while
+    naming nothing this contract publishes, so the form is checked as strictly as
+    the target.
+    """
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    documents = {name: _load_schema(name) for name in ALL_SCHEMAS}
+    registry = _build_registry(documents)
+    resolver = registry.resolver(base_uri=f"{BASE_URI}operations.schema.json")
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        frozen = FROZEN_OPERATIONS.get(name) if isinstance(name, str) else None
+        raw_job = entry.get("job")
+        job = raw_job if isinstance(raw_job, dict) else {}
+        actual = {
+            "input_schema_ref": entry.get("input_schema_ref"),
+            "result_schema_ref": entry.get("result_schema_ref"),
+        }
+        if "terminal_result_schema_ref" in job:
+            actual["terminal_result_schema_ref"] = job["terminal_result_schema_ref"]
+
+        # A malformed name leaves nothing to compare the refs *against*, but they are
+        # still checked for form and resolvability below -- an entry nobody can name
+        # is not a reason to stop asking whether its bindings resolve.
+        expected = (
+            _expected_entry(name, frozen) if isinstance(name, str) and frozen is not None else None
+        )
+        for field_name, ref in actual.items():
+            if not isinstance(ref, str) or not ref.startswith(BASE_URI) or "#/$defs/" not in ref:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].{field_name}: must be an absolute "
+                    f"{BASE_URI}...#/$defs/... reference, found {ref!r}"
+                )
+                continue
+            try:
+                resolver.lookup(ref)
+            except Unresolvable as error:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].{field_name}: "
+                    f"unresolvable reference {ref!r}: {error}"
+                )
+                continue
+            if expected is None:
+                continue
+            frozen_ref = (
+                expected["job"].get(field_name)
+                if field_name == "terminal_result_schema_ref"
+                else expected.get(field_name)
+            )
+            if ref != frozen_ref:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].{field_name}: must bind "
+                    f"{frozen_ref!r}, found {ref!r}"
+                )
+    return findings
+
+
+def check_operation_catalogue_postures() -> list[str]:
+    """Every non-error field of every entry equals the A2.5 freeze exactly.
+
+    Reported field by field rather than object by object: "``memory.list``'s
+    audit category is wrong" is actionable, "entry 15 differs" is not.
+    """
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str):
+            continue  # malformed name, already reported by the shape check
+        frozen = FROZEN_OPERATIONS.get(name)
+        if frozen is None:
+            continue  # unknown name, already reported by the shape check
+        expected = _expected_entry(name, frozen)
+        for field_name in ("scope", "required_capability", "job", "pagination",
+                           "idempotency", "precondition", "audit"):
+            if entry.get(field_name) != expected[field_name]:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].{field_name}: must be "
+                    f"{expected[field_name]!r}, found {entry.get(field_name)!r}"
+                )
+
+    # Set-level invariants: stated once, over the whole catalogue, so an entry
+    # that drifts *into* a set is caught as surely as one that drifts out of it.
+    def _named(predicate: Callable[[dict[str, Any]], bool]) -> list[str]:
+        return sorted(
+            entry["name"]
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str) and predicate(entry)
+        )
+
+    def _sub(entry: dict[str, Any], key: str) -> dict[str, Any]:
+        value = entry.get(key)
+        return value if isinstance(value, dict) else {}
+
+    sets: list[tuple[str, list[str], list[str]]] = [
+        (
+            "installation-scoped",
+            _named(lambda e: _sub(e, "scope").get("scope_kind") == "installation"),
+            sorted(n for n, f in FROZEN_OPERATIONS.items() if f.scope_kind == "installation"),
+        ),
+        (
+            "paginated",
+            _named(lambda e: _sub(e, "pagination").get("paginated") is True),
+            sorted(n for n, f in FROZEN_OPERATIONS.items() if f.paginated),
+        ),
+        (
+            "mutation-precondition",
+            _named(lambda e: _sub(e, "precondition").get("supports_mutation_precondition") is True),
+            sorted(FROZEN_PRECONDITION_OPERATIONS),
+        ),
+        (
+            "durable-job-starting",
+            _named(lambda e: _sub(e, "job").get("completion_mode") != "synchronous"),
+            sorted(n for n, f in FROZEN_OPERATIONS.items() if f.job_kind is not None),
+        ),
+    ]
+    for label, actual_set, expected_set in sets:
+        if actual_set != expected_set:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}: the {label} operations must be exactly "
+                f"{expected_set}, found {actual_set}"
+            )
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        job = _sub(entry, "job")
+        pagination = _sub(entry, "pagination")
+        idempotency = _sub(entry, "idempotency")
+        precondition = _sub(entry, "precondition")
+        mode = job.get("completion_mode")
+        if mode == "may_return_job":
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].job: 'may_return_job' does not occur "
+                "in the v1 catalogue"
+            )
+        if mode == "synchronous":
+            present = sorted({"job_kind", "terminal_result_schema_ref"} & set(job))
+            if present:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].job: a synchronous operation must "
+                    f"omit {present}"
+                )
+        elif mode == "always_returns_job":
+            absent = sorted({"job_kind", "terminal_result_schema_ref"} - set(job))
+            if absent:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].job: an always_returns_job "
+                    f"operation must declare {absent}"
+                )
+        if pagination.get("paginated") is False and "max_page_size" in pagination:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].pagination: a non-paginated operation "
+                "must omit max_page_size"
+            )
+        if pagination.get("paginated") is True:
+            # `type(...) is not int` rather than `!=`: JSON `1000.0` parses to a
+            # float that Draft 2020-12 accepts as an integer and that compares
+            # equal to 1000, so an equality test alone would let it through here.
+            page_size = pagination.get("max_page_size")
+            if type(page_size) is not int or page_size != FROZEN_PAGE_SIZE:
+                findings.append(
+                    f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].pagination: max_page_size must be "
+                    f"the integer {FROZEN_PAGE_SIZE}, found {page_size!r}"
+                )
+        if idempotency.get("required") and not idempotency.get("supports_idempotency_key"):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].idempotency: a required idempotency "
+                "key must also be supported"
+            )
+        if idempotency.get("safe_to_retry") and idempotency.get("required"):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].idempotency: an operation that requires "
+                "an idempotency key is not safe to retry without one"
+            )
+        if precondition.get("required") and not precondition.get("supports_mutation_precondition"):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].precondition: a required mutation "
+                "precondition must also be supported"
+            )
+        if _sub(entry, "audit").get("audited") is not True:
+            findings.append(f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].audit: must be audited")
+    return findings
+
+
+def check_operation_catalogue_errors() -> list[str]:
+    """Allowed-error arrays are sorted, unique, known, and exactly the frozen profile."""
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    catalogue = _load_schema("errors").get("x-omnivia-error-catalogue")
+    known: dict[str, Any] = catalogue if isinstance(catalogue, dict) else {}
+    if not known:
+        findings.append("errors.schema.json: x-omnivia-error-catalogue must be an object")
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        errors = entry.get("allowed_errors")
+        if not isinstance(errors, list) or not errors:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: must be a non-empty array"
+            )
+            continue
+        # Every rule below sorts the codes, hashes them, or looks them up in the
+        # error catalogue, and none of those is defined for a null, a number, an
+        # array, or an object. A non-string code is therefore reported as exactly
+        # that, and this entry is judged no further: it cannot equal any frozen
+        # profile whatever else it says, so a second finding would only bury the
+        # one that names the real defect.
+        non_strings = [code for code in errors if not isinstance(code, str)]
+        if non_strings:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: every code must be a "
+                f"string, found {non_strings!r}"
+            )
+            continue
+        if errors != sorted(errors):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: must be sorted"
+            )
+        duplicates = sorted({code for code in errors if errors.count(code) > 1})
+        if duplicates:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: duplicate code(s) "
+                f"{duplicates}"
+            )
+        unknown = sorted(code for code in errors if code not in known)
+        if unknown:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: code(s) {unknown} do "
+                "not resolve through x-omnivia-error-catalogue"
+            )
+        if CANONICAL_INVALID_REQUEST not in errors:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: every operation can "
+                f"reject a malformed request, so {CANONICAL_INVALID_REQUEST!r} must be allowed"
+            )
+        frozen = FROZEN_OPERATIONS.get(name) if isinstance(name, str) else None
+        if frozen is not None and errors != list(ERROR_PROFILES[frozen.errors]):
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: must be exactly the "
+                f"{frozen.errors} profile {list(ERROR_PROFILES[frozen.errors])!r}, found {errors!r}"
+            )
+
+    for name in ("job.cancel", "job.retry"):
+        entry = next((e for e in entries if isinstance(e, dict) and e.get("name") == name), None)
+        if entry is None:
+            continue  # missing operation, already reported by the shape check
+        # Only an actual array is asked about. `in` over a scalar raises, and over a
+        # string or an object it answers a different question entirely -- substring,
+        # or key membership -- so a malformed `allowed_errors` would otherwise either
+        # crash the gate or produce a finding about something nobody wrote. The loop
+        # above has already reported it as not being an array of codes.
+        allowed = entry.get("allowed_errors")
+        if isinstance(allowed, list) and "conflict" in allowed:
+            findings.append(
+                f"{OPERATION_CATALOGUE_ANNOTATION}[{name}].allowed_errors: must not allow "
+                "'conflict' -- a state-based cancel/retry refusal is a successful explicit "
+                "disposition returning the unchanged handle, not a conflict the caller retries"
+            )
+
+    retry_class = known.get(CANONICAL_INVALID_REQUEST)
+    if retry_class != "non_retryable":
+        findings.append(
+            f"errors.schema.json: {CANONICAL_INVALID_REQUEST!r} must have retry class "
+            f"'non_retryable', found {retry_class!r}"
+        )
+    return findings
+
+
+def check_operation_catalogue_fixture_matches() -> list[str]:
+    """The independent fixture must equal the canonical annotation exactly.
+
+    The fixture is hand-transcribed rather than generated, precisely so that it
+    disagrees when the annotation is edited without intent. It is a regression
+    oracle, not a second source: nothing generates from it.
+    """
+    entries, findings = _catalogue_entries()
+    if findings:
+        return findings
+
+    if not OPERATION_CATALOGUE_FIXTURE.is_file():
+        return [f"{OPERATION_CATALOGUE_FIXTURE}: missing operation-catalogue fixture"]
+    with OPERATION_CATALOGUE_FIXTURE.open(encoding="utf-8") as handle:
+        fixture = json.load(handle)
+
+    expected_format = "omnivia.operation-catalogue.v1"
+    if not isinstance(fixture, dict) or fixture.get("format") != expected_format:
+        found = fixture.get("format") if isinstance(fixture, dict) else fixture
+        finding = (
+            f"{OPERATION_CATALOGUE_FIXTURE}: 'format' must be {expected_format!r}, "
+            f"found {found!r}"
+        )
+        return [finding]
+    operations = fixture.get("operations")
+    if not isinstance(operations, list):
+        return [f"{OPERATION_CATALOGUE_FIXTURE}: 'operations' must be an array"]
+    if operations != entries:
+        fixture_names = _entry_names(operations)
+        canonical_names = _entry_names(entries)
+        if fixture_names != canonical_names:
+            findings.append(
+                f"{OPERATION_CATALOGUE_FIXTURE}: operation names disagree with "
+                f"{OPERATION_CATALOGUE_ANNOTATION}: fixture has {fixture_names}, canonical has "
+                f"{canonical_names}"
+            )
+        else:
+            # `_entry_names` skips non-object entries on both sides, so matching name
+            # lists do not guarantee matching entry *shapes*: an annotation carrying a
+            # bare number alongside a duplicated name reaches here. The label falls
+            # back to the position, since a non-object entry has no name to quote.
+            for index, (fixture_entry, entry) in enumerate(zip(operations, entries)):
+                if fixture_entry != entry:
+                    label = entry.get("name") if isinstance(entry, dict) else f"index {index}"
+                    findings.append(
+                        f"{OPERATION_CATALOGUE_FIXTURE}: {label!r} disagrees with "
+                        f"{OPERATION_CATALOGUE_ANNOTATION}: fixture has {fixture_entry!r}, "
+                        f"canonical has {entry!r}"
+                    )
+    return findings
+
+
+# --------------------------------------------------------------------------
 # Dependency-boundary checks
 # --------------------------------------------------------------------------
 
@@ -1229,6 +1960,12 @@ def run_checks() -> list[str]:
     findings += check_fixtures_match_declared_schema_validity()
     findings += check_fixture_tolerant_decode_matches_declared()
     findings += check_fixture_semantics()
+    findings += check_operation_catalogue_shape()
+    findings += check_operation_catalogue_entries_are_valid()
+    findings += check_operation_catalogue_schema_refs()
+    findings += check_operation_catalogue_postures()
+    findings += check_operation_catalogue_errors()
+    findings += check_operation_catalogue_fixture_matches()
     findings += check_contract_package_has_no_forbidden_imports()
     findings += check_generated_artifacts_match_schemas()
     return findings

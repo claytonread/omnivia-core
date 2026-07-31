@@ -956,3 +956,615 @@ def test_run_checks_reports_an_extra_schema_document(
     findings = run_checks()
     assert len(findings) == 1
     assert "rogue.schema.json" in findings[0]
+
+
+# --------------------------------------------------------------------------
+# Operation catalogue: every category of drift must be detected on its own, so
+# the gate cannot pass on a catalogue that has quietly stopped matching A2.5.
+# --------------------------------------------------------------------------
+
+CatalogueMutation = Callable[[list[dict[str, Any]]], None]
+
+#: The checks that read the *canonical annotation* and judge it on its own terms.
+#:
+#: `check_operation_catalogue_fixture_matches` is deliberately excluded. It
+#: compares the on-disk fixture against whatever the annotation currently says,
+#: so *every* annotation mutation trips it -- including one that no semantic
+#: check would catch. Running it alongside the others would make the drift matrix
+#: below a tautology: it would stay green even if all five semantic checks
+#: regressed to `return []`, which is precisely the failure it exists to rule
+#: out. The fixture oracle is real and is tested separately, on its own terms.
+_SEMANTIC_CATALOGUE_CHECKS: tuple[str, ...] = (
+    "check_operation_catalogue_shape",
+    "check_operation_catalogue_entries_are_valid",
+    "check_operation_catalogue_schema_refs",
+    "check_operation_catalogue_postures",
+    "check_operation_catalogue_errors",
+)
+
+_CATALOGUE_CHECKS: tuple[str, ...] = (
+    *_SEMANTIC_CATALOGUE_CHECKS,
+    "check_operation_catalogue_fixture_matches",
+)
+
+
+def _patch_catalogue(monkeypatch: pytest.MonkeyPatch, mutate: CatalogueMutation) -> None:
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(name: str) -> dict[str, Any]:
+        document = real_load_schema(name)
+        if name == "operations":
+            document = copy.deepcopy(document)
+            mutate(document[checker.OPERATION_CATALOGUE_ANNOTATION])
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+
+
+def _with_catalogue(
+    monkeypatch: pytest.MonkeyPatch,
+    mutate: CatalogueMutation,
+    checks: tuple[str, ...] = _SEMANTIC_CATALOGUE_CHECKS,
+) -> list[str]:
+    """Run the semantic catalogue checks against a mutated canonical annotation."""
+    _patch_catalogue(monkeypatch, mutate)
+    findings: list[str] = []
+    for check_name in checks:
+        findings += cast("Check", getattr(checker, check_name))()
+    return findings
+
+
+def _entry(catalogue: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    return next(entry for entry in catalogue if entry["name"] == name)
+
+
+#: Each case pairs a mutation with the substring the finding it *should* produce
+#: must contain. Asserting only that "some finding appeared" would let a mutation
+#: be credited to a check that fired for an unrelated reason -- several of these
+#: entries do legitimately trip more than one rule, and the point of the matrix is
+#: that the rule named by the label is one of them.
+CATALOGUE_MUTATIONS: dict[str, tuple[CatalogueMutation, str]] = {
+    "removed-operation": (
+        lambda c: c.remove(_entry(c, "memory.list")),
+        "missing operation(s) ['memory.list']",
+    ),
+    "added-operation": (
+        lambda c: c.append({**copy.deepcopy(c[0]), "name": "memory.zzz"}),
+        "unknown operation(s) ['memory.zzz']",
+    ),
+    "service-probe": (
+        lambda c: c.insert(0, {**copy.deepcopy(c[0]), "name": "service.health"}),
+        "are not application operations",
+    ),
+    "job-resume": (
+        lambda c: c.insert(10, {**copy.deepcopy(c[0]), "name": "job.resume"}),
+        "are not application operations",
+    ),
+    "reordered": (lambda c: c.insert(0, c.pop()), "entries must be sorted by name"),
+    "duplicate-name": (
+        lambda c: c.__setitem__(1, copy.deepcopy(c[0])),
+        "duplicate operation name(s)",
+    ),
+    "undeclared-field": (
+        lambda c: c[0].__setitem__("surprise", True),
+        "not a valid OperationMetadata",
+    ),
+    "wrong-input-ref": (
+        lambda c: _entry(c, "memory.get").__setitem__(
+            "input_schema_ref", f"{checker.BASE_URI}memory.schema.json#/$defs/MemoryListInput"
+        ),
+        "input_schema_ref: must bind",
+    ),
+    "unresolvable-ref": (
+        lambda c: _entry(c, "memory.get").__setitem__(
+            "result_schema_ref", f"{checker.BASE_URI}memory.schema.json#/$defs/NoSuchDefinition"
+        ),
+        "unresolvable reference",
+    ),
+    "relative-ref": (
+        lambda c: _entry(c, "memory.get").__setitem__(
+            "input_schema_ref", "#/$defs/MemoryGetInput"
+        ),
+        "must be an absolute",
+    ),
+    "wrong-terminal-result-ref": (
+        lambda c: _entry(c, "import.start")["job"].__setitem__(
+            "terminal_result_schema_ref",
+            f"{checker.BASE_URI}jobs.schema.json#/$defs/JobGetResult",
+        ),
+        "terminal_result_schema_ref: must bind",
+    ),
+    "unresolvable-terminal-result-ref": (
+        lambda c: _entry(c, "import.start")["job"].__setitem__(
+            "terminal_result_schema_ref",
+            f"{checker.BASE_URI}jobs.schema.json#/$defs/NoSuchTerminalResult",
+        ),
+        "unresolvable reference",
+    ),
+    "scope-kind-drift": (
+        lambda c: _entry(c, "memory.get")["scope"].__setitem__("scope_kind", "installation"),
+        "the installation-scoped operations must be exactly",
+    ),
+    "required-scope-drift": (
+        lambda c: _entry(c, "memory.get")["scope"].__setitem__(
+            "required_scopes", ["memory:write"]
+        ),
+        "[memory.get].scope: must be",
+    ),
+    "side-effect-drift": (
+        lambda c: _entry(c, "memory.get")["scope"].__setitem__("side_effect", "update"),
+        "[memory.get].scope: must be",
+    ),
+    "capability-id-drift": (
+        lambda c: _entry(c, "memory.get")["required_capability"].__setitem__("id", "graph.read"),
+        "[memory.get].required_capability: must be",
+    ),
+    "capability-version-drift": (
+        lambda c: _entry(c, "memory.get")["required_capability"].__setitem__(
+            "minimum_version", "2.0"
+        ),
+        "[memory.get].required_capability: must be",
+    ),
+    "capability-optional": (
+        lambda c: _entry(c, "memory.get")["required_capability"].__setitem__("required", False),
+        "[memory.get].required_capability: must be",
+    ),
+    "job-fields-on-synchronous": (
+        lambda c: _entry(c, "memory.get")["job"].__setitem__("job_kind", "ingestion.import"),
+        "a synchronous operation must omit",
+    ),
+    "may-return-job": (
+        lambda c: _entry(c, "memory.get")["job"].__setitem__(
+            "completion_mode", "may_return_job"
+        ),
+        "'may_return_job' does not occur in the v1 catalogue",
+    ),
+    "missing-job-fields": (
+        lambda c: _entry(c, "import.start")["job"].pop("job_kind"),
+        "an always_returns_job operation must declare",
+    ),
+    "second-job-starting-operation": (
+        lambda c: _entry(c, "memory.create")["job"].update(
+            {
+                "completion_mode": "always_returns_job",
+                "job_kind": "ingestion.import",
+                "terminal_result_schema_ref": (
+                    f"{checker.BASE_URI}jobs.schema.json#/$defs/ImportCompletionResult"
+                ),
+            }
+        ),
+        "the durable-job-starting operations must be exactly",
+    ),
+    "page-size-drift": (
+        lambda c: _entry(c, "memory.list")["pagination"].__setitem__("max_page_size", 500),
+        "max_page_size must be the integer 1000",
+    ),
+    "page-size-as-float": (
+        lambda c: _entry(c, "memory.list")["pagination"].__setitem__("max_page_size", 1000.0),
+        "max_page_size must be the integer 1000",
+    ),
+    "page-size-without-pagination": (
+        lambda c: _entry(c, "memory.get")["pagination"].__setitem__("max_page_size", 1000),
+        "a non-paginated operation must omit max_page_size",
+    ),
+    "pagination-added": (
+        lambda c: _entry(c, "memory.get")["pagination"].__setitem__("paginated", True),
+        "the paginated operations must be exactly",
+    ),
+    "idempotency-not-required": (
+        lambda c: _entry(c, "memory.create")["idempotency"].__setitem__("required", False),
+        "[memory.create].idempotency: must be",
+    ),
+    "idempotency-required-unsupported": (
+        lambda c: _entry(c, "memory.create")["idempotency"].__setitem__(
+            "supports_idempotency_key", False
+        ),
+        "a required idempotency key must also be supported",
+    ),
+    "mutation-marked-safe-to-retry": (
+        lambda c: _entry(c, "memory.create")["idempotency"].__setitem__("safe_to_retry", True),
+        "is not safe to retry without one",
+    ),
+    "read-takes-idempotency-key": (
+        lambda c: _entry(c, "memory.get")["idempotency"].__setitem__(
+            "supports_idempotency_key", True
+        ),
+        "[memory.get].idempotency: must be",
+    ),
+    "precondition-added": (
+        lambda c: _entry(c, "memory.create")["precondition"].__setitem__(
+            "supports_mutation_precondition", True
+        ),
+        "the mutation-precondition operations must be exactly",
+    ),
+    "precondition-removed": (
+        lambda c: _entry(c, "record.supersede")["precondition"].__setitem__("required", False),
+        "[record.supersede].precondition: must be",
+    ),
+    "precondition-required-unsupported": (
+        lambda c: _entry(c, "memory.create")["precondition"].__setitem__("required", True),
+        "a required mutation precondition must also be supported",
+    ),
+    "not-audited": (
+        lambda c: _entry(c, "memory.get")["audit"].__setitem__("audited", False),
+        "must be audited",
+    ),
+    "audit-category-drift": (
+        lambda c: _entry(c, "memory.get")["audit"].__setitem__("audit_category", "mutation"),
+        "[memory.get].audit: must be",
+    ),
+    "unsorted-errors": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].reverse(),
+        "allowed_errors: must be sorted",
+    ),
+    "duplicate-error": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append("not_found"),
+        "duplicate code(s)",
+    ),
+    "unknown-error": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append("zzz_invented"),
+        "do not resolve through x-omnivia-error-catalogue",
+    ),
+    "emptied-errors": (
+        lambda c: _entry(c, "memory.get").__setitem__("allowed_errors", []),
+        "must be a non-empty array",
+    ),
+    "missing-invalid-request": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].remove("invalid_request"),
+        "must be allowed",
+    ),
+    "conflict-on-job-cancel": (
+        lambda c: _entry(c, "job.cancel")["allowed_errors"].insert(4, "conflict"),
+        "[job.cancel].allowed_errors: must not allow 'conflict'",
+    ),
+    "conflict-on-job-retry": (
+        lambda c: _entry(c, "job.retry")["allowed_errors"].insert(4, "conflict"),
+        "[job.retry].allowed_errors: must not allow 'conflict'",
+    ),
+    "swapped-error-code-within-profile": (
+        lambda c: _entry(c, "memory.search").__setitem__(
+            "allowed_errors",
+            sorted(
+                set(_entry(c, "memory.search")["allowed_errors"])
+                - {"stale_projection"}
+                | {"size_limit_exceeded"}
+            ),
+        ),
+        "must be exactly the PROJECTION_READ profile",
+    ),
+    "wrong-error-profile": (
+        lambda c: _entry(c, "memory.get").__setitem__(
+            "allowed_errors", list(_entry(c, "memory.list")["allowed_errors"])
+        ),
+        "must be exactly the POINT_READ profile",
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(CATALOGUE_MUTATIONS), ids=sorted(CATALOGUE_MUTATIONS))
+def test_the_gate_detects_every_category_of_catalogue_drift(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each mutation is a distinct way the catalogue could stop stating A2.5.
+
+    Only the five *semantic* checks run here. Including the fixture comparison
+    would make this vacuous -- the fixture disagrees with any mutated annotation,
+    so the matrix would stay green even if every semantic check were gutted.
+    """
+    mutate, expected = CATALOGUE_MUTATIONS[label]
+    findings = _with_catalogue(monkeypatch, mutate)
+    assert findings, f"{label}: catalogue drift went undetected"
+    assert any(expected in finding for finding in findings), (
+        f"{label}: expected a finding containing {expected!r}, got {findings}"
+    )
+
+
+def test_the_annotation_must_be_an_array(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The one shape the mutation matrix cannot express: no catalogue at all."""
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(name: str) -> dict[str, Any]:
+        document = real_load_schema(name)
+        if name == "operations":
+            document = copy.deepcopy(document)
+            document[checker.OPERATION_CATALOGUE_ANNOTATION] = {"not": "an array"}
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+    for check_name in _SEMANTIC_CATALOGUE_CHECKS:
+        findings = cast("Check", getattr(checker, check_name))()
+        assert any("must be an array" in finding for finding in findings), check_name
+
+
+def test_the_canonical_invalid_request_retry_class_is_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invariant 24's retry-class clause reads ``errors.schema.json``, not the
+    annotation, so no catalogue mutation can reach it.
+    """
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(name: str) -> dict[str, Any]:
+        document = real_load_schema(name)
+        if name == "errors":
+            document = copy.deepcopy(document)
+            document["x-omnivia-error-catalogue"]["invalid_request"] = "retryable"
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+    findings = cast("Check", checker.check_operation_catalogue_errors)()
+    assert any("must have retry class 'non_retryable'" in finding for finding in findings)
+
+
+def test_the_catalogue_checks_pass_on_the_real_contract() -> None:
+    for check_name in _CATALOGUE_CHECKS:
+        assert cast("Check", getattr(checker, check_name))() == [], check_name
+
+
+def test_the_catalogue_checks_are_registered_in_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check nobody calls protects nothing, so the wiring is asserted through
+    ``run_checks`` itself rather than by calling the catalogue checks directly.
+    """
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(name: str) -> dict[str, Any]:
+        document = real_load_schema(name)
+        if name == "operations":
+            document = copy.deepcopy(document)
+            CATALOGUE_MUTATIONS["removed-operation"][0](
+                document[checker.OPERATION_CATALOGUE_ANNOTATION]
+            )
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+    assert any(
+        checker.OPERATION_CATALOGUE_ANNOTATION in finding
+        for finding in cast("Check", checker.run_checks)()
+    )
+
+
+def test_the_fixture_is_compared_against_the_annotation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The independent oracle is a real gate, not a file nothing reads."""
+    findings = _with_catalogue(
+        monkeypatch,
+        lambda c: _entry(c, "memory.get")["scope"].__setitem__("side_effect", "update"),
+        checks=("check_operation_catalogue_fixture_matches",),
+    )
+    assert any(str(checker.OPERATION_CATALOGUE_FIXTURE) in finding for finding in findings)
+
+
+def test_a_missing_fixture_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(checker, "OPERATION_CATALOGUE_FIXTURE", tmp_path / "absent.json")
+    check = cast("Check", checker.check_operation_catalogue_fixture_matches)
+    findings = check()
+    assert len(findings) == 1
+    assert "missing operation-catalogue fixture" in findings[0]
+
+
+# --------------------------------------------------------------------------
+# Operation catalogue: hostile annotation shapes.
+#
+# The annotation is ordinary JSON living inside a schema document, which means
+# nothing validates it before a check reads it: a `name` can be absent, null, a
+# number, an array or an object, and `allowed_errors` can hold any of those too.
+# A check that sorts, hashes, or looks such a value up without narrowing it
+# first does not report a malformed catalogue -- it raises out of the gate. That
+# is strictly worse than a missed finding, because a gate that crashes reports
+# *nothing*, including every defect it had already found before the bad value.
+#
+# So each case here asserts two things at once: that the full `run_checks()`
+# completes, and that it names the actual defect.
+# --------------------------------------------------------------------------
+
+#: The unhashable and unorderable values a JSON document can put anywhere.
+_UNHASHABLE_NAME: list[str] = ["memory", "get"]
+_MAPPING_NAME: dict[str, str] = {"name": "memory.get"}
+
+
+def _replace_two_names_with_lists(catalogue: list[dict[str, Any]]) -> None:
+    for name in ("memory.get", "memory.list"):
+        _entry(catalogue, name)["name"] = [name]
+
+HOSTILE_CATALOGUE_SHAPES: dict[str, tuple[CatalogueMutation, str]] = {
+    "missing-name": (
+        lambda c: _entry(c, "memory.get").pop("name"),
+        "missing or non-string name",
+    ),
+    "null-name": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", None),
+        "missing or non-string name",
+    ),
+    "integer-name": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", 7),
+        "missing or non-string name",
+    ),
+    "boolean-name": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", True),
+        "missing or non-string name",
+    ),
+    "list-name": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", copy.deepcopy(_UNHASHABLE_NAME)),
+        "missing or non-string name",
+    ),
+    "mapping-name": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", copy.deepcopy(_MAPPING_NAME)),
+        "missing or non-string name",
+    ),
+    # Two unhashable names at once. One is enough to raise, so one alone cannot
+    # distinguish a name list that was genuinely narrowed from one that merely
+    # happened to survive a single bad value.
+    "two-list-names": (_replace_two_names_with_lists, "missing or non-string name"),
+    # A non-string name must not suppress the *other* findings the same entry
+    # earns: the operation it should have named is still missing.
+    "non-string-name-is-also-a-missing-operation": (
+        lambda c: _entry(c, "memory.get").__setitem__("name", 7),
+        "missing operation(s) ['memory.get']",
+    ),
+    "allowed-errors-with-null": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append(None),
+        "every code must be a string",
+    ),
+    "allowed-errors-with-integer": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append(7),
+        "every code must be a string",
+    ),
+    "allowed-errors-with-list": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append(["not_found"]),
+        "every code must be a string",
+    ),
+    "allowed-errors-with-mapping": (
+        lambda c: _entry(c, "memory.get")["allowed_errors"].append({"code": "not_found"}),
+        "every code must be a string",
+    ),
+    "allowed-errors-mixed-string-and-non-string": (
+        lambda c: _entry(c, "memory.get").__setitem__(
+            "allowed_errors", ["invalid_request", None, 7, ["x"], {"y": 1}]
+        ),
+        "every code must be a string",
+    ),
+    "allowed-errors-all-non-strings": (
+        lambda c: _entry(c, "memory.get").__setitem__("allowed_errors", [1, 2, 3]),
+        "every code must be a string",
+    ),
+    "allowed-errors-as-mapping": (
+        lambda c: _entry(c, "memory.get").__setitem__("allowed_errors", {"invalid_request": True}),
+        "must be a non-empty array",
+    ),
+    "allowed-errors-as-integer": (
+        lambda c: _entry(c, "memory.get").__setitem__("allowed_errors", 7),
+        "must be a non-empty array",
+    ),
+    "allowed-errors-as-string": (
+        lambda c: _entry(c, "memory.get").__setitem__("allowed_errors", "invalid_request"),
+        "must be a non-empty array",
+    ),
+    # `"conflict" in <not a list>` is the specific hazard in the job-control
+    # rule: over a scalar it raises, and over a string or a mapping it silently
+    # answers a different question (substring, or key membership).
+    "job-cancel-allowed-errors-as-integer": (
+        lambda c: _entry(c, "job.cancel").__setitem__("allowed_errors", 7),
+        "must be a non-empty array",
+    ),
+    "job-retry-allowed-errors-as-conflict-substring": (
+        lambda c: _entry(c, "job.retry").__setitem__("allowed_errors", "xx_conflict_xx"),
+        "must be a non-empty array",
+    ),
+    "job-cancel-allowed-errors-as-mapping-keyed-by-conflict": (
+        lambda c: _entry(c, "job.cancel").__setitem__("allowed_errors", {"conflict": True}),
+        "must be a non-empty array",
+    ),
+    "non-object-entry": (
+        lambda c: c.__setitem__(0, 7),
+        "are not objects",
+    ),
+    "null-entry": (
+        lambda c: c.__setitem__(0, None),
+        "are not objects",
+    ),
+    "list-entry": (
+        lambda c: c.__setitem__(0, ["memory.get"]),
+        "are not objects",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "label", sorted(HOSTILE_CATALOGUE_SHAPES), ids=sorted(HOSTILE_CATALOGUE_SHAPES)
+)
+def test_the_whole_gate_reports_hostile_catalogue_shapes_instead_of_crashing(
+    label: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run_checks()` itself, not a hand-picked subset: the property under test is
+    that the *gate* survives, and a subset could pass while a check the subset
+    leaves out is the one that raises.
+    """
+    mutate, expected = HOSTILE_CATALOGUE_SHAPES[label]
+    _patch_catalogue(monkeypatch, mutate)
+    findings = cast("Check", checker.run_checks)()
+    assert findings, f"{label}: a malformed catalogue produced no finding"
+    assert any(expected in finding for finding in findings), (
+        f"{label}: expected a finding containing {expected!r}, got {findings}"
+    )
+
+
+#: Every JSON-representable value class, including the ones that cannot be
+#: hashed (list, dict) or ordered against a string (None, int, float, bool).
+_HOSTILE_VALUES: tuple[Any, ...] = (
+    None,
+    0,
+    -1,
+    1.5,
+    True,
+    "",
+    "   ",
+    [],
+    [None],
+    [1],
+    [{}],
+    ["invalid_request", 1],
+    {},
+    {"a": 1},
+)
+
+_ENTRY_FIELDS: tuple[str, ...] = (
+    "name",
+    "scope",
+    "input_schema_ref",
+    "result_schema_ref",
+    "required_capability",
+    "job",
+    "pagination",
+    "idempotency",
+    "precondition",
+    "audit",
+    "allowed_errors",
+)
+
+
+@pytest.mark.parametrize("value", _HOSTILE_VALUES, ids=[repr(v) for v in _HOSTILE_VALUES])
+@pytest.mark.parametrize("field", _ENTRY_FIELDS)
+def test_no_hostile_value_in_any_entry_field_can_crash_a_catalogue_check(
+    field: str, value: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole cross product, rather than the shapes someone thought of.
+
+    Each catalogue field is reachable by any JSON value, so the guarantee worth
+    asserting is per *value class*, not per plausible mistake: no check may raise,
+    and something must still report the drift.
+    """
+    findings = _with_catalogue(
+        monkeypatch,
+        lambda c: _entry(c, "memory.get").__setitem__(field, copy.deepcopy(value)),
+        checks=_CATALOGUE_CHECKS,
+    )
+    assert findings, f"{field}={value!r} went undetected"
+
+
+@pytest.mark.parametrize("field", _ENTRY_FIELDS)
+def test_a_dropped_entry_field_is_reported_rather_than_raising(
+    field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    findings = _with_catalogue(
+        monkeypatch,
+        lambda c: _entry(c, "memory.get").pop(field),
+        checks=_CATALOGUE_CHECKS,
+    )
+    assert findings, f"a missing {field!r} went undetected"
+
+
+def test_the_fixture_comparison_survives_a_non_object_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-object entry can reach the entry-by-entry comparison.
+
+    `_entry_names` skips non-objects on both sides, so inserting one leaves the
+    two *name* lists identical while the entry lists differ -- which is exactly
+    the path that pairs a fixture object against a bare number. The finding has
+    to fall back to the position, since a non-object entry has no name to quote.
+    """
+    findings = _with_catalogue(
+        monkeypatch,
+        lambda c: c.insert(3, 7),
+        checks=("check_operation_catalogue_fixture_matches",),
+    )
+    assert any("'index 3'" in finding for finding in findings), findings

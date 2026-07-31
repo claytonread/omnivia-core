@@ -239,7 +239,7 @@
     },
     "JobTerminalSuccess": {
       "title": "JobTerminalSuccess",
-      "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which frozen result shape `result` carries, so a caller reads a success payload by matching a declared kind instead of guessing from the job kind. `result` stays an opaque JSON object in this document because JSON Schema cannot bind it to a per-kind shape within the subset the generator supports; the binding is a semantic rule (`omnivia_core.contracts.v1.semantics_jobs`) until the A2.5 operation catalogue publishes `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is `import_completion`, whose `result` is an `ImportCompletionResult`.",
+      "description": "The final outcome of a job that succeeded. Carries `result` and never `error` or `cancellation`. Terminal success is typed rather than opaque: `result_kind` names which frozen result shape `result` carries, so a caller reads a success payload by matching a declared kind instead of guessing from the job kind. `result` stays an opaque JSON object in this document because JSON Schema cannot bind it to a per-kind shape within the subset the generator supports; `result_kind` and `semantics_jobs` (`omnivia_core.contracts.v1.semantics_jobs`) still validate the frozen result-kind mapping. The operation catalogue additionally binds a job-starting operation to its terminal result schema through `OperationJobMetadata.terminal_result_schema_ref`. The one kind frozen in v1 is `import_completion`: `import.start` binds it to `ImportCompletionResult`.",
       "type": "object",
       "properties": {
         "identity": {

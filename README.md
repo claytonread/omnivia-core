@@ -156,8 +156,40 @@ PYTHON=.venv/bin/python scripts/check-package-builds.sh
 `omnivia_core.contracts.v1` is a provider-neutral wire contract for
 application-layer request/response negotiation: version and capability
 negotiation, request/response envelopes, and typed, retry-classified errors.
-It is a foundation only — there is no per-operation payload catalogue, HTTP
-binding, or transport implementation yet.
+It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
+MCP implementation.
+
+The canonical `x-omnivia-operation-catalogue` annotation in
+`operations.schema.json` names exactly **20 application operations** and binds
+each to its input/result schemas and its scope, capability, completion,
+pagination, idempotency, mutation-precondition, audit, and allowed-error
+posture.
+
+Two are installation-scoped:
+
+```text
+workspace.create   workspace.list
+```
+
+Eighteen are workspace-scoped:
+
+```text
+candidate.approve   candidate.reject    context_pack.build  evidence.search
+graph.traverse      import.start        job.cancel          job.events
+job.get             job.retry           knowledge.propose   knowledge.search
+memory.create       memory.get          memory.list         memory.search
+record.supersede    workspace.inspect
+```
+
+`service.health`, `service.readiness`, and `service.discover` are **not** in
+this catalogue. They are dedicated runtime probes with their own contract, so a
+probe can never be dispatched as a product application operation. There is no
+`job.resume`: A2.4 folded resume into `job.retry`, which reports
+`retry_scheduled`, `resume_scheduled`, or `not_retryable`.
+
+The catalogue is a single source. `OPERATION_CATALOGUE` is generated from it for
+both Python and TypeScript, so neither language carries a hand-maintained
+operation list that could drift from the schemas.
 
 Canonical source and generated artifacts:
 
@@ -696,6 +728,48 @@ Canonical source and generated artifacts:
   live in `jobs.schema.json` rather than in a new top-level document: each is a
   statement about one durable job, so a separate schema would add a document
   boundary where no boundary exists.
+- `src/omnivia_core/contracts/v1/semantics_operations.py` — the narrow read
+  surface over the generated operation catalogue (A2.5, ADR-038/ADR-039).
+  Standard library only, and three functions wide:
+
+  - `get_operation_metadata(operation)` returns the frozen catalogue entry for
+    an application operation. An unknown name — including any runtime probe and
+    `job.resume` — is rejected rather than defaulted, since returning a fallback
+    scope, capability, and error set would state a contract nothing stands
+    behind.
+  - `validate_operation_request_metadata(operation, metadata)` checks a
+    `RequestMetadata` against exactly the part of the contract a request can
+    state for itself: a `workspace_id` present for workspace-scoped operations
+    and absent for installation-scoped ones, every required scope held, exactly
+    one non-duplicate capability declaration for the catalogue capability marked
+    `required` at or above the catalogue minimum (compared as contract versions,
+    so `1.10` is above `1.9`), and an idempotency key and mutation precondition
+    that agree with the operation's posture in *both* directions — one required
+    but missing is rejected, and one supplied to an operation that does not
+    honour it is rejected too, because silently dropping it would let a caller
+    believe a call is replay-safe or precondition-guarded when nothing makes it
+    so. It returns the resolved metadata.
+  - `validate_operation_error(operation, error)` checks that an `ApiError` is
+    one the operation is allowed to fail with, then applies the existing frozen
+    retry-class rule. The allow-list is checked first, so a code outside it is
+    reported as an error this operation may not raise rather than as a
+    retry-class problem. Note the two failures are deliberately different
+    exception types: a disallowed code raises `ContractSemanticError`, while an
+    *allowed* code carrying the wrong retry class raises the existing
+    `RetryClassMismatchError` (a `ContractDecodeError`, not a
+    `ContractSemanticError`). A known code paired with the wrong class is a
+    distinct protocol violation from an operation failing with an error it is
+    not permitted to raise, and collapsing the two would tell a caller less than
+    it needs — so a caller that wants to handle both must catch both.
+
+  This is not dispatch and not authorization. It cannot decide whether a claimed
+  principal is authenticated, whether the server granted a capability, or
+  whether a workspace exists — it never sees a server, and a caller can assert
+  anything it likes in its own metadata. Extra scopes and extra uniquely named
+  capability requirements are left in place: neither widens authority. Every
+  function is a direct entry point and type-guards what it is handed, so a
+  hand-built value raises `ContractSemanticError`, never a raw
+  `TypeError`/`AttributeError`/`KeyError`.
 - `src/omnivia_core/contracts/v1/canonical_json.py` — the RFC 8785 JSON
   Canonicalization Scheme the Context Pack digest is defined over, kept separate
   from the contract semantics so it can be audited on its own. Standard library
@@ -809,7 +883,8 @@ development-only dependency declared under `[dependency-groups]` in
 its tests — the `format` extra provides the RFC 3339 calendar validation
 `jsonschema.FormatChecker` needs. The contract package itself (`generated.py`,
 `codec.py`, `compatibility.py`, `semantics.py`, `semantics_evidence.py`,
-`semantics_knowledge.py`, `canonical_json.py`, `resources.py`) has zero runtime
+`semantics_jobs.py`, `semantics_knowledge.py`, `semantics_operations.py`,
+`canonical_json.py`, `resources.py`) has zero runtime
 dependencies, including on `jsonschema` and on any third-party canonicalizer.
 
 The generated TypeScript module is regenerated and checked for drift the same

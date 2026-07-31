@@ -139,7 +139,7 @@
     },
     "JsonObject": {
       "title": "JsonObject",
-      "description": "An opaque JSON object. The application contract carries domain payloads without inspecting them; per-operation payload schemas are out of scope for v1 foundations.",
+      "description": "An opaque JSON object. The envelope carries domain payloads without inspecting them, which is a statement about the envelope rather than about the payload: an operation's `input` and `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-operation-catalogue` (`input_schema_ref` and `result_schema_ref`), and validating a payload against that binding is a separate step from decoding the envelope carrying it.",
       "type": "object"
     },
     "ClientIdentity": {
@@ -349,7 +349,7 @@
     },
     "JobReference": {
       "title": "JobReference",
-      "description": "Reference to asynchronous work started by an operation. Job lifecycle, polling, and cancellation are later phases; v1 carries the identifier only.",
+      "description": "Reference to asynchronous work started by an operation. The reference carries the identifier only, deliberately: the job's own lifecycle -- its states, progress, attempts, events, cancellation and retry -- is published separately in `jobs.schema.json`, and is read and controlled through the `job.get`, `job.events`, `job.cancel` and `job.retry` operations rather than by widening the handle a response hands back.",
       "type": "object",
       "properties": {
         "job_id": {
