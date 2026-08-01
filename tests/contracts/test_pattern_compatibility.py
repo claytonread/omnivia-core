@@ -8,7 +8,8 @@ values this contract's own semantics and every ECMAScript client already
 refused.
 
 These tests exercise the classifier against synthetic changes, because the
-interesting cases are the ones the real migration deliberately does not contain.
+interesting cases are the ones the accepted contract state deliberately does not
+contain.
 """
 
 from __future__ import annotations
@@ -126,7 +127,7 @@ def test_an_unevaluable_change_is_indeterminate_not_optimistic() -> None:
 
 
 # --------------------------------------------------------------------------
-# The gate as wired, against the real migration
+# The gate as wired, against the real accepted state
 # --------------------------------------------------------------------------
 
 
@@ -138,8 +139,17 @@ def test_the_baseline_records_the_accepted_checkpoint() -> None:
 
 
 @requires_node
-def test_the_migration_classifies_as_parity_throughout() -> None:
-    """Every one of the 54 changes, and no finding raised."""
+def test_every_definition_classifies_as_unchanged() -> None:
+    """The rollover's own postcondition: nothing is left to classify.
+
+    The baseline now records the accepted checkpoint that already carries the
+    guarded patterns, so the recorded definitions and the current schemas are
+    the same 55 definitions. Every one must classify `unchanged` -- and, just as
+    importantly, *nothing* may classify parity, major or indeterminate: a
+    surviving parity verdict would mean the baseline was not actually rolled
+    forward, and either of the other two would mean a pattern moved after the
+    checkpoint this baseline claims to be.
+    """
     document = json.loads(checker.PATTERN_BASELINE.read_text(encoding="utf-8"))
     recorded = document["definitions"]
     current = checker._current_patterned_nodes()
@@ -158,11 +168,14 @@ def test_the_migration_classifies_as_parity_throughout() -> None:
             name, recorded[name], current[name], values, ecmascript
         )
         tally[classification] = tally.get(classification, 0) + 1
-    assert tally == {PARITY: 54, checker.CLASSIFICATION_UNCHANGED: 1}, tally
+    assert tally == {checker.CLASSIFICATION_UNCHANGED: 55}, tally
+    # Stated separately from the tally above so a failure names the outcome that
+    # appeared rather than only that the totals differed.
+    assert not {PARITY, MAJOR, "indeterminate"} & set(tally), tally
 
 
 @requires_node
-def test_the_wired_gate_reports_nothing_for_the_accepted_migration() -> None:
+def test_the_wired_gate_reports_nothing_for_the_accepted_checkpoint() -> None:
     assert checker.check_scalar_pattern_compatibility() == []
 
 
@@ -275,7 +288,7 @@ def test_candidate_modified_fallback_is_rejected_under_the_external_anchor(
 
     It must still be refused, because hosted acceptance never consults that
     constant: :func:`_resolve_accepted_checkpoint` reads the anchor only from
-    :data:`ACCEPTED_CHECKPOINT_ENV`, which here is supplied the real accepted A2.6
+    :data:`ACCEPTED_CHECKPOINT_ENV`, which here is supplied the real accepted A2.7.1
     checkpoint from outside the candidate's tree. The candidate's forged checkpoint
     disagreeing with that external anchor is exactly the check that matters --
     without it, a candidate who reads this checker's own source could defeat the
@@ -336,9 +349,9 @@ def test_ci_may_supply_the_accepted_checkpoint(monkeypatch: pytest.MonkeyPatch) 
     assert any("is not the accepted contract checkpoint" in f for f in findings), findings
 
 
-def test_external_a26_anchor_accepts_the_real_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_external_accepted_anchor_accepts_the_real_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
     """The positive case for the reusable half above: supplying the *correct*
-    externally-configured anchor -- the accepted A2.6 checkpoint -- must pass, not
+    externally-configured anchor -- the accepted A2.7.1 checkpoint -- must pass, not
     merely fail differently. Without this, a broken wiring that always rejects
     every supplied checkpoint would still make
     `test_ci_may_supply_the_accepted_checkpoint` and the malformed/hosted tests
@@ -423,7 +436,21 @@ def test_unavailable_history_produces_a_finding_rather_than_a_crash(
 def test_an_unevaluable_classifier_run_reports_indeterminate_not_silence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same rule for the classifier's ECMAScript evidence."""
+    """The same rule for the classifier's ECMAScript evidence.
+
+    Driven from a synthetic change rather than from the real definitions: the
+    baseline now records the accepted checkpoint the schemas already sit at, so
+    every real definition classifies `unchanged` and never reaches the
+    ECMAScript evidence at all. The rule under test is about a definition that
+    *did* change, so one is introduced here -- an already-guarded pattern with a
+    second guard appended, which is the shape that would otherwise be waved
+    through as a parity correction. Without usable evidence it must be refused
+    as indeterminate instead.
+    """
+    current = checker._current_patterned_nodes()
+    name = min(current)
+    current[name] = {**current[name], "pattern": current[name]["pattern"] + GUARD}
+    monkeypatch.setattr(checker, "_current_patterned_nodes", lambda: current)
 
     def unavailable(*_args: Any, **_kwargs: Any) -> Any:
         raise FileNotFoundError("node is not installed")
