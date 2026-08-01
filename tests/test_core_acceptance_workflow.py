@@ -74,6 +74,19 @@ GATE_STEPS = (
 # below, so they appear here only to pin their place in the gate order.
 SCOPED_STEPS = ("Run Ruff", "Run strict mypy")
 
+# The steps that execute the A2.7 accepted-checkpoint gate -- directly, or by
+# collecting a pytest run that includes `tests/contracts` -- and so must be
+# supplied the same repository-external anchor the checker itself refuses to
+# substitute a local fallback for on a hosted run (see
+# `_resolve_accepted_checkpoint` in `scripts/check-application-contracts.py`).
+CONTRACT_CHECKPOINT_STEPS = (
+    "Check application contracts",
+    "Run application contract tests",
+    "Run full repository test suite",
+)
+
+CONTRACT_CHECKPOINT_ENV_VALUE = "${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}"
+
 # Ruff's currently accepted clean scope: the canonical trees plus every
 # converted legacy facade/barrel file, and now the converted package root. This
 # list is pinned exactly rather than counted, so an added target must be declared
@@ -453,6 +466,42 @@ def test_required_commands_run_in_their_own_steps_and_in_order() -> None:
     expected = [name for name, _ in GATE_STEPS] + list(SCOPED_STEPS)
     positions = [order.index(name) for name in expected]
     assert positions == sorted(positions), f"gate steps are out of order: {order}"
+
+
+def test_contract_checkpoint_env_is_supplied_from_repository_vars_and_only_there() -> None:
+    """Every step that runs the A2.7 accepted-checkpoint gate must read
+    `OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT` from
+    `vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT` -- repository-external GitHub
+    configuration, never the in-tree fallback constant the checker itself refuses
+    on a hosted run.
+
+    This has to be asserted structurally, at each step's own `env:` block: the
+    same substring appears in this file's plain-prose comment describing why the
+    anchor is external, and a naive `"OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT" in
+    text` check would pass on that comment alone even if every step's `env:` were
+    deleted. `_significant()` already drops whole-line comments before any of
+    this file's helpers see them, so a commented-out `env:` entry cannot satisfy
+    `_entry` either.
+
+    The carrying steps are also compared as an exact set, not just checked for
+    containment: a step that should not need the anchor picking it up anyway --
+    or a renamed/new step silently missing it -- must fail here too, not only a
+    known step losing it.
+    """
+    steps = _steps()
+    carrying = []
+    for name in _step_names(steps):
+        step = _step(steps, name)
+        if _locate(step, "env") is None:
+            continue
+        environment = _block(step, "env")
+        value = _entry(environment, "OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT")
+        if value is None:
+            continue
+        assert value == CONTRACT_CHECKPOINT_ENV_VALUE, name
+        carrying.append(name)
+
+    assert sorted(carrying) == sorted(CONTRACT_CHECKPOINT_STEPS)
 
 
 def _audit_targets(command: str, prefix: str, required: tuple[str, ...]) -> None:

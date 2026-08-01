@@ -758,9 +758,15 @@ def _validate_against_schema(
 
     ``pattern`` uses :func:`re.search`, which is JSON Schema's own semantics, so
     this agrees exactly with the strict ``jsonschema`` validation the conformance
-    gate applies to the checked-in schemas. Tightening it to ``fullmatch`` here
-    would make the runtime accept a *narrower* language than the contract
-    publishes; that terminal-anchor question belongs to A2.7.
+    gate applies to the checked-in schemas.
+
+    It also now agrees with the semantic layer's :func:`re.fullmatch`. That was
+    the open terminal-anchor question left to A2.7: a bare ``$`` matches before a
+    trailing newline under Python search semantics, so search accepted values
+    fullmatch refused, and this runtime read a wider language than the library
+    around it. Every canonical pattern now ends ``$(?![\\s\\S])``, so search and
+    fullmatch describe the same language and neither has to be tightened here.
+    ``tests/contracts/test_scalar_anchor_parity.py`` holds that agreement.
     """
     findings: list[str] = []
 

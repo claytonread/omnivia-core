@@ -52,53 +52,53 @@ export const SCHEMA_BASE_URI = "https://contracts.omnivia.dev/application/v1/" a
  * forward compatible.
  */
 export type ContractVersion = string;
-export const CONTRACT_VERSION_PATTERN: string = "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$";
+export const CONTRACT_VERSION_PATTERN: string = "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])";
 
 /**
  * A SemVer 2.0.0 release string identifying a concrete build, not a contract.
  */
 export type ReleaseVersion = string;
 export const RELEASE_VERSION_PATTERN: string =
-  "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0" +
-  "-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA" +
-  "-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$";
+  "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]" +
+  "*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0" +
+  "-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$(?![\\s\\S])";
 
 /**
  * Bounded, non-empty caller-assigned identifier for a single request attempt.
  */
 export type RequestId = string;
-export const REQUEST_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const REQUEST_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Bounded, non-empty identifier grouping related requests into one logical operation.
  */
 export type CorrelationId = string;
-export const CORRELATION_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const CORRELATION_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Bounded, non-empty distributed-trace identifier. Diagnostic only; never an authorization
  * input.
  */
 export type TraceId = string;
-export const TRACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const TRACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Bounded, non-empty identifier of the workspace a request is scoped to.
  */
 export type WorkspaceId = string;
-export const WORKSPACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const WORKSPACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Bounded, non-empty server-issued reference to the audit record for a completed operation.
  */
 export type AuditReference = string;
-export const AUDIT_REFERENCE_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const AUDIT_REFERENCE_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.
  */
 export type Identifier = string;
-export const IDENTIFIER_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const IDENTIFIER_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Stable namespaced capability identifier such as `memory.read`. At least one dot is required so
@@ -106,28 +106,28 @@ export const IDENTIFIER_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
  */
 export type CapabilityId = string;
 export const CAPABILITY_ID_PATTERN: string =
-  "^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*(?:" +
-  "\\.[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*)+$";
+  "^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*(?:\\.[a-z" +
+  "][a-z0-9]*(?:[_-][a-z0-9]+)*)+$(?![\\s\\S])";
 
 /**
  * An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible
  * minor releases can add vocabulary; consumers must preserve values they do not recognize.
  */
 export type OpenCode = string;
-export const OPEN_CODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const OPEN_CODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * An open scope token such as `memory:read` requested by the caller. Scopes narrow a request;
  * they never widen granted authority.
  */
 export type Scope = string;
-export const SCOPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$";
+export const SCOPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * An open purpose-limitation token stating why the caller is making this request.
  */
 export type Purpose = string;
-export const PURPOSE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const PURPOSE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never
@@ -146,15 +146,15 @@ export const OPAQUE_TOKEN_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
  * `idempotency_conflict`.
  */
 export type IdempotencyKey = string;
-export const IDEMPOTENCY_KEY_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const IDEMPOTENCY_KEY_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * An RFC 3339 timestamp in UTC with a literal `Z` offset.
  */
 export type Timestamp = string;
 export const TIMESTAMP_PATTERN: string =
-  "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:" +
-  "[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$";
+  "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]" +
+  "{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])";
 
 /**
  * A bounded non-negative duration in milliseconds.
@@ -165,7 +165,7 @@ export type DurationMs = number;
  * An opaque per-projection version marker used to reason about read staleness.
  */
 export type ProjectionVersion = string;
-export const PROJECTION_VERSION_PATTERN: string = "^[!-~]+$";
+export const PROJECTION_VERSION_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
 
 /**
  * An opaque JSON object. The envelope carries domain payloads without inspecting them, which is
@@ -188,7 +188,7 @@ export type PageLimit = number;
  */
 export type OperationCompatibilityState = string;
 export const OPERATION_COMPATIBILITY_STATE_PATTERN: string =
-  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming how thoroughly a release or capability combination has
@@ -199,7 +199,8 @@ export const OPERATION_COMPATIBILITY_STATE_PATTERN: string =
  * evidence of support.
  */
 export type QualificationState = string;
-export const QUALIFICATION_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const QUALIFICATION_STATE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming which component a compatibility entry describes, such as
@@ -207,7 +208,8 @@ export const QUALIFICATION_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][
  * can add components without breaking existing decoders.
  */
 export type ComponentKind = string;
-export const COMPONENT_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const COMPONENT_KIND_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a
@@ -218,7 +220,8 @@ export const COMPONENT_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-
  * -- and `returned_artifact` was never a wire mode at all.
  */
 export type ContextPackMode = string;
-export const CONTEXT_PACK_MODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const CONTEXT_PACK_MODE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * A bounded, non-negative count of tokens actually observed: the tokens one section's model-
@@ -243,7 +246,7 @@ export type ContextPackTokenBudget = number;
  * are admitted.
  */
 export type ContextPackDigest = string;
-export const CONTEXT_PACK_DIGEST_PATTERN: string = "^sha256:[0-9a-f]{64}$";
+export const CONTEXT_PACK_DIGEST_PATTERN: string = "^sha256:[0-9a-f]{64}$(?![\\s\\S])";
 
 /**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
@@ -255,7 +258,8 @@ export const CONTEXT_PACK_DIGEST_PATTERN: string = "^sha256:[0-9a-f]{64}$";
  * `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.
  */
 export type OperationName = string;
-export const OPERATION_NAME_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$";
+export const OPERATION_NAME_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])";
 
 /**
  * Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum,
@@ -263,21 +267,21 @@ export const OPERATION_NAME_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-
  * map them onto a known code.
  */
 export type ErrorCode = string;
-export const ERROR_CODE_PATTERN: string = "^[a-z][a-z0-9_]*$";
+export const ERROR_CODE_PATTERN: string = "^[a-z][a-z0-9_]*$(?![\\s\\S])";
 
 /**
  * How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized
  * retry class MUST fail safe as non-retryable: never infer that an unknown class is retryable.
  */
 export type RetryClass = string;
-export const RETRY_CLASS_PATTERN: string = "^[a-z][a-z0-9_]*$";
+export const RETRY_CLASS_PATTERN: string = "^[a-z][a-z0-9_]*$(?![\\s\\S])";
 
 /**
  * Stable identifier of one L0 evidence artifact, constant across its append-only provenance
  * history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.
  */
 export type EvidenceId = string;
-export const EVIDENCE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const EVIDENCE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * A caller-supplied, normalized search query for `evidence.search`. Normalization (case-folding,
@@ -291,14 +295,15 @@ export type EvidenceQuery = string;
  * mandate a specific algorithm.
  */
 export type EvidenceChecksum = string;
-export const EVIDENCE_CHECKSUM_PATTERN: string = "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$";
+export const EVIDENCE_CHECKSUM_PATTERN: string = "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$(?![\\s\\S])";
 
 /**
  * An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.
  */
 export type MediaType = string;
 export const MEDIA_TYPE_PATTERN: string =
-  "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$";
+  "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za" +
+  "-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
@@ -307,7 +312,8 @@ export const MEDIA_TYPE_PATTERN: string =
  * guessed at.
  */
 export type GraphDirection = string;
-export const GRAPH_DIRECTION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GRAPH_DIRECTION_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming a kind of relation between governed records, such as
@@ -315,7 +321,8 @@ export const GRAPH_DIRECTION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0
  * types without breaking existing decoders.
  */
 export type GraphRelationType = string;
-export const GRAPH_RELATION_TYPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GRAPH_RELATION_TYPE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * A bounded traversal depth a caller may request, or the server states it actually applied. Zero
@@ -330,7 +337,8 @@ export type GraphDepthLimit = number;
  * node/edge ordering.
  */
 export type GraphOrderingBasis = string;
-export const GRAPH_ORDERING_BASIS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GRAPH_ORDERING_BASIS_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code justifying why one endpoint of an edge is absent from a traversal
@@ -341,7 +349,8 @@ export const GRAPH_ORDERING_BASIS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z]
  * semantic validation and an unrecognized reason fails closed rather than being guessed at.
  */
 export type GraphBoundaryReason = string;
-export const GRAPH_BOUNDARY_REASON_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GRAPH_BOUNDARY_REASON_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or
@@ -349,7 +358,7 @@ export const GRAPH_BOUNDARY_REASON_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z
  * release can add states without breaking existing decoders.
  */
 export type JobState = string;
-export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such
@@ -357,7 +366,8 @@ export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)
  * without breaking existing decoders.
  */
 export type JobProgressUnit = string;
-export const JOB_PROGRESS_UNIT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const JOB_PROGRESS_UNIT_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right
@@ -372,7 +382,7 @@ export const JOB_PROGRESS_UNIT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-
  */
 export type JobCancellationAvailability = string;
 export const JOB_CANCELLATION_AVAILABILITY_PATTERN: string =
-  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right
@@ -386,7 +396,8 @@ export const JOB_CANCELLATION_AVAILABILITY_PATTERN: string =
  * persistence detail.
  */
 export type JobRecoveryAvailability = string;
-export const JOB_RECOVERY_AVAILABILITY_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const JOB_RECOVERY_AVAILABILITY_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known
@@ -400,7 +411,7 @@ export const JOB_RECOVERY_AVAILABILITY_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.
  */
 export type JobCancellationDisposition = string;
 export const JOB_CANCELLATION_DISPOSITION_PATTERN: string =
-  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming what one `job.retry` call actually did, with three known
@@ -415,7 +426,8 @@ export const JOB_CANCELLATION_DISPOSITION_PATTERN: string =
  * checkpoint, or persistence detail.
  */
 export type JobRecoveryDisposition = string;
-export const JOB_RECOVERY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const JOB_RECOVERY_DISPOSITION_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
@@ -427,7 +439,7 @@ export const JOB_RECOVERY_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[
  * checksum means.
  */
 export type ContentChecksum = string;
-export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$";
+export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
@@ -435,7 +447,8 @@ export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$";
  * record types without breaking existing decoders.
  */
 export type GovernedRecordType = string;
-export const GOVERNED_RECORD_TYPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GOVERNED_RECORD_TYPE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code selecting which slice of a governed record's versions a read
@@ -446,7 +459,8 @@ export const GOVERNED_RECORD_TYPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z]
  * concern (see `omnivia_core.contracts.v1.semantics`), not a wire-shape one.
  */
 export type GovernedRecordView = string;
-export const GOVERNED_RECORD_VIEW_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GOVERNED_RECORD_VIEW_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed
@@ -456,7 +470,8 @@ export const GOVERNED_RECORD_VIEW_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z]
  * compatible minor release can add classifications without breaking existing decoders.
  */
 export type RecordDomainScope = string;
-export const RECORD_DOMAIN_SCOPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const RECORD_DOMAIN_SCOPE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * A caller-supplied, normalized search query for `memory.search`. Normalization (case-folding,
@@ -470,7 +485,8 @@ export type MemoryQuery = string;
  * existing decoders.
  */
 export type MemorySearchOrder = string;
-export const MEMORY_SEARCH_ORDER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const MEMORY_SEARCH_ORDER_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming whether invoking an operation mutates state, such as `none`
@@ -478,7 +494,8 @@ export const MEMORY_SEARCH_ORDER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][
  * classifications without breaking existing decoders.
  */
 export type OperationSideEffect = string;
-export const OPERATION_SIDE_EFFECT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const OPERATION_SIDE_EFFECT_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming the kind of scope an operation carries, such as
@@ -487,7 +504,8 @@ export const OPERATION_SIDE_EFFECT_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z
  * one kind.
  */
 export type OperationScopeKind = string;
-export const OPERATION_SCOPE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const OPERATION_SCOPE_KIND_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming how an operation completes, such as `synchronous` (no durable
@@ -498,7 +516,8 @@ export const OPERATION_SCOPE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z]
  * without breaking existing decoders.
  */
 export type OperationCompletionMode = string;
-export const OPERATION_COMPLETION_MODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const OPERATION_COMPLETION_MODE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Whether and how an operation's results are paginated.
@@ -564,14 +583,14 @@ export type SchemaReference = string;
  * Stable identifier of a governed record, constant across every version of that record.
  */
 export type RecordId = string;
-export const RECORD_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$";
+export const RECORD_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
  * Opaque, server-issued version marker of one specific revision of a record. Clients must round-
  * trip it verbatim and must never parse it.
  */
 export type RecordVersion = string;
-export const RECORD_VERSION_PATTERN: string = "^[!-~]+$";
+export const RECORD_VERSION_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw
@@ -581,7 +600,8 @@ export const RECORD_VERSION_PATTERN: string = "^[!-~]+$";
  * compatible minor release can add layers without breaking existing decoders.
  */
 export type GovernanceLayer = string;
-export const GOVERNANCE_LAYER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GOVERNANCE_LAYER_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming whether a record version is the active one, such as `current`
@@ -589,7 +609,8 @@ export const GOVERNANCE_LAYER_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z
  * coerced to a known one.
  */
 export type RecordCurrentness = string;
-export const RECORD_CURRENTNESS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const RECORD_CURRENTNESS_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming a record's position in its own governance workflow, such as
@@ -600,14 +621,15 @@ export const RECORD_CURRENTNESS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a
  * decoders.
  */
 export type GovernanceState = string;
-export const GOVERNANCE_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const GOVERNANCE_STATE_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming the kind of thing a source reference points at, such as
  * `document` or `conversation` or `api_response`.
  */
 export type SourceKind = string;
-export const SOURCE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const SOURCE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * An addressable position within a source: a pointer plus an optional character span, so
@@ -635,7 +657,8 @@ export interface SourceSpan {
  * value must be preserved, not coerced to a known one.
  */
 export type EvidenceDisposition = string;
-export const EVIDENCE_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const EVIDENCE_DISPOSITION_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
@@ -644,7 +667,7 @@ export const EVIDENCE_DISPOSITION_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z]
  * breaking existing callers.
  */
 export type ProbeKind = string;
-export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming the outcome of a probe or one of its components, such as
@@ -652,7 +675,7 @@ export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*
  * surfaced, not coerced to a known one.
  */
 export type ProbeStatus = string;
-export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
@@ -660,7 +683,8 @@ export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_
  * without breaking existing decoders.
  */
 export type WorkspaceStatus = string;
-export const WORKSPACE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$";
+export const WORKSPACE_STATUS_PATTERN: string =
+  "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
  * Input for `workspace.create`. Installation-scoped: carries only installation-level creation

@@ -43,8 +43,12 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -2266,6 +2270,484 @@ def check_generated_artifacts_match_schemas() -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Scalar pattern compatibility classification (A2.7)
+# --------------------------------------------------------------------------
+
+PATTERN_BASELINE = REPO_ROOT / "contracts" / "application" / "v1" / "pattern-baseline.json"
+PATTERN_BASELINE_FORMAT = "omnivia.application-pattern-baseline.v1"
+SCHEMA_ROOT = "contracts/application/v1/schemas"
+
+#: The accepted contract checkpoint the pattern baseline may name.
+#:
+#: The trust anchor, and deliberately *not* inferred from the candidate's own
+#: history. Ancestry only proves ordering: every earlier commit on a branch is an
+#: ancestor of its tip, so a candidate that commits its schemas and then names
+#: that commit satisfies an ancestry test while certifying itself. Acceptance is
+#: a fact about review, so it has to arrive from somewhere the change under
+#: review does not author.
+#:
+#: **This constant is a local-development fallback, and nothing more.** It lives
+#: in the tree the candidate is allowed to rewrite, so on its own it establishes
+#: nothing: a candidate can commit its schemas, move this line to that commit,
+#: and certify itself in one diff. It exists so the gate is runnable on a laptop
+#: without repository configuration, and hosted acceptance refuses it outright --
+#: see :data:`ACCEPTED_CHECKPOINT_ENV` and :func:`_resolve_accepted_checkpoint`.
+#:
+#: **Rollover rule.** This value moves only *after* a slice is independently
+#: accepted and committed, in a change of its own, together with a baseline
+#: re-captured from that commit. It is never advanced prospectively to a commit
+#: belonging to the candidate it is meant to judge. Currently the accepted A2.6
+#: checkpoint.
+ACCEPTED_CONTRACT_CHECKPOINT = "9597837c936ae12879f0487fb6b0409aa5aab652"
+
+#: Where the *authoritative* anchor arrives: repository-external GitHub
+#: configuration -- a repository or environment variable, set and audited outside
+#: this tree -- passed into the gate process by the workflow. Hosted acceptance
+#: reads the anchor from here and from nowhere else.
+ACCEPTED_CHECKPOINT_ENV = "OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT"
+
+#: Environment variables that mark a hosted run. GitHub Actions always sets both
+#: to ``true``; other hosted runners set ``CI``. Any non-empty value counts,
+#: including one this gate cannot interpret: reading an ambiguous marker as
+#: hosted is the fail-closed direction, and the cost of being wrong is a run that
+#: demands its anchor be configured rather than one that silently trusts the tree.
+HOSTED_EXECUTION_MARKERS: tuple[str, ...] = ("GITHUB_ACTIONS", "CI")
+
+#: Git's canonical object-id spelling: exactly 40 lowercase hex characters.
+_FULL_OBJECT_ID = re.compile(r"[0-9a-f]{40}")
+
+#: The one transformation this gate may classify below major.
+TERMINAL_GUARD = "(?![\\s\\S])"
+
+CLASSIFICATION_UNCHANGED = "unchanged"
+CLASSIFICATION_PARITY = "patch / validator_parity_correction"
+CLASSIFICATION_MAJOR = "major / manual_review"
+
+
+def _patterned_nodes(document: Mapping[str, Any], source: str) -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+
+    def walk(node: Any, trail: list[str]) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("pattern"), str):
+                found[f"{source}:{'.'.join(trail)}"] = node
+            for key, value in node.items():
+                walk(value, [*trail, key])
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, [*trail, str(index)])
+
+    walk(document, [])
+    return found
+
+
+def _current_patterned_nodes() -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(SCHEMA_DIR.glob("*.schema.json")):
+        found.update(
+            _patterned_nodes(json.loads(path.read_text(encoding="utf-8")), path.stem)
+        )
+    return found
+
+
+def _corpus_probe_values() -> list[str]:
+    """Every string the frozen fixtures carry, plus trailing-suffix variants.
+
+    The classifier's evidence is drawn from the frozen corpus rather than from
+    generated inputs, because the corpus is the language the contract actually
+    publishes and is the same population every other gate reasons about.
+    """
+    strings: set[str] = set()
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+        elif isinstance(node, str):
+            strings.add(node)
+
+    for path in sorted(FIXTURES_DIR.glob("*.json")):
+        collect(json.loads(path.read_text(encoding="utf-8")))
+    probes = set(strings)
+    for value in strings:
+        for suffix in ("\n", "\r", "\r\n", " ", "\t", "\x00", "é"):
+            probes.add(value + suffix)
+    return sorted(probes)
+
+
+def _ecmascript_accepts(patterns: Sequence[str], values: Sequence[str]) -> list[list[bool]] | None:
+    """Ask Node which values each pattern accepts, or ``None`` when unavailable.
+
+    ``None`` is not "assume it agrees": the caller turns it into an
+    indeterminate classification, which fails. A parity claim that cannot be
+    checked against the other runtime is not a parity claim.
+    """
+    if shutil.which("node") is None:
+        return None
+    script = (
+        "const {patterns, values} = JSON.parse(require('fs').readFileSync(0, 'utf8'));\n"
+        "const out = patterns.map(p => {\n"
+        "  let re; try { re = new RegExp(p); } catch (e) { return null; }\n"
+        "  return values.map(v => re.test(v));\n"
+        "});\n"
+        "process.stdout.write(JSON.stringify(out));\n"
+    )
+    try:
+        finished = subprocess.run(
+            ["node", "-e", script],
+            input=json.dumps({"patterns": list(patterns), "values": list(values)}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if finished.returncode != 0:
+        return None
+    decoded: Any = json.loads(finished.stdout)
+    return None if any(row is None for row in decoded) else cast("list[list[bool]]", decoded)
+
+
+def _classify(
+    name: str,
+    old: Mapping[str, Any],
+    new: Mapping[str, Any],
+    values: Sequence[str],
+    ecmascript: Mapping[str, list[bool]] | None,
+) -> tuple[str, str | None]:
+    """Classify one definition's change, returning (classification, why-not-patch).
+
+    Everything defaults to major. The single exception is the exact terminal-guard
+    transformation, and it has to earn its way past three separate conditions --
+    the pattern differs *only* by the guard, every other keyword is untouched, and
+    the values Python stops accepting were already refused by the semantic layer
+    and by ECMAScript. A change that cannot be evaluated is indeterminate, never
+    optimistic.
+    """
+    old_pattern, new_pattern = old["pattern"], new["pattern"]
+    if old_pattern == new_pattern and old.get("keywords") == {
+        k: v for k, v in new.items() if k != "pattern"
+    }:
+        return CLASSIFICATION_UNCHANGED, None
+
+    if new_pattern != old_pattern + TERMINAL_GUARD:
+        return CLASSIFICATION_MAJOR, "the pattern changed by more than the terminal guard"
+    if old.get("keywords") != {k: v for k, v in new.items() if k != "pattern"}:
+        return CLASSIFICATION_MAJOR, "another schema keyword changed alongside the pattern"
+
+    # Condition: every value Python stops accepting was already rejected by the
+    # public semantic layer, which uses `fullmatch`.
+    #
+    # Under the exact-guard precondition above this is provably satisfied -- if
+    # `fullmatch(old, v)` succeeds then `old` spans the whole value, so nothing
+    # follows the match and the guard holds -- and likewise nothing can be newly
+    # admitted, since appending a guard only ever narrows. Both are kept as
+    # executed checks rather than as a comment because they are what makes the
+    # precondition *safe to loosen*: relax the exact-guard rule above and these
+    # start doing real work in the same commit. They are stated here as vacuous
+    # today so nobody reads them as the thing carrying the argument.
+    dropped = [
+        value
+        for value in values
+        if re.search(old_pattern, value) is not None and re.search(new_pattern, value) is None
+    ]
+    readmitted = [
+        value
+        for value in values
+        if re.search(old_pattern, value) is None and re.search(new_pattern, value) is not None
+    ]
+    if readmitted:
+        return CLASSIFICATION_MAJOR, f"the new pattern admits {readmitted[0]!r}, which the old refused"
+    still_semantic = [value for value in dropped if re.fullmatch(old_pattern, value) is not None]
+    if still_semantic:
+        return (
+            CLASSIFICATION_MAJOR,
+            f"removes {still_semantic[0]!r}, which public semantics already accepted",
+        )
+
+    # Condition: the two ECMAScript languages agree over the frozen corpus.
+    #
+    # This is the condition that actually does the work. ECMAScript's `$` is
+    # already strict, so appending the guard to an *anchored* pattern is a no-op
+    # there -- which is precisely what makes it a parity correction rather than a
+    # language change. Append it to an unanchored pattern and JavaScript's
+    # accepted language really does shrink, the two runs disagree, and the change
+    # is classified major. Nothing else here distinguishes those two cases.
+    if ecmascript is None:
+        return "indeterminate", "ECMAScript evaluation is unavailable"
+    before, after = ecmascript.get(old_pattern), ecmascript.get(new_pattern)
+    if before is None or after is None:
+        return "indeterminate", "ECMAScript evaluation did not cover this pattern"
+    if before != after:
+        index = next(i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b)
+        return (
+            CLASSIFICATION_MAJOR,
+            f"the ECMAScript languages differ at {values[index]!r}",
+        )
+    del name
+    return CLASSIFICATION_PARITY, None
+
+
+def _git(*arguments: str) -> tuple[int, str]:
+    """Run one git command, reporting failure rather than raising.
+
+    A missing or unusable git is a *finding*, not a traceback: this gate has to
+    answer "verified" or "not verified" deterministically, and an exception
+    escaping here would replace that answer with a crash the caller cannot
+    classify.
+    """
+    try:
+        finished = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *arguments],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return 1, ""
+    return finished.returncode, finished.stdout
+
+
+def _definitions_at(revision: str) -> dict[str, dict[str, Any]] | None:
+    """The patterned definitions recorded in the schemas at `revision`.
+
+    ``None`` when the revision cannot be read at all, which the caller turns
+    into a failure rather than a pass.
+    """
+    definitions: dict[str, dict[str, Any]] = {}
+    # Enumerated from the revision, not from the working tree. What the baseline
+    # claims is "this is what the accepted commit published", so the set of
+    # documents to read is the commit's, and this check stays independent of
+    # whatever the current schema directory happens to contain.
+    code, listing = _git("ls-tree", "--name-only", revision, f"{SCHEMA_ROOT}/")
+    if code != 0:
+        return None
+    for relative in sorted(line for line in listing.splitlines() if line.endswith(".schema.json")):
+        code, blob = _git("show", f"{revision}:{relative}")
+        if code != 0:
+            return None
+        stem = relative.rsplit("/", 1)[-1].removesuffix(".json")
+        for name, node in _patterned_nodes(json.loads(blob), stem).items():
+            definitions[name] = {
+                "pattern": node["pattern"],
+                "keywords": {k: v for k, v in node.items() if k != "pattern"},
+            }
+    return definitions
+
+
+def _is_hosted_execution(environ: Mapping[str, str]) -> bool:
+    """Whether this run is GitHub Actions or any other CI, per its own markers."""
+    return any(environ.get(marker, "").strip() for marker in HOSTED_EXECUTION_MARKERS)
+
+
+def _resolve_accepted_checkpoint(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str | None, list[str]]:
+    """The trust anchor to judge the baseline against, or why there is not one.
+
+    Hosted acceptance takes the anchor only from :data:`ACCEPTED_CHECKPOINT_ENV`,
+    which the workflow fills from repository-external GitHub configuration. The
+    constant in this file is not an acceptable hosted source and is not consulted
+    there at all: it sits in the tree under review, so a candidate that moved it
+    to a commit of its own would be certifying itself with the very artifact the
+    anchor exists to be independent of.
+
+    Everything short of a canonical object id fails closed rather than falling
+    back -- unset, empty, whitespace, a symbolic ref, an abbreviation, uppercase
+    hex, a revision expression. Falling back on any of those would turn a
+    misconfigured repository variable into a silently self-anchored run, which is
+    the same failure as having no anchor, only harder to notice.
+
+    Local development keeps the constant, and only local development. Surrounding
+    whitespace on a supplied value is stripped first: GitHub configuration
+    routinely carries a trailing newline, and that is a transport artifact rather
+    than a different object id.
+    """
+    environ = os.environ if environ is None else environ
+    raw = environ.get(ACCEPTED_CHECKPOINT_ENV)
+    supplied = "" if raw is None else raw.strip()
+
+    if not supplied:
+        if _is_hosted_execution(environ):
+            return None, [
+                (
+                    f"{ACCEPTED_CHECKPOINT_ENV}: hosted acceptance must be supplied the accepted "
+                    "contract checkpoint from repository-external GitHub configuration (a "
+                    f"repository or environment variable), and it is "
+                    f"{'unset' if raw is None else 'empty'}; the in-repository constant is a "
+                    "non-authoritative local-development fallback and does not apply here"
+                )
+            ]
+        return ACCEPTED_CONTRACT_CHECKPOINT, []
+
+    if _FULL_OBJECT_ID.fullmatch(supplied) is None:
+        return None, [
+            (
+                f"{ACCEPTED_CHECKPOINT_ENV}: the supplied accepted checkpoint {supplied!r} is "
+                "not a full 40-character object id in canonical lowercase hex"
+            )
+        ]
+    return supplied, []
+
+
+def check_pattern_baseline_is_the_accepted_checkpoint() -> list[str]:
+    """The baseline must be what the accepted checkpoint actually says.
+
+    Without this the classifier is decorative. The baseline is an ordinary file
+    in the tree, so the same commit that narrows a pattern can rewrite the
+    baseline entry to match, and the comparison then finds "no change" and
+    passes -- a breaking change published as compatible, which is precisely the
+    outcome the gate exists to prevent.
+
+    Anchoring it to a commit removes the option. A commit is immutable, so the
+    baseline can only be moved forward to a state that has *already* been
+    reviewed and committed, and the classifier's inputs stop being editable by
+    the change under classification.
+
+    An unreadable checkpoint is a failure, not a pass: a claim about a commit
+    nobody can read is not evidence. If CI clones shallowly, deepen the fetch
+    rather than skipping the check.
+
+    The anchor it is compared against comes from
+    :func:`_resolve_accepted_checkpoint`: repository-external GitHub
+    configuration on a hosted run, the in-tree constant only on a laptop.
+    """
+    if not PATTERN_BASELINE.exists():
+        return [f"{PATTERN_BASELINE.name}: missing; capture it from the accepted checkpoint"]
+    baseline: Any = json.loads(PATTERN_BASELINE.read_text(encoding="utf-8"))
+    checkpoint = baseline.get("accepted_checkpoint")
+
+    # A canonical full object id, and nothing else. `HEAD`, a branch, a tag, an
+    # abbreviation or any other revision expression is refused before it is
+    # resolved -- because a symbolic name resolves to whatever the candidate
+    # happens to be, and `"accepted_checkpoint": "HEAD"` would name the very
+    # state this gate exists to judge.
+    if not isinstance(checkpoint, str) or _FULL_OBJECT_ID.fullmatch(checkpoint) is None:
+        return [
+            (
+                f"{PATTERN_BASELINE.name}: accepted_checkpoint must be a full 40-character "
+                f"object id, got {checkpoint!r}; symbolic refs, abbreviations and revision "
+                "expressions resolve against the candidate and cannot establish acceptance"
+            )
+        ]
+
+    # Equality with a trust anchor obtained from outside this history. Ancestry
+    # was the earlier rule and it is not acceptance: every earlier commit on a
+    # branch is an ancestor, so a candidate could commit its own schemas, name
+    # that commit, and certify itself. Acceptance is a fact about review, and the
+    # only way to know it here is to be told by something the candidate does not
+    # write. Hosted runs are told by repository-external GitHub configuration and
+    # by nothing else; the in-tree constant answers only on a developer's laptop,
+    # where the run certifies nothing anyway.
+    expected, anchor_findings = _resolve_accepted_checkpoint()
+    if expected is None:
+        return anchor_findings
+    if checkpoint != expected:
+        return [
+            (
+                f"{PATTERN_BASELINE.name}: accepted_checkpoint {checkpoint[:7]} is not the "
+                f"accepted contract checkpoint {expected[:7]}; the baseline may advance only "
+                "to a separately accepted checkpoint, never to a commit authored by the "
+                "change it is meant to judge"
+            )
+        ]
+
+    if _git("cat-file", "-e", f"{checkpoint}^{{commit}}")[0] != 0:
+        return [
+            (
+                f"{PATTERN_BASELINE.name}: accepted_checkpoint {checkpoint} is not a commit "
+                "in this repository, so the baseline cannot be verified "
+                "(deepen a shallow fetch)"
+            )
+        ]
+
+    recorded = baseline.get("definitions", {})
+    accepted = _definitions_at(checkpoint)
+    if accepted is None:
+        return [
+            (
+                f"{PATTERN_BASELINE.name}: the schemas cannot be read at {checkpoint}, "
+                "so the baseline cannot be verified"
+            )
+        ]
+
+    findings: list[str] = []
+    for name in sorted(set(recorded) - set(accepted)):
+        findings.append(
+            f"{PATTERN_BASELINE.name}: records {name}, which does not exist at the accepted "
+            f"checkpoint {checkpoint[:7]}"
+        )
+    for name in sorted(set(accepted) - set(recorded)):
+        findings.append(
+            f"{PATTERN_BASELINE.name}: omits {name}, which the accepted checkpoint "
+            f"{checkpoint[:7]} publishes"
+        )
+    for name in sorted(set(recorded) & set(accepted)):
+        if recorded[name] != accepted[name]:
+            findings.append(
+                f"{PATTERN_BASELINE.name}: {name} does not match the accepted checkpoint "
+                f"{checkpoint[:7]}; the baseline may only be moved by capturing an accepted commit"
+            )
+    return findings
+
+
+def check_scalar_pattern_compatibility() -> list[str]:
+    """Classify every canonical pattern change against the accepted baseline.
+
+    A pattern is the wire language. Narrowing one silently breaks producers that
+    were conforming yesterday, so the default is major and manual. The one
+    transformation this gate may wave through is the terminal end-of-input guard,
+    because it removes only values the contract's own semantics and every
+    ECMAScript client already refused -- a validator-parity correction rather than
+    a language change.
+
+    The baseline is a checked-in inventory captured from the last accepted
+    checkpoint, so a change and its classification arrive in the same diff and a
+    reviewer can see both.
+    """
+    if not PATTERN_BASELINE.exists():
+        return [f"{PATTERN_BASELINE.name}: missing; capture it from the accepted checkpoint"]
+    baseline: Any = json.loads(PATTERN_BASELINE.read_text(encoding="utf-8"))
+    if baseline.get("format") != PATTERN_BASELINE_FORMAT:
+        return [f"{PATTERN_BASELINE.name}: format must be {PATTERN_BASELINE_FORMAT!r}"]
+
+    recorded: dict[str, Any] = baseline.get("definitions", {})
+    current = _current_patterned_nodes()
+    findings: list[str] = []
+
+    for name in sorted(set(recorded) - set(current)):
+        findings.append(
+            f"{PATTERN_BASELINE.name}: {name} was removed; removing a published definition is "
+            f"{CLASSIFICATION_MAJOR} and needs an accepted contract decision"
+        )
+    for name in sorted(set(current) - set(recorded)):
+        findings.append(
+            f"{PATTERN_BASELINE.name}: {name} is new and unrecorded; a new published pattern is "
+            f"{CLASSIFICATION_MAJOR} and needs an accepted contract decision"
+        )
+
+    values = _corpus_probe_values()
+    shared = sorted(set(recorded) & set(current))
+    wanted: list[str] = []
+    for name in shared:
+        wanted.extend((recorded[name]["pattern"], current[name]["pattern"]))
+    evaluated = _ecmascript_accepts(sorted(set(wanted)), values)
+    ecmascript = (
+        dict(zip(sorted(set(wanted)), evaluated, strict=True)) if evaluated is not None else None
+    )
+
+    for name in shared:
+        classification, reason = _classify(name, recorded[name], current[name], values, ecmascript)
+        if classification in {CLASSIFICATION_UNCHANGED, CLASSIFICATION_PARITY}:
+            continue
+        findings.append(f"{name}: classified {classification} -- {reason}")
+    return findings
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -2294,6 +2776,8 @@ def run_checks() -> list[str]:
     findings += check_adapter_conformance_corpus()
     findings += check_contract_package_has_no_forbidden_imports()
     findings += check_generated_artifacts_match_schemas()
+    findings += check_pattern_baseline_is_the_accepted_checkpoint()
+    findings += check_scalar_pattern_compatibility()
     return findings
 
 

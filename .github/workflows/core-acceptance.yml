@@ -89,10 +89,27 @@ jobs:
       - name: Build and install-check all distributions
         run: PYTHON=python scripts/check-package-builds.sh
 
+      # The accepted contract checkpoint that anchors the scalar pattern
+      # baseline. It is deliberately supplied from repository configuration --
+      # `vars.<NAME>`, a repository or environment variable set and audited
+      # outside this tree -- and not from a constant in the checkout: a candidate
+      # can rewrite anything it ships, so an in-tree anchor would let a change
+      # certify itself. It is a repository *variable*, not a secret: a commit id
+      # is not confidential, and a variable stays readable in the run log, which
+      # is the point of anchoring acceptance to it.
+      #
+      # Unset repository configuration expands to the empty string, and the gate
+      # fails closed on that rather than falling back to the in-tree constant.
+      # These three steps are the ones that execute the gate; the checker's own
+      # tests run inside the two pytest steps, so they need the same anchor.
       - name: Check application contracts
+        env:
+          OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
         run: python scripts/check-application-contracts.py
 
       - name: Run application contract tests
+        env:
+          OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
         run: python -m pytest tests/contracts -q
 
       - name: Check generated TypeScript contracts
@@ -125,6 +142,8 @@ jobs:
         run: PYTHON=python scripts/check-core-baseline.sh
 
       - name: Run full repository test suite
+        env:
+          OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
         run: python -m pytest -q
 
       - name: Run benchmark tests

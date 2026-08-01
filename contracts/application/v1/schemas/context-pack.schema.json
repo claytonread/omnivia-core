@@ -10,7 +10,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
     },
     "ContextPackTokenCount": {
       "title": "ContextPackTokenCount",
@@ -32,7 +32,7 @@
       "type": "string",
       "minLength": 71,
       "maxLength": 71,
-      "pattern": "^sha256:[0-9a-f]{64}$"
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
     },
     "ContextPackEvidenceReference": {
       "title": "ContextPackEvidenceReference",
