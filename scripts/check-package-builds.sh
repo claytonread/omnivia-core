@@ -174,10 +174,17 @@ print(
 PYEOF
 echo
 
+# Importing only the top-level package proves the wheel unpacks, and nothing more.
+# A distribution whose operational module imports an undeclared sibling installs
+# cleanly and passes that check, then fails on first use -- which is exactly what
+# happened to the MCP adapter. The submodules a distribution actually runs are
+# therefore imported too.
 install_and_import() {
   local venv_name="$1"
   local dist_name="$2"
   local import_name="$3"
+  shift 3
+  local operational=("$@")
   local venv_dir="${WORKDIR}/${venv_name}"
 
   echo "--- ${venv_name}: install ${dist_name}, import ${import_name} ---"
@@ -187,13 +194,32 @@ install_and_import() {
 import ${import_name}
 print('${import_name}', ${import_name}.__version__, 'OK')
 "
+
+  # `${arr[@]+...}` because Bash 3.2 -- still the system Bash on macOS -- treats an
+  # empty array as unset under `set -u`.
+  for module in ${operational[@]+"${operational[@]}"}; do
+    echo "    operational module: ${module}"
+    "${venv_dir}/bin/python" -c "
+import importlib
+importlib.import_module('${module}')
+print('${module}', 'OK')
+"
+  done
   echo
 }
 
 install_and_import "venv-core" "omnivia-core" "omnivia_core"
-install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime"
+install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" \
+  "omnivia_core_runtime.service.main" \
+  "omnivia_core_runtime.service.runner" \
+  "omnivia_core_runtime.service.transport"
+# No operational modules: the MCP distribution is a skeleton surface until the
+# separately approved Phase 4 packet. Its operational adapter imported
+# `omnivia_core_cli`, a sibling, which the approved topology does not permit.
 install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp"
-install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli"
+install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
+  "omnivia_core_cli.client" \
+  "omnivia_core_cli.main"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"
 CORE_RESOURCE_CWD="${WORKDIR}/core-resource-check-cwd"

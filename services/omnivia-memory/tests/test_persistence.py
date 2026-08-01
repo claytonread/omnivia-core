@@ -11,6 +11,7 @@ from omnivia_memory.memory.models import Memory
 from omnivia_memory.persistence.database import (
     Database,
     DatabaseConfig,
+    _ImplicitDatabasePathRefused,
     get_database,
     reset_database,
 )
@@ -326,26 +327,34 @@ class TestMemoryRepository:
 class TestGetDatabase:
     """Tests for get_database function."""
 
-    def test_get_database_creates_default(self):
-        """get_database creates default database if not exists."""
+    def test_get_database_refuses_an_implicit_path(self):
+        """get_database has no default path (T-0629F).
+
+        This test previously asserted the opposite: that a bare call created a
+        database "in the default location". That location was the developer's real
+        ~/.omnivia/memories.db, created as a side effect of a getter, and it sits
+        outside any workspace so it can be neither migrated nor fenced. Removing the
+        fallback is the mutation cutover, so the test now pins the refusal.
+        """
         reset_database()
 
-        # Should create database in default location
-        db = get_database()
+        with pytest.raises(_ImplicitDatabasePathRefused) as raised:
+            get_database()
 
-        assert db is not None
-        assert isinstance(db, Database)
+        assert "explicit db_path" in str(raised.value)
+        assert "~/.omnivia/memories.db" in str(raised.value)
 
         reset_database()
 
-    def test_get_database_returns_same_instance(self):
-        """get_database returns singleton instance."""
+    def test_get_database_returns_same_instance(self, db_path):
+        """get_database returns a singleton once given an explicit path."""
         reset_database()
 
-        db1 = get_database()
-        db2 = get_database()
+        db1 = get_database(db_path)
+        db2 = get_database(db_path)
 
         assert db1 is db2
+        assert isinstance(db1, Database)
 
         reset_database()
 

@@ -65,8 +65,17 @@ GATE_STEPS = (
         "python scripts/check-root-facade-resolver.py",
     ),
     ("Verify Phase 0 baseline", "PYTHON=python scripts/check-core-baseline.sh"),
-    # The full suite, on its own: an exact match rejects added filters.
-    ("Run full repository test suite", "python -m pytest -q"),
+    # The full suite, pinned exactly so a narrowed scope fails here. It names its
+    # paths because Phase 2 lives outside `testpaths` (`services` and `tests`), so a
+    # bare `pytest -q` reported a green full-repository run while collecting none of
+    # it. Naming paths disables `testpaths`, so `services` and `tests` are listed
+    # explicitly rather than inherited, and the three must stay one invocation:
+    # several Phase 2 modules import public barrels, and splitting the run is what
+    # hid the barrel-namespace drift.
+    (
+        "Run full repository test suite",
+        "python -m pytest services tests packages/omnivia-core-runtime/tests/phase2 -q",
+    ),
     ("Run benchmark tests", "python -m pytest benchmarks/tests -q"),
 )
 

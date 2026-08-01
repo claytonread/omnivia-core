@@ -421,7 +421,14 @@ BARRELS: tuple[dict[str, Any], ...] = (
         "runtime_exclusions": WORKSPACE_EXCLUSIONS,
         "forbidden_runtime_modules": WORKSPACE_FORBIDDEN_MODULES,
         "children": {"models": "omnivia_core.workspace.models"},
-        "incidental_children": {},
+        # Phase 2 added two public workspace submodules. Like `ingestion.watcher`,
+        # they become attributes of the barrel only once something imports them --
+        # which nothing did until the Phase 2 suite ran in the same process, so the
+        # default root suite stayed green while the combined run failed.
+        "incidental_children": {
+            "compatibility": "omnivia_core.workspace.compatibility",
+            "manifest": "omnivia_core.workspace.manifest",
+        },
         "expected_closure": frozenset(
             {"omnivia_core", "omnivia_core.workspace", "omnivia_core.workspace.models"}
         ),

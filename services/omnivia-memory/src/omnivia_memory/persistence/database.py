@@ -7,10 +7,11 @@ The database file is stored in the user's data directory.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 
 @dataclass
@@ -584,25 +585,54 @@ class Database:
 _global_db: Database | None = None
 
 
+class _ImplicitDatabasePathRefused(RuntimeError):
+    """`get_database()` was called without an explicit path.
+
+    T-0629F removes the implicit writable home-database fallback. The exception
+    carries the remedy because every caller that hits it needs the same fix: pass
+    the workspace database path, or go through the Core Service.
+
+    Deliberately underscore-prefixed. This is a frozen Phase 0 module, and its public
+    export inventory is pinned evidence from T-0627; adding a public name here drifts
+    that baseline and would require regenerating frozen evidence, which is a
+    governance act rather than an implementation one. A private name keeps the
+    exception catchable without mutating the record. Promote it if and when the
+    baseline is legitimately recaptured.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "get_database() requires an explicit db_path. The implicit "
+            "~/.omnivia/memories.db fallback was removed by T-0629F: a getter must "
+            "not create a writable database as a side effect, and an unversioned "
+            "global database cannot be fenced. Pass the workspace database path, or "
+            "use the Core Service API."
+        )
+
+
 def get_database(db_path: Path | str | None = None) -> Database:
     """Get or create the global database instance.
 
     Args:
-        db_path: Optional path to the database file.
-                 Defaults to ~/.omnivia/memories.db
+        db_path: Path to the database file. **Required.** There is deliberately no
+                 default: the previous behaviour created `~/.omnivia/` and opened a
+                 writable `memories.db` inside it as a side effect of a getter, so
+                 the first bare call anywhere in a process silently chose an
+                 unversioned global database and pinned it for every later caller.
+                 That database sits outside any workspace, so it can be neither
+                 migrated nor fenced.
 
     Returns:
         The global Database instance
+
+    Raises:
+        _ImplicitDatabasePathRefused: when `db_path` is omitted.
     """
     global _global_db
 
     if _global_db is None:
         if db_path is None:
-            # Default to ~/.omnivia/memories.db
-            home = Path.home()
-            db_dir = home / ".omnivia"
-            db_dir.mkdir(parents=True, exist_ok=True)
-            db_path = db_dir / "memories.db"
+            raise _ImplicitDatabasePathRefused
 
         config = DatabaseConfig(db_path=Path(db_path))
         _global_db = Database(config)

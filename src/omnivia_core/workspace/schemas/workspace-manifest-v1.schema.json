@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/workspace/workspace-manifest-v1.schema.json",
+  "title": "OmniVia portable workspace manifest, version 1",
+  "description": "The portable workspace.json document. Carries stable identity and format information only. Absolute paths, installation or process identity, open history, endpoints, credentials, secrets and key material are prohibited by construction: no property admitting them is defined, and unevaluatedProperties is false.",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "workspace_id",
+    "created_at",
+    "compatibility"
+  ],
+  "unevaluatedProperties": false,
+  "properties": {
+    "manifest_version": {
+      "description": "Schema version of this manifest document. Distinct from the workspace format version.",
+      "const": "1"
+    },
+    "workspace_id": {
+      "description": "Stable workspace identity. Independent of on-disk location, so it survives a move.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "created_at": {
+      "$ref": "#/$defs/Timestamp"
+    },
+    "name": {
+      "description": "Optional human label. Not an identifier.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 512
+    },
+    "compatibility": {
+      "$ref": "#/$defs/CoreCompatibility"
+    },
+    "projections": {
+      "description": "Derived indexes held inside the workspace.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProjectionDeclaration"
+      }
+    },
+    "encryption": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EncryptionMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "migration": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MigrationSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "integrity": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/IntegrityMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "Timestamp": {
+      "description": "RFC 3339 / ISO 8601 timestamp.",
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "Version": {
+      "description": "Dotted version string. OPEN by design: a patterned string, not an enum, so a pre-release suffix never makes a version incomparable.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[0-9]+(\\.[0-9]+)*([-+][A-Za-z0-9.]+)?$"
+    },
+    "CoreCompatibility": {
+      "type": "object",
+      "required": [
+        "workspace_format_version",
+        "min_core_version"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "workspace_format_version": {
+          "$ref": "#/$defs/Version"
+        },
+        "min_core_version": {
+          "$ref": "#/$defs/Version"
+        },
+        "max_core_version_exclusive": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Version"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectionDeclaration": {
+      "type": "object",
+      "required": [
+        "projection_id",
+        "version",
+        "rebuildable"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "projection_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "version": {
+          "$ref": "#/$defs/Version"
+        },
+        "rebuildable": {
+          "description": "Whether this projection can be rebuilt from canonical data. A non-rebuildable projection must block an incompatible open rather than be discarded.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EncryptionMetadata": {
+      "description": "How the workspace is encrypted. Never the material required to decrypt it: no key, passphrase, salt or wrapped key blob is representable here.",
+      "type": "object",
+      "required": [
+        "algorithm",
+        "key_derivation"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "key_derivation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "key_reference": {
+          "description": "Opaque non-secret identifier for the expected key, so a reader can distinguish a wrong key from corrupt data without holding any key.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "MigrationSummary": {
+      "description": "The last format migration, as a portable record. The legacy source is identified by fingerprint, never by path.",
+      "type": "object",
+      "required": [
+        "from_format_version",
+        "to_format_version",
+        "migrated_at",
+        "attempt_id"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "from_format_version": {
+          "$ref": "#/$defs/Version"
+        },
+        "to_format_version": {
+          "$ref": "#/$defs/Version"
+        },
+        "migrated_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        },
+        "source_fingerprint": {
+          "description": "Digest identifying the migrated source data. Not a path.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "IntegrityMetadata": {
+      "description": "Checksum over the canonical JSON of this manifest with the integrity block removed. Including the block would be self-referential.",
+      "type": "object",
+      "required": [
+        "canonical_checksum"
+      ],
+      "unevaluatedProperties": false,
+      "properties": {
+        "canonical_checksum": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "algorithm": {
+          "const": "sha256"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -13,5 +13,8 @@ dependencies = [
     "omnivia-core>=0.1.0,<0.2.0",
 ]
 
+[project.scripts]
+omnivia = "omnivia_core_cli.main:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnivia_core_cli"]
