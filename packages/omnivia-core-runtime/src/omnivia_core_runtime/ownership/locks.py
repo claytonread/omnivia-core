@@ -287,8 +287,32 @@ REFUSED_FILESYSTEMS = frozenset(
 )
 
 #: Local filesystems with lock semantics this project has qualified.
+#:
+#: `ext2/ext3` is one label, not a pair of names: GNU coreutils prints that exact
+#: string for statfs magic 0xEF53, which covers ext2, ext3 *and* ext4. So every
+#: stock Linux box -- including a hosted Ubuntu runner, whose workspace is ext4 --
+#: reports itself as `ext2/ext3` and never as `ext4`. Listing only the individual
+#: names meant `stat -f -c %T` returned a value none of them matched and the
+#: service refused a standard local filesystem.
+#:
+#: Membership is an exact match, deliberately. Accepting anything that merely
+#: contains or starts with a qualified name would admit `ext2/ext3/ext4-fuse` and
+#: every other filesystem whose name happens to embed one of these.
 QUALIFIED_FILESYSTEMS = frozenset(
-    {"apfs", "hfs", "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "ntfs", "tmpfs", "overlay"}
+    {
+        "apfs",
+        "btrfs",
+        "ext2",
+        "ext2/ext3",
+        "ext3",
+        "ext4",
+        "hfs",
+        "ntfs",
+        "overlay",
+        "tmpfs",
+        "xfs",
+        "zfs",
+    }
 )
 
 
@@ -322,6 +346,10 @@ def detect_filesystem(path: Path) -> str:
             # filesystem type comes from resolving the mount point and reading its
             # type out of `mount`.
             return _darwin_filesystem(target)
+        if system == "Windows":
+            # Windows has no `stat -f`, and until now this fell through to the
+            # `"unknown"` below, so a Windows host could never qualify at all.
+            return _windows_filesystem(target)
         if system == "Linux":
             import subprocess
 
@@ -375,6 +403,51 @@ def _darwin_filesystem(target: Path) -> str:
         first = remainder.split(",")[0].strip().rstrip(")").lower()
         return first or "unknown"
     return "unknown"
+
+
+#: `GetDriveTypeW`'s DRIVE_REMOTE. A network volume reports the filesystem on the
+#: *server*, which is no evidence at all about cross-host lock semantics, so its
+#: name is never reported as if it were local.
+_DRIVE_REMOTE = 4
+
+#: MAX_PATH + 1. Both volume APIs document this as a sufficient output buffer.
+_WINDOWS_BUFFER = 261
+
+
+def _windows_filesystem(target: Path) -> str:
+    """Windows filesystem type, read off the volume with `GetVolumeInformationW`.
+
+    The name comes from the volume itself -- `ntfs`, `refs`, `exfat`, `fat32` --
+    never from the fact that the host is Windows. Answering "ntfs" because
+    `platform.system()` said Windows would make qualification a tautology: it would
+    report success on a ReFS or exFAT workspace whose lock semantics this project
+    has never qualified, which is the one thing the gate exists to prevent.
+
+    `ctypes` is the standard library's route to the Win32 API, so this needs no
+    dependency. Anything unexpected -- no kernel32, a failed call, a network
+    volume, an empty name -- returns "unknown", which default-deny then refuses.
+    """
+    import ctypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+        root = ctypes.create_unicode_buffer(_WINDOWS_BUFFER)
+        # The volume mount point, which is what both following calls take. It is
+        # not always `X:\`: a volume can be mounted on a directory.
+        if not kernel32.GetVolumePathNameW(str(target), root, _WINDOWS_BUFFER):
+            return "unknown"
+        if kernel32.GetDriveTypeW(root.value) == _DRIVE_REMOTE:
+            return "unknown"
+        name = ctypes.create_unicode_buffer(_WINDOWS_BUFFER)
+        # Volume label, serial, component length and flags are all passed NULL:
+        # the filesystem name is the only output this needs.
+        if not kernel32.GetVolumeInformationW(
+            root.value, None, 0, None, None, None, name, _WINDOWS_BUFFER
+        ):
+            return "unknown"
+    except Exception:  # noqa: BLE001 - any probe failure means unknown
+        return "unknown"
+    return str(name.value).strip().lower() or "unknown"
 
 
 def qualify_filesystem(

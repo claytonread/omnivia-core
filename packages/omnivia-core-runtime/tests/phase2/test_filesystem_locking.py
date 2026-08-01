@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import platform
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_runtime.ownership.identity import (
@@ -26,6 +28,7 @@ from omnivia_core_runtime.ownership.locks import (
     LockUnavailable,
     PosixFileLock,
     WindowsFileLock,
+    _windows_filesystem,
     create_lock,
     detect_filesystem,
     qualify_filesystem,
@@ -136,6 +139,186 @@ def test_fl07_unknown_lock_semantics_refuse_writable_operation(tmp_path: Path) -
         qualification = qualify_filesystem(tmp_path, filesystem=name, probe_locking=False)
         assert not qualification.writable, name
         assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN
+
+
+# --- what the platforms actually report ---------------------------------------
+#
+# Detection is the half of qualification a unit test kept missing: the rules above
+# inject a filesystem name, so they pass no matter what the real probes return. On
+# hosted CI both probes returned a name the rules then refused -- Linux because
+# `stat -f -c %T` prints one label for the whole ext family, Windows because there
+# was no probe at all -- and a standard runner was told its own disk was
+# unqualified. These pin the reported values, not just the rules applied to them.
+
+
+def test_the_linux_ext_statfs_label_is_qualified(tmp_path: Path) -> None:
+    """`stat -f -c %T` prints `ext2/ext3` for ext2, ext3 and ext4 alike.
+
+    GNU coreutils maps statfs magic 0xEF53 to that one string, so a hosted Ubuntu
+    runner reports its ext4 workspace under a name that listing `ext2`, `ext3` and
+    `ext4` individually never matched.
+    """
+    assert "ext2/ext3" in QUALIFIED_FILESYSTEMS
+    qualification = qualify_filesystem(tmp_path, filesystem="ext2/ext3", probe_locking=False)
+    assert qualification.writable, qualification
+    assert qualification.verdict is FilesystemVerdict.QUALIFIED
+
+
+def test_the_ext_label_is_matched_exactly_rather_than_by_substring(tmp_path: Path) -> None:
+    """Recognising one compound label must not become a prefix or substring rule.
+
+    A containment test would have been the shorter fix and would admit anything
+    whose name happens to embed a qualified one, which is precisely the assumption
+    default-deny exists to refuse.
+    """
+    for name in ("ext2/ext3/ext4", "ext", "ext5", "myext4", "ext4fs", "ext2/ext3fs"):
+        qualification = qualify_filesystem(tmp_path, filesystem=name, probe_locking=False)
+        assert not qualification.writable, name
+        assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN, name
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="Linux statfs label")
+def test_linux_detection_names_the_filesystem_it_is_running_on(tmp_path: Path) -> None:
+    """The Ubuntu row's own evidence: detection must produce a real name here.
+
+    Asserted directly rather than left to the service tests, where the same defect
+    surfaced as twelve unrelated-looking startup failures.
+    """
+    detected = detect_filesystem(tmp_path)
+    assert detected != "unknown"
+    assert detected in QUALIFIED_FILESYSTEMS, (
+        f"this Linux filesystem reports as {detected!r}, which the qualified set "
+        "does not recognise"
+    )
+
+
+class _FakeKernel32:
+    """The two `kernel32` entry points `_windows_filesystem` calls.
+
+    They exist only on Windows, so macOS and Linux exercise the helper's logic
+    through this fake -- output buffers included, since a real
+    `create_unicode_buffer` works on every platform -- and the hosted Windows row
+    is the proof that the real API is driven correctly.
+    """
+
+    def __init__(
+        self,
+        *,
+        filesystem: str = "NTFS",
+        drive_type: int = 3,  # DRIVE_FIXED
+        volume_path_ok: bool = True,
+        volume_info_ok: bool = True,
+        root: str = "C:\\",
+    ) -> None:
+        self.filesystem = filesystem
+        self.drive_type = drive_type
+        self.volume_path_ok = volume_path_ok
+        self.volume_info_ok = volume_info_ok
+        self.root = root
+
+    # Win32 spelling, deliberately: these stand in for the real entry points and
+    # are looked up by exactly these names.
+    def GetVolumePathNameW(self, path: str, buffer: Any, size: int) -> int:
+        if not self.volume_path_ok:
+            return 0
+        buffer.value = self.root
+        return 1
+
+    def GetDriveTypeW(self, root: str) -> int:
+        return self.drive_type
+
+    def GetVolumeInformationW(
+        self,
+        root: str,
+        volume_name: Any,
+        volume_size: int,
+        serial: Any,
+        component_length: Any,
+        flags: Any,
+        filesystem_name: Any,
+        filesystem_size: int,
+    ) -> int:
+        if not self.volume_info_ok:
+            return 0
+        filesystem_name.value = self.filesystem
+        return 1
+
+
+def _patch_kernel32(monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32) -> None:
+    """`ctypes.WinDLL` does not exist off Windows, hence `raising=False`."""
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: fake, raising=False)
+
+
+def test_windows_detection_reports_the_volume_filesystem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="NTFS"))
+    assert _windows_filesystem(tmp_path) == "ntfs"
+
+
+def test_windows_detection_is_not_ntfs_by_assumption(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Windows host is not evidence that the workspace sits on NTFS.
+
+    Returning `ntfs` from the platform name would make the gate a tautology: it
+    would report a ReFS or exFAT workspace as qualified without ever having asked
+    the volume, and those lock semantics are exactly what has not been qualified.
+    """
+    _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="ReFS"))
+    assert _windows_filesystem(tmp_path) == "refs"
+    assert not qualify_filesystem(tmp_path, filesystem="refs", probe_locking=False).writable
+
+    _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="exFAT"))
+    assert _windows_filesystem(tmp_path) == "exfat"
+    assert not qualify_filesystem(tmp_path, filesystem="exfat", probe_locking=False).writable
+
+
+@pytest.mark.parametrize(
+    ("case", "fake"),
+    [
+        ("no volume path", _FakeKernel32(volume_path_ok=False)),
+        ("no volume information", _FakeKernel32(volume_info_ok=False)),
+        ("empty filesystem name", _FakeKernel32(filesystem="   ")),
+        # A network volume reports the *server's* filesystem, which says nothing
+        # about cross-host locking; ADR-037 refuses those outright.
+        ("network drive", _FakeKernel32(drive_type=4)),
+    ],
+)
+def test_windows_detection_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str, fake: _FakeKernel32
+) -> None:
+    _patch_kernel32(monkeypatch, fake)
+    assert _windows_filesystem(tmp_path) == "unknown", case
+    qualification = qualify_filesystem(tmp_path, filesystem="unknown", probe_locking=False)
+    assert not qualification.writable, case
+    assert qualification.verdict is FilesystemVerdict.REFUSED_UNKNOWN, case
+
+
+def test_windows_detection_survives_an_unavailable_kernel32(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A probe that raises is a probe that proved nothing, not a reason to crash."""
+
+    def unavailable(name: str) -> object:
+        raise OSError("kernel32 unavailable")
+
+    monkeypatch.setattr(ctypes, "WinDLL", unavailable, raising=False)
+    assert _windows_filesystem(tmp_path) == "unknown"
+
+
+def test_detect_filesystem_probes_the_volume_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The dispatch, not only the helper: Windows used to fall through to unknown.
+
+    Every Windows path was refused before this, which is why the Windows row could
+    not qualify its own runner disk.
+    """
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    _patch_kernel32(monkeypatch, _FakeKernel32(filesystem="NTFS"))
+    assert detect_filesystem(tmp_path) == "ntfs"
+    assert qualify_filesystem(tmp_path, probe_locking=False).writable
 
 
 def test_a_qualified_local_filesystem_is_accepted(tmp_path: Path) -> None:

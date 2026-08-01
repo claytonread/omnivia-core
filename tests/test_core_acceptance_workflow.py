@@ -42,6 +42,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACCEPTANCE_WORKFLOW = WORKFLOW_DIR / "core-acceptance.yml"
 PERFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-performance-report.yml"
+PHASE2_WORKFLOW = WORKFLOW_DIR / "phase2-platform.yml"
 
 # (step name, exact command) for each single-command gate step, in the order the
 # workflow must run them.
@@ -217,6 +218,31 @@ REQUIRED_LOCAL_INSTALLS = (
     'python -m pip install -e "services/omnivia-memory[dev]"',
 )
 
+# The same ordering constraint in the other two workflows, pinned because both
+# broke on it. `omnivia-core` is unpublished, so every local distribution that
+# depends on it -- `omnivia-memory` and the three `packages/` distributions --
+# can only resolve against this checkout, and only if it is installed first.
+# Installed the other way round, pip reaches the index and the job dies before
+# it runs anything.
+PHASE2_LOCAL_INSTALLS = (
+    "python -m pip install -e .",
+    'python -m pip install -e "services/omnivia-memory[dev]"',
+    "python -m pip install -e packages/omnivia-core-runtime",
+    "python -m pip install -e packages/omnivia-core-cli",
+    "python -m pip install -e packages/omnivia-core-mcp",
+)
+
+# The performance job invokes pip as `python3`, so the commands are pinned as it
+# actually writes them rather than normalised.
+PERFORMANCE_LOCAL_INSTALLS = (
+    "python3 -m pip install -e .",
+    'python3 -m pip install -e "services/omnivia-memory[dev]"',
+)
+
+PHASE2_JOB = "phase2-platform"
+PHASE2_INSTALL_STEP = "Install Python tooling and local packages"
+PHASE2_MATRIX = "[ubuntu-latest, macos-latest, windows-latest]"
+
 # A workflow-shaped fixture for the helper meta-test. Every commented directive
 # here must be invisible to the helpers; every uncommented one must be found.
 COMMENTED_FIXTURE = """\
@@ -375,6 +401,24 @@ def _steps() -> list[Line]:
     return _block(_job(), "steps")
 
 
+def _job_of(workflow: Path, job: str) -> list[Line]:
+    """The named job of any workflow, through the same structural helpers."""
+    return _block(_block(_significant(workflow.read_text(encoding="utf-8")), "jobs"), job)
+
+
+def _steps_of(workflow: Path, job: str) -> list[Line]:
+    return _block(_job_of(workflow, job), "steps")
+
+
+def _assert_install_order(commands: tuple[str, ...], required: tuple[str, ...]) -> None:
+    """Every install is present, and they run in the order `required` lists them."""
+    positions = []
+    for install in required:
+        assert install in commands, f"missing install: {install}"
+        positions.append(commands.index(install))
+    assert positions == sorted(positions), f"installs are out of order: {commands}"
+
+
 def test_acceptance_workflow_exists() -> None:
     assert ACCEPTANCE_WORKFLOW.is_file(), f"missing workflow: {ACCEPTANCE_WORKFLOW}"
 
@@ -454,12 +498,9 @@ def test_python_tooling_installation_pins_the_build_backend() -> None:
 
 
 def test_local_packages_install_root_before_compatibility_distribution() -> None:
-    commands = _commands(_step(_steps(), "Install local packages"))
-    positions = []
-    for install in REQUIRED_LOCAL_INSTALLS:
-        assert install in commands, f"missing local install: {install}"
-        positions.append(commands.index(install))
-    assert positions == sorted(positions), "the root package must be installed first"
+    _assert_install_order(
+        _commands(_step(_steps(), "Install local packages")), REQUIRED_LOCAL_INSTALLS
+    )
 
 
 def test_node_dependencies_use_the_lockfile() -> None:
@@ -633,6 +674,72 @@ def test_performance_workflow_stays_separate_and_informational() -> None:
     # The acceptance gate must not delegate to, or reuse, the informational
     # performance workflow.
     assert "core-performance" not in _text()
+
+
+def test_performance_workflow_installs_the_root_checkout_first() -> None:
+    """The whole job died on this: `omnivia-memory` was installed on its own, pip
+    went looking for the unpublished `omnivia-core` on the index, and the run
+    failed at dependency resolution without reaching a benchmark."""
+    steps = _steps_of(PERFORMANCE_WORKFLOW, "performance-report")
+    step = _step(steps, "Install Core test dependencies")
+    _assert_install_order(_commands(step), PERFORMANCE_LOCAL_INSTALLS)
+
+
+def test_phase2_workflow_installs_the_root_checkout_before_its_dependents() -> None:
+    """Root, then the compatibility distribution, then the three local packages.
+
+    `services/omnivia-memory[dev]` was absent altogether, which is why FM-22's
+    `import omnivia_memory` failed on the macOS and Windows rows; it is ordered
+    after the root install for the same reason the acceptance job orders them.
+    """
+    step = _step(_steps_of(PHASE2_WORKFLOW, PHASE2_JOB), PHASE2_INSTALL_STEP)
+    _assert_install_order(_commands(step), PHASE2_LOCAL_INSTALLS)
+
+
+def test_phase2_install_commands_are_quoted_for_every_hosted_shell() -> None:
+    """One script runs on bash and on PowerShell, so the arguments carrying shell
+    metacharacters are quoted rather than relying on the runner's default shell
+    treating `[`, `]`, `>` and `<` as literals."""
+    step = _step(_steps_of(PHASE2_WORKFLOW, PHASE2_JOB), PHASE2_INSTALL_STEP)
+    unquoted = [
+        (command, argument)
+        for command in _commands(step)
+        for argument in command.split()
+        if any(character in argument for character in "[]<>")
+        and not (argument.startswith('"') and argument.endswith('"'))
+    ]
+    assert not unquoted, f"shell metacharacters left unquoted: {unquoted}"
+
+
+def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> None:
+    """The matrix and its two steps are the evidence this workflow exists to
+    collect, so none of it may be narrowed, skipped or made informational to get a
+    green run: a suppressed Windows row reports success for the one platform that
+    has never proved anything."""
+    job = _job_of(PHASE2_WORKFLOW, PHASE2_JOB)
+
+    strategy = _block(job, "strategy")
+    assert _entry(strategy, "fail-fast") == "false"
+    assert _entry(_block(strategy, "matrix"), "os") == PHASE2_MATRIX
+
+    offenders = [
+        content
+        for _, content in _significant(PHASE2_WORKFLOW.read_text(encoding="utf-8"))
+        if content.startswith(("continue-on-error", "if:"))
+    ]
+    assert not offenders, f"a platform row must fail the workflow, found: {offenders}"
+
+    steps = _block(job, "steps")
+    # The whole Phase 2 directory, not a selected subset, and then the gate that
+    # proves this platform's own lock case ran rather than skipped.
+    assert (
+        "python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs"
+        in _commands(_step(steps, "Run Phase 2 acceptance suite"))
+    )
+    assert "python scripts/check-platform-lock-coverage.py" in _commands(
+        _step(steps, "Assert this platform's lock case actually ran")
+    )
+    assert (REPO_ROOT / "scripts" / "check-platform-lock-coverage.py").is_file()
 
 
 RESOLVER_SMOKE_STEP = "Run compatibility root resolver and installed-root smoke"
