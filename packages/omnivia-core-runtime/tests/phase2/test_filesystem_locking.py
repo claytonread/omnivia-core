@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import platform
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 from omnivia_core_runtime.ownership.identity import (
+    _ERROR_ACCESS_DENIED,
+    _PROCESS_QUERY_LIMITED_INFORMATION,
     FakeClock,
     FakeProcessEvidence,
     InstallationIdentity,
@@ -17,6 +21,7 @@ from omnivia_core_runtime.ownership.identity import (
     ServiceInstanceIdentity,
     SystemClock,
     SystemProcessEvidence,
+    _process_start_time,
     process_is_alive,
 )
 from omnivia_core_runtime.ownership.locks import (
@@ -444,16 +449,266 @@ def test_real_process_evidence_reads_the_current_process() -> None:
     current = source.current()
     assert current.pid > 0
     assert current.os_principal
-    if platform.system() in ("Linux", "Darwin"):
+    if platform.system() in ("Linux", "Darwin", "Windows"):
         assert current.start_time, "start time must be readable on a supported platform"
 
 
 def test_process_is_alive_distinguishes_present_from_absent() -> None:
-    import os as _os
-
-    assert process_is_alive(_os.getpid())
+    assert process_is_alive(os.getpid())
     assert not process_is_alive(2**30)
     assert not process_is_alive(0)
+
+
+# --- the Windows process probes ----------------------------------------------
+#
+# The two cases above are the real proof, and on the hosted Windows runner they
+# are what failed: `os.kill(pid, 0)` is not an existence probe there. Signal 0 is
+# `CTRL_C_EVENT`, so probing this process's own liveness delivered a console
+# control event to the process group and the run died of `KeyboardInterrupt`
+# inside that assertion -- after the PowerShell launched per start-time probe had
+# already stretched the preceding cases past three minutes.
+#
+# `OpenProcess` and `GetProcessTimes` cannot be called from macOS or Linux, so the
+# decisions taken around them are pinned here through a fake kernel32, and the
+# hosted Windows row is the proof that the real API is driven correctly.
+
+#: `ERROR_INVALID_PARAMETER`, which is what opening an unused PID reports.
+_ERROR_INVALID_PARAMETER = 87
+
+#: A plausible `FILETIME` creation time, in the two halves Win32 reports it in.
+_CREATION_LOW = 0x9DC53E00
+_CREATION_HIGH = 0x01DBF7A2
+_CREATION_100NS = str((_CREATION_HIGH << 32) | _CREATION_LOW)
+
+
+class _FakeWinFunction:
+    """One entry point of the fake kernel32.
+
+    A `ctypes` foreign function carries `argtypes` and `restype`, and the probes
+    set both on every entry point before calling anything. A bound method cannot
+    hold those attributes, so each entry point is an object with a `__call__`
+    rather than a method.
+    """
+
+    def __init__(self, implementation: Any) -> None:
+        self._implementation = implementation
+        self.argtypes: Any = None
+        self.restype: Any = None
+
+    def __call__(self, *arguments: Any) -> Any:
+        # `is not None`, because `GetLastError` takes no arguments and is
+        # configured with an empty -- and therefore falsy -- `argtypes`. The
+        # signatures must be in place before the first call: the error code is
+        # read from the thread straight after a failed `OpenProcess`, and
+        # resolving an entry point in between could overwrite it.
+        assert self.argtypes is not None, "called before its signature was configured"
+        assert self.restype is not None, "called before its signature was configured"
+        return self._implementation(*arguments)
+
+
+def _behind_byref(argument: Any) -> Any:
+    """The structure a `ctypes.byref` argument points at."""
+    return getattr(argument, "_obj", argument)
+
+
+class _FakeKernel32Process:
+    """The `kernel32` entry points the Windows process probes drive."""
+
+    def __init__(
+        self,
+        *,
+        handle: int = 0x2A,
+        last_error: int = _ERROR_INVALID_PARAMETER,
+        creation: tuple[int, int] = (_CREATION_LOW, _CREATION_HIGH),
+        times_ok: bool = True,
+    ) -> None:
+        self.handle = handle
+        self.last_error = last_error
+        self.creation = creation
+        self.times_ok = times_ok
+        self.access_rights: list[int] = []
+        self.opened: list[int] = []
+        self.closed: list[int] = []
+        # Win32 spelling, deliberately: these stand in for the real entry points
+        # and are looked up by exactly these names.
+        self.OpenProcess = _FakeWinFunction(self._open_process)
+        self.CloseHandle = _FakeWinFunction(self._close_handle)
+        self.GetProcessTimes = _FakeWinFunction(self._get_process_times)
+        self.GetLastError = _FakeWinFunction(lambda: self.last_error)
+
+    def _open_process(self, access: int, inherit: int, pid: int) -> int:
+        self.access_rights.append(access)
+        if not self.handle:
+            return 0  # NULL, exactly as a failed OpenProcess returns.
+        self.opened.append(self.handle)
+        return self.handle
+
+    def _close_handle(self, handle: int) -> int:
+        self.closed.append(handle)
+        return 1
+
+    def _get_process_times(
+        self, handle: Any, created: Any, exited: Any, kernel: Any, user: Any
+    ) -> int:
+        if not self.times_ok:
+            return 0
+        low, high = self.creation
+        target = _behind_byref(created)
+        target.dwLowDateTime = low
+        target.dwHighDateTime = high
+        return 1
+
+
+def _patch_windows_probes(monkeypatch: pytest.MonkeyPatch, fake: _FakeKernel32Process) -> None:
+    """Drive the Windows branch from any host, with both POSIX escapes blocked.
+
+    `os.kill` and `subprocess.run` are made to fail loudly rather than left alone.
+    The defect being pinned is that the Windows path reached them at all, and a
+    test that only checked the returned value would pass either way.
+
+    `ctypes.WinDLL` does not exist off Windows, hence `raising=False`.
+    """
+
+    def signalled(*arguments: Any, **keywords: Any) -> object:
+        raise AssertionError("signal 0 is CTRL_C_EVENT on Windows; os.kill must not run")
+
+    def launched(*arguments: Any, **keywords: Any) -> object:
+        raise AssertionError("the Windows probes must not launch a subprocess")
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: fake, raising=False)
+    monkeypatch.setattr(os, "kill", signalled)
+    monkeypatch.setattr(subprocess, "run", launched)
+
+
+def test_windows_liveness_opens_and_closes_a_process_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An opened handle is the existence proof, and it is handed straight back."""
+    fake = _FakeKernel32Process()
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert process_is_alive(4242)
+    assert fake.access_rights == [_PROCESS_QUERY_LIMITED_INFORMATION]
+    assert fake.opened == [fake.handle]
+    assert fake.closed == fake.opened, "every opened handle must be closed"
+
+
+def test_windows_liveness_is_absent_when_the_process_cannot_be_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail closed: an unused PID reports `ERROR_INVALID_PARAMETER`, not liveness."""
+    fake = _FakeKernel32Process(handle=0, last_error=_ERROR_INVALID_PARAMETER)
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert not process_is_alive(2**30)
+    assert fake.opened == []
+    assert fake.closed == [], "nothing was opened, so there is nothing to close"
+
+
+def test_windows_access_denied_is_evidence_the_process_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused open means the kernel resolved the PID and denied this caller.
+
+    Reading that as absence would declare a live lease owner dead whenever it runs
+    as another principal, and take its storage over while it is still writing.
+    """
+    fake = _FakeKernel32Process(handle=0, last_error=_ERROR_ACCESS_DENIED)
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert process_is_alive(4242)
+    assert fake.closed == [], "a failed open returns no handle to close"
+
+
+def test_windows_liveness_refuses_a_non_positive_pid_without_probing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PID 0 is the System Idle Process: genuinely present, never a lease owner."""
+    fake = _FakeKernel32Process()
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert not process_is_alive(0)
+    assert not process_is_alive(-1)
+    assert fake.access_rights == [], "the guard decides before any Win32 call"
+
+
+def test_windows_start_time_comes_from_getprocesstimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeKernel32Process()
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert _process_start_time(4242) == _CREATION_100NS
+    assert fake.closed == [fake.handle]
+
+
+def test_windows_start_time_uses_both_halves_of_the_filetime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The low half wraps every 429 seconds, so alone it is not an identity.
+
+    Two processes started further apart than that can share it, which would make
+    a reused PID look like the same process -- the one thing this evidence exists
+    to rule out.
+    """
+    later = _FakeKernel32Process(creation=(_CREATION_LOW, _CREATION_HIGH + 1))
+    _patch_windows_probes(monkeypatch, later)
+
+    expected = str(((_CREATION_HIGH + 1) << 32) | _CREATION_LOW)
+    assert _process_start_time(4242) == expected
+    assert expected != _CREATION_100NS, "the same low half must not produce the same evidence"
+
+
+def test_windows_start_time_is_none_when_getprocesstimes_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeKernel32Process(times_ok=False)
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert _process_start_time(4242) is None
+    assert fake.closed == [fake.handle], "the failing path closes its handle too"
+
+
+def test_windows_start_time_is_none_when_the_process_cannot_be_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeKernel32Process(handle=0)
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert _process_start_time(2**30) is None
+    # Asserted rather than assumed: "no evidence" is also what returning nothing at
+    # all looks like, so the probe has to be shown to have run and failed.
+    assert fake.access_rights == [_PROCESS_QUERY_LIMITED_INFORMATION]
+    assert fake.closed == []
+
+
+def test_windows_start_time_refuses_a_zero_creation_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero is not a creation time; reported as one it would make processes alike."""
+    fake = _FakeKernel32Process(creation=(0, 0))
+    _patch_windows_probes(monkeypatch, fake)
+
+    assert _process_start_time(4242) is None
+    assert fake.closed == [fake.handle]
+
+
+def test_windows_current_process_evidence_needs_no_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole evidence path on Windows, with no process launched anywhere.
+
+    A launch per probe is what made the hosted run take minutes to reach the
+    failure, so "it works" is not the only requirement here.
+    """
+    fake = _FakeKernel32Process()
+    _patch_windows_probes(monkeypatch, fake)
+
+    evidence = SystemProcessEvidence().current()
+    assert evidence.pid == os.getpid()
+    assert evidence.start_time == _CREATION_100NS
+    assert evidence.boot_id
 
 
 def test_fake_clock_moves_monotonic_and_wall_independently() -> None:
