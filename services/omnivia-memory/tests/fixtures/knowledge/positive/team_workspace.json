@@ -1,0 +1,106 @@
+{
+  "id": "team-workspace",
+  "title": "Team Workspace",
+  "space_type": "team workspace",
+  "contract_version": "1.0",
+  "summary": "Team decisions, risks, and workflow artifacts.",
+  "tags": ["team-workspace", "workflow"],
+  "sources": [
+    {
+      "id": "source-decision-log",
+      "space_id": "team-workspace",
+      "source_type": "document",
+      "title": "Decision Log",
+      "relative_path": "docs/decision-log.md",
+      "origin": "manual",
+      "visibility": "team"
+    }
+  ],
+  "objects": [
+    {
+      "id": "decision-portable-contracts",
+      "space_id": "team-workspace",
+      "kind": "decision",
+      "title": "Adopt Portable Contracts",
+      "tags": ["decision"],
+      "source_refs": [
+        {
+          "source_id": "source-decision-log",
+          "source_type": "document",
+          "path": "docs/decision-log.md",
+          "locator": "#portable-contracts",
+          "quote_preview": "Adopt a portable contract surface before runtime work.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "APPROVED",
+      "visibility": "team"
+    },
+    {
+      "id": "risk-runtime-creep",
+      "space_id": "team-workspace",
+      "kind": "concept",
+      "title": "Runtime Creep",
+      "tags": ["risk"],
+      "source_refs": [
+        {
+          "source_id": "source-decision-log",
+          "source_type": "document",
+          "path": "docs/decision-log.md",
+          "locator": "#portable-contracts",
+          "quote_preview": "Do not let scanners or provider code leak into Core.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "visibility": "team"
+    },
+    {
+      "id": "workflow-review-gate",
+      "space_id": "team-workspace",
+      "kind": "workflow",
+      "title": "Review Gate",
+      "tags": ["workflow"],
+      "source_refs": [
+        {
+          "source_id": "source-decision-log",
+          "source_type": "document",
+          "path": "docs/decision-log.md",
+          "locator": "#portable-contracts",
+          "quote_preview": "Review gates are required before acceptance.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "visibility": "team"
+    }
+  ],
+  "collections": [],
+  "links": [
+    {
+      "id": "decision-mitigates-risk",
+      "space_id": "team-workspace",
+      "source_object_id": "decision-portable-contracts",
+      "target_object_id": "risk-runtime-creep",
+      "relation": "related_to",
+      "source_refs": [
+        {
+          "source_id": "source-decision-log",
+          "source_type": "document",
+          "path": "docs/decision-log.md",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "APPROVED",
+      "evidence_strength": "SUPPORTING"
+    }
+  ],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": []
+}

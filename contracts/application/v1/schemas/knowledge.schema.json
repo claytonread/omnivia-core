@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json",
+  "title": "OmniVia Core Application Contract v1 - governed-knowledge operations",
+  "description": "Provider-neutral wire shapes for the explicit governed-knowledge search and governance-transition operations: `knowledge.search`, `knowledge.propose`, `candidate.approve`, `candidate.reject`, and `record.supersede` (ADR-039). Every operation is workspace-scoped through the request envelope and never carries a second, independent workspace identifier. Every mutation input identifies its target record by `record_id` only: the target *version* is the envelope's `MutationPrecondition.record_version`, never duplicated here. No mutation input carries a governance-state, currentness, authority-level, reviewer identity, or server-owned temporal field; every governance decision is produced server-side from an explicit, auditable `GovernanceRationale`, never smuggled through an automated-extraction input. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "GovernanceRationale": {
+      "title": "GovernanceRationale",
+      "description": "A caller-supplied, auditable reason for a governance decision or transition: an open reason code plus an optional bounded human-readable comment. Carries no reviewer identity, authority level, or governance-state field of its own -- those are server-owned and never asserted through this shape.",
+      "type": "object",
+      "properties": {
+        "reason_code": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why this governance decision or transition was made."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Optional bounded human-readable elaboration. Not a stable interface.",
+          "maxLength": 2048
+        }
+      },
+      "required": ["reason_code"],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeSearchInput": {
+      "title": "KnowledgeSearchInput",
+      "description": "Input for `knowledge.search`. Workspace-scoped: the workspace is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier. Absent `view` defaults to `current_canonical`; only an explicit `view` selector may request `candidates` or `history`, so a caller can never receive candidate, rejected, superseded, or otherwise non-canonical governed knowledge by omission.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryQuery",
+          "description": "Normalized search query."
+        },
+        "order": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemorySearchOrder",
+          "description": "Requested result order. Absent means the server's default order."
+        },
+        "view": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordView",
+          "description": "Which slice of records' versions to consider. Absent defaults to `current_canonical`; requesting `candidates` or `history` requires this field to be set explicitly."
+        },
+        "record_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordType",
+          "description": "Restrict results to this record type, when set."
+        },
+        "domain_scope": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope",
+          "description": "Restrict results to this domain scope, when set."
+        },
+        "limit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit",
+          "description": "Bounded maximum number of records to return in this page."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position from a prior page, when paging."
+        }
+      },
+      "required": ["query"],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeSearchResult": {
+      "title": "KnowledgeSearchResult",
+      "description": "Result of `knowledge.search`. When the request's `view` was absent or `current_canonical`, every returned record must be the exact accepted, current, canonical version; no candidate, rejected, superseded, or non-canonical-layer record may appear.",
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "description": "Governed records in this page, ordered per the request's `order`.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
+          },
+          "maxItems": 500
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position for the next page, absent on the last page."
+        }
+      },
+      "required": ["records", "page"],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeProposeInput": {
+      "title": "KnowledgeProposeInput",
+      "description": "Input for `knowledge.propose`: transitions an existing proposed (`l1`/`proposed`) record into a candidate (`l1`/`candidate`) awaiting a governance decision. Never duplicates `memory.create`: it identifies an already-existing record by `record_id` rather than proposing new content, and never carries content, evidence, or assertion fields. The target version is the envelope's `MutationPrecondition.record_version`, not duplicated here. Like every other governance transition, the rationale is required: no governance decision on this contract is ever recorded without an explicit, auditable reason.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the existing proposed record to transition into a candidate."
+        },
+        "rationale": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale",
+          "description": "Reason this record is being put forward as a candidate."
+        }
+      },
+      "required": ["record_id", "rationale"],
+      "unevaluatedProperties": false
+    },
+    "KnowledgeProposeResult": {
+      "title": "KnowledgeProposeResult",
+      "description": "Result of `knowledge.propose`: both versions of the record as they stand *after* the transition, so a caller can validate the transition and confirm no history or provenance was lost. `previous_record` is the prior version, which the transition has itself marked superseded and pointed at the new one; `updated_record` is the newly current version. Neither is a pre-transition snapshot: `previous_record` is what that version now is, not what it looked like before the call.",
+      "type": "object",
+      "properties": {
+        "previous_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The prior version this transition replaced, as it stands after the transition: still carrying its own `proposed` claim, now marked superseded and pointing at `updated_record`."
+        },
+        "updated_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The newly current version: the record's new candidate state."
+        }
+      },
+      "required": ["previous_record", "updated_record"],
+      "unevaluatedProperties": false
+    },
+    "CandidateApproveInput": {
+      "title": "CandidateApproveInput",
+      "description": "Input for `candidate.approve`: creates a new accepted (`l2`/`accepted`) governed version of an existing candidate record, with reviewer authority attributed server-side. The target version is the envelope's `MutationPrecondition.record_version`, not duplicated here. Carries no authority-level, reviewer identity, or governance-state field of its own -- only the explicit, auditable rationale for the decision.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the candidate record to approve."
+        },
+        "rationale": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale",
+          "description": "Reason this candidate was approved."
+        }
+      },
+      "required": ["record_id", "rationale"],
+      "unevaluatedProperties": false
+    },
+    "CandidateApproveResult": {
+      "title": "CandidateApproveResult",
+      "description": "Result of `candidate.approve`: both versions of the record as they stand *after* approval, so a caller can validate the transition and confirm no history or provenance was lost. `previous_record` is the prior candidate version, which the approval has itself marked superseded and pointed at the new one; `updated_record` is the newly current version. Neither is a pre-transition snapshot: `previous_record` is what that version now is, not what it looked like before the call.",
+      "type": "object",
+      "properties": {
+        "previous_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The prior candidate version this approval replaced, as it stands after the transition: still carrying its candidate authority, now marked superseded and pointing at `updated_record`."
+        },
+        "updated_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The newly current version: the record's new accepted, current, canonical state."
+        }
+      },
+      "required": ["previous_record", "updated_record"],
+      "unevaluatedProperties": false
+    },
+    "CandidateRejectInput": {
+      "title": "CandidateRejectInput",
+      "description": "Input for `candidate.reject`: creates a new rejected (`l1`/`rejected`) governed version of an existing candidate record, with reviewer authority attributed server-side. The target version is the envelope's `MutationPrecondition.record_version`, not duplicated here. `rejected` is never treated as a favourable or accepted authority decision.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the candidate record to reject."
+        },
+        "rationale": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale",
+          "description": "Reason this candidate was rejected."
+        }
+      },
+      "required": ["record_id", "rationale"],
+      "unevaluatedProperties": false
+    },
+    "CandidateRejectResult": {
+      "title": "CandidateRejectResult",
+      "description": "Result of `candidate.reject`: both versions of the record as they stand *after* rejection, so a caller can validate the transition and confirm no history or provenance was lost. `previous_record` is the prior candidate version, which the rejection has itself marked superseded and pointed at the new one; `updated_record` is the newly current version. Neither is a pre-transition snapshot: `previous_record` is what that version now is, not what it looked like before the call.",
+      "type": "object",
+      "properties": {
+        "previous_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The prior candidate version this rejection replaced, as it stands after the transition: still carrying its candidate authority, now marked superseded and pointing at `updated_record`."
+        },
+        "updated_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The newly current version: the record's new rejected state. `rejected` carries a reviewer, but is never a favourable or accepted authority decision."
+        }
+      },
+      "required": ["previous_record", "updated_record"],
+      "unevaluatedProperties": false
+    },
+    "RecordSupersedeInput": {
+      "title": "RecordSupersedeInput",
+      "description": "Input for `record.supersede`: an explicit, authorized replacement of a current accepted (`l2`/`accepted`/`current`) governed record with a new accepted version. The target version is the envelope's `MutationPrecondition.record_version`, not duplicated here. Exactly three fields: which record, the complete replacement claim, and why. The replacement is a whole `MemoryCreateInput` rather than a loose bag of content/evidence fields, so the new version's content, evidence disposition, sources, assertion, extraction lineage, and proposed validity window are supplied and validated as one coherent claim under exactly the rules `memory.create` already enforces. It inherits that shape's least-authority-escalating guarantee: no governance-state, currentness, authority-level, reviewer, or supersession field is accepted from a caller. The server alone produces the new version's identity, authority, temporal envelope, and the reciprocal `supersedes`/`superseded_by` pointers, and the replacement's `record_type`/`domain_scope` must equal the superseded record's -- superseding replaces a claim, it never silently reclassifies the record.",
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the current accepted record to supersede."
+        },
+        "replacement": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryCreateInput",
+          "description": "The complete replacement claim: content, evidence disposition, sources, assertion, optional extraction lineage, and optional event/observed times, in exactly the shape `memory.create` accepts. Its `record_type`/`domain_scope` must equal the superseded record's."
+        },
+        "rationale": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/knowledge.schema.json#/$defs/GovernanceRationale",
+          "description": "Reason this record is being superseded."
+        }
+      },
+      "required": ["record_id", "replacement", "rationale"],
+      "unevaluatedProperties": false
+    },
+    "RecordSupersedeResult": {
+      "title": "RecordSupersedeResult",
+      "description": "Result of `record.supersede`: the prior current record (now superseded) and the new current record, so a caller can validate the reciprocal `supersedes`/`superseded_by` pointers, the preserved stable record identity, and the complete, unerased provenance history.",
+      "type": "object",
+      "properties": {
+        "previous_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The prior current record, now superseded."
+        },
+        "updated_record": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord",
+          "description": "The new current, accepted, canonical record."
+        }
+      },
+      "required": ["previous_record", "updated_record"],
+      "unevaluatedProperties": false
+    }
+  }
+}

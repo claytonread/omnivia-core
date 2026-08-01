@@ -44,6 +44,8 @@ Do not use deprecated terms unless quoting old docs.
 - public contracts
 - manifest schemas
 - provenance primitives
+- repo-local reference implementations that currently live here for memory,
+  persistence, ingestion, search, and graph assembly
 
 ## This repo does not own
 
@@ -51,6 +53,10 @@ Do not use deprecated terms unless quoting old docs.
 - licensing
 - Harness implementation
 - paid Modules
+
+The runtime-oriented implementations that ship here are transitional. Treat them
+as local code in this repo, not as a claim that Core is the final long-term
+owner of those boundaries.
 
 ## Before coding
 

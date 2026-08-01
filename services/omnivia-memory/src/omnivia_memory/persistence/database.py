@@ -7,10 +7,11 @@ The database file is stored in the user's data directory.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 
 @dataclass
@@ -370,6 +371,59 @@ class Database:
             ON pattern_relationships(source_pattern_id)
         """)
 
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_manifests (
+                workspace_id TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_resources (
+                workspace_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                lifecycle TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, resource_type, resource_id)
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_workspace
+            ON control_plane_resources(workspace_id)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_type
+            ON control_plane_resources(resource_type)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_resources_lifecycle
+            ON control_plane_resources(lifecycle)
+        """)
+        self._try_execute_schema("""
+            CREATE TABLE IF NOT EXISTS control_plane_events (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_events_workspace
+            ON control_plane_events(workspace_id)
+        """)
+        self._try_execute_schema("""
+            CREATE INDEX IF NOT EXISTS idx_control_plane_events_type
+            ON control_plane_events(event_type)
+        """)
+
         if self.config.auto_commit:
             self.connection.commit()
 
@@ -471,30 +525,114 @@ class Database:
             self.connection.rollback()
             raise
 
+    @contextmanager
+    def immediate_transaction(self) -> Generator[None, None, None]:
+        """Context manager that holds a SQLite ``BEGIN IMMEDIATE`` write lock.
+
+        This acquires SQLite's reserved write lock for the duration of the
+        block, so a single local worker process holds it while it selects and
+        conditionally writes a row. A second process that tries to start its own
+        immediate transaction against the same database file blocks until this
+        one commits/rolls back, or fails with ``sqlite3.OperationalError``
+        ("database is locked") once the busy timeout elapses. Callers that want
+        to fail closed on contention should catch that error.
+
+        ``auto_commit`` is suspended for the block so :meth:`execute` does not
+        commit (and end the transaction) between statements; the whole block
+        commits on success and rolls back on any exception. The previous
+        ``auto_commit`` setting and connection ``isolation_level`` are always
+        restored.
+
+        Scope/limitation: this is a local single-file SQLite write lock for a
+        local worker fleet. It is NOT a distributed lock; a Cloud worker fleet
+        spanning hosts/processes against a shared service still needs real
+        distributed locking. It complements (does not replace) the payload
+        compare-and-set guard used by the control-plane claim path.
+
+        Only SQLite connections support ``BEGIN IMMEDIATE``; this wrapper assumes
+        the connection is SQLite (the only backend this Database manages).
+        """
+
+        connection = self.connection
+        # Flush any implicit pending transaction so BEGIN IMMEDIATE starts clean.
+        if connection.in_transaction:
+            connection.commit()
+
+        previous_auto_commit = self.config.auto_commit
+        previous_isolation = connection.isolation_level
+        # Take manual control of transaction boundaries so the explicit
+        # BEGIN IMMEDIATE/COMMIT/ROLLBACK statements are issued verbatim.
+        connection.isolation_level = None
+        self.config.auto_commit = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield
+            connection.execute("COMMIT")
+        except Exception:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                # No active transaction to roll back (e.g. BEGIN IMMEDIATE itself
+                # failed on lock contention); nothing to undo.
+                pass
+            raise
+        finally:
+            self.config.auto_commit = previous_auto_commit
+            connection.isolation_level = previous_isolation
+
 
 # Global database instance for convenience
 _global_db: Database | None = None
+
+
+class _ImplicitDatabasePathRefused(RuntimeError):
+    """`get_database()` was called without an explicit path.
+
+    T-0629F removes the implicit writable home-database fallback. The exception
+    carries the remedy because every caller that hits it needs the same fix: pass
+    the workspace database path, or go through the Core Service.
+
+    Deliberately underscore-prefixed. This is a frozen Phase 0 module, and its public
+    export inventory is pinned evidence from T-0627; adding a public name here drifts
+    that baseline and would require regenerating frozen evidence, which is a
+    governance act rather than an implementation one. A private name keeps the
+    exception catchable without mutating the record. Promote it if and when the
+    baseline is legitimately recaptured.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "get_database() requires an explicit db_path. The implicit "
+            "~/.omnivia/memories.db fallback was removed by T-0629F: a getter must "
+            "not create a writable database as a side effect, and an unversioned "
+            "global database cannot be fenced. Pass the workspace database path, or "
+            "use the Core Service API."
+        )
 
 
 def get_database(db_path: Path | str | None = None) -> Database:
     """Get or create the global database instance.
 
     Args:
-        db_path: Optional path to the database file.
-                 Defaults to ~/.omnivia/memories.db
+        db_path: Path to the database file. **Required.** There is deliberately no
+                 default: the previous behaviour created `~/.omnivia/` and opened a
+                 writable `memories.db` inside it as a side effect of a getter, so
+                 the first bare call anywhere in a process silently chose an
+                 unversioned global database and pinned it for every later caller.
+                 That database sits outside any workspace, so it can be neither
+                 migrated nor fenced.
 
     Returns:
         The global Database instance
+
+    Raises:
+        _ImplicitDatabasePathRefused: when `db_path` is omitted.
     """
     global _global_db
 
     if _global_db is None:
         if db_path is None:
-            # Default to ~/.omnivia/memories.db
-            home = Path.home()
-            db_dir = home / ".omnivia"
-            db_dir.mkdir(parents=True, exist_ok=True)
-            db_path = db_dir / "memories.db"
+            raise _ImplicitDatabasePathRefused
 
         config = DatabaseConfig(db_path=Path(db_path))
         _global_db = Database(config)

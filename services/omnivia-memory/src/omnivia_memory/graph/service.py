@@ -12,6 +12,7 @@ Governance:
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 from omnivia_memory.graph.models import (
@@ -279,6 +280,126 @@ class GraphService:
             raise GraphServiceError("Relationship repository not configured")
 
         return self.relationship_repository.get_by_entity(entity_id)
+
+    def get_backlinks(
+        self,
+        entity_id: str,
+        relationship_type: str | RelationshipType | None = None,
+    ) -> list[tuple[Entity, Relationship]]:
+        """Get the entities that link *to* a given entity (its backlinks).
+
+        Backlinks are the inverse of outgoing links: they answer "what points
+        here?". Each result pairs the linking (source) entity with the
+        relationship that connects it to ``entity_id``.
+
+        Args:
+            entity_id: The ID of the entity to collect backlinks for
+            relationship_type: Optional filter by relationship type
+
+        Returns:
+            List of (source_entity, relationship) tuples, one per incoming
+            relationship whose source entity still exists, in the order returned
+            by the repository
+
+        Raises:
+            GraphServiceError: If repositories are not configured
+        """
+        if not self.relationship_repository:
+            raise GraphServiceError("Relationship repository not configured")
+        if not self.entity_repository:
+            raise GraphServiceError("Entity repository not configured")
+
+        incoming = self.relationship_repository.get_incoming(entity_id)
+
+        if relationship_type is not None:
+            # Convert string to RelationshipType if needed
+            if isinstance(relationship_type, str):
+                relationship_type = RelationshipType(relationship_type)
+            incoming = [
+                rel for rel in incoming if rel.relationship_type == relationship_type
+            ]
+
+        backlinks: list[tuple[Entity, Relationship]] = []
+        for rel in incoming:
+            source_entity = self.entity_repository.get(rel.source_entity_id)
+            if source_entity is not None:
+                backlinks.append((source_entity, rel))
+
+        return backlinks
+
+    def find_path(
+        self,
+        source_entity_id: str,
+        target_entity_id: str,
+        max_depth: int = 5,
+    ) -> list[Entity] | None:
+        """Find the shortest path between two entities.
+
+        Performs a breadth-first search over relationships, treating the graph
+        as undirected (a relationship can be traversed from either end). This
+        answers "how is A connected to B?" — the spine of cross-entity
+        reasoning.
+
+        Args:
+            source_entity_id: ID of the entity to start from
+            target_entity_id: ID of the entity to reach
+            max_depth: Maximum number of hops to explore (default 5). A value
+                of 0 only allows a source-to-self path.
+
+        Returns:
+            The shortest path as an ordered list of entities from source to
+            target (inclusive), or None if no path exists within max_depth. A
+            path from an entity to itself is a single-element list.
+
+        Raises:
+            GraphServiceError: If repositories are not configured
+            EntityNotFoundError: If either endpoint entity does not exist
+            ValueError: If max_depth is negative
+        """
+        if not self.relationship_repository:
+            raise GraphServiceError("Relationship repository not configured")
+        if not self.entity_repository:
+            raise GraphServiceError("Entity repository not configured")
+
+        if max_depth < 0:
+            raise ValueError("max_depth must be non-negative")
+
+        source_entity = self.entity_repository.get(source_entity_id)
+        if source_entity is None:
+            raise EntityNotFoundError(f"Source entity {source_entity_id} not found")
+        target_entity = self.entity_repository.get(target_entity_id)
+        if target_entity is None:
+            raise EntityNotFoundError(f"Target entity {target_entity_id} not found")
+
+        if source_entity_id == target_entity_id:
+            return [source_entity]
+
+        # Breadth-first search returns the first path found to the target, which
+        # is guaranteed to be a shortest path. Entities are marked visited when
+        # enqueued so each node is expanded once.
+        queue: deque[list[Entity]] = deque([[source_entity]])
+        visited: set[str] = {source_entity_id}
+
+        while queue:
+            path = queue.popleft()
+
+            # Number of hops taken so far; stop expanding at the depth limit.
+            if len(path) - 1 >= max_depth:
+                continue
+
+            current = path[-1]
+            for neighbor_entity, _rel in self.relationship_repository.get_neighbors(
+                current.id
+            ):
+                if neighbor_entity.id in visited:
+                    continue
+                next_path = path + [neighbor_entity]
+                if neighbor_entity.id == target_entity_id:
+                    return next_path
+                visited.add(neighbor_entity.id)
+                queue.append(next_path)
+
+        return None
 
     def link_to_memory(
         self,

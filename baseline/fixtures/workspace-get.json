@@ -1,0 +1,49 @@
+{
+  "baseline_slice": "workspace.get",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.workspace.service.WorkspaceService.get"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "absolute-path",
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": null,
+  "request": {
+    "workspace_id": "<uuid-0001>"
+  },
+  "response": {
+    "created_at": "<timestamp>",
+    "description": "Ephemeral workspace used to freeze the Phase 0 baseline.",
+    "id": "<uuid-0001>",
+    "index_status": "unindexed",
+    "last_indexed_at": null,
+    "name": "Baseline Workspace",
+    "root_path": "<workspace-root>",
+    "settings": {
+      "import_profile": "baseline"
+    },
+    "storage_path": "<workspace-storage>",
+    "updated_at": "<timestamp>"
+  },
+  "scenario": "workspace.get",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Get a workspace by id"
+}

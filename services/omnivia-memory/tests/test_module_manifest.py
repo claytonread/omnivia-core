@@ -9,6 +9,7 @@ from omnivia_memory.module_manifest import (
     ModuleManifest,
     ModuleManifestValidationError,
     Permission,
+    PublishedTarget,
     validate_module_manifest,
 )
 
@@ -365,6 +366,100 @@ def test_rejects_permission_with_empty_name():
     with pytest.raises(ModuleManifestValidationError) as exc_info:
         validate_module_manifest(data)
     assert "permissions[0].name" in str(exc_info.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Published targets tests
+# ---------------------------------------------------------------------------
+
+def test_published_targets_default_empty():
+    """A manifest without published_targets defaults to an empty list."""
+    data = _minimal_dict()
+
+    manifest = validate_module_manifest(data)
+
+    assert manifest.published_targets == []
+
+
+def test_validate_with_published_targets():
+    """A manifest with valid published_targets parses correctly."""
+    data = _minimal_dict("dev")
+    data["module_id"] = "com.omnivia.dev"
+    data["display_name"] = "OmniVia Dev"
+    data["published_targets"] = [
+        {"target_id": "launch.web", "contract_path": "targets/web.json"},
+        {"target_id": "launch.cli", "contract_path": "targets/cli.json"},
+    ]
+
+    manifest = validate_module_manifest(data)
+
+    assert len(manifest.published_targets) == 2
+    assert isinstance(manifest.published_targets[0], PublishedTarget)
+    assert manifest.published_targets[0].target_id == "launch.web"
+    assert manifest.published_targets[0].contract_path == "targets/web.json"
+    assert manifest.published_targets[1].target_id == "launch.cli"
+    assert manifest.published_targets[1].contract_path == "targets/cli.json"
+
+
+def test_rejects_non_list_published_targets():
+    """Non-list published_targets raises a clear error."""
+    data = _minimal_dict()
+    data["published_targets"] = "not a list"
+
+    with pytest.raises(ModuleManifestValidationError) as exc_info:
+        validate_module_manifest(data)
+    assert "published_targets" in str(exc_info.value).lower()
+
+
+def test_rejects_published_target_not_object():
+    """A non-object published_targets entry raises a clear error."""
+    data = _minimal_dict()
+    data["published_targets"] = ["not an object"]
+
+    with pytest.raises(ModuleManifestValidationError) as exc_info:
+        validate_module_manifest(data)
+    assert "published_targets[0]" in str(exc_info.value).lower()
+
+
+def test_rejects_published_target_empty_target_id():
+    """A published target with an empty target_id raises a clear error."""
+    data = _minimal_dict()
+    data["published_targets"] = [
+        {"target_id": "", "contract_path": "targets/web.json"}
+    ]
+
+    with pytest.raises(ModuleManifestValidationError) as exc_info:
+        validate_module_manifest(data)
+    assert "published_targets[0].target_id" in str(exc_info.value).lower()
+
+
+def test_rejects_published_target_missing_contract_path():
+    """A published target missing contract_path raises a clear error."""
+    data = _minimal_dict()
+    data["published_targets"] = [{"target_id": "launch.web"}]
+
+    with pytest.raises(ModuleManifestValidationError) as exc_info:
+        validate_module_manifest(data)
+    assert "published_targets[0].contract_path" in str(exc_info.value).lower()
+
+
+def test_rejects_published_target_non_string_contract_path():
+    """A published target with a non-string contract_path raises a clear error."""
+    data = _minimal_dict()
+    data["published_targets"] = [
+        {"target_id": "launch.web", "contract_path": 42}
+    ]
+
+    with pytest.raises(ModuleManifestValidationError) as exc_info:
+        validate_module_manifest(data)
+    assert "published_targets[0].contract_path" in str(exc_info.value).lower()
+
+
+def test_published_target_model():
+    """PublishedTarget model holds target_id and contract_path."""
+    t = PublishedTarget(target_id="launch.web", contract_path="targets/web.json")
+    assert t.target_id == "launch.web"
+    assert t.contract_path == "targets/web.json"
 
 
 # ---------------------------------------------------------------------------

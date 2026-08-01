@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
 [project]
 name = "omnivia-core"
 version = "0.1.0"
@@ -5,5 +9,25 @@ description = "Public OmniVia core primitives for local-first knowledge modeling
 readme = "README.md"
 requires-python = ">=3.11"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/omnivia_core"]
+
+# `contracts/application/v1/{schemas,fixtures}` stay the only checked-in
+# canonical copy (ADR-038). This force-includes them into the built wheel
+# under an importable resource path alongside the v1 package's Python
+# modules, without duplicating them anywhere else in the source tree.
+[tool.hatch.build.targets.wheel.force-include]
+"contracts/application/v1/schemas" = "omnivia_core/contracts/v1/resources/schemas"
+"contracts/application/v1/fixtures" = "omnivia_core/contracts/v1/resources/fixtures"
+
 [tool.pytest.ini_options]
-testpaths = ["services"]
+testpaths = ["services", "tests"]
+pythonpath = ["src"]
+
+[dependency-groups]
+# Development-only tooling. Runtime dependencies stay empty: the public
+# contract package (src/omnivia_core/contracts) is standard-library only.
+# The `format` extra pulls in `rfc3339-validator` so `jsonschema.FormatChecker`
+# enforces true RFC 3339 calendar validity, not just Timestamp's lexical
+# pattern; it stays conformance-only, never a runtime dependency.
+dev = ["jsonschema[format]>=4.25,<5", "types-jsonschema>=4.25,<5"]

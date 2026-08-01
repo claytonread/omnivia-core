@@ -1,0 +1,194 @@
+{
+  "descriptor_fields": [
+    "command",
+    "operation"
+  ],
+  "evidence_source": {
+    "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/cli/commands.py",
+    "kind": "reviewed_static_source",
+    "live_response_captured": false,
+    "note": "Base command list read from the owning repository by a read-only review pass and applied here. No live command output was captured, so the cli.* golden fixtures stay empty rather than claiming a Dev response.",
+    "path": "services/omnivia-memory-dev/src/omnivia_memory_dev/cli/commands.py",
+    "references": [
+      "cli/commands.py lines 1527-1722"
+    ],
+    "repo": "omnivia-dev"
+  },
+  "format_version": "1",
+  "inventory": {
+    "entries": [
+      {
+        "command": "approve",
+        "kind": "operation"
+      },
+      {
+        "command": "context-pack generate",
+        "kind": "operation"
+      },
+      {
+        "command": "context-pack get",
+        "kind": "operation"
+      },
+      {
+        "command": "context-pack list",
+        "kind": "operation"
+      },
+      {
+        "command": "create",
+        "kind": "operation"
+      },
+      {
+        "command": "delete",
+        "kind": "operation"
+      },
+      {
+        "command": "get",
+        "kind": "operation"
+      },
+      {
+        "command": "ingest",
+        "kind": "operation"
+      },
+      {
+        "command": "list",
+        "kind": "operation"
+      },
+      {
+        "command": "reject",
+        "kind": "operation"
+      },
+      {
+        "command": "search",
+        "kind": "operation"
+      },
+      {
+        "command": "sources",
+        "kind": "operation"
+      },
+      {
+        "command": "stats",
+        "kind": "operation"
+      },
+      {
+        "command": "update",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace create",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace delete",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace get",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace import",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace list",
+        "kind": "operation"
+      },
+      {
+        "command": "workspace update",
+        "kind": "operation"
+      }
+    ],
+    "exclusions": [
+      {
+        "kind": "prefix",
+        "reason": "Dev codebase-intelligence commands (search, map, context) are Dev Module surface, not base Core-relevant commands.",
+        "value": "codebase-intelligence"
+      },
+      {
+        "kind": "prefix",
+        "reason": "Dev observability and evidence seams are Dev Module surface. The review named the seam group without enumerating its command names, so this stays a rule rather than a list of commands Core has not seen.",
+        "value": "observability"
+      },
+      {
+        "kind": "prefix",
+        "reason": "Dev observability and evidence seams are Dev Module surface. The review named the seam group without enumerating its command names, so this stays a rule rather than a list of commands Core has not seen.",
+        "value": "evidence"
+      }
+    ],
+    "identity_field": "command",
+    "kind": "base_cli_commands",
+    "match_fields": [
+      "command"
+    ],
+    "notes": [
+      "The full base command list, including the workspace and context-pack command groups.",
+      "Dev-only extensions — the codebase-intelligence commands and the Dev observability and evidence seams — are excluded by rule."
+    ]
+  },
+  "operations": [
+    {
+      "baseline_slice": "cli.read",
+      "core_contracts": [
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "command": "get",
+        "operation": "read"
+      },
+      "descriptor_fields": [
+        "command",
+        "operation"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/cli/commands.py",
+        "gap_id": "GAP-003",
+        "live_response_captured": false
+      },
+      "notes": "The CLI equivalent of the MCP read operation, so the two surfaces stay comparable after the migration: `get` pairs with memory_get.",
+      "operation_id": "cli.read",
+      "owner_repo": "omnivia-dev",
+      "title": "One CLI read operation over Core memory"
+    },
+    {
+      "baseline_slice": "cli.write",
+      "core_contracts": [
+        "omnivia_memory.memory.models.MemoryCreate",
+        "omnivia_memory.memory.models.Memory",
+        "omnivia_memory.memory.service.MemoryService"
+      ],
+      "descriptor": {
+        "command": "create",
+        "operation": "write"
+      },
+      "descriptor_fields": [
+        "command",
+        "operation"
+      ],
+      "evidence": {
+        "capture_kind": "reviewed_static_source",
+        "captured": true,
+        "captured_from": "omnivia-dev:services/omnivia-memory-dev/src/omnivia_memory_dev/cli/commands.py",
+        "gap_id": "GAP-003",
+        "live_response_captured": false
+      },
+      "notes": "The CLI equivalent of the MCP write operation, so the two surfaces stay comparable after the migration: `create` pairs with memory_store.",
+      "operation_id": "cli.write",
+      "owner_repo": "omnivia-dev",
+      "title": "One CLI write operation over Core memory"
+    }
+  ],
+  "owner_repo": "omnivia-dev",
+  "required_slices": [
+    "cli.read",
+    "cli.write"
+  ],
+  "response_envelope": null,
+  "status": "reviewed_static_evidence",
+  "status_note": "Descriptors come from a read-only review of the owning repository, recorded with evidence.capture_kind='reviewed_static_source'. No live response body was captured, so live_response_captured stays false. An operation with no reviewed descriptor keeps a null descriptor and an open gap.",
+  "surface": "cli_commands",
+  "task": "T-0627",
+  "title": "Base CLI commands relevant to Core"
+}

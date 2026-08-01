@@ -1,0 +1,70 @@
+# Platform qualification for the Phase 2 ownership substrate (T-0629, SB-12).
+#
+# Deliberately a separate workflow rather than extra jobs in `core-acceptance.yml`.
+# That file defines the single merge-blocking check `Core acceptance`, and a matrix
+# expands job names to `<name> (<os>)`, so folding these rows in would rename the
+# required check and silently drop the rule that references the exact string. The
+# acceptance workflow's own tests pin it to one job for that reason.
+#
+# These rows are NOT merge-blocking today. Making them required is a repository
+# settings change, and it should not happen until the Windows row has passed once:
+# a rule pointing at a check that has never been green blocks every merge.
+name: Phase 2 platform qualification
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  phase2-platform:
+    name: Phase 2 platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      # Every row runs. One platform failing is the result, not a reason to stop
+      # collecting the others -- and the Windows row is the one with no prior
+      # evidence at all, so losing it to an unrelated macOS failure would defeat
+      # the point of adding this.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tooling and local packages
+        # Order is the whole content of this step. `omnivia-core` is unpublished,
+        # so the only thing that can satisfy the `omnivia-core>=0.1.0,<0.2.0`
+        # dependency of `omnivia-memory` and of the three local packages is this
+        # checkout -- installed first, or pip goes to the index and fails to
+        # resolve it. `omnivia-memory[dev]` itself was missing entirely, which is
+        # why FM-22's `import omnivia_memory` failed on macOS and Windows.
+        #
+        # Every argument is quoted so the one line with shell metacharacters
+        # (`[`, `]`, `>`, `<`) is a literal in bash, zsh and PowerShell alike; the
+        # matrix runs the same script on all three default hosted shells.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "jsonschema[format]>=4.25,<5" pytest
+          python -m pip install -e .
+          python -m pip install -e "services/omnivia-memory[dev]"
+          python -m pip install -e packages/omnivia-core-runtime
+          python -m pip install -e packages/omnivia-core-cli
+          python -m pip install -e packages/omnivia-core-mcp
+
+      - name: Run Phase 2 acceptance suite
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs
+
+      - name: Assert this platform's lock case actually ran
+        # The whole point of the matrix. `msvcrt` byte-range locking has exactly one
+        # dedicated case and it has never executed on any machine, so a silent skip
+        # here would leave the Windows row green while proving nothing.
+        run: python scripts/check-platform-lock-coverage.py

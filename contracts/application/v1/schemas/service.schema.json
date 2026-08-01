@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/service.schema.json",
+  "title": "OmniVia Core Application Contract v1 - service runtime probes",
+  "description": "Health, readiness, and discovery probe request/result shapes. These are transport-level infrastructure endpoints, not application operations: a probe carries no workspace scope, no caller authority, and no operation payload, so it can be answered before authentication or workspace negotiation completes. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "ProbeKind": {
+      "title": "ProbeKind",
+      "description": "Open, dot-namespaced code naming which runtime probe is being requested or answered. The frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and `service.discover`. Open by design so a compatible minor release can add probe kinds without breaking existing callers.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ProbeStatus": {
+      "title": "ProbeStatus",
+      "description": "Open, dot-namespaced code naming the outcome of a probe or one of its components, such as `pass` or `warn` or `fail`. Open by design; an unrecognized status must be preserved and surfaced, not coerced to a known one.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ServiceProbeRequest": {
+      "title": "ServiceProbeRequest",
+      "description": "A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it carries no `operation`, no `input`, and no workspace or authority scoping, because a probe must be answerable before those concepts apply.",
+      "type": "object",
+      "properties": {
+        "probe": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeKind",
+          "description": "Which probe is being requested."
+        },
+        "request_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/RequestId",
+          "description": "Identifies this probe attempt, for correlating logs across a health check."
+        },
+        "deadline_ms": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/DurationMs",
+          "description": "Relative time budget for answering the probe."
+        }
+      },
+      "required": ["probe"],
+      "unevaluatedProperties": false
+    },
+    "ServiceComponentStatus": {
+      "title": "ServiceComponentStatus",
+      "description": "The health of one subsystem a readiness or health probe inspected.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable identifier of the subsystem, such as `storage` or `search_index`."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeStatus",
+          "description": "Outcome for this subsystem."
+        },
+        "observed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this subsystem was last checked."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable explanation. Not a stable interface.",
+          "maxLength": 2048
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional structured detail."
+        }
+      },
+      "required": ["id", "status", "observed_at"],
+      "unevaluatedProperties": false
+    },
+    "ServiceProbeResult": {
+      "title": "ServiceProbeResult",
+      "description": "The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` / `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority, because a probe answers a transport-level question, not an application operation.",
+      "type": "object",
+      "properties": {
+        "probe": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeKind",
+          "description": "Echoes the probe that was requested."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ProbeStatus",
+          "description": "Overall outcome for this probe."
+        },
+        "server_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Concrete server build version answering the probe."
+        },
+        "api_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "API contract version this server build implements."
+        },
+        "observed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this probe was answered."
+        },
+        "components": {
+          "type": "array",
+          "description": "Per-subsystem detail, for a health or readiness probe.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceComponentStatus"
+          },
+          "maxItems": 256
+        },
+        "supported_capabilities": {
+          "type": "array",
+          "description": "Capabilities this server build implements, for a discovery probe. This is a runtime discovery fact only: an unauthenticated probe has no caller and no workspace to authorize against, so it must never state `granted` or `effective` authority. A caller must still negotiate `CapabilitySet.granted`/`effective` through an authenticated request.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRef"
+          },
+          "maxItems": 256
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional structured detail."
+        }
+      },
+      "required": ["probe", "status", "server_version", "api_version", "observed_at"],
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -7,7 +7,6 @@ before triggering batch processing.
 from __future__ import annotations
 
 import threading
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable
@@ -121,7 +120,7 @@ class Debouncer:
         Returns:
             List of flushed batches.
         """
-        batches = []
+        batches: list[FileChangeBatch] = []
         with self._lock:
             keys = list(self._pending.keys())
             for key in keys:
@@ -139,9 +138,9 @@ class Debouncer:
                         batch.timer = None
 
         # Invoke callbacks outside lock to avoid deadlock
-        for batch in batches:
+        for file_batch in batches:
             if self._on_batch:
-                self._on_batch(batch)
+                self._on_batch(file_batch)
 
         return batches
 

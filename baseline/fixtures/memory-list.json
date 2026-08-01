@@ -1,0 +1,186 @@
+{
+  "baseline_slice": "memory.list",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.memory.service.MemoryService.list"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "absolute-path",
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": "repository returns created_at DESC; baseline sorts by content",
+  "request": {
+    "limit": 100,
+    "offset": 0,
+    "workspace_id": "<uuid-0001>"
+  },
+  "response": {
+    "count": 9,
+    "memories": [
+      {
+        "content": "# ADR 0001: Portable Knowledge Substrate",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0014>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0003>",
+          "reference": "<workspace-root>/docs/adr/0001-portable-knowledge.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "# Graph Review",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0015>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0007>",
+          "reference": "<workspace-root>/docs/notes/graph-review.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Core owns portable knowledge contracts and keeps them backend neutral.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0016>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0003>",
+          "reference": "<workspace-root>/docs/adr/0001-portable-knowledge.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Core owns portable knowledge contracts; Platform and Dev adapt them to their own runtimes.",
+        "created_at": "<timestamp>",
+        "created_by": "human",
+        "id": "<uuid-0013>",
+        "lifecycle_state": "approved",
+        "memory_type": "decision",
+        "source": {
+          "description": "Baseline ADR reference",
+          "reference": "docs/adr/0001-portable-knowledge.md",
+          "type": "adr"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Each memory keeps a provenance reference back to the source file.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0017>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0011>",
+          "reference": "<workspace-root>/notes/inbox.txt",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Edges without evidence stay proposed and are surfaced as warnings.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0018>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0007>",
+          "reference": "<workspace-root>/docs/notes/graph-review.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Every graph edge must cite source evidence before it is treated as approved.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0019>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0007>",
+          "reference": "<workspace-root>/docs/notes/graph-review.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Platform adapts the contracts to a runtime. Dev adapts them to developer tools.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0020>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0003>",
+          "reference": "<workspace-root>/docs/adr/0001-portable-knowledge.md",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      },
+      {
+        "content": "Workspace imports create one memory per content chunk.",
+        "created_at": "<timestamp>",
+        "created_by": "agent",
+        "id": "<uuid-0021>",
+        "lifecycle_state": "proposed",
+        "memory_type": "context",
+        "source": {
+          "description": "Workspace source <uuid-0011>",
+          "reference": "<workspace-root>/notes/inbox.txt",
+          "type": "file"
+        },
+        "updated_at": "<timestamp>",
+        "workspace_id": "<uuid-0001>"
+      }
+    ],
+    "stats": {
+      "by_state": {
+        "approved": 1,
+        "observed": 0,
+        "proposed": 8,
+        "rejected": 0
+      },
+      "total": 9
+    }
+  },
+  "scenario": "memory.list",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "List memories"
+}

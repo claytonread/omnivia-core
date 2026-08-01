@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/evidence.schema.json",
+  "title": "OmniVia Core Application Contract v1 - L0 evidence foundations",
+  "description": "Provider-neutral wire shapes for the L0 evidence artifact and the `evidence.search` operation payload (ADR-039). `evidence.search` returns complete, append-preserving L0 evidence with exact provenance; an `EvidenceArtifact` is never a substitute for, and carries no reference implying it is, an accepted `GovernedRecord` -- it reuses only the generic `records.schema.json` provenance/temporal/source primitives that carry no governance-layer or governance-state assertion of their own. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "EvidenceId": {
+      "title": "EvidenceId",
+      "description": "Stable identifier of one L0 evidence artifact, constant across its append-only provenance history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])"
+    },
+    "EvidenceQuery": {
+      "title": "EvidenceQuery",
+      "description": "A caller-supplied, normalized search query for `evidence.search`. Normalization (case-folding, whitespace, tokenization) is caller-side; this document defines no normalization algorithm.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "EvidenceChecksum": {
+      "title": "EvidenceChecksum",
+      "description": "A content checksum, spelled `algorithm:hex-digest` (such as `sha256:9f86d0...`) so the digest is never ambiguous about which algorithm produced it. Provider-neutral: this contract does not mandate a specific algorithm.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$(?![\\s\\S])"
+    },
+    "MediaType": {
+      "title": "MediaType",
+      "description": "An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])"
+    },
+    "EvidenceArtifact": {
+      "title": "EvidenceArtifact",
+      "description": "One complete, append-preserving L0 evidence artifact: stable identity, workspace, exact source/native locator, applicable temporal instants, content checksum and media type, opaque metadata, permission/sensitivity labels, tombstone status, parser/ingestion status, and append-only provenance history. Carries no `GovernanceLayer`, `GovernanceState`, `RecordCurrentness`, or `authority_level` field: an evidence artifact is raw L0 material, never governed knowledge, and this shape must never be mistaken for a `GovernedRecord`.",
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId",
+          "description": "Stable identifier of this evidence artifact."
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this evidence artifact belongs to."
+        },
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceReference",
+          "description": "Exact source, native identifier, and locator this evidence was captured from."
+        },
+        "temporal": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordTemporalMetadata",
+          "description": "The distinct instants applicable to this evidence: when observed, when ingested, and when this artifact was recorded, without collapsing them into one. `valid_from`/`valid_until`/`superseded_at` are rarely applicable to append-only L0 evidence and are typically absent."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum",
+          "description": "Checksum of this evidence artifact's content, proving the content has not been altered since capture."
+        },
+        "media_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType",
+          "description": "Media type of this evidence artifact's content."
+        },
+        "metadata": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque metadata captured alongside this evidence artifact."
+        },
+        "permission_labels": {
+          "type": "array",
+          "description": "Open codes naming the access/permission labels attached to this evidence artifact, such as `restricted` or `team_only`. May be empty when no label applies.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
+          "maxItems": 64
+        },
+        "sensitivity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming this evidence artifact's sensitivity classification, such as `public` or `confidential`."
+        },
+        "tombstoned": {
+          "type": "boolean",
+          "description": "True when this evidence artifact has been tombstoned. A tombstoned artifact's append-only provenance history is never erased; tombstoning is itself recorded as a provenance entry."
+        },
+        "parser_status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the status of parsing this evidence artifact's content, such as `parsed` or `parse_failed`."
+        },
+        "ingestion_status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the status of ingesting this evidence artifact, such as `ingested` or `quarantined`."
+        },
+        "provenance_history": {
+          "type": "array",
+          "description": "Append-only history of actions taken on this evidence artifact. Never truncated or rewritten; a correction is a new entry, not an edit to a prior one. Never empty: even the first capture of this artifact is itself a provenance entry, so an artifact with no recorded history entry would be an unaudited state.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/ProvenanceEntry"
+          },
+          "minItems": 1,
+          "maxItems": 1024
+        },
+        "import_run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Names the import job/run that produced this evidence artifact, when it was produced by one. Typed as `OpaqueToken` because it is drawn from exactly the same opaque token domain as `JobIdentity.job_id` and `ImportCompletionResult.import_run_id`: the completion contract promises this backlink names the run that created this evidence, and spelled in any narrower vocabulary it could not hold every job id the contract admits -- a run such as `job/opaque-token` could complete and then have no writable backlink at all."
+        }
+      },
+      "required": [
+        "evidence_id",
+        "workspace_id",
+        "source",
+        "temporal",
+        "content_checksum",
+        "media_type",
+        "metadata",
+        "permission_labels",
+        "sensitivity",
+        "tombstoned",
+        "parser_status",
+        "ingestion_status",
+        "provenance_history"
+      ],
+      "unevaluatedProperties": false
+    },
+    "EvidenceSearchInput": {
+      "title": "EvidenceSearchInput",
+      "description": "Input for `evidence.search`. Workspace-scoped: the workspace is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceQuery",
+          "description": "Normalized search query."
+        },
+        "sensitivity": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Restrict results to this sensitivity classification, when set."
+        },
+        "include_tombstoned": {
+          "type": "boolean",
+          "description": "Whether tombstoned evidence artifacts may be included. Absent means the server's default (excluded)."
+        },
+        "limit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit",
+          "description": "Bounded maximum number of evidence artifacts to return in this page."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position from a prior page, when paging."
+        }
+      },
+      "required": ["query"],
+      "unevaluatedProperties": false
+    },
+    "EvidenceSearchResult": {
+      "title": "EvidenceSearchResult",
+      "description": "Result of `evidence.search`: complete, append-preserving L0 evidence artifacts with exact provenance. Never substitutes a `GovernedRecord` for an evidence artifact.",
+      "type": "object",
+      "properties": {
+        "evidence": {
+          "type": "array",
+          "description": "Evidence artifacts in this page.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceArtifact"
+          },
+          "maxItems": 500
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position for the next page, absent on the last page."
+        }
+      },
+      "required": ["evidence", "page"],
+      "unevaluatedProperties": false
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "baseline_slice": "graph.traversal",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.graph.service.GraphService.get_neighbors",
+    "omnivia_memory.graph.service.GraphService.get_backlinks",
+    "omnivia_memory.graph.service.GraphService.find_path"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "find_path treats relationships as undirected, so the captured path runs against edge direction.",
+    "Agent-created entities and relationships stay in the proposed approval state; the baseline records that governance default.",
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": "GraphService.get_neighbors returns outgoing relationships before incoming ones; the baseline sorts neighbour and backlink pairs by entity name then relationship type. The find_path chain has a unique shortest path, so its order is behaviour, not a sort",
+  "request": {
+    "backlinks_of": "Portable Contracts",
+    "entities": [
+      {
+        "entity_type": "system",
+        "name": "OmniVia Core"
+      },
+      {
+        "entity_type": "concept",
+        "name": "Portable Contracts"
+      },
+      {
+        "entity_type": "system",
+        "name": "Platform Runtime"
+      },
+      {
+        "entity_type": "product",
+        "name": "Desktop Shell"
+      }
+    ],
+    "find_path": {
+      "from": "OmniVia Core",
+      "max_depth": 5,
+      "to": "Desktop Shell"
+    },
+    "neighbors_of": "Portable Contracts",
+    "relationships": [
+      {
+        "source": "Portable Contracts",
+        "target": "OmniVia Core",
+        "type": "part_of"
+      },
+      {
+        "source": "Platform Runtime",
+        "target": "Portable Contracts",
+        "type": "depends_on"
+      },
+      {
+        "source": "Desktop Shell",
+        "target": "Platform Runtime",
+        "type": "uses"
+      }
+    ]
+  },
+  "response": {
+    "backlinks": [
+      {
+        "entity": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "entity_type": "system",
+          "id": "<uuid-0022>",
+          "name": "Platform Runtime",
+          "source_id": "source-baseline",
+          "updated_at": "<timestamp>"
+        },
+        "relationship": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "id": "<uuid-0023>",
+          "relationship_type": "depends_on",
+          "source_entity_id": "<uuid-0022>",
+          "source_id": null,
+          "target_entity_id": "<uuid-0024>",
+          "updated_at": "<timestamp>"
+        }
+      }
+    ],
+    "neighbors": [
+      {
+        "entity": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "entity_type": "system",
+          "id": "<uuid-0025>",
+          "name": "OmniVia Core",
+          "source_id": "source-baseline",
+          "updated_at": "<timestamp>"
+        },
+        "relationship": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "id": "<uuid-0026>",
+          "relationship_type": "part_of",
+          "source_entity_id": "<uuid-0024>",
+          "source_id": null,
+          "target_entity_id": "<uuid-0025>",
+          "updated_at": "<timestamp>"
+        }
+      },
+      {
+        "entity": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "entity_type": "system",
+          "id": "<uuid-0022>",
+          "name": "Platform Runtime",
+          "source_id": "source-baseline",
+          "updated_at": "<timestamp>"
+        },
+        "relationship": {
+          "approval_status": "proposed",
+          "created_at": "<timestamp>",
+          "id": "<uuid-0023>",
+          "relationship_type": "depends_on",
+          "source_entity_id": "<uuid-0022>",
+          "source_id": null,
+          "target_entity_id": "<uuid-0024>",
+          "updated_at": "<timestamp>"
+        }
+      }
+    ],
+    "path": [
+      {
+        "approval_status": "proposed",
+        "created_at": "<timestamp>",
+        "entity_type": "system",
+        "id": "<uuid-0025>",
+        "name": "OmniVia Core",
+        "source_id": "source-baseline",
+        "updated_at": "<timestamp>"
+      },
+      {
+        "approval_status": "proposed",
+        "created_at": "<timestamp>",
+        "entity_type": "concept",
+        "id": "<uuid-0024>",
+        "name": "Portable Contracts",
+        "source_id": "source-baseline",
+        "updated_at": "<timestamp>"
+      },
+      {
+        "approval_status": "proposed",
+        "created_at": "<timestamp>",
+        "entity_type": "system",
+        "id": "<uuid-0022>",
+        "name": "Platform Runtime",
+        "source_id": "source-baseline",
+        "updated_at": "<timestamp>"
+      },
+      {
+        "approval_status": "proposed",
+        "created_at": "<timestamp>",
+        "entity_type": "product",
+        "id": "<uuid-0027>",
+        "name": "Desktop Shell",
+        "source_id": "source-baseline",
+        "updated_at": "<timestamp>"
+      }
+    ],
+    "path_found": true,
+    "stats": {
+      "entities": 4,
+      "relationships": 3
+    }
+  },
+  "scenario": "graph.traversal",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Graph neighbours, backlinks, and path finding"
+}

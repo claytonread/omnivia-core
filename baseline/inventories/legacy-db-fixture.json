@@ -1,0 +1,222 @@
+{
+  "format_version": "1",
+  "inventory": {
+    "content_checksum": "32babfa450b1c792e18fd2b09cf6f51fbaafd601a7df3944aab635dbb27d6b30",
+    "tables": [
+      {
+        "columns": [
+          "id",
+          "source_id",
+          "chunk_index",
+          "content",
+          "start_offset",
+          "end_offset",
+          "content_hash"
+        ],
+        "content_checksum": "772aa67e9dc3305a612fae99c847223270ccad9a41cb8c676b8bcbc312bbec78",
+        "name": "chunks",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "workspace_id",
+          "name",
+          "purpose",
+          "query",
+          "memory_ids_json",
+          "source_references_json",
+          "format",
+          "content",
+          "created_at"
+        ],
+        "content_checksum": "03cfb2306ee62cc7dfdd29fe9559c7d08159e2a100ac82271376aac2c5c1d7cd",
+        "name": "context_packs",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "workspace_id",
+          "event_type",
+          "resource_type",
+          "resource_id",
+          "payload_json",
+          "created_at"
+        ],
+        "content_checksum": "6e9fccce4c07bc34c5a981c3aab95aee784a7dc2aa4838cad74fb32987bac002",
+        "name": "control_plane_events",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "workspace_id",
+          "schema_version",
+          "payload_json",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "779e0e53c8054995b47935b823fe33b9fc4ab174b41ee280315e90c03f9d998e",
+        "name": "control_plane_manifests",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "workspace_id",
+          "resource_type",
+          "resource_id",
+          "lifecycle",
+          "payload_json",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "5d7fec609518a8e0d1facb0308794704225f72bdcbfce0b3812b542dfce61f0f",
+        "name": "control_plane_resources",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "entity_id",
+          "memory_id",
+          "source_id",
+          "created_at"
+        ],
+        "content_checksum": "eefe7261f6697023cc766691697445794720bab80496daae40e4307737d85295",
+        "name": "entity_memory_links",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "name",
+          "entity_type",
+          "source_id",
+          "approval_status",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "ab493a919142125dbaec4e9bfc3c98d52da116a9da8ff45ce4aa466971937f5e",
+        "name": "graph_entities",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "source_entity_id",
+          "target_entity_id",
+          "relationship_type",
+          "source_id",
+          "approval_status",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "329a033b962cf5302e3b1f70921a8fb02731e9badf0f9cd827f03de13f79349c",
+        "name": "graph_relationships",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "workspace_id",
+          "content",
+          "source_type",
+          "source_reference",
+          "source_description",
+          "lifecycle_state",
+          "memory_type",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "c4fea9418886b5081bf70f97e47793266e8657435dd53626c9ba4811c6790827",
+        "name": "memories",
+        "row_count": 3
+      },
+      {
+        "columns": [
+          "id",
+          "pattern_id",
+          "memory_id",
+          "evidence",
+          "detected_at"
+        ],
+        "content_checksum": "5afa80a517e6282ce0ce6a7902231e2aef8ff2ed2f246d517452693f11d00b13",
+        "name": "pattern_occurrences",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "source_pattern_id",
+          "target_pattern_id",
+          "related_memory_id",
+          "relationship_type",
+          "source_id",
+          "approval_status",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "933bc6aba96d921447f4750921165e7c5da054d3e80a5be080e5c04b67b9b6ee",
+        "name": "pattern_relationships",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "name",
+          "pattern_type",
+          "description",
+          "confidence",
+          "occurrence_count",
+          "source_id",
+          "approval_status",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "c1c2e34a204b1644fe85bf0ec663fca87066fb6c6d9c64e64269ded00f83edd2",
+        "name": "patterns",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "workspace_id",
+          "file_path",
+          "extension",
+          "size_bytes",
+          "modified_time",
+          "file_type",
+          "content_hash",
+          "parse_status",
+          "error_message",
+          "created_at",
+          "updated_at"
+        ],
+        "content_checksum": "09db543451f9a34c229963dd9c045925529de14be409622ede588a53580bc7f9",
+        "name": "sources",
+        "row_count": 0
+      },
+      {
+        "columns": [
+          "id",
+          "name",
+          "root_path",
+          "storage_path",
+          "description",
+          "index_status",
+          "settings_json",
+          "created_at",
+          "updated_at",
+          "last_indexed_at"
+        ],
+        "content_checksum": "96a3a7bb515459fc37f45a4047876d502d41839e6b51690ebfc4b518b31d2afb",
+        "name": "workspaces",
+        "row_count": 1
+      }
+    ],
+    "total_rows": 4
+  },
+  "note": "Generated from synthetic content only. The real ~/.omnivia/memories.db is never opened, copied, or inspected by this tooling.",
+  "source": "baseline.legacy_db.build_legacy_fixture_database",
+  "task": "T-0627"
+}

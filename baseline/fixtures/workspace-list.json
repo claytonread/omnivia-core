@@ -1,0 +1,55 @@
+{
+  "baseline_slice": "workspace.list",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.workspace.service.WorkspaceService.list"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "absolute-path",
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": "repository returns created_at DESC; baseline sorts by name",
+  "request": {
+    "limit": 100,
+    "offset": 0
+  },
+  "response": {
+    "count": 1,
+    "workspaces": [
+      {
+        "created_at": "<timestamp>",
+        "description": "Ephemeral workspace used to freeze the Phase 0 baseline.",
+        "id": "<uuid-0001>",
+        "index_status": "unindexed",
+        "last_indexed_at": null,
+        "name": "Baseline Workspace",
+        "root_path": "<workspace-root>",
+        "settings": {
+          "import_profile": "baseline"
+        },
+        "storage_path": "<workspace-storage>",
+        "updated_at": "<timestamp>"
+      }
+    ]
+  },
+  "scenario": "workspace.list",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "List workspaces"
+}

@@ -1,0 +1,554 @@
+{
+  "format": "omnivia.application-pattern-baseline.v1",
+  "accepted_checkpoint": "3b6101c89a7b1d5b8575c360e0972faebdcfb218",
+  "definitions": {
+    "common.schema:$defs.AuditReference": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "AuditReference",
+        "description": "Bounded, non-empty server-issued reference to the audit record for a completed operation.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.CapabilityId": {
+      "pattern": "^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*)+$(?![\\s\\S])",
+      "keywords": {
+        "title": "CapabilityId",
+        "description": "Stable namespaced capability identifier such as `memory.read`. At least one dot is required so capability names always carry a namespace.",
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.ContractVersion": {
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])",
+      "keywords": {
+        "title": "ContractVersion",
+        "description": "A `major.minor` contract version. Major changes are breaking; minor changes are additive and forward compatible.",
+        "type": "string",
+        "maxLength": 32
+      }
+    },
+    "common.schema:$defs.CorrelationId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "CorrelationId",
+        "description": "Bounded, non-empty identifier grouping related requests into one logical operation.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.IdempotencyKey": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "IdempotencyKey",
+        "description": "Caller-assigned key making a mutation safe to retry. Equal keys with different inputs are an `idempotency_conflict`.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.Identifier": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "Identifier",
+        "description": "Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.OpaqueToken": {
+      "pattern": "^[!-~]+$(?![\\s\\S])",
+      "keywords": {
+        "title": "OpaqueToken",
+        "description": "A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never parse it. The pattern's trailing negative lookahead is an end-of-input assertion, not a widening of the character domain: a bare `$` matches before a final line terminator in some conforming regex engines, so a token spelled with a trailing newline would be schema-valid while the semantic validators -- which match the whole string -- refuse it. The lookahead pins the anchor to absolute end of input, so strict schema and semantic validation accept exactly the same tokens.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "common.schema:$defs.OpenCode": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "OpenCode",
+        "description": "An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible minor releases can add vocabulary; consumers must preserve values they do not recognize.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.ProjectionVersion": {
+      "pattern": "^[!-~]+$(?![\\s\\S])",
+      "keywords": {
+        "title": "ProjectionVersion",
+        "description": "An opaque per-projection version marker used to reason about read staleness.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.Purpose": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "Purpose",
+        "description": "An open purpose-limitation token stating why the caller is making this request.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.ReleaseVersion": {
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$(?![\\s\\S])",
+      "keywords": {
+        "title": "ReleaseVersion",
+        "description": "A SemVer 2.0.0 release string identifying a concrete build, not a contract.",
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.RequestId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "RequestId",
+        "description": "Bounded, non-empty caller-assigned identifier for a single request attempt.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.Scope": {
+      "pattern": "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "Scope",
+        "description": "An open scope token such as `memory:read` requested by the caller. Scopes narrow a request; they never widen granted authority.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.Timestamp": {
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])",
+      "keywords": {
+        "title": "Timestamp",
+        "description": "An RFC 3339 timestamp in UTC with a literal `Z` offset.",
+        "type": "string",
+        "format": "date-time",
+        "maxLength": 40
+      }
+    },
+    "common.schema:$defs.TraceId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "TraceId",
+        "description": "Bounded, non-empty distributed-trace identifier. Diagnostic only; never an authorization input.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "common.schema:$defs.WorkspaceId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "WorkspaceId",
+        "description": "Bounded, non-empty identifier of the workspace a request is scoped to.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "compatibility-matrix.schema:$defs.ComponentKind": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "ComponentKind",
+        "description": "Open, dot-namespaced code naming which component a compatibility entry describes, such as `core` or `runtime` or `cli` or `mcp` or `sdk`. Open by design so a compatible minor release can add components without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "compatibility-matrix.schema:$defs.OperationCompatibilityState": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "OperationCompatibilityState",
+        "description": "Open, dot-namespaced code naming an operation's lifecycle state, such as `stable` or `experimental` or `deprecated` or `removed`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "compatibility-matrix.schema:$defs.QualificationState": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "QualificationState",
+        "description": "Open, dot-namespaced code naming how thoroughly a release or capability combination has actually been verified, such as `development` or `unverified` or `qualified` or `supported`. Open by design so a compatible minor release can add states without breaking existing decoders. A combination absent this state, or carrying anything other than an explicitly verified state, must never be treated as supported: an empty or `unverified` entry is not evidence of support.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "context-pack.schema:$defs.ContextPackDigest": {
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+      "keywords": {
+        "title": "ContextPackDigest",
+        "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value an independent implementation must be able to recompute and compare byte for byte, so exactly one algorithm, one length, and one letter case are admitted.",
+        "type": "string",
+        "minLength": 71,
+        "maxLength": 71
+      }
+    },
+    "context-pack.schema:$defs.ContextPackMode": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "ContextPackMode",
+        "description": "Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a compatible minor release can add vocabulary, but trust-sensitive: v1 recognizes exactly one value, `deterministic_view` (a regenerated, non-persisted, deterministic view), and semantic validation fails closed on every other value rather than guessing at it. `immutable_snapshot` is deliberately not a v1 mode -- persistence is an operation posture this read does not have -- and `returned_artifact` was never a wire mode at all.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "envelopes.schema:$defs.OperationName": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])",
+      "keywords": {
+        "title": "OperationName",
+        "description": "Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states; what each name binds to -- its input and result schemas, and its scope, capability, completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture -- is published per operation by `operations.schema.json`'s `x-omnivia-operation-catalogue`. The pattern admits any well-formed name, including ones no catalogue entry defines: whether a name is a v1 application operation is a semantic question (see `omnivia_core.contracts.v1.semantics_operations`), not a wire-shape one.",
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128
+      }
+    },
+    "errors.schema:$defs.ErrorCode": {
+      "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "ErrorCode",
+        "description": "Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum, so compatible minor releases can add codes. Decoders must preserve unknown codes and must not map them onto a known code.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "errors.schema:$defs.RetryClass": {
+      "pattern": "^[a-z][a-z0-9_]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "RetryClass",
+        "description": "How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized retry class MUST fail safe as non-retryable: never infer that an unknown class is retryable.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "evidence.schema:$defs.EvidenceChecksum": {
+      "pattern": "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$(?![\\s\\S])",
+      "keywords": {
+        "title": "EvidenceChecksum",
+        "description": "A content checksum, spelled `algorithm:hex-digest` (such as `sha256:9f86d0...`) so the digest is never ambiguous about which algorithm produced it. Provider-neutral: this contract does not mandate a specific algorithm.",
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 256
+      }
+    },
+    "evidence.schema:$defs.EvidenceId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "EvidenceId",
+        "description": "Stable identifier of one L0 evidence artifact, constant across its append-only provenance history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "evidence.schema:$defs.MediaType": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "MediaType",
+        "description": "An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.",
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 255
+      }
+    },
+    "graph.schema:$defs.GraphBoundaryReason": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GraphBoundaryReason",
+        "description": "Open, dot-namespaced code justifying why one endpoint of an edge is absent from a traversal result: `page_boundary` when the traversal stopped at the node limit and offers a continuation token, or `depth_boundary` when the present endpoint sits exactly at the applied depth limit. Wire-open by shape, but trust-sensitive: an absent endpoint is a claim that the projection stopped, not that the relation lost an end, so only the recognized values are accepted by semantic validation and an unrecognized reason fails closed rather than being guessed at.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "graph.schema:$defs.GraphDirection": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GraphDirection",
+        "description": "Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`, `inbound`, or `both`. Wire-open by shape, but trust-sensitive: only the known values are accepted by semantic validation, and an unrecognized value fails closed rather than being guessed at.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "graph.schema:$defs.GraphOrderingBasis": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GraphOrderingBasis",
+        "description": "Open, dot-namespaced code naming the deterministic key a traversal result was ordered by, such as `record_id_asc`, so identical inputs against an unchanged projection reproduce identical node/edge ordering.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "graph.schema:$defs.GraphRelationType": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GraphRelationType",
+        "description": "Open, dot-namespaced code naming a kind of relation between governed records, such as `relates_to` or `derived_from`. Open by design so a compatible minor release can add relation types without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.ContentChecksum": {
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])",
+      "keywords": {
+        "title": "ContentChecksum",
+        "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value the caller and the server must be able to recompute and compare byte for byte over the same staged bytes, so exactly one algorithm, one length, and one letter case are admitted. Stated as what v1 initially requires: admitting a further algorithm later is an additive widening of this pattern, not a redefinition of what a checksum means.",
+        "type": "string",
+        "minLength": 71,
+        "maxLength": 71
+      }
+    },
+    "jobs.schema:$defs.JobCancellationAvailability": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobCancellationAvailability",
+        "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right now and where an already-requested cancellation stands, with four known values: `cancellable` (a `job.cancel` would be accepted), `cancellation_pending` (a cancellation is already requested and has not yet taken effect), `cancelled` (the job is already cancelled), and `not_cancellable` (a `job.cancel` would be refused). This is an availability statement about the job as observed, not the outcome of a control call: what a particular `job.cancel` did is reported by `JobCancellationDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation is permitted, and carries no scheduler, worker, lease, or persistence detail.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.JobCancellationDisposition": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobCancellationDisposition",
+        "description": "Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known values: `cancellation_requested` (cancellation was accepted and the job will stop), `cancelled` (the job is already cancelled, so the call changed nothing), and `not_cancellable` (the call was refused and the job is unchanged). A state-based refusal is a successful, idempotent control result rather than an API error: `not_cancellable` is returned alongside the current unchanged handle, not raised as `conflict`. Open by design; an unrecognized value decodes and is preserved but never implies cancellation was accepted, and carries no scheduler, worker, lease, or persistence detail.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.JobProgressUnit": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobProgressUnit",
+        "description": "Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such as `item` or `byte` or `document`. Open by design so a compatible minor release can add units without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.JobRecoveryAvailability": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobRecoveryAvailability",
+        "description": "Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right now, with three known values: `retryable` (a failed job that `job.retry` would run again), `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and `not_retryable` (a `job.retry` would be refused). `job.retry` is the single recovery operation and carries no action selector, so this code reports which recovery server state would choose rather than offering the caller a choice; what a particular `job.retry` did is reported by `JobRecoveryDisposition`. Open by design; an unrecognized value decodes and is preserved but never implies recovery is permitted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.JobRecoveryDisposition": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobRecoveryDisposition",
+        "description": "Open, dot-namespaced code naming what one `job.retry` call actually did, with three known values: `retry_scheduled` (a failed job was scheduled to run again, from the beginning or from a supported checkpoint), `resume_scheduled` (a cancelled resumable job was scheduled to continue from its checkpoint), and `not_retryable` (no recovery was scheduled and the job is unchanged). `job.retry` is the single recovery operation and carries no action selector: server state, not the caller, decides between retrying and resuming, so this code reports that decision rather than accepting it. A state-based refusal is a successful, idempotent control result rather than an API error. Open by design; an unrecognized value decodes and is preserved but never implies recovery was accepted, and carries no scheduler, worker, lease, checkpoint, or persistence detail.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "jobs.schema:$defs.JobState": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "JobState",
+        "description": "Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "memory.schema:$defs.GovernedRecordType": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GovernedRecordType",
+        "description": "Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact` or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add record types without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "memory.schema:$defs.GovernedRecordView": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GovernedRecordView",
+        "description": "Open, dot-namespaced code selecting which slice of a governed record's versions a read considers: `current_canonical` (the single active accepted version, the default when this field is absent), `candidates` (proposed/candidate versions not yet accepted), or `history` (every version, including superseded ones). Open by design so a compatible minor release can add views without breaking existing decoders. Default resolution when absent is a semantic concern (see `omnivia_core.contracts.v1.semantics`), not a wire-shape one.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "memory.schema:$defs.MemorySearchOrder": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "MemorySearchOrder",
+        "description": "Open, dot-namespaced code naming how `memory.search` results are ordered, such as `relevance` or `recency`. Open by design so a compatible minor release can add orders without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "memory.schema:$defs.RecordDomainScope": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "RecordDomainScope",
+        "description": "Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or checks a permission, it only classifies what the record is about. Open by design so a compatible minor release can add classifications without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "operations.schema:$defs.OperationCompletionMode": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "OperationCompletionMode",
+        "description": "Open, dot-namespaced code naming how an operation completes, such as `synchronous` (no durable job, ever), `may_return_job` (a response may carry a `JobReference`), or `always_returns_job` (every invocation starts a durable job). Independent of `OperationSideEffect`: an operation like `import.start` is representable as a mutation (`side_effect`) that always returns a durable job (`completion_mode`). Open by design so a compatible minor release can add modes without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "operations.schema:$defs.OperationScopeKind": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "OperationScopeKind",
+        "description": "Open, dot-namespaced code naming the kind of scope an operation carries, such as `installation` or `workspace`. Open by design so a compatible minor release can add scope kinds without breaking existing decoders. A given operation's scope metadata carries exactly one kind.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "operations.schema:$defs.OperationSideEffect": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "OperationSideEffect",
+        "description": "Open, dot-namespaced code naming whether invoking an operation mutates state, such as `none` or `create` or `update` or `delete`. Open by design so a compatible minor release can add classifications without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.EvidenceDisposition": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "EvidenceDisposition",
+        "description": "Open, dot-namespaced code stating whether concrete evidence is actually available for a record, such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.GovernanceLayer": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GovernanceLayer",
+        "description": "Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw evidence), `l1` (candidate observations), `l2` (governed records / canonical knowledge), `l3` (context models), or `l4` (organisational model). Distinct from workspace scope, which is a caller-facing tenancy boundary, not a knowledge-governance layer. Open by design so a compatible minor release can add layers without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.GovernanceState": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "GovernanceState",
+        "description": "Open, dot-namespaced code naming a record's position in its own governance workflow, such as `proposed` or `candidate` or `accepted` or `rejected`. Distinct from `GovernanceLayer` (which namespace a record belongs to) and `RecordCurrentness` (whether this version is the active one): a record can be `accepted` and still later superseded, or `proposed` and never adopted. Open by design so a compatible minor release can add states without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.RecordCurrentness": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "RecordCurrentness",
+        "description": "Open, dot-namespaced code naming whether a record version is the active one, such as `current` or `superseded` or `retracted`. Open by design; an unrecognized value must be preserved, not coerced to a known one.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.RecordId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])",
+      "keywords": {
+        "title": "RecordId",
+        "description": "Stable identifier of a governed record, constant across every version of that record.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "records.schema:$defs.RecordVersion": {
+      "pattern": "^[!-~]+$(?![\\s\\S])",
+      "keywords": {
+        "title": "RecordVersion",
+        "description": "Opaque, server-issued version marker of one specific revision of a record. Clients must round-trip it verbatim and must never parse it.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "records.schema:$defs.SourceKind": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "SourceKind",
+        "description": "Open, dot-namespaced code naming the kind of thing a source reference points at, such as `document` or `conversation` or `api_response`.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "service.schema:$defs.ProbeKind": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "ProbeKind",
+        "description": "Open, dot-namespaced code naming which runtime probe is being requested or answered. The frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and `service.discover`. Open by design so a compatible minor release can add probe kinds without breaking existing callers.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "service.schema:$defs.ProbeStatus": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "ProbeStatus",
+        "description": "Open, dot-namespaced code naming the outcome of a probe or one of its components, such as `pass` or `warn` or `fail`. Open by design; an unrecognized status must be preserved and surfaced, not coerced to a known one.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "workspace.schema:$defs.WorkspaceStatus": {
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])",
+      "keywords": {
+        "title": "WorkspaceStatus",
+        "description": "Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or `provisioning` or `archived`. Open by design so a compatible minor release can add statuses without breaking existing decoders.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    }
+  }
+}

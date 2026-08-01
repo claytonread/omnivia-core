@@ -1,85 +1,1097 @@
 # OmniVia Core
 
-OmniVia Core is the public foundation for OmniVia's local-first knowledge model.
+OmniVia Core is a public, local-first, backend-neutral portable knowledge
+substrate.
 
-It contains public source-library primitives for representing, storing, linking,
-importing, exporting, and searching local knowledge. It is intentionally not the
-OmniVia desktop app, commercial platform, Dev Module, or cloud product.
+It is not a note app, graph UI, scanner, sync service, hosted service, provider
+router, MCP server, CLI runtime, or assistant installer. Core owns portable
+contracts, validation, normalization, extension semantics, public API exports,
+static fixtures/examples, and documentation that other repositories or tools
+can build on safely.
 
-## Scope
+## Positioning
 
-OmniVia Core may contain:
+Core is designed for:
 
-- domain models
-- file-format primitives
-- graph and storage primitives
-- local knowledge primitives
-- backlink/link primitives
-- import/export primitives
-- basic search primitives
-- public tests for core primitives
-- public documentation that is safe for community use
+- developers building graph-backed or knowledge-backed applications
+- AI agent builders who need typed, source-grounded, reviewable context
+- researchers working with claims, citations, and evidence strength
+- personal knowledge builders modeling notes, links, tags, and tasks
+- team knowledge builders modeling decisions, workflows, and risks
+- Obsidian-like tool builders who need a portable contract surface
+- Graphify-like codebase-map builders who need a portable graph fragment shape
+- future OmniVia Platform, Dev, and Apps implementers
 
-OmniVia Core must not contain:
+Core alone is not designed for:
 
-- desktop app code
-- runtime adapter code
-- UI/interface code
-- Electron or Tauri code
-- app shell, preload, main, or renderer bridge code
-- licensing, entitlement, or billing implementation
-- MCP server implementation
-- Dev CLI implementation
-- repo indexing, code graph, or agent context pack features
-- cloud services or cloud client code
-- private strategy, planning, prompts, or operating files
-- secrets, credentials, local databases, generated builds, caches, or dependency folders
+- a complete note editor or publish/sync workflow
+- a vault scanner, repo scanner, parser, or importer runtime
+- a visual graph explorer or query runtime
+- provider enrichment, model routing, or hosted storage
+- direct CLI, MCP, or assistant-install surfaces
+
+## Principles
+
+- `local-first`: contract shapes assume local artifacts and local provenance.
+- `backend-neutral`: contracts do not assume SQLite, Neo4j, vector DBs, or any
+  specific storage/query engine.
+- `developer-first`: exports are explicit, typed, reviewable, and easy to
+  validate in tests and fixtures.
+- `agent-safe`: confidence, review status, evidence strength, sensitivity, and
+  missing-evidence markers stay first-class.
+- `portable`: the same contract layer can represent vaults, codebases, research
+  corpora, team workspaces, workflow systems, and agent memory.
+
+## Repository Boundary
+
+`omnivia-core` owns:
+
+- portable knowledge contracts
+- graph fragments, source refs, and schema version helpers
+- validation helpers and normalization helpers
+- extension manifests and namespace rules
+- static examples, fixtures, adapter docs, and public-safe documentation
+
+`omnivia-core` also still ships a small set of repo-local reference
+implementations for memory, persistence, ingestion, search, and graph assembly.
+Treat those as transitional code that currently lives here, not as a claim that
+Core is the long-term runtime owner for those surfaces.
+
+`omnivia-core` does not own:
+
+- long-term ownership of ingestion, indexing, parsing, scanning, or watcher lifecycle
+- long-term ownership of persistence lifecycle, caches, sync, or background jobs
+- long-term ownership of query runtime, UI runtime, desktop runtime, or hosted runtime
+- provider/model calls or assistant installation
+- MCP serving, CLI runtime, or repo-specific tool workflows
+
+## Comparison
+
+Obsidian-like tools:
+
+- Core can represent notes, wikilinks, derived backlinks, tags,
+  frontmatter-derived properties, canvas/card-like objects, embedded files, and
+  note-to-task links.
+- Core does not try to become a note editor, plugin runtime, publish flow, or
+  sync layer.
+
+Graphify-like tools:
+
+- Core can represent portable graph fragments, extracted/inferred/ambiguous
+  confidence, source-backed code/document links, and bounded extension
+  annotations such as `graphify:god_node` and `graphify:surprise_edge`.
+- Graphify remains reference-only. Do not add `graphifyy` as a dependency.
+- Core does not become a scanner, cache, query CLI, MCP server, or installer.
+
+## Dependency Posture
+
+The following are reference-only or future integration concerns, not default
+Core dependencies:
+
+- Graphify and other code-graph tools
+- Obsidian and note-app/plugin runtimes
+- tree-sitter language packages
+- Markdown parser runtimes
+- graph databases and vector databases
+- model/provider SDKs
+- MCP servers and CLI runtimes
+
+## Package Topology
+
+The repository root is the canonical `omnivia-core` distribution
+(import package `omnivia_core`, under `src/`). Three sibling skeleton
+distributions live under `packages/` and depend on `omnivia-core`:
+
+```text
+                    omnivia-core
+                  ^      ^      ^
+                  |      |      |
+omnivia-core-runtime   omnivia-core-mcp   omnivia-core-cli
+```
+
+| Distribution | Import package | Location | Depends on |
+|---|---|---|---|
+| `omnivia-core` | `omnivia_core` | `src/omnivia_core` | — |
+| `omnivia-core-runtime` | `omnivia_core_runtime` | `packages/omnivia-core-runtime` | `omnivia-core` |
+| `omnivia-core-mcp` | `omnivia_core_mcp` | `packages/omnivia-core-mcp` | `omnivia-core` |
+| `omnivia-core-cli` | `omnivia_core_cli` | `packages/omnivia-core-cli` | `omnivia-core` |
+
+Rules enforced by `scripts/check-package-boundaries.py`:
+
+- `omnivia-core` never depends on or imports any sibling distribution or the
+  legacy `omnivia_memory` implementation.
+- `omnivia-core-runtime`, `omnivia-core-mcp`, and `omnivia-core-cli` each
+  declare a compile-time dependency on `omnivia-core`.
+- `omnivia-core-mcp` and `omnivia-core-cli` never depend on or import
+  `omnivia_core_runtime`.
+
+All four packages are a **package-boundary skeleton only**: `omnivia_core`,
+`omnivia_core_runtime`, `omnivia_core_mcp`, and `omnivia_core_cli` currently
+expose package identity/version metadata and nothing else. There is no
+runtime, MCP, or CLI implementation yet, and no compatibility facade has been
+created for the legacy `omnivia-memory` implementation. The reference
+implementation that other tooling should still use today continues to live,
+unchanged, at `services/omnivia-memory` (import package `omnivia_memory`) — see
+[Repository Split](#repository-split) below.
+
+### Boundary and build checks
+
+Run the boundary checks (manifest and AST-based) and their tests:
+
+```bash
+.venv/bin/python -m pytest tests -q
+.venv/bin/python scripts/check-package-boundaries.py
+```
+
+Run a clean, isolated build/install check for all four distributions. This
+builds a temporary wheelhouse and installs each distribution into its own
+temporary virtual environment; it writes nothing under the repository tree:
+
+```bash
+PYTHON=.venv/bin/python scripts/check-package-builds.sh
+```
+
+## Application Contract v1
+
+`omnivia_core.contracts.v1` is a provider-neutral wire contract for
+application-layer request/response negotiation: version and capability
+negotiation, request/response envelopes, and typed, retry-classified errors.
+It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
+MCP implementation.
+
+The canonical `x-omnivia-operation-catalogue` annotation in
+`operations.schema.json` names exactly **20 application operations** and binds
+each to its input/result schemas and its scope, capability, completion,
+pagination, idempotency, mutation-precondition, audit, and allowed-error
+posture.
+
+Two are installation-scoped:
+
+```text
+workspace.create   workspace.list
+```
+
+Eighteen are workspace-scoped:
+
+```text
+candidate.approve   candidate.reject    context_pack.build  evidence.search
+graph.traverse      import.start        job.cancel          job.events
+job.get             job.retry           knowledge.propose   knowledge.search
+memory.create       memory.get          memory.list         memory.search
+record.supersede    workspace.inspect
+```
+
+`service.health`, `service.readiness`, and `service.discover` are **not** in
+this catalogue. They are dedicated runtime probes with their own contract, so a
+probe can never be dispatched as a product application operation. There is no
+`job.resume`: A2.4 folded resume into `job.retry`, which reports
+`retry_scheduled`, `resume_scheduled`, or `not_retryable`.
+
+The catalogue is a single source. `OPERATION_CATALOGUE` is generated from it for
+both Python and TypeScript, so neither language carries a hand-maintained
+operation list that could drift from the schemas.
+
+Canonical source and generated artifacts:
+
+- `contracts/application/v1/schemas/*.schema.json` — sixteen JSON Schema
+  Draft 2020-12 documents (`common`, `compatibility`, `errors`, `envelopes`,
+  `service`, `records`, `jobs`, `operations`, `workspace`, `memory`,
+  `evidence`, `knowledge`, `graph`, `context-pack`, `compatibility-matrix`,
+  and the reference-only `application-v1` registry). These are the single
+  source of truth; everything else is derived from them.
+- `contracts/application/v1/fixtures/` — thirteen canonical example wire
+  documents plus `manifest.json`, covering compatible negotiation, capability
+  denial, an incompatible major version, a minimal request, a retryable
+  mutation, a rich success response, a plain error response, tolerant decoding
+  of an additive unknown field, an unrecognized open vocabulary value, a
+  duplicate capability id, a response carrying both `result` and `error`, a
+  response carrying neither, and a pattern-compatible but calendar-invalid
+  RFC 3339 timestamp. The same directory also ships
+  `application-wire-adapter-conformance-v1.json`, the adapter conformance
+  corpus, which is a transcript of many exchanges rather than a single wire
+  document and is governed separately from the manifest — see
+  `conformance.py` below.
+- `src/omnivia_core/contracts/v1/generated.py` — generated frozen dataclasses,
+  type aliases, and frozen vocabulary constants. Standard library only.
+- `src/omnivia_core/contracts/v1/codec.py` — tolerant production wire codec
+  (canonical JSON, response-branch dispatch, retry semantics). Standard
+  library only.
+- `src/omnivia_core/contracts/v1/compatibility.py` — pure version-window and
+  capability-negotiation semantics (version comparison, effective-capability
+  intersection, duplicate-id detection, requirement resolution) plus the
+  whole-envelope invariants `decode_response` enforces: every declared version
+  parses, the versions in force (`api_version`, `workspace_format_version`)
+  equal the ones negotiation selected, and each selected version falls inside
+  the window the same envelope publishes as supported. The open
+  `CompatibilityStatus` vocabulary is deliberately left unconstrained, so a
+  newer peer's unseen status still decodes. Standard library only.
+- `src/omnivia_core/contracts/v1/semantics.py` — pure semantic validation for
+  the workspace and governed-memory DTOs (A2.2, ADR-038/ADR-039): domain-scope
+  and identifier/open-code shape checks, temporal ordering, evidence/
+  currentness/supersession/authority coherence, `memory.create` proposed-only
+  result-tuple enforcement (including the reserved-field decode guard), and
+  candidate evidence/provenance coherence. One shared pair of lineage rules
+  validates a claim's `assertion`/`extraction` wherever it appears — on the
+  `memory.create` input that supplied it and on the `RecordProvenance` that
+  preserved it — so a governance transition, which can only see that both
+  versions preserved lineage identically, cannot wave through lineage that is
+  identically malformed on both sides. A record's *history* evidence is
+  validated intrinsically but is deliberately never required to cite a source
+  the current version declares: history is append-only and survives
+  supersession onto wholly different evidence. Every public function here is a
+  direct entry point and type-guards what it is handed, so a hand-built
+  dataclass raises `ContractSemanticError`, never a raw
+  `TypeError`/`AttributeError`. Standard library only.
+- `src/omnivia_core/contracts/v1/semantics_evidence.py` — pure semantic
+  validation for the L0 `evidence.search` DTOs (A2.3, ADR-039): evidence
+  artifact integrity, tombstone rules, and sensitivity/leakage enforcement.
+  An artifact's optional `import_run_id` is validated as an `OpaqueToken`,
+  the same token domain a job id and an import completion's `import_run_id`
+  live in, so the backlink the completion contract promises can actually hold
+  the run that produced the evidence. Standard library only.
+- `src/omnivia_core/contracts/v1/semantics_knowledge.py` — pure semantic
+  validation for the governed-knowledge, graph, and Context Pack DTOs (A2.3,
+  ADR-039): `knowledge.search` default-canonical-view leak prevention, the
+  governance-transition closure shared by `knowledge.propose` /
+  `candidate.approve` / `candidate.reject` / `record.supersede` (frozen
+  state/authority/reviewer matrices, precondition binding, exactly-one audit
+  event with the request rationale carried over verbatim, exact claim
+  preservation or exact replacement binding), graph-traversal projection
+  integrity, and Context Pack reproducibility/citation/budget invariants.
+  Standard library only.
+
+  `validate_projection_freshness` is the one shared rule every
+  projection-served read composes, so no two operations can drift on what a
+  staleness statement has to say: `ProjectionFreshness` carries both
+  `projection_versions` (which version served this read) and
+  `projection_watermarks` (how far each projection has consumed the write
+  model), each non-empty and keyed by exactly the same projection names — a
+  version without its watermark leaves a caller unable to tell how far behind
+  the write model that projection actually is.
+
+  `graph.traverse` is a projection over governed records, never a second
+  canonical authority, so its result validator takes the *complete original
+  request* plus the canonical resolution time and the caller's authorized
+  views, and re-validates the request rather than trusting a view string:
+  every node and relation record must belong to the selected workspace, honour
+  the requested `domain_scope`/`relation_types` filters, and be exactly what
+  the resolved view permits (`current_canonical` — always allowed, never gated
+  — requires exact `l2`/`accepted`/`current` records carrying `canonical`
+  authority, a reviewer, and a validity window containing the resolution
+  instant; `candidates` and `history` must be both explicitly requested and
+  present in `authorized_views`). The `history` view is not merely the same
+  shape across the two reads but literally the same code: `knowledge.search`
+  and `graph.traverse` compose one shared historical-canonical rule, so the two
+  cannot drift on what proves a version was once canonical. History returns the
+  versions that *were* canonical knowledge, so `l2`/`accepted`/`superseded`
+  alone does not qualify one — it must also carry `canonical` authority and a
+  reviewer, and have been superseded no later than the canonical resolution
+  time, since a version replaced only *after* the instant a read resolved at
+  was still the canonical answer at that instant. A superseded version's
+  `valid_from`/`valid_until` window is deliberately *not* required to contain
+  the resolution instant: supersession, not validity, is what places a version
+  in the past. A `GraphEdge` references the relation record
+  through `relation_reference` and never re-identifies it, edges order by the
+  complete `(source, relation_type, target, relation_reference)` tuple rather
+  than endpoints alone, and a missing endpoint is stated rather than implied:
+  it carries a `GraphBoundaryReason` that must actually hold here —
+  `page_boundary` only with a continuation token and the node limit reached
+  exactly, `depth_boundary` only when the endpoint that is present sits at the
+  applied depth. Naming *both* endpoints is the claim that the edge is fully
+  materialized on this page, so both must be nodes the result actually
+  returned; an end the traversal did not reach is stated by omitting that
+  endpoint with a boundary reason, never by naming a record the result never
+  returned. `page` follows the one direction-neutral posture this contract
+  applies everywhere: a request omits it to ask for the first page and must
+  name a real continuation token when it carries one, since `{}` would ask to
+  continue from nowhere; a result always carries it, offering a token when more
+  remains and `{}` when the traversal is exhausted. A `{}` result page
+  therefore never justifies a `page_boundary` — an exhausted read has no next
+  page for a missing endpoint to be waiting on.
+
+  A traversal also answers the question it was asked, and depth is measured
+  from the seeds it was asked to start from — which is what an absent request
+  `page` makes checkable. Four rules state that, each checked directly: on a
+  *first* page every identity in `start` comes back as a node, a returned seed
+  sits at depth 0 and never deeper, a node that is *not* a requested seed never
+  sits at depth 0 on any page, and a continuation page — `page` present on the
+  *request* — does not return a requested seed again at any depth, since an
+  earlier page already did. Together the first two make a first page return
+  every seed exactly once at depth 0, so a result can never omit some or all of
+  its seeds and hand back unrelated nodes instead — including the degenerate
+  empty `nodes` list, which page metadata on the *result* does not excuse,
+  since offering a next page says nothing about what this one already owed. The
+  third closes the half no seed-presence check can: a result may return
+  everything it owes *and* still smuggle a spurious record in at depth 0. Two
+  consequences follow without a check of their own — every node on a
+  continuation page sits at depth 1 or deeper, and the node budget always holds
+  what a first page owes: a requested `node_limit` must be at least
+  `len(start)`, and so must a first page's `applied_node_limit`, including when
+  the request named no limit and the server tightened it on its own. Projection
+  loss is never canonical-data loss.
+
+  `context_pack.build` is a synchronous, non-persisting read of the current
+  canonical view, and its result is a *content-addressed artifact*: `pack_id`
+  and `reproducibility.artifact_checksum` are both the SHA-256 of the RFC 8785
+  canonical UTF-8 bytes of the complete result with exactly those two members
+  removed — nothing else is excluded, so the generation time, the authority
+  context, the freshness statement, every policy and configuration version, the
+  budget, the sections, the citations, and every selected item are all covered.
+  Because identity is content, holding a `pack_id` grants nothing: it is a value
+  anyone can recompute, and `fresh_authorization_required` stays literally true.
+
+  That posture is what shapes the rest. The input carries no view selector, no
+  point-in-time selector, no pagination, and no persistence, expiry, retention,
+  snapshot, or job control — and because the production decoder ignores unknown
+  fields by design, `decode_context_pack_build_input` refuses those names on the
+  *raw* payload before the tolerant decode, rather than silently handing back a
+  synchronous pack to a caller who asked for a persisted or paginated one. That
+  refusal covers the request's *top-level* members and stops there, which is the
+  ADR-038 rule rather than an omission: an additive unknown optional field is
+  dropped whole by the tolerant decoder, so a `future_envelope.snapshot_id`
+  never reaches the five scalar fields `ContextPackBuildInput` has and cannot be
+  honoured in part — while rejecting it would fail a document a compatible later
+  minor release is entitled to send. Only a name at the top level competes with a
+  field this operation actually decodes.
+  `ContextPackMode` stays wire-open but recognizes only `deterministic_view`;
+  `immutable_snapshot` and `returned_artifact` are refused by name so the failure
+  says why. Authority is recorded structurally rather than as an opaque
+  fingerprint — principal, roles, capabilities, scopes, purpose, and policy
+  versions, each compared for exact equality against what the caller vouches for
+  — because two hashes that differ tell a reviewer nothing about what changed.
+
+  Some of `reproducibility` is not like that, and the distinction is worth being
+  explicit about. The normalized query and normalization version, the
+  builder/retrieval/ranking/reranking/selection
+  versions, the tokenizer id and version, the summarizer version, and the model
+  versions are all *the producer's own statements about the producer*: nothing
+  inside the artifact can contradict them, so with no expectation supplied the
+  validator can only check their shape — which must not be mistaken for
+  verification. Both entry points therefore take an optional `expected_*` keyword
+  argument for each one; supply it and the value is bound by exact equality,
+  omit it and only the shape check runs. `expected_model_versions` needs no
+  sentinel for "expected absent": `model_versions` is required and may be empty,
+  so `{}` expects a build that used no model and `None` expects nothing.
+  Everything already bound externally — workspace, authority, scopes, purpose,
+  policy versions, request, freshness, resolution time — stays mandatory.
+
+  `authorization_context.authorized_candidate_set_checksum` used to sit in that
+  optional list and no longer does, because it is the one field that must never
+  be taken on trust. It is a digest of something that never appears in the
+  artifact, so byte-level integrity cannot reach it and a value read back out of
+  the pack agrees with itself whatever the pack actually ranked over. Both entry
+  points now *require* `expected_authorized_candidate_set`: a
+  `ContextPackAuthorizedCandidateSetManifest` naming the complete authorized
+  frontier, supplied out of band. The frontier is the candidate set after
+  retrieval, after the request's own scope, and after workspace, scope, purpose,
+  capability, policy, ACL, and sensitivity authorization, frozen *before* the
+  first ranking, reranking, selection, or budget decision — neither the whole
+  workspace nor a restatement of what the pack selected. Its digest is
+  recomputed here and compared, its workspace must be the validated one, and
+  every selected item must be a member of it under its own exact partition,
+  which is what makes "nothing enters a pack after the frontier is frozen"
+  checkable rather than asserted.
+
+  The manifest carries workspace domain separation plus immutable identities and
+  nothing else — no content, excerpts, provenance, spans, scores, distances,
+  ranks, tie-breaks, selection flags, citations, sections, query or normalization
+  state, and no authority, policy, configuration, or projection version — because
+  the digest must depend on which authorized material existed and on nothing a
+  later ranking step could change. It is in-process, identity-only trusted input:
+  never a response field, never logged, and referenced by no other definition in
+  the contract. Duplicates are refused rather than collapsed (a repeated tuple,
+  one evidence identifier at two content checksums, one governed
+  `(record_id, version)` repeated within a partition or claimed by two of them),
+  different versions of one record stay two ordinary candidates, and an unknown
+  partition fails closed. Every identity component is drawn from the *exact*
+  domain of the item it names — `evidence.EvidenceId` and
+  `evidence.EvidenceChecksum` for an L0 artifact, `records.RecordId` and
+  `records.RecordVersion` for a governed version — referenced by `$ref` and
+  applied by the same validators those items pass, never restated as a local
+  pattern that could drift. A frontier states which real items were authorized,
+  so an identity no artifact and no record could carry names a membership that
+  cannot exist, and both the schema and the checksum helper refuse it rather than
+  hash it. Candidates are a set: a flat array is sorted by
+  `(partition, remaining identity components in declaration order)` under the same
+  unsigned UTF-16 code-unit comparison RFC 8785 uses for member names, with no
+  Unicode normalization, giving the partition order `context_models`, `evidence`,
+  `history`, `records`. RFC 8785 orders object members but never array elements,
+  so that sort is part of the definition rather than of the canonicalization.
+  That comparison is normative because the element sort and the canonicalization
+  it feeds must be one ordering rather than two, not because a v1 identity can
+  exercise the difference: all four identity alphabets above are ASCII, printable
+  ASCII, or an ASCII-restricted checksum, and over ASCII code-unit order and
+  code-point order coincide exactly, so no valid candidate distinguishes them.
+  Where the two genuinely diverge is arbitrary-Unicode object member names, and
+  that divergence is proved against `utf16_sort_key` and the RFC's own
+  property-ordering vector in `tests/contracts/test_canonical_json.py` — not by
+  admitting candidate identities the contract does not allow. What the fixture's
+  mixed vectors still pin is that the comparison is over raw code units rather
+  than a locale collation or a case-insensitive fold: `ev-B` sorts before `ev-a`.
+  The
+  preimage is
+  `{"format": "omnivia.context-pack.authorized-candidate-set.v1", "workspace_id": …, "candidates": […]}`
+  and the digest is `sha256:` plus the lowercase hex SHA-256 of its canonical
+  UTF-8 bytes. The empty set is valid: for `ws-1` its canonical bytes are
+  `{"candidates":[],"format":"omnivia.context-pack.authorized-candidate-set.v1","workspace_id":"ws-1"}`
+  and its digest is
+  `sha256:666dd0b418f32f6fc03a5f87e430efaf6f9a6e5d50569b5fd74eb87e8b864b41`.
+  `tests/contracts/fixtures/context-pack-authorized-candidate-set-v1.json` freezes
+  that and eight more vectors, plus the manifests that must never digest at all,
+  so a second implementation can be held to the same bytes.
+
+  Resolution-time closure is complete rather than representative:
+  `canonical_resolution_time` is an inclusive upper bound on *every* act and
+  observation a selected item carries, not only on the one or two instants a
+  partition rule happens to read. For a selected evidence artifact that is
+  `temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`,
+  `source.retrieved_at`, every `provenance_history[].occurred_at`, and every
+  `provenance_history[].evidence[].source.retrieved_at`. For a selected governed
+  record in `records`, `history`, or `context_models` it is
+  `provenance.temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`,
+  every `provenance.sources[].retrieved_at`, every
+  `provenance.history[].occurred_at`, every
+  `provenance.history[].evidence[].source.retrieved_at`,
+  `provenance.assertion.asserted_at`, every
+  `provenance.assertion.evidence[].source.retrieved_at`, and
+  `provenance.extraction.extracted_at`. A pack presenting an act that had not
+  happened when it resolved is the deterministic-view guarantee read backwards,
+  whichever depth it sits at. Equality passes and only a strictly later instant is
+  refused; the rejection is a refusal rather than a repair — provenance is
+  append-only, so an out-of-range instant is never dropped or truncated to make
+  the item selectable. `assertion.proposed_valid_from` and `proposed_valid_until`
+  are deliberately *not* bounded: a proposed effective date in the future is an
+  ordinary claim rather than an act, and refusing it would make a forward-dated
+  proposal unselectable for a reason unrelated to when the pack resolved. A record
+  whose own validity contains the resolution instant may propose taking effect from
+  a later one and remains selectable. No causal or ordering rule is added between
+  these instants, and the bound applies to selection into a pack only — the generic
+  record and evidence rules are unchanged.
+
+  The closure sits *alongside* each partition's validity and supersession rules
+  rather than replacing them, so those four rules are restated here exactly rather
+  than left as "unchanged". All four are evaluated against
+  `canonical_resolution_time`:
+
+  - **`evidence`** — validity contains the resolution instant inclusively
+    (`valid_from` no later than it, `valid_until` no earlier, equality accepted at
+    both ends); `superseded_at` absent or *strictly after* it. Equality is
+    **rejected**: an artifact replaced at the very instant a pack resolved was
+    already not the live one.
+  - **`records`** — validity contains the resolution instant inclusively, on the
+    same two boundaries; the version must be current and unsuperseded at it
+    (`currentness` exactly `current`, and `superseded_at` **absent outright,
+    irrespective of timestamp**). Not merely absent at or before the resolution
+    instant: a current version records no supersession at all, so a `superseded_at`
+    strictly *after* the resolution instant is refused exactly as one at or before it
+    is, and a version that states when it was replaced belongs to `history` whichever
+    side of the instant that statement falls on. A version valid only from a later
+    instant was not yet in force; one that expired earlier was no longer the answer.
+  - **`history`** — `superseded_at` is required and must be at or before the
+    resolution instant, with equality **accepted**: a version replaced at that
+    instant was already history by it, and one superseded only afterwards was still
+    canonical then. This is the deliberate mirror image of the `evidence` boundary,
+    and the two differ because they ask opposite questions of the same instant.
+    Validity containment is deliberately *not* required — a historical version's
+    window has usually closed, which is what makes it historical, so requiring
+    containment would empty the partition of exactly what it carries.
+  - **`context_models`** — the same current rules as `records`, at L3 rather than
+    L2, including `superseded_at` absent outright irrespective of timestamp. Only
+    `layer` differs.
+
+  One consequence is worth stating because it bounds what the closure itself can be
+  tested through: on `history`, the intrinsic record chain `recorded_at <=
+  superseded_at` composed with that partition's `superseded_at <= resolution` already
+  forces `recorded_at <= resolution` (and `ingested_at <= recorded_at` carries it one
+  step earlier). So a future `ingested_at`/`recorded_at` on a historical version is
+  refused by the intrinsic rules *before* the nested closure is consulted. Those two
+  instants are still bounded — just not by this rule — and the tests assert that
+  refusal explicitly rather than claiming a closure diagnostic that never fires.
+  Every selected item across the four partitions (L0 evidence, current canonical
+  L2 `records`, historical canonical L2 `history`, current canonical L3
+  `context_models`) is held to the same shared temporal and authority rules
+  `knowledge.search` and `graph.traverse` apply, is cited at least once, and
+  appears in `reproducibility`'s exact version sets; every citation resolves to
+  something the pack actually selected and is used by at least one section.
+  Every identity-bearing array is in strictly ascending order under the *same*
+  unsigned UTF-16 code-unit ordering RFC 8785 imposes on object member names, so
+  a pack cannot be canonically ordered by this contract's rule and out of order
+  by the one its own checksum is computed under.
+
+  Integrity verification needs the bytes, not a decoded value, so there are two
+  entry points and the difference is stated rather than implied.
+  `verify_context_pack_artifact_document` (and the full
+  `validate_context_pack_build_result_document`) parse raw JSON text or UTF-8
+  bytes with duplicate-member detection, require the raw object to round-trip
+  exactly through the strict DTO, and only then hash — because an ordinary parser
+  keeps the last of a duplicated member and the tolerant decoder drops unknown
+  fields, so a digest computed after either would attest to a document nobody
+  sent. `validate_context_pack_build_result` and
+  `compute_context_pack_artifact_digest` take an already-strict trusted value and
+  document that they cannot recover what an earlier parser discarded. Ordinary,
+  non-integrity decoding stays tolerant exactly as ADR-038 requires.
+- `src/omnivia_core/contracts/v1/semantics_jobs.py` — pure semantic validation
+  for the durable-job and provider-neutral import DTOs (A2.4, ADR-039):
+  `import.start`, `job.get`, `job.cancel`, `job.retry`, and `job.events`.
+  Standard library only.
+
+  `import.start` accepts an `ImportSourceDescriptor` and nothing else. That
+  descriptor names a server-issued `staged_source_ref` plus the content facts it
+  resolves to — a `ContentChecksum` (`sha256:` and exactly 64 lowercase hex
+  characters, deliberately narrower than the general `EvidenceChecksum` because
+  both sides must recompute it), a byte length, a `MediaType`, and an optional
+  `source_version`. There is no path, URL, inline archive, credential, connector
+  configuration, parser implementation name, or storage option anywhere in the
+  shape, so an import cannot be steered from the wire into reading something the
+  server did not already stage. `ImportStartResult` carries a `JobHandle` and
+  nothing else, and the response envelope's `ResponseMetadata.job` names the same
+  job: `import.start` always starts durable work, so that reference is mandatory
+  and must agree with the handle. The four synchronous `job.*` operations add no
+  second job reference of their own.
+
+  Terminal success is typed rather than opaque. `JobTerminalSuccess` carries a
+  required `result_kind` naming which frozen shape `result` holds; a successful
+  `ingestion.import` job started by `import.start` must report
+  `import_completion`, and that kind may appear on no other job — the binding is
+  enforced in both directions, so neither a bare opaque payload passed off as an
+  import outcome nor an import completion attached to a job that never imported
+  anything survives. `ImportCompletionResult` reports L0 evidence only:
+  `discovered_items` must equal `evidence_records_created + skipped_items +
+  failed_items`, and `partial` is exactly `failed_items > 0`.
+  `OperationJobMetadata.terminal_result_schema_ref` is the field the later
+  operation catalogue binds to the same shape this module already enforces.
+
+  Two of an import completion's claims cannot be checked from the document
+  alone, so they are checked against trusted context that the API *requires*
+  rather than accepts. `import_run_id` equals the job's own `job_id` and is
+  typed as the same `OpaqueToken` for that reason — spelled in any narrower
+  vocabulary it could not state the equality for every job id the contract
+  admits, so a job id like `job/opaque-token` would have made the rule
+  unstateable. The L0 evidence backlink is typed in that same domain:
+  `EvidenceArtifact.import_run_id` is an `OpaqueToken` too, so the run a
+  completion reports is a run its evidence can actually name — typed any
+  narrower, that same `job/opaque-token` run could complete and then have no
+  writable backlink at all. And `source` is byte-for-byte the descriptor
+  `import.start` accepted, staged handle through checksum, byte length, media
+  type and source version alike. `validate_job_terminal_result` and `validate_job_get_result`
+  therefore take a mandatory `accepted_import_source`: an import success with no
+  trusted source to check against is rejected, and `None` is a statement a
+  caller makes for the branches that have none (a failure, a cancellation, a
+  success of some other job kind) rather than an omission the validator infers.
+  The intrinsic half is still available on its own, named for what it is —
+  `validate_import_completion_result_shape`.
+
+  A `job.get` result is one description of one job, not two that travel
+  together. Where a terminal result accompanies a handle, identity and state
+  match exactly, the handle's `latest_attempt` *is* the final attempt of the
+  terminal history (and is absent exactly when that history is empty), every
+  attempt instant in the history falls inside the handle's own
+  `created_at`/`updated_at` lifetime, and a terminal failure's `error` is
+  exactly the final attempt's own error — the failure that ended the last
+  attempt is the failure that ended the job.
+
+  There is one recovery operation. `job.retry` retries a failed job from the
+  beginning or a supported checkpoint, and resumes a cancelled resumable one from
+  its checkpoint; server state chooses, so the input carries no action selector
+  and no checkpoint reference, and there is no `job.resume` operation and no
+  `JobControl.resume` member. A handle states *availability* (`cancellable` /
+  `cancellation_pending` / `cancelled` / `not_cancellable`, and `retryable` /
+  `resumable` / `not_retryable`); a control result states what one call *did*
+  (`cancellation_requested` / `cancelled` / `not_cancellable`, and
+  `retry_scheduled` / `resume_scheduled` / `not_retryable`). Both vocabularies
+  are open and both fail safe: an unrecognized value implies neither permission
+  nor acceptance. A handle carrying an availability this build has never seen is
+  preserved and judged for shape only — it is a newer peer's word, not a
+  falsehood — and it grants nothing, because `permits_cancellation` and
+  `permits_recovery` answer false for it. What *is* rejected is a known
+  availability that contradicts a known state: a succeeded job advertising
+  `cancellable` is not a value this build failed to recognize.
+
+  A state-based refusal is a successful, idempotent control result, never an API
+  error. `not_cancellable`, `not_retryable`, `cancelled` (the job was already
+  cancelled, so the call changed nothing), and every disposition this build does
+  not recognize come back with the current handle unchanged, and `conflict` is
+  not raised merely because a job is already terminal; authorization failures, a
+  missing job, and workspace failures stay typed API errors.
+
+  A control result states what *changed*, and what changed cannot be read from
+  the returned handle alone — `retry_scheduled` beside a queued job is either an
+  honest recovery or a fabrication, and the two are identical documents. So the
+  full validators require the trusted pre-mutation handle rather than treating it
+  as optional enrichment, and the structural-only readings are named for what
+  they are (`validate_job_cancel_result_shape`,
+  `validate_job_retry_result_shape`). `cancellation_requested` is accepted only
+  from a handle that offered `cancellable`, and the handle it returns has stopped
+  offering it; a succeeded, failed, already-cancelled, or already-pending job is
+  never rewound into a fresh acceptance. `retry_scheduled` is accepted only from
+  `failed` + `retryable` and `resume_scheduled` only from `cancelled` +
+  `resumable` — neither pairing substitutes for the other, and a queued job has
+  nothing to recover from. An accepted recovery returns the *same* job id to
+  `queued` and creates no attempt: attempt N+1 appears only when execution
+  starts, so the previous finished attempt is still `latest_attempt` on the
+  handle the call returns.
+
+  A replay re-authorizes and answers from the recorded outcome. It preserves the
+  operation, the disposition, and the job's *whole* immutable identity — job
+  kind, originating operation, audit reference and workspace included, since a
+  drifted audit reference under a stable id is a different job wearing a familiar
+  name. Its handle legitimately differs, because the job goes on evolving: a
+  recovery that returned `queued` may since be running or finished, and a
+  replay is checked as a legal later *observation* rather than for equality with
+  the instant the first call returned. The original call's own transition rules
+  are deliberately not re-applied to it — they judge a mutation against the
+  handle it acted on, and the replay performed none. What a replay may never do
+  is drive a second transition, create an attempt (a still-`queued` job shows the
+  same retained attempt), regress progress, or rewrite a state.
+
+  The job state machine and attempt chronology are exact. Known adjacent
+  transitions are `queued -> queued|running|failed|cancelled`, `running ->
+  running|succeeded|failed|cancelled`, and each terminal state to itself;
+  `failed -> queued` and `cancelled -> queued` open only under an accepted
+  `job.retry`, and nothing reopens `succeeded`. Polling is sampling rather than
+  witnessing, so two *observations* are checked against the closure of that table
+  (`JOB_STATE_OBSERVABLE_PROGRESSIONS`): a caller may read `queued` and next
+  `succeeded` without ever seeing `running`, and may skip an attempt entirely.
+  What it may never see is a regression — time, state, attempt number or
+  completed units going backwards — or a rewrite: attempt N starts once, and once
+  it has finished, its state, finish instant and error are history. A job's
+  progress unit and, once stated, its total are fixed for its whole history, and
+  completed units never fall.
+
+  An attempt exists because execution started, so `queued` is not an attempt
+  state at all. Attempts are numbered `1..N` contiguously, never overlap or move
+  backward (abutting instants are allowed), carry a terminal error exactly when
+  they failed, and only a `failed` or `cancelled` attempt is ever followed by
+  another — a succeeded attempt is final. Only the final attempt of an actively
+  executing job may be unfinished. A success or failure needs at least one
+  attempt; a job cancelled before it started may have none. The job's
+  `finished_at` equals its last attempt's, and every attempt instant falls inside
+  `created_at`/`updated_at`. A `queued` handle either has never executed or
+  reports the finished `failed`/`cancelled` attempt an accepted recovery was
+  scheduled from — never a succeeded, running, or unfinished one. Unknown states
+  are preserved and judged for shape only: this build cannot know whether a state
+  it has never seen is terminal, so it never treats one as terminal and never
+  infers a successor for it.
+
+  `job.events` is snapshot-stable. The first tokenless request captures the
+  job's current event count, and that session's sequences are exactly
+  `0 .. snapshot_event_count - 1` — an event recorded afterwards never appears in
+  it, so a caller paging a running job reads a fixed history rather than one
+  growing under the cursor. Pages are contiguous from the position they continued
+  from, strictly increasing and duplicate-free, and `page` is always present:
+  a continuation token exactly when more of the snapshot remains, `{}` when it
+  is exhausted — the one direction-neutral posture every paginated result in
+  this contract shares, so a caller never has to know which result type it is
+  holding to know what "no next page" looks like. Continuation tokens stay
+  adapter-owned: nothing here decodes one. A caller proves what a token was bound
+  to by handing in a trusted, non-wire `JobEventsPageBinding` (token format
+  version, validated principal, workspace, operation `job.events`, job id,
+  ordering `sequence_asc`, snapshot count, next sequence), and every mismatch —
+  another principal, workspace, operation, job, ordering, format version, or
+  snapshot — raises one uniform rejection that never says which member disagreed,
+  so a rejected token is not an oracle for what a valid one contains. It reports
+  the catalogue's own `invalid_request` (`non_retryable`), which
+  `errors.schema.json` publishes as the single canonical code for a request the
+  server cannot execute as stated: a token that is not valid for the request
+  presenting it, a missing required idempotency key, a precondition sent to an
+  operation that applies none. There is deliberately no second, operation-specific
+  alias, since two spellings of one fact let two peers classify it differently.
+  Transport streaming is out of scope.
+
+  Idempotency equivalence is scoped, not global: a key is the caller's word
+  inside one *validated* principal, one workspace, and one operation. Two
+  requests are the same request when that scope matches and the fingerprint over
+  the normalized operation input, purpose, exercised scopes, and required
+  capabilities matches; request/correlation/trace ids, deadline, and client
+  diagnostics are excluded, because a genuine retry is expected to change exactly
+  those and folding them in would make every honest retry a conflict. Scopes and
+  capability requirements compare as sets, and a capability requirement
+  participates in full — id, minimum version, *and* the `required` flag, because
+  "I need this capability" and "use it if you have it" are different requests
+  even when they name the same capability at the same version. The same scoped
+  key with a different fingerprint is `idempotency_conflict`.
+  `OperationIdempotencyMetadata` gains a
+  required `required` flag, and the three flags must be mutually satisfiable
+  (`required` entails `supports_idempotency_key`; `safe_to_retry` excludes
+  `required`). `import.start`, `job.cancel`, and `job.retry` require a key and
+  apply no precondition; `job.get` and `job.events` are safe reads. Those five
+  postures are published as `JOB_LIFECYCLE_OPERATION_POSTURES` for the operation
+  catalogue to bind rather than restate.
+
+  Every public entry point here is a *direct* entry point: a caller may reach it
+  without a tolerant `from_wire` decode in front. So each type-checks what it was
+  handed before using it and raises `ContractSemanticError` rather than leaking a
+  `TypeError`, `AttributeError`, or `ContractDecodeError` — including every
+  boolean, since Python truthiness is not semantic validation. `"false"` is
+  truthy and `0` is falsy, and neither is a statement a caller made:
+  `recovery_accepted` unlocks a step out of a terminal state, `executing`
+  licenses an unfinished attempt, and the idempotency and precondition flags
+  decide whether a request is executable at all.
+
+  `ImportSourceDescriptor`, `ContentChecksum`, and the five operations' payloads
+  live in `jobs.schema.json` rather than in a new top-level document: each is a
+  statement about one durable job, so a separate schema would add a document
+  boundary where no boundary exists.
+- `src/omnivia_core/contracts/v1/semantics_operations.py` — the narrow read
+  surface over the generated operation catalogue (A2.5, ADR-038/ADR-039).
+  Standard library only, and three functions wide:
+
+  - `get_operation_metadata(operation)` returns the frozen catalogue entry for
+    an application operation. An unknown name — including any runtime probe and
+    `job.resume` — is rejected rather than defaulted, since returning a fallback
+    scope, capability, and error set would state a contract nothing stands
+    behind.
+  - `validate_operation_request_metadata(operation, metadata)` checks a
+    `RequestMetadata` against exactly the part of the contract a request can
+    state for itself: a `workspace_id` present for workspace-scoped operations
+    and absent for installation-scoped ones, every required scope held, exactly
+    one non-duplicate capability declaration for the catalogue capability marked
+    `required` at or above the catalogue minimum (compared as contract versions,
+    so `1.10` is above `1.9`), and an idempotency key and mutation precondition
+    that agree with the operation's posture in *both* directions — one required
+    but missing is rejected, and one supplied to an operation that does not
+    honour it is rejected too, because silently dropping it would let a caller
+    believe a call is replay-safe or precondition-guarded when nothing makes it
+    so. It returns the resolved metadata.
+  - `validate_operation_error(operation, error)` checks that an `ApiError` is
+    one the operation is allowed to fail with, then applies the existing frozen
+    retry-class rule. The allow-list is checked first, so a code outside it is
+    reported as an error this operation may not raise rather than as a
+    retry-class problem. Note the two failures are deliberately different
+    exception types: a disallowed code raises `ContractSemanticError`, while an
+    *allowed* code carrying the wrong retry class raises the existing
+    `RetryClassMismatchError` (a `ContractDecodeError`, not a
+    `ContractSemanticError`). A known code paired with the wrong class is a
+    distinct protocol violation from an operation failing with an error it is
+    not permitted to raise, and collapsing the two would tell a caller less than
+    it needs — so a caller that wants to handle both must catch both.
+
+  This is not dispatch and not authorization. It cannot decide whether a claimed
+  principal is authenticated, whether the server granted a capability, or
+  whether a workspace exists — it never sees a server, and a caller can assert
+  anything it likes in its own metadata. Extra scopes and extra uniquely named
+  capability requirements are left in place: neither widens authority. Every
+  function is a direct entry point and type-guards what it is handed, so a
+  hand-built value raises `ContractSemanticError`, never a raw
+  `TypeError`/`AttributeError`/`KeyError`.
+- `src/omnivia_core/contracts/v1/adapter.py` — the provider-neutral wire seam
+  (A2.6). `ApplicationWireAdapter` is one method wide: an encoded request
+  envelope goes out, an encoded response envelope comes back. It is stated in
+  *wire mappings* rather than decoded dataclasses because that is the only thing
+  an in-process caller, a local IPC client, and an HTTP client actually have in
+  common — a protocol phrased in decoded envelopes would assume the codec runs on
+  the caller's side of the wire, which for a real transport it does not. Either
+  response branch is a normal return: `not_found` is something this contract says
+  an operation may answer with, so turning it into an exception would put it
+  outside the envelope that defines it. Raising is reserved for the seam itself
+  failing.
+
+  `InProcessFakeAdapter` replays recorded exchanges, keyed by request id, and
+  decides nothing: no dispatch, no storage, no authorization, no computed
+  results. Whether a replay is honest or a token still binds is a fact *stated in
+  the corpus*, so the conformance runner is checking the contract rather than a
+  second implementation of the thing under test. An unrecorded request is refused
+  rather than improvised, and every call returns a fresh copy so a caller cannot
+  rewrite the transcript mid-run.
+- `src/omnivia_core/contracts/v1/conformance.py` — the shared corpus and its
+  runner (A2.6). `load_adapter_conformance_corpus()` reads the packaged
+  `application-wire-adapter-conformance-v1.json`; `run_adapter_conformance()`
+  drives every recorded exchange through any `ApplicationWireAdapter` and returns
+  the number verified, raising `AdapterConformanceError` — which names the case —
+  at the first divergence.
+
+  The runner restates no *per-value* semantics. Whether an error code is one the
+  operation may raise, whether the retry class is right, whether a job's state
+  may move as it did, whether a governed transition is attributed to the right
+  actor: each was frozen in an earlier slice and is *called* here. What it adds
+  is what no single-operation validator can see — that a recorded exchange is
+  coherent end to end, and that the values survive the trip in both directions
+  unchanged, request as well as response.
+
+  It does state a few rules of its own, and they are all *relational*: what an
+  honest replay must answer with and what an idempotency conflict must be refused
+  with, that a continuation token still binds the query that produced it, that
+  every workspace-scoped identifier in a result is the one the request selected,
+  and that a case's declared principal is the one its response attests. Each
+  concerns two exchanges, or an exchange and the request that provoked it, which
+  is precisely what a validator taking a single decoded value cannot express.
+  They are named here rather than described as "called, never restated", because
+  claiming to own no semantics while owning several is how a reader stops
+  checking.
+
+  Which relationships those rules apply to is read from the exchanges, not from
+  what a case declares: two requests carrying the same idempotency key under one
+  principal and workspace are a repeat whether or not the corpus says so, and a
+  request presenting a token an earlier result issued is a continuation of it. A
+  declaration is kept as an assertion and checked against what was derived.
+
+  The corpus holds 73 exchanges: one primary success for each of the 20
+  operations, an honest replay and an idempotency conflict for each of the 9
+  mutations, a second page for each of the 7 paginated operations, one case for
+  each of the 26 frozen error codes on an operation the catalogue permits to
+  raise it, and two further readings of one job — failed, then succeeded — so
+  that a job's life is observed across several exchanges rather than asserted
+  once, and so that the frozen terminal-result and attempt-history rules have
+  something to run against. It ships beside the canonical wire fixtures so every
+  adapter can read it from an installed wheel, but it is deliberately **not**
+  registered in
+  `fixtures/manifest.json`: that manifest describes one wire envelope per entry —
+  which branch, whether it is schema-valid, which semantic it carries — and a
+  transcript of many exchanges has no single answer to any of those. It is
+  governed instead by its own coverage gate in
+  `scripts/check-application-contracts.py`, which asserts the coverage above
+  against the catalogue rather than against however the corpus happened to be
+  written.
+
+  This is a contract fixture, not a service. The same corpus will be driven
+  through the real HTTP adapter when it exists, and "both adapters pass" will
+  then mean something stronger than "both adapters have tests".
+- `src/omnivia_core/contracts/v1/canonical_json.py` — the RFC 8785 JSON
+  Canonicalization Scheme the Context Pack digest is defined over, kept separate
+  from the contract semantics so it can be audited on its own. Standard library
+  only, and deliberately not `json.dumps(sort_keys=True)`: object members are
+  ordered by unsigned UTF-16 code unit (which differs from code-point order for
+  every name containing a supplementary character — the case the RFC's own
+  property-ordering example turns on), and numbers are rendered by ECMAScript's
+  `Number::toString`, which JCS defers to and which disagrees with Python's
+  `repr` on integral values, on the 21-digit threshold where the exponential
+  form takes over, and on exponent spelling. The input domain is I-JSON,
+  enforced recursively: finite binary64 numbers only, Python integers only when
+  the conversion is lossless, strings that are valid Unicode scalar sequences
+  with no lone surrogate, string-keyed objects, and no duplicated member name.
+
+  Two separate claims live here, and only one of them is universal.
+  **Output:** every value this module *accepts* serializes byte-for-byte as
+  RFC 8785 specifies, which is what makes
+  `reproducibility.artifact_canonicalization` legitimately `rfc8785`.
+  **Input:** OmniVia applies a stricter lossless-binary64/I-JSON *acceptance
+  profile* than "any document RFC 8785 could be applied to". A valid JSON numeric
+  literal whose value cannot round-trip through binary64 — `9007199254740993`,
+  say — is **rejected before canonicalization**, where a conforming JCS
+  implementation would follow ECMAScript and silently emit the rounded
+  `9007199254740992`. Rounding is fine for serialization and fatal for a content
+  address: a digest over a rounded value attests to a document the sender never
+  wrote. The line falls where the JSON parser stops being lossless — integer
+  literals arrive exact and are refused when out of range, fractional literals
+  arrive already rounded to the nearest double and canonicalize exactly as JCS
+  specifies (`0.1000000000000000055511151231257827` → `0.1`). So: OmniVia accepts
+  a strict subset of RFC-8785-canonicalizable documents and canonicalizes every
+  member of that subset exactly as RFC 8785 requires; it does not accept every
+  possible RFC 8785 document and does not claim to. The policy is frozen —
+  loosening it would change which documents verify, which is a contract change.
+
+  Stated provider-neutrally, Context Pack format 1.0 applies RFC 8785 byte
+  serialization to an admitted I-JSON data model. Before canonicalization every
+  number must be a finite binary64; additionally, any number token written in
+  *integer form* — and any direct host-language *integral value*, which never
+  passed through a parser at all — is admitted only when converting it to
+  binary64 and back to the mathematical integer is exact. Decimal and exponent
+  tokens are read as finite binary64 under ordinary JCS rules, with no
+  requirement of an exact decimal rational representation. This is an admission
+  rule, **not** a "safe integer" range: exact larger integers such as powers of
+  two stay valid. The frozen boundaries are `9007199254740991` accept,
+  `9007199254740992` accept, `9007199254740993` reject, `-9007199254740993`
+  reject, `1152921504606846976` accept with canonical form
+  `1152921504606847000`, `1152921504606846977` reject, `0.1` accept, `1e+21`
+  accept, and `1e400` reject as non-finite. They are restated as raw JSON text —
+  never as host-language values, which a parser would already have rounded — in
+  `tests/contracts/fixtures/context-pack-canonicalization-v1.json`, with the
+  canonical form for every accepted vector and a stable error category for every
+  rejected one, so a second implementation can be held to the same line.
+  `reproducibility.artifact_canonicalization` stays exactly `rfc8785`: the rule
+  narrows which documents are admitted and changes no output byte.
+- `src/omnivia_core/contracts/v1/resources.py` — standard-library-only
+  accessors for the packaged schemas and fixtures (see below).
+- `generated/typescript/application/v1/index.ts` — the same contract surface
+  as a declaration-only TypeScript module.
+
+`contracts/application/v1/{schemas,fixtures}` stay the only checked-in
+canonical copy. The built wheel force-includes them under
+`omnivia_core/contracts/v1/resources/{schemas,fixtures}` (see
+`[tool.hatch.build.targets.wheel.force-include]` in `pyproject.toml`), and
+`omnivia_core.contracts.v1` exposes `list_schema_names`, `read_schema`,
+`read_schema_text`, `list_fixture_files`, `read_fixture`, `read_fixture_text`,
+and `read_fixture_manifest` as the only supported way to read that packaged
+copy through `importlib.resources`.
+
+Regenerate and verify:
+
+```bash
+.venv/bin/python scripts/generate-application-contracts.py         # regenerate
+.venv/bin/python scripts/generate-application-contracts.py --check # verify no drift
+.venv/bin/python scripts/check-application-contracts.py            # conformance gate
+```
+
+The conformance gate checks the canonical schema directory holds exactly the
+sixteen frozen schema documents (an extra one would be read by no check yet
+packaged by the wheel, and a missing one is reported in the same place),
+validates every schema against the Draft 2020-12
+metaschema and its exact `$schema`/`$id`, resolves every `$ref` offline,
+checks the registry publishes exactly the source schemas' definitions and
+lists their exact URIs, validates every fixture against its declared
+schema-validity (RFC 3339 `format` included, via `jsonschema.FormatChecker`)
+and declared `tolerant_decode` outcome by actually running the production
+codec, validates the manifest itself (unique nonempty ids, unique existing
+files, explicit boolean flags, known semantic keys, and an exact match
+against a frozen id/file/semantic mapping so deleting, renaming, or swapping
+a fixture's assertion cannot stay green), runs every fixture's semantic
+assertion, and checks that `src/omnivia_core/contracts` has no import outside
+the standard library or its own package — including relative imports that
+resolve elsewhere, and constant-string `__import__`/`importlib.import_module`
+escapes under any alias (`import importlib as il`, `from importlib import
+import_module as load`), with a non-literal argument failing closed.
+
+The schema-set check complements, rather than replaces, the exact wheel
+resource-set assertion in `scripts/check-package-builds.sh`: that one proves
+the built wheel packages exactly what the canonical directory holds, which is
+only worth having once this one has established that the directory holds
+exactly the frozen set.
+
+Run the contract test suite:
+
+```bash
+.venv/bin/python -m pytest tests/contracts -q
+```
+
+`jsonschema[format]` (plus its `types-jsonschema` stubs) is a
+development-only dependency declared under `[dependency-groups]` in
+`pyproject.toml`, used only by `scripts/check-application-contracts.py` and
+its tests — the `format` extra provides the RFC 3339 calendar validation
+`jsonschema.FormatChecker` needs. The contract package itself (`generated.py`,
+`codec.py`, `compatibility.py`, `semantics.py`, `semantics_evidence.py`,
+`semantics_jobs.py`, `semantics_knowledge.py`, `semantics_operations.py`,
+`adapter.py`, `conformance.py`, `canonical_json.py`, `resources.py`) has zero
+runtime
+dependencies, including on `jsonschema` and on any third-party canonicalizer.
+
+The generated TypeScript module is regenerated and checked for drift the same
+way as the Python module, and is strict-compiled (`--strict --noEmit
+--skipLibCheck`, target `ES2022`, module `ESNext`, module resolution
+`Bundler`) by `scripts/check-application-typescript.sh`.
+
+The compiler is a repository-local, version-pinned dev dependency: TypeScript
+is declared at the exact version `5.9.3` in `package.json` and locked in
+`package-lock.json`, so `npm ci` reproduces the same compiler every time. The
+check needs no sibling repository and no global install, and adds no runtime
+JavaScript dependency — `typescript` is the only entry, and it is a
+`devDependencies` one:
+
+```bash
+npm ci                                 # install the pinned compiler (once)
+npm run check:application-contracts    # strict, no-emit contract compile
+```
+
+The npm script runs the shell gate, so the two are never separate copies of
+the compiler flags. The shell gate can also be run directly, and resolves a
+`tsc` binary in order: the `TSC` environment variable (explicit override), the
+repository-local `node_modules/.bin/tsc` (the reproducible default), then
+`tsc` on PATH:
+
+```bash
+scripts/check-application-typescript.sh
+TSC=/path/to/tsc scripts/check-application-typescript.sh   # explicit override
+```
 
 ## Repository Split
 
-OmniVia uses a split repository model:
-
 | Repository | Visibility | Purpose |
 |---|---|---|
-| `omnivia-core` | Public | Core primitives and public documentation. |
-| `omnivia-platform` | Private | Base app, runtime, UI, desktop shell, distribution, module loader, licensing and entitlement client boundaries. |
-| `omnivia-dev` | Private | Optional downloadable Dev module with MCP, CLI, repo indexing, code graph, and agent context pack features. |
-| `omnivia-cloud` | Private | Future cloud implementation placeholder. |
-| `omnivia-pm` | Private | Planning, ADRs, roadmap, task backlog, strategy, prompts, reviews, and repository governance. |
+| `omnivia-core` | Public | Portable contracts, validators, normalizers, fixtures, and public docs. |
+| `omnivia-platform` | Private | Runtime lifecycle, desktop shell, UI/runtime boundaries, sync/distribution concerns. |
+| `omnivia-dev` | Private | Query tooling, MCP/CLI surfaces, repo indexing, and developer workflows. |
+| `omnivia-cloud` | Private | Future hosted/cloud implementation placeholder. |
+| `omnivia-pm` | Private | Backlog, planning, ADRs, research reviews, and implementation packets. |
 
-Dependency direction flows from private implementation repositories toward this
-public core. `omnivia-core` must not depend on private repositories.
+## Docs Map
 
-## Status
-
-This repository now contains the public OmniVia core tree. App/runtime and
-Dev-specific code live in the related private repositories listed above.
+- [Portable Knowledge ADR](docs/adr/portable-knowledge-substrate.md)
+- [Portable Knowledge Contract Spec](docs/specs/portable-knowledge-contract.md)
+- [Obsidian-like Compatibility](docs/compatibility/obsidian-like.md)
+- [Graphify-like Compatibility](docs/compatibility/graphify-like.md)
+- [Portable Knowledge Launch Packet](docs/launch/portable-knowledge-launch-packet.md)
+- [Examples](docs/examples/README.md)
+- [Phase 0 Baseline Freeze](docs/baseline/phase-0-baseline-freeze.md)
+- [Legacy memories.db Migration Criteria](docs/baseline/legacy-memories-db-migration.md)
 
 ## Checks
 
-Install the public core memory package locally for development:
+Install the public Core package locally for development:
 
 ```bash
 python3 -m pip install -e services/omnivia-memory[dev]
 ```
 
-Run the core Python test suite with the package source path available:
+Run the focused contract checks:
+
+```bash
+PYTHONPATH=services/omnivia-memory/src python3 -m pytest \
+  services/omnivia-memory/tests/test_public_api.py \
+  services/omnivia-memory/tests/test_knowledge_contract.py
+```
+
+Run the full package suite:
 
 ```bash
 PYTHONPATH=services/omnivia-memory/src python3 -m pytest services/omnivia-memory/tests
 ```
 
+Verify the Phase 0 baseline freeze (public exports, storage schema, dependency
+drift, and golden fixtures):
+
+```bash
+scripts/check-core-baseline.sh
+```
+
+The PDF and DOCX ingestion tests need optional extractor dependencies that the
+`dev` extra does not install. See the
+[Phase 0 baseline freeze](docs/baseline/phase-0-baseline-freeze.md) for the
+clean environment recipe.
+
 ## Public Import Example
 
 ```python
-from omnivia_memory import CreatedBy, MemoryCreate, MemoryService, Source, SourceType
-
-source = Source(type=SourceType.HUMAN, reference="direct")
-memory = MemoryCreate(
-    content="A source-backed local knowledge item.",
-    source=source,
-    created_by=CreatedBy.HUMAN,
+from omnivia_memory import (
+    GraphConfidence,
+    GraphSourceType,
+    KNOWLEDGE_CONTRACT_VERSION,
+    KnowledgeObject,
+    KnowledgeSource,
+    KnowledgeSpace,
+    SourceRef,
+    validate_knowledge_space,
 )
-service = MemoryService()
-created = service.create(memory)
+
+source = KnowledgeSource(
+    id="source-daily-note",
+    space_id="personal-vault",
+    source_type=GraphSourceType.NOTE,
+    title="Daily Note",
+    relative_path="notes/daily-note.md",
+)
+note = KnowledgeObject(
+    id="daily-note",
+    space_id="personal-vault",
+    kind="note",
+    title="Daily Note",
+    tags=["daily-note"],
+    source_refs=[
+        SourceRef(
+            source_id="source-daily-note",
+            source_type=GraphSourceType.NOTE,
+            path="notes/daily-note.md",
+            confidence=GraphConfidence.EXTRACTED,
+        )
+    ],
+    confidence=GraphConfidence.EXTRACTED,
+)
+space = KnowledgeSpace(
+    id="personal-vault",
+    title="Personal Vault",
+    space_type="personal vault",
+    contract_version=KNOWLEDGE_CONTRACT_VERSION,
+    sources=[source],
+    objects=[note],
+)
+
+assert validate_knowledge_space(space).valid
 ```

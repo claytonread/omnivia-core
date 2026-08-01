@@ -5,13 +5,28 @@ build-backend = "hatchling.build"
 [project]
 name = "omnivia-memory"
 version = "0.1.0"
-description = "OmniVia Core memory, persistence, graph, ingestion, provenance, workspace, and basic search primitives"
+# DEPRECATION NOTICE (ADR-036). This distribution is a compatibility facade: it
+# adds no implementation of its own for the contracts it publishes, and every
+# name its package root advertises is imported unchanged from `omnivia_core`.
+# The notice lives here, in the release metadata, and in README.md's Migration
+# section -- deliberately *not* as a `warnings.warn`, log line, or anything else
+# that runs at import time and pollutes a consumer's output. See
+# `tests/compatibility/test_root_facade_distribution.py`, which asserts both the
+# wording below and that importing the package stays silent.
+description = "DEPRECATED compatibility facade for omnivia-core: import from omnivia_core instead of omnivia_memory"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
+    "omnivia-core>=0.1.0,<0.2.0",
     "sqlalchemy>=2.0.0",
 ]
+
+[project.urls]
+# Published migration guidance. This is the repository path that holds this
+# distribution's README, whose Migration section is the canonical instruction
+# set for consumers; it is a real, reachable location rather than a placeholder.
+Migration = "https://github.com/claytonread/omnivia-core/tree/main/services/omnivia-memory#migration"
 
 [project.optional-dependencies]
 dev = [

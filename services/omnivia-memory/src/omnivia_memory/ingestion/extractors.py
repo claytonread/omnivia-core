@@ -47,7 +47,7 @@ class PDFExtractor(BaseExtractor):
     def extract(self, file_path: Path) -> ExtractionResult:
         """Extract text from PDF using PyMuPDF."""
         try:
-            import fitz  # PyMuPDF
+            import fitz  # type: ignore[import-untyped]  # PyMuPDF
 
             doc = fitz.open(str(file_path))
             text_parts = []

@@ -27,7 +27,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install Core test dependencies
+        # The root checkout first: `omnivia-memory` requires
+        # `omnivia-core>=0.1.0,<0.2.0`, `omnivia-core` is unpublished, and this
+        # checkout is the only thing that satisfies it. Installed the other way
+        # round, pip reaches the index for a distribution that is not there and
+        # the whole job fails before a single benchmark runs.
         run: |
+          python3 -m pip install -e .
           python3 -m pip install -e "services/omnivia-memory[dev]"
 
       - name: Run benchmark tests

@@ -1,0 +1,39 @@
+{
+  "id": "invalid-extension",
+  "title": "Invalid Extension",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [],
+  "objects": [
+    {
+      "id": "bad-extension-object",
+      "space_id": "invalid-extension",
+      "kind": "omnivia:custom_thing",
+      "title": "Bad Extension",
+      "tags": ["extension"],
+      "source_refs": []
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [],
+  "extension_manifests": [
+    {
+      "id": "bad-extension-manifest",
+      "contract_version": "1.0",
+      "namespace": "lab",
+      "title": "Bad Extension Manifest",
+      "version": "1.0",
+      "object_kinds": ["omnivia:custom_thing"],
+      "node_kinds": [],
+      "relations": []
+    }
+  ],
+  "agent_contexts": [],
+  "expected_errors": [
+    "objects[0].kind must not use reserved omnivia namespace outside official manifests",
+    "extension_manifests[0].object_kinds[0] collides with reserved omnivia namespace"
+  ]
+}

@@ -1,0 +1,202 @@
+{
+  "id": "codebase-map",
+  "title": "Graphify-like Codebase Map",
+  "space_type": "codebase graph",
+  "contract_version": "1.0",
+  "summary": "Representation-only codebase graph with extracted and inferred edges.",
+  "tags": ["graphify-like", "codebase-map"],
+  "sources": [
+    {
+      "id": "source-app-module",
+      "space_id": "codebase-map",
+      "source_type": "code",
+      "title": "app.py",
+      "relative_path": "src/app.py",
+      "origin": "import"
+    },
+    {
+      "id": "source-arch-doc",
+      "space_id": "codebase-map",
+      "source_type": "document",
+      "title": "Architecture Doc",
+      "relative_path": "docs/architecture.md",
+      "origin": "import"
+    }
+  ],
+  "objects": [
+    {
+      "id": "module-app",
+      "space_id": "codebase-map",
+      "kind": "code",
+      "title": "src/app.py",
+      "tags": ["module"],
+      "source_refs": [
+        {
+          "source_id": "source-app-module",
+          "source_type": "code",
+          "path": "src/app.py",
+          "locator": "L1-L80",
+          "quote_preview": "from service import run",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    },
+    {
+      "id": "function-run",
+      "space_id": "codebase-map",
+      "kind": "code",
+      "title": "run()",
+      "tags": ["function"],
+      "source_refs": [
+        {
+          "source_id": "source-app-module",
+          "source_type": "code",
+          "path": "src/app.py",
+          "locator": "L14-L28",
+          "quote_preview": "def run():",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED"
+    },
+    {
+      "id": "architecture-concept",
+      "space_id": "codebase-map",
+      "kind": "concept",
+      "title": "Architecture Boundary",
+      "tags": ["concept"],
+      "source_refs": [
+        {
+          "source_id": "source-arch-doc",
+          "source_type": "document",
+          "path": "docs/architecture.md",
+          "locator": "#boundary",
+          "quote_preview": "The app runtime depends on a service boundary.",
+          "confidence": "INFERRED"
+        }
+      ],
+      "confidence": "INFERRED",
+      "review_status": "UNREVIEWED"
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [
+    {
+      "id": "graphify-fragment",
+      "space_id": "codebase-map",
+      "contract_version": "1.0",
+      "nodes": [
+        {
+          "id": "module-app",
+          "space_id": "codebase-map",
+          "label": "src/app.py",
+          "kind": "code",
+          "object_id": "module-app",
+          "source_refs": [
+            {
+              "source_id": "source-app-module",
+              "source_type": "code",
+              "path": "src/app.py",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        },
+        {
+          "id": "function-run",
+          "space_id": "codebase-map",
+          "label": "run()",
+          "kind": "code",
+          "object_id": "function-run",
+          "source_refs": [
+            {
+              "source_id": "source-app-module",
+              "source_type": "code",
+              "path": "src/app.py",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        },
+        {
+          "id": "god-node-service",
+          "space_id": "codebase-map",
+          "label": "Service Hotspot",
+          "kind": "graphify:god_node",
+          "source_refs": [
+            {
+              "source_id": "source-app-module",
+              "source_type": "code",
+              "path": "src/app.py",
+              "locator": "L1-L80",
+              "quote_preview": "Annotated hotspot from static analysis.",
+              "confidence": "INFERRED"
+            }
+          ],
+          "confidence": "INFERRED"
+        }
+      ],
+      "edges": [
+        {
+          "id": "module-contains-run",
+          "space_id": "codebase-map",
+          "source": "module-app",
+          "target": "function-run",
+          "relation": "contains",
+          "source_refs": [
+            {
+              "source_id": "source-app-module",
+              "source_type": "code",
+              "path": "src/app.py",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED",
+          "review_status": "REVIEWED",
+          "evidence_strength": "PRIMARY"
+        },
+        {
+          "id": "run-surprise-edge",
+          "space_id": "codebase-map",
+          "source": "function-run",
+          "target": "god-node-service",
+          "relation": "graphify:surprise_edge",
+          "source_refs": [
+            {
+              "source_id": "source-arch-doc",
+              "source_type": "document",
+              "path": "docs/architecture.md",
+              "locator": "#boundary",
+              "quote_preview": "Inferred coupling between code and design concept.",
+              "confidence": "AMBIGUOUS"
+            }
+          ],
+          "confidence": "AMBIGUOUS",
+          "review_status": "UNREVIEWED",
+          "evidence_strength": "WEAK"
+        }
+      ],
+      "origin": "import",
+      "owner": "portable",
+      "producer": "graphify-reference"
+    }
+  ],
+  "extension_manifests": [
+    {
+      "id": "graphify-extension-manifest",
+      "contract_version": "1.0",
+      "namespace": "graphify",
+      "title": "Graphify-like Extensions",
+      "version": "1.0",
+      "object_kinds": ["graphify:query_result"],
+      "node_kinds": ["graphify:god_node"],
+      "relations": ["graphify:surprise_edge", "graphify:affected_context"]
+    }
+  ],
+  "agent_contexts": []
+}

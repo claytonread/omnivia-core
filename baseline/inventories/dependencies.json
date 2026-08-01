@@ -1,0 +1,183 @@
+{
+  "declared_but_unimported": [
+    "sqlalchemy"
+  ],
+  "declared_dependencies": [
+    "sqlalchemy>=2.0.0"
+  ],
+  "declared_optional_dependencies": {
+    "dev": [
+      "mypy>=1.10.0",
+      "pytest-cov>=4.1.0",
+      "pytest>=8.0.0",
+      "ruff>=0.4.0"
+    ]
+  },
+  "format_version": "1",
+  "layers": {
+    "contract_modules": [
+      "omnivia_memory",
+      "omnivia_memory._shared",
+      "omnivia_memory._shared.validation",
+      "omnivia_memory.app_manifest",
+      "omnivia_memory.app_manifest.models",
+      "omnivia_memory.app_manifest.validation",
+      "omnivia_memory.app_shell_bridge",
+      "omnivia_memory.app_shell_bridge.models",
+      "omnivia_memory.app_shell_bridge.validation",
+      "omnivia_memory.component_contract",
+      "omnivia_memory.component_contract.models",
+      "omnivia_memory.component_contract.validation",
+      "omnivia_memory.control_plane",
+      "omnivia_memory.control_plane.imports",
+      "omnivia_memory.control_plane.models",
+      "omnivia_memory.control_plane.validation",
+      "omnivia_memory.knowledge",
+      "omnivia_memory.knowledge.models",
+      "omnivia_memory.knowledge.normalize",
+      "omnivia_memory.knowledge.validation",
+      "omnivia_memory.lifecycle",
+      "omnivia_memory.lifecycle.models",
+      "omnivia_memory.lifecycle.rules",
+      "omnivia_memory.memory_graph",
+      "omnivia_memory.memory_graph.assembly",
+      "omnivia_memory.memory_graph.fixtures",
+      "omnivia_memory.memory_graph.models",
+      "omnivia_memory.memory_graph.validation",
+      "omnivia_memory.module_manifest",
+      "omnivia_memory.module_manifest.models",
+      "omnivia_memory.module_manifest.validation",
+      "omnivia_memory.provenance",
+      "omnivia_memory.provenance.models",
+      "omnivia_memory.run_ledger",
+      "omnivia_memory.run_ledger.models",
+      "omnivia_memory.run_ledger.validation"
+    ],
+    "runtime_modules": [
+      "omnivia_memory.control_plane.registry",
+      "omnivia_memory.graph",
+      "omnivia_memory.graph.models",
+      "omnivia_memory.graph.repository",
+      "omnivia_memory.graph.search_models",
+      "omnivia_memory.graph.search_service",
+      "omnivia_memory.graph.service",
+      "omnivia_memory.ingestion",
+      "omnivia_memory.ingestion.chunker",
+      "omnivia_memory.ingestion.extractors",
+      "omnivia_memory.ingestion.models",
+      "omnivia_memory.ingestion.pipeline",
+      "omnivia_memory.ingestion.repositories",
+      "omnivia_memory.ingestion.scanner",
+      "omnivia_memory.ingestion.watcher",
+      "omnivia_memory.ingestion.watcher.debouncer",
+      "omnivia_memory.ingestion.watcher.models",
+      "omnivia_memory.ingestion.watcher.tracker",
+      "omnivia_memory.memory",
+      "omnivia_memory.memory.models",
+      "omnivia_memory.memory.service",
+      "omnivia_memory.memory_graph.ingestion_adapter",
+      "omnivia_memory.memory_graph.store",
+      "omnivia_memory.persistence",
+      "omnivia_memory.persistence.database",
+      "omnivia_memory.persistence.repositories",
+      "omnivia_memory.search",
+      "omnivia_memory.search.service",
+      "omnivia_memory.workspace",
+      "omnivia_memory.workspace.models",
+      "omnivia_memory.workspace.repository",
+      "omnivia_memory.workspace.service"
+    ],
+    "runtime_prefixes": [
+      "omnivia_memory.control_plane.registry",
+      "omnivia_memory.graph",
+      "omnivia_memory.ingestion",
+      "omnivia_memory.memory",
+      "omnivia_memory.memory_graph.ingestion_adapter",
+      "omnivia_memory.memory_graph.store",
+      "omnivia_memory.persistence",
+      "omnivia_memory.search",
+      "omnivia_memory.workspace"
+    ]
+  },
+  "module_count": 68,
+  "package": "omnivia_memory",
+  "stdlib_imports": [
+    "__future__",
+    "abc",
+    "collections",
+    "contextlib",
+    "dataclasses",
+    "datetime",
+    "enum",
+    "fnmatch",
+    "hashlib",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "re",
+    "sqlite3",
+    "threading",
+    "typing",
+    "unicodedata",
+    "uuid"
+  ],
+  "task": "T-0627",
+  "third_party_imports": [
+    {
+      "imported_by": [
+        "omnivia_memory.ingestion.extractors"
+      ],
+      "module": "docx",
+      "reason": "python-docx, imported lazily inside DOCXExtractor.extract and degraded to a failure result when absent. Not a declared dependency."
+    },
+    {
+      "imported_by": [
+        "omnivia_memory.ingestion.extractors"
+      ],
+      "module": "fitz",
+      "reason": "PyMuPDF, imported lazily inside PDFExtractor.extract and degraded to a failure result when absent. Not a declared dependency."
+    }
+  ],
+  "transitional_imports": [
+    {
+      "imported": "omnivia_memory.memory",
+      "importer": "omnivia_memory",
+      "reason": "Documented compatibility re-export: downstream callers import MemoryService, MemoryCreate, and MemoryUpdate from the package root. Kept out of __all__.",
+      "symbols": [
+        "MemoryCreate",
+        "MemoryService",
+        "MemoryUpdate"
+      ]
+    },
+    {
+      "imported": "omnivia_memory.persistence",
+      "importer": "omnivia_memory",
+      "reason": "Documented compatibility re-export: downstream callers import Database from the package root. Kept out of __all__.",
+      "symbols": [
+        "Database"
+      ]
+    },
+    {
+      "imported": "omnivia_memory.memory_graph.ingestion_adapter",
+      "importer": "omnivia_memory.memory_graph",
+      "reason": "The memory_graph package re-exports the adapter that turns ingestion records into memory graph records. It depends on the ingestion runtime and belongs with it once ownership moves.",
+      "symbols": [
+        "IngestionGraphAdapterError",
+        "IngestionGraphWriteResult",
+        "chunk_to_memory_segment",
+        "source_to_memory_source",
+        "write_ingestion_records_to_graph"
+      ]
+    },
+    {
+      "imported": "omnivia_memory.memory_graph.store",
+      "importer": "omnivia_memory.memory_graph",
+      "reason": "The memory_graph package re-exports its durable JSON store alongside the display contracts. The store performs filesystem writes and belongs with the runtime once ownership moves.",
+      "symbols": [
+        "MemoryGraphStore",
+        "MemoryGraphStoreError"
+      ]
+    }
+  ]
+}

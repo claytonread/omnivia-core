@@ -1,0 +1,369 @@
+{
+  "format_version": 1,
+  "legacy_package": "omnivia_memory",
+  "canonical_package": "omnivia_core",
+  "compatibility_dependency": "omnivia-core>=0.1.0,<0.2.0",
+  "expected_counts": {
+    "routes": 47,
+    "direct": 40,
+    "hybrid_barrel": 6,
+    "root": 1,
+    "leaf": 30,
+    "barrel": 16,
+    "runtime_only_modules": 21
+  },
+  "routes": [
+    {
+      "legacy_module": "omnivia_memory",
+      "canonical_module": "omnivia_core",
+      "pair_kind": "root",
+      "shape": "root",
+      "migration_state": "root_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory._shared",
+      "canonical_module": "omnivia_core._shared",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory._shared.validation",
+      "canonical_module": "omnivia_core._shared.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_manifest",
+      "canonical_module": "omnivia_core.app_manifest",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_manifest.models",
+      "canonical_module": "omnivia_core.app_manifest.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_manifest.validation",
+      "canonical_module": "omnivia_core.app_manifest.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_shell_bridge",
+      "canonical_module": "omnivia_core.app_shell_bridge",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_shell_bridge.models",
+      "canonical_module": "omnivia_core.app_shell_bridge.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.app_shell_bridge.validation",
+      "canonical_module": "omnivia_core.app_shell_bridge.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.component_contract",
+      "canonical_module": "omnivia_core.component_contract",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.component_contract.models",
+      "canonical_module": "omnivia_core.component_contract.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.component_contract.validation",
+      "canonical_module": "omnivia_core.component_contract.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.control_plane",
+      "canonical_module": "omnivia_core.control_plane",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.control_plane.imports",
+      "canonical_module": "omnivia_core.control_plane.imports",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.control_plane.models",
+      "canonical_module": "omnivia_core.control_plane.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.control_plane.validation",
+      "canonical_module": "omnivia_core.control_plane.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.graph",
+      "canonical_module": "omnivia_core.graph",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.graph.models",
+      "canonical_module": "omnivia_core.graph.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.graph.search_models",
+      "canonical_module": "omnivia_core.graph.search_models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "split_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.ingestion",
+      "canonical_module": "omnivia_core.ingestion",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.ingestion.models",
+      "canonical_module": "omnivia_core.ingestion.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.ingestion.watcher",
+      "canonical_module": "omnivia_core.ingestion.watcher",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.ingestion.watcher.models",
+      "canonical_module": "omnivia_core.ingestion.watcher.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.knowledge",
+      "canonical_module": "omnivia_core.knowledge",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.knowledge.models",
+      "canonical_module": "omnivia_core.knowledge.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.knowledge.normalize",
+      "canonical_module": "omnivia_core.knowledge.normalize",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.knowledge.validation",
+      "canonical_module": "omnivia_core.knowledge.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.lifecycle",
+      "canonical_module": "omnivia_core.lifecycle",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.lifecycle.models",
+      "canonical_module": "omnivia_core.lifecycle.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.lifecycle.rules",
+      "canonical_module": "omnivia_core.lifecycle.rules",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory",
+      "canonical_module": "omnivia_core.memory",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory.models",
+      "canonical_module": "omnivia_core.memory.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory_graph",
+      "canonical_module": "omnivia_core.memory_graph",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory_graph.assembly",
+      "canonical_module": "omnivia_core.memory_graph.assembly",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory_graph.fixtures",
+      "canonical_module": "omnivia_core.memory_graph.fixtures",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory_graph.models",
+      "canonical_module": "omnivia_core.memory_graph.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.memory_graph.validation",
+      "canonical_module": "omnivia_core.memory_graph.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.module_manifest",
+      "canonical_module": "omnivia_core.module_manifest",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.module_manifest.models",
+      "canonical_module": "omnivia_core.module_manifest.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.module_manifest.validation",
+      "canonical_module": "omnivia_core.module_manifest.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.provenance",
+      "canonical_module": "omnivia_core.provenance",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.provenance.models",
+      "canonical_module": "omnivia_core.provenance.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.run_ledger",
+      "canonical_module": "omnivia_core.run_ledger",
+      "pair_kind": "direct",
+      "shape": "barrel",
+      "migration_state": "transitive_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.run_ledger.models",
+      "canonical_module": "omnivia_core.run_ledger.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.run_ledger.validation",
+      "canonical_module": "omnivia_core.run_ledger.validation",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.workspace",
+      "canonical_module": "omnivia_core.workspace",
+      "pair_kind": "hybrid_barrel",
+      "shape": "barrel",
+      "migration_state": "hybrid_facade"
+    },
+    {
+      "legacy_module": "omnivia_memory.workspace.models",
+      "canonical_module": "omnivia_core.workspace.models",
+      "pair_kind": "direct",
+      "shape": "leaf",
+      "migration_state": "direct_facade"
+    }
+  ],
+  "runtime_only_modules": [
+    "omnivia_memory.control_plane.registry",
+    "omnivia_memory.graph.repository",
+    "omnivia_memory.graph.search_service",
+    "omnivia_memory.graph.service",
+    "omnivia_memory.ingestion.chunker",
+    "omnivia_memory.ingestion.extractors",
+    "omnivia_memory.ingestion.pipeline",
+    "omnivia_memory.ingestion.repositories",
+    "omnivia_memory.ingestion.scanner",
+    "omnivia_memory.ingestion.watcher.debouncer",
+    "omnivia_memory.ingestion.watcher.tracker",
+    "omnivia_memory.memory.service",
+    "omnivia_memory.memory_graph.ingestion_adapter",
+    "omnivia_memory.memory_graph.store",
+    "omnivia_memory.persistence",
+    "omnivia_memory.persistence.database",
+    "omnivia_memory.persistence.repositories",
+    "omnivia_memory.search",
+    "omnivia_memory.search.service",
+    "omnivia_memory.workspace.repository",
+    "omnivia_memory.workspace.service"
+  ]
+}

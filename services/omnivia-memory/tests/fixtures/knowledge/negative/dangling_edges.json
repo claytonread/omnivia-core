@@ -1,0 +1,83 @@
+{
+  "id": "dangling-edges",
+  "title": "Dangling Edges",
+  "space_type": "test space",
+  "contract_version": "1.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-dangling",
+      "space_id": "dangling-edges",
+      "source_type": "code",
+      "title": "main.py",
+      "relative_path": "src/main.py"
+    }
+  ],
+  "objects": [
+    {
+      "id": "main-node",
+      "space_id": "dangling-edges",
+      "kind": "code",
+      "title": "main.py",
+      "tags": ["code"],
+      "source_refs": [
+        {
+          "source_id": "source-dangling",
+          "source_type": "code",
+          "path": "src/main.py",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [
+    {
+      "id": "dangling-fragment",
+      "space_id": "dangling-edges",
+      "contract_version": "1.0",
+      "nodes": [
+        {
+          "id": "main-node",
+          "space_id": "dangling-edges",
+          "label": "main.py",
+          "kind": "code",
+          "object_id": "main-node",
+          "source_refs": [
+            {
+              "source_id": "source-dangling",
+              "source_type": "code",
+              "path": "src/main.py",
+              "confidence": "EXTRACTED"
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "dangling-edge",
+          "space_id": "dangling-edges",
+          "source": "main-node",
+          "target": "missing-node",
+          "relation": "calls",
+          "source_refs": [
+            {
+              "source_id": "source-dangling",
+              "source_type": "code",
+              "path": "src/main.py",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "origin": "manual",
+      "owner": "portable"
+    }
+  ],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": ["graph_fragments[0].edges[0] has dangling node references"]
+}

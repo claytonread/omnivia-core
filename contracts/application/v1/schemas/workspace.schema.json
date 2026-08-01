@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/workspace.schema.json",
+  "title": "OmniVia Core Application Contract v1 - workspace foundations",
+  "description": "Provider-neutral wire shapes for the workspace descriptor and the `workspace.list` / `workspace.create` / `workspace.inspect` operation payloads (ADR-038, ADR-039). `workspace.list` and `workspace.create` are installation-scoped: their inputs carry no workspace identifier. `workspace.inspect` is workspace-scoped through the request envelope's selected workspace and never carries a second, independent workspace identifier in its own input. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "WorkspaceStatus": {
+      "title": "WorkspaceStatus",
+      "description": "Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or `provisioning` or `archived`. Open by design so a compatible minor release can add statuses without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "WorkspaceCompatibility": {
+      "title": "WorkspaceCompatibility",
+      "description": "The concrete workspace-format version a workspace is stored at, and the inclusive version window this server build can read and write. Reuses the same `VersionWindow` and `OpenCode` primitives `VersionCapabilityEnvelope` negotiates with, rather than inventing a second version model.",
+      "type": "object",
+      "properties": {
+        "workspace_format_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Concrete workspace-format version this workspace is currently stored at."
+        },
+        "supported_workspace_versions": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow",
+          "description": "Inclusive workspace-format version window this server build can read and write."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Compatibility status of `workspace_format_version` against `supported_workspace_versions`. Known values are listed in `compatibility.schema.json`'s `x-omnivia-compatibility-statuses`; unknown values must be preserved."
+        }
+      },
+      "required": ["workspace_format_version", "supported_workspace_versions", "status"],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceDescriptor": {
+      "title": "WorkspaceDescriptor",
+      "description": "A workspace's identity, display name, lifecycle status, format compatibility, and lifecycle timestamps.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Stable, server-assigned identifier of this workspace."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable workspace name.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceStatus",
+          "description": "Current lifecycle status of this workspace."
+        },
+        "compatibility": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceCompatibility",
+          "description": "Concrete workspace-format version and the compatibility window it falls within."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this workspace was created."
+        },
+        "updated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this workspace's descriptor was last updated, when known."
+        }
+      },
+      "required": ["workspace_id", "display_name", "status", "compatibility", "created_at"],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceListInput": {
+      "title": "WorkspaceListInput",
+      "description": "Input for `workspace.list`. Installation-scoped: carries no workspace identifier, since it lists every workspace the caller's installation-level authority can see.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageLimit",
+          "description": "Bounded maximum number of workspaces to return in this page."
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position from a prior page, when paging."
+        }
+      },
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceListResult": {
+      "title": "WorkspaceListResult",
+      "description": "Result of `workspace.list`.",
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "description": "Workspaces visible to the caller's installation-level authority, in this page.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceDescriptor"
+          },
+          "maxItems": 1000
+        },
+        "page": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/PageMetadata",
+          "description": "Continuation position for the next page, absent on the last page."
+        }
+      },
+      "required": ["workspaces", "page"],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceCreateInput": {
+      "title": "WorkspaceCreateInput",
+      "description": "Input for `workspace.create`. Installation-scoped: carries only installation-level creation data, and never a caller-supplied workspace identifier.",
+      "type": "object",
+      "properties": {
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name for the new workspace.",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": ["display_name"],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceCreateResult": {
+      "title": "WorkspaceCreateResult",
+      "description": "Result of `workspace.create`: the concrete created workspace, including its server-assigned identifier and format compatibility. Never a sentinel or placeholder workspace identifier.",
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceDescriptor",
+          "description": "The concrete workspace that was created."
+        }
+      },
+      "required": ["workspace"],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceInspectInput": {
+      "title": "WorkspaceInspectInput",
+      "description": "Input for `workspace.inspect`. Workspace-scoped: the workspace to inspect is the request envelope's selected workspace; this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "unevaluatedProperties": false
+    },
+    "WorkspaceInspectResult": {
+      "title": "WorkspaceInspectResult",
+      "description": "Result of `workspace.inspect`: the envelope-selected workspace's concrete descriptor.",
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/workspace.schema.json#/$defs/WorkspaceDescriptor",
+          "description": "The inspected workspace."
+        }
+      },
+      "required": ["workspace"],
+      "unevaluatedProperties": false
+    }
+  }
+}

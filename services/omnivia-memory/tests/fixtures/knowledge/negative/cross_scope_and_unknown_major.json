@@ -1,0 +1,70 @@
+{
+  "id": "cross-scope-version",
+  "title": "Cross Scope Version",
+  "space_type": "test space",
+  "contract_version": "2.0",
+  "tags": ["negative"],
+  "sources": [
+    {
+      "id": "source-cross",
+      "space_id": "cross-scope-version",
+      "source_type": "document",
+      "title": "Cross Scope",
+      "relative_path": "docs/cross.md"
+    }
+  ],
+  "objects": [
+    {
+      "id": "cross-object",
+      "space_id": "cross-scope-version",
+      "kind": "concept",
+      "title": "Cross Scope Object",
+      "tags": ["cross-object"],
+      "source_refs": [
+        {
+          "source_id": "source-cross",
+          "source_type": "document",
+          "path": "docs/cross.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [],
+  "graph_fragments": [
+    {
+      "id": "cross-fragment",
+      "space_id": "cross-scope-version",
+      "contract_version": "2.0",
+      "nodes": [
+        {
+          "id": "cross-object",
+          "space_id": "other-space",
+          "label": "Cross Scope Object",
+          "kind": "concept",
+          "object_id": "cross-object",
+          "source_refs": [
+            {
+              "source_id": "source-cross",
+              "source_type": "document",
+              "path": "docs/cross.md",
+              "confidence": "EXTRACTED"
+            }
+          ]
+        }
+      ],
+      "edges": [],
+      "origin": "manual",
+      "owner": "portable"
+    }
+  ],
+  "extension_manifests": [],
+  "agent_contexts": [],
+  "expected_errors": [
+    "unsupported contract major version 2.0; expected 1.x",
+    "graph_fragments[0].unsupported contract major version 2.0; expected 1.x",
+    "graph_fragments[0].nodes[0] belongs to a different space"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "baseline_slice": "mcp.tools_discovery",
+  "capture_kind": "not_captured",
+  "entrypoints": [],
+  "evidence_gap": "GAP-008",
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [],
+    "redactions": []
+  },
+  "notes": [
+    "Core ships no MCP server; tool discovery is a Dev surface.",
+    "The tools/list method and the base tool list are recorded in the MCP inventory.",
+    "No request or response is recorded here. This slice belongs to a surface Core does not own; its operation descriptor, where one has been reviewed, lives in the surface inventory rather than in this fixture."
+  ],
+  "ordering": null,
+  "request": null,
+  "response": null,
+  "scenario": "mcp.tools_discovery",
+  "status": "pending_external_capture",
+  "surface": "mcp_tools",
+  "task": "T-0627",
+  "title": "MCP tool discovery"
+}

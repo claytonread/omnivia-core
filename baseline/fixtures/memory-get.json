@@ -1,0 +1,49 @@
+{
+  "baseline_slice": "memory.get",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.memory.service.MemoryService.get"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": null,
+  "request": {
+    "memory_id": "<uuid-0013>"
+  },
+  "response": {
+    "content": "Core owns portable knowledge contracts; Platform and Dev adapt them to their own runtimes.",
+    "created_at": "<timestamp>",
+    "created_by": "human",
+    "id": "<uuid-0013>",
+    "lifecycle_state": "approved",
+    "memory_type": "decision",
+    "source": {
+      "description": "Baseline ADR reference",
+      "reference": "docs/adr/0001-portable-knowledge.md",
+      "type": "adr"
+    },
+    "updated_at": "<timestamp>",
+    "workspace_id": "<uuid-0001>"
+  },
+  "scenario": "memory.get",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Get a memory by id"
+}

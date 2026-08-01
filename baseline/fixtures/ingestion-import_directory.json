@@ -1,0 +1,190 @@
+{
+  "baseline_slice": "ingestion.import_directory",
+  "capture_kind": "core_code_path",
+  "entrypoints": [
+    "omnivia_memory.workspace.service.WorkspaceService.import_path",
+    "omnivia_memory.ingestion.pipeline.IngestionPipeline.ingest_directory"
+  ],
+  "evidence_gap": null,
+  "format_version": "1",
+  "normalization": {
+    "configured_path_roots": [
+      "<home>",
+      "<repo>",
+      "<session-root>",
+      "<workspace-root>",
+      "<workspace-storage>"
+    ],
+    "redactions": [
+      "absolute-path",
+      "random-uuid",
+      "wall-clock-timestamp"
+    ]
+  },
+  "notes": [
+    "Only Markdown and text extractors are exercised. The PDF and DOCX extractors need optional dependencies and are covered by the existing ingestion tests instead.",
+    "Captured by calling Core in this checkout. It is a deterministic Core-side equivalent of the slice, not a live Platform, MCP, or CLI response capture."
+  ],
+  "ordering": "FileScanner walks directories with Path.iterdir(), which is not ordered; the baseline sorts sources by path and relies on ChunkRepository's ORDER BY chunk_index for chunks",
+  "request": {
+    "documents": [
+      "docs/adr/0001-portable-knowledge.md",
+      "docs/notes/graph-review.md",
+      "notes/inbox.txt"
+    ],
+    "workspace_id": "<uuid-0001>"
+  },
+  "response": {
+    "sources": [
+      {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "content": "# ADR 0001: Portable Knowledge Substrate",
+            "content_hash": "706c3eb6e72b67bc1dfad108bbde9f92e6a8f0a3684426f7387e01609ab9e8ec",
+            "end_offset": 40,
+            "id": "<uuid-0002>",
+            "source_id": "<uuid-0003>",
+            "start_offset": 0
+          },
+          {
+            "chunk_index": 1,
+            "content": "Core owns portable knowledge contracts and keeps them backend neutral.",
+            "content_hash": "e2968b489638b0a9faad46b26f33d4d5ec1729b2413ac0b786f9b9fe19c5da6b",
+            "end_offset": 112,
+            "id": "<uuid-0004>",
+            "source_id": "<uuid-0003>",
+            "start_offset": 42
+          },
+          {
+            "chunk_index": 2,
+            "content": "Platform adapts the contracts to a runtime. Dev adapts them to developer tools.",
+            "content_hash": "050c8eaaf228f26294a6fc883019cdd13dae63298c4e2e3c7134066b337ea2a4",
+            "end_offset": 193,
+            "id": "<uuid-0005>",
+            "source_id": "<uuid-0003>",
+            "start_offset": 114
+          }
+        ],
+        "source": {
+          "created_at": "<timestamp>",
+          "error": null,
+          "file_type": "markdown",
+          "hash": "97919af5f758b4f906fd4b232e14349b88df6018948bff5d834bcb9e3cff5522",
+          "id": "<uuid-0003>",
+          "modified_time": null,
+          "path": "<workspace-root>/docs/adr/0001-portable-knowledge.md",
+          "size": 194,
+          "status": "success",
+          "updated_at": "<timestamp>",
+          "workspace_id": "<uuid-0001>"
+        }
+      },
+      {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "content": "# Graph Review",
+            "content_hash": "8cb08d2b45c3a263a948a632f84fa1000529d9fe15831a24bb94df92f84461db",
+            "end_offset": 14,
+            "id": "<uuid-0006>",
+            "source_id": "<uuid-0007>",
+            "start_offset": 0
+          },
+          {
+            "chunk_index": 1,
+            "content": "Every graph edge must cite source evidence before it is treated as approved.",
+            "content_hash": "1076e4bf09911647cb89d88d272020c5721d16dfa7de4850f7d9abdde63e4607",
+            "end_offset": 92,
+            "id": "<uuid-0008>",
+            "source_id": "<uuid-0007>",
+            "start_offset": 16
+          },
+          {
+            "chunk_index": 2,
+            "content": "Edges without evidence stay proposed and are surfaced as warnings.",
+            "content_hash": "11e22d6d6c21b9a57e235e951acd979eff83f6e4ed9bfc53470d3e471d588e58",
+            "end_offset": 160,
+            "id": "<uuid-0009>",
+            "source_id": "<uuid-0007>",
+            "start_offset": 94
+          }
+        ],
+        "source": {
+          "created_at": "<timestamp>",
+          "error": null,
+          "file_type": "markdown",
+          "hash": "f8e84f20eacc1d1146b86e10fe4069a0ab53ae7bd4824dd873c58fad588930be",
+          "id": "<uuid-0007>",
+          "modified_time": null,
+          "path": "<workspace-root>/docs/notes/graph-review.md",
+          "size": 161,
+          "status": "success",
+          "updated_at": "<timestamp>",
+          "workspace_id": "<uuid-0001>"
+        }
+      },
+      {
+        "chunks": [
+          {
+            "chunk_index": 0,
+            "content": "Workspace imports create one memory per content chunk.",
+            "content_hash": "478230a2137d02b6597b2b741fa0d5115e111ddce7c0fa59b15c4b4e641d5f5d",
+            "end_offset": 54,
+            "id": "<uuid-0010>",
+            "source_id": "<uuid-0011>",
+            "start_offset": 0
+          },
+          {
+            "chunk_index": 1,
+            "content": "Each memory keeps a provenance reference back to the source file.",
+            "content_hash": "e7c98c67bfa3074b0eefe4660e50bf1808fbb4913276da6d777b2934965e2441",
+            "end_offset": 121,
+            "id": "<uuid-0012>",
+            "source_id": "<uuid-0011>",
+            "start_offset": 56
+          }
+        ],
+        "source": {
+          "created_at": "<timestamp>",
+          "error": null,
+          "file_type": "text",
+          "hash": "d0e06c5aace3133482d4392f5105a04acae7b8395fb464973d957654b1931ae5",
+          "id": "<uuid-0011>",
+          "modified_time": null,
+          "path": "<workspace-root>/notes/inbox.txt",
+          "size": 122,
+          "status": "success",
+          "updated_at": "<timestamp>",
+          "workspace_id": "<uuid-0001>"
+        }
+      }
+    ],
+    "summary": {
+      "errors": [],
+      "files_seen": 3,
+      "memories_created": 8,
+      "sources_created": 3,
+      "workspace_id": "<uuid-0001>"
+    },
+    "workspace_after_import": {
+      "created_at": "<timestamp>",
+      "description": "Ephemeral workspace used to freeze the Phase 0 baseline.",
+      "id": "<uuid-0001>",
+      "index_status": "indexed",
+      "last_indexed_at": "<timestamp>",
+      "name": "Baseline Workspace",
+      "root_path": "<workspace-root>",
+      "settings": {
+        "import_profile": "baseline"
+      },
+      "storage_path": "<workspace-storage>",
+      "updated_at": "<timestamp>"
+    }
+  },
+  "scenario": "ingestion.import_directory",
+  "status": "captured",
+  "surface": "core_python",
+  "task": "T-0627",
+  "title": "Import a directory into a workspace"
+}

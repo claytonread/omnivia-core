@@ -1,0 +1,433 @@
+{
+  "source": {
+    "id": "source-001",
+    "workspace_id": "workspace-001",
+    "type": "file",
+    "uri": "docs/adr/001-memory.md",
+    "title": "Memory ADR",
+    "owner_ref": "Core",
+    "connector_ref": null,
+    "freshness": "fresh",
+    "status": "ready",
+    "checksum": "sha256:source",
+    "created_at": "2026-06-07T00:00:00+00:00",
+    "updated_at": "2026-06-07T00:00:00+00:00"
+  },
+  "segments": [
+    {
+      "id": "segment-001",
+      "source_id": "source-001",
+      "workspace_id": "workspace-001",
+      "kind": "text",
+      "label": "Purpose",
+      "span": {
+        "lines": [
+          1,
+          12
+        ]
+      },
+      "text_preview": "Memory facts must cite source evidence.",
+      "checksum": "sha256:segment-a",
+      "parser": "markdown",
+      "parser_settings_ref": "default-v1",
+      "created_at": "2026-06-07T00:00:00+00:00"
+    },
+    {
+      "id": "segment-002",
+      "source_id": "source-001",
+      "workspace_id": "workspace-001",
+      "kind": "text",
+      "label": "Ownership",
+      "span": {
+        "lines": [
+          14,
+          22
+        ]
+      },
+      "text_preview": "Core owns public-safe memory graph types.",
+      "checksum": "sha256:segment-b",
+      "parser": "markdown",
+      "parser_settings_ref": "default-v1",
+      "created_at": "2026-06-07T00:00:00+00:00"
+    }
+  ],
+  "entities": [
+    {
+      "id": "entity-core",
+      "workspace_id": "workspace-001",
+      "type": "module",
+      "canonical_name": "Core",
+      "aliases": [
+        "omnivia-core"
+      ],
+      "confidence": "extracted",
+      "source_refs": [
+        {
+          "source_id": "source-001",
+          "segment_id": "segment-001",
+          "span": {
+            "lines": [
+              1,
+              12
+            ]
+          },
+          "quote_preview": "Memory facts must cite source evidence.",
+          "confidence": "extracted"
+        }
+      ],
+      "created_at": "2026-06-07T00:00:00+00:00",
+      "updated_at": "2026-06-07T00:00:00+00:00"
+    },
+    {
+      "id": "entity-memory-graph",
+      "workspace_id": "workspace-001",
+      "type": "contract",
+      "canonical_name": "Memory Graph Contract",
+      "aliases": [
+        "memory graph"
+      ],
+      "confidence": 0.96,
+      "source_refs": [
+        {
+          "source_id": "source-001",
+          "segment_id": "segment-001",
+          "span": {
+            "lines": [
+              1,
+              12
+            ]
+          },
+          "quote_preview": "Memory facts must cite source evidence.",
+          "confidence": "extracted"
+        }
+      ],
+      "created_at": "2026-06-07T00:00:00+00:00",
+      "updated_at": "2026-06-07T00:00:00+00:00"
+    }
+  ],
+  "facts": [
+    {
+      "id": "fact-001",
+      "workspace_id": "workspace-001",
+      "subject_id": "entity-core",
+      "predicate": "owns",
+      "object_id": "entity-memory-graph",
+      "object_value": null,
+      "confidence": "extracted",
+      "source_refs": [
+        {
+          "source_id": "source-001",
+          "segment_id": "segment-001",
+          "span": {
+            "lines": [
+              1,
+              12
+            ]
+          },
+          "quote_preview": "Memory facts must cite source evidence.",
+          "confidence": "extracted"
+        }
+      ],
+      "valid_from": "2026-06-07T00:00:00+00:00",
+      "valid_to": null,
+      "supersedes": null,
+      "status": "approved",
+      "created_at": "2026-06-07T00:00:00+00:00",
+      "updated_at": "2026-06-07T00:00:00+00:00"
+    },
+    {
+      "id": "fact-002",
+      "workspace_id": "workspace-001",
+      "subject_id": "entity-memory-graph",
+      "predicate": "may_support",
+      "object_id": null,
+      "object_value": "future visual graph UI",
+      "confidence": "ambiguous",
+      "source_refs": [
+        {
+          "source_id": "source-001",
+          "segment_id": "segment-001",
+          "span": {
+            "lines": [
+              1,
+              12
+            ]
+          },
+          "quote_preview": "Memory facts must cite source evidence.",
+          "confidence": "extracted"
+        }
+      ],
+      "valid_from": null,
+      "valid_to": null,
+      "supersedes": null,
+      "status": "proposed",
+      "created_at": "2026-06-07T00:00:00+00:00",
+      "updated_at": "2026-06-07T00:00:00+00:00"
+    },
+    {
+      "id": "fact-003",
+      "workspace_id": "workspace-001",
+      "subject_id": "entity-memory-graph",
+      "predicate": "missing_evidence_example",
+      "object_id": null,
+      "object_value": true,
+      "confidence": "inferred",
+      "source_refs": [],
+      "valid_from": null,
+      "valid_to": null,
+      "supersedes": null,
+      "status": "proposed",
+      "created_at": "2026-06-07T00:00:00+00:00",
+      "updated_at": "2026-06-07T00:00:00+00:00"
+    }
+  ],
+  "graph_preview": {
+    "workspace_id": "workspace-001",
+    "query": "source:source-001",
+    "nodes": [
+      {
+        "id": "node-source-001",
+        "entity_ref": null,
+        "source_ref": "source-001",
+        "segment_ref": null,
+        "label": "Memory ADR",
+        "type": "file",
+        "kind": "source",
+        "state": "ready",
+        "confidence": "extracted",
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      },
+      {
+        "id": "node-entity-core",
+        "entity_ref": "entity-core",
+        "source_ref": null,
+        "segment_ref": null,
+        "label": "Core",
+        "type": "module",
+        "kind": "entity",
+        "state": "ready",
+        "confidence": "extracted",
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      },
+      {
+        "id": "node-entity-memory-graph",
+        "entity_ref": "entity-memory-graph",
+        "source_ref": null,
+        "segment_ref": null,
+        "label": "Memory Graph Contract",
+        "type": "contract",
+        "kind": "entity",
+        "state": "ready",
+        "confidence": 0.96,
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-fact-001",
+        "source": "node-entity-core",
+        "target": "node-entity-memory-graph",
+        "label": "owns",
+        "type": "owns",
+        "state": "ready",
+        "confidence": "extracted",
+        "valid_from": "2026-06-07T00:00:00+00:00",
+        "valid_to": null,
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      }
+    ],
+    "warnings": [
+      "preview limited to 100 nodes and 150 edges"
+    ],
+    "limits": {
+      "nodes": 100,
+      "edges": 150
+    },
+    "generated_at": "2026-06-07T00:00:00+00:00"
+  },
+  "evidence_graph": {
+    "workspace_id": "workspace-001",
+    "answer_id": "answer-001",
+    "query": "What owns the Memory Graph Contract?",
+    "nodes": [
+      {
+        "id": "node-source-001",
+        "entity_ref": null,
+        "source_ref": "source-001",
+        "segment_ref": null,
+        "label": "Memory ADR",
+        "type": "file",
+        "kind": "source",
+        "state": "ready",
+        "confidence": "extracted",
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      },
+      {
+        "id": "node-entity-core",
+        "entity_ref": "entity-core",
+        "source_ref": null,
+        "segment_ref": null,
+        "label": "Core",
+        "type": "module",
+        "kind": "entity",
+        "state": "ready",
+        "confidence": "extracted",
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      },
+      {
+        "id": "node-entity-memory-graph",
+        "entity_ref": "entity-memory-graph",
+        "source_ref": null,
+        "segment_ref": null,
+        "label": "Memory Graph Contract",
+        "type": "contract",
+        "kind": "entity",
+        "state": "ready",
+        "confidence": 0.96,
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-fact-001",
+        "source": "node-entity-core",
+        "target": "node-entity-memory-graph",
+        "label": "owns",
+        "type": "owns",
+        "state": "ready",
+        "confidence": "extracted",
+        "valid_from": "2026-06-07T00:00:00+00:00",
+        "valid_to": null,
+        "source_refs": [
+          {
+            "source_id": "source-001",
+            "segment_id": "segment-001",
+            "span": {
+              "lines": [
+                1,
+                12
+              ]
+            },
+            "quote_preview": "Memory facts must cite source evidence.",
+            "confidence": "extracted"
+          }
+        ],
+        "display": {}
+      }
+    ],
+    "citations": [
+      {
+        "source_id": "source-001",
+        "segment_id": "segment-001",
+        "span": {
+          "lines": [
+            1,
+            12
+          ]
+        },
+        "quote_preview": "Memory facts must cite source evidence.",
+        "confidence": "extracted"
+      }
+    ],
+    "warnings": [],
+    "generated_at": "2026-06-07T00:00:00+00:00"
+  }
+}

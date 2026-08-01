@@ -1,0 +1,82 @@
+{
+  "format": "omnivia.context-pack.canonicalization-vectors.v1",
+  "description": "Language-neutral admission vectors for the numeric half of the Context Pack canonicalization freeze (ADR-039). Context Pack format 1.0 applies RFC 8785 byte serialization to an admitted I-JSON data model: before canonicalization every number must be a finite binary64, and additionally any number token written in integer form -- and any direct host-language integral value -- is admitted only when converting it to binary64 and back to the mathematical integer is exact. Decimal and exponent tokens are read as finite binary64 under ordinary JCS rules; an exact decimal rational representation is not required. This refuses silent rounding of an integer identity or count without changing the bytes any admitted document serializes to, which is why `reproducibility.artifact_canonicalization` stays exactly `rfc8785`. It is an admission rule and not a safe-integer range: exact larger integers such as powers of two remain valid.",
+  "pack_format_version": "1.0",
+  "artifact_canonicalization": "rfc8785",
+  "error_categories": {
+    "non_finite_number": "The value is not a finite binary64 and is therefore outside I-JSON, whether it arrived as an overflowing exponent token or as a NaN or Infinity spelling.",
+    "inexact_integer": "The value is an integer -- from an integer-form token, or handed to the canonicalizer directly by a host language -- whose conversion to binary64 and back to the mathematical integer is not exact. A conforming JCS implementation would round it and hash a number the sender never wrote."
+  },
+  "usage": "Each vector's `input_json` is a complete JSON document holding one number, given as raw text so no host language's parser has already rounded it. Parse it, then canonicalize. When `admitted` is true the canonical form must equal `canonical_json` byte for byte; when `admitted` is false the attempt must fail and the failure must be the stated `error_category`. A vector marked `host_integral` must reach the same verdict when the same mathematical integer is handed to the canonicalizer directly as a host-language integer, never having passed through a parser.",
+  "vectors": [
+    {
+      "id": "two-pow-53-minus-one",
+      "input_json": "9007199254740991",
+      "admitted": true,
+      "canonical_json": "9007199254740991",
+      "host_integral": true,
+      "note": "2**53 - 1. Every integer up to this magnitude is exact in binary64."
+    },
+    {
+      "id": "two-pow-53",
+      "input_json": "9007199254740992",
+      "admitted": true,
+      "canonical_json": "9007199254740992",
+      "host_integral": true,
+      "note": "2**53 itself is exact, so it is admitted. The rule is exactness, not a range that stops here."
+    },
+    {
+      "id": "two-pow-53-plus-one",
+      "input_json": "9007199254740993",
+      "admitted": false,
+      "error_category": "inexact_integer",
+      "host_integral": true,
+      "note": "2**53 + 1 is the first integer binary64 cannot hold. ECMAScript, which JCS defers to for number serialization, would emit 9007199254740992 instead."
+    },
+    {
+      "id": "negative-two-pow-53-plus-one",
+      "input_json": "-9007199254740993",
+      "admitted": false,
+      "error_category": "inexact_integer",
+      "host_integral": true,
+      "note": "The rule is symmetric about zero; sign is not part of it."
+    },
+    {
+      "id": "two-pow-60",
+      "input_json": "1152921504606846976",
+      "admitted": true,
+      "canonical_json": "1152921504606847000",
+      "host_integral": true,
+      "note": "2**60 is exact in binary64 and therefore admitted, far above 2**53. Its canonical form is the shortest decimal digit string that reads back as the same double, positioned by ECMAScript's rules, which is why the trailing digits are zeros rather than ...976."
+    },
+    {
+      "id": "two-pow-60-plus-one",
+      "input_json": "1152921504606846977",
+      "admitted": false,
+      "error_category": "inexact_integer",
+      "host_integral": true,
+      "note": "One more than an exact power of two is not exact, so it is refused even though the neighbouring value is admitted."
+    },
+    {
+      "id": "one-tenth",
+      "input_json": "0.1",
+      "admitted": true,
+      "canonical_json": "0.1",
+      "note": "No binary64 equals one tenth, and none is required to: a decimal token is read as the nearest finite binary64 under ordinary JCS rules, and canonicalizes to the shortest decimal that reads back as that same double."
+    },
+    {
+      "id": "one-e-plus-twenty-one",
+      "input_json": "1e+21",
+      "admitted": true,
+      "canonical_json": "1e+21",
+      "note": "The first magnitude at which ECMAScript's Number::toString leaves positional notation for the exponential form, so it pins the threshold as well as the admission."
+    },
+    {
+      "id": "overflowing-exponent",
+      "input_json": "1e400",
+      "admitted": false,
+      "error_category": "non_finite_number",
+      "note": "Overflows to infinity, which is outside I-JSON and has no JSON spelling at all."
+    }
+  ]
+}

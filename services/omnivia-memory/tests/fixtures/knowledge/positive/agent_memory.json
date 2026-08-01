@@ -1,0 +1,112 @@
+{
+  "id": "agent-memory-space",
+  "title": "Agent Memory",
+  "space_type": "agent memory",
+  "contract_version": "1.0",
+  "summary": "Restricted memory entries and agent-safe context summaries.",
+  "tags": ["agent-memory", "restricted"],
+  "sources": [
+    {
+      "id": "source-agent-session",
+      "space_id": "agent-memory-space",
+      "source_type": "conversation",
+      "title": "Agent Session 101",
+      "relative_path": "sessions/session-101.md",
+      "origin": "agent",
+      "visibility": "private",
+      "sensitivity": "restricted"
+    }
+  ],
+  "objects": [
+    {
+      "id": "agent-memory-entry",
+      "space_id": "agent-memory-space",
+      "kind": "agent_memory",
+      "title": "Remember preferred verification flow",
+      "tags": ["agent-memory", "workflow"],
+      "source_refs": [
+        {
+          "source_id": "source-agent-session",
+          "source_type": "conversation",
+          "path": "sessions/session-101.md",
+          "locator": "#verification",
+          "quote_preview": "Run fixtures before broad tests.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "visibility": "private",
+      "sensitivity": "restricted"
+    }
+  ],
+  "collections": [],
+  "links": [],
+  "claims": [
+    {
+      "id": "agent-memory-claim",
+      "space_id": "agent-memory-space",
+      "subject_object_id": "agent-memory-entry",
+      "predicate": "supports_claim",
+      "object_value": "Run fixtures before broad tests.",
+      "source_refs": [
+        {
+          "source_id": "source-agent-session",
+          "source_type": "conversation",
+          "path": "sessions/session-101.md",
+          "locator": "#verification",
+          "quote_preview": "Run fixtures before broad tests.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "evidence_strength": "PRIMARY",
+      "visibility": "private",
+      "sensitivity": "restricted",
+      "influences_decision": true
+    }
+  ],
+  "graph_fragments": [],
+  "extension_manifests": [],
+  "agent_contexts": [
+    {
+      "id": "agent-context-101",
+      "space_id": "agent-memory-space",
+      "summary": "EXTRACTED guidance from prior session remains reviewable and restricted.",
+      "object_ids": ["agent-memory-entry"],
+      "link_ids": [],
+      "claim_ids": ["agent-memory-claim"],
+      "confidence_summary": {
+        "EXTRACTED": 2,
+        "INFERRED": 0,
+        "AMBIGUOUS": 0,
+        "NUMERIC": 0
+      },
+      "review_summary": {
+        "UNREVIEWED": 0,
+        "REVIEWED": 2,
+        "APPROVED": 0,
+        "REJECTED": 0,
+        "SUPERSEDED": 0
+      },
+      "sensitivity_summary": {
+        "public": 0,
+        "internal": 0,
+        "confidential": 0,
+        "restricted": 2
+      },
+      "warnings": ["Keep restricted memory out of public exports."],
+      "source_refs": [
+        {
+          "source_id": "source-agent-session",
+          "source_type": "conversation",
+          "path": "sessions/session-101.md",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "visibility": "private",
+      "sensitivity": "restricted"
+    }
+  ]
+}

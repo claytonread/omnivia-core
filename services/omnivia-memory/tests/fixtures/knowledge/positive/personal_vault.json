@@ -1,0 +1,177 @@
+{
+  "id": "personal-vault",
+  "title": "Personal Vault",
+  "space_type": "personal vault",
+  "contract_version": "1.0",
+  "summary": "A local-first note and task vault.",
+  "tags": ["personal-vault", "local-first"],
+  "sources": [
+    {
+      "id": "source-daily-note",
+      "space_id": "personal-vault",
+      "source_type": "note",
+      "title": "Daily Note",
+      "relative_path": "notes/daily-note.md",
+      "origin": "manual",
+      "visibility": "private",
+      "sensitivity": "internal"
+    }
+  ],
+  "objects": [
+    {
+      "id": "daily-note",
+      "space_id": "personal-vault",
+      "kind": "note",
+      "title": "Daily Note",
+      "summary": "A source-backed personal note.",
+      "tags": ["daily-note", "journal"],
+      "source_refs": [
+        {
+          "source_id": "source-daily-note",
+          "source_type": "note",
+          "path": "notes/daily-note.md",
+          "locator": "#daily-note",
+          "quote_preview": "Capture work items and reflections.",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "visibility": "private",
+      "sensitivity": "internal"
+    },
+    {
+      "id": "task-refactor-core",
+      "space_id": "personal-vault",
+      "kind": "task",
+      "title": "Refactor Core",
+      "summary": "A note-linked task with provenance.",
+      "tags": ["task", "work"],
+      "source_refs": [
+        {
+          "source_id": "source-daily-note",
+          "source_type": "note",
+          "path": "notes/daily-note.md",
+          "locator": "L8-L11",
+          "quote_preview": "- [ ] Refactor Core",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "visibility": "private",
+      "sensitivity": "internal"
+    }
+  ],
+  "collections": [
+    {
+      "id": "daily-notes",
+      "space_id": "personal-vault",
+      "title": "Daily Notes",
+      "member_ids": ["daily-note"],
+      "tags": ["daily-note"],
+      "source_refs": [
+        {
+          "source_id": "source-daily-note",
+          "source_type": "note",
+          "path": "notes/daily-note.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "id": "daily-note-links-task",
+      "space_id": "personal-vault",
+      "source_object_id": "daily-note",
+      "target_object_id": "task-refactor-core",
+      "relation": "links_to",
+      "source_refs": [
+        {
+          "source_id": "source-daily-note",
+          "source_type": "note",
+          "path": "notes/daily-note.md",
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "confidence": "EXTRACTED",
+      "review_status": "REVIEWED",
+      "evidence_strength": "SUPPORTING"
+    }
+  ],
+  "claims": [],
+  "graph_fragments": [
+    {
+      "id": "fragment-personal-vault",
+      "space_id": "personal-vault",
+      "contract_version": "1.0",
+      "nodes": [
+        {
+          "id": "daily-note",
+          "space_id": "personal-vault",
+          "label": "Daily Note",
+          "kind": "note",
+          "object_id": "daily-note",
+          "source_refs": [
+            {
+              "source_id": "source-daily-note",
+              "source_type": "note",
+              "path": "notes/daily-note.md",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        },
+        {
+          "id": "task-refactor-core",
+          "space_id": "personal-vault",
+          "label": "Refactor Core",
+          "kind": "task",
+          "object_id": "task-refactor-core",
+          "source_refs": [
+            {
+              "source_id": "source-daily-note",
+              "source_type": "note",
+              "path": "notes/daily-note.md",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED"
+        }
+      ],
+      "edges": [
+        {
+          "id": "daily-note-task-link",
+          "space_id": "personal-vault",
+          "source": "daily-note",
+          "target": "task-refactor-core",
+          "relation": "links_to",
+          "source_refs": [
+            {
+              "source_id": "source-daily-note",
+              "source_type": "note",
+              "path": "notes/daily-note.md",
+              "confidence": "EXTRACTED"
+            }
+          ],
+          "confidence": "EXTRACTED",
+          "review_status": "REVIEWED",
+          "evidence_strength": "SUPPORTING"
+        }
+      ],
+      "origin": "manual",
+      "owner": "portable",
+      "source_refs": [
+        {
+          "source_id": "source-daily-note",
+          "source_type": "note",
+          "path": "notes/daily-note.md",
+          "confidence": "EXTRACTED"
+        }
+      ]
+    }
+  ],
+  "extension_manifests": [],
+  "agent_contexts": []
+}
