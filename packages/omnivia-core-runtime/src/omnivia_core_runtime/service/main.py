@@ -20,7 +20,12 @@ from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
-from omnivia_core_runtime.service.transport import LocalSocketServer
+from omnivia_core_runtime.service.transport import (
+    LOCAL_SCHEME,
+    LocalEndpoint,
+    LocalSocketServer,
+    parse_endpoint,
+)
 
 #: The service serves the OS user that started it. There is no multi-principal
 #: story yet, and inventing one here would be a security surface with no design
@@ -40,7 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="installation-local state root (backups, attempts, runtime)",
     )
-    parser.add_argument("--endpoint", default=None, help="endpoint to advertise")
+    parser.add_argument(
+        "--endpoint",
+        default=None,
+        help=(
+            "endpoint to serve and advertise, as a URL: unix://<socket path> on "
+            "POSIX, pipe://<name> on Windows"
+        ),
+    )
     parser.add_argument(
         "--core-version", default="0.1.0", help="Core version for compatibility checks"
     )
@@ -52,11 +64,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _socket_path(endpoint: str | None) -> Path | None:
-    """The path a `unix://` endpoint names, or None when there is nothing to serve."""
-    if endpoint is None or not endpoint.startswith("unix://"):
+def _endpoint_to_serve(endpoint: str | None) -> LocalEndpoint | None:
+    """The endpoint this platform can actually serve, or None when there is none.
+
+    The scheme has to match the platform, not merely parse. A `unix://` endpoint on
+    Windows is not a socket this process can bind with a different constant in front
+    of it -- CPython has no `AF_UNIX` there at all -- so accepting one would put a
+    live process behind an endpoint nothing can open and advertise it as ready.
+    """
+    if endpoint is None:
         return None
-    return Path(endpoint[len("unix://") :])
+    parsed = parse_endpoint(endpoint)
+    if parsed is None or parsed.scheme is not LOCAL_SCHEME:
+        return None
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,14 +97,15 @@ def main(argv: list[str] | None = None) -> int:
         endpoint=args.endpoint,
     )
     runner = ServiceRunner(settings)
-    path = None if args.check_only else _socket_path(settings.endpoint)
-    if not args.check_only and path is None:
+    endpoint = None if args.check_only else _endpoint_to_serve(settings.endpoint)
+    if not args.check_only and endpoint is None:
         # Refused before startup, not after. Blocking here would leave a live process
         # advertising readiness at an endpoint nothing listens on -- the same lie the
         # exit-immediately bug told, with a live pid behind it instead of a dead one.
         sys.stderr.write(
-            "refusing to serve: --endpoint must be a unix:// socket path, got "
-            f"{settings.endpoint!r}. Use --check-only to run startup without serving.\n"
+            f"refusing to serve: --endpoint must be a {LOCAL_SCHEME.value}:// endpoint "
+            f"on this platform, got {settings.endpoint!r}. Use --check-only to run "
+            "startup without serving.\n"
         )
         return 2
 
@@ -95,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         startup instead of exiting with a ready descriptor pointing at a process that
         is about to die.
         """
-        assert path is not None and started.workspace_id is not None
+        assert endpoint is not None and started.workspace_id is not None
         server = LocalSocketServer(
             dispatcher=Dispatcher.for_service_operations(
                 Grant(
@@ -105,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 started,
             ),
-            path=path,
+            endpoint=endpoint,
         )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
@@ -120,15 +142,26 @@ def main(argv: list[str] | None = None) -> int:
         runner.stop()
         return 0
 
-    # Wait. SIGTERM is what a supervisor sends and SIGINT is what a terminal sends;
-    # both mean stop, and both have to unwind through the same path as a clean exit
-    # so the descriptor and the locks go with the process.
+    # Wait. SIGTERM is what a POSIX supervisor sends and SIGINT is what a terminal
+    # sends; both mean stop, and both have to unwind through the same path as a clean
+    # exit so the descriptor and the locks go with the process.
+    #
+    # SIGBREAK is the Windows member of that set, and it is not optional there.
+    # Windows has no signal delivery: `os.kill(pid, SIGTERM)` calls `TerminateProcess`,
+    # which runs no handler, so a supervisor using it would leave the descriptor
+    # advertising a ready service at a pid that no longer exists. `CTRL_BREAK_EVENT`
+    # raises SIGBREAK in the target and is the one stop signal a Windows caller can
+    # send that this process can act on.
     stopping = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
         stopping.set()
 
-    for signum in (signal.SIGTERM, signal.SIGINT):
+    stop_signals = [signal.SIGTERM, signal.SIGINT]
+    windows_break = getattr(signal, "SIGBREAK", None)
+    if windows_break is not None:
+        stop_signals.append(windows_break)
+    for signum in stop_signals:
         signal.signal(signum, request_stop)
 
     try:

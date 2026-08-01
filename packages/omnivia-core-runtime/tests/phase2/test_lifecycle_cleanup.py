@@ -27,6 +27,7 @@ from omnivia_core_runtime.ownership.identity import (
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.bootstrap import (
     StartupOutcome,
+    _endpoint_answers,
     coordinated_startup,
     refuse_incompatible_workspace,
 )
@@ -44,6 +45,7 @@ from omnivia_core_runtime.service.runner import (
     ServiceRunner,
     ServiceSettings,
 )
+from omnivia_core_runtime.service.transport import endpoint_for_path
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
@@ -88,7 +90,7 @@ def served(tmp_path: Path, phase0_source: Path):
         workspace_root=workspace.root,
         installation_root=installation.root,
         core_version=CORE_VERSION,
-        endpoint="unix:///tmp/omnivia-test.sock",
+        endpoint=endpoint_for_path(tmp_path / "omnivia-test.sock").url,
     )
     return workspace, installation, settings
 
@@ -121,7 +123,7 @@ def live_endpoint():
     )
     server.start()
     try:
-        yield f"unix://{server.path}"
+        yield server.url
     finally:
         server.stop()
         shutil_module.rmtree(directory, ignore_errors=True)
@@ -838,3 +840,35 @@ def test_srb07_a_live_pid_with_a_dead_endpoint_is_not_used(tmp_path: Path) -> No
         runtime, api_version=API_VERSION, workspace_format_version="1"
     ) as decision:
         assert decision.outcome is StartupOutcome.SPAWN
+
+
+# --- bootstrap endpoint probing ----------------------------------------------
+
+
+def test_endpoint_answers_trusts_the_pid_alone_for_a_non_local_endpoint() -> None:
+    """An in-process endpoint names no local scheme and has nothing to connect to."""
+    assert _endpoint_answers("in-process")
+
+
+def test_endpoint_answers_probes_a_live_local_endpoint(live_endpoint: str) -> None:
+    assert _endpoint_answers(live_endpoint)
+
+
+def test_endpoint_answers_refuses_a_dead_local_endpoint(tmp_path: Path) -> None:
+    assert not _endpoint_answers(endpoint_for_path(tmp_path / "nothing-here.sock").url)
+
+
+def test_endpoint_answers_fails_closed_on_a_malformed_claimed_local_endpoint() -> None:
+    """A claim that cannot be checked must not be believed.
+
+    `pipe://../escape` claims a local scheme but is not a name this runtime can
+    address at all, so it cannot be treated the same as an endpoint that simply
+    is not answering right now.
+    """
+    assert not _endpoint_answers("pipe://../escape")
+    assert not _endpoint_answers("unix://")
+
+
+def test_endpoint_answers_trusts_the_pid_for_anything_naming_no_local_scheme() -> None:
+    """Only a *claimed* local scheme is checked; anything else defers to the pid."""
+    assert _endpoint_answers("not-a-url-at-all")

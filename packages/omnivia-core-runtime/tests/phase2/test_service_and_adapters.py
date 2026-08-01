@@ -25,13 +25,20 @@ from omnivia_core_runtime.service.authorization import (
     authorize,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.main import _endpoint_to_serve
+from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     OperationRegistry,
     build_service_registry,
 )
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
-from omnivia_core_runtime.service.transport import LocalSocketTransport
+from omnivia_core_runtime.service.transport import (
+    LOCAL_SCHEME,
+    EndpointScheme,
+    LocalSocketTransport,
+    endpoint_for_path,
+)
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.legacy import migrate_legacy_database
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
@@ -428,6 +435,7 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
     socket_path = socket_dir / "s.sock"
     runtime_directory = installation.runtime_for(WORKSPACE_ID)
 
+    endpoint = endpoint_for_path(socket_path)
     process = subprocess.Popen(
         [
             sys.executable,
@@ -438,27 +446,30 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
             "--installation-state",
             str(installation.root),
             "--endpoint",
-            f"unix://{socket_path}",
+            endpoint.url,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
     try:
         deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and not socket_path.exists():
+        found = None
+        while time.monotonic() < deadline:
             assert process.poll() is None, "the service exited instead of serving"
+            found = discover(runtime_directory)
+            if found is not None and found.ready:
+                break
             time.sleep(0.05)
-        assert socket_path.exists(), "the advertised endpoint was never created"
 
         # It is discoverable, and the pid it advertises is this live process.
-        found = discover(runtime_directory)
         assert found is not None and found.ready
         assert found.pid == process.pid
-        assert found.endpoint == f"unix://{socket_path}"
+        assert found.endpoint == endpoint.url
 
         # And something is actually listening there, speaking the real contract.
-        response = LocalSocketTransport(path=socket_path).call(
+        response = LocalSocketTransport(endpoint=endpoint).call(
             build_request(
                 "core.health", workspace_id=WORKSPACE_ID, request_id="req-entrypoint"
             )
@@ -469,7 +480,12 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
         # The service is still up after serving a request.
         assert process.poll() is None
 
-        process.send_signal(signal.SIGTERM)
+        stop_signal = (
+            signal.CTRL_BREAK_EVENT
+            if endpoint.scheme is EndpointScheme.PIPE
+            else signal.SIGTERM
+        )
+        process.send_signal(stop_signal)
         assert process.wait(timeout=30) == 0
     finally:
         if process.poll() is None:  # pragma: no cover - only on a failed assertion
@@ -479,7 +495,66 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
 
     # Shutdown removed what startup advertised: no descriptor for a dead process.
     assert discover(runtime_directory) is None
-    assert not socket_path.exists()
+    assert endpoint.path is None or not endpoint.path.exists()
+
+
+# --- main(): endpoint accept/reject ------------------------------------------
+
+
+def test_endpoint_to_serve_accepts_the_platforms_own_scheme(tmp_path: Path) -> None:
+    url = endpoint_for_path(tmp_path / "s.sock").url
+    endpoint = _endpoint_to_serve(url)
+    assert endpoint is not None
+    assert endpoint.scheme is LOCAL_SCHEME
+
+
+def test_endpoint_to_serve_rejects_the_other_platforms_scheme() -> None:
+    """A `unix://` endpoint on Windows, or a `pipe://` endpoint on POSIX, parses
+    fine but names a mechanism this process cannot open."""
+    other = "pipe://omnivia-deadbeef" if LOCAL_SCHEME.value == "unix" else "unix:///tmp/s.sock"
+    assert _endpoint_to_serve(other) is None
+
+
+def test_endpoint_to_serve_rejects_malformed_or_missing_endpoints() -> None:
+    assert _endpoint_to_serve(None) is None
+    assert _endpoint_to_serve("not-a-url") is None
+    assert _endpoint_to_serve(f"{LOCAL_SCHEME.value}://") is None
+
+
+def test_main_refuses_a_mismatched_scheme_before_touching_the_workspace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Refused before startup runs -- not after a lock or lease was taken."""
+    other = "pipe://omnivia-deadbeef" if LOCAL_SCHEME.value == "unix" else "unix:///tmp/s.sock"
+    code = service_main(
+        [
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--installation-state",
+            str(tmp_path / "installation-state"),
+            "--endpoint",
+            other,
+        ]
+    )
+    assert code == 2
+    assert "refusing to serve" in capsys.readouterr().err
+    assert not (tmp_path / "workspace").exists(), "nothing was touched before the refusal"
+
+
+def test_main_check_only_bypasses_endpoint_validation(tmp_path: Path) -> None:
+    """`--check-only` reports readiness without ever needing an endpoint."""
+    code = service_main(
+        [
+            "--workspace",
+            str(tmp_path / "workspace"),
+            "--installation-state",
+            str(tmp_path / "installation-state"),
+            "--check-only",
+        ]
+    )
+    # No workspace exists, so readiness is refused -- but for that reason, and
+    # not for a missing or invalid endpoint.
+    assert code == 1
 
 
 def _serve_subprocess(workspace: Path, installation: InstallationLayout, endpoint: str):
@@ -599,7 +674,7 @@ def test_srb02_the_endpoint_starts_before_the_descriptor_is_published(
         workspace_root=workspace.root,
         installation_root=installation.root,
         core_version="0.1.0",
-        endpoint="unix:///tmp/omnivia-srb02-order.sock",
+        endpoint=endpoint_for_path(tmp_path / "omnivia-srb02-order.sock").url,
     )
     observed: dict[str, object] = {}
 
@@ -641,6 +716,7 @@ def test_srb02_readiness_is_never_visible_before_the_endpoint_accepts(
     socket_dir = Path(tf.mkdtemp(prefix="ovs-", dir=tf.gettempdir()))
     socket_path = socket_dir / "s.sock"
 
+    endpoint = endpoint_for_path(socket_path)
     process = sp.Popen(
         [
             system.executable,
@@ -651,11 +727,12 @@ def test_srb02_readiness_is_never_visible_before_the_endpoint_accepts(
             "--installation-state",
             str(installation.root),
             "--endpoint",
-            f"unix://{socket_path}",
+            endpoint.url,
         ],
         stdout=sp.PIPE,
         stderr=sp.PIPE,
         text=True,
+        creationflags=getattr(sp, "CREATE_NEW_PROCESS_GROUP", 0),
     )
     try:
         deadline = time.monotonic() + 60
@@ -669,12 +746,17 @@ def test_srb02_readiness_is_never_visible_before_the_endpoint_accepts(
         assert found is not None and found.ready, "never became discoverable"
 
         # No sleep, no waiting on the socket file: the descriptor is the promise.
-        response = LocalSocketTransport(path=socket_path).call(
+        response = LocalSocketTransport(endpoint=endpoint).call(
             request_for("core.health", workspace=WORKSPACE_ID)
         )
         assert isinstance(response, SuccessResponseEnvelope), response
 
-        process.send_signal(signal.SIGTERM)
+        stop_signal = (
+            signal.CTRL_BREAK_EVENT
+            if endpoint.scheme is EndpointScheme.PIPE
+            else signal.SIGTERM
+        )
+        process.send_signal(stop_signal)
         assert process.wait(timeout=60) == 0
     finally:
         if process.poll() is None:  # pragma: no cover - only on a failed assertion

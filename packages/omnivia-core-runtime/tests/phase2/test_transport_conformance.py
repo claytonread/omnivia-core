@@ -19,13 +19,22 @@ from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.transport import (
+    LOCAL_SCHEME,
+    EndpointProbe,
+    EndpointScheme,
     InProcessTransport,
+    LocalEndpoint,
     LocalSocketServer,
     LocalSocketTransport,
     Transport,
     TransportError,
     decode_frame,
     encode_frame,
+    endpoint_for_path,
+    names_a_local_endpoint,
+    parse_endpoint,
+    pipe_name_for_path,
+    probe_endpoint,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -79,6 +88,30 @@ def make_dispatcher() -> Dispatcher:
         ),
         FakeService(),
     )
+
+
+def send_raw_frame(path: Path, payload: bytes) -> None:
+    """Send one deliberately unvalidated frame over this platform's local IPC."""
+    endpoint = endpoint_for_path(path)
+    if endpoint.scheme is EndpointScheme.PIPE:
+        from multiprocessing import connection as pipes
+
+        client = pipes.Client(endpoint.address, family="AF_PIPE")
+        try:
+            client.send_bytes(payload)
+        finally:
+            client.close()
+        return
+
+    import socket as socket_module
+
+    client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    try:
+        client.settimeout(5)
+        client.connect(endpoint.address)
+        client.sendall(payload)
+    finally:
+        client.close()
 
 
 @pytest.fixture(params=["in_process", "local_socket"])
@@ -222,14 +255,21 @@ def test_both_transports_produce_identical_wire_responses(socket_dir: Path) -> N
 def test_the_socket_is_not_world_accessible(socket_dir: Path) -> None:
     """A local socket any user could connect to would bypass the grant."""
     socket_path = socket_dir / "s.sock"
-    with LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path):
+    with LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path) as server:
+        if LOCAL_SCHEME is EndpointScheme.PIPE:
+            assert server.endpoint is not None
+            assert server.endpoint.path is None
+            assert not socket_path.exists()
+            response = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
+            assert isinstance(response, SuccessResponseEnvelope)
+            return
         mode = socket_path.stat().st_mode & 0o777
     assert mode == 0o600, f"socket mode is {oct(mode)}"
 
 
 def test_calling_an_absent_socket_reports_it_clearly(socket_dir: Path) -> None:
     transport = LocalSocketTransport(path=socket_dir / "missing.sock")
-    with pytest.raises(TransportError, match="no service socket"):
+    with pytest.raises(TransportError, match="no service endpoint"):
         transport.call(request_for("core.health"))
 
 
@@ -237,9 +277,15 @@ def test_the_socket_file_is_removed_on_stop(socket_dir: Path) -> None:
     socket_path = socket_dir / "s.sock"
     server = LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path)
     server.start()
-    assert socket_path.exists()
+    endpoint = endpoint_for_path(socket_path)
+    if endpoint.scheme is EndpointScheme.UNIX:
+        assert socket_path.exists()
+    else:
+        assert not socket_path.exists()
+        assert probe_endpoint(endpoint) is EndpointProbe.ANSWERING
     server.stop()
     assert not socket_path.exists()
+    assert probe_endpoint(endpoint) is EndpointProbe.REFUSED
 
 
 def test_a_leftover_socket_file_does_not_block_startup(socket_dir: Path) -> None:
@@ -250,13 +296,19 @@ def test_a_leftover_socket_file_does_not_block_startup(socket_dir: Path) -> None
     found, including a lifetime lock file. A stale socket is the real scenario, and
     the only one where removing the path is safe.
     """
-    import socket as socket_module
-
     socket_path = socket_dir / "s.sock"
-    abandoned = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    abandoned.bind(str(socket_path))
-    abandoned.close()  # the process dies; the socket file survives
-    assert socket_path.is_socket()
+    if LOCAL_SCHEME is EndpointScheme.UNIX:
+        import socket as socket_module
+
+        abandoned = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+        abandoned.bind(str(socket_path))
+        abandoned.close()  # the process dies; the socket file survives
+        assert socket_path.is_socket()
+    else:
+        previous = LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path)
+        previous.start()
+        previous.stop()
+        assert probe_endpoint(endpoint_for_path(socket_path)) is EndpointProbe.REFUSED
 
     with LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path):
         response = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
@@ -275,15 +327,9 @@ def test_starting_twice_is_refused(socket_dir: Path) -> None:
 
 def test_a_malformed_frame_does_not_take_the_server_down(socket_dir: Path) -> None:
     """One bad client must not end service for the next one."""
-    import socket as socket_module
-
     socket_path = socket_dir / "s.sock"
     with LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path):
-        bad = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-        bad.settimeout(5)
-        bad.connect(str(socket_path))
-        bad.sendall(b"{not json at all\n")
-        bad.close()
+        send_raw_frame(socket_path, b"{not json at all\n")
 
         # The next well-formed call still succeeds.
         response = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
@@ -306,6 +352,11 @@ def test_a_non_object_frame_is_refused(bad: bytes) -> None:
 def test_an_over_long_socket_path_is_refused_with_the_numbers(tmp_path: Path) -> None:
     """A deeply nested workspace hits the OS limit; say so, do not raise OSError."""
     deep = tmp_path / ("d" * 40) / ("e" * 40) / ("f" * 40) / "s.sock"
+    if LOCAL_SCHEME is EndpointScheme.PIPE:
+        with LocalSocketServer(dispatcher=make_dispatcher(), path=deep):
+            response = LocalSocketTransport(path=deep).call(request_for("core.health"))
+        assert isinstance(response, SuccessResponseEnvelope)
+        return
     with pytest.raises(TransportError, match="AF_UNIX limit"):
         LocalSocketTransport(path=deep).call(request_for("core.health"))
     with pytest.raises(TransportError, match="AF_UNIX limit"):
@@ -340,15 +391,9 @@ def test_sb07_a_malformed_frame_does_not_kill_the_accept_loop(
     `codec.decode_request` raises `ContractDecodeError`, so one `{}` from any local
     client terminated the sole accept loop while the service stayed advertised.
     """
-    import socket as socket_module
-
     socket_path = socket_dir / "s.sock"
     with LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path) as server:
-        client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-        client.settimeout(5)
-        client.connect(str(socket_path))
-        client.sendall(payload)
-        client.close()
+        send_raw_frame(socket_path, payload)
 
         # The accept thread is the thing under test: it must still be alive...
         transport = LocalSocketTransport(path=socket_path)
@@ -380,8 +425,12 @@ def test_srb04_binding_never_unlinks_a_path_that_is_not_a_socket(socket_dir: Pat
     assert owner.acquire()
     try:
         server = LocalSocketServer(dispatcher=make_dispatcher(), path=lock_path)
-        with pytest.raises(TransportError, match="not a socket"):
+        if LOCAL_SCHEME is EndpointScheme.UNIX:
+            with pytest.raises(TransportError, match="not a socket"):
+                server.start()
+        else:
             server.start()
+            server.stop()
 
         # The lock file is untouched, and still exclusive.
         assert lock_path.is_file()
@@ -408,7 +457,10 @@ def test_srb05_a_live_endpoint_is_never_unlinked(socket_dir: Path) -> None:
             contender.start()
 
         # The running service is untouched and still answering.
-        assert socket_path.is_socket()
+        if LOCAL_SCHEME is EndpointScheme.UNIX:
+            assert socket_path.is_socket()
+        else:
+            assert probe_endpoint(endpoint_for_path(socket_path)) is EndpointProbe.ANSWERING
         response = LocalSocketTransport(path=socket_path).call(request_for("core.health"))
         assert isinstance(response, SuccessResponseEnvelope)
     finally:
@@ -429,9 +481,36 @@ def test_srb10_the_endpoint_name_never_points_at_nothing(
     take a freed name and be silently unlinked by this one.
     """
     import os as os_module
-    import socket as socket_module
 
     socket_path = socket_dir / "s.sock"
+    if LOCAL_SCHEME is EndpointScheme.PIPE:
+        unlinked: list[str] = []
+        real_unlink = os_module.unlink
+        real_path_unlink = Path.unlink
+
+        def record_os_unlink(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            unlinked.append(str(path))
+            return real_unlink(path, *args, **kwargs)
+
+        def record_path_unlink(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            unlinked.append(str(self))
+            return real_path_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(os_module, "unlink", record_os_unlink)
+        monkeypatch.setattr(Path, "unlink", record_path_unlink)
+        server = LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path)
+        server.start()
+        monkeypatch.undo()
+        try:
+            assert unlinked == []
+            assert probe_endpoint(endpoint_for_path(socket_path)) is EndpointProbe.ANSWERING
+        finally:
+            server.stop()
+        assert probe_endpoint(endpoint_for_path(socket_path)) is EndpointProbe.REFUSED
+        return
+
+    import socket as socket_module
+
     abandoned = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     abandoned.bind(str(socket_path))
     abandoned.close()
@@ -482,13 +561,15 @@ def test_srb12_only_one_binder_reclaims_a_stale_endpoint(socket_dir: Path) -> No
     it went live -- the stranding the probe exists to prevent, moved a few
     microseconds later.
     """
-    import socket as socket_module
     import threading
 
     socket_path = socket_dir / "s.sock"
-    abandoned = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    abandoned.bind(str(socket_path))
-    abandoned.close()
+    if LOCAL_SCHEME is EndpointScheme.UNIX:
+        import socket as socket_module
+
+        abandoned = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+        abandoned.bind(str(socket_path))
+        abandoned.close()
 
     outcomes: list[str] = []
     bound: list[LocalSocketServer] = []
@@ -520,3 +601,101 @@ def test_srb12_only_one_binder_reclaims_a_stale_endpoint(socket_dir: Path) -> No
     finally:
         for server in bound:
             server.stop()
+
+
+# --- endpoint parsing -----------------------------------------------------
+
+
+def test_parse_endpoint_recognizes_unix_urls() -> None:
+    parsed = parse_endpoint("unix:///var/run/omnivia/s.sock")
+    assert parsed == LocalEndpoint(EndpointScheme.UNIX, "/var/run/omnivia/s.sock")
+
+
+def test_parse_endpoint_recognizes_pipe_urls() -> None:
+    parsed = parse_endpoint("pipe://omnivia-deadbeef")
+    assert parsed == LocalEndpoint(EndpointScheme.PIPE, "omnivia-deadbeef")
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "in-process",
+        "",
+        "unix://",
+        "pipe://",
+        "http://localhost/socket",
+        "pipe://../escape",
+        "pipe://has a space",
+        "pipe://" + "x" * 201,
+    ],
+)
+def test_parse_endpoint_refuses_anything_it_cannot_address(endpoint: str) -> None:
+    assert parse_endpoint(endpoint) is None
+
+
+def test_names_a_local_endpoint_distinguishes_claims_from_in_process() -> None:
+    """An endpoint naming no local scheme is simply not probeable.
+
+    An endpoint that claims one of this runtime's local schemes but fails to
+    parse is a different failure -- a claim that cannot be believed -- and the
+    two must not be confused, or a malformed `pipe://` URL would be trusted on
+    the strength of its pid alone.
+    """
+    assert not names_a_local_endpoint("in-process")
+    assert names_a_local_endpoint("unix:///anything")
+    assert names_a_local_endpoint("pipe://anything")
+    # Claims a local scheme, but parse_endpoint refuses the malformed name.
+    assert names_a_local_endpoint("pipe://../escape")
+    assert parse_endpoint("pipe://../escape") is None
+
+
+def test_a_malformed_pipe_endpoint_is_refused_at_construction() -> None:
+    with pytest.raises(TransportError, match="not a usable named-pipe name"):
+        LocalEndpoint(EndpointScheme.PIPE, "../escape")
+
+
+def test_an_empty_unix_endpoint_is_refused_at_construction() -> None:
+    with pytest.raises(TransportError, match="needs a socket path"):
+        LocalEndpoint(EndpointScheme.UNIX, "")
+
+
+# --- the platform URL -------------------------------------------------------
+
+
+def test_endpoint_for_path_serves_this_platforms_scheme(tmp_path: Path) -> None:
+    """`endpoint_for_path` never guesses: it always returns `LOCAL_SCHEME`.
+
+    A Windows host advertising `unix://` -- inferring the mechanism at the call
+    site instead of asking the platform once -- is exactly the defect this
+    module exists to prevent.
+    """
+    endpoint = endpoint_for_path(tmp_path / "s.sock")
+    assert endpoint.scheme is LOCAL_SCHEME
+    assert endpoint.url.startswith(f"{LOCAL_SCHEME.value}://")
+
+
+def test_pipe_name_for_path_is_deterministic_and_bounded(tmp_path: Path) -> None:
+    """A launcher and the service it spawned must derive the same pipe name."""
+    path = tmp_path / "workspace" / "locks" / "s.sock"
+    first = pipe_name_for_path(path)
+    second = pipe_name_for_path(path)
+    assert first == second
+    assert first.startswith("omnivia-")
+    assert len(first) <= 200
+
+    other = pipe_name_for_path(tmp_path / "elsewhere" / "s.sock")
+    assert other != first
+
+
+def test_a_pipe_endpoint_carries_no_filesystem_path() -> None:
+    """A named pipe lives in a kernel namespace, not on disk."""
+    endpoint = LocalEndpoint(EndpointScheme.PIPE, "omnivia-deadbeef")
+    assert endpoint.path is None
+    assert endpoint.address == "\\\\.\\pipe\\omnivia-deadbeef"
+
+
+def test_a_unix_endpoint_reports_its_own_path(tmp_path: Path) -> None:
+    socket_path = tmp_path / "s.sock"
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    assert endpoint.path == socket_path
+    assert endpoint.address == str(socket_path)

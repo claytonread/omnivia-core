@@ -41,7 +41,12 @@ from omnivia_core_runtime.ownership.discovery import (
 )
 from omnivia_core_runtime.ownership.identity import process_is_alive
 from omnivia_core_runtime.ownership.locks import FileLock, LockRole, create_lock
-from omnivia_core_runtime.service.transport import EndpointProbe, probe_endpoint
+from omnivia_core_runtime.service.transport import (
+    EndpointProbe,
+    names_a_local_endpoint,
+    parse_endpoint,
+    probe_endpoint,
+)
 
 
 class StartupOutcome(str, Enum):
@@ -222,13 +227,23 @@ def _live(descriptor: ServiceDescriptor | None) -> ServiceDescriptor | None:
 def _endpoint_answers(endpoint: str) -> bool:
     """Whether the advertised endpoint accepts a connection right now.
 
-    Only `unix://` endpoints can be probed. An in-process endpoint has no socket to
-    connect to and is not something another launcher could use anyway, so the pid
-    check stands alone there.
+    Both local IPC schemes are probed: a Unix domain socket and a Windows named pipe
+    are the same claim -- "you can talk to me here" -- made by different mechanisms,
+    and a launcher that could only test one of them would trust a Windows service's
+    endpoint on the strength of its pid alone.
+
+    An in-process endpoint names no local scheme, has nothing to connect to, and is
+    not something another launcher could use anyway, so the pid check stands alone
+    there. An endpoint that *does* claim a local scheme but cannot be addressed --
+    a malformed pipe name, a `unix://` path on a host with no `AF_UNIX` -- is the
+    opposite case: the claim cannot be checked, so it is not believed.
     """
-    if not endpoint.startswith("unix://"):
+    if not names_a_local_endpoint(endpoint):
         return True
-    return probe_endpoint(Path(endpoint[len("unix://") :])) is EndpointProbe.ANSWERING
+    parsed = parse_endpoint(endpoint)
+    if parsed is None:
+        return False
+    return probe_endpoint(parsed) is EndpointProbe.ANSWERING
 
 
 def refuse_incompatible_workspace(outcome: CompatibilityOutcome) -> None:
