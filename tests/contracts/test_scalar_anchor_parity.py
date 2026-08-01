@@ -110,12 +110,48 @@ def _accepts(node: dict[str, Any], value: str) -> bool:
     return Draft202012Validator(schema).is_valid(value)
 
 
+def _first_matching_corpus_string(node: dict[str, Any]) -> str | None:
+    """The first corpus string this node accepts, in a fixed, deterministic order.
+
+    ``CORPUS_STRINGS`` is a set; iterating it directly means the value a bare
+    ``next()`` lands on depends on Python's per-process string hash seed.
+    Sorting first pins the order so sample choice -- and anything built from
+    that sample -- no longer varies across ``PYTHONHASHSEED``.
+    """
+    return next((s for s in sorted(CORPUS_STRINGS) if _accepts(node, s)), None)
+
+
 def _sample(name: str) -> str:
-    node = DEFINITIONS[name]
-    value = next((s for s in CORPUS_STRINGS if _accepts(node, s)), None)
+    value = _first_matching_corpus_string(DEFINITIONS[name])
     if value is None:
         pytest.skip(f"{name}: the frozen corpus carries no value of this shape")
     return value
+
+
+def _over_length_witness(name: str) -> str | None:
+    """An in-language value exceeding this definition's ``maxLength``, or ``None``.
+
+    Appending a repeated character past ``maxLength`` only stays in-language
+    when the run being extended carries no leading-character constraint (for
+    example a numeric segment that must not gain a leading zero) -- so the
+    same construction can succeed for one corpus value and fail for another
+    of the same shape. ``ContractVersion``'s corpus samples split exactly
+    this way (``"1.0"`` and ``"2.0"`` cannot be extended; ``"1.1"``, ``"1.2"``
+    and ``"1.3"`` can), which is why a single hash-ordered sample pick made
+    this definition's maxLength coverage alternate between pass and skip
+    across ``PYTHONHASHSEED`` values. Trying every corpus candidate, and
+    every distinct character each one contains, in a fixed sorted order,
+    makes which witness -- if any -- is found independent of set order.
+    """
+    node = DEFINITIONS[name]
+    maximum = int(node["maxLength"])
+    pattern = str(node["pattern"])
+    for value in sorted(s for s in CORPUS_STRINGS if _accepts(node, s)):
+        for char in sorted(set(value)):
+            overlong = value + char * (maximum - len(value) + 1)
+            if re.search(pattern, overlong) is not None:
+                return overlong
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -215,19 +251,31 @@ def test_length_bounds_still_bind(name: str) -> None:
     minimum, maximum = node.get("minLength"), node.get("maxLength")
     if minimum is None and maximum is None:
         pytest.skip(f"{name}: declares no length bound")
-    value = _sample(name)
 
     if isinstance(minimum, int) and minimum > 0:
         assert not _accepts(node, ""), f"{name}: minLength {minimum} does not reject an empty value"
 
     if isinstance(maximum, int):
-        # Grow the sample by repeating its final character; for these patterns
-        # that keeps the value in the language while pushing it past the bound.
-        overlong = value + value[-1] * (maximum - len(value) + 1)
-        if re.search(node["pattern"], overlong) is None:
+        overlong = _over_length_witness(name)
+        if overlong is None:
             pytest.skip(f"{name}: cannot build an over-long value in this language")
         assert len(overlong) > maximum
         assert not _accepts(node, overlong), f"{name}: maxLength {maximum} does not bind"
+
+
+def test_contract_version_max_length_witness_is_always_found() -> None:
+    """A27-R5 pin: ``ContractVersion`` must never fall back to a skip here.
+
+    Unlike ``Timestamp``, ``ContextPackDigest`` and ``ContentChecksum`` --
+    whose patterns are fixed-width or bounded tightly enough that no
+    in-language value can exceed `maxLength` -- `ContractVersion`'s minor
+    version segment is an unbounded numeric run, so a witness must always be
+    constructible from the frozen corpus. This turns that requirement into an
+    explicit failure rather than a silent, corpus-dependent skip.
+    """
+    name = "common.schema:$defs.ContractVersion"
+    assert name in DEFINITIONS
+    assert _over_length_witness(name) is not None
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +330,7 @@ def test_ecmascript_and_python_accept_the_same_values() -> None:
     cases = []
     for name in DEFINITION_IDS:
         node = DEFINITIONS[name]
-        value = next((s for s in CORPUS_STRINGS if _accepts(node, s)), None)
+        value = _first_matching_corpus_string(node)
         if value is None:
             continue
         for suffix in ("", "\n", "\r", " "):
