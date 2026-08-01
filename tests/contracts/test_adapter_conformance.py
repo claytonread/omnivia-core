@@ -2286,21 +2286,21 @@ def test_a_pack_attesting_a_principal_the_exchange_denies_is_rejected(
 
 
 def test_no_exchange_can_attest_a_duplicate_capability_id() -> None:
-    """What keeps a laxer frozen rule out of reach, pinned as a property.
+    """No exchange may attest one capability id twice, pinned as a property.
 
-    `GrantedAuthority` is judged differently depending on where it sits. On a
-    response envelope, duplicate capability ids are refused. Inside a Context
-    Pack's `authorization_context`, `validate_context_pack_build_result` compares
-    `(id, version)` pairs and accepts `memory.read` at both 1.0 and 1.1 -- the
-    corpus carried exactly that until the pack's expectation began coming from
-    the exchange.
+    `GrantedAuthority` used to be judged differently depending on where it sat.
+    A response envelope refused a repeated capability id, while
+    `validate_context_pack_build_result` compared `(id, version)` pairs and
+    accepted `memory.read` at both 1.0 and 1.1 -- so the same authority was legal
+    inside a Context Pack and illegal on the envelope that delivered it. The
+    corpus carried exactly that shape until the pack's expectation began coming
+    from the exchange. A2.7.1 closed the divergence in `semantics_knowledge`, and
+    both positions now hold a capability id to a single grant.
 
-    Repairing that divergence means changing `semantics_knowledge`, which is
-    outside this slice's frozen file list, so it is reported rather than done.
-    What closes it *here* is the envelope: a pack's authority must equal the one
-    the response attests, and the response cannot attest a duplicate id. This
-    test pins that load-bearing half, so relaxing the envelope path fails loudly
-    instead of quietly reopening the gap.
+    This test pins the envelope half. It was the only thing keeping the laxer
+    rule out of reach before the repair, and it stays because a pack's authority
+    must equal the one the response attests: relax this path and the gap reopens
+    from the other side.
     """
     from omnivia_core.contracts.v1.codec import decode_response
 

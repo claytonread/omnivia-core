@@ -1027,13 +1027,22 @@ EV_CHECKSUM = "sha256:" + "9f" * 32
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 
 EXPECTED_ROLES = ("analyst", "reader")
-EXPECTED_CAPABILITIES = (("memory.read", "1.0"), ("memory.read", "1.1"), ("workspace.read", "1.0"))
+EXPECTED_CAPABILITIES = (
+    ("memory.read", "1.0"),
+    ("memory.write", "1.1"),
+    ("workspace.read", "1.0"),
+)
 EXPECTED_SCOPES = ("memory:read", "workspace:read")
 EXPECTED_POLICY_VERSIONS = {"acl": "pv-acl-1", "sensitivity": "pv-sens-1"}
-"""Roles, capabilities, and scopes are written already in ascending order, and
-capabilities carry the same id at two versions on purpose: a `(id, version)` sort that
-compared ids alone would still pass here, and a set comparison that collapsed them would
-lose one."""
+"""Roles, capabilities, and scopes are written already in ascending order.
+
+Capabilities previously carried the same id at two versions on purpose, to catch a
+sort that compared ids alone and a set comparison that collapsed the pair. A granted
+authority may no longer name one id twice at all -- the response envelope always
+refused it, and the Context Pack rule now agrees -- so that shape is not a hazard
+this fixture can still hold. Distinct ids in ascending order exercise the ordering
+rule, and the differing versions keep version part of the recorded identity, which
+the expected-set comparison still checks pairwise."""
 
 ALL_CITATION_IDS = ("cit-1", "cit-2", "cit-3", "cit-4")
 
@@ -6229,8 +6238,16 @@ def test_context_pack_authorization_roles_must_match_exactly(roles: list[str]) -
         _validate_pack(result)
 
 
-def test_context_pack_authorization_capability_version_is_part_of_identity() -> None:
-    """The same capability id at a different version is a different grant."""
+def test_context_pack_authorization_capability_id_is_granted_once() -> None:
+    """A capability id appears once, whatever version it carries.
+
+    A `GrantedAuthority` on a response envelope is refused by
+    `validate_granted_authority` for a repeated capability id. This rule read
+    `(id, version)` pairs instead, so `memory.read` at 1.0 *and* 2.0 was a legal
+    authority inside a Context Pack and an illegal one on the envelope that
+    delivered it -- the same value valid or invalid depending on position, which
+    is not something a contract can mean.
+    """
     result = _pack(
         reproducibility=_reproducibility_wire(
             authorization_context=_authorization_context_wire(
@@ -6244,7 +6261,100 @@ def test_context_pack_authorization_capability_version_is_part_of_identity() -> 
             )
         )
     )
-    with pytest.raises(ContractSemanticError, match="capabilities"):
+    with pytest.raises(ContractSemanticError, match="repeats capability id 'memory.read'"):
+        _validate_pack(result)
+
+
+def test_context_pack_authorization_capability_id_repeat_is_refused_by_the_authority_rule(
+) -> None:
+    """Refused by the uniqueness rule itself, not by the expected-set comparison.
+
+    The duplicate must fail on its own terms. Passing the very same authority as
+    the expectation removes the set comparison as an explanation: if uniqueness
+    were not enforced, the two sides would agree exactly and the pack would be
+    accepted.
+    """
+    duplicated = [
+        {"id": "memory.read", "version": "1.0"},
+        {"id": "memory.read", "version": "2.0"},
+        {"id": "workspace.read", "version": "1.0"},
+    ]
+    result = _pack(
+        reproducibility=_reproducibility_wire(
+            authorization_context=_authorization_context_wire(
+                authority=_granted_authority_wire(capabilities=duplicated)
+            )
+        )
+    )
+    with pytest.raises(ContractSemanticError, match="names each capability once"):
+        _validate_pack(
+            result,
+            expected_authority=GrantedAuthority.from_wire(
+                _granted_authority_wire(capabilities=duplicated)
+            ),
+        )
+
+
+def test_context_pack_authorization_capability_version_is_part_of_identity() -> None:
+    """A capability at the wrong version is not the grant the caller expected.
+
+    This used to be guaranteed by the fixture's shape rather than by an
+    assertion: it carried one id at two versions, so a comparison that collapsed
+    to ids alone would have lost an entry and failed. Unique ids removed that
+    guarantee -- collapse this comparison to ids and the pack below matches -- so
+    the property is now asserted directly rather than inferred from test data.
+    """
+    result = _pack(
+        reproducibility=_reproducibility_wire(
+            authorization_context=_authorization_context_wire(
+                authority=_granted_authority_wire(
+                    capabilities=[
+                        {"id": "memory.read", "version": "1.0"},
+                        {"id": "memory.write", "version": "9.9"},
+                        {"id": "workspace.read", "version": "1.0"},
+                    ]
+                )
+            )
+        )
+    )
+    with pytest.raises(ContractSemanticError, match="expected capability set"):
+        _validate_pack(result)
+
+
+def test_context_pack_authorization_accepts_distinct_capability_ids() -> None:
+    """The control: unique ids in ascending order remain valid.
+
+    Without this, the rule above could be satisfied by refusing every authority.
+    """
+    result = _pack(
+        reproducibility=_reproducibility_wire(
+            authorization_context=_authorization_context_wire(
+                authority=_granted_authority_wire()
+            )
+        )
+    )
+    _validate_pack(result)
+
+
+def test_context_pack_authorization_capabilities_stay_ordered() -> None:
+    """Uniqueness did not displace the deterministic ordering requirement.
+
+    A stored pack is content-addressed, so its authority has one canonical
+    spelling; ids that are unique but out of order are still refused.
+    """
+    result = _pack(
+        reproducibility=_reproducibility_wire(
+            authorization_context=_authorization_context_wire(
+                authority=_granted_authority_wire(
+                    capabilities=[
+                        {"id": "workspace.read", "version": "1.0"},
+                        {"id": "memory.read", "version": "1.0"},
+                    ]
+                )
+            )
+        )
+    )
+    with pytest.raises(ContractSemanticError, match="ascending"):
         _validate_pack(result)
 
 
@@ -6373,7 +6483,7 @@ def test_context_pack_caller_expectation_need_not_be_sorted() -> None:
                 roles=["reader", "analyst"],
                 capabilities=[
                     {"id": "workspace.read", "version": "1.0"},
-                    {"id": "memory.read", "version": "1.1"},
+                    {"id": "memory.write", "version": "1.1"},
                     {"id": "memory.read", "version": "1.0"},
                 ],
             )

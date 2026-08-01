@@ -4043,19 +4043,35 @@ def _validate_authorization_context(
         )
     previous = None
     stored_capabilities: set[tuple[str, str]] = set()
+    stored_capability_ids: set[str] = set()
     for index, value in enumerate(capabilities):
         capability_label = f"{label}.authority.capabilities[{index}]"
         _require_type(value, CapabilityRef, capability_label)
         assert isinstance(value, CapabilityRef)
+        capability_id = _validate_capability_id(value.id, f"{capability_label}.id")
         key = (
-            _validate_capability_id(value.id, f"{capability_label}.id"),
+            capability_id,
             _validate_contract_version(value.version, f"{capability_label}.version"),
         )
-        if key in stored_capabilities:
-            raise ContractSemanticError(f"{capability_label} duplicates capability {key!r}")
+        # One grant per capability id, whatever version it carries. A
+        # `GrantedAuthority` on a response envelope is held to exactly this by
+        # `validate_granted_authority`, and a type whose validity depended on
+        # where it sat would let a pack attest an authority the envelope that
+        # delivered it could never have stated -- the same document legal in one
+        # position and illegal in the other.
+        #
+        # This subsumes the `(id, version)` duplicate that used to be rejected
+        # here: a repeated pair repeats its id, so that check could no longer
+        # fire and is gone rather than left reading as protection.
+        if capability_id in stored_capability_ids:
+            raise ContractSemanticError(
+                f"{capability_label} repeats capability id {capability_id!r}; a granted "
+                "authority names each capability once, at a single version"
+            )
         previous = _require_ascending(
             _identity_sort_key(*key), previous, capability_label, "(id, version)"
         )
+        stored_capability_ids.add(capability_id)
         stored_capabilities.add(key)
     expected_capabilities = {
         (
