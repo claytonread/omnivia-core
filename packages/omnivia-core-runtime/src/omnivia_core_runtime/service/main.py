@@ -165,7 +165,16 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signum, request_stop)
 
     try:
-        stopping.wait()
+        # A single indefinite wait() never returns to the bytecode loop, so on
+        # Windows the pending signal set by the console control handler thread
+        # is never serviced: Event.wait() with no timeout blocks in a native
+        # WaitForSingleObject(INFINITE) call, and CPython only checks for
+        # pending signals between bytecode instructions on the main thread.
+        # POSIX does not need this -- a blocking syscall there is interrupted
+        # (EINTR) and the signal runs immediately -- but polling is harmless
+        # there too, so one path serves both platforms.
+        while not stopping.wait(timeout=0.25):
+            pass
     finally:
         # One unwind, in reverse acquisition order: the socket server was pushed onto
         # the same stack as the guard, lease, connection and lock.
