@@ -441,24 +441,35 @@ def open_pipe_listener(address: str, *, timeout: float) -> RawPipeListener:
 
 def open_pipe_client(address: str, *, timeout: float) -> RawPipeChannel:
     api = _api()
-    if not api.WaitNamedPipeW(address, _milliseconds(timeout)):
-        raise WindowsPipeError(
-            "raw named-pipe endpoint is unavailable", code=_last_error()
+    deadline = monotonic() + timeout
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise WindowsPipeError(
+                "raw named-pipe endpoint is unavailable", code=_ERROR_SEM_TIMEOUT
+            )
+        if not api.WaitNamedPipeW(address, _milliseconds(remaining)):
+            raise WindowsPipeError(
+                "raw named-pipe endpoint is unavailable", code=_last_error()
+            )
+        handle = api.CreateFileW(
+            address,
+            _GENERIC_READ | _GENERIC_WRITE,
+            0,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_OVERLAPPED,
+            None,
         )
-    handle = api.CreateFileW(
-        address,
-        _GENERIC_READ | _GENERIC_WRITE,
-        0,
-        None,
-        _OPEN_EXISTING,
-        _FILE_FLAG_OVERLAPPED,
-        None,
-    )
-    if handle == _INVALID_HANDLE_VALUE:
-        raise WindowsPipeError(
-            "could not open raw named-pipe endpoint", code=_last_error()
-        )
-    return RawPipeChannel(int(handle), timeout)
+        if handle != _INVALID_HANDLE_VALUE:
+            return RawPipeChannel(int(handle), timeout)
+        error = _last_error()
+        # WaitNamedPipe and CreateFile are separate operations. Another local client
+        # may consume the available instance between them, so retry ERROR_PIPE_BUSY
+        # under the same absolute connection deadline rather than failing a healthy
+        # endpoint after a successful wait.
+        if error != _ERROR_PIPE_BUSY:
+            raise WindowsPipeError("could not open raw named-pipe endpoint", code=error)
 
 
 def probe_pipe(
