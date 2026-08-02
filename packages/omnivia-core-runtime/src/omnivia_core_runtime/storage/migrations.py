@@ -243,7 +243,10 @@ def bootstrap_generation_one(
     `expect_phase0_baseline` distinguishes adopting a frozen legacy database from
     initialising a pristine one. When true the schema must match the frozen Phase 0
     fingerprint exactly, so an unknown database cannot be adopted as if its shape
-    were understood.
+    were understood. When false, the same transaction also materialises the frozen
+    Phase 0 artifact as empty compatibility scaffolding -- uncounted in the ledger,
+    never written to -- so a pristine workspace exposes the same table shape an
+    adopted one does and every migration from 0002 onward can run against either.
     """
     if not mode.exclusive:
         raise StorageError(
@@ -276,9 +279,19 @@ def bootstrap_generation_one(
     timestamp = _now()
     attempt_id = f"bootstrap-{uuid.uuid4()}"
 
-    with immediate_transaction(connection), authorised(
-        connection, mutations=True, ddl=True
+    with (
+        immediate_transaction(connection),
+        authorised(connection, mutations=True, ddl=True),
     ):
+        if not expect_phase0_baseline:
+            # A pristine database has none of the 14 frozen Phase 0 tables that
+            # migration 0002 onward add triggers to, so apply_pending_migrations()
+            # would fail on the first one with "no such table". Applying the
+            # checked-in artifact here -- through the same transaction-preserving
+            # helper as every other script, and not registered as a migration --
+            # gives a pristine workspace the same schema shape as an adopted one
+            # without recording 0000 in the ledger or writing any Phase 0 row.
+            execute_script(connection, phase0_baseline_sql())
         execute_script(connection, substrate.sql)
         connection.execute(
             "INSERT INTO omnivia_migration_attempts "
@@ -381,12 +394,11 @@ def apply_pending_migrations(
                 (attempt_id, migration.version, started),
             )
         try:
-            with immediate_transaction(connection), authorised(
-                connection, mutations=True, ddl=True
+            with (
+                immediate_transaction(connection),
+                authorised(connection, mutations=True, ddl=True),
             ):
-                _assert_authority(
-                    connection, workspace_id, fencing_generation
-                )
+                _assert_authority(connection, workspace_id, fencing_generation)
                 execute_script(connection, migration.sql)
                 connection.execute(
                     "INSERT INTO omnivia_schema_migrations "
@@ -464,7 +476,13 @@ def record_open_event(
             "INSERT INTO omnivia_workspace_open_events "
             "(event_id, opened_at, open_mode, service_instance_id, fencing_generation) "
             "VALUES (?, ?, ?, ?, ?)",
-            (event_id, _now(), open_mode.value, service_instance_id, fencing_generation),
+            (
+                event_id,
+                _now(),
+                open_mode.value,
+                service_instance_id,
+                fencing_generation,
+            ),
         )
     return event_id
 
