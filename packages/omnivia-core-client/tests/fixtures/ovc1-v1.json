@@ -1,0 +1,932 @@
+{
+  "format": "omnivia.ovc1.v1",
+  "description": "Language-neutral byte vectors for the frozen OVC1 frame used by every OmniVia Core client. A frame is the four ASCII magic bytes OVC1, an unsigned big-endian uint32 giving the JSON byte length, then exactly that many canonical UTF-8 JSON bytes and nothing after them. The JSON root is always an object, and the payload is at most 4194304 bytes inclusive. Canonical JSON is RFC 8785 (JCS) over the admitted I-JSON value domain: the same algorithm and the same admission policy OmniVia Core applies to a content-addressed Context Pack artifact. There is exactly one canonical form here and no wire-specific variant of it.",
+  "magic_hex": "4f564331",
+  "magic_ascii": "OVC1",
+  "length_field": "unsigned big-endian uint32, 4 bytes, the JSON byte count",
+  "header_bytes": 8,
+  "maximum_json_bytes": 4194304,
+  "protocol_version": "1.0",
+  "contract_version": "1.2",
+  "canonicalization": {
+    "algorithm": "rfc8785",
+    "specification": "RFC 8785, the JSON Canonicalization Scheme",
+    "encoding": "utf-8",
+    "member_order": "by the UTF-16 code-unit sequence of the member name, not by Unicode code point",
+    "number_format": "ECMAScript Number::toString(x, 10): the shortest round-tripping digits, positional for a decimal-point position in (-6, 21] and exponential otherwise, with -0 rendered as 0",
+    "string_escapes": "the seven short escapes, backslash-u00xx in lowercase hex for the remaining C0 controls, and every other Unicode scalar value literal in UTF-8",
+    "value_domain": "I-JSON: finite binary64 numbers only, integers only when the conversion to binary64 and back is exact, strings with no lone surrogate, string-keyed objects, and no duplicate member name. A value outside it is refused, never coerced -- a non-string member name is a rejection, not a member renamed to its string form",
+    "maximum_nesting_depth": 64,
+    "integer_round_trip": "The admitted domain is a rule about a value: an integer is admitted when converting it to binary64 and back is exact. What travels is the decimal token that value renders to, and that token must clear the same rule in its own right. Usually it does, and then the value survives a frame unchanged -- every integer whose absolute value is at most 9007199254740992 (2**53) does, and so do larger exact ones such as 18014398509481984 (2**54), whose canonical token is the same digits it started as. Sometimes it does not: 1152921504606846976 (2**60) is exact and renders to 1152921504606847000, which converts back to 2**60 and is therefore not an admitted integer, so those bytes cannot be decoded. This is not a safe-integer range and must not be implemented as one; the boundary is exactness of the rendered token, and both directions are stated as vectors below.",
+    "transport_closure": "An OVC1 encoder returns a frame only when the canonical JSON bytes it produced are themselves accepted as canonical by the OVC1 decode path -- parsed, admitted, and re-canonicalized to the same bytes. Encoding is therefore closed under decoding: every frame an encoder returns can be decoded, and there is no third outcome. When the bytes would not survive that test the payload is refused with the transport's own error, at the sender, rather than emitted as a frame no conforming peer can accept. The rule belongs to the transport and changes nothing about the canonical form: a value refused this way still has the same RFC 8785 canonical bytes, and an implementation content-addressing a document rather than sending one applies the canonicalization without this rule. `encoder_rejected_vectors` states the payloads an encoder must refuse."
+  },
+  "usage": "Four arrays, checked four ways. For each entry of `vectors` and `canonicalization_vectors`: canonically encode `payload` and the bytes must equal `canonical_json_hex`; prepend the magic and the big-endian uint32 length and the frame must equal `frame_hex`; decode `frame_hex` and the value must equal `payload`. An implementation must recompute both hex strings from `payload` rather than trusting the stored ones -- stored hex that nothing recomputes only proves the file was not edited. Vectors marked `reused_from` are that canonical application contract fixture verbatim, and must stay equal to it. For each entry of `rejected_vectors`: decoding `frame_hex` must fail, and `reason` names the category from `rejection_reasons` this implementation is expected to report. The rejection itself is universal; each note says where the category legitimately differs between implementations. `json_hex` is the authoritative document and `json` repeats it as text, absent when the bytes are not valid UTF-8. For each entry of `encoder_rejected_vectors`: encoding `payload` must fail with a transport error and return no frame, and `reason` names the category from `encoder_rejection_reasons`. These are the closure rule made checkable -- `canonical_json_hex` records the bytes a non-conforming encoder emits for that payload instead, and `decode_rejection` names the `rejected_vectors` entry that refuses exactly those bytes on arrival, so the two arrays state the same fact from each end of the wire.",
+  "vectors": [
+    {
+      "id": "application.request",
+      "type": "RequestEnvelope",
+      "note": "The canonical minimal request, framed verbatim: a RequestEnvelope carrying only the fields RequestMetadata requires.",
+      "reused_from": "contracts/application/v1/fixtures/minimal-request.json",
+      "payload": {
+        "input": {},
+        "metadata": {
+          "api_version": "1.2",
+          "client": {
+            "id": "omnivia.cli",
+            "version": "1.4.2"
+          },
+          "correlation_id": "corr-min-0001",
+          "purpose": "user_initiated",
+          "request_id": "req-min-0001",
+          "required_capabilities": [],
+          "scopes": [],
+          "trace_id": "trace-min-0001",
+          "workspace_id": "workspace-alpha"
+        },
+        "operation": "memory.get"
+      },
+      "canonical_json_bytes": 306,
+      "canonical_json_hex": "7b22696e707574223a7b7d2c226d65746164617461223a7b226170695f76657273696f6e223a22312e32222c22636c69656e74223a7b226964223a226f6d6e697669612e636c69222c2276657273696f6e223a22312e342e32227d2c22636f7272656c6174696f6e5f6964223a22636f72722d6d696e2d30303031222c22707572706f7365223a22757365725f696e69746961746564222c22726571756573745f6964223a227265712d6d696e2d30303031222c2272657175697265645f6361706162696c6974696573223a5b5d2c2273636f706573223a5b5d2c2274726163655f6964223a2274726163652d6d696e2d30303031222c22776f726b73706163655f6964223a22776f726b73706163652d616c706861227d2c226f7065726174696f6e223a226d656d6f72792e676574227d",
+      "frame_bytes": 314,
+      "frame_hex": "4f564331000001327b22696e707574223a7b7d2c226d65746164617461223a7b226170695f76657273696f6e223a22312e32222c22636c69656e74223a7b226964223a226f6d6e697669612e636c69222c2276657273696f6e223a22312e342e32227d2c22636f7272656c6174696f6e5f6964223a22636f72722d6d696e2d30303031222c22707572706f7365223a22757365725f696e69746961746564222c22726571756573745f6964223a227265712d6d696e2d30303031222c2272657175697265645f6361706162696c6974696573223a5b5d2c2273636f706573223a5b5d2c2274726163655f6964223a2274726163652d6d696e2d30303031222c22776f726b73706163655f6964223a22776f726b73706163652d616c706861227d2c226f7065726174696f6e223a226d656d6f72792e676574227d"
+    },
+    {
+      "id": "application.success",
+      "type": "ResponseEnvelope",
+      "note": "The canonical success response, framed verbatim. It exercises every optional ResponseMetadata field at once, so the vector covers nested objects, arrays, booleans and integers in one frame.",
+      "reused_from": "contracts/application/v1/fixtures/success-response.json",
+      "payload": {
+        "metadata": {
+          "audit_reference": "audit-ref-1",
+          "authority": {
+            "capabilities": [
+              {
+                "id": "memory.read",
+                "version": "1.0"
+              },
+              {
+                "id": "memory.write",
+                "version": "1.0"
+              }
+            ],
+            "principal_id": "user-42",
+            "roles": [
+              "member"
+            ]
+          },
+          "canonical_resolution_time": "2026-07-30T12:00:01Z",
+          "correlation_id": "corr-0006",
+          "freshness": {
+            "as_of": "2026-07-30T12:00:00Z",
+            "projection_versions": {
+              "memory_index": "pv-42"
+            },
+            "projection_watermarks": {
+              "memory_index": "wm-41"
+            },
+            "stale": false
+          },
+          "job": {
+            "job_id": "opaque-job-1"
+          },
+          "omissions": [
+            {
+              "code": "redacted_for_policy",
+              "message": "Omitted per data policy.",
+              "path": "/items/3/secret"
+            }
+          ],
+          "page": {
+            "continuation_token": "opaque-cursor-1"
+          },
+          "partial": {
+            "is_partial": true,
+            "reasons": [
+              "projection_lag"
+            ]
+          },
+          "request_id": "req-0006",
+          "version": {
+            "api_version": "1.2",
+            "capabilities": {
+              "effective": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ],
+              "granted": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ],
+              "supported": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ]
+            },
+            "compatibility": {
+              "deprecations": [],
+              "selected_api_version": "1.2",
+              "selected_workspace_version": "1.0",
+              "status": "compatible",
+              "supported_api_versions": {
+                "maximum": "1.3",
+                "minimum": "1.0"
+              },
+              "supported_workspace_versions": {
+                "maximum": "1.0",
+                "minimum": "1.0"
+              },
+              "upgrade_state": {
+                "value": "none"
+              }
+            },
+            "server_version": "1.2.5",
+            "workspace_format_version": "1.0"
+          },
+          "warnings": [
+            {
+              "code": "deprecated_field_used",
+              "message": "Field 'legacy_tag' is deprecated."
+            }
+          ]
+        },
+        "result": {
+          "count": 1,
+          "items": [
+            {
+              "id": "note-1"
+            }
+          ]
+        }
+      },
+      "canonical_json_bytes": 1491,
+      "canonical_json_hex": "7b226d65746164617461223a7b2261756469745f7265666572656e6365223a2261756469742d7265662d31222c22617574686f72697479223a7b226361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c227072696e636970616c5f6964223a22757365722d3432222c22726f6c6573223a5b226d656d626572225d7d2c2263616e6f6e6963616c5f7265736f6c7574696f6e5f74696d65223a22323032362d30372d33305431323a30303a30315a222c22636f7272656c6174696f6e5f6964223a22636f72722d30303036222c2266726573686e657373223a7b2261735f6f66223a22323032362d30372d33305431323a30303a30305a222c2270726f6a656374696f6e5f76657273696f6e73223a7b226d656d6f72795f696e646578223a2270762d3432227d2c2270726f6a656374696f6e5f77617465726d61726b73223a7b226d656d6f72795f696e646578223a22776d2d3431227d2c227374616c65223a66616c73657d2c226a6f62223a7b226a6f625f6964223a226f70617175652d6a6f622d31227d2c226f6d697373696f6e73223a5b7b22636f6465223a2272656461637465645f666f725f706f6c696379222c226d657373616765223a224f6d697474656420706572206461746120706f6c6963792e222c2270617468223a222f6974656d732f332f736563726574227d5d2c2270616765223a7b22636f6e74696e756174696f6e5f746f6b656e223a226f70617175652d637572736f722d31227d2c227061727469616c223a7b2269735f7061727469616c223a747275652c22726561736f6e73223a5b2270726f6a656374696f6e5f6c6167225d7d2c22726571756573745f6964223a227265712d30303036222c2276657273696f6e223a7b226170695f76657273696f6e223a22312e32222c226361706162696c6974696573223a7b22656666656374697665223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c226772616e746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c22737570706f72746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d2c22636f6d7061746962696c697479223a7b226465707265636174696f6e73223a5b5d2c2273656c65637465645f6170695f76657273696f6e223a22312e32222c2273656c65637465645f776f726b73706163655f76657273696f6e223a22312e30222c22737461747573223a22636f6d70617469626c65222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22757067726164655f7374617465223a7b2276616c7565223a226e6f6e65227d7d2c227365727665725f76657273696f6e223a22312e322e35222c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30227d2c227761726e696e6773223a5b7b22636f6465223a22646570726563617465645f6669656c645f75736564222c226d657373616765223a224669656c6420276c65676163795f7461672720697320646570726563617465642e227d5d7d2c22726573756c74223a7b22636f756e74223a312c226974656d73223a5b7b226964223a226e6f74652d31227d5d7d7d",
+      "frame_bytes": 1499,
+      "frame_hex": "4f564331000005d37b226d65746164617461223a7b2261756469745f7265666572656e6365223a2261756469742d7265662d31222c22617574686f72697479223a7b226361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c227072696e636970616c5f6964223a22757365722d3432222c22726f6c6573223a5b226d656d626572225d7d2c2263616e6f6e6963616c5f7265736f6c7574696f6e5f74696d65223a22323032362d30372d33305431323a30303a30315a222c22636f7272656c6174696f6e5f6964223a22636f72722d30303036222c2266726573686e657373223a7b2261735f6f66223a22323032362d30372d33305431323a30303a30305a222c2270726f6a656374696f6e5f76657273696f6e73223a7b226d656d6f72795f696e646578223a2270762d3432227d2c2270726f6a656374696f6e5f77617465726d61726b73223a7b226d656d6f72795f696e646578223a22776d2d3431227d2c227374616c65223a66616c73657d2c226a6f62223a7b226a6f625f6964223a226f70617175652d6a6f622d31227d2c226f6d697373696f6e73223a5b7b22636f6465223a2272656461637465645f666f725f706f6c696379222c226d657373616765223a224f6d697474656420706572206461746120706f6c6963792e222c2270617468223a222f6974656d732f332f736563726574227d5d2c2270616765223a7b22636f6e74696e756174696f6e5f746f6b656e223a226f70617175652d637572736f722d31227d2c227061727469616c223a7b2269735f7061727469616c223a747275652c22726561736f6e73223a5b2270726f6a656374696f6e5f6c6167225d7d2c22726571756573745f6964223a227265712d30303036222c2276657273696f6e223a7b226170695f76657273696f6e223a22312e32222c226361706162696c6974696573223a7b22656666656374697665223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c226772616e746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c22737570706f72746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d2c22636f6d7061746962696c697479223a7b226465707265636174696f6e73223a5b5d2c2273656c65637465645f6170695f76657273696f6e223a22312e32222c2273656c65637465645f776f726b73706163655f76657273696f6e223a22312e30222c22737461747573223a22636f6d70617469626c65222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22757067726164655f7374617465223a7b2276616c7565223a226e6f6e65227d7d2c227365727665725f76657273696f6e223a22312e322e35222c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30227d2c227761726e696e6773223a5b7b22636f6465223a22646570726563617465645f6669656c645f75736564222c226d657373616765223a224669656c6420276c65676163795f7461672720697320646570726563617465642e227d5d7d2c22726573756c74223a7b22636f756e74223a312c226974656d73223a5b7b226964223a226e6f74652d31227d5d7d7d"
+    },
+    {
+      "id": "application.error",
+      "type": "ResponseEnvelope",
+      "note": "The canonical error response, framed verbatim. An error response is an answer the peer gave, carried in an ordinary frame; nothing in the framing distinguishes it from a success.",
+      "reused_from": "contracts/application/v1/fixtures/error-response.json",
+      "payload": {
+        "error": {
+          "code": "not_found",
+          "message": "No record with the given id exists in this workspace.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "authority": {
+            "capabilities": [
+              {
+                "id": "memory.read",
+                "version": "1.0"
+              },
+              {
+                "id": "memory.write",
+                "version": "1.0"
+              }
+            ],
+            "principal_id": "user-42",
+            "roles": [
+              "member"
+            ]
+          },
+          "correlation_id": "corr-0007",
+          "request_id": "req-0007",
+          "version": {
+            "api_version": "1.2",
+            "capabilities": {
+              "effective": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ],
+              "granted": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ],
+              "supported": [
+                {
+                  "id": "memory.read",
+                  "version": "1.0"
+                },
+                {
+                  "id": "memory.write",
+                  "version": "1.0"
+                }
+              ]
+            },
+            "compatibility": {
+              "deprecations": [],
+              "selected_api_version": "1.2",
+              "selected_workspace_version": "1.0",
+              "status": "compatible",
+              "supported_api_versions": {
+                "maximum": "1.3",
+                "minimum": "1.0"
+              },
+              "supported_workspace_versions": {
+                "maximum": "1.0",
+                "minimum": "1.0"
+              },
+              "upgrade_state": {
+                "value": "none"
+              }
+            },
+            "server_version": "1.2.5",
+            "workspace_format_version": "1.0"
+          }
+        }
+      },
+      "canonical_json_bytes": 993,
+      "canonical_json_hex": "7b226572726f72223a7b22636f6465223a226e6f745f666f756e64222c226d657373616765223a224e6f207265636f726420776974682074686520676976656e2069642065786973747320696e207468697320776f726b73706163652e222c2272657472795f636c617373223a226e6f6e5f726574727961626c65227d2c226d65746164617461223a7b22617574686f72697479223a7b226361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c227072696e636970616c5f6964223a22757365722d3432222c22726f6c6573223a5b226d656d626572225d7d2c22636f7272656c6174696f6e5f6964223a22636f72722d30303037222c22726571756573745f6964223a227265712d30303037222c2276657273696f6e223a7b226170695f76657273696f6e223a22312e32222c226361706162696c6974696573223a7b22656666656374697665223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c226772616e746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c22737570706f72746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d2c22636f6d7061746962696c697479223a7b226465707265636174696f6e73223a5b5d2c2273656c65637465645f6170695f76657273696f6e223a22312e32222c2273656c65637465645f776f726b73706163655f76657273696f6e223a22312e30222c22737461747573223a22636f6d70617469626c65222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22757067726164655f7374617465223a7b2276616c7565223a226e6f6e65227d7d2c227365727665725f76657273696f6e223a22312e322e35222c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30227d7d7d",
+      "frame_bytes": 1001,
+      "frame_hex": "4f564331000003e17b226572726f72223a7b22636f6465223a226e6f745f666f756e64222c226d657373616765223a224e6f207265636f726420776974682074686520676976656e2069642065786973747320696e207468697320776f726b73706163652e222c2272657472795f636c617373223a226e6f6e5f726574727961626c65227d2c226d65746164617461223a7b22617574686f72697479223a7b226361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c227072696e636970616c5f6964223a22757365722d3432222c22726f6c6573223a5b226d656d626572225d7d2c22636f7272656c6174696f6e5f6964223a22636f72722d30303037222c22726571756573745f6964223a227265712d30303037222c2276657273696f6e223a7b226170695f76657273696f6e223a22312e32222c226361706162696c6974696573223a7b22656666656374697665223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c226772616e746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d2c22737570706f72746564223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d2c22636f6d7061746962696c697479223a7b226465707265636174696f6e73223a5b5d2c2273656c65637465645f6170695f76657273696f6e223a22312e32222c2273656c65637465645f776f726b73706163655f76657273696f6e223a22312e30222c22737461747573223a22636f6d70617469626c65222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22757067726164655f7374617465223a7b2276616c7565223a226e6f6e65227d7d2c227365727665725f76657273696f6e223a22312e322e35222c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30227d7d7d"
+    },
+    {
+      "id": "probe.health.request",
+      "type": "ServiceProbeRequest",
+      "note": "A health probe request with a relative deadline.",
+      "payload": {
+        "probe": "service.health",
+        "request_id": "req-probe-health-0001",
+        "deadline_ms": 2000
+      },
+      "canonical_json_bytes": 82,
+      "canonical_json_hex": "7b22646561646c696e655f6d73223a323030302c2270726f6265223a22736572766963652e6865616c7468222c22726571756573745f6964223a227265712d70726f62652d6865616c74682d30303031227d",
+      "frame_bytes": 90,
+      "frame_hex": "4f564331000000527b22646561646c696e655f6d73223a323030302c2270726f6265223a22736572766963652e6865616c7468222c22726571756573745f6964223a227265712d70726f62652d6865616c74682d30303031227d"
+    },
+    {
+      "id": "probe.health.result",
+      "type": "ServiceProbeResult",
+      "note": "A passing health probe result: the minimum a ServiceProbeResult requires, with no components, capabilities or descriptor.",
+      "payload": {
+        "probe": "service.health",
+        "status": "pass",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T12:00:00Z"
+      },
+      "canonical_json_bytes": 124,
+      "canonical_json_hex": "7b226170695f76657273696f6e223a22312e32222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e6865616c7468222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a2270617373227d",
+      "frame_bytes": 132,
+      "frame_hex": "4f5643310000007c7b226170695f76657273696f6e223a22312e32222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e6865616c7468222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a2270617373227d"
+    },
+    {
+      "id": "probe.readiness.request",
+      "type": "ServiceProbeRequest",
+      "note": "A readiness probe request with a relative deadline.",
+      "payload": {
+        "probe": "service.readiness",
+        "request_id": "req-probe-readiness-0001",
+        "deadline_ms": 5000
+      },
+      "canonical_json_bytes": 88,
+      "canonical_json_hex": "7b22646561646c696e655f6d73223a353030302c2270726f6265223a22736572766963652e72656164696e657373222c22726571756573745f6964223a227265712d70726f62652d72656164696e6573732d30303031227d",
+      "frame_bytes": 96,
+      "frame_hex": "4f564331000000587b22646561646c696e655f6d73223a353030302c2270726f6265223a22736572766963652e72656164696e657373222c22726571756573745f6964223a227265712d70726f62652d72656164696e6573732d30303031227d"
+    },
+    {
+      "id": "probe.readiness.result",
+      "type": "ServiceProbeResult",
+      "note": "A readiness probe result reporting per-subsystem status, including one component that warns. An unrecognized status is preserved, never coerced, so the vector fixes the bytes of a warn as well as a pass.",
+      "payload": {
+        "probe": "service.readiness",
+        "status": "warn",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T12:00:00Z",
+        "components": [
+          {
+            "id": "storage",
+            "status": "pass",
+            "observed_at": "2026-07-30T12:00:00Z"
+          },
+          {
+            "id": "search-index",
+            "status": "warn",
+            "observed_at": "2026-07-30T12:00:00Z",
+            "message": "Projection is behind the write log."
+          }
+        ]
+      },
+      "canonical_json_bytes": 335,
+      "canonical_json_hex": "7b226170695f76657273696f6e223a22312e32222c22636f6d706f6e656e7473223a5b7b226964223a2273746f72616765222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c22737461747573223a2270617373227d2c7b226964223a227365617263682d696e646578222c226d657373616765223a2250726f6a656374696f6e20697320626568696e6420746865207772697465206c6f672e222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c22737461747573223a227761726e227d5d2c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e72656164696e657373222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a227761726e227d",
+      "frame_bytes": 343,
+      "frame_hex": "4f5643310000014f7b226170695f76657273696f6e223a22312e32222c22636f6d706f6e656e7473223a5b7b226964223a2273746f72616765222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c22737461747573223a2270617373227d2c7b226964223a227365617263682d696e646578222c226d657373616765223a2250726f6a656374696f6e20697320626568696e6420746865207772697465206c6f672e222c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c22737461747573223a227761726e227d5d2c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e72656164696e657373222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a227761726e227d"
+    },
+    {
+      "id": "probe.discover.request",
+      "type": "ServiceProbeRequest",
+      "note": "A discovery probe request. It carries no workspace scope and no authority: a probe must be answerable before either exists.",
+      "payload": {
+        "probe": "service.discover",
+        "request_id": "req-probe-discover-0001"
+      },
+      "canonical_json_bytes": 67,
+      "canonical_json_hex": "7b2270726f6265223a22736572766963652e646973636f766572222c22726571756573745f6964223a227265712d70726f62652d646973636f7665722d30303031227d",
+      "frame_bytes": 75,
+      "frame_hex": "4f564331000000437b2270726f6265223a22736572766963652e646973636f766572222c22726571756573745f6964223a227265712d70726f62652d646973636f7665722d30303031227d"
+    },
+    {
+      "id": "probe.discover.result-with-descriptor",
+      "type": "ServiceProbeResult",
+      "note": "A discovery probe result carrying a complete accepted ServiceEndpointDescriptor at protocol version 1.0, including its optional process evidence. Coordination facts only: no authority, no credential or token, no storage, database or filesystem path, and no lease. `endpoint_uri` is a loopback address to dial, deliberately not a socket path, so the vector states no filesystem location at all. `fencing_generation` records which claim is newer and, per the accepted descriptor contract, neither states nor transfers ownership.",
+      "payload": {
+        "probe": "service.discover",
+        "status": "pass",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T12:00:00Z",
+        "supported_capabilities": [
+          {
+            "id": "memory.read",
+            "version": "1.0"
+          },
+          {
+            "id": "memory.write",
+            "version": "1.0"
+          }
+        ],
+        "descriptor": {
+          "descriptor_version": "1.2",
+          "workspace_id": "workspace-alpha",
+          "service_instance_id": "service-instance-01",
+          "installation_id": "installation-alpha",
+          "endpoint_uri": "ovc1+tcp://127.0.0.1:7420",
+          "protocol_version": "1.0",
+          "server_version": "1.2.5",
+          "supported_api_versions": {
+            "minimum": "1.0",
+            "maximum": "1.3"
+          },
+          "supported_workspace_versions": {
+            "minimum": "1.0",
+            "maximum": "1.0"
+          },
+          "workspace_format_version": "1.0",
+          "ready": true,
+          "lifecycle_state": "serving",
+          "fencing_generation": 7,
+          "published_at": "2026-07-30T11:59:58Z",
+          "process": {
+            "pid": 4821,
+            "start_time": "1785412798.42",
+            "boot_id": "boot-7f3c"
+          }
+        }
+      },
+      "canonical_json_bytes": 812,
+      "canonical_json_hex": "7b226170695f76657273696f6e223a22312e32222c2264657363726970746f72223a7b2264657363726970746f725f76657273696f6e223a22312e32222c22656e64706f696e745f757269223a226f7663312b7463703a2f2f3132372e302e302e313a37343230222c2266656e63696e675f67656e65726174696f6e223a372c22696e7374616c6c6174696f6e5f6964223a22696e7374616c6c6174696f6e2d616c706861222c226c6966656379636c655f7374617465223a2273657276696e67222c2270726f63657373223a7b22626f6f745f6964223a22626f6f742d37663363222c22706964223a343832312c2273746172745f74696d65223a22313738353431323739382e3432227d2c2270726f746f636f6c5f76657273696f6e223a22312e30222c227075626c69736865645f6174223a22323032362d30372d33305431313a35393a35385a222c227265616479223a747275652c227365727665725f76657273696f6e223a22312e322e35222c22736572766963655f696e7374616e63655f6964223a22736572766963652d696e7374616e63652d3031222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30222c22776f726b73706163655f6964223a22776f726b73706163652d616c706861227d2c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e646973636f766572222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a2270617373222c22737570706f727465645f6361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d",
+      "frame_bytes": 820,
+      "frame_hex": "4f5643310000032c7b226170695f76657273696f6e223a22312e32222c2264657363726970746f72223a7b2264657363726970746f725f76657273696f6e223a22312e32222c22656e64706f696e745f757269223a226f7663312b7463703a2f2f3132372e302e302e313a37343230222c2266656e63696e675f67656e65726174696f6e223a372c22696e7374616c6c6174696f6e5f6964223a22696e7374616c6c6174696f6e2d616c706861222c226c6966656379636c655f7374617465223a2273657276696e67222c2270726f63657373223a7b22626f6f745f6964223a22626f6f742d37663363222c22706964223a343832312c2273746172745f74696d65223a22313738353431323739382e3432227d2c2270726f746f636f6c5f76657273696f6e223a22312e30222c227075626c69736865645f6174223a22323032362d30372d33305431313a35393a35385a222c227265616479223a747275652c227365727665725f76657273696f6e223a22312e322e35222c22736572766963655f696e7374616e63655f6964223a22736572766963652d696e7374616e63652d3031222c22737570706f727465645f6170695f76657273696f6e73223a7b226d6178696d756d223a22312e33222c226d696e696d756d223a22312e30227d2c22737570706f727465645f776f726b73706163655f76657273696f6e73223a7b226d6178696d756d223a22312e30222c226d696e696d756d223a22312e30227d2c22776f726b73706163655f666f726d61745f76657273696f6e223a22312e30222c22776f726b73706163655f6964223a22776f726b73706163652d616c706861227d2c226f627365727665645f6174223a22323032362d30372d33305431323a30303a30305a222c2270726f6265223a22736572766963652e646973636f766572222c227365727665725f76657273696f6e223a22312e322e35222c22737461747573223a2270617373222c22737570706f727465645f6361706162696c6974696573223a5b7b226964223a226d656d6f72792e72656164222c2276657273696f6e223a22312e30227d2c7b226964223a226d656d6f72792e7772697465222c2276657273696f6e223a22312e30227d5d7d"
+    }
+  ],
+  "canonicalization_vectors": [
+    {
+      "id": "structure.empty-object",
+      "note": "The smallest frame there is. A frame's root is always an object, and an empty one is a complete value.",
+      "payload": {},
+      "canonical_json": "{}",
+      "canonical_json_bytes": 2,
+      "canonical_json_hex": "7b7d",
+      "frame_bytes": 10,
+      "frame_hex": "4f564331000000027b7d"
+    },
+    {
+      "id": "order.utf16-code-unit",
+      "note": "The vector that tells RFC 8785 apart from sorting by Unicode code point. U+1F600 is one code point above U+FB33, but its UTF-16 form begins with the high surrogate 0xD83D, which sorts below 0xFB33 -- so the emoji member comes first. The payload states the members in a third order again, so an implementation that preserved insertion order fails here too.",
+      "payload": {
+        "דּ": 3,
+        "😀": 2,
+        "a": 1
+      },
+      "canonical_json": "{\"a\":1,\"😀\":2,\"דּ\":3}",
+      "canonical_json_bytes": 24,
+      "canonical_json_hex": "7b2261223a312c22f09f9880223a322c22efacb3223a337d",
+      "frame_bytes": 32,
+      "frame_hex": "4f564331000000187b2261223a312c22f09f9880223a322c22efacb3223a337d"
+    },
+    {
+      "id": "string.escaping",
+      "note": "Every escaping rule at once: the seven short escapes, backslash-u00xx in lowercase hex for the remaining C0 controls, and literal UTF-8 for everything else -- including U+007F (DEL), which is not escaped, and non-ASCII, which is never escaped.",
+      "payload": {
+        "s": "\u0000\u0001\u001f\b\f\n\r\t\"\\ \u007f café 😀"
+      },
+      "canonical_json": "{\"s\":\"\\u0000\\u0001\\u001f\\b\\f\\n\\r\\t\\\"\\\\ \u007f café 😀\"}",
+      "canonical_json_bytes": 53,
+      "canonical_json_hex": "7b2273223a225c75303030305c75303030315c75303031665c625c665c6e5c725c745c225c5c207f20636166c3a920f09f9880227d",
+      "frame_bytes": 61,
+      "frame_hex": "4f564331000000357b2273223a225c75303030305c75303030315c75303031665c625c665c6e5c725c745c225c5c207f20636166c3a920f09f9880227d"
+    },
+    {
+      "id": "number.negative-zero",
+      "note": "JSON has one zero. ECMAScript's number-to-string renders -0 as 0, so a frame can never carry a signed zero, and the bytes -0.0 are not canonical for any value.",
+      "payload": {
+        "value": -0.0
+      },
+      "canonical_json": "{\"value\":0}",
+      "canonical_json_bytes": 11,
+      "canonical_json_hex": "7b2276616c7565223a307d",
+      "frame_bytes": 19,
+      "frame_hex": "4f5643310000000b7b2276616c7565223a307d"
+    },
+    {
+      "id": "number.integral-float",
+      "note": "1.0 and 1 are one JSON number with one canonical spelling: 1. An implementation whose number rendering keeps a trailing .0 produces different bytes for the same value.",
+      "payload": {
+        "value": 1.0
+      },
+      "canonical_json": "{\"value\":1}",
+      "canonical_json_bytes": 11,
+      "canonical_json_hex": "7b2276616c7565223a317d",
+      "frame_bytes": 19,
+      "frame_hex": "4f5643310000000b7b2276616c7565223a317d"
+    },
+    {
+      "id": "number.positional-upper-bound",
+      "note": "1e20 is written out positionally. The exponential form only takes over above a decimal-point position of 21, which is the threshold ECMAScript specifies and not the one a printf-style float format would pick.",
+      "payload": {
+        "value": 1e+20
+      },
+      "canonical_json": "{\"value\":100000000000000000000}",
+      "canonical_json_bytes": 31,
+      "canonical_json_hex": "7b2276616c7565223a3130303030303030303030303030303030303030307d",
+      "frame_bytes": 39,
+      "frame_hex": "4f5643310000001f7b2276616c7565223a3130303030303030303030303030303030303030307d"
+    },
+    {
+      "id": "number.exponential-upper-bound",
+      "note": "One step past the positional window: 1e21 is the smallest power of ten written in exponential form, and its exponent carries an explicit +.",
+      "payload": {
+        "value": 1e+21
+      },
+      "canonical_json": "{\"value\":1e+21}",
+      "canonical_json_bytes": 15,
+      "canonical_json_hex": "7b2276616c7565223a31652b32317d",
+      "frame_bytes": 23,
+      "frame_hex": "4f5643310000000f7b2276616c7565223a31652b32317d"
+    },
+    {
+      "id": "number.positional-lower-bound",
+      "note": "1e-6 is still positional, written with its leading zeros in full.",
+      "payload": {
+        "value": 1e-06
+      },
+      "canonical_json": "{\"value\":0.000001}",
+      "canonical_json_bytes": 18,
+      "canonical_json_hex": "7b2276616c7565223a302e3030303030317d",
+      "frame_bytes": 26,
+      "frame_hex": "4f564331000000127b2276616c7565223a302e3030303030317d"
+    },
+    {
+      "id": "number.exponential-lower-bound",
+      "note": "One step below the positional window: 1e-7 is exponential, and its exponent is written e-7 rather than the e-07 a C-style float format would produce.",
+      "payload": {
+        "value": 1e-07
+      },
+      "canonical_json": "{\"value\":1e-7}",
+      "canonical_json_bytes": 14,
+      "canonical_json_hex": "7b2276616c7565223a31652d377d",
+      "frame_bytes": 22,
+      "frame_hex": "4f5643310000000e7b2276616c7565223a31652d377d"
+    },
+    {
+      "id": "number.fraction",
+      "note": "0.1 is admitted and canonicalizes to 0.1 even though no binary64 equals one tenth: a decimal token is read as the nearest binary64 under ordinary rules, and an exact decimal value is not required.",
+      "payload": {
+        "value": 0.1
+      },
+      "canonical_json": "{\"value\":0.1}",
+      "canonical_json_bytes": 13,
+      "canonical_json_hex": "7b2276616c7565223a302e317d",
+      "frame_bytes": 21,
+      "frame_hex": "4f5643310000000d7b2276616c7565223a302e317d"
+    },
+    {
+      "id": "number.exact-integer-boundary",
+      "note": "Both sides of the exact-integer boundary, in both directions. An integer is admitted only when converting it to binary64 and back is exact, and these are the largest magnitudes for which that holds with the integer's own decimal form unchanged.",
+      "payload": {
+        "max": 9007199254740992,
+        "max_minus_one": 9007199254740991,
+        "min": -9007199254740992,
+        "min_plus_one": -9007199254740991
+      },
+      "canonical_json": "{\"max\":9007199254740992,\"max_minus_one\":9007199254740991,\"min\":-9007199254740992,\"min_plus_one\":-9007199254740991}",
+      "canonical_json_bytes": 114,
+      "canonical_json_hex": "7b226d6178223a393030373139393235343734303939322c226d61785f6d696e75735f6f6e65223a393030373139393235343734303939312c226d696e223a2d393030373139393235343734303939322c226d696e5f706c75735f6f6e65223a2d393030373139393235343734303939317d",
+      "frame_bytes": 122,
+      "frame_hex": "4f564331000000727b226d6178223a393030373139393235343734303939322c226d61785f6d696e75735f6f6e65223a393030373139393235343734303939312c226d696e223a2d393030373139393235343734303939322c226d696e5f706c75735f6f6e65223a2d393030373139393235343734303939317d"
+    },
+    {
+      "id": "number.exact-integer-above-safe-range",
+      "note": "An exact integer above 2**53 that still frames, in both directions. 2**54 converts to binary64 and back exactly and renders as the same seventeen digits, so the token is admitted in its own right and the value survives a frame. The vector exists to stop the admission rule being implemented as a safe-integer range: an implementation that refuses everything above 2**53 fails here, and one that accepts everything exact fails `encoder_rejected_vectors`. Both boundaries are needed to pin the actual rule.",
+      "payload": {
+        "negative": -18014398509481984,
+        "positive": 18014398509481984
+      },
+      "canonical_json": "{\"negative\":-18014398509481984,\"positive\":18014398509481984}",
+      "canonical_json_bytes": 60,
+      "canonical_json_hex": "7b226e65676174697665223a2d31383031343339383530393438313938342c22706f736974697665223a31383031343339383530393438313938347d",
+      "frame_bytes": 68,
+      "frame_hex": "4f5643310000003c7b226e65676174697665223a2d31383031343339383530393438313938342c22706f736974697665223a31383031343339383530393438313938347d"
+    },
+    {
+      "id": "nesting.at-maximum",
+      "note": "Nesting at exactly the 64-level maximum: 64 nested objects with a number inside. One level deeper has no canonical form and is refused.",
+      "payload": {
+        "n": {
+          "n": {
+            "n": {
+              "n": {
+                "n": {
+                  "n": {
+                    "n": {
+                      "n": {
+                        "n": {
+                          "n": {
+                            "n": {
+                              "n": {
+                                "n": {
+                                  "n": {
+                                    "n": {
+                                      "n": {
+                                        "n": {
+                                          "n": {
+                                            "n": {
+                                              "n": {
+                                                "n": {
+                                                  "n": {
+                                                    "n": {
+                                                      "n": {
+                                                        "n": {
+                                                          "n": {
+                                                            "n": {
+                                                              "n": {
+                                                                "n": {
+                                                                  "n": {
+                                                                    "n": {
+                                                                      "n": {
+                                                                        "n": {
+                                                                          "n": {
+                                                                            "n": {
+                                                                              "n": {
+                                                                                "n": {
+                                                                                  "n": {
+                                                                                    "n": {
+                                                                                      "n": {
+                                                                                        "n": {
+                                                                                          "n": {
+                                                                                            "n": {
+                                                                                              "n": {
+                                                                                                "n": {
+                                                                                                  "n": {
+                                                                                                    "n": {
+                                                                                                      "n": {
+                                                                                                        "n": {
+                                                                                                          "n": {
+                                                                                                            "n": {
+                                                                                                              "n": {
+                                                                                                                "n": {
+                                                                                                                  "n": {
+                                                                                                                    "n": {
+                                                                                                                      "n": {
+                                                                                                                        "n": {
+                                                                                                                          "n": {
+                                                                                                                            "n": {
+                                                                                                                              "n": {
+                                                                                                                                "n": {
+                                                                                                                                  "n": {
+                                                                                                                                    "n": {
+                                                                                                                                      "n": 1
+                                                                                                                                    }
+                                                                                                                                  }
+                                                                                                                                }
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "canonical_json": "{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+      "canonical_json_bytes": 385,
+      "canonical_json_hex": "7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a317d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+      "frame_bytes": 393,
+      "frame_hex": "4f564331000001817b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a317d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
+    }
+  ],
+  "rejection_reasons": {
+    "not_utf8": "the declared JSON bytes are not valid UTF-8",
+    "not_json": "the bytes are valid UTF-8 and are not well-formed JSON",
+    "duplicate_member_name": "one object names the same member twice, so the document has no single value. Every implementation refuses the frame; one without a duplicate-rejecting parser reports it as not_canonical instead",
+    "non_standard_number_literal": "the document carries NaN, Infinity or -Infinity, which some parsers accept as an extension and the JSON number domain does not have",
+    "number_not_admitted": "a number outside the admitted I-JSON domain: not finite as a binary64, or an integer that does not convert to binary64 and back exactly",
+    "not_a_json_object": "the JSON root is not an object",
+    "nesting_too_deep_to_canonicalize": "the document nests deeper than the 64-level maximum the canonical form admits",
+    "not_canonical": "well-formed, admissible JSON whose bytes are a different spelling of its value than the canonical form"
+  },
+  "rejected_vectors": [
+    {
+      "id": "utf8.invalid-continuation",
+      "note": "The declared JSON bytes are not valid UTF-8. Refused before any parse, so no diagnostic can quote them.",
+      "reason": "not_utf8",
+      "json_hex": "7b2261223a22fffe227d",
+      "frame_hex": "4f5643310000000a7b2261223a22fffe227d"
+    },
+    {
+      "id": "json.syntax-error",
+      "note": "Well-formed UTF-8 that is not well-formed JSON.",
+      "reason": "not_json",
+      "json": "{\"a\":}",
+      "json_hex": "7b2261223a7d",
+      "frame_hex": "4f564331000000067b2261223a7d"
+    },
+    {
+      "id": "json.duplicate-member-name",
+      "note": "One object names a member twice. Refused at parse, the only point where a duplicate is still visible: a parser that builds a mapping keeps one occurrence and drops the rest, so no later stage can detect it. An implementation without a duplicate-rejecting parser still refuses this frame, because the mapping it builds re-encodes to different bytes -- the rejection is universal, the category reported for it is not.",
+      "reason": "duplicate_member_name",
+      "json": "{\"a\":1,\"a\":2}",
+      "json_hex": "7b2261223a312c2261223a327d",
+      "frame_hex": "4f5643310000000d7b2261223a312c2261223a327d"
+    },
+    {
+      "id": "json.nan-literal",
+      "note": "NaN is not JSON. Some parsers accept it as an extension; the OVC1 number domain has no NaN.",
+      "reason": "non_standard_number_literal",
+      "json": "{\"a\":NaN}",
+      "json_hex": "7b2261223a4e614e7d",
+      "frame_hex": "4f564331000000097b2261223a4e614e7d"
+    },
+    {
+      "id": "json.infinity-literal",
+      "note": "Infinity is not JSON, for the same reason.",
+      "reason": "non_standard_number_literal",
+      "json": "{\"a\":Infinity}",
+      "json_hex": "7b2261223a496e66696e6974797d",
+      "frame_hex": "4f5643310000000e7b2261223a496e66696e6974797d"
+    },
+    {
+      "id": "json.negative-infinity-literal",
+      "note": "-Infinity is not JSON either.",
+      "reason": "non_standard_number_literal",
+      "json": "{\"a\":-Infinity}",
+      "json_hex": "7b2261223a2d496e66696e6974797d",
+      "frame_hex": "4f5643310000000f7b2261223a2d496e66696e6974797d"
+    },
+    {
+      "id": "number.overflowing-exponent",
+      "note": "1e400 has no finite binary64 value. A parser that reads it as infinity has not preserved the document, so the value is refused rather than carried.",
+      "reason": "number_not_admitted",
+      "json": "{\"a\":1e400}",
+      "json_hex": "7b2261223a31653430307d",
+      "frame_hex": "4f5643310000000b7b2261223a31653430307d"
+    },
+    {
+      "id": "number.inexact-integer-above-maximum",
+      "note": "2**53 + 1 has no exact binary64 value. RFC 8785 defers number serialization to ECMAScript, which would round it to 9007199254740992 and canonicalize a number the sender never wrote; OVC1 refuses the input instead.",
+      "reason": "number_not_admitted",
+      "json": "{\"a\":9007199254740993}",
+      "json_hex": "7b2261223a393030373139393235343734303939337d",
+      "frame_hex": "4f564331000000167b2261223a393030373139393235343734303939337d"
+    },
+    {
+      "id": "number.inexact-integer-below-minimum",
+      "note": "The same boundary in the negative direction.",
+      "reason": "number_not_admitted",
+      "json": "{\"a\":-9007199254740993}",
+      "json_hex": "7b2261223a2d393030373139393235343734303939337d",
+      "frame_hex": "4f564331000000177b2261223a2d393030373139393235343734303939337d"
+    },
+    {
+      "id": "number.inexact-large-integer",
+      "note": "1152921504606847000 is the ECMAScript rendering of 2**60, and is not itself an admitted integer: converting it to binary64 lands on 2**60, which is a different integer. A conforming OVC1 encoder never puts these bytes on the wire -- the closure rule refuses the payload instead, see encoder_rejected_vectors.encode.inexact-canonical-integer -- but a non-conforming peer can, so the decode-side rejection is required and is stated here.",
+      "reason": "number_not_admitted",
+      "json": "{\"a\":1152921504606847000}",
+      "json_hex": "7b2261223a313135323932313530343630363834373030307d",
+      "frame_hex": "4f564331000000197b2261223a313135323932313530343630363834373030307d"
+    },
+    {
+      "id": "root.array",
+      "note": "A frame's root is always an object.",
+      "reason": "not_a_json_object",
+      "json": "[1,2]",
+      "json_hex": "5b312c325d",
+      "frame_hex": "4f564331000000055b312c325d"
+    },
+    {
+      "id": "root.scalar",
+      "note": "A scalar root is refused for the same reason.",
+      "reason": "not_a_json_object",
+      "json": "123",
+      "json_hex": "313233",
+      "frame_hex": "4f56433100000003313233"
+    },
+    {
+      "id": "nesting.past-maximum",
+      "note": "One level past the 64-level maximum: valid JSON, admitted by the parser, and with no canonical form.",
+      "reason": "nesting_too_deep_to_canonicalize",
+      "json": "{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":{\"n\":1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+      "json_hex": "7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a317d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+      "frame_hex": "4f564331000001877b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a7b226e223a317d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
+    },
+    {
+      "id": "canonical.member-order-not-sorted",
+      "note": "Valid JSON, and a different spelling: the members are not in order.",
+      "reason": "not_canonical",
+      "json": "{\"b\":1,\"a\":2}",
+      "json_hex": "7b2262223a312c2261223a327d",
+      "frame_hex": "4f5643310000000d7b2262223a312c2261223a327d"
+    },
+    {
+      "id": "canonical.member-order-by-code-point",
+      "note": "The discriminating non-canonical vector: members sorted by Unicode code point instead of by UTF-16 code unit. An implementation that sorts by code point both accepts this frame and produces it, and is wrong on both counts.",
+      "reason": "not_canonical",
+      "json": "{\"a\":1,\"דּ\":3,\"😀\":2}",
+      "json_hex": "7b2261223a312c22efacb3223a332c22f09f9880223a327d",
+      "frame_hex": "4f564331000000187b2261223a312c22efacb3223a332c22f09f9880223a327d"
+    },
+    {
+      "id": "canonical.whitespace-after-separators",
+      "note": "Insignificant whitespace is still a different spelling.",
+      "reason": "not_canonical",
+      "json": "{\"a\": 1, \"b\": 2}",
+      "json_hex": "7b2261223a20312c202262223a20327d",
+      "frame_hex": "4f564331000000107b2261223a20312c202262223a20327d"
+    },
+    {
+      "id": "canonical.leading-whitespace",
+      "note": "Whitespace before the root object.",
+      "reason": "not_canonical",
+      "json": "  {\"a\":1}",
+      "json_hex": "20207b2261223a317d",
+      "frame_hex": "4f5643310000000920207b2261223a317d"
+    },
+    {
+      "id": "canonical.trailing-newline",
+      "note": "A newline inside the declared length. Nothing follows the closing brace.",
+      "reason": "not_canonical",
+      "json": "{\"a\":1}\n",
+      "json_hex": "7b2261223a317d0a",
+      "frame_hex": "4f564331000000087b2261223a317d0a"
+    },
+    {
+      "id": "canonical.number-in-exponent-form",
+      "note": "1e2 is the number 100, spelled another way.",
+      "reason": "not_canonical",
+      "json": "{\"a\":1e2}",
+      "json_hex": "7b2261223a3165327d",
+      "frame_hex": "4f564331000000097b2261223a3165327d"
+    },
+    {
+      "id": "canonical.number-with-trailing-zero",
+      "note": "1.50 is the number 1.5, spelled another way.",
+      "reason": "not_canonical",
+      "json": "{\"a\":1.50}",
+      "json_hex": "7b2261223a312e35307d",
+      "frame_hex": "4f5643310000000a7b2261223a312e35307d"
+    },
+    {
+      "id": "canonical.integral-float-spelling",
+      "note": "1.0 is the number 1, whose canonical spelling carries no fraction.",
+      "reason": "not_canonical",
+      "json": "{\"a\":1.0}",
+      "json_hex": "7b2261223a312e307d",
+      "frame_hex": "4f564331000000097b2261223a312e307d"
+    },
+    {
+      "id": "canonical.negative-zero-spelling",
+      "note": "-0.0 is the number 0, which JSON spells with no sign.",
+      "reason": "not_canonical",
+      "json": "{\"a\":-0.0}",
+      "json_hex": "7b2261223a2d302e307d",
+      "frame_hex": "4f5643310000000a7b2261223a2d302e307d"
+    },
+    {
+      "id": "canonical.escaped-ascii",
+      "note": "The escape for the letter c, which is written literally.",
+      "reason": "not_canonical",
+      "json": "{\"a\":\"\\u0063\"}",
+      "json_hex": "7b2261223a225c7530303633227d",
+      "frame_hex": "4f5643310000000e7b2261223a225c7530303633227d"
+    },
+    {
+      "id": "canonical.escaped-non-ascii",
+      "note": "The escape for e-acute, which is carried literally by the UTF-8 encoding rather than escaped.",
+      "reason": "not_canonical",
+      "json": "{\"a\":\"\\u00e9\"}",
+      "json_hex": "7b2261223a225c7530306539227d",
+      "frame_hex": "4f5643310000000e7b2261223a225c7530306539227d"
+    }
+  ],
+  "encoder_rejection_reasons": {
+    "canonical_form_not_admitted": "the payload has canonical bytes, and those bytes are not themselves admitted by the decode path, so the frame they would form could not be decoded. The encoder returns no frame. Separate from `rejection_reasons`, which are what a *received* frame is refused for: these are values an implementation must decline to send"
+  },
+  "encoder_rejected_vectors": [
+    {
+      "id": "encode.inexact-canonical-integer",
+      "note": "The case the closure rule exists for. 2**60 is exactly representable, so it is inside the admitted value domain and has canonical bytes; those bytes spell 1152921504606847000, which converts to binary64 and back as 2**60 and is therefore not an admitted integer itself. An encoder that returned this frame would hand its caller bytes no conforming peer accepts, so it refuses the payload instead. A sender that needs this identity carries it as a string.",
+      "reason": "canonical_form_not_admitted",
+      "payload": {
+        "a": 1152921504606846976
+      },
+      "canonical_json": "{\"a\":1152921504606847000}",
+      "canonical_json_hex": "7b2261223a313135323932313530343630363834373030307d",
+      "decode_rejection": "number.inexact-large-integer"
+    },
+    {
+      "id": "encode.inexact-canonical-integer-smaller",
+      "note": "The same failure two magnitudes down, so the rule is not read as being about 2**60 in particular. 2**55 is exact and renders as 36028797018963970, which lands back on 2**55. The smallest power of two this happens to is 2**55: 2**54 renders as its own seventeen digits and frames, see canonicalization_vectors.number.exact-integer-above-safe-range.",
+      "reason": "canonical_form_not_admitted",
+      "payload": {
+        "a": 36028797018963968
+      },
+      "canonical_json": "{\"a\":36028797018963970}",
+      "canonical_json_hex": "7b2261223a33363032383739373031383936333937307d"
+    }
+  ]
+}

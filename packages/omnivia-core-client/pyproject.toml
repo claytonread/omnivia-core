@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "omnivia-core-client"
+version = "0.1.0"
+description = "Shared client protocol foundation for OmniVia Core: the frozen OVC1 frame, call deadlines and cancellation, version compatibility, and the transport contract."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "omnivia-core>=0.1.0,<0.2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/omnivia_core_client"]
