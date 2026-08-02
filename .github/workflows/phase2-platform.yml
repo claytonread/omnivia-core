@@ -59,6 +59,7 @@ jobs:
           python -m pip install -e packages/omnivia-core-runtime
           python -m pip install -e packages/omnivia-core-cli
           python -m pip install -e packages/omnivia-core-mcp
+          python -m pip install -e packages/omnivia-core-client
 
       - name: Run Phase 2 acceptance suite
         run: python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs
@@ -68,3 +69,6 @@ jobs:
         # dedicated case and it has never executed on any machine, so a silent skip
         # here would leave the Windows row green while proving nothing.
         run: python scripts/check-platform-lock-coverage.py
+
+      - name: Qualify P1b native descriptor provenance
+        run: python -m pytest packages/omnivia-core-client/tests/test_discovery.py -q -rs
