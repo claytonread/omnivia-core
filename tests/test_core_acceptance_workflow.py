@@ -462,7 +462,7 @@ def test_gate_is_not_informational() -> None:
 
 def test_checkout_fetches_full_history() -> None:
     step = _step(_steps(), "Check out repository")
-    assert _entry(step, "uses") == "actions/checkout@v4"
+    assert _entry(step, "uses") == "actions/checkout@v7"
     # Needed by both diff-check steps to resolve their commit ranges.
     assert _entry(_block(step, "with"), "fetch-depth") == "0"
 
@@ -471,11 +471,11 @@ def test_python_and_node_versions() -> None:
     steps = _steps()
 
     python_step = _step(steps, "Set up Python")
-    assert _entry(python_step, "uses") == "actions/setup-python@v5"
+    assert _entry(python_step, "uses") == "actions/setup-python@v7"
     assert _entry(_block(python_step, "with"), "python-version") == '"3.11"'
 
     node_step = _step(steps, "Set up Node")
-    assert _entry(node_step, "uses") == "actions/setup-node@v4"
+    assert _entry(node_step, "uses") == "actions/setup-node@v7"
     node_options = _block(node_step, "with")
     assert _entry(node_options, "node-version") == '"22"'
     assert _entry(node_options, "cache") == "npm"

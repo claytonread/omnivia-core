@@ -1,19 +1,18 @@
 """Transport-neutral operation dispatch (B9, ADR-038).
 
-Scope, stated plainly: **this registry contains no product operations.** A2 owns the
-provider-neutral operation catalogue — workspace inspect/create/list, memory
-create/read/list/search, ingestion, evidence search, graph traversal, Context Pack
-creation — and registering them is the separately approved Phase 4 packet, not this
-one. The five schemas this runtime builds on are envelope-level
-only (`common`, `compatibility`, `errors`, `envelopes`, `application`); there is no
-operation or payload schema to implement against.
+Scope, stated plainly: **this slice registers no application handlers.** The
+accepted generated application catalogue now exists, and this module represents it
+as the catalogue-backed application registry boundary — the accepted operation
+names are derived from that catalogue rather than transcribed here, so the boundary
+cannot drift from what was frozen.
 
-Defining those payloads here would create exactly the competing public domain API
-the programme rules forbid, so the registry ships with only the three
-service-lifecycle operations ADR-037 keeps distinct from product operations —
-health, readiness and discovery — and **refuses** any operation it does not know.
-When A2 freezes the catalogue, handlers register against those frozen contracts
-without the runtime having invented them.
+Representing the boundary is all this slice does: it changes no dispatch,
+authorization, storage or advertised support behaviour. The three service-lifecycle
+operations ADR-037 keeps distinct from application operations — health, readiness
+and discovery — remain the only implemented handlers, and the registry still
+**refuses** any operation it does not know. Later, separately approved slices add
+the real application handlers against those frozen contracts, without the runtime
+having invented the payloads itself.
 
 The dispatcher itself is transport-neutral: it consumes a `RequestEnvelope` and
 returns a `ResponseEnvelope`, so an in-process caller, a local IPC transport, the
@@ -27,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from omnivia_core.contracts.v1 import (
+    OPERATION_CATALOGUE,
     ApiError,
     CapabilityRef,
     CapabilitySet,
@@ -45,6 +45,12 @@ from omnivia_core.contracts.v1 import (
 #: The only operations this runtime implements today. Deliberately not product
 #: operations: ADR-037 keeps health, readiness and discovery distinct from them.
 SERVICE_OPERATIONS = ("core.health", "core.readiness", "core.discovery")
+
+#: The accepted application operation names, derived from the frozen A2 catalogue
+#: rather than transcribed, so this set cannot drift from what A2 froze.
+APPLICATION_OPERATIONS: frozenset[str] = frozenset(
+    entry.name for entry in OPERATION_CATALOGUE
+)
 
 OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
 
@@ -95,6 +101,72 @@ class OperationRegistry:
 
     def __contains__(self, operation: object) -> bool:
         return operation in self._handlers
+
+
+@dataclass(frozen=True)
+class ApplicationRegistryCompleteness:
+    """Whether an application registry has exactly one handler per catalogue name.
+
+    Both lists are sorted so a report is deterministic and diffable regardless of
+    registration order.
+    """
+
+    missing: tuple[str, ...]
+    unexpected: tuple[str, ...]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.missing and not self.unexpected
+
+
+@dataclass
+class ApplicationOperationRegistry:
+    """Handlers for the accepted application operation catalogue, bounded by
+    :data:`APPLICATION_OPERATIONS`.
+
+    Registering a name outside that set, or registering the same name twice, fails
+    closed. Holding zero handlers, or fewer than all of them, is a valid
+    construction state -- later slices own filling handlers in -- but nothing here
+    calls a partial registry complete or supported; only `assert_complete` makes
+    that claim, and only when it is true.
+    """
+
+    _handlers: dict[str, OperationHandler] = field(default_factory=dict)
+
+    def register(self, operation: str, handler: OperationHandler) -> None:
+        if operation not in APPLICATION_OPERATIONS:
+            raise ValueError(
+                f"operation {operation!r} is not part of the accepted application "
+                "operation catalogue"
+            )
+        if operation in self._handlers:
+            raise ValueError(f"operation {operation!r} is already registered")
+        self._handlers[operation] = handler
+
+    def get(self, operation: str) -> OperationHandler | None:
+        return self._handlers.get(operation)
+
+    @property
+    def operations(self) -> frozenset[str]:
+        return frozenset(self._handlers)
+
+    def __contains__(self, operation: object) -> bool:
+        return operation in self._handlers
+
+    def completeness(self) -> ApplicationRegistryCompleteness:
+        registered = frozenset(self._handlers)
+        return ApplicationRegistryCompleteness(
+            missing=tuple(sorted(APPLICATION_OPERATIONS - registered)),
+            unexpected=tuple(sorted(registered - APPLICATION_OPERATIONS)),
+        )
+
+    def assert_complete(self) -> None:
+        report = self.completeness()
+        if not report.is_complete:
+            raise ValueError(
+                "application registry is incomplete: "
+                f"missing={list(report.missing)} unexpected={list(report.unexpected)}"
+            )
 
 
 SERVER_VERSION = "0.1.0"
@@ -233,7 +305,10 @@ def build_service_registry() -> OperationRegistry:
 
 
 __all__ = [
+    "APPLICATION_OPERATIONS",
     "SERVICE_OPERATIONS",
+    "ApplicationOperationRegistry",
+    "ApplicationRegistryCompleteness",
     "OperationContext",
     "OperationError",
     "OperationHandler",
