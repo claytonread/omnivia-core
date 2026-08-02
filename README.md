@@ -99,14 +99,14 @@ Core dependencies:
 ## Package Topology
 
 The repository root is the canonical `omnivia-core` distribution
-(import package `omnivia_core`, under `src/`). Three sibling skeleton
-distributions live under `packages/` and depend on `omnivia-core`:
+(import package `omnivia_core`, under `src/`). Four sibling distributions
+live under `packages/` and depend on `omnivia-core`:
 
 ```text
-                    omnivia-core
-                  ^      ^      ^
-                  |      |      |
-omnivia-core-runtime   omnivia-core-mcp   omnivia-core-cli
+                          omnivia-core
+             ^          ^          ^          ^
+             |          |          |          |
+omnivia-core-runtime  omnivia-core-mcp  omnivia-core-cli  omnivia-core-client
 ```
 
 | Distribution | Import package | Location | Depends on |
@@ -115,37 +115,48 @@ omnivia-core-runtime   omnivia-core-mcp   omnivia-core-cli
 | `omnivia-core-runtime` | `omnivia_core_runtime` | `packages/omnivia-core-runtime` | `omnivia-core` |
 | `omnivia-core-mcp` | `omnivia_core_mcp` | `packages/omnivia-core-mcp` | `omnivia-core` |
 | `omnivia-core-cli` | `omnivia_core_cli` | `packages/omnivia-core-cli` | `omnivia-core` |
+| `omnivia-core-client` | `omnivia_core_client` | `packages/omnivia-core-client` | `omnivia-core` |
 
 Rules enforced by `scripts/check-package-boundaries.py`:
 
-- `omnivia-core` never depends on or imports any sibling distribution or the
-  legacy `omnivia_memory` implementation.
-- `omnivia-core-runtime`, `omnivia-core-mcp`, and `omnivia-core-cli` each
-  declare a compile-time dependency on `omnivia-core`.
+- `omnivia-core` never depends on or imports any sibling distribution — the
+  client included — or the legacy `omnivia_memory` implementation.
+- `omnivia-core-runtime`, `omnivia-core-mcp`, `omnivia-core-cli`, and
+  `omnivia-core-client` each declare a compile-time dependency on the accepted
+  `omnivia-core>=0.1.0,<0.2.0` range.
 - `omnivia-core-mcp` and `omnivia-core-cli` never depend on or import
   `omnivia_core_runtime`.
+- `omnivia-core-client` declares exactly one dependency — that same
+  `omnivia-core` range — and nothing else, third-party libraries included, and
+  imports no runtime, MCP, CLI, or legacy package. It is the shared protocol
+  foundation the others may build on, so that edge only ever points the other
+  way.
 
-All four packages are a **package-boundary skeleton only**: `omnivia_core`,
-`omnivia_core_runtime`, `omnivia_core_mcp`, and `omnivia_core_cli` currently
-expose package identity/version metadata and nothing else. There is no
-runtime, MCP, or CLI implementation yet, and no compatibility facade has been
-created for the legacy `omnivia-memory` implementation. The reference
-implementation that other tooling should still use today continues to live,
-unchanged, at `services/omnivia-memory` (import package `omnivia_memory`) — see
-[Repository Split](#repository-split) below.
+`omnivia-core-client` carries the OVC1 protocol **foundation** only:
+`framing`, `deadline`, `compatibility`, `errors`, and the `transport` protocol
+that concrete transports will satisfy. No concrete transport ships in it — no
+local socket, no HTTP, no endpoint discovery, no retry, and no high-level
+client — so nothing outside it should assume a working client yet.
+
+No compatibility facade has been created for the legacy `omnivia-memory`
+implementation. The reference implementation that other tooling should still use
+today continues to live, unchanged, at `services/omnivia-memory` (import package
+`omnivia_memory`) — see [Repository Split](#repository-split) below.
 
 ### Boundary and build checks
 
 Run the boundary checks (manifest and AST-based) and their tests:
 
 ```bash
-.venv/bin/python -m pytest tests -q
+.venv/bin/python -m pytest tests packages/omnivia-core-client/tests -q
 .venv/bin/python scripts/check-package-boundaries.py
 ```
 
-Run a clean, isolated build/install check for all four distributions. This
+Run a clean, isolated build/install check for all five distributions. This
 builds a temporary wheelhouse and installs each distribution into its own
-temporary virtual environment; it writes nothing under the repository tree:
+temporary virtual environment — offline, `--no-index`, from the wheelhouse
+alone — then imports its operational modules; it writes nothing under the
+repository tree:
 
 ```bash
 PYTHON=.venv/bin/python scripts/check-package-builds.sh

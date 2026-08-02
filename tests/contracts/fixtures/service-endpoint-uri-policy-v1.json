@@ -1,0 +1,136 @@
+{
+  "format": "omnivia.service-endpoint-uri-policy.v1",
+  "accepted": [
+    {
+      "id": "loopback-http",
+      "endpoint_uri": "http://127.0.0.1:8731/"
+    },
+    {
+      "id": "network-https",
+      "endpoint_uri": "https://core.example.invalid/v1"
+    },
+    {
+      "id": "ipv6-http",
+      "endpoint_uri": "http://[::1]:8731/"
+    },
+    {
+      "id": "unix-domain-socket",
+      "endpoint_uri": "unix:///run/omnivia/core.sock"
+    },
+    {
+      "id": "windows-named-pipe",
+      "endpoint_uri": "pipe://omnivia-deadbeef"
+    },
+    {
+      "id": "highest-port",
+      "endpoint_uri": "http://127.0.0.1:65535/"
+    }
+  ],
+  "rejected": [
+    {
+      "id": "authority-userinfo",
+      "endpoint_uri": "http://svc:hunter2@127.0.0.1:8731/",
+      "reason": "credential"
+    },
+    {
+      "id": "direct-storage-file-uri",
+      "endpoint_uri": "file:///Users/alice/Library/OmniVia/workspace.sqlite",
+      "reason": "direct_storage"
+    },
+    {
+      "id": "unapproved-scheme",
+      "endpoint_uri": "ftp://127.0.0.1/core",
+      "reason": "unapproved_transport"
+    },
+    {
+      "id": "fragment",
+      "endpoint_uri": "http://127.0.0.1:8731/#fragment",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "non-ascii-without-percent-encoding",
+      "endpoint_uri": "unix:///tmp/café.sock",
+      "reason": "not_canonical_uri"
+    },
+    {
+      "id": "malformed-percent-encoding",
+      "endpoint_uri": "unix:///tmp/%zz",
+      "reason": "not_canonical_uri"
+    },
+    {
+      "id": "credential-bearing-query",
+      "endpoint_uri": "http://127.0.0.1:8731/?access_token=hunter2",
+      "reason": "credential"
+    },
+    {
+      "id": "unix-storage-path",
+      "endpoint_uri": "unix:///Users/alice/Library/OmniVia/workspace.sqlite",
+      "reason": "direct_storage"
+    },
+    {
+      "id": "missing-http-host",
+      "endpoint_uri": "http://:80/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "empty-ip-literal",
+      "endpoint_uri": "http://[]/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "unbalanced-ip-literal",
+      "endpoint_uri": "http://[::1:8731/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "malformed-ip-literal-extra-colon",
+      "endpoint_uri": "http://[:::]/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "malformed-ip-literal-nine-groups",
+      "endpoint_uri": "http://[1:2:3:4:5:6:7:8:9]/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "non-numeric-port",
+      "endpoint_uri": "http://host:abc/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "out-of-range-port",
+      "endpoint_uri": "http://host:65536/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "unsafe-pipe-name",
+      "endpoint_uri": "pipe://../escape",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "pipe-dot-sentinel",
+      "endpoint_uri": "pipe://..",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "unix-dot-segment",
+      "endpoint_uri": "unix:///../tmp/core.sock",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "unix-percent-encoded-dot-segment",
+      "endpoint_uri": "unix:///%2E%2E/tmp/core.sock",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "zero-port",
+      "endpoint_uri": "http://127.0.0.1:0/",
+      "reason": "not_dialable"
+    },
+    {
+      "id": "leading-zero-port",
+      "endpoint_uri": "http://127.0.0.1:08731/",
+      "reason": "not_canonical_uri"
+    }
+  ]
+}

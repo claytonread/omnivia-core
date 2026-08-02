@@ -135,7 +135,7 @@ def test_the_baseline_records_the_accepted_checkpoint() -> None:
     document = json.loads(checker.PATTERN_BASELINE.read_text(encoding="utf-8"))
     assert document["format"] == checker.PATTERN_BASELINE_FORMAT
     assert document["accepted_checkpoint"]
-    assert len(document["definitions"]) == 55
+    assert len(document["definitions"]) == 56
 
 
 @requires_node
@@ -144,7 +144,7 @@ def test_every_definition_classifies_as_unchanged() -> None:
 
     The baseline now records the accepted checkpoint that already carries the
     guarded patterns, so the recorded definitions and the current schemas are
-    the same 55 definitions. Every one must classify `unchanged` -- and, just as
+    the same 56 definitions. Every one must classify `unchanged` -- and, just as
     importantly, *nothing* may classify parity, major or indeterminate: a
     surviving parity verdict would mean the baseline was not actually rolled
     forward, and either of the other two would mean a pattern moved after the
@@ -168,7 +168,7 @@ def test_every_definition_classifies_as_unchanged() -> None:
             name, recorded[name], current[name], values, ecmascript
         )
         tally[classification] = tally.get(classification, 0) + 1
-    assert tally == {checker.CLASSIFICATION_UNCHANGED: 55}, tally
+    assert tally == {checker.CLASSIFICATION_UNCHANGED: 56}, tally
     # Stated separately from the tally above so a failure names the outcome that
     # appeared rather than only that the totals differed.
     assert not {PARITY, MAJOR, "indeterminate"} & set(tally), tally

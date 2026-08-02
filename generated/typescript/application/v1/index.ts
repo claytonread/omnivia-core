@@ -678,6 +678,47 @@ export type ProbeStatus = string;
 export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Canonical dialable Core transport endpoint. Lowercase HTTP and HTTPS require a valid host and
+ * an optional port in 1-65535 written without leading zeros, and carry no query and no fragment.
+ * Local IPC uses an absolute `.sock` Unix-domain socket URI or a safe Windows named-pipe URI.
+ * URI userinfo, direct-storage schemes, credential-bearing queries, fragments and unapproved
+ * transports are forbidden. This pattern is the single authority for the policy: every generated
+ * binding compiles it directly, so no runtime adds acceptance rules of its own.
+ */
+export type ServiceEndpointUri = string;
+export const SERVICE_ENDPOINT_URI_PATTERN: string =
+  "^(?:https?://(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\\.(?" +
+  ":25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|[A-Za-z0-9](?:[A-Za-" +
+  "z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-" +
+  "z0-9])?)*|\\[(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-" +
+  "f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A" +
+  "-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1" +
+  ",4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa" +
+  "-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|" +
+  "[0-9A-Fa-f]{1,4}:(?:(?::[0-9A-Fa-f]{1,4}){1,6})|:(?:(?::[0-9A-Fa-f]{" +
+  "1,4}){1,7}|:))\\])(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}" +
+  "|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/(?:[A-Za-z0-9\\-._~!$&" +
+  "'()*+,;=:@]|%[0-9A-F]{2})*)*|unix:///(?!\\.{1,2}(?:/|$))(?!.*?/\\.{1,2" +
+  "}(?:/|$))(?!.*//)(?!.*%2[EF])(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A" +
+  "-F]{2})+(?:/(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A-F]{2})+)*\\.sock|" +
+  "pipe://[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9])?)$(?![\\s\\S])";
+/**
+ * Return whether a value is a canonical credential-free dialable Core endpoint URI.
+ */
+export function isServiceEndpointUri(value: unknown): value is ServiceEndpointUri {
+  return typeof value === "string" && value.length <= 2048 && new RegExp(SERVICE_ENDPOINT_URI_PATTERN).test(value);
+}
+
+/**
+ * Assert the endpoint policy without including a rejected value in the error.
+ */
+export function assertServiceEndpointUri(value: unknown): asserts value is ServiceEndpointUri {
+  if (!isServiceEndpointUri(value)) {
+    throw new TypeError("endpoint_uri is not an approved credential-free dialable Core transport URI");
+  }
+}
+
+/**
  * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
  * `provisioning` or `archived`. Open by design so a compatible minor release can add statuses
  * without breaking existing decoders.
@@ -2541,9 +2582,10 @@ export interface RecordIdentity {
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
- * authority, no lease ownership, and no database or filesystem location. Holding one lets a
- * caller address an endpoint and negotiate versions; it authorizes nothing, and every authority
- * question is still settled by an authenticated request.
+ * authority, no lease ownership, and no database or workspace storage location. A local IPC
+ * transport address may contain its bounded socket path. Holding one lets a caller address an
+ * endpoint and negotiate versions; it authorizes nothing, and every authority question is still
+ * settled by an authenticated request.
  */
 export interface ServiceEndpointDescriptor {
   /**
@@ -2566,10 +2608,12 @@ export interface ServiceEndpointDescriptor {
    */
   readonly installation_id: Identifier;
   /**
-   * Absolute URI a client connects to, scheme included. An address to dial, not a location to
-   * open: it never names a database file or a workspace directory.
+   * Approved dialable Core transport URI. It never carries userinfo and never names a database
+   * file or workspace directory. A `unix:///` value names only a bounded `.sock` transport
+   * address; Runtime publication additionally requires it to match the transport-owned
+   * endpoint source.
    */
-  readonly endpoint_uri: string;
+  readonly endpoint_uri: ServiceEndpointUri;
   /**
    * Wire protocol version spoken at this endpoint.
    */
@@ -2617,6 +2661,22 @@ export interface ServiceEndpointDescriptor {
    * complete when present, so a reader never has to reason about a half-identified process.
    */
   readonly process?: ServiceProcessEvidence;
+}
+
+/**
+ * Return whether a structurally decoded descriptor satisfies mandatory endpoint semantics.
+ */
+export function isServiceEndpointDescriptorSemanticallyValid(value: ServiceEndpointDescriptor): boolean {
+  return isServiceEndpointUri(value.endpoint_uri);
+}
+
+/**
+ * Assert descriptor endpoint semantics without echoing a rejected value.
+ */
+export function assertServiceEndpointDescriptorSemantics(value: ServiceEndpointDescriptor): void {
+  if (!isServiceEndpointDescriptorSemanticallyValid(value)) {
+    throw new TypeError("service endpoint descriptor is not safe to publish");
+  }
 }
 
 /**
@@ -3118,6 +3178,16 @@ export interface ServiceProbeResult {
    * Optional structured detail.
    */
   readonly details?: JsonObject;
+}
+
+/**
+ * Assert nested descriptor semantics before a probe result reaches a public boundary.
+ */
+export function assertServiceProbeResultSemantics(value: ServiceProbeResult): void {
+  const descriptor = value.descriptor;
+  if (descriptor !== undefined && descriptor !== null) {
+    assertServiceEndpointDescriptorSemantics(descriptor);
+  }
 }
 
 /**

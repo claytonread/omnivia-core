@@ -2,15 +2,16 @@
 #
 # Build and install-check the OmniVia Core package topology (ADR-036, T-0628).
 #
-# Builds wheels for the four distributions (omnivia-core, omnivia-core-runtime,
-# omnivia-core-mcp, omnivia-core-cli) into a temporary wheelhouse, then
-# installs each into its own isolated temporary virtual environment and
-# imports it:
+# Builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
+# omnivia-core-mcp, omnivia-core-cli, omnivia-core-client) into a temporary
+# wheelhouse, then installs each into its own isolated temporary virtual
+# environment and imports it:
 #
 #   a. omnivia-core alone
 #   b. omnivia-core-runtime from the wheelhouse
 #   c. omnivia-core-mcp from the wheelhouse
 #   d. omnivia-core-cli from the wheelhouse
+#   e. omnivia-core-client from the wheelhouse
 #
 # The omnivia-core wheel additionally gets the Application Contract v1 (ADR-038)
 # packaging checks:
@@ -43,6 +44,7 @@ CORE_DIR="${REPO_ROOT}"
 RUNTIME_DIR="${REPO_ROOT}/packages/omnivia-core-runtime"
 MCP_DIR="${REPO_ROOT}/packages/omnivia-core-mcp"
 CLI_DIR="${REPO_ROOT}/packages/omnivia-core-cli"
+CLIENT_DIR="${REPO_ROOT}/packages/omnivia-core-client"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/omnivia-core-build-check.XXXXXX")"
 WHEELHOUSE="${WORKDIR}/wheelhouse"
@@ -87,6 +89,7 @@ build_wheel "${CORE_DIR}"
 build_wheel "${RUNTIME_DIR}"
 build_wheel "${MCP_DIR}"
 build_wheel "${CLI_DIR}"
+build_wheel "${CLIENT_DIR}"
 
 echo "--- wheelhouse contents ---"
 ls -1 "${WHEELHOUSE}"
@@ -220,6 +223,15 @@ install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp"
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
   "omnivia_core_cli.client" \
   "omnivia_core_cli.main"
+# The client's whole surface is operational: every module below is imported by a
+# caller on the first call it makes, so each one has to resolve from the wheel
+# plus its single declared `omnivia-core` dependency and nothing else.
+install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
+  "omnivia_core_client.compatibility" \
+  "omnivia_core_client.deadline" \
+  "omnivia_core_client.errors" \
+  "omnivia_core_client.framing" \
+  "omnivia_core_client.transport"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"
 CORE_RESOURCE_CWD="${WORKDIR}/core-resource-check-cwd"
@@ -331,6 +343,7 @@ forbidden = (
     'omnivia_core_runtime',
     'omnivia_core_mcp',
     'omnivia_core_cli',
+    'omnivia_core_client',
     'omnivia_memory',
     'jsonschema',
 )
@@ -351,4 +364,4 @@ PYEOF
 )
 echo
 
-echo "All four distributions built and installed cleanly."
+echo "All five distributions built and installed cleanly."

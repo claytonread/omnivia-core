@@ -6,7 +6,8 @@ version/capability compatibility semantics, all re-exported from one place so
 a caller does not need to know which submodule a given name lives in. The
 submodules themselves (:mod:`generated`, :mod:`codec`, :mod:`compatibility`,
 :mod:`semantics`, :mod:`semantics_evidence`, :mod:`semantics_jobs`,
-:mod:`semantics_knowledge`, :mod:`semantics_operations`, :mod:`adapter`,
+:mod:`semantics_knowledge`, :mod:`semantics_operations`,
+:mod:`semantics_service`, :mod:`adapter`,
 :mod:`conformance`) remain importable directly for callers that prefer
 explicit provenance.
 
@@ -28,6 +29,7 @@ from . import (
     semantics_jobs,
     semantics_knowledge,
     semantics_operations,
+    semantics_service,
 )
 from .adapter import (
     ApplicationWireAdapter,
@@ -172,6 +174,7 @@ from .generated import (
     RETRYABLE_RETRY_CLASSES,
     SCHEMA_BASE_URI,
     SCOPE_PATTERN,
+    SERVICE_ENDPOINT_URI_PATTERN,
     SOURCE_KIND_PATTERN,
     TIMESTAMP_PATTERN,
     TRACE_ID_PATTERN,
@@ -350,6 +353,7 @@ from .generated import (
     Scope,
     ServiceComponentStatus,
     ServiceEndpointDescriptor,
+    ServiceEndpointUri,
     ServiceProbeRequest,
     ServiceProbeResult,
     ServiceProcessEvidence,
@@ -616,6 +620,14 @@ from .semantics_operations import (
     validate_operation_error,
     validate_operation_request_metadata,
 )
+from .semantics_service import (
+    decode_service_endpoint_descriptor,
+    decode_service_probe_result,
+    encode_service_endpoint_descriptor,
+    encode_service_probe_result,
+    validate_service_endpoint_descriptor,
+    validate_service_probe_result,
+)
 
 __all__ = [
     "ADAPTER_CONFORMANCE_CORPUS_FILE",
@@ -835,6 +847,7 @@ __all__ = [
     "SCOPE_KIND_INSTALLATION",
     "SCOPE_KIND_WORKSPACE",
     "SCOPE_PATTERN",
+    "SERVICE_ENDPOINT_URI_PATTERN",
     "SOURCE_KIND_PATTERN",
     "TIMESTAMP_PATTERN",
     "TRACE_ID_PATTERN",
@@ -1024,6 +1037,7 @@ __all__ = [
     "Scope",
     "ServiceComponentStatus",
     "ServiceEndpointDescriptor",
+    "ServiceEndpointUri",
     "ServiceProbeRequest",
     "ServiceProbeResult",
     "ServiceProcessEvidence",
@@ -1079,12 +1093,16 @@ __all__ = [
     "decode_record_supersede_input",
     "decode_request",
     "decode_response",
+    "decode_service_endpoint_descriptor",
+    "decode_service_probe_result",
     "decode_success_response",
     "duplicate_capability_ids",
     "effective_capabilities",
     "encode_error_response",
     "encode_request",
     "encode_response",
+    "encode_service_endpoint_descriptor",
+    "encode_service_probe_result",
     "encode_success_response",
     "generated",
     "get_operation_metadata",
@@ -1123,6 +1141,7 @@ __all__ = [
     "semantics_jobs",
     "semantics_knowledge",
     "semantics_operations",
+    "semantics_service",
     "to_canonical_json",
     "to_canonical_json_document",
     "validate_candidate_approve_input",
@@ -1188,6 +1207,8 @@ __all__ = [
     "validate_record_supersede_result",
     "validate_record_temporal_metadata",
     "validate_request_idempotency",
+    "validate_service_endpoint_descriptor",
+    "validate_service_probe_result",
     "validate_synchronous_job_response_job_reference",
     "validate_version_capability_envelope",
     "validate_version_window",
