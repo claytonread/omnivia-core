@@ -163,15 +163,17 @@ def test_the_audited_population_is_what_the_schemas_contain() -> None:
     """Pins the size of the thing everything below asserts about.
 
     The audit found 54 definitions carrying a bare terminal anchor across 13
-    pattern families. `OpaqueToken` is the 55th patterned definition and already
+    pattern families. `OpaqueToken` was the 55th patterned definition and already
     carried the guard, which is why the idiom used here is the contract's own
     rather than one invented for the migration -- and once the other 54 are
-    hardened its pattern is no longer distinct, so 55 definitions share 13
-    families.
+    hardened its pattern is no longer distinct, so those 55 definitions share 13
+    families. `ServiceEndpointUri` is the 56th patterned definition and the only
+    one added since, contributing the single endpoint-policy family and carrying
+    the terminal guard from its first publication.
     """
-    assert len(DEFINITIONS) == 55
+    assert len(DEFINITIONS) == 56
     families = {node["pattern"] for node in DEFINITIONS.values()}
-    assert len(families) == 13, sorted(families)
+    assert len(families) == 14, sorted(families)
 
 
 @pytest.mark.parametrize("name", DEFINITION_IDS)

@@ -1536,6 +1536,35 @@ def emit_typescript(contract: Contract) -> str:
                     for index, piece in enumerate(pieces):
                         terminator = ";" if index == len(pieces) - 1 else " +"
                         lines.append(f"  {json.dumps(piece)}{terminator}")
+                if definition.name == "ServiceEndpointUri":
+                    lines += typescript_doc(
+                        "Return whether a value is a canonical credential-free dialable Core endpoint URI.",
+                        "",
+                    )
+                    lines.append(
+                        "export function isServiceEndpointUri(value: unknown): value is ServiceEndpointUri {"
+                    )
+                    lines.append(
+                        '  return typeof value === "string" && value.length <= 2048 && '
+                        "new RegExp(SERVICE_ENDPOINT_URI_PATTERN).test(value);"
+                    )
+                    lines.append("}")
+                    lines.append("")
+                    lines += typescript_doc(
+                        "Assert the endpoint policy without including a rejected value in the error.",
+                        "",
+                    )
+                    lines.append(
+                        "export function assertServiceEndpointUri("
+                        "value: unknown): asserts value is ServiceEndpointUri {"
+                    )
+                    lines.append("  if (!isServiceEndpointUri(value)) {")
+                    lines.append(
+                        '    throw new TypeError("endpoint_uri is not an approved credential-free '
+                        'dialable Core transport URI");'
+                    )
+                    lines.append("  }")
+                    lines.append("}")
             lines.append("")
         elif definition.kind == "integer":
             lines += typescript_doc(definition.description, "")
@@ -1562,6 +1591,50 @@ def emit_typescript(contract: Contract) -> str:
                     f"  readonly {prop.name}{optional}: {typescript_annotation(prop.type)};"
                 )
             lines.append("}")
+            if definition.name == "ServiceEndpointDescriptor":
+                lines.append("")
+                lines += typescript_doc(
+                    "Return whether a structurally decoded descriptor satisfies mandatory endpoint semantics.",
+                    "",
+                )
+                lines.append(
+                    "export function isServiceEndpointDescriptorSemanticallyValid("
+                    "value: ServiceEndpointDescriptor): boolean {"
+                )
+                lines.append("  return isServiceEndpointUri(value.endpoint_uri);")
+                lines.append("}")
+                lines.append("")
+                lines += typescript_doc(
+                    "Assert descriptor endpoint semantics without echoing a rejected value.",
+                    "",
+                )
+                lines.append(
+                    "export function assertServiceEndpointDescriptorSemantics("
+                    "value: ServiceEndpointDescriptor): void {"
+                )
+                lines.append(
+                    "  if (!isServiceEndpointDescriptorSemanticallyValid(value)) {"
+                )
+                lines.append(
+                    '    throw new TypeError("service endpoint descriptor is not safe to publish");'
+                )
+                lines.append("  }")
+                lines.append("}")
+            elif definition.name == "ServiceProbeResult":
+                lines.append("")
+                lines += typescript_doc(
+                    "Assert nested descriptor semantics before a probe result reaches a public boundary.",
+                    "",
+                )
+                lines.append(
+                    "export function assertServiceProbeResultSemantics("
+                    "value: ServiceProbeResult): void {"
+                )
+                lines.append("  const descriptor = value.descriptor;")
+                lines.append("  if (descriptor !== undefined && descriptor !== null) {")
+                lines.append("    assertServiceEndpointDescriptorSemantics(descriptor);")
+                lines.append("  }")
+                lines.append("}")
             lines.append("")
 
     lines += typescript_doc(

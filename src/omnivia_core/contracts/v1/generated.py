@@ -134,6 +134,7 @@ __all__ = [
     "RETRY_CLASS_RETRYABLE_AFTER_PRECONDITION_REFRESH",
     "SCHEMA_BASE_URI",
     "SCOPE_PATTERN",
+    "SERVICE_ENDPOINT_URI_PATTERN",
     "SOURCE_KIND_PATTERN",
     "TIMESTAMP_PATTERN",
     "TRACE_ID_PATTERN",
@@ -312,6 +313,7 @@ __all__ = [
     "Scope",
     "ServiceComponentStatus",
     "ServiceEndpointDescriptor",
+    "ServiceEndpointUri",
     "ServiceProbeRequest",
     "ServiceProbeResult",
     "ServiceProcessEvidence",
@@ -683,6 +685,23 @@ SOURCE_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S
 EVIDENCE_DISPOSITION_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])'
 PROBE_KIND_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])'
 PROBE_STATUS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])'
+SERVICE_ENDPOINT_URI_PATTERN: Final = (
+    '^(?:https?://(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\\.(?'
+    ':25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|[A-Za-z0-9](?:[A-Za-'
+    'z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-'
+    'z0-9])?)*|\\[(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-'
+    'f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A'
+    '-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1'
+    ',4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa'
+    '-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|'
+    '[0-9A-Fa-f]{1,4}:(?:(?::[0-9A-Fa-f]{1,4}){1,6})|:(?:(?::[0-9A-Fa-f]{'
+    '1,4}){1,7}|:))\\])(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}'
+    '|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/(?:[A-Za-z0-9\\-._~!$&'
+    "'()*+,;=:@]|%[0-9A-F]{2})*)*|unix:///(?!\\.{1,2}(?:/|$))(?!.*?/\\.{1,2"
+    "}(?:/|$))(?!.*//)(?!.*%2[EF])(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A"
+    "-F]{2})+(?:/(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A-F]{2})+)*\\.sock|"
+    'pipe://[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9])?)$(?![\\s\\S])'
+)
 WORKSPACE_STATUS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])'
 
 
@@ -1262,6 +1281,15 @@ ProbeStatus: TypeAlias = str
 """Open, dot-namespaced code naming the outcome of a probe or one of its components, such as `pass`
 or `warn` or `fail`. Open by design; an unrecognized status must be preserved and surfaced, not
 coerced to a known one.
+"""
+
+ServiceEndpointUri: TypeAlias = str
+"""Canonical dialable Core transport endpoint. Lowercase HTTP and HTTPS require a valid host and an
+optional port in 1-65535 written without leading zeros, and carry no query and no fragment. Local
+IPC uses an absolute `.sock` Unix-domain socket URI or a safe Windows named-pipe URI. URI
+userinfo, direct-storage schemes, credential-bearing queries, fragments and unapproved transports
+are forbidden. This pattern is the single authority for the policy: every generated binding
+compiles it directly, so no runtime adds acceptance rules of its own.
 """
 
 WorkspaceStatus: TypeAlias = str
@@ -5869,16 +5897,17 @@ class ServiceEndpointDescriptor:
     """The published coordination facts a client needs to find one running service instance and
     decide whether it can talk to it, before any request is sent. Coordination data only: a
     descriptor carries no bearer credential or token, no granted or effective capability
-    authority, no lease ownership, and no database or filesystem location. Holding one lets a
-    caller address an endpoint and negotiate versions; it authorizes nothing, and every
-    authority question is still settled by an authenticated request.
+    authority, no lease ownership, and no database or workspace storage location. A local IPC
+    transport address may contain its bounded socket path. Holding one lets a caller address
+    an endpoint and negotiate versions; it authorizes nothing, and every authority question
+    is still settled by an authenticated request.
     """
 
     descriptor_version: ContractVersion
     workspace_id: WorkspaceId
     service_instance_id: Identifier
     installation_id: Identifier
-    endpoint_uri: str
+    endpoint_uri: ServiceEndpointUri
     protocol_version: ContractVersion
     server_version: ReleaseVersion
     supported_api_versions: VersionWindow

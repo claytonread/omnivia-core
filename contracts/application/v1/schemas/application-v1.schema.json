@@ -178,6 +178,9 @@
     "ServiceProcessEvidence": {
       "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProcessEvidence"
     },
+    "ServiceEndpointUri": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceEndpointUri"
+    },
     "ServiceEndpointDescriptor": {
       "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceEndpointDescriptor"
     },
