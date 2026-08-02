@@ -469,17 +469,21 @@ def _open_pipe_listener(endpoint: LocalEndpoint, *, timeout: float) -> _Listener
         open_pipe_listener,
     )
 
+    listener: _Listener | None = None
+    failed = False
     try:
-        return open_pipe_listener(endpoint.address, timeout=timeout)
+        listener = open_pipe_listener(endpoint.address, timeout=timeout)
     except WindowsPipeError:
-        raise TransportError("could not create the raw named-pipe endpoint") from None
+        failed = True
+    if failed:
+        raise TransportError("local named-pipe listener start failed")
+    assert listener is not None
+    return listener
 
 
 def _refuse_live_endpoint(endpoint: LocalEndpoint) -> TransportError:
-    return TransportError(
-        f"refusing to bind the endpoint: {endpoint.url} is answering or cannot be "
-        "shown to be dead, so replacing it could strand a live service."
-    )
+    del endpoint
+    return TransportError("local service endpoint is already in use")
 
 
 # --- the service side ---------------------------------------------------------
@@ -543,18 +547,41 @@ class LocalSocketServer:
         if self._listener is not None:
             raise TransportError("transport is already started")
         endpoint = self._endpoint()
-        if endpoint.scheme is EndpointScheme.UNIX:
-            self._begin_serving(self._bind_unix(endpoint))
-        else:
-            self._begin_serving(self._bind_pipe(endpoint))
+        listener: _Listener | None = None
+        failure: TransportError | None = None
+        try:
+            if endpoint.scheme is EndpointScheme.UNIX:
+                listener = self._bind_unix(endpoint)
+            else:
+                listener = self._bind_pipe(endpoint)
+            self._begin_serving(listener)
+        except TransportError as error:
+            failure = error
+        except Exception:  # noqa: BLE001 - public start errors are normalized below
+            failure = TransportError("local service transport start failed")
+        if failure is not None:
+            self._clean_failed_start(listener)
+            raise failure
         return endpoint.url
+
+    def _clean_failed_start(self, listener: _Listener | None) -> None:
+        """Best-effort unwind without replacing the fixed public start failure."""
+        try:
+            if listener is not None:
+                listener.close()
+        except BaseException:  # noqa: BLE001,S110 - preserve the primary refusal
+            pass
+        self._listener = None
+        self._thread = None
+        self._stop = None
+        try:
+            self._remove_socket_file()
+        except BaseException:  # noqa: BLE001,S110 - preserve the primary refusal
+            pass
 
     def _bind_unix(self, endpoint: LocalEndpoint) -> _Listener:
         if not _HAS_AF_UNIX:
-            raise TransportError(
-                f"this platform cannot serve a unix socket: {endpoint.url}. "
-                f"Use a {LOCAL_SCHEME.value}:// endpoint."
-            )
+            raise TransportError("this platform cannot serve the requested endpoint")
         path = Path(endpoint.name)
         assert_socket_path_fits(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,10 +596,7 @@ class LocalSocketServer:
             path.with_name(f".{path.name}.bind"), LockRole.BOOTSTRAP_MUTEX
         )
         if not bind_lock.acquire():
-            raise TransportError(
-                f"refusing to bind the endpoint: another process is claiming "
-                f"{path} right now."
-            )
+            raise TransportError("local service endpoint bind is already in progress")
         try:
             return self._bind_socket(endpoint, path)
         finally:
@@ -586,10 +610,7 @@ class LocalSocketServer:
             # its owner kept an flock on the now-unlinked inode, so once the socket
             # was cleaned up a successor created a fresh lock file and acquired it --
             # two live writers on one workspace.
-            raise TransportError(
-                f"refusing to bind the endpoint: {path} already exists and is "
-                "not a socket. The endpoint must be a path this service owns."
-            )
+            raise TransportError("local service endpoint path is already occupied")
         if path.is_socket() and probe_endpoint(endpoint) is not EndpointProbe.REFUSED:
             raise _refuse_live_endpoint(endpoint)
 
@@ -703,14 +724,18 @@ class LocalSocketServer:
         if self._active_channel is not None:
             self._active_channel.close()
         if self._listener is not None:
-            # Woken in bounded attempts rather than joined once for a long time: the
-            # wake has to land after the stop flag is set, and on a slow start the
-            # accept it unblocks may not have reached its wait when the first arrives.
-            for _ in range(3):
+            # Woken in bounded attempts rather than joined once for a long time.  A
+            # client can be accepted between the first active-channel check above and
+            # the wake, so each attempt rechecks and closes the channel after giving
+            # the serving thread a short opportunity to publish it.
+            for _ in range(20):
                 if self._thread is None or not self._thread.is_alive():
                     break
                 self._listener.wake()
-                self._thread.join(timeout=2)
+                self._thread.join(timeout=0.005)
+                if self._active_channel is not None:
+                    self._active_channel.close()
+                self._thread.join(timeout=0.005)
         self._thread = None
         if self._listener is not None:
             self._listener.close()
@@ -778,7 +803,17 @@ class LocalSocketTransport:
         return self.endpoint
 
     def call(self, request: RequestEnvelope) -> ResponseEnvelope:
-        channel = _connect(self._endpoint(), timeout=self.timeout)
+        channel: _Channel | None = None
+        connect_failure: TransportError | None = None
+        try:
+            channel = _connect(self._endpoint(), timeout=self.timeout)
+        except TransportError as error:
+            connect_failure = error
+        except OSError:
+            connect_failure = TransportError("could not access local service endpoint")
+        if connect_failure is not None:
+            raise connect_failure
+        assert channel is not None
         raw: bytes | None = None
         failed = False
         try:

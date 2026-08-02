@@ -20,7 +20,8 @@ from omnivia_core_runtime.service.lifecycle import (
     ReadinessRequirements,
     ServiceState,
 )
-from omnivia_core_runtime.service.main import _router_for, main as service_main
+from omnivia_core_runtime.service.main import _router_for
+from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.ovc1 import decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ServiceFacts
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
@@ -183,7 +184,10 @@ def test_overlong_endpoint_diagnostics_are_fixed_and_non_disclosing(
 
     operations = (
         lambda: LocalSocketTransport(path=overlong).call(_request()),
-        lambda: LocalSocketServer(router=_router_for(ProbeFactsRunner(), RecordingDispatcher()), endpoint=LocalEndpoint(EndpointScheme.UNIX, str(overlong))).start(),  # type: ignore[arg-type]
+        lambda: LocalSocketServer(
+            router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),
+            endpoint=LocalEndpoint(EndpointScheme.UNIX, str(overlong)),
+        ).start(),  # type: ignore[arg-type]
     )
     for operation in operations:
         with pytest.raises(TransportError) as caught:
@@ -220,6 +224,61 @@ def test_call_diagnostic_hides_raw_os_error_and_exception_chain(
     _assert_transport_error_is_non_disclosing(caught.value, secret)
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+@pytest.mark.parametrize(
+    "failure_site", ["path_inspection", "socket_create", "connect_close"]
+)
+def test_endpoint_open_failures_are_fixed_and_non_disclosing(
+    socket_path: Path, monkeypatch: pytest.MonkeyPatch, failure_site: str
+) -> None:
+    import omnivia_core_runtime.service.transport as module
+
+    secret = "hunter2"
+    endpoint_path = socket_path.with_name(f"{secret}.sock")
+
+    class FailingConnection:
+        def settimeout(self, timeout: float) -> None:
+            del timeout
+
+        def connect(self, address: str) -> None:
+            del address
+            raise OSError(f"raw connect failure at {secret}")
+
+        def close(self) -> None:
+            raise OSError(f"raw close failure at {secret}")
+
+    if failure_site == "path_inspection":
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda self: (_ for _ in ()).throw(
+                OSError(f"raw path inspection failure at {secret}")
+            ),
+        )
+    else:
+        monkeypatch.setattr(Path, "exists", lambda self: True)
+        if failure_site == "socket_create":
+            monkeypatch.setattr(
+                module.socket,
+                "socket",
+                lambda *args: (_ for _ in ()).throw(
+                    OSError(f"raw socket creation failure at {secret}")
+                ),
+            )
+        else:
+            monkeypatch.setattr(
+                module.socket, "socket", lambda *args: FailingConnection()
+            )
+
+    with pytest.raises(TransportError) as caught:
+        LocalSocketTransport(path=endpoint_path).call(_request())
+
+    assert str(caught.value) == "could not access local service endpoint"
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+
+
 def test_call_close_diagnostic_hides_raw_os_error_and_exception_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -246,6 +305,121 @@ def test_call_close_diagnostic_hides_raw_os_error_and_exception_chain(
     with pytest.raises(TransportError) as caught:
         LocalSocketTransport(endpoint=endpoint).call(_request())
 
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+@pytest.mark.parametrize("failure_site", ["parent_mkdir", "bind_lock_create"])
+def test_bind_path_and_lock_operation_failures_are_fixed_and_non_disclosing(
+    socket_path: Path, monkeypatch: pytest.MonkeyPatch, failure_site: str
+) -> None:
+    import omnivia_core_runtime.service.transport as module
+
+    secret = "hunter2"
+    endpoint_path = socket_path.with_name(f"{secret}.sock")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError(f"raw {failure_site} failure at {secret}")
+
+    if failure_site == "parent_mkdir":
+        monkeypatch.setattr(Path, "mkdir", fail)
+    else:
+        monkeypatch.setattr(module, "create_lock", fail)
+
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=LocalEndpoint(EndpointScheme.UNIX, str(endpoint_path)),
+    )
+    with pytest.raises(TransportError) as caught:
+        server.start()
+
+    assert str(caught.value) == "local service transport start failed"
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+@pytest.mark.parametrize("failure_site", ["bind", "listen", "rename"])
+def test_raw_socket_start_failures_are_fixed_and_non_disclosing(
+    socket_path: Path, monkeypatch: pytest.MonkeyPatch, failure_site: str
+) -> None:
+    import omnivia_core_runtime.service.transport as module
+
+    secret = "hunter2"
+    endpoint_path = socket_path.with_name(f"{secret}.sock")
+
+    class FailingSocket:
+        def bind(self, address: str) -> None:
+            del address
+            if failure_site == "bind":
+                raise OSError(f"raw bind failure at {secret}")
+
+        def listen(self, backlog: int) -> None:
+            del backlog
+            if failure_site == "listen":
+                raise OSError(f"raw listen failure at {secret}")
+
+        def close(self) -> None:
+            pass
+
+        def settimeout(self, timeout: float) -> None:
+            del timeout
+
+    monkeypatch.setattr(module.socket, "socket", lambda *args: FailingSocket())
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: None)
+    if failure_site == "rename":
+        monkeypatch.setattr(
+            module.os,
+            "rename",
+            lambda source, target: (_ for _ in ()).throw(
+                OSError(f"raw rename failure at {secret}")
+            ),
+        )
+
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=LocalEndpoint(EndpointScheme.UNIX, str(endpoint_path)),
+    )
+    with pytest.raises(TransportError) as caught:
+        server.start()
+
+    assert str(caught.value) == "local service transport start failed"
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+
+
+def test_pipe_listener_failure_is_fixed_and_non_disclosing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import omnivia_core_runtime.service.transport as module
+    import omnivia_core_runtime.service.windows_pipe as pipe_module
+
+    secret = "credential-hunter2"
+    endpoint = LocalEndpoint(EndpointScheme.PIPE, f"omnivia-{secret}")
+    monkeypatch.setattr(
+        module,
+        "probe_endpoint",
+        lambda endpoint: module.EndpointProbe.REFUSED,
+    )
+    monkeypatch.setattr(
+        pipe_module,
+        "open_pipe_listener",
+        lambda address, timeout: (_ for _ in ()).throw(
+            pipe_module.WindowsPipeError(f"raw pipe listener failure at {secret}")
+        ),
+    )
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+    )
+
+    with pytest.raises(TransportError) as caught:
+        server.start()
+
+    assert str(caught.value) == "local named-pipe listener start failed"
     _assert_transport_error_is_non_disclosing(caught.value, secret)
 
 
@@ -303,6 +477,32 @@ def test_runner_projects_live_identity_and_endpoint_into_discovery_probe_facts(
     assert facts.descriptor.service_instance_id == "service-instance-1"
     assert facts.descriptor.fencing_generation == 7
     assert facts.descriptor.protocol_version == "1.0"
+
+
+def test_runner_start_report_redacts_unexpected_transport_hook_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "credential=hunter2 /Users/alice/private.sock [Errno 13]"
+    runner = ServiceRunner(
+        ServiceSettings(
+            workspace_root=tmp_path / "workspace",
+            installation_root=tmp_path / "installation",
+            endpoint="unix:///tmp/omnivia-core.sock",
+        )
+    )
+
+    def fail_start(*, serve: object | None = None) -> object:
+        del serve
+        return runner._start_transport(
+            lambda started: (_ for _ in ()).throw(OSError(secret))
+        )
+
+    monkeypatch.setattr(runner, "_start", fail_start)
+    report = runner.start()
+
+    assert not report.ready
+    assert report.reason == "local service transport start failed"
+    assert secret not in repr(report.to_dict())
 
 
 @pytest.mark.skipif(
@@ -398,8 +598,8 @@ def test_one_response_closes_the_connection_and_no_second_request_is_served(
 
 
 def test_failed_start_never_claims_or_removes_a_regular_file(socket_path: Path) -> None:
-    secret = "credential-hunter2"
-    occupied = socket_path.with_name(f"{secret}-regular-file")
+    secret = "hunter2"
+    occupied = socket_path.with_name(secret)
     occupied.write_text("owner-data", encoding="utf-8")
     endpoint = LocalEndpoint(EndpointScheme.UNIX, str(occupied))
     server = LocalSocketServer(
@@ -418,8 +618,8 @@ def test_failed_start_never_claims_or_removes_a_regular_file(socket_path: Path) 
     not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
 )
 def test_live_endpoint_refusal_is_fixed_and_non_disclosing(socket_path: Path) -> None:
-    secret = "credential-hunter2"
-    live_path = socket_path.with_name(f"{secret}-live.sock")
+    secret = "hunter2"
+    live_path = socket_path.with_name(f"{secret}.sock")
     endpoint = LocalEndpoint(EndpointScheme.UNIX, str(live_path))
     live = LocalSocketServer(
         router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]

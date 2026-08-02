@@ -372,17 +372,19 @@ def test_a_non_object_frame_is_refused(bad: bytes) -> None:
         decode_frame(frame_body(bad))
 
 
-def test_an_over_long_socket_path_is_refused_with_the_numbers(tmp_path: Path) -> None:
-    """A deeply nested workspace hits the OS limit; say so, do not raise OSError."""
+def test_an_over_long_socket_path_is_refused_with_a_fixed_diagnostic(
+    tmp_path: Path,
+) -> None:
+    """A deeply nested workspace is refused without exposing its path or length."""
     deep = tmp_path / ("d" * 40) / ("e" * 40) / ("f" * 40) / "s.sock"
     if LOCAL_SCHEME is EndpointScheme.PIPE:
         with LocalSocketServer(dispatcher=make_dispatcher(), path=deep):
             response = LocalSocketTransport(path=deep).call(request_for("core.health"))
         assert isinstance(response, SuccessResponseEnvelope)
         return
-    with pytest.raises(TransportError, match="AF_UNIX limit"):
+    with pytest.raises(TransportError, match="endpoint path is too long"):
         LocalSocketTransport(path=deep).call(request_for("core.health"))
-    with pytest.raises(TransportError, match="AF_UNIX limit"):
+    with pytest.raises(TransportError, match="endpoint path is too long"):
         LocalSocketServer(dispatcher=make_dispatcher(), path=deep).start()
 
 
@@ -458,7 +460,7 @@ def test_srb04_binding_never_unlinks_a_path_that_is_not_a_socket(
     try:
         server = LocalSocketServer(dispatcher=make_dispatcher(), path=lock_path)
         if LOCAL_SCHEME is EndpointScheme.UNIX:
-            with pytest.raises(TransportError, match="not a socket"):
+            with pytest.raises(TransportError, match="path is already occupied"):
                 server.start()
         else:
             server.start()
@@ -485,7 +487,7 @@ def test_srb05_a_live_endpoint_is_never_unlinked(socket_dir: Path) -> None:
     live.start()
     try:
         contender = LocalSocketServer(dispatcher=make_dispatcher(), path=socket_path)
-        with pytest.raises(TransportError, match="answering"):
+        with pytest.raises(TransportError, match="endpoint is already in use"):
             contender.start()
 
         # The running service is untouched and still answering.
@@ -696,7 +698,7 @@ def test_names_a_local_endpoint_distinguishes_claims_from_in_process() -> None:
 
 
 def test_a_malformed_pipe_endpoint_is_refused_at_construction() -> None:
-    with pytest.raises(TransportError, match="not a usable named-pipe name"):
+    with pytest.raises(TransportError, match="endpoint name is invalid"):
         LocalEndpoint(EndpointScheme.PIPE, "../escape")
 
 
