@@ -162,6 +162,11 @@ def publish(root: Path, document: object | None = None) -> Path:
     )
     if os.name == "posix":
         path.chmod(0o600)
+    elif os.name == "nt":
+        # Windows test fixtures must model the producer's owner-equivalent
+        # publication contract rather than inherit the hosted runner's broad temp
+        # directory ACL and elevated-token default owner.
+        _secure_windows_descriptor_tree(root, path)
     return path
 
 
@@ -206,6 +211,7 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
     advapi = libraries.advapi32
     kernel = libraries.kernel32
     security_descriptor = wintypes.LPVOID()
+    owner = wintypes.LPVOID()
     size = wintypes.DWORD()
 
     advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
@@ -217,6 +223,14 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
     advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
     assert advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, 1, ctypes.byref(security_descriptor), ctypes.byref(size)
+    )
+    advapi.ConvertStringSidToSidW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+    assert advapi.ConvertStringSidToSidW(
+        _windows_current_user_sid_text(), ctypes.byref(owner)
     )
     try:
         present = wintypes.BOOL()
@@ -250,8 +264,8 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
         result = advapi.SetNamedSecurityInfoW(
             str(path),
             1,
-            0x00000004 | 0x80000000,
-            None,
+            0x00000001 | 0x00000004 | 0x80000000,
+            owner,
             None,
             dacl,
             None,
@@ -260,6 +274,7 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
     finally:
         kernel.LocalFree.argtypes = [wintypes.LPVOID]
         kernel.LocalFree.restype = wintypes.LPVOID
+        kernel.LocalFree(owner)
         kernel.LocalFree(security_descriptor)
 
 
