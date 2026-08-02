@@ -20,13 +20,22 @@ jobs:
         os: [windows-latest]
 
     steps:
-      - name: Check out repository
+      - name: Check out exact reviewed P1b candidate
         uses: actions/checkout@v7
+        with:
+          ref: 2a8a332f02dadc3f47b4f193ef3fa947dc8bf432
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+
+      - name: Assert exact reviewed identity
+        shell: pwsh
+        run: |
+          $expected = "2a8a332f02dadc3f47b4f193ef3fa947dc8bf432"
+          $actual = git rev-parse HEAD
+          if ($actual -ne $expected) { throw "reviewed identity mismatch" }
 
       - name: Install Python tooling and local packages
         # Order is the whole content of this step. `omnivia-core` is unpublished,
