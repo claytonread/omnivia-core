@@ -12,8 +12,10 @@ import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 
+from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, ServiceProcessEvidence
 from omnivia_core.workspace.compatibility import evaluate_compatibility
 from omnivia_core_runtime.ownership.discovery import (
     ReadinessState,
@@ -51,6 +53,17 @@ from omnivia_core_runtime.service.lifecycle import (
     ReadinessRequirements,
     ServiceLifecycle,
     ServiceState,
+)
+from omnivia_core_runtime.service.probes import ServiceFacts
+from omnivia_core_runtime.service.versions import (
+    API_VERSION as PUBLIC_API_VERSION,
+)
+from omnivia_core_runtime.service.versions import (
+    PROTOCOL_VERSION,
+    SERVER_VERSION,
+    supported_api_versions,
+    supported_workspace_versions,
+    workspace_contract_version,
 )
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
@@ -112,7 +125,9 @@ class StartupReport:
 class ServiceRunner:
     """Owns one workspace for the lifetime of this process."""
 
-    def __init__(self, settings: ServiceSettings, *, clock: Clock | None = None) -> None:
+    def __init__(
+        self, settings: ServiceSettings, *, clock: Clock | None = None
+    ) -> None:
         self.settings = settings
         self.clock: Clock = clock or SystemClock()
         self.layout = WorkspaceLayout(root=settings.workspace_root)
@@ -122,6 +137,7 @@ class ServiceRunner:
         self.connection: sqlite3.Connection | None = None
         self.generation: int | None = None
         self.workspace_id: str | None = None
+        self.workspace_format_ordinal: str | None = None
 
     # --- startup -------------------------------------------------------------
 
@@ -178,6 +194,7 @@ class ServiceRunner:
         #    nothing to unwind.
         manifest = read_manifest(self.layout)
         self.workspace_id = manifest.workspace_id
+        self.workspace_format_ordinal = manifest.compatibility.workspace_format_version
         compatibility = evaluate_compatibility(manifest, settings.core_version)
         refuse_incompatible_workspace(compatibility)
 
@@ -308,6 +325,57 @@ class ServiceRunner:
             service_instance_id=self.identity.service_instance_id,
             unmet=(),
             reason="writable readiness published",
+        )
+
+    def probe_facts(self) -> ServiceFacts:
+        """Project this live instance into the accepted public probe snapshot."""
+        observed_at = (
+            self.clock.wall_time().astimezone(UTC).isoformat().replace("+00:00", "Z")
+        )
+        ready = self.lifecycle.advertises_writable
+        descriptor = None
+        if (
+            self.identity is not None
+            and self.workspace_id is not None
+            and self.workspace_format_ordinal is not None
+            and self.generation is not None
+            and self.settings.endpoint is not None
+        ):
+            workspace_version = workspace_contract_version(
+                self.workspace_format_ordinal
+            )
+            descriptor = ServiceEndpointDescriptor(
+                descriptor_version=PUBLIC_API_VERSION,
+                workspace_id=self.workspace_id,
+                service_instance_id=self.identity.service_instance_id,
+                installation_id=self.identity.installation_id,
+                endpoint_uri=self.settings.endpoint,
+                protocol_version=PROTOCOL_VERSION,
+                server_version=SERVER_VERSION,
+                supported_api_versions=supported_api_versions(),
+                supported_workspace_versions=supported_workspace_versions(
+                    self.workspace_format_ordinal
+                ),
+                workspace_format_version=workspace_version,
+                ready=ready,
+                lifecycle_state=self.lifecycle.state.value,
+                fencing_generation=self.generation,
+                published_at=observed_at,
+                process=ServiceProcessEvidence(
+                    pid=self.identity.process.pid,
+                    start_time=self.identity.process.start_time,
+                    boot_id=self.identity.process.boot_id,
+                ),
+            )
+        status = "pass" if ready else "fail"
+        return ServiceFacts(
+            observed_at=observed_at,
+            health_status="fail"
+            if self.lifecycle.state is ServiceState.FAILED
+            else "pass",
+            readiness_status=status,
+            discovery_status="pass" if descriptor is not None else "fail",
+            descriptor=descriptor,
         )
 
     def _evaluate_readiness(
