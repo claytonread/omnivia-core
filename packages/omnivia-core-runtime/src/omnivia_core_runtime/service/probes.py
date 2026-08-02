@@ -69,9 +69,25 @@ and a value outside it is refused rather than trimmed, escaped or re-spelled.
 That stays grammar enforcement, not secret-detection, and the distinction is what
 keeps it honest: nothing here asks whether a value *looks* sensitive. It asks only
 whether the value is one the contract says that field can hold. A path is refused
-from `ServiceComponentStatus.id` because an `Identifier` cannot contain one -- and
-the very same path is published without complaint as `endpoint_uri`, which P0 froze
-as the coordination fact a client needs to dial the instance at all.
+from `ServiceComponentStatus.id` because an `Identifier` cannot contain one, and a
+workspace database is refused from `endpoint_uri` because `ServiceEndpointUri`
+admits only an approved dialable transport, which a database is not.
+
+That last field is the one published value whose policy this module does not own.
+P0 froze `endpoint_uri` as the coordination fact a client needs to dial the
+instance at all, and froze *which* endpoints may be published as one: Core's
+generated `ServiceEndpointUri` pattern is the single authority, compiled directly
+by every binding so that no runtime adds acceptance rules of its own. So the
+descriptor is handed to `validate_service_endpoint_descriptor` rather than assessed
+again here. The permissive rule that used to sit in its place was a second policy
+in all but name, and it disagreed: it published `file:///.../workspace.sqlite`, a
+credential-bearing query and an unapproved scheme, because each of those is a
+well-formed absolute URI carrying nothing in the `userinfo` position it looked at.
+
+Only the *refusal* stays local. What an unauthenticated caller may be told is this
+boundary's call rather than something inherited from a library raising to its own
+caller, so Core's `ContractSemanticError` is translated into a fixed `ProbeError`
+that names the field and stops.
 """
 
 from __future__ import annotations
@@ -101,6 +117,7 @@ from omnivia_core.contracts.v1 import (
     ServiceProcessEvidence,
     VersionWindow,
     duplicate_capability_ids,
+    validate_service_endpoint_descriptor,
     validate_version_window,
 )
 from omnivia_core_runtime.service.versions import API_VERSION, SERVER_VERSION
@@ -156,9 +173,6 @@ _CONTRACT_VERSION_MAX: Final = 32
 #: `Timestamp.maxLength`, wide enough for nine fractional digits and no wider.
 _TIMESTAMP_MAX: Final = 40
 
-#: `ServiceEndpointDescriptor.endpoint_uri.maxLength`.
-_ENDPOINT_URI_MAX: Final = 2048
-
 #: `CapabilityId.minLength`: `a.b` is the shortest namespaced capability there is.
 _CAPABILITY_ID_MIN: Final = 3
 
@@ -209,18 +223,6 @@ _OPAQUE_TEXT: Final[_Scalar] = (
     re.compile(r"[^\x00-\x1f\x7f-\x9f]+"),
     1,
     _BOUNDED_MAX,
-)
-
-#: An absolute URI: an RFC 3986 scheme, then only characters RFC 3986 permits,
-#: percent-encodings included and only where they are well formed. `endpoint_uri`
-#: is the one published string the schema constrains by `format` rather than by
-#: pattern, and `format: uri` is exactly what a runtime with no URI library cannot
-#: check by accident -- so it is checked on purpose here. Deliberately narrower
-#: than a permissive parser at one point: a trailing newline is refused, because a
-#: control character has no business on a wire an unauthenticated caller reads.
-_ENDPOINT_URI_RE: Final = re.compile(
-    r"[A-Za-z][A-Za-z0-9+.\-]*:"
-    r"(?:[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=]|%[0-9A-Fa-f]{2})*"
 )
 
 
@@ -555,42 +557,33 @@ def _timestamp(value: object, label: str) -> None:
         raise ProbeError(f"{label} is malformed") from None
 
 
-def _endpoint_uri(value: object, label: str) -> None:
-    """Refuse an endpoint that is not a bounded, credential-free absolute URI.
+def _endpoint(descriptor: ServiceEndpointDescriptor, label: str) -> None:
+    """Refuse a descriptor whose endpoint Core's accepted policy will not publish.
 
-    `endpoint_uri` is the one published field that is *meant* to carry a path: a
-    unix socket lives somewhere on a filesystem and a client cannot dial it without
-    being told where. So the check here is not "is this a path" -- it is that the
-    value is a URI at all, that it fits, and that its authority carries no
-    `userinfo`.
+    The one published field this module does not judge for itself. `endpoint_uri` is
+    also the one that is *meant* to carry a path -- a unix socket lives somewhere on
+    a filesystem and a client cannot dial it without being told where -- so "does
+    this look like a path" was never the question, and the question it is instead is
+    settled by Core: the generated `ServiceEndpointUri` pattern decides which
+    endpoints publish, and every binding compiles that one pattern so no runtime
+    acquires acceptance rules of its own.
 
-    The `userinfo` rule is the one refusal here that is about content, and it is
-    structural rather than a guess at what a secret looks like: `user:password@` is
-    a *component* of an RFC 3986 authority, recognized by position, not a string
-    that resembles a credential. `ServiceEndpointDescriptor` states outright that a
-    descriptor carries no bearer credential or token, and an endpoint spelled
-    `http://svc:hunter2@127.0.0.1:9000` hands one to every unauthenticated caller
-    that asks what this instance is.
+    Which is why nothing is restated here. The permissive rule this replaced asked
+    only whether the value was an absolute URI with nothing in the `userinfo`
+    position, and `file:///Users/.../workspace.sqlite`, an unapproved scheme and
+    `http://host/?access_token=...` all answered yes -- a second, laxer policy that
+    read like the same one.
+
+    The refusal is local and fixed. Core names no value in its own message either,
+    but a probe answers before authentication, so what that caller is told is
+    decided at this boundary rather than inherited from a library raising to its
+    caller: `from None` keeps the contract's text off the error a caller catches,
+    and the message names the field and stops there.
     """
-    if not isinstance(value, str):
-        raise ProbeError(f"{label} is not a string")
-    if not 1 <= len(value) <= _ENDPOINT_URI_MAX:
-        raise ProbeError(f"{label} is malformed")
-    if _ENDPOINT_URI_RE.fullmatch(value) is None:
-        raise ProbeError(f"{label} is malformed")
-    if "@" in _uri_authority(value):
-        raise ProbeError(f"{label} carries a userinfo component")
-
-
-def _uri_authority(uri: str) -> str:
-    """The RFC 3986 `authority` of `uri`, or the empty string when it has none."""
-    _, _, rest = uri.partition(":")
-    if not rest.startswith("//"):
-        return ""
-    authority = rest[2:]
-    for delimiter in ("/", "?", "#"):
-        authority = authority.partition(delimiter)[0]
-    return authority
+    try:
+        validate_service_endpoint_descriptor(descriptor)
+    except ContractSemanticError:
+        raise ProbeError(f"{label} is not an approved transport endpoint") from None
 
 
 def _bounded_int(value: object, label: str, minimum: int) -> None:
@@ -726,6 +719,10 @@ def _validate_descriptor(descriptor: ServiceEndpointDescriptor) -> None:
     its shape, and its shape *is* the public one -- so there is no allowlist here
     doing half the work, and checking it is the whole of what stands between a
     Runtime's mistake and an unauthenticated caller.
+
+    Every field but one is held to its own public grammar here. `endpoint_uri` is
+    held to Core's, whose generated pattern is the policy rather than a description
+    of it -- see :func:`_endpoint`.
     """
     label = "service facts descriptor"
     _scalar(
@@ -734,7 +731,7 @@ def _validate_descriptor(descriptor: ServiceEndpointDescriptor) -> None:
     _scalar(descriptor.workspace_id, f"{label} workspace_id", _WORKSPACE_ID)
     _scalar(descriptor.service_instance_id, f"{label} service_instance_id", _IDENTIFIER)
     _scalar(descriptor.installation_id, f"{label} installation_id", _IDENTIFIER)
-    _endpoint_uri(descriptor.endpoint_uri, f"{label} endpoint_uri")
+    _endpoint(descriptor, f"{label} endpoint_uri")
     _scalar(descriptor.protocol_version, f"{label} protocol_version", _CONTRACT_VERSION)
     _scalar(descriptor.server_version, f"{label} server_version", _RELEASE_VERSION)
     _version_window(

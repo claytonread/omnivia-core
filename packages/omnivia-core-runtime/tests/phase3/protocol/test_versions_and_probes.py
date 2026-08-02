@@ -101,11 +101,15 @@ PLANTED = (
 #: purpose: P0 froze `endpoint_uri` as the coordination fact a client needs to reach
 #: the instance at all. Kept distinct from `SECRET_PATH` so a leak assertion is not
 #: quietly satisfied -- or quietly broken -- by the one path that is meant to travel.
+#: The distinction is now the policy's too: `SECRET_PATH` names a workspace database
+#: and is refused as an endpoint for exactly that reason, while this one is the
+#: bounded `.sock` transport address `ServiceEndpointUri` permits a `unix:///` value
+#: to be.
 #:
-#: Percent-encoded, because the schema declares `format: uri` and a raw space is not
-#: one. The unencoded spelling is what a Runtime building this by string
-#: concatenation would produce, and
-#: `test_an_endpoint_uri_that_is_not_a_uri_is_refused` is where it is refused.
+#: Percent-encoded, because the accepted pattern admits a space only as `%20`. The
+#: unencoded spelling is what a Runtime building this by string concatenation would
+#: produce, and `test_an_endpoint_uri_that_is_not_a_uri_is_refused` is where it is
+#: refused.
 ENDPOINT_URI = "unix:///Users/someone/Library/Application%20Support/omnivia/core.sock"
 
 #: The same socket, spelled the way a naive `f"unix://{path}"` would spell it.
@@ -212,11 +216,47 @@ def _router(
 # contract does not define and `format_checker` refusing a `Timestamp` that names
 # no instant and an `endpoint_uri` that is not a URI.
 
-SCHEMA_DIR = (
-    Path(__file__).resolve().parents[5] / "contracts" / "application" / "v1" / "schemas"
-)
+REPO_ROOT = Path(__file__).resolve().parents[5]
+SCHEMA_DIR = REPO_ROOT / "contracts" / "application" / "v1" / "schemas"
 SCHEMA_BASE_URI = "https://contracts.omnivia.dev/application/v1/"
 _SCHEMA_NAMES = ("common", "compatibility", "service")
+
+#: The accepted `ServiceEndpointUri` corpus, checked in beside the contract that
+#: froze it: which endpoints publish, and which are refused and why.
+#:
+#: Read rather than restated. The generated pattern is the single authority for the
+#: policy, and a Runtime test spelling out its own approved and refused lists would
+#: be a second one -- free to drift, and drifting silently, since nothing would
+#: compare the two. Driving the regressions below from this file means Runtime is
+#: asserted to publish exactly what Core accepts, case for case.
+ENDPOINT_POLICY: dict[str, Any] = json.loads(
+    (
+        REPO_ROOT
+        / "tests"
+        / "contracts"
+        / "fixtures"
+        / "service-endpoint-uri-policy-v1.json"
+    ).read_text(encoding="utf-8")
+)
+
+
+def _policy(group: str) -> list[Any]:
+    """The fixture's `accepted` or `rejected` endpoints, as named test cases."""
+    cases = ENDPOINT_POLICY[group]
+    assert cases, f"the endpoint policy fixture names no {group} case"
+    return [pytest.param(case["endpoint_uri"], id=case["id"]) for case in cases]
+
+
+#: The whole of what a caller is told about an endpoint that will not publish.
+#:
+#: Fixed, and pinned here rather than matched loosely, because a fixed string is the
+#: proof that nothing was echoed: the refused value may be the credential, query or
+#: workspace database this boundary exists to keep private, and Core's own refusal
+#: -- which is a library's message to its caller, not this boundary's to an
+#: unauthenticated one -- is not passed on either.
+ENDPOINT_REFUSAL = (
+    "service facts descriptor endpoint_uri is not an approved transport endpoint"
+)
 
 
 def _registry() -> Registry:
@@ -1021,6 +1061,87 @@ def test_a_descriptor_field_outside_its_public_grammar_is_never_published(
     }
 
 
+def _refused_endpoint(endpoint_uri: str) -> str:
+    """Refuse `endpoint_uri` through the router, and return what the caller is told."""
+    facts = _facts(descriptor=replace(_descriptor(), endpoint_uri=endpoint_uri))
+    with pytest.raises(ProbeError) as raised:
+        _router(facts).route(ServiceProbeRequest(probe=PROBE_DISCOVER))
+    return str(raised.value)
+
+
+#: The refusals this file stands as a permanent regression for, and the transports
+#: it proves still publish -- named by the fixture's own case ids.
+#:
+#: The parametrized tests take whatever the corpus holds, which is what keeps them
+#: from restating the policy. It is also what would let coverage vanish silently: a
+#: case dropped from the fixture simply produces one parametrization fewer, and no
+#: test counts them. Pinning the ids is the other half. A rule this boundary was
+#: repaired for cannot stop being exercised here without something failing.
+REQUIRED_REJECTIONS = frozenset(
+    {
+        "authority-userinfo",
+        "direct-storage-file-uri",
+        "credential-bearing-query",
+        "fragment",
+        "unapproved-scheme",
+        "missing-http-host",
+        "unbalanced-ip-literal",
+        "malformed-ip-literal-nine-groups",
+        "non-numeric-port",
+        "out-of-range-port",
+        "unix-storage-path",
+        "unix-dot-segment",
+    }
+)
+
+REQUIRED_APPROVALS = frozenset(
+    {
+        "loopback-http",
+        "network-https",
+        "ipv6-http",
+        "unix-domain-socket",
+        "windows-named-pipe",
+    }
+)
+
+
+def test_the_endpoint_policy_corpus_still_carries_every_case_regressed_on() -> None:
+    """The corpus is read, so what it must keep carrying is written down."""
+    for group, required in (
+        ("rejected", REQUIRED_REJECTIONS),
+        ("accepted", REQUIRED_APPROVALS),
+    ):
+        present = {case["id"] for case in ENDPOINT_POLICY[group]}
+        assert required <= present, sorted(required - present)
+
+
+@pytest.mark.parametrize("endpoint_uri", _policy("rejected"))
+def test_an_endpoint_the_accepted_policy_refuses_is_never_published(
+    endpoint_uri: str,
+) -> None:
+    """Every refusal the accepted policy names, refused here too, and told nothing.
+
+    The corpus is Core's, so this is not a restatement of the rule but a check that
+    Runtime publishes exactly what Core accepts: a credential in the authority, a
+    `file:///` workspace database, a credential-bearing query, a fragment, a missing
+    or malformed host, a malformed IPv6 literal, a port that is not one, a `..`
+    segment in a socket path, and an unapproved scheme are each refused, and none of
+    them is quoted back.
+
+    The permissive rule this replaced published most of them. `file:///Users/alice/
+    Library/OmniVia/workspace.sqlite` is a well-formed absolute URI with an empty
+    authority, so a check asking only "is this a URI, and is there a `userinfo`"
+    handed an unauthenticated caller the location of the workspace database.
+    """
+    message = _refused_endpoint(endpoint_uri)
+    # Equality is what proves the refusal is fixed; the second assertion is what it
+    # is fixed *for*. The refused value is the credential, the workspace database or
+    # the token, so a message that named what it refused would publish it to exactly
+    # the caller the refusal exists to withhold it from.
+    assert message == ENDPOINT_REFUSAL
+    assert endpoint_uri not in message
+
+
 @pytest.mark.parametrize(
     ("endpoint_uri", "why"),
     [
@@ -1028,35 +1149,83 @@ def test_a_descriptor_field_outside_its_public_grammar_is_never_published(
         (SECRET_PATH, "a bare path names no scheme"),
         ("core.sock", "a relative reference is not absolute"),
         ("unix:///tmp/core.sock\n", "a trailing newline is a control character"),
-        ("unix:///tmp/café.sock", "a non-ASCII character must be encoded"),
-        ("unix:///tmp/%zz", "a malformed percent-encoding"),
-        ("unix:///" + "a" * 2041, "one character past the 2048 the schema allows"),
+        ("unix:///tmp/core.sock?token=x", "a query is not part of a dialable endpoint"),
+        ("unix:///tmp/core", "a unix endpoint that is not a `.sock` address"),
         ("", "nothing at all"),
     ],
 )
 def test_an_endpoint_uri_that_is_not_a_uri_is_refused(
     endpoint_uri: str, why: str
 ) -> None:
-    facts = _facts(descriptor=replace(_descriptor(), endpoint_uri=endpoint_uri))
-    with pytest.raises(ProbeError, match="endpoint_uri"):
-        _router(facts).route(ServiceProbeRequest(probe=PROBE_DISCOVER))
+    """The shapes the fixture does not carry, refused on the same terms.
+
+    Distinct from the corpus above, which is the policy's own list of what publishes
+    and what does not. These are the ways a Runtime *building* an endpoint gets one
+    wrong -- concatenating an unescaped path, forgetting the scheme, letting a
+    trailing newline through -- and they are here because the value under test is
+    the one this file's own fixture would otherwise have produced.
+    """
+    assert _refused_endpoint(endpoint_uri) == ENDPOINT_REFUSAL
 
 
 def test_an_endpoint_uri_that_carries_a_credential_is_refused() -> None:
     """`ServiceEndpointDescriptor` states it carries no bearer credential or token.
 
     Recognized by position, not by resemblance: `userinfo` is a component of an RFC
-    3986 authority, so this refuses where a credential structurally *is*, and does
-    not guess at which strings look like one.
+    3986 authority, so the accepted pattern refuses where a credential structurally
+    *is*, and does not guess at which strings look like one. The refusal is fixed,
+    so the token cannot come back out in the message that reports it.
     """
-    facts = _facts(
-        descriptor=replace(
-            _descriptor(), endpoint_uri=f"http://svc:{SECRET_TOKEN}@127.0.0.1:9000"
-        )
-    )
-    with pytest.raises(ProbeError, match="userinfo") as raised:
-        _router(facts).route(ServiceProbeRequest(probe=PROBE_DISCOVER))
-    assert SECRET_TOKEN not in str(raised.value)
+    message = _refused_endpoint(f"http://svc:{SECRET_TOKEN}@127.0.0.1:9000")
+    assert message == ENDPOINT_REFUSAL
+    assert SECRET_TOKEN not in message
+
+
+@pytest.mark.parametrize(
+    ("endpoint_uri", "where"),
+    [
+        (f"http://svc:{SECRET_TOKEN}@127.0.0.1:9000/", "the authority's userinfo"),
+        (f"http://127.0.0.1:9000/?access_token={SECRET_TOKEN}", "the query"),
+        (f"http://127.0.0.1:9000/#{SECRET_TOKEN}", "the fragment"),
+        (f"file://{SECRET_PATH}", "a direct-storage scheme"),
+        (f"unix://{SECRET_PATH}", "a socket path that is a database"),
+        (f"http://127.0.0.1:9000/{SECRET_TOKEN}?db={SECRET_PATH}", "both at once"),
+    ],
+)
+def test_a_refused_endpoint_echoes_back_no_value_token_or_path(
+    endpoint_uri: str, where: str
+) -> None:
+    """The refusal is the one surface a rejected endpoint could still travel on.
+
+    Every value here is refused, so none of them is published as `endpoint_uri` --
+    which leaves the message that reports the refusal as the only thing the caller
+    receives. A boundary that named what it would not publish would publish it, and
+    the credential, workspace database and lease token planted above are exactly the
+    values the field carries when a Runtime has built one wrong.
+
+    So the refusal is asserted whole and then searched: the same fixed string every
+    other refused endpoint gets, with no part of the value in it, whichever position
+    the secret sat in.
+    """
+    message = _refused_endpoint(endpoint_uri)
+    assert message == ENDPOINT_REFUSAL, where
+    for leaked in (*PLANTED, endpoint_uri, "access_token", "svc"):
+        assert leaked not in message
+
+
+@pytest.mark.parametrize("endpoint_uri", _policy("accepted"))
+def test_an_endpoint_the_accepted_policy_approves_is_published(
+    endpoint_uri: str,
+) -> None:
+    """Every endpoint the policy approves -- HTTP, HTTPS, IPv6, socket, pipe.
+
+    Fail-closed is only half of it. A boundary that refused the approved transports
+    too would pass every leak assertion in this file and leave no way to dial the
+    instance at all, which is the fact `endpoint_uri` exists to carry.
+    """
+    facts = _facts(descriptor=replace(_descriptor(), endpoint_uri=endpoint_uri))
+    wire = _published(facts, probe=PROBE_DISCOVER)
+    assert wire["descriptor"]["endpoint_uri"] == endpoint_uri
 
 
 @pytest.mark.parametrize(
@@ -1066,7 +1235,6 @@ def test_an_endpoint_uri_that_carries_a_credential_is_refused() -> None:
         "unix:///tmp/omnivia/core.sock",
         "http://127.0.0.1:9000/ovc1",
         "https://[::1]:9000/",
-        "unix:///" + "a" * 2040,
         # `@` outside an authority is an ordinary path character. The userinfo rule
         # is positional, so these must stay answerable -- a rule that simply banned
         # `@` would refuse them and read as if it were the same check.
@@ -1450,23 +1618,43 @@ def test_the_length_bounds_are_the_ones_the_packaged_schema_declares(
 
 
 def test_the_endpoint_uri_bound_is_the_one_the_packaged_schema_declares() -> None:
+    """The bound is followed to where it is declared, not assumed to sit inline.
+
+    `ServiceEndpointDescriptor.endpoint_uri` is a `$ref` to `ServiceEndpointUri`,
+    which is where the accepted policy pins the pattern and the length together --
+    so `properties.endpoint_uri.maxLength` is a key that is no longer there, and a
+    test reading it would fail on the document rather than on the bound.
+
+    Both witnesses are real `.sock` addresses, one character apart. The over-long
+    one is lengthened in its path rather than past its suffix, so length is the only
+    reason it is refused: appending to `accepted` would have produced `...socka`,
+    which the policy refuses for not being a socket at all.
+    """
     schema = json.loads(
         (SCHEMA_DIR / "service.schema.json").read_text(encoding="utf-8")
     )
-    maximum = schema["$defs"]["ServiceEndpointDescriptor"]["properties"][
+    reference = schema["$defs"]["ServiceEndpointDescriptor"]["properties"][
         "endpoint_uri"
-    ]["maxLength"]
-    accepted = "unix:///" + "a" * (maximum - 8)
+    ]["$ref"]
+    _, _, pointer = reference.partition("#/")
+    definition = schema
+    for token in pointer.split("/"):
+        definition = definition[token]
+    maximum = definition["maxLength"]
+    assert isinstance(maximum, int)
+
+    def _socket(length: int) -> str:
+        filler = length - len("unix:///") - len(".sock")
+        return "unix:///" + "a" * filler + ".sock"
+
+    accepted = _socket(maximum)
     assert len(accepted) == maximum
 
     facts = _facts(descriptor=replace(_descriptor(), endpoint_uri=accepted))
     assert _published(facts, probe=PROBE_DISCOVER)["descriptor"]["endpoint_uri"] == (
         accepted
     )
-    with pytest.raises(ProbeError, match="endpoint_uri"):
-        _router(
-            _facts(descriptor=replace(_descriptor(), endpoint_uri=accepted + "a"))
-        ).route(ServiceProbeRequest(probe=PROBE_DISCOVER))
+    assert _refused_endpoint(_socket(maximum + 1)) == ENDPOINT_REFUSAL
 
 
 def test_the_published_array_bound_is_the_one_the_packaged_schema_declares() -> None:
