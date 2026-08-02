@@ -187,8 +187,16 @@ def _live_result_wire(result: ServiceProbeResult) -> dict[str, Any]:
                 "id": component.id,
                 "status": component.status,
                 "observed_at": component.observed_at,
-                **({"message": component.message} if component.message is not None else {}),
-                **({"details": component.details} if component.details is not None else {}),
+                **(
+                    {"message": component.message}
+                    if component.message is not None
+                    else {}
+                ),
+                **(
+                    {"details": component.details}
+                    if component.details is not None
+                    else {}
+                ),
             }
             for component in result.components
         ]
@@ -211,7 +219,7 @@ def _validate_live_result(result: object) -> ServiceProbeResult:
     validated: ServiceProbeResult | None = None
     try:
         validated = decode_service_probe_result(_live_result_wire(result))
-    except Exception:
+    except Exception:  # noqa: BLE001 -- all ordinary normalization failures fail closed.
         invalid = True
     else:
         invalid = False
@@ -398,10 +406,73 @@ class _TOKEN_USER_VALUE(ctypes.Structure):
     _fields_ = [("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD)]
 
 
-def _windows_current_user_sid() -> bytes:
+def _configure_windows_api_signatures(advapi: Any, kernel: Any) -> None:
+    advapi.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.GetLengthSid.argtypes = [wintypes.LPVOID]
+    advapi.GetLengthSid.restype = wintypes.DWORD
+    advapi.ConvertStringSidToSidW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.GetAclInformation.argtypes = [
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    advapi.GetAclInformation.restype = wintypes.BOOL
+    advapi.GetAce.argtypes = [
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi.GetAce.restype = wintypes.BOOL
+
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetLastError.argtypes = []
+    kernel.GetLastError.restype = wintypes.DWORD
+
+
+def _windows_apis() -> tuple[Any, Any]:
     libraries = cast(Any, ctypes).windll
     advapi = libraries.advapi32
     kernel = libraries.kernel32
+    _configure_windows_api_signatures(advapi, kernel)
+    return advapi, kernel
+
+
+def _windows_current_user_sid() -> bytes:
+    advapi, kernel = _windows_apis()
     token = wintypes.HANDLE()
     if not advapi.OpenProcessToken(
         kernel.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)
@@ -425,9 +496,7 @@ def _windows_current_user_sid() -> bytes:
 
 
 def _windows_well_known_sid(text: str) -> bytes:
-    libraries = cast(Any, ctypes).windll
-    advapi = libraries.advapi32
-    kernel = libraries.kernel32
+    advapi, kernel = _windows_apis()
     pointer = wintypes.LPVOID()
     if not advapi.ConvertStringSidToSidW(text, ctypes.byref(pointer)):
         _raise_provenance()
@@ -438,8 +507,7 @@ def _windows_well_known_sid(text: str) -> bytes:
 
 
 def _windows_acl_is_owner_equivalent(path: Path) -> bool:
-    libraries = cast(Any, ctypes).windll
-    advapi = libraries.advapi32
+    advapi, kernel = _windows_apis()
     owner = wintypes.LPVOID()
     dacl = wintypes.LPVOID()
     security = wintypes.LPVOID()
@@ -455,7 +523,7 @@ def _windows_acl_is_owner_equivalent(path: Path) -> bool:
     )
     if result != 0 or not owner or not dacl:
         if security:
-            libraries.kernel32.LocalFree(security)
+            kernel.LocalFree(security)
         return False
     try:
         owner_bytes = ctypes.string_at(owner, advapi.GetLengthSid(owner))
@@ -495,7 +563,7 @@ def _windows_acl_is_owner_equivalent(path: Path) -> bool:
                 return False
         return True
     finally:
-        libraries.kernel32.LocalFree(security)
+        kernel.LocalFree(security)
 
 
 def _windows_metadata_is_safe(path: Path, *, directory: bool) -> bool:

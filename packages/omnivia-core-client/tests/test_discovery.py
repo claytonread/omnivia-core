@@ -15,6 +15,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any, cast
 
+import omnivia_core_client.discovery as discovery_module
 import pytest
 from omnivia_core_client import (
     CancellationToken,
@@ -295,6 +296,100 @@ def _secure_windows_descriptor_tree(root: Path, path: Path) -> None:
     sddl = _windows_owner_equivalent_sddl()
     for candidate in (root / "runtime", path.parent, path):
         _windows_set_dacl(candidate, sddl)
+
+
+def test_windows_native_api_signatures_are_explicit_and_pointer_width_safe() -> None:
+    class NativeFunction:
+        argtypes: list[object] | None = None
+        restype: object | None = None
+
+    class NativeLibrary:
+        pass
+
+    advapi: Any = NativeLibrary()
+    kernel: Any = NativeLibrary()
+    for library, names in (
+        (
+            advapi,
+            (
+                "OpenProcessToken",
+                "GetTokenInformation",
+                "GetLengthSid",
+                "ConvertStringSidToSidW",
+                "GetNamedSecurityInfoW",
+                "GetAclInformation",
+                "GetAce",
+            ),
+        ),
+        (
+            kernel,
+            ("LocalFree", "CloseHandle", "GetCurrentProcess", "GetLastError"),
+        ),
+    ):
+        for name in names:
+            setattr(library, name, NativeFunction())
+
+    discovery_module._configure_windows_api_signatures(advapi, kernel)
+
+    signatures: tuple[tuple[Any, list[object], object], ...] = (
+        (
+            advapi.OpenProcessToken,
+            [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.HANDLE),
+            ],
+            wintypes.BOOL,
+        ),
+        (
+            advapi.GetTokenInformation,
+            [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.LPVOID,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ],
+            wintypes.BOOL,
+        ),
+        (advapi.GetLengthSid, [wintypes.LPVOID], wintypes.DWORD),
+        (
+            advapi.ConvertStringSidToSidW,
+            [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)],
+            wintypes.BOOL,
+        ),
+        (
+            advapi.GetNamedSecurityInfoW,
+            [
+                wintypes.LPCWSTR,
+                wintypes.DWORD,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.LPVOID),
+                ctypes.POINTER(wintypes.LPVOID),
+                ctypes.POINTER(wintypes.LPVOID),
+                ctypes.POINTER(wintypes.LPVOID),
+                ctypes.POINTER(wintypes.LPVOID),
+            ],
+            wintypes.DWORD,
+        ),
+        (
+            advapi.GetAclInformation,
+            [wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD],
+            wintypes.BOOL,
+        ),
+        (
+            advapi.GetAce,
+            [wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.LPVOID)],
+            wintypes.BOOL,
+        ),
+        (kernel.LocalFree, [wintypes.HLOCAL], wintypes.HLOCAL),
+        (kernel.CloseHandle, [wintypes.HANDLE], wintypes.BOOL),
+        (kernel.GetCurrentProcess, [], wintypes.HANDLE),
+        (kernel.GetLastError, [], wintypes.DWORD),
+    )
+    for function, argtypes, restype in signatures:
+        assert function.argtypes == argtypes
+        assert function.restype is restype
 
 
 def test_descriptor_path_is_canonical_and_workspace_ids_cannot_select_paths(
