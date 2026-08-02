@@ -227,6 +227,52 @@ def test_pipe_client_retries_the_wait_create_race_when_instance_turns_busy(
     ]
 
 
+@pytest.mark.parametrize("disconnect_error", [109, 232])
+@pytest.mark.parametrize("overlapped", [False, True])
+def test_pipe_accept_contains_a_client_that_disconnects_before_accept_completes(
+    monkeypatch: pytest.MonkeyPatch, disconnect_error: int, overlapped: bool
+) -> None:
+    import omnivia_core_runtime.service.windows_pipe as module
+
+    closed: list[int] = []
+    errors = iter([997, disconnect_error] if overlapped else [disconnect_error])
+
+    class FakeApi:
+        @staticmethod
+        def CreateEventW(*args: object) -> int:
+            del args
+            return 73
+
+        @staticmethod
+        def ConnectNamedPipe(*args: object) -> bool:
+            del args
+            return False
+
+        @staticmethod
+        def WaitForSingleObject(*args: object) -> int:
+            del args
+            assert overlapped
+            return 0
+
+        @staticmethod
+        def GetOverlappedResult(*args: object) -> bool:
+            del args
+            assert overlapped
+            return False
+
+        @staticmethod
+        def CloseHandle(handle: int) -> bool:
+            closed.append(handle)
+            return True
+
+    monkeypatch.setattr(module, "_API", FakeApi())
+    monkeypatch.setattr(module, "_GET_LAST_ERROR", lambda: next(errors))
+
+    module._connect_server(123)
+
+    assert closed == [73]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires a real Windows named pipe")
 def test_raw_pipe_partial_writes_start_with_ovc1_and_route_probe() -> None:
     endpoint = _endpoint()
