@@ -227,6 +227,7 @@ class RawPipeChannel:
     timeout: float
     server_side: bool = False
     _closed: bool = False
+    _wrote: bool = False
 
     def write(self, payload: bytes) -> None:
         """Write exactly these raw bytes, adding no prefix or delimiter."""
@@ -245,6 +246,7 @@ class RawPipeChannel:
             if written <= 0:
                 raise WindowsPipeError("raw pipe write made no progress")
             offset += written
+        self._wrote = True
 
     def send_frame(self, payload: bytes) -> None:
         self.write(payload)
@@ -330,7 +332,11 @@ class RawPipeChannel:
         if self._closed:
             return
         self._closed = True
-        if self.server_side:
+        if self.server_side and not self._wrote:
+            # DisconnectNamedPipe discards unread outbound bytes.  After a response,
+            # close the local handle directly so Windows can drain its internal
+            # buffer to the client without an unbounded FlushFileBuffers wait.  A
+            # request that produced no response can be disconnected immediately.
             _api().DisconnectNamedPipe(self.handle)
         _close_handle(self.handle)
 

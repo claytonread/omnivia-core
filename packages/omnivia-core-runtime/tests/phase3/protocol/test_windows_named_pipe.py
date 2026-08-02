@@ -155,6 +155,34 @@ def test_pipe_unary_boundary_is_rechecked_after_dispatch(
         channel.ensure_unary_boundary()
 
 
+def test_server_response_close_avoids_discard_and_unbounded_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response drains on close: disconnect discards it and flush can block forever."""
+    import omnivia_core_runtime.service.windows_pipe as module
+
+    events: list[str] = []
+
+    class Api:
+        def DisconnectNamedPipe(self, handle: int) -> int:
+            assert handle == 123
+            events.append("disconnect")
+            return 1
+
+        def CloseHandle(self, handle: int) -> int:
+            assert handle == 123
+            events.append("close")
+            return 1
+
+    monkeypatch.setattr(module, "_API", Api())
+    channel = RawPipeChannel(handle=123, timeout=1.0, server_side=True)
+    channel._wrote = True
+
+    channel.close()
+
+    assert events == ["close"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires a real Windows named pipe")
 def test_raw_pipe_partial_writes_start_with_ovc1_and_route_probe() -> None:
     endpoint = _endpoint()
