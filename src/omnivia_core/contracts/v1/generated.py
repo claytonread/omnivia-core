@@ -311,8 +311,10 @@ __all__ = [
     "SchemaReference",
     "Scope",
     "ServiceComponentStatus",
+    "ServiceEndpointDescriptor",
     "ServiceProbeRequest",
     "ServiceProbeResult",
+    "ServiceProcessEvidence",
     "SourceKind",
     "SourceReference",
     "SourceSpan",
@@ -3841,6 +3843,55 @@ class ServiceComponentStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceProcessEvidence:
+    """Evidence naming the operating-system process that published a descriptor, so a stale
+    descriptor left behind by a crashed instance can be recognized rather than trusted. All
+    three facts are required together: a pid alone is ambiguous once the host reuses it, and
+    it is the start time and boot identifier that make the triple a stable identity. This
+    names a process; it does not grant access to one, and it never carries a filesystem or
+    database location.
+    """
+
+    pid: int
+    start_time: str
+    boot_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["pid"] = self.pid
+        wire["start_time"] = self.start_time
+        wire["boot_id"] = self.boot_id
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ServiceProcessEvidence"
+    ) -> ServiceProcessEvidence:
+        """Decode a wire payload into a ServiceProcessEvidence.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_pid = _decode_int(_require_field(mapping, "pid", path), f"{path}.pid")
+        field_start_time = _decode_str(
+            _require_field(mapping, "start_time", path),
+            f"{path}.start_time",
+        )
+        field_boot_id = _decode_str(_require_field(mapping, "boot_id", path), f"{path}.boot_id")
+        return cls(
+            pid=field_pid,
+            start_time=field_start_time,
+            boot_id=field_boot_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GrantedAuthority:
     """Server-produced, validated authority actually applied to a request. This is the only
     authority statement a client may trust.
@@ -5814,21 +5865,30 @@ class RecordIdentity:
 
 
 @dataclass(frozen=True, slots=True)
-class ServiceProbeResult:
-    """The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
-    `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated
-    authority, because a probe answers a transport-level question, not an application
-    operation.
+class ServiceEndpointDescriptor:
+    """The published coordination facts a client needs to find one running service instance and
+    decide whether it can talk to it, before any request is sent. Coordination data only: a
+    descriptor carries no bearer credential or token, no granted or effective capability
+    authority, no lease ownership, and no database or filesystem location. Holding one lets a
+    caller address an endpoint and negotiate versions; it authorizes nothing, and every
+    authority question is still settled by an authenticated request.
     """
 
-    probe: ProbeKind
-    status: ProbeStatus
+    descriptor_version: ContractVersion
+    workspace_id: WorkspaceId
+    service_instance_id: Identifier
+    installation_id: Identifier
+    endpoint_uri: str
+    protocol_version: ContractVersion
     server_version: ReleaseVersion
-    api_version: ContractVersion
-    observed_at: Timestamp
-    components: tuple[ServiceComponentStatus, ...] | None = None
-    supported_capabilities: tuple[CapabilityRef, ...] | None = None
-    details: JsonObject | None = None
+    supported_api_versions: VersionWindow
+    supported_workspace_versions: VersionWindow
+    workspace_format_version: ContractVersion
+    ready: bool
+    lifecycle_state: OpenCode
+    fencing_generation: int
+    published_at: Timestamp
+    process: ServiceProcessEvidence | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Render this value as a JSON-compatible mapping.
@@ -5837,85 +5897,111 @@ class ServiceProbeResult:
         round trip reproduces the original document exactly.
         """
         wire: dict[str, Any] = {}
-        wire["probe"] = self.probe
-        wire["status"] = self.status
+        wire["descriptor_version"] = self.descriptor_version
+        wire["workspace_id"] = self.workspace_id
+        wire["service_instance_id"] = self.service_instance_id
+        wire["installation_id"] = self.installation_id
+        wire["endpoint_uri"] = self.endpoint_uri
+        wire["protocol_version"] = self.protocol_version
         wire["server_version"] = self.server_version
-        wire["api_version"] = self.api_version
-        wire["observed_at"] = self.observed_at
-        if self.components is not None:
-            wire["components"] = [item.to_wire() for item in self.components]
-        if self.supported_capabilities is not None:
-            wire["supported_capabilities"] = [item.to_wire() for item in self.supported_capabilities]
-        if self.details is not None:
-            wire["details"] = _encode_json_object(self.details)
+        wire["supported_api_versions"] = self.supported_api_versions.to_wire()
+        wire["supported_workspace_versions"] = self.supported_workspace_versions.to_wire()
+        wire["workspace_format_version"] = self.workspace_format_version
+        wire["ready"] = self.ready
+        wire["lifecycle_state"] = self.lifecycle_state
+        wire["fencing_generation"] = self.fencing_generation
+        wire["published_at"] = self.published_at
+        if self.process is not None:
+            wire["process"] = self.process.to_wire()
         return wire
 
     @classmethod
-    def from_wire(cls, payload: object, path: str = "ServiceProbeResult") -> ServiceProbeResult:
-        """Decode a wire payload into a ServiceProbeResult.
+    def from_wire(
+        cls, payload: object, path: str = "ServiceEndpointDescriptor"
+    ) -> ServiceEndpointDescriptor:
+        """Decode a wire payload into a ServiceEndpointDescriptor.
 
         Unknown fields are ignored so a newer peer's additive minor release still decodes
         here. Missing required fields and wrongly typed values raise ContractDecodeError.
         """
         mapping = _require_mapping(payload, path)
-        field_probe = _decode_str(_require_field(mapping, "probe", path), f"{path}.probe")
-        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_descriptor_version = _decode_str(
+            _require_field(mapping, "descriptor_version", path),
+            f"{path}.descriptor_version",
+        )
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_service_instance_id = _decode_str(
+            _require_field(mapping, "service_instance_id", path),
+            f"{path}.service_instance_id",
+        )
+        field_installation_id = _decode_str(
+            _require_field(mapping, "installation_id", path),
+            f"{path}.installation_id",
+        )
+        field_endpoint_uri = _decode_str(
+            _require_field(mapping, "endpoint_uri", path),
+            f"{path}.endpoint_uri",
+        )
+        field_protocol_version = _decode_str(
+            _require_field(mapping, "protocol_version", path),
+            f"{path}.protocol_version",
+        )
         field_server_version = _decode_str(
             _require_field(mapping, "server_version", path),
             f"{path}.server_version",
         )
-        field_api_version = _decode_str(
-            _require_field(mapping, "api_version", path),
-            f"{path}.api_version",
+        field_supported_api_versions = VersionWindow.from_wire(
+            _require_field(mapping, "supported_api_versions", path),
+            f"{path}.supported_api_versions",
         )
-        field_observed_at = _decode_str(
-            _require_field(mapping, "observed_at", path),
-            f"{path}.observed_at",
+        field_supported_workspace_versions = VersionWindow.from_wire(
+            _require_field(mapping, "supported_workspace_versions", path),
+            f"{path}.supported_workspace_versions",
         )
-        field_components: tuple[ServiceComponentStatus, ...] | None = None
-        if "components" in mapping:
-            raw_components = mapping["components"]
-            if raw_components is None:
+        field_workspace_format_version = _decode_str(
+            _require_field(mapping, "workspace_format_version", path),
+            f"{path}.workspace_format_version",
+        )
+        field_ready = _decode_bool(_require_field(mapping, "ready", path), f"{path}.ready")
+        field_lifecycle_state = _decode_str(
+            _require_field(mapping, "lifecycle_state", path),
+            f"{path}.lifecycle_state",
+        )
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_published_at = _decode_str(
+            _require_field(mapping, "published_at", path),
+            f"{path}.published_at",
+        )
+        field_process: ServiceProcessEvidence | None = None
+        if "process" in mapping:
+            raw_process = mapping["process"]
+            if raw_process is None:
                 raise ContractDecodeError(
-                    f"{path}.components: null is not a valid value"
+                    f"{path}.process: null is not a valid value"
                 )
-            field_components_items = _decode_sequence(raw_components, f"{path}.components")
-            field_components = tuple(
-                ServiceComponentStatus.from_wire(item, f"{path}.components[{index}]")
-                for index, item in enumerate(field_components_items)
-            )
-        field_supported_capabilities: tuple[CapabilityRef, ...] | None = None
-        if "supported_capabilities" in mapping:
-            raw_supported_capabilities = mapping["supported_capabilities"]
-            if raw_supported_capabilities is None:
-                raise ContractDecodeError(
-                    f"{path}.supported_capabilities: null is not a valid value"
-                )
-            field_supported_capabilities_items = _decode_sequence(
-                raw_supported_capabilities,
-                f"{path}.supported_capabilities",
-            )
-            field_supported_capabilities = tuple(
-                CapabilityRef.from_wire(item, f"{path}.supported_capabilities[{index}]")
-                for index, item in enumerate(field_supported_capabilities_items)
-            )
-        field_details: JsonObject | None = None
-        if "details" in mapping:
-            raw_details = mapping["details"]
-            if raw_details is None:
-                raise ContractDecodeError(
-                    f"{path}.details: null is not a valid value"
-                )
-            field_details = _decode_json_object(raw_details, f"{path}.details")
+            field_process = ServiceProcessEvidence.from_wire(raw_process, f"{path}.process")
         return cls(
-            probe=field_probe,
-            status=field_status,
+            descriptor_version=field_descriptor_version,
+            workspace_id=field_workspace_id,
+            service_instance_id=field_service_instance_id,
+            installation_id=field_installation_id,
+            endpoint_uri=field_endpoint_uri,
+            protocol_version=field_protocol_version,
             server_version=field_server_version,
-            api_version=field_api_version,
-            observed_at=field_observed_at,
-            components=field_components,
-            supported_capabilities=field_supported_capabilities,
-            details=field_details,
+            supported_api_versions=field_supported_api_versions,
+            supported_workspace_versions=field_supported_workspace_versions,
+            workspace_format_version=field_workspace_format_version,
+            ready=field_ready,
+            lifecycle_state=field_lifecycle_state,
+            fencing_generation=field_fencing_generation,
+            published_at=field_published_at,
+            process=field_process,
         )
 
 
@@ -6889,6 +6975,127 @@ class ProvenanceEntry:
             reason_code=field_reason_code,
             reason_comment=field_reason_comment,
             evidence=field_evidence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceProbeResult:
+    """The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
+    `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated
+    authority, because a probe answers a transport-level question, not an application
+    operation.
+    """
+
+    probe: ProbeKind
+    status: ProbeStatus
+    server_version: ReleaseVersion
+    api_version: ContractVersion
+    observed_at: Timestamp
+    components: tuple[ServiceComponentStatus, ...] | None = None
+    supported_capabilities: tuple[CapabilityRef, ...] | None = None
+    descriptor: ServiceEndpointDescriptor | None = None
+    details: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["probe"] = self.probe
+        wire["status"] = self.status
+        wire["server_version"] = self.server_version
+        wire["api_version"] = self.api_version
+        wire["observed_at"] = self.observed_at
+        if self.components is not None:
+            wire["components"] = [item.to_wire() for item in self.components]
+        if self.supported_capabilities is not None:
+            wire["supported_capabilities"] = [item.to_wire() for item in self.supported_capabilities]
+        if self.descriptor is not None:
+            wire["descriptor"] = self.descriptor.to_wire()
+        if self.details is not None:
+            wire["details"] = _encode_json_object(self.details)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ServiceProbeResult") -> ServiceProbeResult:
+        """Decode a wire payload into a ServiceProbeResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_probe = _decode_str(_require_field(mapping, "probe", path), f"{path}.probe")
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_server_version = _decode_str(
+            _require_field(mapping, "server_version", path),
+            f"{path}.server_version",
+        )
+        field_api_version = _decode_str(
+            _require_field(mapping, "api_version", path),
+            f"{path}.api_version",
+        )
+        field_observed_at = _decode_str(
+            _require_field(mapping, "observed_at", path),
+            f"{path}.observed_at",
+        )
+        field_components: tuple[ServiceComponentStatus, ...] | None = None
+        if "components" in mapping:
+            raw_components = mapping["components"]
+            if raw_components is None:
+                raise ContractDecodeError(
+                    f"{path}.components: null is not a valid value"
+                )
+            field_components_items = _decode_sequence(raw_components, f"{path}.components")
+            field_components = tuple(
+                ServiceComponentStatus.from_wire(item, f"{path}.components[{index}]")
+                for index, item in enumerate(field_components_items)
+            )
+        field_supported_capabilities: tuple[CapabilityRef, ...] | None = None
+        if "supported_capabilities" in mapping:
+            raw_supported_capabilities = mapping["supported_capabilities"]
+            if raw_supported_capabilities is None:
+                raise ContractDecodeError(
+                    f"{path}.supported_capabilities: null is not a valid value"
+                )
+            field_supported_capabilities_items = _decode_sequence(
+                raw_supported_capabilities,
+                f"{path}.supported_capabilities",
+            )
+            field_supported_capabilities = tuple(
+                CapabilityRef.from_wire(item, f"{path}.supported_capabilities[{index}]")
+                for index, item in enumerate(field_supported_capabilities_items)
+            )
+        field_descriptor: ServiceEndpointDescriptor | None = None
+        if "descriptor" in mapping:
+            raw_descriptor = mapping["descriptor"]
+            if raw_descriptor is None:
+                raise ContractDecodeError(
+                    f"{path}.descriptor: null is not a valid value"
+                )
+            field_descriptor = ServiceEndpointDescriptor.from_wire(
+                raw_descriptor,
+                f"{path}.descriptor",
+            )
+        field_details: JsonObject | None = None
+        if "details" in mapping:
+            raw_details = mapping["details"]
+            if raw_details is None:
+                raise ContractDecodeError(
+                    f"{path}.details: null is not a valid value"
+                )
+            field_details = _decode_json_object(raw_details, f"{path}.details")
+        return cls(
+            probe=field_probe,
+            status=field_status,
+            server_version=field_server_version,
+            api_version=field_api_version,
+            observed_at=field_observed_at,
+            components=field_components,
+            supported_capabilities=field_supported_capabilities,
+            descriptor=field_descriptor,
+            details=field_details,
         )
 
 
