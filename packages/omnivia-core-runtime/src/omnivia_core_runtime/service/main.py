@@ -14,11 +14,15 @@ import json
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
+from typing import Protocol
 
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
+from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.transport import (
     LOCAL_SCHEME,
@@ -31,6 +35,22 @@ from omnivia_core_runtime.service.transport import (
 #: story yet, and inventing one here would be a security surface with no design
 #: behind it.
 LOCAL_PRINCIPAL = "local-user"
+
+
+class _ProbeFactsSource(Protocol):
+    def probe_facts(self) -> ServiceFacts: ...
+
+
+def _router_for(started: _ProbeFactsSource, dispatcher: Dispatcher) -> DocumentRouter:
+    """Compose the accepted structural router around the existing dispatcher."""
+    return DocumentRouter(
+        probes=ProbeRouter(
+            facts=started.probe_facts,
+            capabilities=tuple,
+            clock=time.monotonic_ns,
+        ),
+        dispatch=dispatcher.dispatch,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,11 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         # Refused before startup, not after. Blocking here would leave a live process
         # advertising readiness at an endpoint nothing listens on -- the same lie the
         # exit-immediately bug told, with a live pid behind it instead of a dead one.
-        sys.stderr.write(
-            f"refusing to serve: --endpoint must be a {LOCAL_SCHEME.value}:// endpoint "
-            f"on this platform, got {settings.endpoint!r}. Use --check-only to run "
-            "startup without serving.\n"
-        )
+        sys.stderr.write("refusing to serve: local service endpoint is invalid\n")
         return 2
 
     def serve(started: ServiceRunner) -> None:
@@ -118,15 +134,16 @@ def main(argv: list[str] | None = None) -> int:
         is about to die.
         """
         assert endpoint is not None and started.workspace_id is not None
-        server = LocalSocketServer(
-            dispatcher=Dispatcher.for_service_operations(
-                Grant(
-                    principal=LOCAL_PRINCIPAL,
-                    workspaces=frozenset({started.workspace_id}),
-                    operations=frozenset(SERVICE_OPERATIONS),
-                ),
-                started,
+        dispatcher = Dispatcher.for_service_operations(
+            Grant(
+                principal=LOCAL_PRINCIPAL,
+                workspaces=frozenset({started.workspace_id}),
+                operations=frozenset(SERVICE_OPERATIONS),
             ),
+            started,
+        )
+        server = LocalSocketServer(
+            router=_router_for(started, dispatcher),
             endpoint=endpoint,
         )
         server.start()
