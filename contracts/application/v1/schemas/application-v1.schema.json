@@ -175,6 +175,12 @@
     "ServiceComponentStatus": {
       "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceComponentStatus"
     },
+    "ServiceProcessEvidence": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProcessEvidence"
+    },
+    "ServiceEndpointDescriptor": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceEndpointDescriptor"
+    },
     "ServiceProbeResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProbeResult"
     },

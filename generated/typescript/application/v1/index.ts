@@ -1716,6 +1716,30 @@ export interface ServiceComponentStatus {
 }
 
 /**
+ * Evidence naming the operating-system process that published a descriptor, so a stale
+ * descriptor left behind by a crashed instance can be recognized rather than trusted. All three
+ * facts are required together: a pid alone is ambiguous once the host reuses it, and it is the
+ * start time and boot identifier that make the triple a stable identity. This names a process;
+ * it does not grant access to one, and it never carries a filesystem or database location.
+ */
+export interface ServiceProcessEvidence {
+  /**
+   * Operating-system process identifier of the running service instance.
+   */
+  readonly pid: number;
+  /**
+   * Opaque, platform-defined process start time, compared only for equality against a later
+   * reading of the same pid. Never parsed: its spelling is whatever the host platform reports.
+   */
+  readonly start_time: string;
+  /**
+   * Identifies the host boot during which the pid and start time were read, so the pair is
+   * never matched against a reading taken after a restart.
+   */
+  readonly boot_id: Identifier;
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -2514,46 +2538,85 @@ export interface RecordIdentity {
 }
 
 /**
- * The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
- * `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority,
- * because a probe answers a transport-level question, not an application operation.
+ * The published coordination facts a client needs to find one running service instance and
+ * decide whether it can talk to it, before any request is sent. Coordination data only: a
+ * descriptor carries no bearer credential or token, no granted or effective capability
+ * authority, no lease ownership, and no database or filesystem location. Holding one lets a
+ * caller address an endpoint and negotiate versions; it authorizes nothing, and every authority
+ * question is still settled by an authenticated request.
  */
-export interface ServiceProbeResult {
+export interface ServiceEndpointDescriptor {
   /**
-   * Echoes the probe that was requested.
+   * Contract version of the descriptor shape itself, so a reader can tell a descriptor it
+   * fully understands from a newer one it must read conservatively.
    */
-  readonly probe: ProbeKind;
+  readonly descriptor_version: ContractVersion;
   /**
-   * Overall outcome for this probe.
+   * Workspace this service instance is serving.
    */
-  readonly status: ProbeStatus;
+  readonly workspace_id: WorkspaceId;
   /**
-   * Concrete server build version answering the probe.
+   * Identifies this running service instance. A restart is a new instance and gets a new
+   * identifier.
+   */
+  readonly service_instance_id: Identifier;
+  /**
+   * Identifies the installation the instance belongs to, which survives restarts and instance
+   * identity changes.
+   */
+  readonly installation_id: Identifier;
+  /**
+   * Absolute URI a client connects to, scheme included. An address to dial, not a location to
+   * open: it never names a database file or a workspace directory.
+   */
+  readonly endpoint_uri: string;
+  /**
+   * Wire protocol version spoken at this endpoint.
+   */
+  readonly protocol_version: ContractVersion;
+  /**
+   * Concrete server build version publishing this descriptor.
    */
   readonly server_version: ReleaseVersion;
   /**
-   * API contract version this server build implements.
+   * Inclusive API contract version window this instance supports.
    */
-  readonly api_version: ContractVersion;
+  readonly supported_api_versions: VersionWindow;
   /**
-   * When this probe was answered.
+   * Inclusive workspace format version window this instance supports.
    */
-  readonly observed_at: Timestamp;
+  readonly supported_workspace_versions: VersionWindow;
   /**
-   * Per-subsystem detail, for a health or readiness probe.
+   * Concrete workspace format version the served workspace is stored at.
    */
-  readonly components?: readonly ServiceComponentStatus[];
+  readonly workspace_format_version: ContractVersion;
   /**
-   * Capabilities this server build implements, for a discovery probe. This is a runtime
-   * discovery fact only: an unauthenticated probe has no caller and no workspace to authorize
-   * against, so it must never state `granted` or `effective` authority. A caller must still
-   * negotiate `CapabilitySet.granted`/`effective` through an authenticated request.
+   * Whether the instance is ready to serve requests now. A descriptor may be published before
+   * readiness, so this stays a fact of its own rather than being implied by the descriptor
+   * existing.
    */
-  readonly supported_capabilities?: readonly CapabilityRef[];
+  readonly ready: boolean;
   /**
-   * Optional structured detail.
+   * Open, dot-namespaced code naming where the instance is in its lifecycle, such as
+   * `starting` or `serving` or `draining`. Open by design; an unrecognized state must be
+   * preserved and surfaced, not coerced to a known one.
    */
-  readonly details?: JsonObject;
+  readonly lifecycle_state: OpenCode;
+  /**
+   * Monotonic generation of this instance's claim on the workspace. A reader holding a lower
+   * generation is looking at a superseded instance. It records which claim is newer; it
+   * neither states nor transfers ownership of one.
+   */
+  readonly fencing_generation: number;
+  /**
+   * When this descriptor was published.
+   */
+  readonly published_at: Timestamp;
+  /**
+   * Local process evidence, when the publisher can observe it. Optional as a whole and
+   * complete when present, so a reader never has to reason about a half-identified process.
+   */
+  readonly process?: ServiceProcessEvidence;
 }
 
 /**
@@ -3005,6 +3068,56 @@ export interface ProvenanceEntry {
    * impossible to record.
    */
   readonly evidence?: readonly EvidenceReference[];
+}
+
+/**
+ * The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
+ * `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority,
+ * because a probe answers a transport-level question, not an application operation.
+ */
+export interface ServiceProbeResult {
+  /**
+   * Echoes the probe that was requested.
+   */
+  readonly probe: ProbeKind;
+  /**
+   * Overall outcome for this probe.
+   */
+  readonly status: ProbeStatus;
+  /**
+   * Concrete server build version answering the probe.
+   */
+  readonly server_version: ReleaseVersion;
+  /**
+   * API contract version this server build implements.
+   */
+  readonly api_version: ContractVersion;
+  /**
+   * When this probe was answered.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * Per-subsystem detail, for a health or readiness probe.
+   */
+  readonly components?: readonly ServiceComponentStatus[];
+  /**
+   * Capabilities this server build implements, for a discovery probe. This is a runtime
+   * discovery fact only: an unauthenticated probe has no caller and no workspace to authorize
+   * against, so it must never state `granted` or `effective` authority. A caller must still
+   * negotiate `CapabilitySet.granted`/`effective` through an authenticated request.
+   */
+  readonly supported_capabilities?: readonly CapabilityRef[];
+  /**
+   * Endpoint descriptor for this service instance, for a discovery probe. Like
+   * `supported_capabilities`, it is a runtime discovery fact: it states what this build is and
+   * where it can be reached, never what the caller may do. Optional, because a health or
+   * readiness probe answers without one.
+   */
+  readonly descriptor?: ServiceEndpointDescriptor;
+  /**
+   * Optional structured detail.
+   */
+  readonly details?: JsonObject;
 }
 
 /**

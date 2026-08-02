@@ -71,6 +71,118 @@
       "required": ["id", "status", "observed_at"],
       "unevaluatedProperties": false
     },
+    "ServiceProcessEvidence": {
+      "title": "ServiceProcessEvidence",
+      "description": "Evidence naming the operating-system process that published a descriptor, so a stale descriptor left behind by a crashed instance can be recognized rather than trusted. All three facts are required together: a pid alone is ambiguous once the host reuses it, and it is the start time and boot identifier that make the triple a stable identity. This names a process; it does not grant access to one, and it never carries a filesystem or database location.",
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "description": "Operating-system process identifier of the running service instance.",
+          "minimum": 1
+        },
+        "start_time": {
+          "type": "string",
+          "description": "Opaque, platform-defined process start time, compared only for equality against a later reading of the same pid. Never parsed: its spelling is whatever the host platform reports.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "boot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifies the host boot during which the pid and start time were read, so the pair is never matched against a reading taken after a restart."
+        }
+      },
+      "required": ["pid", "start_time", "boot_id"],
+      "unevaluatedProperties": false
+    },
+    "ServiceEndpointDescriptor": {
+      "title": "ServiceEndpointDescriptor",
+      "description": "The published coordination facts a client needs to find one running service instance and decide whether it can talk to it, before any request is sent. Coordination data only: a descriptor carries no bearer credential or token, no granted or effective capability authority, no lease ownership, and no database or filesystem location. Holding one lets a caller address an endpoint and negotiate versions; it authorizes nothing, and every authority question is still settled by an authenticated request.",
+      "type": "object",
+      "properties": {
+        "descriptor_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version of the descriptor shape itself, so a reader can tell a descriptor it fully understands from a newer one it must read conservatively."
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this service instance is serving."
+        },
+        "service_instance_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifies this running service instance. A restart is a new instance and gets a new identifier."
+        },
+        "installation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifies the installation the instance belongs to, which survives restarts and instance identity changes."
+        },
+        "endpoint_uri": {
+          "type": "string",
+          "description": "Absolute URI a client connects to, scheme included. An address to dial, not a location to open: it never names a database file or a workspace directory.",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "protocol_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Wire protocol version spoken at this endpoint."
+        },
+        "server_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Concrete server build version publishing this descriptor."
+        },
+        "supported_api_versions": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow",
+          "description": "Inclusive API contract version window this instance supports."
+        },
+        "supported_workspace_versions": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow",
+          "description": "Inclusive workspace format version window this instance supports."
+        },
+        "workspace_format_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Concrete workspace format version the served workspace is stored at."
+        },
+        "ready": {
+          "type": "boolean",
+          "description": "Whether the instance is ready to serve requests now. A descriptor may be published before readiness, so this stays a fact of its own rather than being implied by the descriptor existing."
+        },
+        "lifecycle_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open, dot-namespaced code naming where the instance is in its lifecycle, such as `starting` or `serving` or `draining`. Open by design; an unrecognized state must be preserved and surfaced, not coerced to a known one."
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "description": "Monotonic generation of this instance's claim on the workspace. A reader holding a lower generation is looking at a superseded instance. It records which claim is newer; it neither states nor transfers ownership of one.",
+          "minimum": 1
+        },
+        "published_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this descriptor was published."
+        },
+        "process": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProcessEvidence",
+          "description": "Local process evidence, when the publisher can observe it. Optional as a whole and complete when present, so a reader never has to reason about a half-identified process."
+        }
+      },
+      "required": [
+        "descriptor_version",
+        "workspace_id",
+        "service_instance_id",
+        "installation_id",
+        "endpoint_uri",
+        "protocol_version",
+        "server_version",
+        "supported_api_versions",
+        "supported_workspace_versions",
+        "workspace_format_version",
+        "ready",
+        "lifecycle_state",
+        "fencing_generation",
+        "published_at"
+      ],
+      "unevaluatedProperties": false
+    },
     "ServiceProbeResult": {
       "title": "ServiceProbeResult",
       "description": "The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` / `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority, because a probe answers a transport-level question, not an application operation.",
@@ -111,6 +223,10 @@
             "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRef"
           },
           "maxItems": 256
+        },
+        "descriptor": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceEndpointDescriptor",
+          "description": "Endpoint descriptor for this service instance, for a discovery probe. Like `supported_capabilities`, it is a runtime discovery fact: it states what this build is and where it can be reached, never what the caller may do. Optional, because a health or readiness probe answers without one."
         },
         "details": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",

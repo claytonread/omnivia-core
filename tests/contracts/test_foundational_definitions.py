@@ -57,11 +57,14 @@ from omnivia_core.contracts.v1.generated import (
     RequestEnvelope,
     ResponseEnvelope,
     ServiceComponentStatus,
+    ServiceEndpointDescriptor,
     ServiceProbeRequest,
     ServiceProbeResult,
+    ServiceProcessEvidence,
     SourceReference,
     SourceSpan,
     SupersessionReference,
+    VersionWindow,
     job_terminal_result_from_wire,
     job_terminal_result_to_wire,
 )
@@ -258,6 +261,491 @@ def test_service_probe_result_rejects_legacy_capability_set_shape() -> None:
         "capabilities": {"supported": [], "granted": [], "effective": []},
     }
     _assert_schema_invalid("service", "ServiceProbeResult", document)
+
+
+# --------------------------------------------------------------------------
+# The service endpoint descriptor: the coordination facts a `service.discover`
+# probe publishes so a client can find one instance and decide whether it can
+# talk to it. Coordination data only -- it must never grow a credential, a
+# granted or effective capability, lease ownership, or a storage location, and
+# its local process evidence is all-or-none rather than three loose fields.
+# --------------------------------------------------------------------------
+
+#: Every field the descriptor publishes. Asserted as an exact set, so adding
+#: anything at all -- an authority fact most of all -- fails here and has to
+#: arrive as a deliberate contract decision rather than as a quiet widening.
+DESCRIPTOR_FIELD_NAMES = {
+    "descriptor_version",
+    "workspace_id",
+    "service_instance_id",
+    "installation_id",
+    "endpoint_uri",
+    "protocol_version",
+    "server_version",
+    "supported_api_versions",
+    "supported_workspace_versions",
+    "workspace_format_version",
+    "ready",
+    "lifecycle_state",
+    "fencing_generation",
+    "published_at",
+    "process",
+}
+
+DESCRIPTOR_REQUIRED_FIELD_NAMES = sorted(DESCRIPTOR_FIELD_NAMES - {"process"})
+
+#: Names a descriptor must never carry. A probe that answers before
+#: authentication has no caller and no workspace to authorize against, so a
+#: descriptor that stated any of these would be fabricating authority it never
+#: negotiated -- and a storage location would hand out a way in rather than an
+#: address to dial.
+FORBIDDEN_DESCRIPTOR_FIELD_NAMES = (
+    # Bearer credentials and tokens.
+    "token",
+    "access_token",
+    "auth_token",
+    "bearer_token",
+    "session_token",
+    "credential",
+    "credentials",
+    "secret",
+    "api_key",
+    "password",
+    # Granted / effective capability authority.
+    "granted",
+    "effective",
+    "capabilities",
+    "granted_capabilities",
+    "effective_capabilities",
+    "capability_set",
+    "scopes",
+    "roles",
+    "principal",
+    "authority",
+    "permissions",
+    # Lease ownership.
+    "lease",
+    "lease_id",
+    "lease_owner",
+    "lease_token",
+    "owner",
+    "owner_id",
+    "holder",
+    # Database and filesystem locations.
+    "path",
+    "paths",
+    "database_path",
+    "db_path",
+    "data_dir",
+    "data_directory",
+    "workspace_path",
+    "storage_path",
+    "socket_path",
+    "directory",
+)
+
+
+def _process_evidence_document() -> dict[str, Any]:
+    return {"pid": 4321, "start_time": "132984093840000000", "boot_id": "boot-7f3a"}
+
+
+def _descriptor_document() -> dict[str, Any]:
+    """A fully populated, schema-valid descriptor, minus the optional evidence."""
+    return {
+        "descriptor_version": "1.0",
+        "workspace_id": "workspace-1",
+        "service_instance_id": "instance-9c21",
+        "installation_id": "installation-4b70",
+        "endpoint_uri": "http://127.0.0.1:8731/",
+        "protocol_version": "1.2",
+        "server_version": "1.2.5",
+        "supported_api_versions": {"minimum": "1.0", "maximum": "1.2"},
+        "supported_workspace_versions": {"minimum": "1.0", "maximum": "1.1"},
+        "workspace_format_version": "1.1",
+        "ready": True,
+        "lifecycle_state": "serving",
+        "fencing_generation": 7,
+        "published_at": "2026-07-30T00:00:00Z",
+    }
+
+
+def _descriptor_value(**overrides: Any) -> ServiceEndpointDescriptor:
+    """The same descriptor as a decoded value, for round-trip assertions."""
+    fields_: dict[str, Any] = {
+        "descriptor_version": "1.0",
+        "workspace_id": "workspace-1",
+        "service_instance_id": "instance-9c21",
+        "installation_id": "installation-4b70",
+        "endpoint_uri": "http://127.0.0.1:8731/",
+        "protocol_version": "1.2",
+        "server_version": "1.2.5",
+        "supported_api_versions": VersionWindow(minimum="1.0", maximum="1.2"),
+        "supported_workspace_versions": VersionWindow(minimum="1.0", maximum="1.1"),
+        "workspace_format_version": "1.1",
+        "ready": True,
+        "lifecycle_state": "serving",
+        "fencing_generation": 7,
+        "published_at": "2026-07-30T00:00:00Z",
+    }
+    fields_.update(overrides)
+    return ServiceEndpointDescriptor(**fields_)
+
+
+# --- shape: what a descriptor is, and what it may never become ------------
+
+
+def test_service_endpoint_descriptor_publishes_exactly_the_accepted_fields() -> None:
+    assert {field.name for field in fields(ServiceEndpointDescriptor)} == DESCRIPTOR_FIELD_NAMES
+
+
+@pytest.mark.parametrize("forbidden", FORBIDDEN_DESCRIPTOR_FIELD_NAMES)
+def test_service_endpoint_descriptor_carries_no_authority_or_storage_field(
+    forbidden: str,
+) -> None:
+    """A descriptor is coordination data: an address, a version window, a lifecycle
+    state. It never carries a bearer credential, granted or effective capability
+    authority, lease ownership, or a database or filesystem location."""
+    assert forbidden not in {field.name for field in fields(ServiceEndpointDescriptor)}
+    assert forbidden not in {field.name for field in fields(ServiceProcessEvidence)}
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    ["access_token", "granted", "effective", "capabilities", "lease_owner", "database_path"],
+)
+def test_service_endpoint_descriptor_schema_rejects_an_authority_field(forbidden: str) -> None:
+    """The dataclass surface is not the only guard: `unevaluatedProperties: false`
+    makes a smuggled authority field a schema violation on the wire too."""
+    document = _descriptor_document()
+    document[forbidden] = "anything"
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+def test_service_endpoint_descriptor_states_its_exclusions_in_the_canonical_description() -> None:
+    """The canonical description is the contract a reviewer reads. It has to say what
+    a descriptor never carries, or the exclusion survives only as a test."""
+    document = json.loads((SCHEMA_DIR / "service.schema.json").read_text(encoding="utf-8"))
+    description = document["$defs"]["ServiceEndpointDescriptor"]["description"]
+    for excluded in ("credential", "token", "granted", "effective", "lease", "filesystem"):
+        assert excluded in description
+    assert "authorizes nothing" in description
+
+
+def test_service_endpoint_descriptor_does_not_restate_supported_capabilities() -> None:
+    """`ServiceProbeResult.supported_capabilities` stays the one place a discovery probe
+    says what the build supports, and it stays supported-only."""
+    descriptor_field_names = {field.name for field in fields(ServiceEndpointDescriptor)}
+    assert "supported_capabilities" not in descriptor_field_names
+
+    result_field_names = {field.name for field in fields(ServiceProbeResult)}
+    assert "supported_capabilities" in result_field_names
+    assert "capabilities" not in result_field_names
+    assert {field.name for field in fields(CapabilityRef)} == {"id", "version"}
+
+
+# --- the descriptor's optional placement on ServiceProbeResult ------------
+
+
+def test_service_probe_result_descriptor_is_optional_and_typed() -> None:
+    (descriptor_field,) = [
+        field for field in fields(ServiceProbeResult) if field.name == "descriptor"
+    ]
+    assert descriptor_field.default is None
+    assert descriptor_field.type == "ServiceEndpointDescriptor | None"
+
+
+def test_service_probe_result_without_a_descriptor_is_still_valid() -> None:
+    """A health or readiness probe answers without one, so the field stays optional."""
+    document = {
+        "probe": "service.health",
+        "status": "pass",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T00:00:00Z",
+    }
+    _assert_schema_valid("service", "ServiceProbeResult", document)
+    assert "descriptor" not in ServiceProbeResult.from_wire(document).to_wire()
+
+
+def test_service_discover_result_carrying_a_descriptor_is_valid() -> None:
+    document = {
+        "probe": "service.discover",
+        "status": "pass",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T00:00:00Z",
+        "supported_capabilities": [{"id": "memory.read", "version": "1.0"}],
+        "descriptor": _descriptor_document(),
+    }
+    _assert_schema_valid("service", "ServiceProbeResult", document)
+
+
+def test_service_probe_result_round_trips_a_descriptor() -> None:
+    original = ServiceProbeResult(
+        probe="service.discover",
+        status="pass",
+        server_version="1.2.5",
+        api_version="1.2",
+        observed_at="2026-07-30T00:00:00Z",
+        supported_capabilities=(CapabilityRef(id="memory.read", version="1.0"),),
+        descriptor=_descriptor_value(),
+    )
+    wire = original.to_wire()
+    assert wire["descriptor"] == _descriptor_document()
+    assert "granted" not in wire["descriptor"]
+    assert "effective" not in wire["descriptor"]
+    _assert_schema_valid("service", "ServiceProbeResult", wire)
+    assert ServiceProbeResult.from_wire(wire) == original
+
+
+def test_service_probe_result_rejects_a_null_descriptor() -> None:
+    """Absent and explicitly null are different: an omitted optional round-trips, a
+    null does not, so decoding refuses it rather than silently reading it as absent."""
+    document = {
+        "probe": "service.discover",
+        "status": "pass",
+        "server_version": "1.2.5",
+        "api_version": "1.2",
+        "observed_at": "2026-07-30T00:00:00Z",
+        "descriptor": None,
+    }
+    with pytest.raises(ContractDecodeError, match="descriptor: null is not a valid value"):
+        ServiceProbeResult.from_wire(document)
+    _assert_schema_invalid("service", "ServiceProbeResult", document)
+
+
+# --- round trips ----------------------------------------------------------
+
+
+def test_service_endpoint_descriptor_round_trip_without_process_evidence() -> None:
+    original = _descriptor_value()
+    wire = original.to_wire()
+    assert wire == _descriptor_document()
+    assert "process" not in wire
+    _assert_schema_valid("service", "ServiceEndpointDescriptor", wire)
+    assert ServiceEndpointDescriptor.from_wire(wire) == original
+
+
+def test_service_endpoint_descriptor_round_trip_with_process_evidence() -> None:
+    original = _descriptor_value(
+        process=ServiceProcessEvidence(
+            pid=4321, start_time="132984093840000000", boot_id="boot-7f3a"
+        )
+    )
+    wire = original.to_wire()
+    assert wire["process"] == _process_evidence_document()
+    _assert_schema_valid("service", "ServiceEndpointDescriptor", wire)
+    assert ServiceEndpointDescriptor.from_wire(wire) == original
+
+
+def test_service_process_evidence_round_trip() -> None:
+    original = ServiceProcessEvidence(
+        pid=4321, start_time="132984093840000000", boot_id="boot-7f3a"
+    )
+    wire = original.to_wire()
+    assert wire == _process_evidence_document()
+    _assert_schema_valid("service", "ServiceProcessEvidence", wire)
+    assert ServiceProcessEvidence.from_wire(wire) == original
+
+
+# --- required fields ------------------------------------------------------
+
+
+@pytest.mark.parametrize("omitted", DESCRIPTOR_REQUIRED_FIELD_NAMES)
+def test_service_endpoint_descriptor_requires_every_coordination_fact(omitted: str) -> None:
+    """Each of these answers a question a client must settle before it sends anything,
+    so none of them may be left out and inferred."""
+    document = _descriptor_document()
+    del document[omitted]
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+    with pytest.raises(ContractDecodeError, match=f"missing required field '{omitted}'"):
+        ServiceEndpointDescriptor.from_wire(document)
+
+
+def test_service_endpoint_descriptor_rejects_an_unknown_field() -> None:
+    document = _descriptor_document()
+    document["extra_fact"] = "unexpected"
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+# --- process evidence is all-or-none --------------------------------------
+
+
+def test_process_evidence_is_one_optional_object_not_three_loose_fields() -> None:
+    """The three facts only identify a process together, so they are nested behind one
+    optional field. Three independently optional top-level fields would let a producer
+    publish a pid with no way to tell whether it had been reused."""
+    descriptor_field_names = {field.name for field in fields(ServiceEndpointDescriptor)}
+    for loose in ("pid", "start_time", "boot_id"):
+        assert loose not in descriptor_field_names
+    assert {field.name for field in fields(ServiceProcessEvidence)} == {
+        "pid",
+        "start_time",
+        "boot_id",
+    }
+
+
+@pytest.mark.parametrize("omitted", ["pid", "start_time", "boot_id"])
+def test_process_evidence_is_rejected_when_partially_present(omitted: str) -> None:
+    evidence = _process_evidence_document()
+    del evidence[omitted]
+    _assert_schema_invalid("service", "ServiceProcessEvidence", evidence)
+    with pytest.raises(ContractDecodeError, match=f"missing required field '{omitted}'"):
+        ServiceProcessEvidence.from_wire(evidence)
+
+    document = _descriptor_document()
+    document["process"] = evidence
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+    with pytest.raises(ContractDecodeError, match=f"missing required field '{omitted}'"):
+        ServiceEndpointDescriptor.from_wire(document)
+
+
+def test_process_evidence_rejects_an_unknown_field() -> None:
+    evidence = _process_evidence_document()
+    evidence["executable_path"] = "/usr/local/bin/omnivia"
+    _assert_schema_invalid("service", "ServiceProcessEvidence", evidence)
+
+
+# --- bounded and typed values --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "endpoint_uri",
+    [
+        "/var/run/omnivia.sock",  # a relative reference, not an absolute URI
+        "127.0.0.1:8731",  # a host:port, still no scheme
+        "not a uri at all",
+        "",  # violates minLength
+        "https://example.invalid/" + "a" * 2048,  # violates maxLength
+        8731,  # not a string
+    ],
+)
+def test_endpoint_uri_must_be_a_bounded_absolute_uri(endpoint_uri: object) -> None:
+    document = _descriptor_document()
+    document["endpoint_uri"] = endpoint_uri
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize(
+    "endpoint_uri",
+    ["http://127.0.0.1:8731/", "https://127.0.0.1:8731/v1", "unix:///run/omnivia/core.sock"],
+)
+def test_endpoint_uri_accepts_an_absolute_uri_in_any_scheme(endpoint_uri: str) -> None:
+    document = _descriptor_document()
+    document["endpoint_uri"] = endpoint_uri
+    _assert_schema_valid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("fencing_generation", [0, -1, 1.5, "7", True])
+def test_fencing_generation_must_be_a_positive_integer(fencing_generation: object) -> None:
+    document = _descriptor_document()
+    document["fencing_generation"] = fencing_generation
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("pid", [0, -1, 1.5, "4321", True])
+def test_process_evidence_pid_must_be_a_positive_integer(pid: object) -> None:
+    evidence = _process_evidence_document()
+    evidence["pid"] = pid
+    _assert_schema_invalid("service", "ServiceProcessEvidence", evidence)
+
+
+@pytest.mark.parametrize("start_time", ["", "x" * 129, 132984093840000000])
+def test_process_evidence_start_time_must_be_a_bounded_non_empty_string(
+    start_time: object,
+) -> None:
+    evidence = _process_evidence_document()
+    evidence["start_time"] = start_time
+    _assert_schema_invalid("service", "ServiceProcessEvidence", evidence)
+
+
+@pytest.mark.parametrize("boot_id", ["", "-leading-dash", "x" * 129, 7])
+def test_process_evidence_boot_id_must_be_a_bounded_identifier(boot_id: object) -> None:
+    evidence = _process_evidence_document()
+    evidence["boot_id"] = boot_id
+    _assert_schema_invalid("service", "ServiceProcessEvidence", evidence)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["descriptor_version", "protocol_version", "workspace_format_version"],
+)
+@pytest.mark.parametrize("value", ["1", "1.2.5", "v1.2", "01.2", ""])
+def test_public_contract_version_fields_reject_a_non_major_minor_value(
+    field_name: str, value: str
+) -> None:
+    document = _descriptor_document()
+    document[field_name] = value
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("server_version", ["1.2", "v1.2.5", "latest", ""])
+def test_descriptor_server_version_must_be_a_release_version(server_version: str) -> None:
+    document = _descriptor_document()
+    document["server_version"] = server_version
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("lifecycle_state", ["Serving", "service.", "", "draining!", 1])
+def test_descriptor_lifecycle_state_must_be_an_open_code(lifecycle_state: object) -> None:
+    document = _descriptor_document()
+    document["lifecycle_state"] = lifecycle_state
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+def test_descriptor_lifecycle_state_preserves_an_unrecognized_code() -> None:
+    """The state is an open code, so a value this build has never seen is valid and
+    must survive a round trip rather than being coerced to a known one."""
+    document = _descriptor_document()
+    document["lifecycle_state"] = "quiescing.for_backup"
+    _assert_schema_valid("service", "ServiceEndpointDescriptor", document)
+    decoded = ServiceEndpointDescriptor.from_wire(document)
+    assert decoded.lifecycle_state == "quiescing.for_backup"
+    assert decoded.to_wire()["lifecycle_state"] == "quiescing.for_backup"
+
+
+@pytest.mark.parametrize("ready", ["true", 1, "yes", None])
+def test_descriptor_ready_must_be_a_boolean(ready: object) -> None:
+    document = _descriptor_document()
+    document["ready"] = ready
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("published_at", ["2026-07-30", "2026-13-01T00:00:00Z", "yesterday", 0])
+def test_descriptor_published_at_must_be_a_timestamp(published_at: object) -> None:
+    document = _descriptor_document()
+    document["published_at"] = published_at
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize(
+    "field_name", ["supported_api_versions", "supported_workspace_versions"]
+)
+@pytest.mark.parametrize(
+    "window",
+    [
+        {"minimum": "1.0"},  # a window needs both bounds
+        {"maximum": "1.2"},
+        {"minimum": "1.0", "maximum": "1.2", "preferred": "1.1"},
+        "1.0-1.2",
+    ],
+)
+def test_descriptor_version_windows_must_be_complete_version_windows(
+    field_name: str, window: object
+) -> None:
+    document = _descriptor_document()
+    document[field_name] = window
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize("field_name", ["workspace_id", "service_instance_id", "installation_id"])
+@pytest.mark.parametrize("value", ["", "-leading-dash", "x" * 129, "has space", 7])
+def test_descriptor_identifier_fields_must_be_bounded_identifiers(
+    field_name: str, value: object
+) -> None:
+    document = _descriptor_document()
+    document[field_name] = value
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
 
 
 # --------------------------------------------------------------------------
