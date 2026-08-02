@@ -378,7 +378,11 @@ def _connect_server(handle: int) -> None:
         if api.ConnectNamedPipe(handle, ctypes.byref(operation)):
             return
         error = _last_error()
-        if error == _ERROR_PIPE_CONNECTED:
+        if error in (
+            _ERROR_PIPE_CONNECTED,
+            _ERROR_BROKEN_PIPE,
+            _ERROR_NO_DATA,
+        ):
             return
         if error != _ERROR_IO_PENDING:
             raise WindowsPipeError("raw named-pipe accept failed", code=error)
@@ -389,7 +393,11 @@ def _connect_server(handle: int) -> None:
             handle, ctypes.byref(operation), ctypes.byref(transferred), False
         ):
             error = _last_error()
-            if error not in (_ERROR_PIPE_CONNECTED,):
+            if error not in (
+                _ERROR_PIPE_CONNECTED,
+                _ERROR_BROKEN_PIPE,
+                _ERROR_NO_DATA,
+            ):
                 raise WindowsPipeError(
                     "raw named-pipe accept completion failed", code=error
                 )
