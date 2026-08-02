@@ -2296,9 +2296,9 @@ SCHEMA_ROOT = "contracts/application/v1/schemas"
 #: **Rollover rule.** This value moves only *after* a slice is independently
 #: accepted and committed, in a change of its own, together with a baseline
 #: re-captured from that commit. It is never advanced prospectively to a commit
-#: belonging to the candidate it is meant to judge. Currently the accepted A2.7.1
-#: checkpoint.
-ACCEPTED_CONTRACT_CHECKPOINT = "3b6101c89a7b1d5b8575c360e0972faebdcfb218"
+#: belonging to the candidate it is meant to judge. Currently the accepted P0
+#: service endpoint checkpoint, which publishes ``ServiceEndpointUri``.
+ACCEPTED_CONTRACT_CHECKPOINT = "499e8b3667b707dca58f097cd099d27a23882026"
 
 #: Where the *authoritative* anchor arrives: repository-external GitHub
 #: configuration -- a repository or environment variable, set and audited outside

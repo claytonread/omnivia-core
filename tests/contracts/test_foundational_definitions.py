@@ -426,8 +426,17 @@ def test_service_endpoint_descriptor_states_its_exclusions_in_the_canonical_desc
     a descriptor never carries, or the exclusion survives only as a test."""
     document = json.loads((SCHEMA_DIR / "service.schema.json").read_text(encoding="utf-8"))
     description = document["$defs"]["ServiceEndpointDescriptor"]["description"]
-    for excluded in ("credential", "token", "granted", "effective", "lease", "filesystem"):
+    for excluded in (
+        "credential",
+        "token",
+        "granted",
+        "effective",
+        "lease",
+        "database",
+        "workspace storage",
+    ):
         assert excluded in description
+    assert "bounded socket path" in description
     assert "authorizes nothing" in description
 
 
@@ -628,12 +637,34 @@ def test_endpoint_uri_must_be_a_bounded_absolute_uri(endpoint_uri: object) -> No
 
 @pytest.mark.parametrize(
     "endpoint_uri",
-    ["http://127.0.0.1:8731/", "https://127.0.0.1:8731/v1", "unix:///run/omnivia/core.sock"],
+    [
+        "http://127.0.0.1:8731/",
+        "https://core.example.invalid/v1",
+        "unix:///run/omnivia/core.sock",
+        "pipe://omnivia-deadbeef",
+    ],
 )
-def test_endpoint_uri_accepts_an_absolute_uri_in_any_scheme(endpoint_uri: str) -> None:
+def test_endpoint_uri_accepts_an_approved_dialable_transport(endpoint_uri: str) -> None:
     document = _descriptor_document()
     document["endpoint_uri"] = endpoint_uri
     _assert_schema_valid("service", "ServiceEndpointDescriptor", document)
+
+
+@pytest.mark.parametrize(
+    "endpoint_uri",
+    [
+        "http://svc:hunter2@127.0.0.1:8731/",
+        "file:///Users/alice/Library/OmniVia/workspace.sqlite",
+        "ftp://127.0.0.1/core",
+        "http://127.0.0.1:8731/#fragment",
+    ],
+)
+def test_endpoint_uri_rejects_credentials_storage_and_unapproved_transports(
+    endpoint_uri: str,
+) -> None:
+    document = _descriptor_document()
+    document["endpoint_uri"] = endpoint_uri
+    _assert_schema_invalid("service", "ServiceEndpointDescriptor", document)
 
 
 @pytest.mark.parametrize("fencing_generation", [0, -1, 1.5, "7", True])
