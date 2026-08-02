@@ -1,0 +1,394 @@
+{
+  "format": "omnivia.architecture-gate-traceability.v1",
+  "source": {
+    "document": "omnivia-core-architecture-spec-v0.6-2026-07-29.md",
+    "version": "0.6-draft",
+    "status": "Accepted; architecture frozen",
+    "section": 21,
+    "gate_count": 34
+  },
+  "pending_state": "pending_candidate",
+  "operation_traceability": {
+    "file": "tests/fixtures/service_conformance/operation-traceability-v1.json",
+    "format": "omnivia.operation-traceability.v1"
+  },
+  "gates": [
+    {
+      "gate_id": "architecture-v0.6-s21-g01",
+      "ordinal": 1,
+      "acceptance_gate": "every canonical record can explain its evidence and authority;",
+      "pending_test_id": "test_architecture_gate_canonical_record_evidence_authority",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "evidence.search",
+        "knowledge.search"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g02",
+      "ordinal": 2,
+      "acceptance_gate": "historical state reconstruction is tested;",
+      "pending_test_id": "test_architecture_gate_historical_state_reconstruction",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g03",
+      "ordinal": 3,
+      "acceptance_gate": "automatic extraction cannot bypass governance;",
+      "pending_test_id": "test_architecture_gate_extraction_requires_governance",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "knowledge.propose",
+        "record.supersede"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g04",
+      "ordinal": 4,
+      "acceptance_gate": "ACL tests prove unauthorized content never reaches ranking or model context;",
+      "pending_test_id": "test_architecture_gate_acl_before_ranking_and_context",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "context_pack.build",
+        "evidence.search",
+        "graph.traverse",
+        "knowledge.search",
+        "memory.search"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g05",
+      "ordinal": 5,
+      "acceptance_gate": "ingestion and projections recover after interruption;",
+      "pending_test_id": "test_architecture_gate_ingestion_projection_interruption_recovery",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "import.start",
+        "job.cancel",
+        "job.events",
+        "job.get",
+        "job.retry"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g06",
+      "ordinal": 6,
+      "acceptance_gate": "workspace backup and restore preserve identity and history;",
+      "pending_test_id": "test_architecture_gate_backup_restore_identity_history",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g07",
+      "ordinal": 7,
+      "acceptance_gate": "MCP operates independently of the desktop application;",
+      "pending_test_id": "test_architecture_gate_mcp_desktop_independence",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g08",
+      "ordinal": 8,
+      "acceptance_gate": "MCP network mode is authenticated and loopback-safe by default;",
+      "pending_test_id": "test_architecture_gate_mcp_network_auth_loopback_default",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g09",
+      "ordinal": 9,
+      "acceptance_gate": "sqlite-vec and Zvec have reproducible architectural comparison results at 10k, 100k and 1m where hardware permits;",
+      "pending_test_id": "test_architecture_gate_semantic_engine_comparison_scales",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g10",
+      "ordinal": 10,
+      "acceptance_gate": "the selected default semantic engine passes signed macOS, Windows and Linux packaging, security, recovery and performance gates;",
+      "pending_test_id": "test_architecture_gate_default_semantic_engine_distribution",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g11",
+      "ordinal": 11,
+      "acceptance_gate": "every optional semantic engine included in a release passes the same applicable distribution gates;",
+      "pending_test_id": "test_architecture_gate_optional_semantic_engine_distribution",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g12",
+      "ordinal": 12,
+      "acceptance_gate": "an engine used only as an unshipped comparator does not require production distribution certification;",
+      "pending_test_id": "test_architecture_gate_unshipped_comparator_certification_exemption",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g13",
+      "ordinal": 13,
+      "acceptance_gate": "projection loss can be repaired without losing canonical records;",
+      "pending_test_id": "test_architecture_gate_projection_repair_preserves_canonical_records",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g14",
+      "ordinal": 14,
+      "acceptance_gate": "agent-run compression cannot mutate canonical knowledge;",
+      "pending_test_id": "test_architecture_gate_agent_compression_canonical_immutability",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g15",
+      "ordinal": 15,
+      "acceptance_gate": "local and cloud implementations pass contract-parity tests;",
+      "pending_test_id": "test_architecture_gate_local_cloud_contract_parity",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "context_pack.build",
+        "evidence.search",
+        "graph.traverse",
+        "import.start",
+        "job.cancel",
+        "job.events",
+        "job.get",
+        "job.retry",
+        "knowledge.propose",
+        "knowledge.search",
+        "memory.create",
+        "memory.get",
+        "memory.list",
+        "memory.search",
+        "record.supersede",
+        "workspace.create",
+        "workspace.inspect",
+        "workspace.list"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g16",
+      "ordinal": 16,
+      "acceptance_gate": "a clean installation can run Core and connect Claude through MCP without OmniVia Desktop;",
+      "pending_test_id": "test_architecture_gate_clean_install_mcp_without_desktop",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g17",
+      "ordinal": 17,
+      "acceptance_gate": "the base MCP server has no dependency on OmniVia Dev;",
+      "pending_test_id": "test_architecture_gate_base_mcp_no_dev_dependency",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g18",
+      "ordinal": 18,
+      "acceptance_gate": "Desktop, CLI and MCP clients pass the same application-contract conformance tests;",
+      "pending_test_id": "test_architecture_gate_client_application_contract_conformance",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g19",
+      "ordinal": 19,
+      "acceptance_gate": "stopping the Desktop application does not stop a separately configured Core Service;",
+      "pending_test_id": "test_architecture_gate_desktop_stop_core_service_independence",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g20",
+      "ordinal": 20,
+      "acceptance_gate": "MCP managed-local and service-client modes return equivalent authorized results for the same workspace state;",
+      "pending_test_id": "test_architecture_gate_mcp_mode_authorized_result_equivalence",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g21",
+      "ordinal": 21,
+      "acceptance_gate": "only one authoritative Core Service can obtain a writable workspace service lease;",
+      "pending_test_id": "test_architecture_gate_single_authoritative_workspace_lease",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g22",
+      "ordinal": 22,
+      "acceptance_gate": "MCP, CLI, Desktop and launchers never own the authoritative workspace service lease;",
+      "pending_test_id": "test_architecture_gate_clients_never_own_workspace_lease",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g23",
+      "ordinal": 23,
+      "acceptance_gate": "bootstrap mutex prevents duplicate service startup and is always released;",
+      "pending_test_id": "test_architecture_gate_bootstrap_mutex_startup_and_release",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g24",
+      "ordinal": 24,
+      "acceptance_gate": "failed managed startup cleans up safely;",
+      "pending_test_id": "test_architecture_gate_managed_startup_cleanup",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g25",
+      "ordinal": 25,
+      "acceptance_gate": "fencing prevents an old service from committing after takeover;",
+      "pending_test_id": "test_architecture_gate_fencing_rejects_old_service_after_takeover",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "import.start",
+        "job.cancel",
+        "job.retry",
+        "knowledge.propose",
+        "memory.create",
+        "record.supersede",
+        "workspace.create"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g26",
+      "ordinal": 26,
+      "acceptance_gate": "generation is revalidated after sleep, resume and suspension;",
+      "pending_test_id": "test_architecture_gate_generation_revalidation_after_suspend",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "import.start",
+        "job.cancel",
+        "job.retry",
+        "knowledge.propose",
+        "memory.create",
+        "record.supersede",
+        "workspace.create"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g27",
+      "ordinal": 27,
+      "acceptance_gate": "unreliable-lock filesystems refuse writable direct-file operation;",
+      "pending_test_id": "test_architecture_gate_unreliable_lock_filesystem_refusal",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g28",
+      "ordinal": 28,
+      "acceptance_gate": "stale-lease recovery and graceful handover are tested;",
+      "pending_test_id": "test_architecture_gate_stale_lease_recovery_and_handover",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g29",
+      "ordinal": 29,
+      "acceptance_gate": "stdio MCP cannot enumerate ungranted workspaces;",
+      "pending_test_id": "test_architecture_gate_stdio_mcp_workspace_grants",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g30",
+      "ordinal": 30,
+      "acceptance_gate": "client-supplied identity cannot expand permissions;",
+      "pending_test_id": "test_architecture_gate_client_identity_cannot_expand_permissions",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "context_pack.build",
+        "evidence.search",
+        "graph.traverse",
+        "import.start",
+        "job.cancel",
+        "job.events",
+        "job.get",
+        "job.retry",
+        "knowledge.propose",
+        "knowledge.search",
+        "memory.create",
+        "memory.get",
+        "memory.list",
+        "memory.search",
+        "record.supersede",
+        "workspace.create",
+        "workspace.inspect",
+        "workspace.list"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g31",
+      "ordinal": 31,
+      "acceptance_gate": "application API compatibility, error and job contracts pass conformance tests;",
+      "pending_test_id": "test_architecture_gate_application_api_contract_conformance",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "candidate.approve",
+        "candidate.reject",
+        "context_pack.build",
+        "evidence.search",
+        "graph.traverse",
+        "import.start",
+        "job.cancel",
+        "job.events",
+        "job.get",
+        "job.retry",
+        "knowledge.propose",
+        "knowledge.search",
+        "memory.create",
+        "memory.get",
+        "memory.list",
+        "memory.search",
+        "record.supersede",
+        "workspace.create",
+        "workspace.inspect",
+        "workspace.list"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g32",
+      "ordinal": 32,
+      "acceptance_gate": "service upgrades refuse incompatible workspace formats safely;",
+      "pending_test_id": "test_architecture_gate_upgrade_incompatible_workspace_refusal",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g33",
+      "ordinal": 33,
+      "acceptance_gate": "persisted Context Pack snapshots retain all policy, source and projection inputs;",
+      "pending_test_id": "test_architecture_gate_persisted_context_pack_inputs",
+      "state": "pending_candidate",
+      "operation_traceability_refs": [
+        "context_pack.build"
+      ]
+    },
+    {
+      "gate_id": "architecture-v0.6-s21-g34",
+      "ordinal": 34,
+      "acceptance_gate": "initial semantic-engine feasibility occurs before production adapter lock-in.",
+      "pending_test_id": "test_architecture_gate_semantic_feasibility_before_lock_in",
+      "state": "pending_candidate",
+      "operation_traceability_refs": []
+    }
+  ]
+}
