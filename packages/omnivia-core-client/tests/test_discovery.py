@@ -229,9 +229,16 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
         ctypes.POINTER(wintypes.LPVOID),
     ]
     advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
-    assert advapi.ConvertStringSidToSidW(
+    converted_owner = advapi.ConvertStringSidToSidW(
         _windows_current_user_sid_text(), ctypes.byref(owner)
     )
+    if not converted_owner:
+        kernel.LocalFree.argtypes = [wintypes.LPVOID]
+        kernel.LocalFree.restype = wintypes.LPVOID
+        if owner:
+            kernel.LocalFree(owner)
+        kernel.LocalFree(security_descriptor)
+    assert converted_owner
     try:
         present = wintypes.BOOL()
         dacl = wintypes.LPVOID()
