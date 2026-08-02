@@ -884,6 +884,38 @@ def test_malformed_nested_dto_renderer_is_never_called_or_leaked(
     assert_sanitized(caught.value, planted)
 
 
+def test_ordinary_normalization_exception_is_fixed_payload_free_and_unchained(
+    tmp_path: Path,
+) -> None:
+    publish(tmp_path)
+    planted = "planted-normalization-runtime-secret"
+
+    class ExplodingDetails(Mapping[str, Any]):
+        def __getitem__(self, key: str) -> Any:
+            raise RuntimeError(planted)
+
+        def __iter__(self) -> Iterator[str]:
+            raise RuntimeError(planted)
+
+        def __len__(self) -> int:
+            return 1
+
+    result = ServiceProbeResult(
+        probe="service.discover",
+        status="pass",
+        server_version="1.2.5",
+        api_version=CONTRACT_VERSION,
+        observed_at="2026-07-30T12:00:00Z",
+        descriptor=descriptor(),
+        details=ExplodingDetails(),
+    )
+
+    with pytest.raises(TransportError, match="live discovery") as caught:
+        discover(tmp_path, FixedResultTransport(result))
+
+    assert_sanitized(caught.value, planted)
+
+
 @pytest.mark.parametrize(
     "result",
     [
