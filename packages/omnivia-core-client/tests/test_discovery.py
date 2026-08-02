@@ -10,6 +10,7 @@ import os
 import stat
 import subprocess
 import traceback
+from collections.abc import Iterator, Mapping
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, cast
