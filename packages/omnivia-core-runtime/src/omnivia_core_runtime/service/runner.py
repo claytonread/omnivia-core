@@ -298,7 +298,7 @@ class ServiceRunner:
         # `except` in `start()` unwinds the resource stack and no descriptor is ever
         # written.
         if serve is not None:
-            serve(self)
+            self._start_transport(serve)
 
         # 8. Readiness is advertised last.
         publish(
@@ -326,6 +326,16 @@ class ServiceRunner:
             unmet=(),
             reason="writable readiness published",
         )
+
+    def _start_transport(self, serve: Callable[[ServiceRunner], None]) -> None:
+        """Run the transport hook without publishing its raw failure diagnostics."""
+        failed = False
+        try:
+            serve(self)
+        except Exception:  # noqa: BLE001 - the public report is structural only
+            failed = True
+        if failed:
+            raise RuntimeError("local service transport start failed")
 
     def probe_facts(self) -> ServiceFacts:
         """Project this live instance into the accepted public probe snapshot."""
