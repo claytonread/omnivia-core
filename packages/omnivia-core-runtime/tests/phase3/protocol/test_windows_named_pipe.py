@@ -183,6 +183,50 @@ def test_server_response_close_avoids_discard_and_unbounded_flush(
     assert events == ["close"]
 
 
+def test_pipe_client_retries_the_wait_create_race_when_instance_turns_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import omnivia_core_runtime.service.windows_pipe as module
+
+    events: list[tuple[str, int]] = []
+    assert module._INVALID_HANDLE_VALUE is not None
+    handles = iter([int(module._INVALID_HANDLE_VALUE), 73])
+
+    class FakeApi:
+        @staticmethod
+        def WaitNamedPipeW(address: str, milliseconds: int) -> bool:
+            assert address == r"\\.\pipe\race"
+            assert milliseconds > 0
+            events.append(("wait", milliseconds))
+            return True
+
+        @staticmethod
+        def CreateFileW(*args: object) -> int:
+            del args
+            handle = next(handles)
+            events.append(("create", handle))
+            return handle
+
+        @staticmethod
+        def CloseHandle(handle: int) -> bool:
+            events.append(("close", handle))
+            return True
+
+    monkeypatch.setattr(module, "_API", FakeApi())
+    monkeypatch.setattr(module, "_GET_LAST_ERROR", lambda: module._ERROR_PIPE_BUSY)
+
+    channel = open_pipe_client(r"\\.\pipe\race", timeout=0.1)
+    channel.close()
+
+    assert [name for name, _ in events] == [
+        "wait",
+        "create",
+        "wait",
+        "create",
+        "close",
+    ]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="requires a real Windows named pipe")
 def test_raw_pipe_partial_writes_start_with_ovc1_and_route_probe() -> None:
     endpoint = _endpoint()
