@@ -5,19 +5,23 @@ Parses each distribution's ``pyproject.toml`` (via ``tomllib``) and its
 Python source tree (via the ``ast`` module) to check the compile-time
 dependency direction:
 
-                    omnivia-core
-                  ^      ^      ^
-                  |      |      |
-omnivia-core-runtime   omnivia-core-mcp   omnivia-core-cli
+                          omnivia-core
+             ^          ^          ^          ^
+             |          |          |          |
+omnivia-core-runtime  omnivia-core-mcp  omnivia-core-cli  omnivia-core-client
 
 Checks performed:
 
 - distribution names and top-level import package names are unique;
-- ``omnivia-core`` has no sibling or legacy dependency or import;
-- ``omnivia-core-runtime``, ``omnivia-core-mcp``, and ``omnivia-core-cli``
-  each declare a dependency on ``omnivia-core``;
+- ``omnivia-core`` has no sibling or legacy dependency or import, and
+  ``omnivia-core-client`` counts as a sibling like any other;
+- ``omnivia-core-runtime``, ``omnivia-core-mcp``, ``omnivia-core-cli``, and
+  ``omnivia-core-client`` each declare a dependency on ``omnivia-core``;
 - ``omnivia-core-mcp`` and ``omnivia-core-cli`` do not depend on or import
   ``omnivia_core_runtime``;
+- ``omnivia-core-client`` declares exactly one dependency -- the accepted
+  ``omnivia-core`` range -- and imports no runtime, MCP, CLI, or legacy
+  package;
 - every package's Hatchling wheel target selects its own ``src`` package;
 - every package has a ``py.typed`` marker;
 - every package's build backend is ``hatchling.build`` and its build
@@ -76,9 +80,20 @@ CLI = PackageSpec(
     manifest_path=REPO_ROOT / "packages" / "omnivia-core-cli" / "pyproject.toml",
     src_root=REPO_ROOT / "packages" / "omnivia-core-cli" / "src",
 )
+CLIENT = PackageSpec(
+    distribution_name="omnivia-core-client",
+    import_package="omnivia_core_client",
+    manifest_path=REPO_ROOT / "packages" / "omnivia-core-client" / "pyproject.toml",
+    src_root=REPO_ROOT / "packages" / "omnivia-core-client" / "src",
+)
 
-ALL_PACKAGES: tuple[PackageSpec, ...] = (CORE, RUNTIME, MCP, CLI)
-SIBLINGS: tuple[PackageSpec, ...] = (RUNTIME, MCP, CLI)
+ALL_PACKAGES: tuple[PackageSpec, ...] = (CORE, RUNTIME, MCP, CLI, CLIENT)
+SIBLINGS: tuple[PackageSpec, ...] = (RUNTIME, MCP, CLI, CLIENT)
+
+# The siblings ``omnivia-core-client`` must stay clear of. It is the shared
+# protocol foundation every one of them may build on, so the dependency edge
+# only ever points the other way.
+CLIENT_FORBIDDEN_SIBLINGS: tuple[PackageSpec, ...] = (RUNTIME, MCP, CLI)
 
 LEGACY_IMPORT_PACKAGES: frozenset[str] = frozenset(
     {"omnivia_memory", "omnivia_platform", "omnivia_dev", "omnivia_cloud"}
@@ -334,6 +349,37 @@ def check_mcp_and_cli_do_not_depend_on_runtime() -> list[str]:
     return findings
 
 
+def check_client_depends_only_on_core() -> list[str]:
+    """``omnivia-core-client`` sits on the public contracts and on nothing else.
+
+    Its manifest must declare that one edge and only that one: the dependency
+    list has to be exactly the accepted ``omnivia-core`` range. Enumerating the
+    forbidden distributions instead would pass an unrelated third-party
+    dependency, which is the edge that would quietly make the shared protocol
+    foundation un-vendorable. The source tree must not ``import`` the runtime,
+    MCP, CLI, or legacy packages either.
+    """
+    findings: list[str] = []
+    manifest = load_manifest(CLIENT.manifest_path)
+    dependencies = get_str_list(manifest, "project", "dependencies")
+
+    if dependencies != [REQUIRED_CORE_DEPENDENCY]:
+        findings.append(
+            f"{CLIENT.manifest_path}: project.dependencies={dependencies!r}, expected "
+            f"exactly {[REQUIRED_CORE_DEPENDENCY]!r}"
+        )
+
+    forbidden_imports = {
+        pkg.import_package for pkg in CLIENT_FORBIDDEN_SIBLINGS
+    } | LEGACY_IMPORT_PACKAGES
+    for py_file, names in collect_top_level_imports(CLIENT.src_root).items():
+        hit = names & forbidden_imports
+        if hit:
+            findings.append(f"{py_file}: forbidden import(s) {sorted(hit)}")
+
+    return findings
+
+
 def run_checks() -> list[str]:
     findings: list[str] = []
     findings += check_unique_names()
@@ -346,6 +392,7 @@ def run_checks() -> list[str]:
     findings += check_core_has_no_sibling_or_legacy_import()
     findings += check_siblings_depend_on_core()
     findings += check_mcp_and_cli_do_not_depend_on_runtime()
+    findings += check_client_depends_only_on_core()
     return findings
 
 

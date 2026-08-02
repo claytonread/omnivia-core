@@ -67,15 +67,22 @@ GATE_STEPS = (
     ),
     ("Verify Phase 0 baseline", "PYTHON=python scripts/check-core-baseline.sh"),
     # The full suite, pinned exactly so a narrowed scope fails here. It names its
-    # paths because Phase 2 lives outside `testpaths` (`services` and `tests`), so a
-    # bare `pytest -q` reported a green full-repository run while collecting none of
-    # it. Naming paths disables `testpaths`, so `services` and `tests` are listed
-    # explicitly rather than inherited, and the three must stay one invocation:
-    # several Phase 2 modules import public barrels, and splitting the run is what
-    # hid the barrel-namespace drift.
+    # paths because everything under `packages/` lives outside `testpaths`
+    # (`services` and `tests`), so a bare `pytest -q` reported a green
+    # full-repository run while collecting none of it. Each distribution's whole
+    # `tests` tree is named rather than one phase inside it: pinning
+    # `tests/phase2` kept the accepted Phase 3 authorization and protocol suites
+    # off the gate even though they were committed. Naming paths disables
+    # `testpaths`, so `services` and `tests` are listed explicitly rather than
+    # inherited, and the four must stay one invocation: several of these modules
+    # import public barrels, and splitting the run is what hid the barrel-namespace
+    # drift.
     (
         "Run full repository test suite",
-        "python -m pytest services tests packages/omnivia-core-runtime/tests/phase2 -q",
+        (
+            "python -m pytest services tests packages/omnivia-core-runtime/tests "
+            "packages/omnivia-core-client/tests -q"
+        ),
     ),
     ("Run benchmark tests", "python -m pytest benchmarks/tests -q"),
 )
@@ -146,6 +153,7 @@ REQUIRED_MYPY_TARGETS = (
     "packages/omnivia-core-runtime/src/omnivia_core_runtime",
     "packages/omnivia-core-mcp/src/omnivia_core_mcp",
     "packages/omnivia-core-cli/src/omnivia_core_cli",
+    "packages/omnivia-core-client/src/omnivia_core_client",
     "baseline/facade_manifest.py",
     "scripts/check-facade-routes.py",
     # Every converted facade wrapper -- the package root included, now that it is
@@ -211,11 +219,18 @@ REQUIRED_TOOLING_PINS = (
     '"python-docx>=1.1,<2"',
 )
 
-# The root package must be installed before the compatibility distribution,
-# whose `omnivia-core>=0.1.0,<0.2.0` dependency this checkout satisfies.
+# The root package must be installed before the compatibility distribution and
+# the `packages/` distributions, all of whose `omnivia-core>=0.1.0,<0.2.0`
+# dependency this checkout satisfies. Every distribution under `packages/` is
+# listed: the acceptance suite imports each one, and an uninstalled distribution
+# fails at collection rather than being skipped.
 REQUIRED_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
+    "python -m pip install -e packages/omnivia-core-runtime",
+    "python -m pip install -e packages/omnivia-core-cli",
+    "python -m pip install -e packages/omnivia-core-mcp",
+    "python -m pip install -e packages/omnivia-core-client",
 )
 
 # The same ordering constraint in the other two workflows, pinned because both
@@ -832,3 +847,101 @@ def test_converted_package_root_is_in_both_lint_scopes() -> None:
     assert len(fixtures) == 9
     for name in fixtures:
         assert f"tests/typing/{name}" in REQUIRED_MYPY_TARGETS, name
+
+
+# --------------------------------------------------------------------------
+# Distribution coverage, discovered from the tree rather than restated.
+#
+# Every pin above names its targets literally, which is what makes drift in a
+# known target fail. It is the *unknown* one these cover: a distribution added
+# under `packages/` and then left out of the install step, the broad pytest run,
+# or strict mypy would leave every list above internally consistent and still be
+# untested and untyped on the gate. The client is the case that motivated them.
+# --------------------------------------------------------------------------
+
+# The distribution that must be first-class on this gate alongside the original
+# three, named here so its omission is a failure by name and not only by count.
+CLIENT_DISTRIBUTION = "omnivia-core-client"
+
+FULL_SUITE_STEP = "Run full repository test suite"
+
+
+def _local_distributions() -> list[Path]:
+    """Every distribution directory under `packages/`, discovered from the tree."""
+    directories = sorted(path.parent for path in (REPO_ROOT / "packages").glob("*/pyproject.toml"))
+    assert directories, "no distributions found under packages/"
+    return directories
+
+
+def _import_package(distribution: Path) -> str:
+    """The single import package under a distribution's `src/`."""
+    candidates = sorted(path.name for path in (distribution / "src").iterdir() if path.is_dir())
+    assert len(candidates) == 1, f"{distribution.name}: expected one src package, got {candidates}"
+    return candidates[0]
+
+
+def _full_suite_command() -> str:
+    commands = _commands(_step(_steps(), FULL_SUITE_STEP))
+    assert len(commands) == 1, f"expected a single pytest invocation, got: {commands}"
+    return commands[0]
+
+
+def test_the_client_is_a_first_class_distribution_on_the_gate() -> None:
+    """The five facts that make a distribution actually covered here: it exists,
+    it is installed, its tests are collected, its sources are strict-typed, and
+    its tree is Ruff-clean (via the `packages` target)."""
+    assert (REPO_ROOT / "packages" / CLIENT_DISTRIBUTION / "pyproject.toml").is_file()
+    assert f"python -m pip install -e packages/{CLIENT_DISTRIBUTION}" in REQUIRED_LOCAL_INSTALLS
+    assert f"packages/{CLIENT_DISTRIBUTION}/tests" in _full_suite_command().split()
+    assert (
+        f"packages/{CLIENT_DISTRIBUTION}/src/omnivia_core_client" in REQUIRED_MYPY_TARGETS
+    )
+    assert "packages" in REQUIRED_RUFF_TARGETS
+
+
+def test_every_local_distribution_is_installed_editable() -> None:
+    commands = _commands(_step(_steps(), "Install local packages"))
+    for distribution in _local_distributions():
+        install = f"python -m pip install -e packages/{distribution.name}"
+        assert install in commands, f"missing install: {install}"
+
+
+def test_every_local_distribution_with_tests_is_in_the_broad_pytest_run() -> None:
+    """`testpaths` covers `services` and `tests` only, so a distribution's tests are
+    collected only if the broad run names them. The whole `tests` tree must be
+    named, not a directory inside it: naming the runtime's `tests/phase2` kept
+    every Phase 3 suite beside it off the gate while this file still read as if
+    the runtime were covered."""
+    targets = _full_suite_command().split()
+    for distribution in _local_distributions():
+        if not (distribution / "tests").is_dir():
+            continue
+        tests_tree = f"packages/{distribution.name}/tests"
+        assert tests_tree in targets, (
+            f"{distribution.name}: the broad pytest run must name {tests_tree}, not a "
+            f"subdirectory of it; found {targets}"
+        )
+
+
+def test_every_local_distribution_source_tree_is_strict_typed() -> None:
+    for distribution in _local_distributions():
+        target = f"packages/{distribution.name}/src/{_import_package(distribution)}"
+        assert target in REQUIRED_MYPY_TARGETS, f"missing strict-mypy target: {target}"
+
+
+def test_the_client_compatibility_test_keeps_its_unique_basename() -> None:
+    """The client's compatibility suite must stay `test_ovc1_compatibility.py`.
+
+    The broad run above collects `tests` and `packages/omnivia-core-client/tests`
+    in one invocation, and neither tree is an import package. Under pytest's
+    default import mode a test module is imported under its bare basename, so a
+    second `test_compatibility.py` collides with `tests/contracts/test_compatibility.py`
+    and aborts collection for the whole run.
+    """
+    client_tests = REPO_ROOT / "packages" / CLIENT_DISTRIBUTION / "tests"
+    assert (client_tests / "test_ovc1_compatibility.py").is_file()
+    assert not (client_tests / "test_compatibility.py").exists(), (
+        "the client compatibility suite must not reuse the "
+        "tests/contracts/test_compatibility.py basename"
+    )
+    assert (REPO_ROOT / "tests" / "contracts" / "test_compatibility.py").is_file()

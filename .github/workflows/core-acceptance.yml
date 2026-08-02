@@ -76,11 +76,13 @@ jobs:
           # editable satisfies that from the working tree rather than an index.
           python -m pip install -e .
           python -m pip install -e "services/omnivia-memory[dev]"
-          # Phase 2 lives in the three distributions, so the suite below cannot
-          # import it unless they are installed.
+          # Phase 2 lives in the runtime/CLI/MCP distributions and the client
+          # protocol foundation in its own, so the suite below cannot import
+          # either unless all four are installed.
           python -m pip install -e packages/omnivia-core-runtime
           python -m pip install -e packages/omnivia-core-cli
           python -m pip install -e packages/omnivia-core-mcp
+          python -m pip install -e packages/omnivia-core-client
 
       - name: Install Node dependencies
         run: npm ci
@@ -149,14 +151,21 @@ jobs:
       - name: Run full repository test suite
         env:
           OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
-        # The Phase 2 path is named explicitly because `testpaths` covers `services`
-        # and `tests` only, so a bare `pytest -q` silently skipped every Phase 2 case
-        # while reporting a green full-repository run. The union must be one
-        # invocation: several Phase 2 modules import public barrels, and running them
-        # in a separate process is what hid the barrel-namespace drift.
-        # `testpaths` is not consulted once paths are passed, so `services` and
-        # `tests` are named here rather than inherited.
-        run: python -m pytest services tests packages/omnivia-core-runtime/tests/phase2 -q
+        # The `packages/` paths are named explicitly because `testpaths` covers
+        # `services` and `tests` only, so a bare `pytest -q` silently skipped every
+        # case under `packages/` while reporting a green full-repository run. Each
+        # distribution's whole `tests` tree is named rather than one phase inside
+        # it, so a new phase is merge-blocking the moment it lands -- naming
+        # `tests/phase2` alone is what left the accepted Phase 3 authorization and
+        # protocol suites off the gate. The union must be one invocation: several
+        # of these modules import public barrels, and running them in a separate
+        # process is what hid the barrel-namespace drift. `testpaths` is not
+        # consulted once paths are passed, so `services` and `tests` are named here
+        # rather than inherited.
+        run: |
+          python -m pytest services tests \
+            packages/omnivia-core-runtime/tests \
+            packages/omnivia-core-client/tests -q
 
       - name: Run benchmark tests
         run: python -m pytest benchmarks/tests -q
@@ -213,6 +222,7 @@ jobs:
             packages/omnivia-core-runtime/src/omnivia_core_runtime \
             packages/omnivia-core-mcp/src/omnivia_core_mcp \
             packages/omnivia-core-cli/src/omnivia_core_cli \
+            packages/omnivia-core-client/src/omnivia_core_client \
             baseline/facade_manifest.py \
             scripts/check-facade-routes.py \
             services/omnivia-memory/src/omnivia_memory/__init__.py \
