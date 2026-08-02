@@ -197,6 +197,51 @@ checked before the public contract helpers see it. No raw `TypeError` from a
 regular-expression call, and no contract-layer exception, escapes to a caller
 who wrote `except ClientError`.
 
+### `discovery` — installation-local descriptor discovery
+
+`discover_endpoint()` accepts a trusted installation-state root, a public
+`WorkspaceId`, an injected `ClientTransport`, and the whole-call `Deadline` and
+optional `CancellationToken`. It derives exactly one path:
+
+```text
+<installation-state>/runtime/<workspace_id>/service.json
+```
+
+There is no caller-selected descriptor path, glob, environment lookup, implicit
+home fallback, or workspace-storage fallback. An absent path is a transient
+publication state and returns `None` without contacting the transport.
+
+A present descriptor is coordination data, never authority. Before decoding,
+discovery:
+
+- rejects a symlinked descriptor or derived parent and any non-regular descriptor;
+- requires the descriptor and derived parents to be owned by the current user and
+  inaccessible to group/other on POSIX;
+- applies the owner-equivalent native owner/DACL check on Windows, admitting access
+  only for the current owner, LocalSystem, and built-in Administrators;
+- opens through no-follow directory/file handles on POSIX and compares native file
+  identities before and after the read, so replacement races fail closed; and
+- checks the **64 KiB (65536-byte) inclusive** bound before reading and stops the
+  read at one byte beyond the bound, so a concurrent grow is bounded too.
+
+UTF-8, JSON, duplicate-member, non-finite-number, public DTO, and endpoint-policy
+failures become fixed, payload-free `ProtocolError`s with no nested parser
+exception. The public `decode_service_endpoint_descriptor()` remains the endpoint
+policy authority; discovery does not create a second URI policy.
+
+The accepted descriptor is passed to `negotiate_endpoint()` unchanged, so descriptor
+shape, exact OVC1 protocol, and API overlap keep their accepted order and failure
+types. Before returning the immutable `DiscoveredEndpoint`, the injected transport
+must answer `service.discover` with a descriptor whose workspace and service-instance
+identities exactly match the file. Optional pid/start/boot evidence is corroboration
+only: it never overrides a live identity mismatch and is not process authority.
+Cancellation is checked before the probe is sent, and the same deadline/token are
+passed unchanged to the transport.
+
+This is candidate-level discovery through an injected transport. It does not ship a
+socket, named-pipe, or HTTP transport and does not claim integrated discovery over a
+real local endpoint.
+
 ### `errors` — the typed failures
 
 `ClientError` and, under it, `ProtocolError`, `TransportError`,
@@ -219,7 +264,8 @@ traceback rendering hides them.
 
 None of the following exists in this package, and no caller may assume it:
 
-- **endpoint discovery** — finding a published `ServiceEndpointDescriptor`;
+- **integrated discovery over a real local endpoint** — this packet verifies through
+  an injected transport because no concrete Client local transport ships yet;
 - **local socket transport** — Unix domain socket or Windows named pipe;
 - **HTTP transport**;
 - **retry, backoff, or idempotent replay**;
