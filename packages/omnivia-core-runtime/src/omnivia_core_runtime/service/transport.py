@@ -258,10 +258,7 @@ def assert_socket_path_fits(path: Path) -> None:
     """
     encoded = len(str(path).encode("utf-8"))
     if encoded > MAX_SOCKET_PATH_BYTES:
-        raise TransportError(
-            f"socket path is {encoded} bytes, over the {MAX_SOCKET_PATH_BYTES}-byte "
-            "AF_UNIX limit. Place the socket under a shorter directory."
-        )
+        raise TransportError("local service endpoint path is too long")
 
 
 class _Channel(Protocol):
