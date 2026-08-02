@@ -39,6 +39,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -51,6 +52,7 @@ from omnivia_core_runtime.ownership.fencing import (
     assert_guards_intact,
     close_guard,
     fenced_transaction,
+    guarded_tables,
     open_guard,
     trigger_names,
     verify_fingerprint,
@@ -195,6 +197,10 @@ REFUSED_EXTERNAL_WRITE = (
 )
 
 
+def _numeric_version(migration_file_name: str) -> int:
+    return int(migration_file_name.split("_", 1)[0])
+
+
 def migration_under_test() -> Migration:
     found = [m for m in load_migrations() if m.version == MIGRATION_VERSION]
     assert len(found) == 1, [m.name for m in load_migrations()]
@@ -304,6 +310,21 @@ def migrated(tmp_path: Path) -> Path:
     path = tmp_path / "workspace.sqlite"
     materialise_phase0_baseline(path)
     bootstrap_and_migrate(path)
+    return path
+
+
+@pytest.fixture
+def migrated_through_m1(tmp_path: Path) -> Path:
+    """A workspace adopted from the frozen Phase 0 artifact, migrated through 0007 only.
+
+    Narrower than `migrated`: M1-07 asserts the ledger's maximum version and the
+    `user_version` pragma are exactly 7, which a workspace also carrying a legitimate
+    later migration like 0008 would no longer satisfy.
+    """
+    path = tmp_path / "workspace-through-m1.sqlite"
+    materialise_phase0_baseline(path)
+    with migration_catalogue_through(MIGRATION_VERSION):
+        bootstrap_and_migrate(path)
     return path
 
 
@@ -574,18 +595,26 @@ sys.stdout.write(json.dumps(result, sort_keys=True) + chr(10))
 """
 
 #: A genuinely fresh process that resumes migration on a workspace an interrupted
-#: run left behind.
+#: run left behind. Restricted to the accepted prefix through 0007, on the module
+#: attribute the migrator itself reads, so a subprocess -- which inherits no monkeypatch
+#: from the parent -- still proves the M1 retry scenario alone rather than also
+#: consuming a legitimate later migration like 0008.
 RETRY_CHILD = """
 import json, sys
 from omnivia_core_runtime.storage.connection import (
     OpenMode, foreign_key_check, integrity_check, open_database,
 )
+from omnivia_core_runtime.storage import migrations as migrations_module
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations, apply_pending_migrations, read_workspace_state,
 )
 
 path, workspace_id, service = sys.argv[1], sys.argv[2], sys.argv[3]
 result = {}
+_through_m1 = tuple(
+    m for m in migrations_module.load_migrations() if m.version <= __MIGRATION_VERSION__
+)
+migrations_module.load_migrations = lambda: _through_m1
 connection = open_database(__import__("pathlib").Path(path), OpenMode.EXCLUSIVE_MAINTENANCE)
 try:
     state = read_workspace_state(connection)
@@ -623,7 +652,7 @@ except Exception as exc:
 finally:
     connection.close()
 sys.stdout.write(json.dumps(result, sort_keys=True) + chr(10))
-"""
+""".replace("__MIGRATION_VERSION__", str(MIGRATION_VERSION))
 
 
 class MigrationInterrupted(RuntimeError):
@@ -673,17 +702,31 @@ class FailAfterStatement:
 
 
 def test_m1_01_0007_is_the_unique_consecutive_successor_to_0006() -> None:
-    """M1-01: one file, one version, immediately after the accepted predecessor."""
+    """M1-01: one file, one version, immediately after the accepted predecessor.
+
+    The repository is free to carry legitimate migrations after 0007 -- 0008 and
+    beyond -- so this proves the accepted *prefix* through 0007 is exactly 1..7 and
+    that 0007's immediate predecessor is 0006, without asserting that 0007 is the
+    last migration the repository holds.
+    """
     ordered = load_migrations()
     versions = [migration.version for migration in ordered]
-    assert versions == list(range(1, MIGRATION_VERSION + 1)), versions
+    prefix = [version for version in versions if version <= MIGRATION_VERSION]
+    assert prefix == list(range(1, MIGRATION_VERSION + 1)), versions
 
     sevens = [m for m in ordered if m.version == MIGRATION_VERSION]
     assert len(sevens) == 1, [m.name for m in sevens]
     assert sevens[0].name == MIGRATION_NAME
-    assert ordered[-1] is sevens[0]
-    assert ordered[-2].name == PREDECESSOR_NAME
-    assert ordered[-2].version == MIGRATION_VERSION - 1
+
+    index = ordered.index(sevens[0])
+    assert index > 0
+    predecessor = ordered[index - 1]
+    assert predecessor.name == PREDECESSOR_NAME
+    assert predecessor.version == MIGRATION_VERSION - 1
+
+    # Only higher-version successors may follow 0007 -- never a lower or repeated one.
+    later = ordered[index + 1 :]
+    assert all(m.version > MIGRATION_VERSION for m in later), later
 
 
 def test_m1_02_content_checksum_and_ledger_metadata_agree(migrated: Path) -> None:
@@ -777,10 +820,11 @@ def test_m1_05_canonical_schema_carries_every_m1_object(migrated: Path) -> None:
     try:
         for connection in (without, with_seven):
             connection.executescript(phase0_baseline_sql())
-        for migration in load_migrations():
-            if migration.version != MIGRATION_VERSION:
-                without.executescript(migration.sql)
-            with_seven.executescript(migration.sql)
+        with migration_catalogue_through(MIGRATION_VERSION):
+            for migration in migrations_module.load_migrations():
+                if migration.version != MIGRATION_VERSION:
+                    without.executescript(migration.sql)
+                with_seven.executescript(migration.sql)
 
         before = fingerprint_schema(without)
         after = fingerprint_schema(with_seven)
@@ -831,9 +875,11 @@ def test_m1_06_live_drift_in_any_m1_object_fails(
         connection.close()
 
 
-def test_m1_07_user_version_mirrors_seven_but_is_not_authority(migrated: Path) -> None:
+def test_m1_07_user_version_mirrors_seven_but_is_not_authority(
+    migrated_through_m1: Path,
+) -> None:
     """M1-07: the ledger decides; the pragma is a diagnostic mirror of it."""
-    connection = open_database(migrated, OpenMode.EXCLUSIVE_MAINTENANCE)
+    connection = open_database(migrated_through_m1, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
         ledger = applied_migrations(connection)
         assert max(ledger) == MIGRATION_VERSION
@@ -850,18 +896,24 @@ def test_m1_07_user_version_mirrors_seven_but_is_not_authority(migrated: Path) -
 
 
 def test_m1_08_every_existing_migration_is_byte_for_byte_unchanged() -> None:
-    """M1-08: 0007 is additive; nothing before it moved."""
+    """M1-08: 0007 is additive; nothing at or before it moved.
+
+    Checked against the accepted *prefix* through 0007 rather than everything on
+    disk, so a legitimate migration after 0007 -- 0008 and beyond -- does not turn
+    this into a claim about files this slice has no authority over.
+    """
     package = migrations_module.resources.files(migrations_module.MIGRATION_PACKAGE)
     for name, expected in ACCEPTED_MIGRATION_CHECKSUMS.items():
         text = package.joinpath(name).read_text(encoding="utf-8")
         assert hashlib.sha256(text.encode("utf-8")).hexdigest() == expected, name
 
-    on_disk = {
+    on_disk_through_seven = {
         entry.name
         for entry in package.iterdir()
         if entry.name.endswith(".sql")  # type: ignore[attr-defined]
+        and _numeric_version(entry.name) <= MIGRATION_VERSION  # type: ignore[attr-defined]
     }
-    assert on_disk == set(ACCEPTED_MIGRATION_CHECKSUMS) | {MIGRATION_NAME}
+    assert on_disk_through_seven == set(ACCEPTED_MIGRATION_CHECKSUMS) | {MIGRATION_NAME}
     assert PHASE0_BASELINE_FILE in ACCEPTED_MIGRATION_CHECKSUMS
 
 
@@ -873,21 +925,22 @@ def test_m1_09_pristine_bootstrap_reaches_0007(tmp_path: Path) -> None:
     path = tmp_path / "pristine.sqlite"
     connection = open_database(path, OpenMode.EPHEMERAL)
     try:
-        state = bootstrap_generation_one(
-            connection,
-            workspace_id=WORKSPACE_ID,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            expect_phase0_baseline=False,
-            service_instance_id=SERVICE_INSTANCE,
-        )
-        assert state.baseline_state == BASELINE_PRISTINE
-        applied = apply_pending_migrations(
-            connection,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
-            fencing_generation=state.fencing_generation,
-            workspace_id=WORKSPACE_ID,
-        )
+        with migration_catalogue_through(MIGRATION_VERSION):
+            state = bootstrap_generation_one(
+                connection,
+                workspace_id=WORKSPACE_ID,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                expect_phase0_baseline=False,
+                service_instance_id=SERVICE_INSTANCE,
+            )
+            assert state.baseline_state == BASELINE_PRISTINE
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=state.fencing_generation,
+                workspace_id=WORKSPACE_ID,
+            )
         assert MIGRATION_VERSION in [migration.version for migration in applied]
         assert set(M1_TABLES) <= object_names(connection, "table")
         assert set(M1_INDEXES) <= object_names(connection, "index")
@@ -903,7 +956,8 @@ def test_m1_10_exact_phase0_adoption_reaches_0007(tmp_path: Path) -> None:
     path = tmp_path / "adopted.sqlite"
     materialise_phase0_baseline(path)
     populate_legacy_corpus(path)
-    bootstrap_and_migrate(path)
+    with migration_catalogue_through(MIGRATION_VERSION):
+        bootstrap_and_migrate(path)
 
     connection = open_database(path, OpenMode.READ_ONLY)
     try:
@@ -936,13 +990,14 @@ def test_m1_11_the_full_legacy_inventory_is_unchanged_across_0007(
 
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
-        applied = apply_pending_migrations(
-            connection,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
-            fencing_generation=before_all,
-            workspace_id=WORKSPACE_ID,
-        )
+        with migration_catalogue_through(MIGRATION_VERSION):
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=before_all,
+                workspace_id=WORKSPACE_ID,
+            )
     finally:
         connection.close()
     assert [migration.version for migration in applied] == [MIGRATION_VERSION]
@@ -958,19 +1013,50 @@ def test_m1_11_the_full_legacy_inventory_is_unchanged_across_0007(
         published.close()
 
 
+@contextmanager
+def migration_catalogue_through(version: int) -> Iterator[None]:
+    """Temporarily restrict the repository's migration catalogue to `1..version`.
+
+    Patched at the module attribute the migrator actually reads -- `load_migrations`
+    -- so every path that runs through it (bootstrap, `apply_pending_migrations`, and
+    the canonical schema oracles) sees exactly the accepted prefix. Without this, a
+    legitimate migration after `version` -- 0008 and beyond -- would leak into an
+    assertion this file makes about 0007 specifically.
+
+    The canonical oracles memoise what `load_migrations` returned, and `guarded_tables`
+    derives from them, so all three are cleared on entry -- nothing computed under the
+    narrowed loader is stale -- and again on exit, so nothing computed under it lingers
+    once the real catalogue is restored. `GUARDED_TABLES`, the tuple this module's
+    top-level import already bound, is a plain object rather than a cache and is never
+    touched here.
+    """
+    original = migrations_module.load_migrations
+    trimmed = tuple(m for m in original() if m.version <= version)
+    versions = [m.version for m in trimmed]
+    assert versions == list(range(1, version + 1)), versions
+
+    def _clear_caches() -> None:
+        canonical_schema_tables.cache_clear()
+        canonical_schema_fingerprint.cache_clear()
+        guarded_tables.cache_clear()
+
+    migrations_module.load_migrations = lambda: trimmed  # type: ignore[assignment]
+    try:
+        _clear_caches()
+        yield
+    finally:
+        migrations_module.load_migrations = original  # type: ignore[assignment]
+        _clear_caches()
+
+
 def _apply_through_predecessor(path: Path) -> int:
     """Bootstrap and migrate up to the accepted predecessor only.
 
     `apply_pending_migrations` applies everything outstanding, so reaching the state
-    that existed *before* this slice means narrowing what `load_migrations` offers.
-    Narrowed at the module attribute the migrator actually reads, so both halves of
-    the test still run through the real migrator rather than a hand-rolled stand-in.
+    that existed *before* this slice means narrowing what `load_migrations` offers to
+    the accepted prefix through 0006.
     """
-    original = migrations_module.load_migrations
-    trimmed = tuple(m for m in original() if m.version < MIGRATION_VERSION)
-
-    migrations_module.load_migrations = lambda: trimmed  # type: ignore[assignment]
-    try:
+    with migration_catalogue_through(MIGRATION_VERSION - 1):
         connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
         try:
             state = bootstrap_generation_one(
@@ -991,12 +1077,6 @@ def _apply_through_predecessor(path: Path) -> int:
             return state.fencing_generation
         finally:
             connection.close()
-    finally:
-        migrations_module.load_migrations = original  # type: ignore[assignment]
-        # The canonical oracles memoise what `load_migrations` returned; a value
-        # computed while it was narrowed would describe a schema without 0007.
-        canonical_schema_tables.cache_clear()
-        canonical_schema_fingerprint.cache_clear()
 
 
 def test_m1_12_populated_non_phase0_adoption_is_refused_with_no_m1_objects(
@@ -2225,7 +2305,10 @@ def test_m1_32_m1_33_failure_after_every_statement_converges_exactly_once(
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
         crashing = FailAfterStatement(connection, MIGRATION_STATEMENTS, stop_after)
-        with pytest.raises(MigrationInterrupted, match=f"statement {stop_after}$"):
+        with (
+            migration_catalogue_through(MIGRATION_VERSION),
+            pytest.raises(MigrationInterrupted, match=f"statement {stop_after}$"),
+        ):
             apply_pending_migrations(
                 cast("sqlite3.Connection", crashing),
                 mode=OpenMode.EXCLUSIVE_MAINTENANCE,
@@ -2276,7 +2359,11 @@ def test_m1_32_m1_33_failure_after_every_statement_converges_exactly_once(
 
     settled = open_database(path, OpenMode.READ_ONLY)
     try:
-        assert fingerprint_schema(settled).matches(canonical_schema_fingerprint())
+        # The recovered database carries the prefix through 0007 only (RETRY_CHILD is
+        # scoped the same way), so the oracle it is checked against must be too --
+        # otherwise it would be compared against a catalogue that also includes 0008.
+        with migration_catalogue_through(MIGRATION_VERSION):
+            assert fingerprint_schema(settled).matches(canonical_schema_fingerprint())
     finally:
         settled.close()
 
@@ -2359,13 +2446,14 @@ def adopted_with_backup(tmp_path: Path) -> tuple[Path, Any, dict[str, Any]]:
 
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
-        applied = apply_pending_migrations(
-            connection,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
-            fencing_generation=generation,
-            workspace_id=WORKSPACE_ID,
-        )
+        with migration_catalogue_through(MIGRATION_VERSION):
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=generation,
+                workspace_id=WORKSPACE_ID,
+            )
         assert [migration.version for migration in applied] == [MIGRATION_VERSION]
     finally:
         connection.close()
