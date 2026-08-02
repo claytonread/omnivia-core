@@ -268,16 +268,29 @@ def _windows_set_dacl(path: Path, sddl: str) -> None:
             wintypes.LPVOID,
         ]
         advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
-        result = advapi.SetNamedSecurityInfoW(
+        dacl_result = advapi.SetNamedSecurityInfoW(
             str(path),
             1,
-            0x00000001 | 0x00000004 | 0x80000000,
-            owner,
+            0x00000004 | 0x80000000,
+            None,
             None,
             dacl,
             None,
         )
-        assert result == 0
+        assert dacl_result == 0
+        # Apply the protected owner-equivalent DACL first. Hosted Windows may create
+        # elevated-token files owned by Administrators; granting the current SID
+        # WRITE_OWNER before changing ownership avoids ERROR_ACCESS_DENIED (5).
+        owner_result = advapi.SetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x00000001,
+            owner,
+            None,
+            None,
+            None,
+        )
+        assert owner_result == 0
     finally:
         kernel.LocalFree.argtypes = [wintypes.LPVOID]
         kernel.LocalFree.restype = wintypes.LPVOID
