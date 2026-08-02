@@ -115,10 +115,7 @@ EXPECTED_ACCEPTANCE_GATES = (
     "stale-lease recovery and graceful handover are tested;",
     "stdio MCP cannot enumerate ungranted workspaces;",
     "client-supplied identity cannot expand permissions;",
-    (
-        "application API compatibility, error and job contracts pass "
-        "conformance tests;"
-    ),
+    ("application API compatibility, error and job contracts pass conformance tests;"),
     "service upgrades refuse incompatible workspace formats safely;",
     (
         "persisted Context Pack snapshots retain all policy, source and "
@@ -231,9 +228,7 @@ def test_fixture_metadata_is_exact_and_deterministically_serialized() -> None:
     assert TRACEABILITY["format"] == FIXTURE_FORMAT
     assert TRACEABILITY["source"] == SOURCE_METADATA
     assert TRACEABILITY["pending_state"] == PENDING_STATE
-    assert TRACEABILITY["operation_traceability"] == (
-        OPERATION_TRACEABILITY_REFERENCE
-    )
+    assert TRACEABILITY["operation_traceability"] == (OPERATION_TRACEABILITY_REFERENCE)
     assert FIXTURE_PATH.read_text(encoding="utf-8") == (
         json.dumps(TRACEABILITY, indent=2, ensure_ascii=False) + "\n"
     )
@@ -270,8 +265,9 @@ def test_operation_traceability_reference_resolves_to_the_existing_c0a_ledger() 
     reference_path = REPO_ROOT / TRACEABILITY["operation_traceability"]["file"]
     assert reference_path == OPERATION_TRACEABILITY_PATH
     assert reference_path.is_file()
-    assert OPERATION_TRACEABILITY["format"] == (
-        TRACEABILITY["operation_traceability"]["format"]
+    assert (
+        OPERATION_TRACEABILITY["format"]
+        == (TRACEABILITY["operation_traceability"]["format"])
     )
     assert len(C0A_OPERATION_NAMES) == 20
     assert len(set(C0A_OPERATION_NAMES)) == 20
@@ -281,9 +277,7 @@ def test_operation_references_are_exact_unique_deterministic_and_valid() -> None
     known_operations = set(C0A_OPERATION_NAMES)
     for gate in GATES:
         refs = tuple(gate["operation_traceability_refs"])
-        expected = EXPECTED_OPERATION_REFS_BY_TEST_ID.get(
-            gate["pending_test_id"], ()
-        )
+        expected = EXPECTED_OPERATION_REFS_BY_TEST_ID.get(gate["pending_test_id"], ())
         assert refs == expected, gate["gate_id"]
         assert len(refs) == len(set(refs)), gate["gate_id"]
         assert set(refs) <= known_operations, gate["gate_id"]
