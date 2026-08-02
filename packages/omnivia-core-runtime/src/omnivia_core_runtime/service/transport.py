@@ -737,11 +737,26 @@ class LocalSocketServer:
                     self._active_channel.close()
                 self._thread.join(timeout=0.005)
         self._thread = None
-        if self._listener is not None:
-            self._listener.close()
-            self._listener = None
+        cleanup_failed = False
         if served:
-            self._remove_socket_file()
+            # Unlink the Unix name while the listener that owns it is still open.
+            # Closing first creates a replacement window in which another process can
+            # bind the same name and then be deleted by this instance's cleanup.
+            try:
+                self._remove_socket_file()
+            except Exception:  # noqa: BLE001 - normalized after listener teardown
+                cleanup_failed = True
+        listener = self._listener
+        close_failed = False
+        try:
+            if listener is not None:
+                listener.close()
+        except Exception:  # noqa: BLE001 - fixed public cleanup diagnostic below
+            close_failed = True
+        finally:
+            self._listener = None
+        if cleanup_failed or close_failed:
+            raise TransportError("local service transport cleanup failed")
 
     def _remove_socket_file(self) -> None:
         """Remove what this instance created, and only that.

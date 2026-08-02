@@ -26,11 +26,13 @@ from omnivia_core_runtime.service.ovc1 import decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ServiceFacts
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.transport import (
+    EndpointProbe,
     EndpointScheme,
     LocalEndpoint,
     LocalSocketServer,
     LocalSocketTransport,
     TransportError,
+    probe_endpoint,
 )
 
 from omnivia_core.contracts.v1 import RequestEnvelope, SuccessResponseEnvelope
@@ -526,7 +528,11 @@ def test_shutdown_closes_a_partial_client_promptly_and_is_idempotent(
         started = time.monotonic()
         server.stop()
         assert time.monotonic() - started < 1.0
-        assert client.recv(1) == b""
+        try:
+            closed = client.recv(1)
+        except ConnectionResetError:
+            closed = b""
+        assert closed == b""
         assert not socket_path.exists()
         server.stop()
     finally:
@@ -551,7 +557,9 @@ def test_cleanup_never_unlinks_a_replacement_endpoint_owned_by_another_instance(
 
     def close_then_replace() -> None:
         real_close()
-        socket_path.unlink()
+        assert not os.path.lexists(socket_path), (
+            "the server closed its listener before unlinking its owned endpoint"
+        )
         replacement.bind(str(socket_path))
         replacement.listen(1)
 
@@ -565,6 +573,33 @@ def test_cleanup_never_unlinks_a_replacement_endpoint_owned_by_another_instance(
         replacement.close()
         if os.path.lexists(socket_path):
             socket_path.unlink()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_cleanup_failure_still_closes_listener_and_is_non_disclosing(
+    socket_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+    )
+    server.start()
+    secret = "credential=hunter2 /private/replacement.sock"
+
+    def fail_cleanup() -> None:
+        raise PermissionError(secret)
+
+    monkeypatch.setattr(server, "_remove_socket_file", fail_cleanup)
+    with pytest.raises(TransportError) as caught:
+        server.stop()
+
+    assert str(caught.value) == "local service transport cleanup failed"
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+    assert server._listener is None
+    assert probe_endpoint(endpoint) is EndpointProbe.REFUSED
 
 
 @pytest.mark.skipif(

@@ -91,6 +91,16 @@ def _receive_frame(connection: socket.socket) -> bytes:
     return header + _read_exact(connection, length)
 
 
+def _assert_no_valid_response(connection: socket.socket) -> None:
+    try:
+        response = connection.recv(1)
+    except ConnectionResetError:
+        # Linux may reset when the server closes with unread inbound bytes; this is
+        # the same protocol outcome as EOF: no valid OVC1 response was emitted.
+        return
+    assert response == b"", "invalid traffic received a valid OVC1 response"
+
+
 @pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
 )
@@ -175,7 +185,7 @@ def test_newline_truncated_trailing_and_pipelined_traffic_get_no_response(
             except OSError as error:
                 if error.errno != errno.ENOTCONN:
                     raise
-            assert client.recv(1) == b""
+            _assert_no_valid_response(client)
         finally:
             client.close()
 
@@ -224,8 +234,7 @@ def test_second_frame_sent_during_dispatch_gets_no_valid_response(
             except OSError as error:
                 if error.errno != errno.ENOTCONN:
                     raise
-            response = client.recv(1)
-            assert response == b"", "pipelined traffic received a valid OVC1 response"
+            _assert_no_valid_response(client)
         finally:
             client.close()
 
@@ -243,7 +252,7 @@ def test_slowloris_partial_header_is_bounded_and_does_not_block_shutdown_or_next
     slow.sendall(b"OV")
     try:
         time.sleep(0.15)
-        assert slow.recv(1) == b""
+        _assert_no_valid_response(slow)
 
         healthy = _connect(socket_path)
         try:
@@ -277,6 +286,6 @@ def test_partial_reads_share_one_absolute_header_and_body_deadline(
                 client.sendall(request[HEADER_BYTES + 1 :])
             except (BrokenPipeError, ConnectionResetError):
                 pass
-            assert client.recv(1) == b""
+            _assert_no_valid_response(client)
         finally:
             client.close()
