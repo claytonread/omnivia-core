@@ -398,13 +398,42 @@ def test_one_response_closes_the_connection_and_no_second_request_is_served(
 
 
 def test_failed_start_never_claims_or_removes_a_regular_file(socket_path: Path) -> None:
-    socket_path.write_text("owner-data", encoding="utf-8")
-    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    secret = "credential-hunter2"
+    occupied = socket_path.with_name(f"{secret}-regular-file")
+    occupied.write_text("owner-data", encoding="utf-8")
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(occupied))
     server = LocalSocketServer(
         router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
         endpoint=endpoint,
     )
-    with pytest.raises(TransportError, match="not a socket"):
+    with pytest.raises(TransportError) as caught:
         server.start()
+    assert str(caught.value) == "local service endpoint path is already occupied"
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
     server.stop()
-    assert socket_path.read_text(encoding="utf-8") == "owner-data"
+    assert occupied.read_text(encoding="utf-8") == "owner-data"
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_live_endpoint_refusal_is_fixed_and_non_disclosing(socket_path: Path) -> None:
+    secret = "credential-hunter2"
+    live_path = socket_path.with_name(f"{secret}-live.sock")
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(live_path))
+    live = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+    )
+    live.start()
+    try:
+        contender = LocalSocketServer(
+            router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+            endpoint=endpoint,
+        )
+        with pytest.raises(TransportError) as caught:
+            contender.start()
+        assert str(caught.value) == "local service endpoint is already in use"
+        _assert_transport_error_is_non_disclosing(caught.value, secret)
+    finally:
+        live.stop()
