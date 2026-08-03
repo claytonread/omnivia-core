@@ -40,6 +40,7 @@ import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -1101,6 +1102,7 @@ sys.stdout.write(json.dumps(result, sort_keys=True) + chr(10))
 #: run left behind.
 RETRY_CHILD = """
 import json, sys
+from omnivia_core_runtime.storage import migrations as migrations_module
 from omnivia_core_runtime.storage.connection import (
     OpenMode, foreign_key_check, integrity_check, open_database,
 )
@@ -1110,6 +1112,11 @@ from omnivia_core_runtime.storage.migrations import (
 
 path, workspace_id, service = sys.argv[1], sys.argv[2], sys.argv[3]
 result = {}
+original_load_migrations = migrations_module.load_migrations
+accepted_through_m2 = tuple(
+    migration for migration in original_load_migrations() if migration.version <= 8
+)
+migrations_module.load_migrations = lambda: accepted_through_m2
 connection = open_database(
     __import__("pathlib").Path(path), OpenMode.EXCLUSIVE_MAINTENANCE
 )
@@ -1148,6 +1155,7 @@ except Exception as exc:
     result["error"] = str(exc)
 finally:
     connection.close()
+    migrations_module.load_migrations = original_load_migrations
 sys.stdout.write(json.dumps(result, sort_keys=True) + chr(10))
 """
 
@@ -1239,6 +1247,21 @@ def _apply_through_predecessor(path: Path) -> int:
         guarded_tables.cache_clear()
 
 
+@contextmanager
+def migration_catalogue_through(version: int) -> Iterator[None]:
+    """Expose the real migrator to one accepted historical prefix only."""
+    original = migrations_module.load_migrations
+    trimmed = tuple(m for m in original() if m.version <= version)
+    migrations_module.load_migrations = lambda: trimmed  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        migrations_module.load_migrations = original  # type: ignore[assignment]
+        canonical_schema_tables.cache_clear()
+        canonical_schema_fingerprint.cache_clear()
+        guarded_tables.cache_clear()
+
+
 # --- M2-01 … M2-08: migration identity, ledger and fingerprint ----------------
 
 
@@ -1246,14 +1269,16 @@ def test_m2_01_0008_is_the_unique_consecutive_successor_to_0007() -> None:
     """M2-01: one file, one version, immediately after the accepted predecessor."""
     ordered = load_migrations()
     versions = [migration.version for migration in ordered]
-    assert versions == list(range(1, MIGRATION_VERSION + 1)), versions
+    assert versions[:MIGRATION_VERSION] == list(range(1, MIGRATION_VERSION + 1)), (
+        versions
+    )
 
     eights = [m for m in ordered if m.version == MIGRATION_VERSION]
     assert len(eights) == 1, [m.name for m in eights]
     assert eights[0].name == MIGRATION_NAME
-    assert ordered[-1] is eights[0]
-    assert ordered[-2].name == PREDECESSOR_NAME
-    assert ordered[-2].version == MIGRATION_VERSION - 1
+    assert ordered[MIGRATION_VERSION - 1] is eights[0]
+    assert ordered[MIGRATION_VERSION - 2].name == PREDECESSOR_NAME
+    assert ordered[MIGRATION_VERSION - 2].version == MIGRATION_VERSION - 1
 
 
 def test_m2_02_content_checksum_and_ledger_metadata_agree(migrated: Path) -> None:
@@ -1344,12 +1369,13 @@ def test_m2_05_every_accepted_migration_is_byte_for_byte_unchanged() -> None:
         for entry in package.iterdir()
         if entry.name.endswith(".sql")  # type: ignore[attr-defined]
     }
-    assert on_disk == set(ACCEPTED_MIGRATION_CHECKSUMS) | {MIGRATION_NAME}
+    accepted_through_m2 = set(ACCEPTED_MIGRATION_CHECKSUMS) | {MIGRATION_NAME}
+    assert accepted_through_m2 <= on_disk
     assert PHASE0_BASELINE_FILE in ACCEPTED_MIGRATION_CHECKSUMS
     # The accepted corpus is exactly 0000 … 0007, so "consecutive successor" is a
     # claim about a numbered series and not about whichever files happen to be here.
     assert sorted(ACCEPTED_MIGRATION_CHECKSUMS) == [
-        name for name in sorted(on_disk) if name != MIGRATION_NAME
+        name for name in sorted(on_disk) if name < MIGRATION_NAME
     ]
 
 
@@ -1388,15 +1414,17 @@ def test_m2_06_canonical_schema_carries_every_m2_object_and_no_other(
         for connection in (without, with_eight):
             connection.executescript(phase0_baseline_sql())
         for migration in load_migrations():
-            if migration.version != MIGRATION_VERSION:
+            if migration.version < MIGRATION_VERSION:
                 without.executescript(migration.sql)
-            with_eight.executescript(migration.sql)
+            if migration.version <= MIGRATION_VERSION:
+                with_eight.executescript(migration.sql)
 
         before = fingerprint_schema(without)
         after = fingerprint_schema(with_eight)
         assert after.tables - before.tables == len(M2_TABLES)
         assert after.indexes - before.indexes == len(M2_INDEXES)
         assert after.triggers - before.triggers == len(M2_TRIGGERS)
+        assert object_names(with_eight, "view") == object_names(without, "view")
         assert after.digest != before.digest
     finally:
         without.close()
@@ -1409,8 +1437,7 @@ def test_m2_06_canonical_schema_carries_every_m2_object_and_no_other(
         assert set(M2_TABLES) <= object_names(live, "table")
         assert set(M2_INDEXES) <= object_names(live, "index")
         assert set(M2_TRIGGERS) <= object_names(live, "trigger")
-        # No view and no virtual table: the slice adds storage, not projections.
-        assert object_names(live, "view") == set()
+        # No virtual table: the slice adds ordinary storage, not virtual storage.
         assert not [
             name for name in object_names(live, "table") if name.startswith("sqlite_")
         ]
@@ -1444,10 +1471,24 @@ def test_m2_07_live_drift_in_any_m2_object_fails(
         connection.close()
 
 
-def test_m2_08_user_version_mirrors_eight_but_is_not_authority(migrated: Path) -> None:
+def test_m2_08_user_version_mirrors_eight_but_is_not_authority(
+    tmp_path: Path,
+) -> None:
     """M2-08: the ledger decides; the pragma is a diagnostic mirror of it."""
-    connection = open_database(migrated, OpenMode.EXCLUSIVE_MAINTENANCE)
+    path = tmp_path / "m2-only.sqlite"
+    materialise_phase0_baseline(path)
+    generation = _apply_through_predecessor(path)
+    connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
+        with migration_catalogue_through(MIGRATION_VERSION):
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=generation,
+                workspace_id=WORKSPACE_ID,
+            )
+        assert [migration.version for migration in applied] == [MIGRATION_VERSION]
         ledger = applied_migrations(connection)
         assert max(ledger) == MIGRATION_VERSION
         version = connection.execute("PRAGMA user_version").fetchone()
@@ -1590,13 +1631,14 @@ def test_m2_11_the_full_legacy_inventory_is_unchanged_across_0008(
 
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
-        applied = apply_pending_migrations(
-            connection,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
-            fencing_generation=generation,
-            workspace_id=WORKSPACE_ID,
-        )
+        with migration_catalogue_through(MIGRATION_VERSION):
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=generation,
+                workspace_id=WORKSPACE_ID,
+            )
     finally:
         connection.close()
     assert [migration.version for migration in applied] == [MIGRATION_VERSION]
@@ -5195,7 +5237,10 @@ def test_m2_40_m2_41_failure_after_every_statement_converges_exactly_once(
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
         crashing = FailAfterStatement(connection, MIGRATION_STATEMENTS, stop_after)
-        with pytest.raises(MigrationInterrupted, match=f"statement {stop_after}$"):
+        with (
+            pytest.raises(MigrationInterrupted, match=f"statement {stop_after}$"),
+            migration_catalogue_through(MIGRATION_VERSION),
+        ):
             apply_pending_migrations(
                 cast("sqlite3.Connection", crashing),
                 mode=OpenMode.EXCLUSIVE_MAINTENANCE,
@@ -5250,7 +5295,8 @@ def test_m2_40_m2_41_failure_after_every_statement_converges_exactly_once(
 
     settled = open_database(path, OpenMode.READ_ONLY)
     try:
-        assert fingerprint_schema(settled).matches(canonical_schema_fingerprint())
+        with migration_catalogue_through(MIGRATION_VERSION):
+            assert fingerprint_schema(settled).matches(canonical_schema_fingerprint())
         attempts = migration_attempts(settled)
         assert sorted(row[0] for row in attempts) == ["failed", "succeeded"], attempts
         preserved = next(row for row in attempts if row[0] == "failed")
@@ -5305,13 +5351,14 @@ def adopted_with_m2_backup(tmp_path: Path) -> tuple[Path, Any, dict[str, Any]]:
 
     connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
-        applied = apply_pending_migrations(
-            connection,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
-            fencing_generation=generation,
-            workspace_id=WORKSPACE_ID,
-        )
+        with migration_catalogue_through(MIGRATION_VERSION):
+            applied = apply_pending_migrations(
+                connection,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=SERVICE_INSTANCE,
+                fencing_generation=generation,
+                workspace_id=WORKSPACE_ID,
+            )
         assert [migration.version for migration in applied] == [MIGRATION_VERSION]
     finally:
         connection.close()

@@ -831,6 +831,7 @@ def test_m1_05_canonical_schema_carries_every_m1_object(migrated: Path) -> None:
         assert after.tables - before.tables == len(M1_TABLES)
         assert after.indexes - before.indexes == len(M1_INDEXES)
         assert after.triggers - before.triggers == len(M1_TRIGGERS)
+        assert object_names(with_seven, "view") == object_names(without, "view")
         assert after.digest != before.digest
     finally:
         without.close()
@@ -843,8 +844,6 @@ def test_m1_05_canonical_schema_carries_every_m1_object(migrated: Path) -> None:
         assert set(M1_TABLES) <= object_names(live, "table")
         assert set(M1_INDEXES) <= object_names(live, "index")
         assert set(M1_TRIGGERS) <= object_names(live, "trigger")
-        # No view and no virtual table: the slice adds storage, not projections.
-        assert object_names(live, "view") == set()
     finally:
         live.close()
 
