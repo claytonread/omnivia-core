@@ -334,6 +334,12 @@ BEGIN
        OR NEW.workspace_id IS NOT (
             SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1
        );
+    SELECT RAISE(ABORT, 'omnivia: projection run identity already exists')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_runs
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id
+    );
     SELECT RAISE(ABORT, 'omnivia: projection run must start in running state')
     WHERE NEW.state <> 'running';
     SELECT RAISE(ABORT, 'omnivia: projection run declaration must match ledger identity')
@@ -461,6 +467,21 @@ BEGIN
     WHERE NEW.state = 'failed'
       AND (NEW.error_json IS NULL OR json_valid(NEW.error_json) IS NOT 1
            OR json(NEW.error_json) <> NEW.error_json);
+    SELECT RAISE(ABORT, 'omnivia: failed projection after validation start requires validation decision')
+    WHERE NEW.state = 'failed' AND NEW.validation_started_at_us IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM omnivia_projection_validations v
+        WHERE v.workspace_id = OLD.workspace_id
+          AND v.projection_id = OLD.projection_id AND v.run_id = OLD.run_id
+      );
+    SELECT RAISE(ABORT, 'omnivia: failed projection closeout precedes validation decision')
+    WHERE NEW.state = 'failed'
+      AND EXISTS (
+        SELECT 1 FROM omnivia_projection_validations v
+        WHERE v.workspace_id = OLD.workspace_id
+          AND v.projection_id = OLD.projection_id AND v.run_id = OLD.run_id
+          AND NEW.finished_at_us < v.validated_at_us
+      );
     SELECT RAISE(ABORT, 'omnivia: projection supersession requires later activation')
     WHERE NEW.state = 'superseded'
       AND NOT EXISTS (
@@ -494,6 +515,12 @@ BEGIN
               AND l.workspace_id = g.workspace_id
               AND l.service_instance_id = g.service_instance_id
               AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: projection checkpoint identity already exists')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_run_checkpoints
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id AND checkpoint_sequence = NEW.checkpoint_sequence
+    );
     SELECT RAISE(ABORT, 'omnivia: checkpoint requires running or validating projection')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_projection_runs
@@ -552,6 +579,12 @@ BEGIN
               AND l.workspace_id = g.workspace_id
               AND l.service_instance_id = g.service_instance_id
               AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: projection failure identity already exists')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_record_failures
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id AND failure_sequence = NEW.failure_sequence
+    );
     SELECT RAISE(ABORT, 'omnivia: record failure requires running or validating projection')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_projection_runs
@@ -605,6 +638,12 @@ BEGIN
               AND l.workspace_id = g.workspace_id
               AND l.service_instance_id = g.service_instance_id
               AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: projection validation identity already exists')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_validations
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id
+    );
     SELECT RAISE(ABORT, 'omnivia: validation requires validating projection and correlated time')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_projection_runs r
@@ -650,6 +689,12 @@ BEGIN
               AND l.workspace_id = g.workspace_id
               AND l.service_instance_id = g.service_instance_id
               AND l.lifecycle IN ('acquiring', 'held', 'draining'));
+    SELECT RAISE(ABORT, 'omnivia: projection activation identity already exists')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_activations
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND activation_sequence = NEW.activation_sequence
+    );
     SELECT RAISE(ABORT, 'omnivia: activation sequence must be contiguous')
     WHERE NEW.activation_sequence IS NOT (
         SELECT COALESCE(MAX(activation_sequence), -1) + 1
@@ -739,6 +784,20 @@ CREATE TRIGGER IF NOT EXISTS omnivia_guard_projection_activations_delete
 BEFORE DELETE ON omnivia_projection_activations
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_projection_activations is append-only; DELETE is never permitted');
+END;
+
+-- SQLite replacement conflict algorithms can implicitly delete a conflicting row
+-- without invoking DELETE triggers when recursive_triggers is disabled.  Refuse an
+-- existing ledger identity before conflict handling so the active pointer cannot be
+-- rewritten through INSERT OR REPLACE / REPLACE INTO.
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_projection_ledger_identity_insert
+BEFORE INSERT ON omnivia_projection_ledger
+WHEN EXISTS (
+    SELECT 1 FROM omnivia_projection_ledger
+    WHERE projection_id = NEW.projection_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: projection ledger identity already exists');
 END;
 
 -- The activation row is the only authority for changing an established M5
