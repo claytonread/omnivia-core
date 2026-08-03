@@ -111,7 +111,9 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_runs (
            typeof(validation_started_at_us) = 'integer'
            AND validation_started_at_us >= started_at_us)),
     CHECK (finished_at_us IS NULL OR (
-           typeof(finished_at_us) = 'integer' AND finished_at_us >= started_at_us)),
+           typeof(finished_at_us) = 'integer' AND finished_at_us >= started_at_us
+           AND (validation_started_at_us IS NULL
+                OR finished_at_us >= validation_started_at_us))),
     CHECK (state IN ('running', 'validating', 'succeeded', 'failed', 'superseded')),
     CHECK (input_record_count IS NULL OR (
            typeof(input_record_count) = 'integer' AND input_record_count >= 0)),
@@ -406,6 +408,17 @@ BEGIN
         OR (OLD.state = 'validating' AND NEW.state IN ('succeeded', 'failed'))
         OR (OLD.state = 'succeeded' AND NEW.state = 'superseded')
     );
+    SELECT RAISE(ABORT, 'omnivia: projection validation start is immutable')
+    WHERE OLD.validation_started_at_us IS NOT NULL
+      AND NEW.validation_started_at_us IS NOT OLD.validation_started_at_us;
+    SELECT RAISE(ABORT, 'omnivia: projection supersession may change only state')
+    WHERE OLD.state = 'succeeded'
+      AND (NEW.validation_started_at_us IS NOT OLD.validation_started_at_us
+           OR NEW.finished_at_us IS NOT OLD.finished_at_us
+           OR NEW.input_record_count IS NOT OLD.input_record_count
+           OR NEW.output_record_count IS NOT OLD.output_record_count
+           OR NEW.build_digest IS NOT OLD.build_digest
+           OR NEW.error_json IS NOT OLD.error_json);
     SELECT RAISE(ABORT, 'omnivia: validation start must follow run evidence')
     WHERE NEW.state = 'validating'
       AND (
@@ -431,7 +444,18 @@ BEGIN
           AND v.input_record_count = NEW.input_record_count
           AND v.output_record_count = NEW.output_record_count
           AND v.build_digest = NEW.build_digest
+          AND v.validated_at_us >= NEW.validation_started_at_us
           AND NEW.finished_at_us >= v.validated_at_us
+          AND v.validated_at_us >= COALESCE((
+            SELECT MAX(created_at_us) FROM omnivia_projection_run_checkpoints
+            WHERE workspace_id = OLD.workspace_id
+              AND projection_id = OLD.projection_id AND run_id = OLD.run_id
+          ), OLD.started_at_us)
+          AND v.validated_at_us >= COALESCE((
+            SELECT MAX(occurred_at_us) FROM omnivia_projection_record_failures
+            WHERE workspace_id = OLD.workspace_id
+              AND projection_id = OLD.projection_id AND run_id = OLD.run_id
+          ), OLD.started_at_us)
       );
     SELECT RAISE(ABORT, 'omnivia: failed projection requires sanitized canonical error JSON')
     WHERE NEW.state = 'failed'
@@ -477,6 +501,11 @@ BEGIN
           AND run_id = NEW.run_id AND state IN ('running', 'validating')
           AND source_checkpoint = NEW.source_checkpoint
           AND NEW.created_at_us >= started_at_us);
+    SELECT RAISE(ABORT, 'omnivia: validation closes projection checkpoint evidence')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_validations
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id);
     SELECT RAISE(ABORT, 'omnivia: projection checkpoint sequence must be contiguous')
     WHERE NEW.checkpoint_sequence IS NOT (
         SELECT COALESCE(MAX(checkpoint_sequence), -1) + 1
@@ -529,6 +558,11 @@ BEGIN
         WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
           AND run_id = NEW.run_id AND state IN ('running', 'validating')
           AND NEW.occurred_at_us >= started_at_us);
+    SELECT RAISE(ABORT, 'omnivia: validation closes projection failure evidence')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_projection_validations
+        WHERE workspace_id = NEW.workspace_id AND projection_id = NEW.projection_id
+          AND run_id = NEW.run_id);
     SELECT RAISE(ABORT, 'omnivia: projection failure sequence must be contiguous')
     WHERE NEW.failure_sequence IS NOT (
         SELECT COALESCE(MAX(failure_sequence), -1) + 1
@@ -644,6 +678,20 @@ BEGIN
           AND r.build_digest = NEW.build_digest
           AND v.build_digest = NEW.build_digest
           AND v.validation_digest = NEW.validation_digest
+          AND v.validated_at_us >= r.validation_started_at_us
+          AND r.finished_at_us >= v.validated_at_us
+          AND r.input_record_count = v.input_record_count
+          AND r.output_record_count = v.output_record_count
+          AND v.validated_at_us >= COALESCE((
+            SELECT MAX(created_at_us) FROM omnivia_projection_run_checkpoints
+            WHERE workspace_id = r.workspace_id
+              AND projection_id = r.projection_id AND run_id = r.run_id
+          ), r.started_at_us)
+          AND v.validated_at_us >= COALESCE((
+            SELECT MAX(occurred_at_us) FROM omnivia_projection_record_failures
+            WHERE workspace_id = r.workspace_id
+              AND projection_id = r.projection_id AND run_id = r.run_id
+          ), r.started_at_us)
           AND NEW.activated_at_us >= r.finished_at_us
           AND NEW.activated_at_us >= v.validated_at_us);
 END;
@@ -708,6 +756,21 @@ WHEN NEW.projection_kind IS NOT OLD.projection_kind
   OR NEW.active_validation_digest IS NOT OLD.active_validation_digest
   OR NEW.activated_at_us IS NOT OLD.activated_at_us
 BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded UPDATE on projection active pointer')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1
+            FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1
+              AND g.workspace_id = s.workspace_id
+              AND g.fencing_generation = s.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining')
+       );
     SELECT RAISE(ABORT, 'omnivia: projection active pointer requires matching activation')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_projection_activations a
@@ -715,6 +778,9 @@ BEGIN
           ON r.workspace_id = a.workspace_id AND r.projection_id = a.projection_id
          AND r.run_id = a.run_id
         WHERE a.projection_id = NEW.projection_id
+          AND a.workspace_id = (
+              SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1
+          )
           AND a.run_id = NEW.active_run_id
           AND a.target_epoch = NEW.active_epoch
           AND a.source_checkpoint = NEW.active_source_checkpoint
