@@ -169,6 +169,7 @@ M3_RETRY_CHILD = """
 import json
 import sys
 from pathlib import Path
+import omnivia_core_runtime.storage.migrations as migration_module
 from omnivia_core_runtime.storage.connection import (
     OpenMode, foreign_key_check, integrity_check, open_database,
 )
@@ -177,6 +178,10 @@ from omnivia_core_runtime.storage.migrations import (
 )
 
 path, service, workspace_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+all_migrations = migration_module.load_migrations()
+migration_module.load_migrations = lambda: tuple(
+    migration for migration in all_migrations if migration.version <= 9
+)
 connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
 try:
     state = read_workspace_state(connection)
@@ -229,7 +234,8 @@ def audit_row(audit_ref: str, principal: str = "principal-1") -> dict[str, objec
 def owned(tmp_path: Path) -> Iterator[m2.Owned]:
     path = tmp_path / "workspace.sqlite"
     materialise_phase0_baseline(path)
-    m2.bootstrap_and_migrate(path)
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        m2.bootstrap_and_migrate(path)
     holder = m2.take_ownership(path)
     m2.seed_chain(holder)
     with fenced_transaction(
@@ -1178,10 +1184,13 @@ def seed_table_family(holder: m2.Owned, table: str) -> None:
 
 def test_m3_01_unique_consecutive_successor_and_predecessor_hashes() -> None:
     migrations = load_migrations()
-    assert [migration.version for migration in migrations] == list(range(1, 10))
-    assert migrations[-1].name == MIGRATION_NAME
+    owned_migrations = tuple(
+        migration for migration in migrations if migration.version <= MIGRATION_VERSION
+    )
+    assert [migration.version for migration in owned_migrations] == list(range(1, 10))
+    assert owned_migrations[-1].name == MIGRATION_NAME
     assert {
-        m.version: m.checksum for m in migrations[:-1]
+        m.version: m.checksum for m in owned_migrations[:-1]
     } == ACCEPTED_PREDECESSOR_HASHES
     assert MIGRATION.checksum == hashlib.sha256(MIGRATION.sql.encode()).hexdigest()
 
@@ -1189,7 +1198,8 @@ def test_m3_01_unique_consecutive_successor_and_predecessor_hashes() -> None:
 def test_m3_02_pristine_migration_converges_and_records_version(tmp_path: Path) -> None:
     path = tmp_path / "pristine.sqlite"
     materialise_phase0_baseline(path)
-    m2.bootstrap_and_migrate(path)
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        m2.bootstrap_and_migrate(path)
     connection = open_database(path, OpenMode.READ_ONLY)
     try:
         assert max(applied_migrations(connection)) == MIGRATION_VERSION
