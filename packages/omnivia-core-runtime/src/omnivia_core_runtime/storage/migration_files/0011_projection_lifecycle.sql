@@ -11,22 +11,26 @@ ALTER TABLE omnivia_projection_ledger ADD COLUMN projection_kind TEXT
         AND projection_kind GLOB '[a-z]*'
         AND projection_kind NOT GLOB '*[^a-z0-9_.]*'
         AND projection_kind NOT GLOB '*.'
-        AND projection_kind NOT GLOB '*.[^a-z]*'));
+        AND projection_kind NOT GLOB '*.[^a-z]*'
+        AND instr(projection_kind, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN schema_version TEXT
     CHECK (schema_version IS NULL OR (
         typeof(schema_version) = 'text' AND length(schema_version) BETWEEN 1 AND 128
         AND schema_version GLOB '[A-Za-z0-9]*'
-        AND schema_version NOT GLOB '*[^A-Za-z0-9._:-]*'));
+        AND schema_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+        AND instr(schema_version, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN profile_version TEXT
     CHECK (profile_version IS NULL OR (
         typeof(profile_version) = 'text' AND length(profile_version) BETWEEN 1 AND 128
         AND profile_version GLOB '[A-Za-z0-9]*'
-        AND profile_version NOT GLOB '*[^A-Za-z0-9._:-]*'));
+        AND profile_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+        AND instr(profile_version, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN active_run_id TEXT
     CHECK (active_run_id IS NULL OR (
         typeof(active_run_id) = 'text' AND length(active_run_id) BETWEEN 1 AND 128
         AND active_run_id GLOB '[A-Za-z0-9]*'
-        AND active_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*'));
+        AND active_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*'
+        AND instr(active_run_id, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN active_epoch INTEGER
     CHECK (active_epoch IS NULL OR (typeof(active_epoch) = 'integer' AND active_epoch > 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN active_source_checkpoint TEXT
@@ -38,12 +42,14 @@ ALTER TABLE omnivia_projection_ledger ADD COLUMN active_build_digest TEXT
     CHECK (active_build_digest IS NULL OR (
         typeof(active_build_digest) = 'text' AND length(active_build_digest) = 71
         AND substr(active_build_digest, 1, 7) = 'sha256:'
-        AND substr(active_build_digest, 8) NOT GLOB '*[^0-9a-f]*'));
+        AND substr(active_build_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        AND instr(active_build_digest, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN active_validation_digest TEXT
     CHECK (active_validation_digest IS NULL OR (
         typeof(active_validation_digest) = 'text' AND length(active_validation_digest) = 71
         AND substr(active_validation_digest, 1, 7) = 'sha256:'
-        AND substr(active_validation_digest, 8) NOT GLOB '*[^0-9a-f]*'));
+        AND substr(active_validation_digest, 8) NOT GLOB '*[^0-9a-f]*'
+        AND instr(active_validation_digest, char(0)) = 0));
 ALTER TABLE omnivia_projection_ledger ADD COLUMN activated_at_us INTEGER
     CHECK (activated_at_us IS NULL OR (
         typeof(activated_at_us) = 'integer' AND activated_at_us > 0));
@@ -86,13 +92,16 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_runs (
            AND projection_kind GLOB '[a-z]*'
            AND projection_kind NOT GLOB '*[^a-z0-9_.]*'
            AND projection_kind NOT GLOB '*.'
-           AND projection_kind NOT GLOB '*.[^a-z]*'),
+           AND projection_kind NOT GLOB '*.[^a-z]*'
+        AND instr(projection_kind, char(0)) = 0),
     CHECK (typeof(schema_version) = 'text' AND length(schema_version) BETWEEN 1 AND 128
            AND schema_version GLOB '[A-Za-z0-9]*'
-           AND schema_version NOT GLOB '*[^A-Za-z0-9._:-]*'),
+           AND schema_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+        AND instr(schema_version, char(0)) = 0),
     CHECK (typeof(profile_version) = 'text' AND length(profile_version) BETWEEN 1 AND 128
            AND profile_version GLOB '[A-Za-z0-9]*'
-           AND profile_version NOT GLOB '*[^A-Za-z0-9._:-]*'),
+           AND profile_version NOT GLOB '*[^A-Za-z0-9._:-]*'
+        AND instr(profile_version, char(0)) = 0),
     CHECK (typeof(source_checkpoint) = 'text'
            AND length(source_checkpoint) BETWEEN 1 AND 512
            AND instr(source_checkpoint, char(0)) = 0),
@@ -111,7 +120,8 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_runs (
     CHECK (build_digest IS NULL OR (
            typeof(build_digest) = 'text' AND length(build_digest) = 71
            AND substr(build_digest, 1, 7) = 'sha256:'
-           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*')),
+           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(build_digest, char(0)) = 0)),
     CHECK (error_json IS NULL OR (
            typeof(error_json) = 'text'
            AND length(CAST(error_json AS BLOB)) BETWEEN 2 AND 65536)),
@@ -121,7 +131,8 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_runs (
            typeof(resumed_from_run_id) = 'text'
            AND length(resumed_from_run_id) BETWEEN 1 AND 128
            AND resumed_from_run_id GLOB '[A-Za-z0-9]*'
-           AND resumed_from_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*')),
+           AND resumed_from_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*'
+           AND instr(resumed_from_run_id, char(0)) = 0)),
     CHECK (resumed_from_checkpoint_sequence IS NULL OR (
            typeof(resumed_from_checkpoint_sequence) = 'integer'
            AND resumed_from_checkpoint_sequence >= 0)),
@@ -170,7 +181,8 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_run_checkpoints (
            AND length(CAST(cursor_json AS BLOB)) BETWEEN 2 AND 1048576),
     CHECK (typeof(checkpoint_digest) = 'text' AND length(checkpoint_digest) = 71
            AND substr(checkpoint_digest, 1, 7) = 'sha256:'
-           AND substr(checkpoint_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+           AND substr(checkpoint_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(checkpoint_digest, char(0)) = 0),
     CHECK (typeof(input_record_count) = 'integer' AND input_record_count >= 0),
     CHECK (typeof(output_record_count) = 'integer' AND output_record_count >= 0),
 
@@ -194,13 +206,16 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_record_failures (
     CHECK (typeof(failure_sequence) = 'integer' AND failure_sequence >= 0),
     CHECK (typeof(record_id) = 'text' AND length(record_id) BETWEEN 1 AND 128
            AND record_id GLOB '[A-Za-z0-9]*'
-           AND record_id NOT GLOB '*[^A-Za-z0-9._:/-]*'),
+           AND record_id NOT GLOB '*[^A-Za-z0-9._:/-]*'
+           AND instr(record_id, char(0)) = 0),
     CHECK (typeof(phase) = 'text' AND length(phase) BETWEEN 1 AND 128
            AND phase GLOB '[a-z]*' AND phase NOT GLOB '*[^a-z0-9_.]*'
-           AND phase NOT GLOB '*.' AND phase NOT GLOB '*.[^a-z]*'),
+           AND phase NOT GLOB '*.' AND phase NOT GLOB '*.[^a-z]*'
+           AND instr(phase, char(0)) = 0),
     CHECK (typeof(error_code) = 'text' AND length(error_code) BETWEEN 1 AND 128
            AND error_code GLOB '[a-z]*' AND error_code NOT GLOB '*[^a-z0-9_.]*'
-           AND error_code NOT GLOB '*.' AND error_code NOT GLOB '*.[^a-z]*'),
+           AND error_code NOT GLOB '*.' AND error_code NOT GLOB '*.[^a-z]*'
+           AND instr(error_code, char(0)) = 0),
     CHECK (sanitized_detail IS NULL OR (
            typeof(sanitized_detail) = 'text' AND length(sanitized_detail) <= 2048
            AND instr(sanitized_detail, char(0)) = 0)),
@@ -230,12 +245,14 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_validations (
     CHECK (typeof(output_record_count) = 'integer' AND output_record_count >= 0),
     CHECK (typeof(build_digest) = 'text' AND length(build_digest) = 71
            AND substr(build_digest, 1, 7) = 'sha256:'
-           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(build_digest, char(0)) = 0),
     CHECK (typeof(report_json) = 'text'
            AND length(CAST(report_json AS BLOB)) BETWEEN 2 AND 1048576),
     CHECK (typeof(validation_digest) = 'text' AND length(validation_digest) = 71
            AND substr(validation_digest, 1, 7) = 'sha256:'
-           AND substr(validation_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+           AND substr(validation_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(validation_digest, char(0)) = 0),
 
     FOREIGN KEY (workspace_id, projection_id, run_id)
         REFERENCES omnivia_projection_runs (workspace_id, projection_id, run_id)
@@ -261,17 +278,20 @@ CREATE TABLE IF NOT EXISTS omnivia_projection_activations (
     CHECK (previous_run_id IS NULL OR (
            typeof(previous_run_id) = 'text' AND length(previous_run_id) BETWEEN 1 AND 128
            AND previous_run_id GLOB '[A-Za-z0-9]*'
-           AND previous_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*')),
+           AND previous_run_id NOT GLOB '*[^A-Za-z0-9._:/-]*'
+           AND instr(previous_run_id, char(0)) = 0)),
     CHECK (typeof(activated_at_us) = 'integer' AND activated_at_us > 0),
     CHECK (typeof(source_checkpoint) = 'text'
            AND length(source_checkpoint) BETWEEN 1 AND 512
            AND instr(source_checkpoint, char(0)) = 0),
     CHECK (typeof(build_digest) = 'text' AND length(build_digest) = 71
            AND substr(build_digest, 1, 7) = 'sha256:'
-           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+           AND substr(build_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(build_digest, char(0)) = 0),
     CHECK (typeof(validation_digest) = 'text' AND length(validation_digest) = 71
            AND substr(validation_digest, 1, 7) = 'sha256:'
-           AND substr(validation_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+           AND substr(validation_digest, 8) NOT GLOB '*[^0-9a-f]*'
+           AND instr(validation_digest, char(0)) = 0),
 
     FOREIGN KEY (workspace_id, projection_id, run_id)
         REFERENCES omnivia_projection_runs (workspace_id, projection_id, run_id)

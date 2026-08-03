@@ -505,6 +505,57 @@ def test_m5_04_run_scalar_matrices_fail_closed(
         insert(owned.connection, "omnivia_projection_runs", row)
 
 
+@pytest.mark.parametrize(
+    "surface",
+    [
+        "run_projection_kind",
+        "run_schema_version",
+        "run_profile_version",
+        "checkpoint_digest",
+        "failure_record_id",
+        "failure_phase",
+        "failure_error_code",
+        "validation_build_digest",
+        "validation_digest",
+    ],
+)
+def test_m5_04a_embedded_nul_text_fields_fail_closed(
+    owned: m2.Owned, surface: str
+) -> None:
+    hidden_suffix = "\x00hidden"
+    if surface.startswith("run_"):
+        field = surface.removeprefix("run_")
+        row = run_row()
+        row[field] = f"{row[field]}{hidden_suffix}"
+        with guarded(owned), pytest.raises(sqlite3.IntegrityError):
+            insert(owned.connection, "omnivia_projection_runs", row)
+        return
+
+    start_run(owned)
+    if surface == "checkpoint_digest":
+        row = checkpoint_row()
+        row["checkpoint_digest"] = f"{DIGEST_A}{hidden_suffix}"
+        with guarded(owned), pytest.raises(sqlite3.IntegrityError):
+            insert(owned.connection, "omnivia_projection_run_checkpoints", row)
+        return
+
+    if surface.startswith("failure_"):
+        field = surface.removeprefix("failure_")
+        row = failure_row()
+        row[field] = f"{row[field]}{hidden_suffix}"
+        with guarded(owned), pytest.raises(sqlite3.IntegrityError):
+            insert(owned.connection, "omnivia_projection_record_failures", row)
+        return
+
+    begin_validation(owned)
+    if surface == "validation_build_digest":
+        with pytest.raises(sqlite3.IntegrityError):
+            validate(owned, build_digest=f"{DIGEST_A}{hidden_suffix}")
+        return
+    with pytest.raises(sqlite3.IntegrityError):
+        validate(owned, validation_digest=f"{DIGEST_B}{hidden_suffix}")
+
+
 def test_m5_05_run_insert_shape_and_lifecycle(owned: m2.Owned) -> None:
     start_run(owned)
     with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="start"):
