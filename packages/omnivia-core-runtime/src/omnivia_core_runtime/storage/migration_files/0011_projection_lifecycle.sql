@@ -461,6 +461,13 @@ BEGIN
     WHERE NEW.state = 'failed'
       AND (NEW.error_json IS NULL OR json_valid(NEW.error_json) IS NOT 1
            OR json(NEW.error_json) <> NEW.error_json);
+    SELECT RAISE(ABORT, 'omnivia: failed projection after validation start requires validation decision')
+    WHERE NEW.state = 'failed' AND NEW.validation_started_at_us IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM omnivia_projection_validations v
+        WHERE v.workspace_id = OLD.workspace_id
+          AND v.projection_id = OLD.projection_id AND v.run_id = OLD.run_id
+      );
     SELECT RAISE(ABORT, 'omnivia: failed projection closeout precedes validation decision')
     WHERE NEW.state = 'failed'
       AND EXISTS (

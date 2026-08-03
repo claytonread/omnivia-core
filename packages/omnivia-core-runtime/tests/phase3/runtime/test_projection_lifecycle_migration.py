@@ -83,7 +83,7 @@ SCHEMA_SQL_SHA256 = {
     "omnivia_guard_projection_run_checkpoints_update": "e45dfdf043e41f8095be73d9745b717af59ce730b6c887d1eb6995d86eb824d3",
     "omnivia_guard_projection_runs_delete": "529313ec2746cf8d9c5636829db093f39ef0a2e204431d93115cd37815e7b498",
     "omnivia_guard_projection_runs_insert": "65d26ec78d7d9f8dfa453004f8224fc203870a1e53817ec68de42b8193671703",
-    "omnivia_guard_projection_runs_update": "576dfbc1bcc4d2caa6b93886ae9f8cd2856f695d5230c16fd8fedeb43360281c",
+    "omnivia_guard_projection_runs_update": "f339e00c200bc1acfe264d2e8dc1519589b6fd850d1e3832c1a4b17d15b1de1e",
     "omnivia_guard_projection_validations_delete": "ea203cc5b5270583702c80866da09f88a37c1749cd43cca47e89e91cde041c7a",
     "omnivia_guard_projection_validations_insert": "1b45faf94c745ceed1b4bf4454fbd9df080c7d9bf6a9352e6cec694215b6cb39",
     "omnivia_guard_projection_validations_update": "34d4ad4d5ec7489688d89c4c90b0f5e014f3e8812aabc700a5c40e98e84d618a",
@@ -1233,6 +1233,44 @@ def test_m5_11c_failed_closeout_follows_validation_decision(
         ).fetchone() == ("failed", BASE_US + 3 + closeout_delta)
 
 
+@pytest.mark.parametrize("path", ["validating", "running_invents_validation_start"])
+def test_m5_11d_failed_closeout_requires_decision_after_validation_start(
+    owned: m2.Owned, path: str
+) -> None:
+    start_run(owned)
+    if path == "validating":
+        begin_validation(owned, at=BASE_US + 2)
+        assignment = (
+            "state = 'failed', finished_at_us = ?, "
+            'error_json = \'{"code":"missing_decision"}\''
+        )
+        expected_state = "validating"
+    else:
+        assignment = (
+            "state = 'failed', validation_started_at_us = ?, finished_at_us = ?, "
+            'error_json = \'{"code":"invented_validation_start"}\''
+        )
+        expected_state = "running"
+
+    parameters = (BASE_US + 3,) if path == "validating" else (BASE_US + 2, BASE_US + 3)
+    with (
+        guarded(owned),
+        pytest.raises(sqlite3.IntegrityError, match="requires validation decision"),
+    ):
+        owned.connection.execute(
+            f"UPDATE omnivia_projection_runs SET {assignment} WHERE run_id = 'run-1'",
+            parameters,
+        )
+    assert owned.connection.execute(
+        "SELECT state, validation_started_at_us, finished_at_us "
+        "FROM omnivia_projection_runs WHERE run_id = 'run-1'"
+    ).fetchone() == (
+        expected_state,
+        BASE_US + 2 if path == "validating" else None,
+        None,
+    )
+
+
 @pytest.mark.parametrize(
     "tamper",
     [
@@ -1241,7 +1279,7 @@ def test_m5_11c_failed_closeout_follows_validation_decision(
         "count_mismatch",
     ],
 )
-def test_m5_11d_activation_revalidates_persisted_history(
+def test_m5_11e_activation_revalidates_persisted_history(
     owned: m2.Owned, tamper: str
 ) -> None:
     start_run(owned)
