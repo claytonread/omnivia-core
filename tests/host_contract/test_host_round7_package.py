@@ -229,17 +229,25 @@ def test_nested_zip_accepts_an_empty_ordinary_directory() -> None:
 @pytest.mark.parametrize(
     ("mode", "data", "expected"),
     [
-        (stat.S_IFLNK | 0o777, b"", "symlinked_member"),
-        (stat.S_IFCHR | 0o600, b"", "malformed_member"),
-        (stat.S_IFDIR | 0o755, b"TestDriverRequest", "malformed_member"),
+        (stat.S_IFLNK | 0o777, b"", ["symlinked_member"]),
+        (stat.S_IFCHR | 0o600, b"", ["malformed_member"]),
+        # A refused directory entry's body is never scanned as a member, so the
+        # control it carries is reported against the container bytes that do
+        # hold it. Refusing the entry and missing what it smuggled would be a
+        # rejection that still learned nothing about the package.
+        (
+            stat.S_IFDIR | 0o755,
+            b"TestDriverRequest",
+            ["malformed_member", "development_control_in_packaged_bytes"],
+        ),
     ],
 )
 def test_nested_zip_rejects_nonordinary_directory_metadata(
-    mode: int, data: bytes, expected: str
+    mode: int, data: bytes, expected: list[str]
 ) -> None:
     info = zip_directory("entry/", mode)
     findings = scan_nested_zip(nested_zip((info, data)))
-    assert [finding.code for finding in findings] == [expected]
+    assert [finding.code for finding in findings] == expected
     assert findings[0].member == "member[0]!member[0]"
 
 
@@ -284,8 +292,12 @@ def test_nested_tar_accepts_an_empty_ordinary_directory() -> None:
 
 def test_nested_tar_rejects_a_nonempty_directory() -> None:
     findings = scan_nested_tar(tar_directory("payload/", b"TestDriverRequest"))
-    assert [finding.code for finding in findings] == ["malformed_member"]
+    assert [finding.code for finding in findings] == [
+        "malformed_member",
+        "development_control_in_packaged_bytes",
+    ]
     assert findings[0].member == "member[0]!member[0]"
+    assert findings[1].member == "member[0]"
 
 
 def test_cli_rejects_a_nonempty_top_level_tar_directory(tmp_path: Path) -> None:

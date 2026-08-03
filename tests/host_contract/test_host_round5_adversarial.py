@@ -221,6 +221,131 @@ def test_cli_rejects_nested_escape_and_does_not_disclose_member_names(
 
 
 # ---------------------------------------------------------------------------
+# Container bytes that belong to no member
+# ---------------------------------------------------------------------------
+
+CONTAINER_SECRET = "ghp_" + "c" * 36
+
+
+def zip_comment_bytes(planted: bytes) -> bytes:
+    """A readable ZIP whose archive comment carries the planted bytes."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("app.js", b"clean")
+        archive.comment = planted
+    return buffer.getvalue()
+
+
+def zip_trailing_bytes(planted: bytes) -> bytes:
+    """A readable ZIP with the planted bytes appended after its EOCD record."""
+    return zip_bytes([("app.js", b"clean")]) + planted
+
+
+def tar_padding_bytes(planted: bytes) -> bytes:
+    """A readable tar with the planted bytes written over its trailing padding."""
+    data = bytearray(tar_bytes([("app.js", b"clean")]))
+    data[-len(planted) :] = planted
+    return bytes(data)
+
+
+CONTAINER_VECTORS = {
+    "zip_comment": (zip_comment_bytes, "release.zip"),
+    "zip_trailing": (zip_trailing_bytes, "release.zip"),
+    "tar_padding": (tar_padding_bytes, "release.tar"),
+}
+
+
+@pytest.mark.parametrize("vector", sorted(CONTAINER_VECTORS))
+@pytest.mark.parametrize(
+    ("planted", "expected_code", "expected_detector"),
+    [
+        (
+            CONTAINER_SECRET.encode("ascii"),
+            "likely_secret_in_packaged_bytes",
+            "github_token",
+        ),
+        (
+            b"TestDriverRequest",
+            "development_control_in_packaged_bytes",
+            "TestDriverRequest",
+        ),
+    ],
+)
+def test_container_bytes_outside_every_member_are_scanned(
+    vector: str, planted: bytes, expected_code: str, expected_detector: str
+) -> None:
+    build, path = CONTAINER_VECTORS[vector]
+    data = build(planted)
+
+    findings = pub.scan_release_package(inventory(path, data))
+
+    assert [(finding.code, finding.detector) for finding in findings] == [
+        (expected_code, expected_detector)
+    ]
+    assert findings[0].member == "member[0]"
+    assert findings[0].offset >= 0
+
+
+@pytest.mark.parametrize("vector", sorted(CONTAINER_VECTORS))
+def test_a_container_carrying_nothing_planted_stays_clean(vector: str) -> None:
+    build, path = CONTAINER_VECTORS[vector]
+    assert pub.scan_release_package(inventory(path, build(b"harmless"))) == ()
+
+
+def test_container_scanning_does_not_duplicate_a_finding_its_member_reported() -> None:
+    findings = pub.scan_release_package(
+        inventory("release.zip", zip_bytes([("app.js", b"TestDriverRequest")]))
+    )
+
+    assert [(finding.code, finding.member) for finding in findings] == [
+        ("development_control_in_packaged_bytes", "member[0]!member[0]")
+    ]
+
+
+def test_container_byte_findings_never_disclose_the_bytes_they_refused() -> None:
+    findings = pub.scan_release_package(
+        inventory("release.zip", zip_comment_bytes(CONTAINER_SECRET.encode("ascii")))
+    )
+
+    assert findings
+    for finding in findings:
+        assert CONTAINER_SECRET not in repr(finding)
+
+
+def test_cli_rejects_a_secret_parked_in_a_packaged_archive_comment(
+    tmp_path: Path,
+) -> None:
+    """The CLI reaches container bytes through the member scan it already runs.
+
+    A packaged archive is a member, and a member's bytes are scanned whole, so
+    the comment travels into the gate with them. The CLI's own reader
+    decomposes the *top-level* package instead of handing over its bytes, so
+    the bytes outside that outermost container's members never become
+    inventory -- a separate reader-side gap, not this one.
+    """
+    secret = "ghp_" + "m" * 36
+    package = tmp_path / "package"
+    (package / "vendor").mkdir(parents=True)
+    (package / "index.html").write_bytes(b"<!doctype html>")
+    (package / "vendor" / "bundle.zip").write_bytes(
+        zip_comment_bytes(secret.encode("ascii"))
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(SCANNER), str(package)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "likely_secret_in_packaged_bytes" in result.stdout
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # Host-owned registration capability
 # ---------------------------------------------------------------------------
 

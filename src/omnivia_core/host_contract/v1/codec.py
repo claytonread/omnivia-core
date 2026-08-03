@@ -22,8 +22,9 @@ records:
   ``temporarily_unhealthy`` answer reports its retry window rather than being
   retried immediately;
 - **the trusted-host authority boundary** -- a ``ShellContext`` is resolved from
-  the trusted host by ``contextId``, never from the hosted payload, and an
-  authority change produces a new immutable context rather than a mutation.
+  the trusted host by ``contextId``, never from the hosted payload; an authority
+  change produces a new immutable context rather than a mutation; and a context
+  whose stated ``expiresAt`` has been reached is authority for nothing.
 
 Standard library only. Nothing here may depend on runtime, storage, HTTP, MCP,
 CLI, Platform, Dev, or a validation framework.
@@ -35,6 +36,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Final, TypeAlias, cast
 
@@ -532,7 +534,9 @@ def _collect_payload_authority_claims(
     raise HostAuthorityError("authority audit found a malformed payload container")
 
 
-def resolve_trusted_context(request: HostRequest, context: ShellContext) -> ShellContext:
+def resolve_trusted_context(
+    request: HostRequest, context: ShellContext, *, now: datetime | None = None
+) -> ShellContext:
     """Return the trusted context this request runs under.
 
     ``context`` must be the record the trusted host holds for the request's
@@ -540,12 +544,65 @@ def resolve_trusted_context(request: HostRequest, context: ShellContext) -> Shel
     ``payload`` is not consulted at all, so a hosted artefact cannot widen its
     own authority by embedding principal, Workspace, permission, entitlement or
     environment values in it.
+
+    ``expiresAt`` is the record's own statement of when it stops being
+    authority, so it is enforced here rather than left to the caller: a context
+    whose expiry is at or before the moment of the check resolves to nothing.
+    The boundary is exclusive of the instant itself because the field names the
+    first instant the record is no longer valid, not the last instant it is.
+
+    ``now`` names the instant the check is made at. It defaults to the current
+    UTC instant and must be time-zone aware, so a caller pinning it for a
+    deterministic check cannot silently compare against a floating local clock.
     """
     _require_valid_trust_request(request)
     _require_valid_trust_context(context)
     if context.context_id != request.context_id:
         raise HostAuthorityError("trusted context does not match the request context")
+    if _has_expired(context, _authority_instant(now)):
+        raise HostAuthorityError("trusted context has expired")
     return context
+
+
+def _authority_instant(now: datetime | None) -> datetime:
+    """Return the instant an authority check is made at, refusing a floating clock."""
+    if now is None:
+        return datetime.now(UTC)
+    if type(now) is not datetime or now.utcoffset() is None:
+        raise HostAuthorityError("authority check requires a time-zone-aware instant")
+    return now
+
+
+def _has_expired(context: ShellContext, now: datetime) -> bool:
+    """Return whether the context's own ``expiresAt`` has been reached.
+
+    An absent ``expiresAt`` states no expiry, which is the record saying its
+    validity ends with the context itself rather than with a clock. An
+    ``expiresAt`` this build cannot read as an instant is not treated as
+    open-ended: the record has already passed schema validation, so a value
+    that still will not resolve is a record this build cannot reason about, and
+    it is refused like any other malformed trusted record.
+    """
+    expires_at = context.expires_at
+    if expires_at is None:
+        return False
+    text = f"{expires_at[:-1]}+00:00" if expires_at[-1:] in ("Z", "z") else expires_at
+    # RFC 3339 permits the leap second the schema validates against ``:59``;
+    # ``fromisoformat`` does not accept it, so it is read the same way here.
+    text = _LEAP_SECOND_RE.sub(":59", text)
+    try:
+        expiry = datetime.fromisoformat(text)
+    except ValueError:
+        raise HostAuthorityError("invalid trusted record") from None
+    if expiry.utcoffset() is None:
+        raise HostAuthorityError("invalid trusted record")
+    return expiry <= now
+
+
+#: The seconds field of a governed RFC 3339 timestamp, when it is the leap
+#: second. Minute and time-zone-offset minute fields are ``[0-5]\d``, so ``:60``
+#: cannot be either of them.
+_LEAP_SECOND_RE: Final[re.Pattern[str]] = re.compile(r":60(?=(?:\.\d+)?[+-]\d{2}:\d{2}$)")
 
 
 def _require_valid_trust_request(request: HostRequest) -> None:
@@ -635,13 +692,23 @@ def validate_context_rotation(old: ShellContext, new: ShellContext) -> None:
         raise HostAuthorityError("ShellContext must advance contextVersion")
 
 
-def is_handle_valid(current: ShellContext, handle_context_id: str) -> bool:
+def is_handle_valid(
+    current: ShellContext, handle_context_id: str, *, now: datetime | None = None
+) -> bool:
     """Return whether a handle issued against ``handle_context_id`` is still usable.
 
     A handle bound to a superseded context is invalid: rotation exists precisely
-    so authority tied to the old context stops being honoured.
+    so authority tied to the old context stops being honoured. An expired
+    context supersedes itself, so no handle is usable against one, including a
+    handle naming its own ``contextId`` -- expiry that a still-held handle could
+    outlive would not be expiry at all.
+
+    ``now`` names the instant the check is made at, exactly as in
+    :func:`resolve_trusted_context`.
     """
     _require_valid_trust_context(current)
+    if _has_expired(current, _authority_instant(now)):
+        return False
     if type(handle_context_id) is not str or _IDENTIFIER_RE.fullmatch(handle_context_id) is None:
         return False
     return handle_context_id == current.context_id

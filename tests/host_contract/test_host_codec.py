@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -501,3 +502,116 @@ def test_a_handle_tied_to_a_superseded_context_is_invalid() -> None:
     current = gen.ShellContext.from_wire(rotated)
     assert codec.is_handle_valid(current, "ctx-002") is True
     assert codec.is_handle_valid(current, "ctx-001") is False
+
+
+# --------------------------------------------------------------------------
+# Context expiry at the authority boundary
+# --------------------------------------------------------------------------
+
+#: The instant every deterministic expiry check below is made at.
+CHECK_TIME = datetime(2026, 8, 4, 12, 0, 0, tzinfo=UTC)
+
+
+def expiring_context(expires_at: str | None) -> gen.ShellContext:
+    document = dict(load("valid/shell-context.json"))
+    if expires_at is not None:
+        document["expiresAt"] = expires_at
+    return gen.ShellContext.from_wire(document)
+
+
+def trusted_request() -> gen.HostRequest:
+    return TEST_HOST.admit_request(load("valid/host-request.json"))
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [
+        "2026-08-04T11:59:59Z",  # already past
+        "2026-08-04T12:00:00Z",  # the boundary instant itself
+        "2026-08-04T13:00:00+01:00",  # the boundary instant, written as an offset
+        "2026-08-04T06:59:59-05:00",  # past, and only past once the offset is read
+    ],
+)
+def test_an_expired_trusted_context_resolves_to_nothing(expires_at: str) -> None:
+    context = expiring_context(expires_at)
+
+    with pytest.raises(codec.HostAuthorityError, match="trusted context has expired"):
+        codec.resolve_trusted_context(trusted_request(), context, now=CHECK_TIME)
+
+    assert codec.is_handle_valid(context, "ctx-001", now=CHECK_TIME) is False
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [
+        "2026-08-04T12:00:01Z",  # one second of validity left
+        "2026-08-04T13:00:00+00:30",  # still ahead once the offset is read
+        "2026-12-31T23:59:60Z",  # the leap second RFC 3339 permits
+        None,  # no expiry stated at all
+    ],
+)
+def test_an_unexpired_trusted_context_still_resolves(expires_at: str | None) -> None:
+    context = expiring_context(expires_at)
+
+    assert (
+        codec.resolve_trusted_context(trusted_request(), context, now=CHECK_TIME)
+        is context
+    )
+    assert codec.is_handle_valid(context, "ctx-001", now=CHECK_TIME) is True
+
+
+def test_a_context_without_an_expiry_never_expires_against_the_default_clock() -> None:
+    context = expiring_context(None)
+
+    assert codec.resolve_trusted_context(trusted_request(), context) is context
+    assert codec.is_handle_valid(context, "ctx-001") is True
+
+
+def test_expiry_is_checked_against_the_real_clock_when_none_is_supplied() -> None:
+    past = expiring_context("2020-01-01T00:00:00Z")
+    future = expiring_context("2999-01-01T00:00:00Z")
+
+    with pytest.raises(codec.HostAuthorityError, match="trusted context has expired"):
+        codec.resolve_trusted_context(trusted_request(), past)
+    assert codec.is_handle_valid(past, "ctx-001") is False
+    assert codec.resolve_trusted_context(trusted_request(), future) is future
+    assert codec.is_handle_valid(future, "ctx-001") is True
+
+
+def test_an_authority_check_cannot_be_made_against_a_floating_clock() -> None:
+    context = expiring_context("2026-08-04T12:00:00Z")
+    naive = datetime(2026, 8, 4, 12, 0, 0)  # noqa: DTZ001 -- the refusal under test
+
+    for check in (
+        lambda: codec.resolve_trusted_context(trusted_request(), context, now=naive),
+        lambda: codec.is_handle_valid(context, "ctx-001", now=naive),
+    ):
+        with pytest.raises(
+            codec.HostAuthorityError, match="time-zone-aware instant"
+        ):
+            check()
+
+
+@pytest.mark.parametrize("expires_at", ["tomorrow", "2026-08-04", 1754308800])
+def test_a_malformed_resolver_expiry_is_refused_rather_than_read_as_open_ended(
+    expires_at: object,
+) -> None:
+    context = replace(
+        expiring_context(None),
+        expires_at=expires_at,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(codec.HostAuthorityError, match="invalid trusted record"):
+        codec.resolve_trusted_context(trusted_request(), context, now=CHECK_TIME)
+    with pytest.raises(codec.HostAuthorityError, match="invalid trusted record"):
+        codec.is_handle_valid(context, "ctx-001", now=CHECK_TIME)
+
+
+def test_expiry_is_an_authority_rule_and_not_a_decoding_rule() -> None:
+    document = dict(load("valid/shell-context.json"))
+    document["expiresAt"] = "2020-01-01T00:00:00Z"
+
+    decoded = codec.decode_shell_context(document)
+
+    assert decoded.expires_at == "2020-01-01T00:00:00Z"
+    assert codec.encode_shell_context(decoded) == document

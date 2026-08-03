@@ -843,20 +843,50 @@ def _member_findings(
     depth: int,
     state: _ScanState,
 ) -> list[PackageFinding]:
-    archive_kind = _archive_kind(path, data)
-    if archive_kind is not None:
-        if depth >= MAX_ARCHIVE_DEPTH:
-            return [
-                _finding(
-                    "incomplete_inventory",
-                    location,
-                    "nested archive depth bound exceeded",
-                )
-            ]
-        if archive_kind == "zip":
-            return _nested_zip_findings(location, data, depth + 1, state)
-        return _nested_tar_findings(location, data, depth + 1, state)
+    """Return every finding in one member's bytes, container or not.
 
+    A recognized container is scanned *both* ways, because decomposing it does
+    not read all of it. A ZIP comment, whatever follows the end-of-central-
+    directory record and a tar's trailing padding belong to no member, so member
+    scanning never reaches them -- and a key or a test-driver symbol parks there
+    as readily as inside a file. The container's own bytes therefore get the
+    same raw-byte scan every other member gets, on top of the recursive scan.
+
+    Its own bytes were already reserved by the caller, so scanning them again
+    costs no further budget and every existing bound still applies. A detector
+    that already fired on a member of this container is not reported a second
+    time for the container that holds it: the member location is the more
+    precise one, and the container adds nothing the package was not already
+    refused for.
+    """
+    archive_kind = _archive_kind(path, data)
+    if archive_kind is None:
+        return _raw_byte_findings(location, data)
+
+    container = _raw_byte_findings(location, data)
+    if depth >= MAX_ARCHIVE_DEPTH:
+        findings = [
+            _finding(
+                "incomplete_inventory",
+                location,
+                "nested archive depth bound exceeded",
+            )
+        ]
+    elif archive_kind == "zip":
+        findings = _nested_zip_findings(location, data, depth + 1, state)
+    else:
+        findings = _nested_tar_findings(location, data, depth + 1, state)
+    reported = {(finding.code, finding.detector) for finding in findings}
+    findings.extend(
+        finding
+        for finding in container
+        if (finding.code, finding.detector) not in reported
+    )
+    return findings
+
+
+def _raw_byte_findings(location: str, data: bytes) -> list[PackageFinding]:
+    """Return the development controls and likely secrets present in raw bytes."""
     findings: list[PackageFinding] = []
     haystack = data.lower()
     for record, spellings in DEVELOPMENT_CONTROL_MARKERS.items():
