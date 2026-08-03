@@ -67,25 +67,27 @@ TRIGGERS.update(
     {
         "omnivia_apply_projection_activation",
         "omnivia_guard_projection_ledger_active_pointer_update",
+        "omnivia_guard_projection_ledger_identity_insert",
     }
 )
 SCHEMA_SQL_SHA256 = {
     "omnivia_apply_projection_activation": "64c9f5a56f26cd5ced352a45ff50ed24d7cb04f3e85c26ea9479cd5e4ef2e57f",
     "omnivia_guard_projection_activations_delete": "0573f9e0ecd794ebcbd348f87e5728f85e96bd8aa6cb752d05e5c60fe279b03a",
-    "omnivia_guard_projection_activations_insert": "c89115c62a1657ff5b2eaea0b7fef9667f07744404d73607438537e8daddbb9f",
+    "omnivia_guard_projection_activations_insert": "5542b3cb4310371d267336ff28aaf1925351839dd0b567edf77a9f92cc47dffb",
     "omnivia_guard_projection_activations_update": "b1fc98488b99710680fd79059fa56f8ba66e91ea184a3e3fe84a295e156a3e91",
     "omnivia_guard_projection_ledger_active_pointer_update": "81746d218464c0447c3f62ebb30357ee7d83317f50606b5866672385ac6865ab",
+    "omnivia_guard_projection_ledger_identity_insert": "6749cd4628e8f9391b6b51d18c9eef76c3b2967ccf4d3d430052ea39a0369774",
     "omnivia_guard_projection_record_failures_delete": "e982c3d0342fdf78e23dfd9a2c7c6551f0239c03db4f248b3ce75fd1ac2a3e31",
-    "omnivia_guard_projection_record_failures_insert": "0224174872cdc8752fd955a6fda7cb4dcd5f83fc17e2b13a1f88f06f39824444",
+    "omnivia_guard_projection_record_failures_insert": "2600c39b61e81e49a1b4cc6215a2786fbe3847a3ced508ac1abbd14d5a78b12d",
     "omnivia_guard_projection_record_failures_update": "11fe3647bafde8811964a7b0e11388564cfb2801b66d2130dc8f0b42640fcc1b",
     "omnivia_guard_projection_run_checkpoints_delete": "6634e17e52f59ea99ad78eaca8ea850649f3291a783eb668259ac603731073f0",
-    "omnivia_guard_projection_run_checkpoints_insert": "ad0414dc69924570d7d17115a3b3857e506af4ca72d825e17ea7daa1b3e9c8e3",
+    "omnivia_guard_projection_run_checkpoints_insert": "3a0f927cf2cfbbfaceb6c6581806cc8efca1fcd04693b7b93942e58822b12cca",
     "omnivia_guard_projection_run_checkpoints_update": "e45dfdf043e41f8095be73d9745b717af59ce730b6c887d1eb6995d86eb824d3",
     "omnivia_guard_projection_runs_delete": "529313ec2746cf8d9c5636829db093f39ef0a2e204431d93115cd37815e7b498",
-    "omnivia_guard_projection_runs_insert": "65d26ec78d7d9f8dfa453004f8224fc203870a1e53817ec68de42b8193671703",
+    "omnivia_guard_projection_runs_insert": "92a089814777c1307efab8ea2aa8bdd85afbe627a9ba95bafdcb5a4a1696ad39",
     "omnivia_guard_projection_runs_update": "f339e00c200bc1acfe264d2e8dc1519589b6fd850d1e3832c1a4b17d15b1de1e",
     "omnivia_guard_projection_validations_delete": "ea203cc5b5270583702c80866da09f88a37c1749cd43cca47e89e91cde041c7a",
-    "omnivia_guard_projection_validations_insert": "1b45faf94c745ceed1b4bf4454fbd9df080c7d9bf6a9352e6cec694215b6cb39",
+    "omnivia_guard_projection_validations_insert": "7512f549a34fe94714c0b206080b8c833f79ab760b7a86fee73e722c3a8d3bf7",
     "omnivia_guard_projection_validations_update": "34d4ad4d5ec7489688d89c4c90b0f5e014f3e8812aabc700a5c40e98e84d618a",
     "omnivia_idx_projection_activations_history": "3b1f81fc167d733b227ff7fbde7f8364d4f04850040c7c1a77c50aa0b6f36549",
     "omnivia_idx_projection_checkpoints_latest": "1de8f61ea0551606364789a7165403a819d06a0838a7dabfc0b844d102a4ecaf",
@@ -1496,6 +1498,135 @@ def test_m5_16_all_tables_refuse_same_value_update_and_delete(
             )
         with guarded(owned), pytest.raises(sqlite3.IntegrityError):
             owned.connection.execute(f"DELETE FROM {table} WHERE {where}")
+
+
+@pytest.mark.parametrize("verb", ["INSERT OR REPLACE INTO", "REPLACE INTO"])
+@pytest.mark.parametrize(
+    "table",
+    [
+        "omnivia_projection_runs",
+        "omnivia_projection_run_checkpoints",
+        "omnivia_projection_record_failures",
+        "omnivia_projection_validations",
+        "omnivia_projection_activations",
+        "omnivia_projection_ledger",
+    ],
+)
+def test_m5_16a_all_durable_identities_refuse_replace_algorithms(
+    owned: m2.Owned, table: str, verb: str
+) -> None:
+    assert owned.connection.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+    start_run(owned)
+    with guarded(owned):
+        insert(
+            owned.connection,
+            "omnivia_projection_run_checkpoints",
+            checkpoint_row(),
+        )
+        insert(owned.connection, "omnivia_projection_record_failures", failure_row())
+    begin_validation(owned)
+    validate(owned)
+    finish_success(owned)
+    activate(owned)
+
+    columns = [
+        str(row[1])
+        for row in owned.connection.execute(f'PRAGMA table_xinfo("{table}")')
+        if int(row[6]) == 0
+    ]
+    quoted = ", ".join(f'"{column}"' for column in columns)
+    before = owned.connection.execute(f'SELECT {quoted} FROM "{table}"').fetchone()
+    assert before is not None
+    placeholders = ", ".join("?" for _ in columns)
+    with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="identity"):
+        owned.connection.execute(
+            f'{verb} "{table}" ({quoted}) VALUES ({placeholders})', before
+        )
+    assert (
+        owned.connection.execute(f'SELECT {quoted} FROM "{table}"').fetchone() == before
+    )
+
+
+def test_m5_16b_replace_cannot_turn_rejected_validation_into_authority(
+    owned: m2.Owned,
+) -> None:
+    assert owned.connection.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+    start_run(owned)
+    begin_validation(owned)
+    validate(owned, accepted=0)
+    rejected = owned.connection.execute(
+        "SELECT * FROM omnivia_projection_validations WHERE run_id = 'run-1'"
+    ).fetchone()
+    assert rejected is not None and rejected[4] == 0
+    accepted = list(rejected)
+    accepted[4] = 1
+    columns = [
+        str(row[1])
+        for row in owned.connection.execute(
+            "PRAGMA table_xinfo(omnivia_projection_validations)"
+        )
+        if int(row[6]) == 0
+    ]
+    quoted = ", ".join(f'"{column}"' for column in columns)
+    placeholders = ", ".join("?" for _ in columns)
+    with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="identity"):
+        owned.connection.execute(
+            "INSERT OR REPLACE INTO omnivia_projection_validations "
+            f"({quoted}) VALUES ({placeholders})",
+            accepted,
+        )
+    assert owned.connection.execute(
+        "SELECT accepted FROM omnivia_projection_validations WHERE run_id = 'run-1'"
+    ).fetchone() == (0,)
+    with pytest.raises(sqlite3.IntegrityError, match="succeeded"):
+        finish_success(owned)
+    with pytest.raises(sqlite3.IntegrityError, match="succeeded"):
+        activate(owned)
+    assert owned.connection.execute(
+        "SELECT active_run_id, active_epoch FROM omnivia_projection_ledger"
+    ).fetchone() == (None, None)
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_projection_activations"
+    ).fetchone() == (0,)
+
+
+def test_m5_16c_replace_cannot_reset_failed_run_history(owned: m2.Owned) -> None:
+    assert owned.connection.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+    start_run(owned)
+    with guarded(owned):
+        owned.connection.execute(
+            "UPDATE omnivia_projection_runs SET state = 'failed', finished_at_us = ?, "
+            "error_json = '{\"code\":\"first\"}' WHERE run_id = 'run-1'",
+            (BASE_US + 1,),
+        )
+    columns = [
+        str(row[1])
+        for row in owned.connection.execute(
+            "PRAGMA table_xinfo(omnivia_projection_runs)"
+        )
+        if int(row[6]) == 0
+    ]
+    quoted = ", ".join(f'"{column}"' for column in columns)
+    before = owned.connection.execute(
+        f"SELECT {quoted} FROM omnivia_projection_runs WHERE run_id = 'run-1'"
+    ).fetchone()
+    assert before is not None
+    rewritten = run_row()
+    rewritten["started_at_us"] = BASE_US + 10
+    rewritten["source_checkpoint"] = "source:rewritten"
+    placeholders = ", ".join("?" for _ in columns)
+    with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="identity"):
+        owned.connection.execute(
+            "INSERT OR REPLACE INTO omnivia_projection_runs "
+            f"({quoted}) VALUES ({placeholders})",
+            tuple(rewritten[column] for column in columns),
+        )
+    assert (
+        owned.connection.execute(
+            f"SELECT {quoted} FROM omnivia_projection_runs WHERE run_id = 'run-1'"
+        ).fetchone()
+        == before
+    )
 
 
 @pytest.mark.parametrize("table", sorted(TABLES))
