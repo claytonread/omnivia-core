@@ -1,0 +1,8 @@
+{
+  "contractVersion": "1.0.0",
+  "requestId": "req-invalid-namespace",
+  "namespace": "payments",
+  "operation": "charge",
+  "contextId": "ctx-001",
+  "payload": {}
+}

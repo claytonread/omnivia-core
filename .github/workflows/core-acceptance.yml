@@ -114,6 +114,9 @@ jobs:
           OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
         run: python scripts/check-application-contracts.py
 
+      - name: Check generated Host Contract
+        run: python scripts/generate-host-contract.py --check
+
       - name: Run application contract tests
         env:
           OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}

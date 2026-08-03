@@ -1,0 +1,15 @@
+{
+  "bindingId": "binding-production-1",
+  "bindingVersion": 1,
+  "releaseId": "release-documents-1",
+  "environmentId": "environment-production",
+  "workspaceId": "workspace-acme",
+  "target": "cloud",
+  "credentialRefs": ["credential.documents.storage"],
+  "integrationRefs": ["integration.documents.index"],
+  "storageRefs": ["storage.documents.primary"],
+  "domainRefs": ["domain.documents.example"],
+  "dataResidencyPolicyRef": "policy.residency.au",
+  "createdAt": "2026-08-03T00:00:00Z",
+  "actorRef": "principal-deployer"
+}

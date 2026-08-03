@@ -1,0 +1,12 @@
+{
+  "scenarioVersion": "1.0.0",
+  "scenarioId": "scenario-documents-happy-path",
+  "principalFixtureId": "fixture-principal-editor",
+  "workspaceFixtureId": "fixture-workspace-acme",
+  "moduleFixtureIds": ["fixture-module-documents"],
+  "appFixtureIds": [],
+  "permissionFixtureId": "fixture-permissions-editor",
+  "healthFixtureId": "fixture-health-healthy",
+  "dataFixtureIds": ["fixture-document-001"],
+  "assertions": [{ "kind": "route_visible", "targetId": "documents.home" }]
+}

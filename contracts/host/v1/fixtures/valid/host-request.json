@@ -1,0 +1,8 @@
+{
+  "contractVersion": "1.0.0",
+  "requestId": "req-001",
+  "namespace": "workspace",
+  "operation": "get_active",
+  "contextId": "ctx-001",
+  "payload": {}
+}

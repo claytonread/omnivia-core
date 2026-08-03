@@ -1,0 +1,8 @@
+{
+  "category": "permission_denied",
+  "capabilityId": "files.export",
+  "safeReason": "You do not have permission to export this Workspace content.",
+  "approvalAvailable": false,
+  "correlationId": "corr-001",
+  "auditRef": "audit-001"
+}

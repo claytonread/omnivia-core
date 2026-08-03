@@ -1,0 +1,13 @@
+{
+  "contractVersion": "1.0.0",
+  "requestId": "req-invalid-001",
+  "namespace": "data",
+  "operation": "mutate",
+  "contextId": "ctx-001",
+  "payload": {
+    "workspaceRef": "workspace-other",
+    "principalRef": "principal-admin",
+    "record": { "id": "record-001" }
+  },
+  "expectedFailure": "payload authority fields ignored; trusted context mismatch rejects request"
+}

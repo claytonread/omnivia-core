@@ -13,12 +13,18 @@ requires-python = ">=3.11"
 packages = ["src/omnivia_core"]
 
 # `contracts/application/v1/{schemas,fixtures}` stay the only checked-in
-# canonical copy (ADR-038). This force-includes them into the built wheel
-# under an importable resource path alongside the v1 package's Python
-# modules, without duplicating them anywhere else in the source tree.
+# canonical copy (ADR-038), and `contracts/host/v1/{schemas,fixtures}` the only
+# checked-in copy of the exact Host Contract v1.0.0 bytes DOC-004 section AA
+# incorporates. This force-includes them into the built wheel under importable
+# resource paths alongside each version package's Python modules, without
+# duplicating them anywhere else in the source tree. The Host Contract fixtures
+# keep their governed category directories (valid, invalid, denial, degradation,
+# migration), which the force-include preserves.
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/application/v1/schemas" = "omnivia_core/contracts/v1/resources/schemas"
 "contracts/application/v1/fixtures" = "omnivia_core/contracts/v1/resources/fixtures"
+"contracts/host/v1/schemas" = "omnivia_core/host_contract/v1/resources/schemas"
+"contracts/host/v1/fixtures" = "omnivia_core/host_contract/v1/resources/fixtures"
 
 [tool.pytest.ini_options]
 testpaths = ["services", "tests"]
@@ -30,4 +36,19 @@ pythonpath = ["src"]
 # The `format` extra pulls in `rfc3339-validator` so `jsonschema.FormatChecker`
 # enforces true RFC 3339 calendar validity, not just Timestamp's lexical
 # pattern; it stays conformance-only, never a runtime dependency.
-dev = ["jsonschema[format]>=4.25,<5", "types-jsonschema>=4.25,<5"]
+#
+# `build` and `hatchling` are here because collected tests build a wheel from
+# this checkout: `tests/host_contract/test_host_wheel_resources.py` proves the
+# packaged Host Contract resources import from a real isolated install, and it
+# builds with isolation disabled, so the backend has to be in the environment
+# already. Without them those tests fail at setup for a missing build backend --
+# an environment gap that reads exactly like a product defect. The CI workflow
+# installs both explicitly for `scripts/check-package-builds.sh`; declaring them
+# here makes a plain `uv sync`/`pip install -e ".[dev]"` environment able to run
+# the suite too. Both stay development-only: runtime dependencies remain empty.
+dev = [
+    "build>=1.2,<2",
+    "hatchling>=1.26,<2",
+    "jsonschema[format]>=4.25,<5",
+    "types-jsonschema>=4.25,<5",
+]
