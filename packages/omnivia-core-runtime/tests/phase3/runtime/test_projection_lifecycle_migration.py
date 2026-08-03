@@ -83,7 +83,7 @@ SCHEMA_SQL_SHA256 = {
     "omnivia_guard_projection_run_checkpoints_update": "e45dfdf043e41f8095be73d9745b717af59ce730b6c887d1eb6995d86eb824d3",
     "omnivia_guard_projection_runs_delete": "529313ec2746cf8d9c5636829db093f39ef0a2e204431d93115cd37815e7b498",
     "omnivia_guard_projection_runs_insert": "65d26ec78d7d9f8dfa453004f8224fc203870a1e53817ec68de42b8193671703",
-    "omnivia_guard_projection_runs_update": "66e0588bc81724e3ca3194bf8a1039755fd72e7f40773677093da2f43602e8fe",
+    "omnivia_guard_projection_runs_update": "576dfbc1bcc4d2caa6b93886ae9f8cd2856f695d5230c16fd8fedeb43360281c",
     "omnivia_guard_projection_validations_delete": "ea203cc5b5270583702c80866da09f88a37c1749cd43cca47e89e91cde041c7a",
     "omnivia_guard_projection_validations_insert": "1b45faf94c745ceed1b4bf4454fbd9df080c7d9bf6a9352e6cec694215b6cb39",
     "omnivia_guard_projection_validations_update": "34d4ad4d5ec7489688d89c4c90b0f5e014f3e8812aabc700a5c40e98e84d618a",
@@ -891,6 +891,71 @@ def test_m5_04c_ledger_pointer_scalar_constraints_are_independent(
         owned.connection.execute(trigger_sql)
 
 
+@pytest.mark.parametrize(
+    ("surface", "byte_limit"),
+    [
+        ("error_json", 65_536),
+        ("cursor_json", 1_048_576),
+        ("report_json", 1_048_576),
+    ],
+)
+@pytest.mark.parametrize("over_limit", [False, True])
+def test_m5_04d_json_byte_boundaries_have_positive_and_negative_controls(
+    owned: m2.Owned, surface: str, byte_limit: int, over_limit: bool
+) -> None:
+    target_size = byte_limit + int(over_limit)
+    value = '"' + ("x" * (target_size - 2)) + '"'
+    assert len(value.encode()) == target_size
+
+    start_run(owned)
+    if surface == "report_json":
+        begin_validation(owned)
+
+    def write() -> None:
+        if surface == "error_json":
+            owned.connection.execute(
+                "UPDATE omnivia_projection_runs SET state = 'failed', "
+                "finished_at_us = ?, error_json = ? WHERE run_id = 'run-1'",
+                (BASE_US + 1, value),
+            )
+        elif surface == "cursor_json":
+            row = checkpoint_row()
+            row["cursor_json"] = value
+            insert(owned.connection, "omnivia_projection_run_checkpoints", row)
+        else:
+            row = {
+                "workspace_id": WORKSPACE_ID,
+                "projection_id": "projection-1",
+                "run_id": "run-1",
+                "validated_at_us": BASE_US + 3,
+                "accepted": 1,
+                "input_record_count": 2,
+                "output_record_count": 2,
+                "build_digest": DIGEST_A,
+                "report_json": value,
+                "validation_digest": DIGEST_B,
+            }
+            insert(owned.connection, "omnivia_projection_validations", row)
+
+    if over_limit:
+        with guarded(owned), pytest.raises(sqlite3.IntegrityError):
+            write()
+    else:
+        with guarded(owned):
+            write()
+        table, field = {
+            "error_json": ("omnivia_projection_runs", "error_json"),
+            "cursor_json": (
+                "omnivia_projection_run_checkpoints",
+                "cursor_json",
+            ),
+            "report_json": ("omnivia_projection_validations", "report_json"),
+        }[surface]
+        assert owned.connection.execute(
+            f"SELECT length(CAST({field} AS BLOB)) FROM {table}"
+        ).fetchone() == (byte_limit,)
+
+
 def test_m5_05_run_insert_shape_and_lifecycle(owned: m2.Owned) -> None:
     start_run(owned)
     with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="start"):
@@ -1136,6 +1201,38 @@ def test_m5_11b_validation_start_time_is_immutable_at_closeout(
         )
 
 
+@pytest.mark.parametrize("accepted", [0, 1])
+@pytest.mark.parametrize("closeout_delta", [-1, 0, 1])
+def test_m5_11c_failed_closeout_follows_validation_decision(
+    owned: m2.Owned, accepted: int, closeout_delta: int
+) -> None:
+    start_run(owned)
+    begin_validation(owned, at=BASE_US + 2)
+    validate(owned, accepted=accepted, at=BASE_US + 3)
+    statement = (
+        "UPDATE omnivia_projection_runs SET state = 'failed', finished_at_us = ?, "
+        "error_json = '{\"code\":\"validation\"}' WHERE run_id = 'run-1'"
+    )
+    parameters = (BASE_US + 3 + closeout_delta,)
+    if closeout_delta < 0:
+        with (
+            guarded(owned),
+            pytest.raises(sqlite3.IntegrityError, match="validation decision"),
+        ):
+            owned.connection.execute(statement, parameters)
+        assert owned.connection.execute(
+            "SELECT state, finished_at_us FROM omnivia_projection_runs "
+            "WHERE run_id = 'run-1'"
+        ).fetchone() == ("validating", None)
+    else:
+        with guarded(owned):
+            owned.connection.execute(statement, parameters)
+        assert owned.connection.execute(
+            "SELECT state, finished_at_us FROM omnivia_projection_runs "
+            "WHERE run_id = 'run-1'"
+        ).fetchone() == ("failed", BASE_US + 3 + closeout_delta)
+
+
 @pytest.mark.parametrize(
     "tamper",
     [
@@ -1144,7 +1241,7 @@ def test_m5_11b_validation_start_time_is_immutable_at_closeout(
         "count_mismatch",
     ],
 )
-def test_m5_11c_activation_revalidates_persisted_history(
+def test_m5_11d_activation_revalidates_persisted_history(
     owned: m2.Owned, tamper: str
 ) -> None:
     start_run(owned)
@@ -1781,9 +1878,40 @@ def test_m5_21_projection_loss_rebuild_oracle_is_deterministic(
         return checkpoint, digest, len(facts), len(projected_rows), projected_rows
 
     derived = tmp_path / "disposable-projection.sqlite"
-    checkpoint, digest, input_count, output_count, rows = rebuild(
-        owned.connection, derived
+    baseline = rebuild(owned.connection, derived)
+    with guarded(owned):
+        m3.insert(
+            owned.connection,
+            "omnivia_application_audit_events",
+            m3.audit_row("audit-3"),
+        )
+    m3.seed_human_candidate(
+        owned,
+        record_id="record-2",
+        assembly_id="assembly-2",
+        version_id="version-2",
+        audit_ref="audit-3",
     )
+    m3.seed_accepted_version(
+        owned,
+        record_id="record-2",
+        candidate_assembly="assembly-2",
+        candidate_version="version-2",
+        assembly_id="assembly-accepted-2",
+        version_id="version-accepted-2",
+        audit_ref="audit-3",
+    )
+    sensitivity_derived = tmp_path / "sensitivity-projection.sqlite"
+    sensitive = rebuild(owned.connection, sensitivity_derived)
+    assert sensitive[0] != baseline[0]
+    assert sensitive[1] != baseline[1]
+    assert sensitive[2] > baseline[2]
+    assert sensitive[3] > baseline[3]
+    assert sensitive[4] != baseline[4]
+    derived.unlink()
+    sensitivity_derived.replace(derived)
+    checkpoint, digest, input_count, output_count, rows = sensitive
+
     start_run(owned, checkpoint=checkpoint)
     begin_validation(owned)
     validate(
