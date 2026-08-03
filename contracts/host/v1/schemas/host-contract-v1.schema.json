@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:omnivia:host-contract:1.0.0",
+  "title": "OmniVia Host Contract v1 proposal",
+  "type": "object",
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "contractVersion": { "type": "string", "pattern": "^1\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "target": { "enum": ["desktop", "cloud", "conformance"] },
+    "namespace": { "enum": ["identity", "organisation", "workspace", "data", "knowledge", "files", "workflows", "agents", "integrations", "credentials", "notifications", "approvals", "audit", "evidence", "entitlements", "navigation", "diagnostics"] },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "capabilityId", "target"],
+      "properties": {
+        "state": { "enum": ["available", "unavailable_on_target", "available_after_configuration", "available_through_companion", "permission_denied", "entitlement_unavailable", "temporarily_unhealthy"] },
+        "capabilityId": { "$ref": "#/$defs/identifier" },
+        "target": { "$ref": "#/$defs/target" },
+        "safeReason": { "type": "string", "maxLength": 500 },
+        "companionId": { "$ref": "#/$defs/identifier" },
+        "retryAfterSeconds": { "type": "integer", "minimum": 0 },
+        "remediation": { "$ref": "#/$defs/remediation" }
+      }
+    },
+    "remediation": {
+      "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["sign_in", "request_membership", "request_permission", "request_approval", "manage_entitlement", "configure", "install_companion", "retry_later", "contact_administrator", "none"] },
+        "routeId": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "denial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "capabilityId", "safeReason", "approvalAvailable", "correlationId"],
+      "properties": {
+        "category": { "enum": ["authentication_required", "membership_required", "permission_denied", "approval_required", "entitlement_required", "unavailable_on_target", "configuration_required", "companion_required", "blocked_by_policy", "temporarily_unhealthy"] },
+        "capabilityId": { "$ref": "#/$defs/identifier" },
+        "safeReason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "approvalAvailable": { "type": "boolean" },
+        "correlationId": { "$ref": "#/$defs/identifier" },
+        "auditRef": { "$ref": "#/$defs/identifier" }
+        ,"remediation": { "$ref": "#/$defs/remediation" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "requestId", "outcome", "correlationId"],
+      "properties": {
+        "contractVersion": { "$ref": "#/$defs/contractVersion" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "outcome": { "enum": ["success", "denied", "unavailable", "failed"] },
+        "data": { "type": "object" },
+        "availability": { "$ref": "#/$defs/availability" },
+        "denial": { "$ref": "#/$defs/denial" },
+        "failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "safeReason"],
+          "properties": {
+            "code": { "$ref": "#/$defs/identifier" },
+            "safeReason": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        },
+        "correlationId": { "$ref": "#/$defs/identifier" },
+        "auditRef": { "$ref": "#/$defs/identifier" }
+      },
+      "allOf": [
+        { "if": { "properties": { "outcome": { "const": "success" } } }, "then": { "required": ["data"], "not": { "anyOf": [{ "required": ["denial"] }, { "required": ["failure"] }] } } },
+        { "if": { "properties": { "outcome": { "const": "denied" } } }, "then": { "required": ["denial"], "not": { "anyOf": [{ "required": ["data"] }, { "required": ["availability"] }, { "required": ["failure"] }] } } },
+        { "if": { "properties": { "outcome": { "const": "unavailable" } } }, "then": { "required": ["availability"], "not": { "anyOf": [{ "required": ["data"] }, { "required": ["denial"] }, { "required": ["failure"] }] } } },
+        { "if": { "properties": { "outcome": { "const": "failed" } } }, "then": { "required": ["failure"], "not": { "anyOf": [{ "required": ["data"] }, { "required": ["availability"] }, { "required": ["denial"] }] } } }
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["contractVersion", "requestId", "namespace", "operation", "contextId", "payload"],
+      "properties": {
+        "contractVersion": { "$ref": "#/$defs/contractVersion" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "namespace": { "$ref": "#/$defs/namespace" },
+        "operation": { "$ref": "#/$defs/identifier" },
+        "contextId": { "$ref": "#/$defs/identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/identifier" },
+        "expectedStateVersion": { "type": "integer", "minimum": 0 },
+        "payload": { "type": "object" }
+      }
+    },
+    "shellContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contextId", "contextVersion", "principalRef", "organisationRef", "workspaceRef", "entitlementSummaryRef", "permissionSummaryRef", "runtimeId", "environmentId", "target", "issuedAt"],
+      "properties": {
+        "contextId": { "$ref": "#/$defs/identifier" },
+        "contextVersion": { "type": "integer", "minimum": 1 },
+        "principalRef": { "$ref": "#/$defs/identifier" },
+        "organisationRef": { "$ref": "#/$defs/identifier" },
+        "workspaceRef": { "$ref": "#/$defs/identifier" },
+        "entitlementSummaryRef": { "$ref": "#/$defs/identifier" },
+        "permissionSummaryRef": { "$ref": "#/$defs/identifier" },
+        "runtimeId": { "$ref": "#/$defs/identifier" },
+        "environmentId": { "$ref": "#/$defs/identifier" },
+        "target": { "$ref": "#/$defs/target" },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "compatibilityResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "target", "requiredMissing", "optionalMissing", "policyBlocks", "requiredConfiguration", "companions", "safeReasons"],
+      "properties": {
+        "status": { "enum": ["compatible", "compatible_with_degradation", "compatible_after_configuration", "requires_companion", "incompatible", "blocked_by_policy"] },
+        "target": { "$ref": "#/$defs/target" },
+        "requiredMissing": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "optionalMissing": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "policyBlocks": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "requiredConfiguration": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "companions": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+        "safeReasons": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "moduleContributionDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declarationVersion", "moduleId", "moduleReleaseId", "contributions", "requiredEntitlements"],
+      "properties": {
+        "declarationVersion": { "$ref": "#/$defs/contractVersion" },
+        "moduleId": { "$ref": "#/$defs/identifier" },
+        "moduleReleaseId": { "$ref": "#/$defs/identifier" },
+        "contributions": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["contributionId", "kind", "targetId", "requiredCapabilities", "optionalCapabilities", "payloadSchemaId"],
+            "properties": {
+              "contributionId": { "$ref": "#/$defs/identifier" },
+              "kind": { "enum": ["route", "navigation", "command", "settings_section", "context_item_type", "workflow_component", "runtime_adapter", "diagnostic", "entitlement"] },
+              "targetId": { "$ref": "#/$defs/identifier" },
+              "priority": { "type": "integer" },
+              "requiredCapabilities": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+              "optionalCapabilities": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+              "payloadSchemaId": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        },
+        "requiredEntitlements": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } }
+      }
+    },
+    "releasePackageIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["appId", "releaseId", "version", "manifestSha256", "payloadSha256", "publisherId", "signingKeyId", "targetEntries"],
+      "properties": {
+        "appId": { "$ref": "#/$defs/identifier" }, "releaseId": { "$ref": "#/$defs/identifier" },
+        "version": { "$ref": "#/$defs/semver" }, "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "payloadSha256": { "$ref": "#/$defs/sha256" }, "publisherId": { "$ref": "#/$defs/identifier" },
+        "signingKeyId": { "$ref": "#/$defs/identifier" },
+        "targetEntries": { "type": "array", "minItems": 1, "items": {
+          "type": "object", "additionalProperties": false, "required": ["target", "entry"],
+          "properties": { "target": { "$ref": "#/$defs/target" }, "entry": { "type": "string", "minLength": 1, "maxLength": 500 } }
+        } }
+      }
+    },
+    "promotionRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promotionId", "releaseId", "sourceRegistry", "targetRegistry", "verifiedManifestSha256", "environmentBindingId", "promotedAt", "actorRef", "result", "auditRef"],
+      "properties": {
+        "promotionId": { "$ref": "#/$defs/identifier" }, "releaseId": { "$ref": "#/$defs/identifier" },
+        "sourceRegistry": { "$ref": "#/$defs/identifier" }, "targetRegistry": { "$ref": "#/$defs/identifier" },
+        "verifiedManifestSha256": { "$ref": "#/$defs/sha256" }, "environmentBindingId": { "$ref": "#/$defs/identifier" },
+        "promotedAt": { "type": "string", "format": "date-time" }, "actorRef": { "$ref": "#/$defs/identifier" },
+        "result": { "enum": ["promoted", "rejected"] }, "auditRef": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "rollbackRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rollbackId", "failedPromotionId", "restoredReleaseId", "reasonCode", "performedAt", "actorRef", "auditRef"],
+      "properties": {
+        "rollbackId": { "$ref": "#/$defs/identifier" }, "failedPromotionId": { "$ref": "#/$defs/identifier" },
+        "restoredReleaseId": { "$ref": "#/$defs/identifier" }, "reasonCode": { "$ref": "#/$defs/identifier" },
+        "performedAt": { "type": "string", "format": "date-time" }, "actorRef": { "$ref": "#/$defs/identifier" },
+        "auditRef": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "environmentBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["bindingId", "bindingVersion", "releaseId", "environmentId", "workspaceId", "target", "credentialRefs", "integrationRefs", "storageRefs", "domainRefs", "createdAt", "actorRef"],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/identifier" }, "bindingVersion": { "type": "integer", "minimum": 1 },
+        "releaseId": { "$ref": "#/$defs/identifier" }, "environmentId": { "$ref": "#/$defs/identifier" },
+        "workspaceId": { "$ref": "#/$defs/identifier" }, "target": { "$ref": "#/$defs/target" },
+        "credentialRefs": { "$ref": "#/$defs/referenceArray" }, "integrationRefs": { "$ref": "#/$defs/referenceArray" },
+        "storageRefs": { "$ref": "#/$defs/referenceArray" }, "domainRefs": { "$ref": "#/$defs/referenceArray" },
+        "dataResidencyPolicyRef": { "$ref": "#/$defs/identifier" }, "runtimeLimitsRef": { "$ref": "#/$defs/identifier" },
+        "executionPlacementRef": { "$ref": "#/$defs/identifier" }, "createdAt": { "type": "string", "format": "date-time" },
+        "actorRef": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "referenceArray": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/identifier" } },
+    "developmentProfile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["profileVersion", "profileId", "sourceMounts", "target", "initialRoute", "scenarioId", "workspaceFixtureId", "declaredCapabilities", "isolationId", "ports", "userDataDirectoryRef"],
+      "properties": {
+        "profileVersion": { "$ref": "#/$defs/contractVersion" }, "profileId": { "$ref": "#/$defs/identifier" },
+        "sourceMounts": { "type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["moduleId", "pathRef"],
+          "properties": { "moduleId": { "$ref": "#/$defs/identifier" }, "pathRef": { "$ref": "#/$defs/identifier" } }
+        } }, "target": { "enum": ["desktop", "conformance"] },
+        "initialRoute": { "$ref": "#/$defs/identifier" }, "scenarioId": { "$ref": "#/$defs/identifier" },
+        "workspaceFixtureId": { "$ref": "#/$defs/identifier" }, "declaredCapabilities": { "$ref": "#/$defs/referenceArray" },
+        "isolationId": { "$ref": "#/$defs/identifier" }, "ports": { "type": "array", "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+        "userDataDirectoryRef": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "shellScenario": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scenarioVersion", "scenarioId", "principalFixtureId", "workspaceFixtureId", "moduleFixtureIds", "appFixtureIds", "permissionFixtureId", "healthFixtureId", "dataFixtureIds", "assertions"],
+      "properties": {
+        "scenarioVersion": { "$ref": "#/$defs/contractVersion" }, "scenarioId": { "$ref": "#/$defs/identifier" },
+        "principalFixtureId": { "$ref": "#/$defs/identifier" }, "workspaceFixtureId": { "$ref": "#/$defs/identifier" },
+        "moduleFixtureIds": { "$ref": "#/$defs/referenceArray" }, "appFixtureIds": { "$ref": "#/$defs/referenceArray" },
+        "permissionFixtureId": { "$ref": "#/$defs/identifier" }, "healthFixtureId": { "$ref": "#/$defs/identifier" },
+        "dataFixtureIds": { "$ref": "#/$defs/referenceArray" }, "assertions": { "type": "array", "items": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "targetId"],
+          "properties": { "kind": { "$ref": "#/$defs/identifier" }, "targetId": { "$ref": "#/$defs/identifier" } }
+        } }
+      }
+    },
+    "testDriverRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["driverVersion", "requestId", "operation", "scenarioId", "payload"],
+      "properties": {
+        "driverVersion": { "$ref": "#/$defs/contractVersion" }, "requestId": { "$ref": "#/$defs/identifier" },
+        "operation": { "enum": ["navigate", "invoke_command", "capture_screenshot", "run_accessibility_check", "capture_trace", "inspect_state"] },
+        "scenarioId": { "$ref": "#/$defs/identifier" }, "payload": { "type": "object" }
+      }
+    },
+    "testDriverResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["driverVersion", "requestId", "outcome", "evidenceRefs", "correlationId"],
+      "properties": {
+        "driverVersion": { "$ref": "#/$defs/contractVersion" }, "requestId": { "$ref": "#/$defs/identifier" },
+        "outcome": { "enum": ["passed", "failed", "unavailable"] },
+        "evidenceRefs": { "$ref": "#/$defs/referenceArray" },
+        "safeReason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "correlationId": { "$ref": "#/$defs/identifier" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/shellContext" },
+    { "$ref": "#/$defs/compatibilityResult" },
+    { "$ref": "#/$defs/availability" },
+    { "$ref": "#/$defs/denial" },
+    { "$ref": "#/$defs/moduleContributionDeclaration" },
+    { "$ref": "#/$defs/releasePackageIdentity" },
+    { "$ref": "#/$defs/promotionRecord" },
+    { "$ref": "#/$defs/rollbackRecord" },
+    { "$ref": "#/$defs/environmentBinding" },
+    { "$ref": "#/$defs/developmentProfile" },
+    { "$ref": "#/$defs/shellScenario" },
+    { "$ref": "#/$defs/testDriverRequest" },
+    { "$ref": "#/$defs/testDriverResult" }
+  ]
+}

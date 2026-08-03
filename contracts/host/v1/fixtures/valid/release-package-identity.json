@@ -1,0 +1,10 @@
+{
+  "appId": "app.documents",
+  "releaseId": "release-documents-1",
+  "version": "1.0.0",
+  "manifestSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "payloadSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "publisherId": "publisher.omnivia",
+  "signingKeyId": "key.release.2026",
+  "targetEntries": [{ "target": "desktop", "entry": "index.html" }]
+}

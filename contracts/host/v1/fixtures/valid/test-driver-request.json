@@ -1,0 +1,7 @@
+{
+  "driverVersion": "1.0.0",
+  "requestId": "driver-request-001",
+  "operation": "navigate",
+  "scenarioId": "scenario-documents-happy-path",
+  "payload": { "routeId": "documents.home" }
+}

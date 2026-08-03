@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1.0.0",
+  "requestId": "req-conflict",
+  "outcome": "denied",
+  "data": {},
+  "denial": {
+    "category": "permission_denied",
+    "capabilityId": "files.write",
+    "safeReason": "Permission is required.",
+    "approvalAvailable": false,
+    "correlationId": "corr-conflict"
+  },
+  "correlationId": "corr-conflict"
+}

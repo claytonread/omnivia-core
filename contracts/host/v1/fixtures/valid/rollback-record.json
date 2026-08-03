@@ -1,0 +1,9 @@
+{
+  "rollbackId": "rollback-001",
+  "failedPromotionId": "promotion-002",
+  "restoredReleaseId": "release-documents-1",
+  "reasonCode": "failed_health_gate",
+  "performedAt": "2026-08-03T00:05:00Z",
+  "actorRef": "principal-release-manager",
+  "auditRef": "audit-rollback-001"
+}

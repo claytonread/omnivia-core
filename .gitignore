@@ -26,6 +26,15 @@ htmlcov/
 *.pem
 *.key
 
+# One governed Host Contract v1 fixture is named for the thing it forbids. It is
+# the approved negative case (DOC-004 section AA) proving an EnvironmentBinding
+# carrying an inline secret is rejected, and its value is the placeholder
+# "forbidden-inline-value", not a credential. Without this exact-path exception
+# the `*secret*` rule above makes the approved bytes untrackable: the working
+# tree passes every check and a fresh clone is missing a fixture. The exception
+# is one path, so `*secret*` still applies everywhere else.
+!contracts/host/v1/fixtures/invalid/environment-binding-inline-secret.json
+
 # Local data
 data/*
 !data/.gitignore

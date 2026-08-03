@@ -293,16 +293,37 @@ def test_core_declares_no_runtime_dependencies_at_all() -> None:
 
 def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() -> None:
     """The wheel's packaged resource set is exact because the force-include maps exactly
-    the two canonical directories (ADR-038) onto the importable resource path.
+    the four canonical directories onto their importable resource paths: the two
+    Application Contract v1 directories (ADR-038) and the two Host Contract v1
+    directories (DOC-004 section AA).
     """
     manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
     force_include = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert force_include == {
         "contracts/application/v1/schemas": "omnivia_core/contracts/v1/resources/schemas",
         "contracts/application/v1/fixtures": "omnivia_core/contracts/v1/resources/fixtures",
+        "contracts/host/v1/schemas": "omnivia_core/host_contract/v1/resources/schemas",
+        "contracts/host/v1/fixtures": "omnivia_core/host_contract/v1/resources/fixtures",
     }
     for source in force_include:
         directory = REPO_ROOT / source
         assert directory.is_dir(), source
-        non_json = sorted(path.name for path in directory.iterdir() if path.suffix != ".json")
+        # Host Contract fixtures keep the governed category directories, so this
+        # walks the tree rather than one level: anything that is not a JSON file
+        # anywhere under a force-included root would still be packaged.
+        non_json = sorted(
+            path.relative_to(directory).as_posix()
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix != ".json"
+        )
         assert non_json == [], f"{source} holds non-JSON file(s) that would be packaged: {non_json}"
+
+
+def test_core_wheel_packages_the_approved_host_contract_resource_count() -> None:
+    """One canonical schema and twenty governed fixtures, no more and no fewer."""
+    schemas = REPO_ROOT / "contracts" / "host" / "v1" / "schemas"
+    fixtures = REPO_ROOT / "contracts" / "host" / "v1" / "fixtures"
+    assert sorted(path.name for path in schemas.rglob("*.json")) == [
+        "host-contract-v1.schema.json"
+    ]
+    assert len(list(fixtures.rglob("*.json"))) == 20
