@@ -492,7 +492,7 @@ def test_python_and_node_versions() -> None:
     node_step = _step(steps, "Set up Node")
     assert _entry(node_step, "uses") == "actions/setup-node@v7"
     node_options = _block(node_step, "with")
-    assert _entry(node_options, "node-version") == '"22"'
+    assert _entry(node_options, "node-version") == '"24"'
     assert _entry(node_options, "cache") == "npm"
     assert _entry(node_options, "cache-dependency-path") == "package-lock.json"
 
