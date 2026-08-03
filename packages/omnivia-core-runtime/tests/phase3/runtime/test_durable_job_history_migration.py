@@ -91,8 +91,12 @@ from omnivia_core_runtime.storage.connection import (
     OpenMode, foreign_key_check, integrity_check, open_database,
 )
 from omnivia_core_runtime.storage.migrations import (
-    apply_pending_migrations, read_workspace_state,
+    apply_pending_migrations, load_migrations, read_workspace_state,
 )
+import omnivia_core_runtime.storage.migrations as migration_module
+
+owned = tuple(migration for migration in load_migrations() if migration.version <= 10)
+migration_module.load_migrations = lambda: owned
 
 path, service, workspace_id = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
@@ -120,7 +124,8 @@ print(json.dumps(result, sort_keys=True))
 def owned(tmp_path: Path) -> Iterator[m2.Owned]:
     path = tmp_path / "workspace.sqlite"
     materialise_phase0_baseline(path)
-    m2.bootstrap_and_migrate(path)
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        m2.bootstrap_and_migrate(path)
     holder = m2.take_ownership(path)
     yield holder
     holder.connection.close()
@@ -243,7 +248,9 @@ def finish_attempt(holder: m2.Owned, state: str, *, finished_at: int) -> None:
 
 
 def test_m4_01_consecutive_lineage_and_predecessor_hashes() -> None:
-    migrations = load_migrations()
+    migrations = [
+        migration for migration in load_migrations() if migration.version <= 10
+    ]
     assert [migration.version for migration in migrations] == list(range(1, 11))
     assert migrations[-1].name == MIGRATION_NAME
     assert {m.version: m.checksum for m in migrations[:-1]} == (
@@ -310,13 +317,14 @@ def test_m4_03_legacy_job_is_preserved_without_synthetic_metadata(
         for table in preserved_tables
     }
     state = m2.read_workspace_state(connection)
-    apply_pending_migrations(
-        connection,
-        mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-        service_instance_id=m2.SERVICE_INSTANCE,
-        fencing_generation=state.fencing_generation,
-        workspace_id=WORKSPACE_ID,
-    )
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        apply_pending_migrations(
+            connection,
+            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+            service_instance_id=m2.SERVICE_INSTANCE,
+            fencing_generation=state.fencing_generation,
+            workspace_id=WORKSPACE_ID,
+        )
     assert connection.execute(
         "SELECT job_type, state, payload_json, created_at, updated_at "
         "FROM omnivia_durable_jobs WHERE job_id = 'legacy-job'"
@@ -1016,7 +1024,10 @@ def test_m4_14_interruption_rolls_back_every_statement(tmp_path: Path) -> None:
         connection = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
         state = m2.read_workspace_state(connection)
         crashing = m2.FailAfterStatement(connection, MIGRATION_STATEMENTS, stop_after)
-        with pytest.raises(m2.MigrationInterrupted):
+        with (
+            m2.migration_catalogue_through(MIGRATION_VERSION),
+            pytest.raises(m2.MigrationInterrupted),
+        ):
             apply_pending_migrations(
                 crashing,
                 mode=OpenMode.EXCLUSIVE_MAINTENANCE,
