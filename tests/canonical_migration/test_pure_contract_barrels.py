@@ -428,6 +428,10 @@ BARRELS: tuple[dict[str, Any], ...] = (
         "incidental_children": {
             "compatibility": "omnivia_core.workspace.compatibility",
             "manifest": "omnivia_core.workspace.manifest",
+            # App Shell G2 Lane 1A adds the Workspace selection authority. Importing
+            # `omnivia_core.workspace.lifecycle` binds the attribute on the barrel for
+            # the same reason as the two Phase 2 submodules above.
+            "lifecycle": "omnivia_core.workspace.lifecycle",
         },
         "expected_closure": frozenset(
             {"omnivia_core", "omnivia_core.workspace", "omnivia_core.workspace.models"}
