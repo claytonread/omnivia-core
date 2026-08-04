@@ -9,7 +9,7 @@ import sqlite3
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 from uuid import uuid4
 
 from omnivia_memory.control_plane.models import (
@@ -67,6 +67,12 @@ from omnivia_memory.run_ledger import (
     RunLedgerProvenance,
     RunLedgerStatus,
 )
+
+
+# Element type of a manifest resource list, so `_find_resource` returns the
+# concrete resource type its caller passed in rather than `Any`. Private so it
+# stays out of the frozen Phase 0 public export inventory.
+_ResourceT = TypeVar("_ResourceT")
 
 
 RESOURCE_LIST_FIELDS = (
@@ -249,7 +255,13 @@ class ControlPlaneRegistry:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def validate_manifest(self, manifest: ControlPlaneManifest | dict[str, Any]):
+    # The return annotation is deliberately omitted: `inspect.signature` feeds
+    # the frozen Phase 0 public export inventory, which pins this method's
+    # rendered signature. Annotating the return would be public-surface drift,
+    # so the strict-mypy rule is suppressed on this one line instead.
+    def validate_manifest(  # type: ignore[no-untyped-def]
+        self, manifest: ControlPlaneManifest | dict[str, Any]
+    ):
         """Validate a manifest with the Core control-plane contract rules."""
 
         return validate_control_plane_manifest(manifest)
@@ -4323,7 +4335,8 @@ class ControlPlaneRegistry:
             raise ControlPlaneRegistryError(
                 f"{resource_type} {resource_id} does not exist in {workspace_id}"
             )
-        return json.loads(row["payload_json"])
+        payload: dict[str, Any] = json.loads(row["payload_json"])
+        return payload
 
     def _manifest_payload_with_resource(
         self,
@@ -5127,7 +5140,7 @@ class ControlPlaneRegistry:
 
 
 def _manifest_to_payload(manifest: ControlPlaneManifest) -> dict[str, Any]:
-    payload = _to_jsonable(asdict(manifest))
+    payload: dict[str, Any] = _to_jsonable(asdict(manifest))
     payload.pop("contract_version", None)
     return payload
 
@@ -5403,7 +5416,7 @@ def _retry_backoff_delay_seconds(
     # Cap the exponent so the doubling cannot overflow into an enormous int
     # before the min() clamp; once base * 2**exponent >= max we are capped.
     capped_exponent = min(exponent, max_delay_seconds.bit_length() + 1)
-    delay = base_delay_seconds * (2**capped_exponent)
+    delay: int = base_delay_seconds * (2**capped_exponent)
     return min(delay, max_delay_seconds)
 
 
@@ -5526,7 +5539,7 @@ def _optional_str(value: Any) -> str | None:
     return text if text else None
 
 
-def _find_resource(resources: list[Any], resource_id: str) -> Any | None:
+def _find_resource(resources: list[_ResourceT], resource_id: str) -> _ResourceT | None:
     for resource in resources:
         if getattr(resource, "id", None) == resource_id:
             return resource
@@ -5786,7 +5799,8 @@ def _sanitize_executor_metadata(metadata: Mapping[str, Any] | None) -> dict[str,
     if not isinstance(metadata, Mapping):
         return {}
     dropped = _drop_forbidden_executor_keys(metadata)
-    return _redact_observability_payload(dropped)
+    sanitized: dict[str, Any] = _redact_observability_payload(dropped)
+    return sanitized
 
 
 def _drop_forbidden_executor_keys(value: Any) -> Any:
