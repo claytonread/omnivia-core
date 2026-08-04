@@ -100,6 +100,19 @@ LEGACY_IMPORT_PACKAGES: frozenset[str] = frozenset(
 )
 REQUIRED_CORE_DEPENDENCY = "omnivia-core>=0.1.0,<0.2.0"
 
+# Apps and Pro are downstream paid Modules (see CLAUDE.md's Naming rule), not
+# Core distributions and not legacy packages being migrated away from. Unlike
+# `LEGACY_IMPORT_PACKAGES` above -- enforced only for `CORE` and (via
+# `CLIENT_FORBIDDEN_SIBLINGS`) `CLIENT` -- neither is ever an acceptable
+# dependency or import for any of Core's five first-class public
+# distributions, so they get their own set and their own check that runs over
+# all of `ALL_PACKAGES`. The import-package spelling matches the equivalent
+# boundary already enforced for the canonical tree in
+# `tests/canonical_migration/test_no_forbidden_imports.py`'s
+# `NAMED_FORBIDDEN_PREFIXES`; no other spelling of either name is in use
+# anywhere in this codebase.
+APPS_AND_PRO_IMPORT_PACKAGES: frozenset[str] = frozenset({"omnivia_apps", "omnivia_pro"})
+
 EXPECTED_BUILD_BACKEND = "hatchling.build"
 ACCEPTED_BUILD_REQUIRES: tuple[str, ...] = ("hatchling>=1.26,<2",)
 
@@ -263,6 +276,29 @@ def check_core_has_no_sibling_or_legacy_import() -> list[str]:
     return findings
 
 
+def check_no_apps_or_pro_dependency_or_import() -> list[str]:
+    """None of Core's five first-class public distributions may depend on or
+    import Apps or Pro. The dependency only ever runs the other way -- both
+    are downstream paid Modules that depend on Core, not the reverse -- so
+    this runs over every entry in ``ALL_PACKAGES``, not just ``CORE`` or
+    ``CLIENT`` the way the legacy-package checks do.
+    """
+    findings: list[str] = []
+    for pkg in ALL_PACKAGES:
+        manifest = load_manifest(pkg.manifest_path)
+        dependencies = get_str_list(manifest, "project", "dependencies")
+        for dep in dependencies:
+            if dependency_name(dep).replace("-", "_") in APPS_AND_PRO_IMPORT_PACKAGES:
+                findings.append(f"{pkg.manifest_path}: forbidden dependency on {dep!r}")
+
+        for py_file, names in collect_top_level_imports(pkg.src_root).items():
+            hit = names & APPS_AND_PRO_IMPORT_PACKAGES
+            if hit:
+                findings.append(f"{py_file}: forbidden import(s) {sorted(hit)}")
+
+    return findings
+
+
 def _dependency_is_direct_reference(dependency: str) -> bool:
     """Return True if ``dependency`` is a PEP 508 direct URL/path/VCS reference."""
     _, sep, remainder = dependency.strip().partition("@")
@@ -390,6 +426,7 @@ def run_checks() -> list[str]:
     findings += check_no_direct_reference_dependencies()
     findings += check_core_has_no_sibling_or_legacy_dependency()
     findings += check_core_has_no_sibling_or_legacy_import()
+    findings += check_no_apps_or_pro_dependency_or_import()
     findings += check_siblings_depend_on_core()
     findings += check_mcp_and_cli_do_not_depend_on_runtime()
     findings += check_client_depends_only_on_core()
