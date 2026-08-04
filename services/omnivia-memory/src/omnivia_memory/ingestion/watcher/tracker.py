@@ -41,7 +41,7 @@ class SourceTracker:
     For persistence, platforms should implement a corresponding repository.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._by_source_path: dict[tuple[str, str], SourceReference] = {}
         self._by_watched_path: dict[str, list[SourceReference]] = {}
 
