@@ -44,6 +44,25 @@ asyncio_mode = "auto"
 target-version = "py311"
 line-length = 100
 
+# Lint semantics are declared explicitly so they do not float with the Ruff
+# version. The dev extra pins only ``ruff>=0.4.0``, and Ruff's implicit rule set
+# widens between releases, so an unstated selection makes CI results depend on
+# whichever Ruff the runner resolves. E4/E7/E9/F is the intended baseline:
+# import errors, statement-level errors, syntax errors, and pyflakes. This
+# matches the declaration Platform carries for its sibling service, so the
+# cross-repo `ship:preflight` Python lint applies one rule set to both trees.
+#
+# Scope note: this file is the nearest Ruff configuration for the whole
+# `services/omnivia-memory` tree, which is the deprecated compatibility facade
+# (ADR-036). Core's own acceptance gate lints the canonical trees (`src`,
+# `packages`, `baseline`, `tests`, `scripts`) plus a named list of converted
+# files under this tree; the rest of the legacy tree is deliberately out of that
+# clean scope. Those canonical trees resolve no `[tool.ruff]` of their own and
+# are intentionally left on Ruff's implicit set, which they satisfy -- narrowing
+# them here is not in scope and would reduce, not restore, their coverage.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
