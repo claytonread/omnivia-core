@@ -23,7 +23,7 @@ jobs:
       - name: Check out exact reviewed P1b candidate
         uses: actions/checkout@v7
         with:
-          ref: c3a0535fe57f75b393f8da3772db85004f772c09
+          ref: 71afb043212f76abe11fb6dc3cbbb1104e5e85f5
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -33,7 +33,7 @@ jobs:
       - name: Assert exact reviewed identity
         shell: pwsh
         run: |
-          $expected = "c3a0535fe57f75b393f8da3772db85004f772c09"
+          $expected = "71afb043212f76abe11fb6dc3cbbb1104e5e85f5"
           $actual = git rev-parse HEAD
           if ($actual -ne $expected) { throw "reviewed identity mismatch" }
 
