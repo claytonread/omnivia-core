@@ -69,6 +69,59 @@ def test_core_has_no_sibling_or_legacy_import() -> None:
     assert boundaries.check_core_has_no_sibling_or_legacy_import() == []
 
 
+def test_no_apps_or_pro_dependency_or_import() -> None:
+    assert boundaries.check_no_apps_or_pro_dependency_or_import() == []
+
+
+def test_apps_and_pro_import_packages_are_exactly_those_two() -> None:
+    """Pinned by name, not just count, so dropping or renaming either fails here
+    rather than only showing up as a silently narrower live check."""
+    assert boundaries.APPS_AND_PRO_IMPORT_PACKAGES == frozenset({"omnivia_apps", "omnivia_pro"})
+
+
+def test_apps_or_pro_check_detects_a_forbidden_dependency_and_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A distribution that imports Apps or Pro, or depends on either, must be
+    reported -- proving the check can actually fail, the same way the client's
+    sibling check is proved against a deliberately broken copy."""
+    src_root = tmp_path / "src" / "omnivia_core_probe"
+    src_root.mkdir(parents=True)
+    (src_root / "adapter.py").write_text(
+        "import omnivia_apps\nimport omnivia_pro\n", encoding="utf-8"
+    )
+    manifest_path = tmp_path / "pyproject.toml"
+    manifest_path.write_text(
+        "[project]\n"
+        'name = "omnivia-core-probe"\n'
+        "dependencies = [\n"
+        '  "omnivia-apps>=0.1.0",\n'
+        '  "Omnivia_Pro>=0.1.0",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    broken = boundaries.PackageSpec(
+        distribution_name="omnivia-core-probe",
+        import_package="omnivia_core_probe",
+        manifest_path=manifest_path,
+        src_root=tmp_path / "src",
+    )
+    monkeypatch.setattr(boundaries, "ALL_PACKAGES", (broken,))
+
+    findings = boundaries.check_no_apps_or_pro_dependency_or_import()
+    # One finding per forbidden dependency (matching
+    # `check_core_has_no_sibling_or_legacy_dependency`'s idiom, not the single
+    # combined finding `check_client_depends_only_on_core` produces), plus one
+    # for the import line naming both.
+    assert len(findings) == 3
+    apps_finding, pro_finding, import_finding = findings
+    assert "omnivia-apps>=0.1.0" in apps_finding
+    assert "Omnivia_Pro>=0.1.0" in pro_finding
+    assert "omnivia_apps" in import_finding
+    assert "omnivia_pro" in import_finding
+
+
 def test_siblings_depend_on_core() -> None:
     assert boundaries.check_siblings_depend_on_core() == []
 
