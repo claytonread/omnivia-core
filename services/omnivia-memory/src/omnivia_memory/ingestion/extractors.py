@@ -51,8 +51,8 @@ class PDFExtractor(BaseExtractor):
 
             doc = fitz.open(str(file_path))
             text_parts = []
-            for page in doc:
-                text_parts.append(page.get_text())
+            for page_number in range(doc.page_count):
+                text_parts.append(doc[page_number].get_text())
             doc.close()
             content = "\n".join(text_parts)
             return ExtractionResult.success(content)
