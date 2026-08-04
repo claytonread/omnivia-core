@@ -53,7 +53,6 @@ from omnivia_memory.control_plane.models import (
     TriggerKind,
     TriggerEventEnvelope,
     TriggerIngestionResult,
-    ValidationResult,
 )
 from omnivia_memory.control_plane.validation import (
     DANGEROUS_SIDE_EFFECTS,
@@ -71,8 +70,9 @@ from omnivia_memory.run_ledger import (
 
 
 # Element type of a manifest resource list, so `_find_resource` returns the
-# concrete resource type its caller passed in rather than `Any`.
-ResourceT = TypeVar("ResourceT")
+# concrete resource type its caller passed in rather than `Any`. Private so it
+# stays out of the frozen Phase 0 public export inventory.
+_ResourceT = TypeVar("_ResourceT")
 
 
 RESOURCE_LIST_FIELDS = (
@@ -255,9 +255,13 @@ class ControlPlaneRegistry:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def validate_manifest(
+    # The return annotation is deliberately omitted: `inspect.signature` feeds
+    # the frozen Phase 0 public export inventory, which pins this method's
+    # rendered signature. Annotating the return would be public-surface drift,
+    # so the strict-mypy rule is suppressed on this one line instead.
+    def validate_manifest(  # type: ignore[no-untyped-def]
         self, manifest: ControlPlaneManifest | dict[str, Any]
-    ) -> ValidationResult:
+    ):
         """Validate a manifest with the Core control-plane contract rules."""
 
         return validate_control_plane_manifest(manifest)
@@ -5535,7 +5539,7 @@ def _optional_str(value: Any) -> str | None:
     return text if text else None
 
 
-def _find_resource(resources: list[ResourceT], resource_id: str) -> ResourceT | None:
+def _find_resource(resources: list[_ResourceT], resource_id: str) -> _ResourceT | None:
     for resource in resources:
         if getattr(resource, "id", None) == resource_id:
             return resource
