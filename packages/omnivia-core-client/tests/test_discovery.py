@@ -7,8 +7,11 @@ import ctypes
 import dataclasses
 import json
 import os
+import socket
 import stat
 import subprocess
+import threading
+import time
 import traceback
 from collections.abc import Iterator, Mapping
 from ctypes import wintypes
@@ -19,6 +22,7 @@ import omnivia_core_client.discovery as discovery_module
 import pytest
 from omnivia_core_client import (
     CancellationToken,
+    ClientError,
     CompatibilityError,
     Deadline,
     DeadlineExceededError,
@@ -44,6 +48,26 @@ from omnivia_core.contracts.v1 import (
 WORKSPACE_ID = "workspace-alpha"
 SERVICE_INSTANCE_ID = "service-instance-01"
 
+# The local IPC endpoint this platform can dial, and the one it cannot. Both are
+# accepted by the shared publication policy, which is the point: only the
+# client's locality rule tells them apart.
+LOCAL_IPC_URI = (
+    "unix:///var/run/omnivia/core.sock"
+    if os.name == "posix"
+    else "pipe://omnivia-core-abc"
+)
+FOREIGN_LOCAL_IPC_URI = (
+    "pipe://omnivia-core-abc"
+    if os.name == "posix"
+    else "unix:///var/run/omnivia/core.sock"
+)
+
+# A descriptor read must finish inside its own call deadline; the wall-clock
+# bound is longer only so a blocked read is reported as a failure rather than
+# hanging the suite.
+DESCRIPTOR_DEADLINE_SECONDS = 1.0
+HANG_DETECTION_SECONDS = 15.0
+
 
 class EqualitySpoof(str):
     def __eq__(self, _other: object) -> bool:
@@ -61,7 +85,7 @@ def descriptor_wire(**overrides: object) -> dict[str, Any]:
         "workspace_id": WORKSPACE_ID,
         "service_instance_id": SERVICE_INSTANCE_ID,
         "installation_id": "installation-alpha",
-        "endpoint_uri": "unix:///var/run/omnivia/core.sock",
+        "endpoint_uri": LOCAL_IPC_URI,
         "protocol_version": "1.0",
         "server_version": "1.2.5",
         "supported_api_versions": {
@@ -536,6 +560,119 @@ def test_credential_bearing_and_direct_storage_endpoints_are_refused_without_lea
         with pytest.raises(ProtocolError, match="descriptor document") as caught:
             discover(tmp_path)
         assert_sanitized(caught.value, planted)
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        "https://example.test/core",
+        "http://127.0.0.1:8080/",
+        FOREIGN_LOCAL_IPC_URI,
+        f"https://example.test/{LOCAL_IPC_URI}",
+    ],
+    ids=(
+        "credential-free-remote",
+        "loopback-remote",
+        "other-platform-local-scheme",
+        "scheme-mismatch",
+    ),
+)
+def test_endpoints_outside_this_platform_local_ipc_are_refused_before_connection(
+    tmp_path: Path, planted: str
+) -> None:
+    """Every one of these is a descriptor the shared publication policy admits.
+
+    That policy answers "is this safe to publish before authentication", which is
+    a different question from "may this client dial it". A credential-free remote
+    URI, a loopback HTTP endpoint, the other platform's local IPC scheme, and a
+    remote URI whose *path* spells this platform's local scheme are all well
+    formed and all refused here, before the transport is touched.
+    """
+    publish(tmp_path, descriptor_wire(endpoint_uri=planted))
+    transport = RecordingTransport()
+
+    with pytest.raises(TransportError, match="local IPC") as caught:
+        discover(tmp_path, transport)
+
+    assert_sanitized(caught.value, planted)
+    assert transport.probes == []
+
+
+def test_traversal_like_pipe_names_never_reach_the_transport(tmp_path: Path) -> None:
+    planted_uris = ["pipe://../../etc/passwd", "pipe://..%2F..%2Fomnivia"]
+    if os.name != "nt":
+        # A separator-free name is a legal Windows pipe name with nothing to
+        # traverse into, so the shared pattern admits it and only the POSIX
+        # locality rule refuses it.
+        planted_uris.append("pipe://omnivia..-..-core")
+    transport = RecordingTransport()
+
+    for planted in planted_uris:
+        publish(tmp_path, descriptor_wire(endpoint_uri=planted))
+        with pytest.raises(ClientError) as caught:
+            discover(tmp_path, transport)
+        assert_sanitized(caught.value, planted)
+        assert transport.probes == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX descriptor file kinds")
+@pytest.mark.parametrize("kind", ["fifo", "socket"])
+def test_posix_refuses_a_non_regular_descriptor_without_waiting_for_a_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A FIFO or socket published at the descriptor path is refused promptly.
+
+    Opening a FIFO for reading blocks until a writer appears, and that wait is
+    reachable by no deadline in this package: the descriptor is read before the
+    transport's send preconditions are ever consulted. So the bound asserted here
+    is wall-clock, and the read runs in a worker thread so that a regression is a
+    failure rather than a hung suite.
+    """
+    path = publish(tmp_path)
+    path.unlink()
+    listener: socket.socket | None = None
+    if kind == "fifo":
+        os.mkfifo(path, 0o600)
+    else:
+        # An AF_UNIX path is bounded near 104 bytes, well under a temporary
+        # descriptor path, so bind relative to the workspace directory instead.
+        monkeypatch.chdir(path.parent)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(path.name)
+    transport = RecordingTransport()
+    outcome: list[object] = []
+
+    def attempt() -> None:
+        try:
+            outcome.append(
+                discover_endpoint(
+                    tmp_path,
+                    WORKSPACE_ID,
+                    transport=transport,
+                    deadline=Deadline.after(DESCRIPTOR_DEADLINE_SECONDS),
+                )
+            )
+        except Exception as error:  # noqa: BLE001 -- the worker reports any outcome.
+            outcome.append(error)
+
+    try:
+        os.chmod(path, 0o600)
+        worker = threading.Thread(target=attempt, daemon=True)
+        started = time.monotonic()
+        worker.start()
+        worker.join(HANG_DETECTION_SECONDS)
+        elapsed = time.monotonic() - started
+    finally:
+        if listener is not None:
+            listener.close()
+
+    assert not worker.is_alive(), f"a {kind} descriptor blocked discovery"
+    assert elapsed < DESCRIPTOR_DEADLINE_SECONDS
+    assert transport.probes == []
+    (refusal,) = outcome
+    assert isinstance(refusal, TransportError)
+    assert "provenance" in str(refusal)
+    assert_sanitized(refusal, str(path))
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
@@ -1043,6 +1180,79 @@ def test_ordinary_normalization_exception_is_fixed_payload_free_and_unchained(
     with pytest.raises(TransportError, match="live discovery") as caught:
         discover(tmp_path, FixedResultTransport(result))
 
+    assert_sanitized(caught.value, planted)
+
+
+def test_transport_probe_failure_is_fixed_payload_free_and_unchained(
+    tmp_path: Path,
+) -> None:
+    """An injected transport's own exception is translated, never re-raised.
+
+    A transport is third-party code to this package: its diagnostics are outside
+    the payload-free rule and may name a credential or a local path. So the probe
+    call is a boundary like every decode here, and what crosses it is a fixed
+    sentence with no chain.
+    """
+    publish(tmp_path)
+    planted = "Bearer sk-live-DEADBEEF /Users/victim/.omnivia/state"
+
+    class ExplodingTransport(RecordingTransport):
+        def probe(
+            self,
+            request: ServiceProbeRequest,
+            *,
+            deadline: Deadline,
+            cancellation: CancellationToken | None = None,
+        ) -> ServiceProbeResult:
+            self.probes.append((request, deadline, cancellation))
+            raise RuntimeError(f"upstream dial failed: {planted}")
+
+    with pytest.raises(TransportError, match="live discovery") as caught:
+        discover(tmp_path, ExplodingTransport())
+
+    assert_sanitized(caught.value, planted)
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        (DeadlineExceededError, DeadlineExceededError),
+        (OperationCancelledError, OperationCancelledError),
+        (RuntimeError, TransportError),
+    ],
+    ids=("expired", "cancelled", "unreachable"),
+)
+def test_transport_probe_failure_keeps_its_kind_and_loses_its_words(
+    tmp_path: Path,
+    raised: type[BaseException],
+    expected: type[ClientError],
+) -> None:
+    """Translation is not flattening: the declared type survives, the message does not.
+
+    A cancelled call was abandoned by the caller and an expired one by the clock,
+    and neither is "the transport could not carry this" -- so all three stay
+    distinguishable. What none of them keeps is the transport's own sentence,
+    which is third-party text: the type is re-raised as a fresh instance rather
+    than the object the transport built, so a secret cannot ride the taxonomy out.
+    """
+    publish(tmp_path)
+    planted = "Bearer sk-live-DEADBEEF /Users/victim/.omnivia/state"
+
+    class ExplodingTransport(RecordingTransport):
+        def probe(
+            self,
+            request: ServiceProbeRequest,
+            *,
+            deadline: Deadline,
+            cancellation: CancellationToken | None = None,
+        ) -> ServiceProbeResult:
+            self.probes.append((request, deadline, cancellation))
+            raise raised(planted)
+
+    with pytest.raises(expected) as caught:
+        discover(tmp_path, ExplodingTransport())
+
+    assert type(caught.value) is expected
     assert_sanitized(caught.value, planted)
 
 

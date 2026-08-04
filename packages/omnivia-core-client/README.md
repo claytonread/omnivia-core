@@ -214,7 +214,9 @@ publication state and returns `None` without contacting the transport.
 A present descriptor is coordination data, never authority. Before decoding,
 discovery:
 
-- rejects a symlinked descriptor or derived parent and any non-regular descriptor;
+- rejects a symlinked descriptor or derived parent and any non-regular descriptor
+  — a FIFO or socket published at the descriptor path is refused on the spot,
+  never waited on for a writer;
 - requires the descriptor and derived parents to be owned by the current user and
   inaccessible to group/other on POSIX;
 - applies the owner-equivalent native owner/DACL check on Windows, admitting access
@@ -227,7 +229,15 @@ discovery:
 UTF-8, JSON, duplicate-member, non-finite-number, public DTO, and endpoint-policy
 failures become fixed, payload-free `ProtocolError`s with no nested parser
 exception. The public `decode_service_endpoint_descriptor()` remains the endpoint
-policy authority; discovery does not create a second URI policy.
+*publication* policy authority, and discovery admits no URI it refused. What
+discovery adds on top is a locality rule, not a second URI grammar: that shared
+policy answers what is safe to publish before authentication, so it admits remote
+HTTP endpoints and both platforms' local IPC schemes, while installation-local
+discovery connects only to this platform's local IPC endpoint — `unix://` on
+POSIX, `pipe://` on Windows. The guard runs after the public decoder, so it
+only narrows what that decoder already admitted; it is a prefix check, not a
+second grammar.
+Anything else is a `TransportError` raised before the transport is touched.
 
 The accepted descriptor is passed to `negotiate_endpoint()` unchanged, so descriptor
 shape, exact OVC1 protocol, and API overlap keep their accepted order and failure

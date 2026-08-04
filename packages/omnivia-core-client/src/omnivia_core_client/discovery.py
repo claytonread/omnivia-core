@@ -3,9 +3,10 @@
 A descriptor is coordination data, never authority.  This module derives its one
 accepted path from a trusted installation-state root and a validated workspace
 identifier, checks native file provenance before decoding a bounded document,
-composes the accepted compatibility negotiation, and then asks the injected
-transport for ``service.discover``.  Only exact workspace and service-instance
-identity agreement turns the coordination hint into a discovered endpoint.
+refuses any endpoint that is not this platform's local IPC endpoint, composes
+the accepted compatibility negotiation, and then asks the injected transport for
+``service.discover``.  Only exact workspace and service-instance identity
+agreement turns the coordination hint into a discovered endpoint.
 
 There is deliberately no concrete transport, path registry, home-directory
 fallback, retry, process management, workspace-storage access, or authority
@@ -42,7 +43,13 @@ from omnivia_core_client.deadline import (
     CancellationToken,
     Deadline,
 )
-from omnivia_core_client.errors import CompatibilityError, ProtocolError, TransportError
+from omnivia_core_client.errors import (
+    CompatibilityError,
+    DeadlineExceededError,
+    OperationCancelledError,
+    ProtocolError,
+    TransportError,
+)
 from omnivia_core_client.transport import ClientTransport, enforce_send_preconditions
 
 __all__ = [
@@ -65,6 +72,14 @@ _RUNTIME_DIRECTORY: Final = "runtime"
 _DISCOVER_PROBE: Final = "service.discover"
 _WORKSPACE_ID_MAX: Final = 128
 _WORKSPACE_ID_RE: Final = re.compile(WORKSPACE_ID_PATTERN)
+
+_LOCAL_IPC_SCHEMES: Final = {"posix": "unix://", "nt": "pipe://"}
+"""The one installation-local IPC scheme this client dials, per platform.
+
+Spelled exactly as the public ``ServiceEndpointUri`` pattern spells them, so this
+narrows that policy rather than restating it: no scheme is admitted here that the
+public descriptor decoder did not already admit.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,12 +127,56 @@ def _raise_document() -> NoReturn:
     raise ProtocolError("descriptor document is not an accepted public descriptor")
 
 
+def _raise_endpoint_locality() -> NoReturn:
+    raise TransportError(
+        "descriptor endpoint is not this platform's local IPC endpoint"
+    )
+
+
+def _raise_live_transport() -> NoReturn:
+    raise TransportError("live discovery call did not complete")
+
+
+def _raise_live_deadline() -> NoReturn:
+    raise DeadlineExceededError(
+        f"{_DISCOVER_PROBE}: the deadline for this call has passed"
+    )
+
+
+def _raise_live_cancelled() -> NoReturn:
+    raise OperationCancelledError(f"{_DISCOVER_PROBE}: cancelled before it completed")
+
+
 def _raise_live_discovery() -> NoReturn:
     raise TransportError("live discovery did not return an endpoint descriptor")
 
 
 def _raise_live_identity() -> NoReturn:
     raise TransportError("descriptor and live identity do not agree")
+
+
+def _require_local_endpoint(descriptor: ServiceEndpointDescriptor) -> None:
+    """Refuse an endpoint this installation-local client has no business dialing.
+
+    ``decode_service_endpoint_descriptor`` has already run, and it answers a
+    different question: whether a URI is safe for a service to *publish* before
+    anyone has authenticated. That policy is shared with every publisher and
+    reader of the descriptor, and it admits remote HTTP endpoints and both
+    platforms' local IPC schemes by design.
+
+    Discovery here is installation-local by definition -- one trusted state root,
+    one workspace directory, one file -- so the only endpoint it may connect to is
+    this platform's local IPC endpoint. A remote URI reached through a local
+    coordination file is the descriptor being used as authority, which it is not.
+    """
+    scheme = _LOCAL_IPC_SCHEMES.get(os.name)
+    endpoint_uri = descriptor.endpoint_uri
+    if (
+        scheme is None
+        or type(endpoint_uri) is not str
+        or not endpoint_uri.startswith(scheme)
+    ):
+        _raise_endpoint_locality()
 
 
 def _negotiate_descriptor(
@@ -252,6 +311,15 @@ def _open_posix(
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     if directory:
         flags |= getattr(os, "O_DIRECTORY", 0)
+    else:
+        # The kind check below runs on an *open* descriptor, so the open itself
+        # must not be able to wait: a FIFO published at the descriptor path would
+        # otherwise block this call until a writer appeared, and nothing on that
+        # path can be interrupted -- the descriptor is read before the transport's
+        # deadline and cancellation are consulted at all. ``O_NONBLOCK`` has no
+        # effect on a read of a regular file, which is the only kind that survives
+        # ``_is_secure_posix``, so it is left set rather than cleared afterwards.
+        flags |= getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(name, flags, dir_fd=dir_fd)
     except FileNotFoundError:
@@ -704,9 +772,13 @@ def discover_endpoint(
     """Discover, negotiate, and live-verify one installation-local endpoint.
 
     An absent descriptor is transient and returns ``None``; every present but
-    untrusted, malformed, incompatible, replaced, or live-mismatched descriptor
-    fails closed.  The same whole-call deadline and cancellation token are passed
-    unchanged to the injected transport.
+    untrusted, malformed, non-local, incompatible, replaced, or live-mismatched
+    descriptor fails closed.  The same whole-call deadline and cancellation token
+    are passed unchanged to the injected transport.  A failure raised by that
+    transport is translated rather than propagated -- its diagnostic is outside
+    this package's payload-free rule -- but the translation preserves the
+    declared type, so an expired deadline and a cancellation stay distinguishable
+    from a transport that could not carry the call.
     """
     identifier = _require_workspace_id(workspace_id)
     content = _read_descriptor(Path(installation_state), identifier)
@@ -715,6 +787,7 @@ def discover_endpoint(
     descriptor = _decode_descriptor(content)
     if descriptor.workspace_id != identifier:
         _raise_live_identity()
+    _require_local_endpoint(descriptor)
     negotiated = _negotiate_descriptor(descriptor)
 
     remaining = enforce_send_preconditions(
@@ -723,13 +796,36 @@ def discover_endpoint(
         operation=_DISCOVER_PROBE,
     )
     deadline_ms = min(MAXIMUM_DURATION_MS, math.floor(remaining * 1000))
-    result = _validate_live_result(
-        transport.probe(
+    # A transport's failure keeps its *kind* and loses its *words*. Which of the
+    # three ways a call can fail happened is what a caller acts on -- a cancelled
+    # call was abandoned by the caller, an expired one by the clock, and reporting
+    # either as "the transport could not carry this" misattributes the cause. The
+    # message is another matter: an injected transport is third-party code, its
+    # diagnostic is outside this package's payload-free rule, and it may name a
+    # credential or a local path. So a fresh, fixed-text instance of the same
+    # declared type is raised, never the transport's own object -- and, like every
+    # refusal here, raised outside the handler so no chain survives to render it.
+    answer: ServiceProbeResult | None = None
+    outcome = "answered"
+    try:
+        answer = transport.probe(
             ServiceProbeRequest(probe=_DISCOVER_PROBE, deadline_ms=deadline_ms),
             deadline=deadline,
             cancellation=cancellation,
         )
-    )
+    except DeadlineExceededError:
+        outcome = "expired"
+    except OperationCancelledError:
+        outcome = "cancelled"
+    except Exception:  # noqa: BLE001 -- a transport diagnostic is not payload-free.
+        outcome = "unreachable"
+    if outcome == "expired":
+        _raise_live_deadline()
+    if outcome == "cancelled":
+        _raise_live_cancelled()
+    if outcome != "answered" or answer is None:
+        _raise_live_transport()
+    result = _validate_live_result(answer)
     if (
         type(result.probe) is not str
         or result.probe != _DISCOVER_PROBE
