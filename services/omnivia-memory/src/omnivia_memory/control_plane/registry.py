@@ -2206,12 +2206,17 @@ class ControlPlaneRegistry:
         capability_span_id = _new_span_id()
         effective_output_payload: Mapping[str, Any] | None = output_payload
         executor_metadata: dict[str, Any] | None = None
-        executor_backed = (
+        # The executor-backed condition is tested inline rather than through a
+        # pre-computed flag so that `capability_executor is not None` narrows the
+        # optional seam for the `_run_supervised_executor` call below; a bool
+        # variable carries the same runtime meaning but discards the narrowing.
+        executor_backed = False
+        if (
             execution_mode == ExecutionMode.SUPERVISED
             and capability_executor is not None
             and capability.side_effect.value in SAFE_EXECUTOR_SIDE_EFFECTS
-        )
-        if executor_backed:
+        ):
+            executor_backed = True
             connection = _find_resource(
                 manifest.connections, capability.connection_id
             )
