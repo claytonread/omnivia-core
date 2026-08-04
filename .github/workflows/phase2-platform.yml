@@ -6,9 +6,13 @@
 # required check and silently drop the rule that references the exact string. The
 # acceptance workflow's own tests pin it to one job for that reason.
 #
-# These rows are NOT merge-blocking today. Making them required is a repository
-# settings change, and it should not happen until the Windows row has passed once:
-# a rule pointing at a check that has never been green blocks every merge.
+# Whether these rows are required by branch protection or a ruleset is a
+# repository setting outside this tree, so this file cannot assert it either
+# way -- the same limitation `core-acceptance.yml`'s own header records for
+# `Core acceptance`, and that `tests/test_core_acceptance_workflow.py` states
+# explicitly it cannot verify. What is certain here: making them required
+# should not happen until the Windows row has passed once, because a rule
+# pointing at a check that has never been green blocks every merge.
 name: Phase 2 platform qualification
 
 on:
