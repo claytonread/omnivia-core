@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope, codec
 from omnivia_core_runtime.ownership.locks import IS_WINDOWS, LockRole, create_lock
@@ -44,6 +44,7 @@ from omnivia_core_runtime.service.ovc1 import (
     HEADER_BYTES,
     MAGIC,
     MAXIMUM_JSON_BYTES,
+    OVC1Error,
     decode_frame,
     encode_frame,
 )
@@ -339,11 +340,18 @@ class _SocketChannel:
 
     def ensure_unary_boundary(self) -> None:
         """Require one bounded quiet window at the current exchange boundary."""
+        timeout = self.connection.gettimeout()
         self.connection.settimeout(UNARY_BOUNDARY_SECONDS)
         try:
             trailing = self.connection.recv(1, socket.MSG_PEEK)
         except TimeoutError:
-            return
+            trailing = b""
+        finally:
+            # Restored here rather than left at the boundary's own 50ms window --
+            # a caller that writes a response right after this check (`_handle`
+            # does, for the response write) must write under its own configured
+            # deadline, not the quiet window this check used internally.
+            self.connection.settimeout(timeout)
         if trailing:
             raise TransportError(
                 "connection carries trailing bytes after one OVC1 frame"
@@ -846,7 +854,21 @@ class LocalSocketTransport:
             raise TransportError("local service transport call failed")
         if raw is None:
             raise TransportError("service closed the connection without responding")
-        return codec.decode_response(decode_frame(raw))
+        document: dict[str, Any] | None = None
+        try:
+            document = decode_frame(raw)
+        except OVC1Error:
+            pass
+        if document is None:
+            # Fixed and non-disclosing, and raised once `except` has exited: `raw`
+            # may carry a caller's own document content, and OVC1Error's message
+            # is not folded in here, so no text from either reaches a caller. The
+            # raise sits outside the `except` block on purpose -- inside it, Python
+            # would set this error's `__context__` to the OVC1Error being handled,
+            # and that error is reachable through `__context__` even when nothing
+            # renders it.
+            raise TransportError("service response was not a valid OVC1 frame")
+        return codec.decode_response(document)
 
 
 def _connect(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:

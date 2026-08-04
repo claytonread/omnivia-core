@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import tempfile
+import threading
 import time
 import traceback
 from collections.abc import Iterator
@@ -22,7 +23,12 @@ from omnivia_core_runtime.service.lifecycle import (
 )
 from omnivia_core_runtime.service.main import _router_for
 from omnivia_core_runtime.service.main import main as service_main
-from omnivia_core_runtime.service.ovc1 import decode_frame, encode_frame
+from omnivia_core_runtime.service.ovc1 import (
+    HEADER_BYTES,
+    MAGIC,
+    decode_frame,
+    encode_frame,
+)
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ServiceFacts
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.transport import (
@@ -307,6 +313,69 @@ def test_call_close_diagnostic_hides_raw_os_error_and_exception_chain(
     with pytest.raises(TransportError) as caught:
         LocalSocketTransport(endpoint=endpoint).call(_request())
 
+    _assert_transport_error_is_non_disclosing(caught.value, secret)
+
+
+def _recv_exact(connection: socket.socket, count: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = count
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_malformed_server_response_is_translated_to_transport_error(
+    socket_path: Path,
+) -> None:
+    """OVC1Error must not escape `call()`: it is not a `TransportError`.
+
+    A well-framed but structurally inadmissible response -- here, non-canonical
+    JSON -- makes `decode_frame` raise `OVC1Error` inside `call()`. That is not
+    one of this module's own transport failures, and letting it escape
+    unconverted would be a taxonomy change a caller catching `TransportError`
+    would not expect. The fixed refusal must also carry nothing of the frame
+    it refused.
+    """
+    secret = "credential-hunter2-payload-marker"
+    # Well-framed (correct magic and declared length) but not canonical JSON:
+    # RFC 8785 forbids the space after the colon, so `decode_frame` refuses it.
+    malformed_body = f'{{"marker": "{secret}"}}'.encode()
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.listen(1)
+    server.settimeout(5.0)
+
+    def respond() -> None:
+        connection, _ = server.accept()
+        try:
+            connection.settimeout(5.0)
+            header = _recv_exact(connection, HEADER_BYTES)
+            length = int.from_bytes(header[len(MAGIC) :], "big")
+            _recv_exact(connection, length)
+            connection.sendall(
+                MAGIC + len(malformed_body).to_bytes(4, "big") + malformed_body
+            )
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=respond, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(TransportError) as caught:
+            LocalSocketTransport(path=socket_path).call(_request())
+    finally:
+        thread.join(timeout=5.0)
+        server.close()
+
+    assert str(caught.value) == "service response was not a valid OVC1 frame"
     _assert_transport_error_is_non_disclosing(caught.value, secret)
 
 

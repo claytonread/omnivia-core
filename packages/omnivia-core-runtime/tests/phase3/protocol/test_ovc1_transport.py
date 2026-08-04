@@ -20,6 +20,7 @@ from omnivia_core_runtime.service.ovc1 import (
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.transport import (
+    UNARY_BOUNDARY_SECONDS,
     EndpointScheme,
     LocalEndpoint,
     LocalSocketServer,
@@ -289,3 +290,72 @@ def test_partial_reads_share_one_absolute_header_and_body_deadline(
             _assert_no_valid_response(client)
         finally:
             client.close()
+
+
+class _LargeResult:
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def to_wire(self) -> dict[str, object]:
+        return {"data": "a" * self._size}
+
+
+class _LargeResponseRouter:
+    """Answers every request with a response too large to fit in a socket buffer."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def route(self, document: dict[str, object]) -> _LargeResult:
+        del document
+        return _LargeResult(self._size)
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_response_write_is_bound_by_the_configured_timeout_not_the_unary_boundary(
+    socket_path: Path,
+) -> None:
+    """The response write must not inherit the 50ms unary-boundary quiet window.
+
+    `_handle` rechecks `ensure_unary_boundary` immediately before writing the
+    response, and that check sets a 50ms socket timeout of its own. A response
+    too large to fit in the kernel's socket buffers, to a reader that stalls
+    partway through, proves whether that 50ms leaked onto the write: the pause
+    starts only once the header has actually arrived -- proof the write is under
+    way -- so this does not race against however long routing and encoding the
+    large payload itself take. A pause comfortably longer than
+    `UNARY_BOUNDARY_SECONDS` but comfortably shorter than the server's
+    configured timeout must still let the write complete.
+    """
+    response_bytes = 3 * 1024 * 1024  # far larger than any default socket buffer
+    stall_seconds = UNARY_BOUNDARY_SECONDS * 4
+    configured_timeout = 2.0
+    assert stall_seconds < configured_timeout
+
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    with LocalSocketServer(
+        router=_LargeResponseRouter(response_bytes),  # type: ignore[arg-type]
+        endpoint=endpoint,
+        timeout=configured_timeout,
+    ):
+        client = _connect(socket_path, timeout=5.0)
+        try:
+            # Shrink the receive buffer so the server's write cannot complete
+            # inside the kernel's socket buffers regardless of host defaults.
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+            client.sendall(encode_frame({"probe": PROBE_HEALTH}))
+            header = _read_exact(client, HEADER_BYTES)
+            length = int.from_bytes(header[len(MAGIC) :], "big")
+            # The header is a tiny fraction of the response, so its arrival is
+            # proof the write is in progress and still has almost everything
+            # left to send. Stalling here, rather than after sending the
+            # request, means the wait always lands mid-write regardless of how
+            # long routing and canonicalizing the large payload took.
+            time.sleep(stall_seconds)
+            body = _read_exact(client, length)
+        finally:
+            client.close()
+
+    assert decode_frame(header + body)["data"] == "a" * response_bytes
