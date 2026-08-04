@@ -15,7 +15,6 @@ no code path through which it could acquire either.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,9 @@ from omnivia_core.contracts.v1 import (
     PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
+    ServiceEndpointDescriptor,
     codec,
+    decode_service_endpoint_descriptor,
 )
 
 API_VERSION = "1.0"
@@ -32,47 +33,34 @@ CLIENT_NAME = "omnivia-cli"
 CLIENT_VERSION = "0.1.0"
 
 
-@dataclass(frozen=True)
-class DiscoveredService:
-    """A service this client may talk to, read from its discovery descriptor."""
-
-    endpoint: str
-    workspace_id: str
-    service_instance_id: str
-    fencing_generation: int
-    api_version: str
-    readiness: str
-
-    @property
-    def ready(self) -> bool:
-        return self.readiness == "ready"
-
-
-def read_descriptor(runtime_directory: Path) -> DiscoveredService | None:
+def read_descriptor(runtime_directory: Path) -> ServiceEndpointDescriptor | None:
     """Read a service descriptor without importing the runtime.
 
     The CLI reads the same file the service publishes, rather than linking against
-    the runtime to ask. That keeps the dependency direction one-way.
+    the runtime to ask. That keeps the dependency direction one-way. It is decoded
+    with the same public decoder the service encodes with, so this is a second
+    *call* of one decoder rather than a second decoder: the private projection that
+    used to live here read `endpoint`, `readiness` and `api_version` by hand, and
+    when the published document moved to the public shape it silently reported
+    every live service as absent.
+
+    The public `ServiceEndpointDescriptor` is returned as it stands. A dataclass of
+    this module's own would carry no fact the contract does not already carry, and
+    keeping one is what let the two drift apart in the first place.
+
+    A missing or malformed descriptor is absent rather than an error: the CLI's
+    correct answer to garbage is "no service is advertised", the same as to an
+    empty directory. `ContractDecodeError` and `ContractSemanticError` are both
+    `ValueError`s, so every way the decoder refuses is caught here.
     """
     path = runtime_directory / "service.json"
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    try:
-        return DiscoveredService(
-            endpoint=str(data["endpoint"]),
-            workspace_id=str(data["workspace_id"]),
-            service_instance_id=str(data["service_instance_id"]),
-            fencing_generation=int(str(data["fencing_generation"])),
-            api_version=str(data["api_version"]),
-            readiness=str(data["readiness"]),
+        return decode_service_endpoint_descriptor(
+            json.loads(path.read_text(encoding="utf-8"))
         )
-    except (KeyError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError):
         return None
 
 
@@ -122,7 +110,6 @@ __all__ = [
     "API_VERSION",
     "CLIENT_NAME",
     "CLIENT_VERSION",
-    "DiscoveredService",
     "build_request",
     "encode",
     "read_descriptor",

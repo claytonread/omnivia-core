@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from omnivia_core.contracts.v1 import ServiceEndpointDescriptor
 from omnivia_core.workspace.compatibility import CompatibilityOutcome
 from omnivia_core_runtime.ownership.discovery import (
-    ServiceDescriptor,
     discover,
     is_compatible,
 )
@@ -65,7 +65,7 @@ class StartupDecision:
 
     outcome: StartupOutcome
     reason: str
-    existing: ServiceDescriptor | None = None
+    existing: ServiceEndpointDescriptor | None = None
 
     @property
     def should_spawn(self) -> bool:
@@ -129,8 +129,11 @@ def _decide(
             StartupDecision(
                 outcome=StartupOutcome.REFUSED_INCOMPATIBLE,
                 reason=(
-                    f"a service is ready but incompatible (api {first.api_version}, "
-                    f"workspace format {first.workspace_format_version})"
+                    "a service is ready but incompatible (api "
+                    f"{first.supported_api_versions.minimum}-"
+                    f"{first.supported_api_versions.maximum}, workspace format "
+                    f"{first.supported_workspace_versions.minimum}-"
+                    f"{first.supported_workspace_versions.maximum})"
                 ),
                 existing=first,
             ),
@@ -192,7 +195,9 @@ def _decide(
     )
 
 
-def _live(descriptor: ServiceDescriptor | None) -> ServiceDescriptor | None:
+def _live(
+    descriptor: ServiceEndpointDescriptor | None,
+) -> ServiceEndpointDescriptor | None:
     """The descriptor, unless the process it names is gone.
 
     A descriptor outlives its process whenever a service is killed before it can
@@ -214,12 +219,25 @@ def _live(descriptor: ServiceDescriptor | None) -> ServiceDescriptor | None:
     a connect, and the endpoint probe covers pid reuse. Neither can prove the service
     is healthy, only that the claim is not obviously dead, so this only ever
     downgrades a claim -- what survives still has to pass compatibility.
+
+    Process evidence is optional in the contract shape, and a descriptor without it
+    is not usable here. The two checks are independent on purpose -- SRB-07 is the
+    record of the endpoint probe alone being insufficient -- so a descriptor that
+    supplies no answer to "is the process that wrote this still running" has not
+    passed the check, it has skipped it. Refusing costs at most one adoption that a
+    launcher then re-establishes by spawning, and the lifetime storage lock still
+    prevents two owners; trusting instead would reinstate the stuck-behind-a-dead-
+    endpoint failure for any descriptor that simply omits the block. Every
+    descriptor this Runtime publishes carries it.
     """
     if descriptor is None:
         return None
-    if not process_is_alive(descriptor.pid):
+    process = descriptor.process
+    if process is None:
         return None
-    if not _endpoint_answers(descriptor.endpoint):
+    if not process_is_alive(process.pid):
+        return None
+    if not _endpoint_answers(descriptor.endpoint_uri):
         return None
     return descriptor
 
