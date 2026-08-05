@@ -35,7 +35,6 @@ import pytest
 from omnivia_core_client.deadline import CancellationToken, Deadline
 from omnivia_core_client.discovery import discover_endpoint
 from omnivia_core_client.transport import enforce_send_preconditions
-from omnivia_core_runtime.ownership import identity
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.main import _router_for
@@ -168,24 +167,20 @@ def migrated_workspace(tmp_path: Path) -> tuple[WorkspaceLayout, InstallationLay
     os.name == "nt", reason="the client dials pipe:// on Windows, which this omits"
 )
 def test_the_accepted_client_discovers_what_the_runtime_publishes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """M2: the real writer's file is read and accepted by the real client.
 
-    One value is normalised, and it is not part of what this proves.
-    `ownership.identity._boot_id` returns a real `Identifier` on Linux -- the
-    kernel's boot UUID -- and on macOS returns the raw `sysctl kern.boottime`
-    output, `'{ sec = ... } Sat Jul 25 19:34:27 2026'`, which is not one. The
-    Runtime's own probe router holds `process.boot_id` to the public `Identifier`
-    grammar and refuses the whole `service.discover` probe when it fails, so on
-    macOS this Runtime cannot answer that probe at all, and now publishes that
-    value into the descriptor as well. That is a pre-existing defect in a module
-    outside this lane's writable manifest; it is reported rather than repaired, and
-    normalised here so this test asserts the writer/reader agreement on every
-    platform rather than a platform's boot-time string format.
+    Nothing is normalised. This test used to patch `ownership.identity._boot_id` to
+    a valid `Identifier` because the real one was not always one: on macOS it
+    returned the raw `sysctl kern.boottime` output, `'{ sec = ... } Sat Jul 25
+    19:34:27 2026'`, and the Runtime's own probe router holds `process.boot_id` to
+    the public `Identifier` grammar, so `service.discover` could not be answered on
+    that platform at all. That defect is repaired --
+    `tests/phase2/test_process_identity.py` holds `_boot_id()` to the generated
+    pattern on whichever platform the row is running -- so the value the writer
+    publishes and the client verifies here is now this host's real one.
     """
-    monkeypatch.setattr(identity, "_boot_id", lambda: "boot-0000")
-
     workspace, installation = migrated_workspace(tmp_path)
 
     # AF_UNIX paths are capped well below pytest's tmp_path length.
