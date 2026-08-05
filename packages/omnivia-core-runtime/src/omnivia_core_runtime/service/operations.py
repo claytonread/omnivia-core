@@ -44,6 +44,8 @@ from omnivia_core.contracts.v1 import (
     UpgradeState,
     VersionCapabilityEnvelope,
     classify_version_compatibility,
+    compare_contract_versions,
+    get_operation_metadata,
 )
 from omnivia_core_runtime.service.versions import (
     API_VERSION,
@@ -180,6 +182,44 @@ class ApplicationOperationRegistry:
             )
 
 
+def server_capability_snapshot(
+    registry: ApplicationOperationRegistry,
+) -> tuple[CapabilityRef, ...]:
+    """What this build supports, derived from the handlers it actually registered.
+
+    This is the server-side capability fact `authorize_application_request` has never
+    had a source for, and the reason it needs one is specific: `response_metadata`
+    below fabricates a `CapabilitySet` per response *from the caller's own claimed
+    `api_version`*. That is a response decoration. Passed to the seam as
+    `supported_capabilities` it would make the seam's twelfth check compare the
+    caller's claim against itself, which is not a check.
+
+    Support is derived from registration rather than from the catalogue at large,
+    because a capability this build declares but implements no operation for is not
+    support -- it is an advertisement. An empty registry therefore supports nothing and
+    every application request is refused, which is the correct fail-closed answer for a
+    build that ships no handlers.
+
+    A capability may appear at most once in a capability set regardless of version, and
+    the seam refuses a repeated id outright rather than resolving it, so where two
+    registered operations require the same capability the *highest* floor wins: a build
+    implementing both implements at least the stricter of the two.
+    """
+    versions: dict[str, str] = {}
+    for name in sorted(registry.operations):
+        required = get_operation_metadata(name).required_capability
+        current = versions.get(required.id)
+        if (
+            current is None
+            or compare_contract_versions(required.minimum_version, current) > 0
+        ):
+            versions[required.id] = required.minimum_version
+    return tuple(
+        CapabilityRef(id=capability_id, version=version)
+        for capability_id, version in sorted(versions.items())
+    )
+
+
 #: The workspace format as a *contract* version. The manifest records the workspace
 #: format as "1" (a single ordinal), but the envelope's ContractVersion requires
 #: `major.minor`, so the two notations are mapped rather than shared. Using "1" here
@@ -208,6 +248,7 @@ def response_metadata(
     *,
     principal: str,
     granted: tuple[str, ...] = (),
+    capabilities: tuple[CapabilityRef, ...] | None = None,
 ) -> ResponseMetadata:
     """Build the contract's response metadata.
 
@@ -277,14 +318,20 @@ def response_metadata(
     # from the request -- and the only version this build holds for its own
     # service-lifecycle operations is the contract revision it implements them under.
     #
-    # ponytail: API_VERSION stands in for a per-capability version table. The
-    # application catalogue's capabilities carry their own `required_capability`
-    # versions; when those handlers are registered, their refs come from the
-    # catalogue and a supported-capability snapshot, not from here.
-    refs = tuple(
-        CapabilityRef(id=operation, version=API_VERSION) for operation in granted
+    # ponytail: API_VERSION stands in for a per-capability version table, and it stands
+    # in only where nothing better was passed. `capabilities` is that better thing, and
+    # it is what the residual above asked for: an application handler's refs are the
+    # *effective* ones `authorize_application_request` computed, at the weaker of the
+    # session's grant and this server's snapshot, read off the frozen catalogue entry
+    # rather than built from an operation name. An operation name is not a capability
+    # id, so the fallback below is right only for the probe operations, which have no
+    # catalogue capability at all.
+    refs = (
+        tuple(CapabilityRef(id=operation, version=API_VERSION) for operation in granted)
+        if capabilities is None
+        else capabilities
     )
-    capabilities = CapabilitySet(supported=refs, granted=refs, effective=refs)
+    capability_set = CapabilitySet(supported=refs, granted=refs, effective=refs)
     return ResponseMetadata(
         request_id=request.metadata.request_id,
         correlation_id=request.metadata.correlation_id,
@@ -322,7 +369,7 @@ def response_metadata(
                 ),
                 deprecations=(),
             ),
-            capabilities=capabilities,
+            capabilities=capability_set,
         ),
         authority=GrantedAuthority(principal_id=principal, roles=(), capabilities=refs),
     )
@@ -334,9 +381,12 @@ def success(
     *,
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
+    capabilities: tuple[CapabilityRef, ...] | None = None,
 ) -> ResponseEnvelope:
     return SuccessResponseEnvelope(
-        metadata=response_metadata(request, principal=principal, granted=granted),
+        metadata=response_metadata(
+            request, principal=principal, granted=granted, capabilities=capabilities
+        ),
         result=dict(result),
     )
 
@@ -421,5 +471,6 @@ __all__ = [
     "health",
     "readiness",
     "response_metadata",
+    "server_capability_snapshot",
     "success",
 ]
