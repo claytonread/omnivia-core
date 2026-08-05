@@ -1,4 +1,19 @@
-"""Service startup coordination (T-0629G, ADR-037).
+"""Service startup coordination (T-0629G, PM ADR-037).
+
+**Staged, not orphaned.** `coordinated_startup` has no production caller yet, and
+that is a decision rather than an oversight: the owner has declared it staged and
+retained as a platform-neutral runtime bootstrap API. The named consumers, in
+order, are `omnivia-core-cli` managed-local start as the required first Core-owned
+production caller, then official MCP managed stdio mode, then `omnivia-platform`'s
+App Shell Host or Core Connectivity adapter. Nothing here may grow Electron,
+Desktop user-interface, Platform account, licensing or Module entitlement
+concerns, and it must never acquire or act as the authoritative workspace service
+lease holder -- the Core Service remains the only workspace lease owner. A
+milestone delivery target and a removal trigger govern how long that stays true,
+and both are normative, so this module is not to be deleted as unreferenced code
+without reading them:
+
+    docs/development/omnivia-core-staged-startup-and-embedder-only-http-2026-08-05.md
 
 The startup sequence is:
 
@@ -100,6 +115,10 @@ def coordinated_startup(
     ordinal through unconverted raises immediately and plainly rather than
     producing a `REFUSED_INCOMPATIBLE` decision whose reason quotes a window the
     caller's intended version would in fact have matched.
+
+    This has no production caller yet by decision, not by neglect. See the module
+    docstring for the staged declaration, the named consumers and the removal
+    trigger before concluding it is unreferenced.
     """
     decision, mutex = _decide(
         runtime_directory,

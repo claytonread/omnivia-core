@@ -1,5 +1,18 @@
 """Loopback HTTP v1 in front of the same router local IPC uses (P2b).
 
+**Embedder-only for v0.6.** This adapter exists, is exercised, and is not served by
+the standard Core service, which is a decision rather than an unfinished wiring:
+`--http-endpoint` defaults to `None`, the console-script entry point supplies no
+credential resolver, and so every HTTP bind reached that way exits 2. Only an
+approved embedder or conformance harness calling `service.main.main` with a
+resolver of its own can bring this listener up. The reason is that no approved
+credential source or bearer-session resolver has been defined yet, and it does not
+remove authenticated HTTP from the target architecture, which still needs it for
+LAN, NAS, private-server, Cloud and hybrid Desktop-to-remote-Core operation. The
+declaration, the credential-source boundary and the revisit trigger are in:
+
+    docs/development/omnivia-core-staged-startup-and-embedder-only-http-2026-08-05.md
+
 Two routes and nothing else: `POST /v1/application` and `POST /v1/probe`. This is a
 transport adapter, so what it owns is bytes, headers, status codes and the
 authentication check that produces a session -- and nothing past that line. The
@@ -754,8 +767,9 @@ class LoopbackHttpServer:
         # over a dispatcher acting as another silently reopens the hole the gate in
         # `_session_admits` closes: sessions for the *declared* principal would be
         # admitted and then executed as the dispatcher's. So where the dispatcher can
-        # state who it acts as -- which is the case for every wiring that reaches
-        # production -- the declaration is checked against it rather than trusted.
+        # state who it acts as -- which is the case for the shipped `service.main`
+        # wiring an approved embedder drives -- the declaration is checked against it
+        # rather than trusted.
         acts_as = _dispatch_principal(self.router)
         if acts_as is not None and acts_as != self.principal:
             raise HttpTransportError(
