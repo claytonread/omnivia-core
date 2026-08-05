@@ -24,6 +24,7 @@ from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.bootstrap import (
     StartupOutcome,
     _endpoint_answers,
+    _require_contract_version,
     coordinated_startup,
     refuse_incompatible_workspace,
 )
@@ -646,7 +647,7 @@ def test_startup_coordination_rediscovers_after_taking_the_mutex(
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as first:
         assert first.outcome is StartupOutcome.SPAWN
 
@@ -665,14 +666,14 @@ def test_startup_coordination_rediscovers_after_taking_the_mutex(
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as second:
         assert second.outcome is StartupOutcome.USE_EXISTING
         assert second.existing is not None
 
     # An incompatible running service is not usable.
     with coordinated_startup(
-        runtime, api_version="9.9", workspace_format_version=WORKSPACE_FORMAT_VERSION
+        runtime, api_version="9.9", workspace_contract_version=WORKSPACE_FORMAT_VERSION
     ) as third:
         assert third.outcome is StartupOutcome.REFUSED_INCOMPATIBLE
 
@@ -693,14 +694,14 @@ def test_sb08_a_second_launcher_cannot_also_spawn_while_the_first_holds_the_mute
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as first:
         assert first.should_spawn
         # Still inside the first launcher's spawn-and-wait window.
         with coordinated_startup(
             runtime,
             api_version=API_VERSION,
-            workspace_format_version=WORKSPACE_FORMAT_VERSION,
+            workspace_contract_version=WORKSPACE_FORMAT_VERSION,
         ) as second:
             assert not second.should_spawn
             assert second.outcome is StartupOutcome.REFUSED_MUTEX_UNAVAILABLE
@@ -709,7 +710,7 @@ def test_sb08_a_second_launcher_cannot_also_spawn_while_the_first_holds_the_mute
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as third:
         assert third.should_spawn
 
@@ -739,7 +740,7 @@ def test_sb08_the_mutex_is_released_on_every_exit_path(
         coordinated_startup(
             runtime,
             api_version=API_VERSION,
-            workspace_format_version=WORKSPACE_FORMAT_VERSION,
+            workspace_contract_version=WORKSPACE_FORMAT_VERSION,
         ),
     ):
         raise RuntimeError("launcher exploded")
@@ -748,7 +749,7 @@ def test_sb08_the_mutex_is_released_on_every_exit_path(
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as after:
         assert after.outcome is not StartupOutcome.REFUSED_MUTEX_UNAVAILABLE
 
@@ -845,7 +846,7 @@ def test_srb05_a_descriptor_naming_a_dead_process_is_not_used(
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as decision:
         assert decision.outcome is expected
 
@@ -872,7 +873,7 @@ def test_srb07_a_live_pid_with_a_dead_endpoint_is_not_used(tmp_path: Path) -> No
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as decision:
         assert decision.outcome is StartupOutcome.SPAWN
 
@@ -903,9 +904,77 @@ def test_a_descriptor_without_process_evidence_is_not_used(
     with coordinated_startup(
         runtime,
         api_version=API_VERSION,
-        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
     ) as decision:
         assert decision.outcome is StartupOutcome.SPAWN
+
+
+# --- the ordinal trap: private manifest notation vs public contract notation --
+
+
+def test_the_manifest_ordinal_is_rejected_loudly_not_refused_misleadingly(
+    tmp_path: Path, live_endpoint: str
+) -> None:
+    """`workspace_contract_version` wants `"1.0"`; the private manifest stores `"1"`.
+
+    Before this was fixed, passing the bare ordinal through unconverted did not
+    raise: `is_compatible` swallowed the resulting `ValueError` and reported
+    `REFUSED_INCOMPATIBLE` quoting a window (`1.0-1.0`) the caller's translated
+    version fits inside perfectly. This falsifies that: a caller that skips the
+    translation must get a loud, honest failure, not a confident-looking lie.
+    Correctly translated, the very same running service is usable.
+    """
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True)
+    publish(
+        runtime,
+        descriptor(
+            instance="svc-ordinal-trap",
+            installation="inst",
+            endpoint=live_endpoint,
+            pid=os.getpid(),
+        ),
+    )
+
+    # The trap: the manifest's bare ordinal, handed straight through.
+    with (
+        pytest.raises(ValueError, match="contract version"),
+        coordinated_startup(
+            runtime,
+            api_version=API_VERSION,
+            workspace_contract_version=WORKSPACE_FORMAT_ORDINAL,
+        ),
+    ):
+        pass
+
+    # Translated through the one boundary that does this correctly, the same
+    # running service is found compatible.
+    with coordinated_startup(
+        runtime,
+        api_version=API_VERSION,
+        workspace_contract_version=WORKSPACE_FORMAT_VERSION,
+    ) as decision:
+        assert decision.outcome is StartupOutcome.USE_EXISTING
+
+
+def test_require_contract_version_names_the_field_that_failed_to_parse() -> None:
+    """`_decide` validates both caller versions eagerly, before discovery runs.
+
+    A well-formed `major.minor` version passes silently. The private manifest's
+    bare ordinal does not -- it names the offending field (`workspace_contract_version`,
+    not `api_version`) rather than reporting a bare `is_compatible` mismatch, which
+    is what let the old refusal quote a window the caller's version fit inside.
+    `is_compatible` itself still fails closed and silently on an unreadable
+    version (see its docstring): this validation is what keeps that path from
+    ever being reached with one.
+    """
+    _require_contract_version("1.0", "workspace_contract_version")  # does not raise
+
+    with pytest.raises(ValueError, match="workspace_contract_version=") as excinfo:
+        _require_contract_version(
+            WORKSPACE_FORMAT_ORDINAL, "workspace_contract_version"
+        )
+    assert "contract version" in str(excinfo.value)
 
 
 # --- bootstrap endpoint probing ----------------------------------------------

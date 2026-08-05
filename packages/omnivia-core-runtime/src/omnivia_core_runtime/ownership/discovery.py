@@ -172,6 +172,15 @@ def _within(version: str, window: VersionWindow) -> bool:
     than answering, and a descriptor that cannot be compared is not a descriptor
     that may be used. Failing closed here keeps that refusal from escaping into a
     launcher, which has no better answer than "not usable" anyway.
+
+    This deliberately does not distinguish a malformed `window` (the discovered
+    service's own advertisement being untrustworthy) from a malformed `version`
+    (the caller's own input being unreadable) -- both become the same `False`.
+    That is safe here only because callers that hand a caller-supplied version to
+    `is_compatible` are expected to have validated it is a `major.minor`
+    ContractVersion first; `service.bootstrap._decide` does exactly that, before
+    discovery ever runs, so the only `ValueError` this can still be swallowing in
+    practice is a genuinely untrustworthy `window`.
     """
     try:
         return version_in_window(version, window)
@@ -205,6 +214,16 @@ def is_compatible(
     answer to the caller's question. Today the Runtime publishes a one-version-wide
     workspace window derived from the format it opened, so the two agree exactly --
     this is the reading that stays correct if that ever stops being true.
+
+    `workspace_format_version` must already be the public `major.minor`
+    ContractVersion (e.g. `"1.0"`), not the private workspace manifest's bare
+    ordinal (`"1"`) -- see `service.versions.workspace_contract_version` for the
+    one place that translation happens. This function does not validate that for
+    you: an unreadable version is silently refused rather than raising (see
+    `_within`), so a caller that skips the translation gets a `False` that looks
+    exactly like a genuine incompatibility. `service.bootstrap.coordinated_startup`
+    validates before calling this, precisely to avoid handing out that misleading
+    answer.
     """
     return _within(api_version, descriptor.supported_api_versions) and _within(
         workspace_format_version, descriptor.supported_workspace_versions
