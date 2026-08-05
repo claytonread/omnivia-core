@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from omnivia_core.contracts.v1 import ServiceEndpointDescriptor
+from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, parse_contract_version
 from omnivia_core.workspace.compatibility import CompatibilityOutcome
 from omnivia_core_runtime.ownership.discovery import (
     discover,
@@ -77,7 +77,7 @@ def coordinated_startup(
     runtime_directory: Path,
     *,
     api_version: str,
-    workspace_format_version: str,
+    workspace_contract_version: str,
 ) -> Iterator[StartupDecision]:
     """Coordinate startup, holding the bootstrap mutex for as long as the decision stands.
 
@@ -90,11 +90,21 @@ def coordinated_startup(
     The mutex is therefore released when the caller leaves this block -- after it has
     spawned and waited, or after it has failed -- and not before. It still grants no
     write authority; it serialises launching, nothing else.
+
+    `workspace_contract_version` is named for the notation it requires: the public
+    `major.minor` ContractVersion, not the private workspace manifest's bare ordinal
+    (`"1"`). A launcher holding the manifest's ordinal must translate it first, with
+    `omnivia_core_runtime.service.versions.workspace_contract_version` -- the one
+    place that translation happens. Both this and `api_version` are validated as
+    `major.minor` ContractVersions before anything else runs, so passing the
+    ordinal through unconverted raises immediately and plainly rather than
+    producing a `REFUSED_INCOMPATIBLE` decision whose reason quotes a window the
+    caller's intended version would in fact have matched.
     """
     decision, mutex = _decide(
         runtime_directory,
         api_version=api_version,
-        workspace_format_version=workspace_format_version,
+        workspace_contract_version=workspace_contract_version,
     )
     try:
         yield decision
@@ -103,19 +113,41 @@ def coordinated_startup(
             mutex.release()
 
 
+def _require_contract_version(version: str, label: str) -> None:
+    """Raise plainly unless `version` is a `major.minor` ContractVersion.
+
+    `api_version` and `workspace_contract_version` are the caller's own input,
+    never the discovered descriptor's, so a value that will not parse is a
+    caller mistake -- most commonly the private workspace manifest's bare
+    ordinal (`"1"`) handed over where the public `major.minor` notation
+    (`"1.0"`) is required. Validating here, before discovery or `is_compatible`
+    ever run, turns that mistake into an immediate, precise `ValueError` instead
+    of a `REFUSED_INCOMPATIBLE` decision: `is_compatible` fails closed on an
+    unreadable version exactly the same as it does on a genuine mismatch, so by
+    the time that path could report anything, the distinction is already gone.
+    """
+    try:
+        parse_contract_version(version)
+    except ValueError as error:
+        raise ValueError(f"{label}={version!r}: {error}") from error
+
+
 def _decide(
     runtime_directory: Path,
     *,
     api_version: str,
-    workspace_format_version: str,
+    workspace_contract_version: str,
 ) -> tuple[StartupDecision, FileLock | None]:
     """Decide, returning the held mutex when this launcher won the right to spawn."""
+    _require_contract_version(api_version, "api_version")
+    _require_contract_version(workspace_contract_version, "workspace_contract_version")
+
     first = _live(discover(runtime_directory))
     if first is not None and first.ready:
         if is_compatible(
             first,
             api_version=api_version,
-            workspace_format_version=workspace_format_version,
+            workspace_format_version=workspace_contract_version,
         ):
             return (
                 StartupDecision(
@@ -163,7 +195,7 @@ def _decide(
             if is_compatible(
                 second,
                 api_version=api_version,
-                workspace_format_version=workspace_format_version,
+                workspace_format_version=workspace_contract_version,
             ):
                 decision = StartupDecision(
                     outcome=StartupOutcome.ANOTHER_LAUNCHER_WON,
