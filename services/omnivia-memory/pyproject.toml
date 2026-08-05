@@ -71,15 +71,26 @@ line-length = 100
 # files under this tree; the rest of the legacy tree is deliberately out of that
 # clean scope.
 #
-# Correction: this note used to say Ruff's implicit rule set is E4/E7/E9/F and
-# that the canonical trees are "intentionally left on Ruff's implicit set". Both
-# halves were wrong by the time they were read. Ruff 0.16.1's default selection
-# is 413 rules across 37 families -- measured, not assumed -- and the canonical
-# trees satisfy all of them with zero findings. So the four families selected
-# here make this legacy tree *narrower* than the canonical trees, not the shared
-# baseline the original wording implied. The canonical trees now resolve the
-# root `[tool.ruff]`, which pins the version rather than restating the rule list;
-# widening or narrowing this tree's own selection remains out of scope.
+# Rule sets, measured under Ruff 0.16.1 -- and the two are not nested. The
+# canonical trees carry no `select` of their own: the root `[tool.ruff]` they
+# resolve pins the Ruff *version* and leaves the rule list to Ruff, so they run
+# its implicit default -- 413 rules, zero findings -- and not the E4/E7/E9/F
+# declared below. 41 of the 59 rules that selection resolves to are in that
+# default too; 372 run only in the canonical trees; 18 run only here:
+#
+#   E401 E402 E701 E702 E703 E711 E712 E713 E714 E721
+#   E731 E741 E742 E743 F403 F405 F406 F722
+#
+# `== None`, `== True`, `type(x) ==`, `lambda` assignment, ambiguous names,
+# imports after code, star imports. Nothing checks the canonical trees for those
+# today. An earlier revision of this note had the relation backwards, after
+# Ruff's implicit set widened underneath it.
+#
+# Unsettled, deliberately. Declaring the canonical selection explicitly is
+# outstanding work, and *which* rules it should hold is a decision nobody has
+# made: putting E4/E7/E9/F there would drop 372 rules and add 18 while reading
+# like a tightening. Changing this tree's own `select` is out of scope either
+# way.
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
