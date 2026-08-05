@@ -31,6 +31,7 @@ from omnivia_core_runtime.service.http_transport import (
     CONTENT_TYPE,
     PROBE_PATH,
     HttpBind,
+    HttpTls,
     HttpTransportError,
     LoopbackHttpServer,
     parse_http_endpoint,
@@ -618,10 +619,73 @@ def test_an_accepted_loopback_endpoint_parses() -> None:
     assert parse_http_endpoint("http://[::1]:8080") == HttpBind("::1", 8080)
 
 
+#: Stated material for the endpoint rules below. `parse_http_endpoint` reads no file
+#: -- validation is at `start`, before a socket exists -- so these paths need not, and
+#: deliberately do not, exist: what is under test here is the agreement between a
+#: scheme and a configuration, not the bytes behind it.
+STATED_TLS = HttpTls(
+    certificate_chain=Path("chain.pem-that-is-never-read"),
+    private_key=Path("key.pem-that-is-never-read"),
+)
+
+
+def test_an_https_endpoint_parses_once_tls_material_is_stated() -> None:
+    """The case `https://127.0.0.1:8080` moved out of the refusal table below.
+
+    It was refused there because this adapter implemented no TLS at all. It does now,
+    so the scheme is expressible -- and the guarantee that replaces the old refusal is
+    stronger than "https is refused": `https` parses **only** with material behind it,
+    a non-loopback `http` endpoint still refuses (the table keeps
+    `http://198.51.100.7:8080`), and the two disagreeing directions are refused below.
+    """
+    assert parse_http_endpoint("https://127.0.0.1:8080", tls=STATED_TLS) == HttpBind(
+        "127.0.0.1", 8080, tls=STATED_TLS
+    )
+    assert parse_http_endpoint("https://[::1]:8080", tls=STATED_TLS) == HttpBind(
+        "::1", 8080, tls=STATED_TLS
+    )
+    # And a routable host, which `http://` cannot reach at any port.
+    assert parse_http_endpoint("https://198.51.100.7:8443", tls=STATED_TLS) == HttpBind(
+        "198.51.100.7", 8443, tls=STATED_TLS
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "endpoint", "tls"),
+    [
+        ("https_with_nothing_to_serve_it_with", "https://127.0.0.1:8080", None),
+        (
+            "https_non_loopback_with_nothing_to_serve_it_with",
+            "https://198.51.100.7:1",
+            None,
+        ),
+        (
+            "http_carrying_material_it_would_not_use",
+            "http://127.0.0.1:8080",
+            STATED_TLS,
+        ),
+        ("http_non_loopback_carrying_material", "http://198.51.100.7:1", STATED_TLS),
+    ],
+)
+def test_an_endpoint_whose_scheme_and_tls_material_disagree_refuses(
+    name: str, endpoint: str, tls: HttpTls | None
+) -> None:
+    """Both directions refuse, and neither has a fallback.
+
+    `https` with nothing behind it must not become a listener, and `http` holding a key
+    must not become one either -- guessing which of the two the caller meant is
+    guessing whether to downgrade, and there is no answer to that question that is not
+    a downgrade half the time.
+    """
+    del name
+
+    with pytest.raises(HttpTransportError):
+        parse_http_endpoint(endpoint, tls=tls)
+
+
 @pytest.mark.parametrize(
     "endpoint",
     [
-        "https://127.0.0.1:8080",
         "unix:///tmp/s.sock",
         "http://0.0.0.0:8080",
         "http://[::]:8080",
@@ -642,10 +706,14 @@ def test_an_accepted_loopback_endpoint_parses() -> None:
     ],
 )
 def test_an_endpoint_this_lane_cannot_serve_refuses(endpoint: str) -> None:
-    """`https` is refused with the rest: this lane implements no TLS at all.
+    """Everything with no bind behind it, still refused with no TLS material stated.
 
-    Accepting the scheme and serving cleartext behind it would be worse than refusing,
-    and implementing TLS here is out of scope by the packet's own boundary.
+    `https://127.0.0.1:8080` used to head this table because the adapter implemented no
+    TLS at all. It has moved up to two named tests rather than been deleted: the scheme
+    now parses, but only with material, and the guarantee this case carried -- a URL
+    can never talk this adapter into serving a routable address in the clear -- is what
+    `http://0.0.0.0:8080`, `http://198.51.100.7:8080` and `http://localhost:8080`
+    below still hold, unchanged and with no `tls` argument in sight.
     """
     with pytest.raises(HttpTransportError):
         parse_http_endpoint(endpoint)
