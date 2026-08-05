@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+from functools import cache
 from pathlib import Path
 
 from omnivia_core.contracts.v1 import (
@@ -43,9 +46,137 @@ DESCRIPTOR_NAME = "service.json"
 DESCRIPTOR_MODE = 0o600
 RUNTIME_DIRECTORY_MODE = 0o700
 
+#: The Windows form of the same restriction, spelled for `icacls`.
+#:
+#: `os.chmod` is close to a no-op there -- it toggles the read-only attribute and
+#: nothing else -- so a descriptor published on Windows carries whatever the
+#: inherited DACL grants, which on a shared machine is every local user. The
+#: accepted client's Windows reader is what this has to satisfy: an object owned by
+#: the current user whose DACL names no other trustee and is not inherited.
+#:
+#: Directories carry `(OI)(CI)` so anything created below them inherits that single
+#: entry instead of the parent's, which is the closest Windows has to `0o700`.
+_WINDOWS_DIRECTORY_RIGHTS = "(OI)(CI)F"
+_WINDOWS_FILE_RIGHTS = "F"
+
+#: `whoami /user` reports the SID in this form, mixed into a CSV row.
+_SID_RE = re.compile(r"S-1-[0-9-]+")
+
 
 def descriptor_path(runtime_directory: Path) -> Path:
     return runtime_directory / DESCRIPTOR_NAME
+
+
+def _system32(program: str) -> str:  # pragma: no cover - Windows only
+    """An absolute path to a Windows system tool.
+
+    Resolving through `PATH` would let any directory earlier on it supply the
+    program that sets the descriptor's ACL, which is the wrong way round for a
+    restriction. `SystemRoot` is where the documentation says these live and is not
+    always `C:\\Windows`.
+    """
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
+
+
+@cache
+def _windows_owner_sid() -> str:  # pragma: no cover - Windows only
+    """This process's token user SID, in the form the accepted client compares.
+
+    The client reads the DACL and compares each allow ACE's SID against its own
+    `TokenUser`, so the ACE granted here has to name that same SID. `whoami /user`
+    reports exactly it. An account *name* would be a second lookup that can resolve
+    to a different principal than the token carries, and the whole point is that
+    these two agree.
+    """
+    completed = subprocess.run(
+        [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    found = _SID_RE.search(completed.stdout)
+    if completed.returncode != 0 or found is None:
+        raise OSError(
+            f"could not read this process's own user SID: {completed.stderr.strip()[:200]}"
+        )
+    return found.group()
+
+
+def _restrict_windows(path: Path, *, directory: bool) -> None:  # pragma: no cover
+    """Reduce `path` to an owner-only DACL: the Windows form of `0o600`/`0o700`.
+
+    Three invocations, because no single one does all of it.
+
+    `/setowner` first. The accepted client refuses an object whose owner is not its
+    own `TokenUser`, and ownership is *inherited from the token*, not from the DACL:
+    a process whose token carries `TokenOwner = BUILTIN\\Administrators` -- the
+    normal shape of an elevated administrator -- creates objects owned by
+    Administrators, and every DACL below would be correct while the client refused
+    the descriptor anyway.
+
+    It can fail on its own, and the rights are not the ones an owner gets for free.
+    An owner implicitly holds `READ_CONTROL` and `WRITE_DAC` -- which is what
+    `/reset` and `/grant:r` need -- but *not* `WRITE_OWNER`, which is what
+    `/setowner` needs and which comes only from the DACL or from
+    `SeTakeOwnershipPrivilege` in the token. So a process that already owns the
+    object can fail this step while the two below it would have succeeded. That is
+    a loud refusal to publish rather than a quiet mis-publication, and it stays
+    fatal for that reason: an owner the client will refuse is a service that
+    advertises itself and cannot be reached, discovered in the field by nobody.
+
+    Neither ordering dominates and this one is a choice, not a consequence. First
+    rescues an object owned by another principal when the token does carry
+    `SeTakeOwnershipPrivilege`, since owning it is then what supplies the
+    `WRITE_DAC` the rest needs. Last would instead rescue an object this process
+    owns whose DACL omits `WRITE_OWNER`, because `F` includes it and `/grant:r`
+    would have just granted it. The chain is created by this installation's own
+    user, so the first case is the one that shows up.
+
+    `/reset` then drops the *explicit* entries, which `/inheritance:r` does not
+    touch -- an installer's or a user's grant to a group would otherwise survive a
+    restriction the POSIX `chmod` clears unconditionally. `/inheritance:r` drops the
+    *inherited* entries and marks the DACL protected, so a permissive parent cannot
+    re-supply them, and `/grant:r` leaves one allow ACE naming this process's own
+    SID.
+
+    `icacls` rather than `ctypes`, deliberately. No host in this repository can
+    exercise Windows, and a wrong `SetNamedSecurityInfoW` call either does nothing
+    or writes a security descriptor nobody intended -- both silent. A wrong `icacls`
+    argument is a non-zero exit with a message on stderr. The cost is a process
+    launch per path; it is paid once per publication, not per probe.
+
+    Failure raises, carrying what the tool said. A descriptor advertising a live
+    endpoint to every local user is worse than no descriptor, so this fails closed --
+    and the message is the only diagnostic a host nobody here can reach will send
+    back, which is half the reason this is a tool call and not a native one.
+    """
+    rights = _WINDOWS_DIRECTORY_RIGHTS if directory else _WINDOWS_FILE_RIGHTS
+    owner = _windows_owner_sid()
+    for arguments in (
+        ("/setowner", f"*{owner}"),
+        ("/reset",),
+        ("/inheritance:r", "/grant:r", f"*{owner}:{rights}"),
+    ):
+        completed = subprocess.run(
+            [_system32("icacls.exe"), str(path), *arguments, "/q"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise OSError(
+                f"could not restrict {path} to its owner: "
+                f"{completed.stderr.strip()[:200]}"
+            )
+
+
+def _restrict(path: Path, *, directory: bool) -> None:
+    """Reduce `path` to owner-only access, in whatever form this platform has one."""
+    os.chmod(path, RUNTIME_DIRECTORY_MODE if directory else DESCRIPTOR_MODE)
+    if os.name == "nt":  # pragma: no cover - proved on the hosted Windows row
+        _restrict_windows(path, directory=directory)
 
 
 def _make_private(runtime_directory: Path) -> None:
@@ -75,17 +206,46 @@ def _make_private(runtime_directory: Path) -> None:
     Ancestors that already existed are left alone. Their permissions are the
     installer's or the user's decision, and silently re-permissioning a directory
     tree this code did not create is its own hazard.
+
+    Which ancestors *were* created is decided by the creating syscall, not by a
+    prior scan. Asking `exists()` first and then calling `mkdir(parents=True)` puts
+    a window between the two: an ancestor observed as present, removed, and then
+    rebuilt by that `mkdir` was created by this call and is not in the scanned set,
+    so it kept the umask-derived mode. Creating the chain a level at a time answers
+    the question with the only call that can answer it -- a `mkdir` that returns is
+    one this call made, and one that fails on a directory that is there is one it
+    did not -- which is why the failure is tolerated only when the directory exists
+    afterwards. Anything else propagates, exactly as `mkdir(parents=True)` did: a
+    component that is a file, or a chain this process may not build, is not
+    something to publish into.
+
+    Each created directory is restricted immediately rather than at the end. A
+    publication that fails partway leaves the levels it did build, and a failure
+    after the loop would leave them at the umask-derived mode *permanently* -- the
+    retry finds them already present, and a directory this call did not create is
+    one it will not touch. Restricting in place costs the same syscalls and means a
+    failed publication leaves nothing open behind it. On Windows it also means each
+    level is owner-only before the next is created inside it, so the child inherits
+    that rather than the parent's.
     """
-    created = [
-        directory
-        for directory in (runtime_directory, *runtime_directory.parents)
-        if not directory.exists()
-    ]
-    runtime_directory.mkdir(parents=True, exist_ok=True)
-    for directory in dict.fromkeys(
-        [*created, runtime_directory.parent, runtime_directory]
-    ):
-        os.chmod(directory, RUNTIME_DIRECTORY_MODE)
+    created: list[Path] = []
+    for directory in reversed((runtime_directory, *runtime_directory.parents)):
+        try:
+            # No `mode=` here. It would narrow the window between creation and the
+            # restriction below, and it would also make that restriction
+            # unfalsifiable on POSIX -- `mkdir(0o700)` under any umask lands on
+            # `0o700`, so deleting the restriction of created ancestors would leave
+            # every case green. The restriction is the thing that has to be proved.
+            directory.mkdir()
+        except OSError:
+            if not directory.is_dir():
+                raise
+            continue
+        _restrict(directory, directory=True)
+        created.append(directory)
+    for directory in (runtime_directory.parent, runtime_directory):
+        if directory not in created:
+            _restrict(directory, directory=True)
 
 
 def publish(runtime_directory: Path, descriptor: ServiceEndpointDescriptor) -> Path:
@@ -109,6 +269,12 @@ def publish(runtime_directory: Path, descriptor: ServiceEndpointDescriptor) -> P
     pid will write -- and without the `chmod` that stale file's own mode is what
     the rename publishes. `os.open`'s mode still matters: it is what keeps the
     ordinary case restrictive from creation rather than from the `chmod`.
+
+    Windows reaches the same property through the same sequence for a different
+    reason. `os.open`'s mode buys nothing there, and the DACL the new file inherits
+    from its directory is whatever that directory hands down, so the restriction is
+    applied to the temporary file and the rename -- within one directory, on one
+    volume -- publishes the object already holding it.
     """
     _make_private(runtime_directory)
     target = descriptor_path(runtime_directory)
@@ -123,7 +289,7 @@ def publish(runtime_directory: Path, descriptor: ServiceEndpointDescriptor) -> P
         os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, DESCRIPTOR_MODE), "wb"
     ) as handle:
         handle.write(document.encode("utf-8"))
-    os.chmod(temporary, DESCRIPTOR_MODE)
+    _restrict(temporary, directory=False)
     temporary.replace(target)
     return target
 
