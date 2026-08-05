@@ -119,29 +119,54 @@ def system32(program: str) -> str:
     return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
 
 
-def icacls(path: Path, *arguments: str) -> str:
+class OracleUnavailable(AssertionError):
+    """A reader this module asks its questions through could not answer.
+
+    Deliberately a different failure from "the answer was wrong". Both are red --
+    an unrunnable check is not a passing one, and skipping it would leave the
+    property proved by nothing, which is what adding it was for -- but a row that
+    cannot tell "the owner is another principal" from "the tool did not launch"
+    costs a CI round-trip to find out which, and Windows is the platform where a
+    round-trip is the only instrument there is.
+    """
+
+
+def run_tool(argv: list[str], *, timeout: int) -> str:
+    """Run one oracle and return its stdout, or fail carrying what it actually said.
+
+    `check=True` raises a `CalledProcessError` that reports the argv and the exit
+    status and **discards both output streams**. That is how the first hosted
+    Windows row reported `exit status 1` and nothing else: the one line that would
+    have explained it was captured and thrown away. Nothing here is sanitized --
+    this is a test oracle reading its own `tmp_path`, not a service refusal that
+    could quote a caller.
+    """
     completed = subprocess.run(
-        [system32("icacls.exe"), str(path), *arguments],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=True,
+        argv, capture_output=True, text=True, timeout=timeout, check=False
     )
+    if completed.returncode != 0:
+        raise OracleUnavailable(
+            f"{Path(argv[0]).name} exited {completed.returncode}\n"
+            f"  argv:   {argv}\n"
+            f"  stderr: {completed.stderr.strip()}\n"
+            f"  stdout: {completed.stdout.strip()}"
+        )
     return completed.stdout
+
+
+def icacls(path: Path, *arguments: str) -> str:
+    return run_tool([system32("icacls.exe"), str(path), *arguments], timeout=60)
 
 
 @cache
 def windows_account_sid() -> str:
     """This account's SID, the form the accepted client compares an owner against."""
-    completed = subprocess.run(
-        [system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
+    output = run_tool(
+        [system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15
     )
-    found = SID_RE.search(completed.stdout)
-    assert found is not None, f"no SID in {completed.stdout!r}"
+    found = SID_RE.search(output)
+    if found is None:
+        raise OracleUnavailable(f"no SID in whoami output: {output!r}")
     return found.group()
 
 
@@ -158,14 +183,20 @@ def windows_owner_sid(path: Path) -> str:
     `Get-Acl` answers directly, and asking it for the SID rather than the account
     name keeps every name-spelling and localization question out of the comparison.
 
-    An unreadable or unparseable answer fails here. An owner nobody could read is
-    not an owner anyone may call correct.
+    An unreadable or unparseable answer fails here, as `OracleUnavailable` rather
+    than as a wrong owner. An owner nobody could read is not an owner anyone may
+    call correct.
+
+    The command string is deliberately unchanged from the one the first hosted
+    Windows row rejected with `exit status 1`. Rewriting it would buy a different
+    failure rather than an explanation of the observed one, and the run that
+    explains it is the same run that would have been spent on the guess.
     """
     command = (
         f"(Get-Acl -LiteralPath '{path}')"
         ".GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
     )
-    completed = subprocess.run(
+    owner = run_tool(
         [
             system32("WindowsPowerShell\\v1.0\\powershell.exe"),
             "-NoProfile",
@@ -173,13 +204,10 @@ def windows_owner_sid(path: Path) -> str:
             "-Command",
             command,
         ],
-        capture_output=True,
-        text=True,
         timeout=120,
-        check=True,
-    )
-    owner = completed.stdout.strip()
-    assert SID_RE.fullmatch(owner), f"could not read the owner of {path}: {owner!r}"
+    ).strip()
+    if not SID_RE.fullmatch(owner):
+        raise OracleUnavailable(f"the owner of {path} did not read as a SID: {owner!r}")
     return owner
 
 
@@ -203,14 +231,7 @@ def windows_account() -> str:
     here has to know how this installation spells `Everyone` or
     `BUILTIN\\Administrators`.
     """
-    completed = subprocess.run(
-        [system32("whoami.exe")],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-    )
-    return completed.stdout.strip().casefold()
+    return run_tool([system32("whoami.exe")], timeout=15).strip().casefold()
 
 
 def windows_trustees(path: Path) -> frozenset[str]:
