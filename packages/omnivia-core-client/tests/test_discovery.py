@@ -37,12 +37,14 @@ from omnivia_core_client.discovery import MAXIMUM_DESCRIPTOR_BYTES, _is_secure_p
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
+    ContractSemanticError,
     RequestEnvelope,
     ResponseEnvelope,
     ServiceEndpointDescriptor,
     ServiceProbeRequest,
     ServiceProbeResult,
     ServiceProcessEvidence,
+    decode_service_endpoint_descriptor,
 )
 
 WORKSPACE_ID = "workspace-alpha"
@@ -1276,19 +1278,25 @@ def test_stale_pid_is_only_corroboration_when_live_identity_matches(
 
 @pytest.mark.parametrize(
     "published_at",
-    ["2001-01-01T00:00:00Z", "2099-12-31T23:59:59Z", "2026-07-30T11:59:58+05:30"],
-    ids=("long-stale", "far-future", "offset-timezone"),
+    ["2001-01-01T00:00:00Z", "2099-12-31T23:59:59Z"],
+    ids=("long-stale", "far-future"),
 )
 def test_publication_time_never_decides_discovery_in_either_direction(
     tmp_path: Path, published_at: str
 ) -> None:
     """A publication timestamp is not evidence, however it reads.
 
-    Years stale, dated in the future, or written in an offset this installation
-    never uses: none of it is a reason to refuse an endpoint whose live identity
-    agrees, and none of it is a reason to accept one whose live identity does
-    not. A clock is the one input an attacker and a badly configured host produce
-    identically, so nothing here may turn on it.
+    Years stale or dated in the future: neither is a reason to refuse an endpoint
+    whose live identity agrees, and neither is a reason to accept one whose live
+    identity does not. A clock is the one input an attacker and a badly configured
+    host produce identically, so nothing here may turn on it.
+
+    A third case used to ride along here -- an offset spelling, `+05:30` -- on the
+    reading that an installation's timezone is as irrelevant as its clock. It is
+    not the same thing. `Timestamp` is declared UTC with a literal `Z`, so that
+    value is not a differently-written instant but a malformed field, and it now
+    belongs to the test below. What this one asserts is unchanged: both values here
+    conform, and discovery still turns on live identity alone.
     """
     publish(tmp_path, descriptor_wire(published_at=published_at))
 
@@ -1303,6 +1311,29 @@ def test_publication_time_never_decides_discovery_in_either_direction(
     with pytest.raises(TransportError, match="live identity") as caught:
         discover(tmp_path, RecordingTransport(live))
     assert_sanitized(caught.value, planted)
+
+
+def test_a_published_at_outside_the_declared_timestamp_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Refused for being malformed, not for what the clock reads.
+
+    Both halves are asserted, because the second alone would pass for the wrong
+    reason: the client's document refusal is the same fixed string a truncated
+    file or a duplicated member produces, so it cannot on its own show that the
+    timestamp is why. The contract's refusal names the field, and that is the
+    reason this document is rejected.
+    """
+    offset = "2026-07-30T11:59:58+05:30"
+
+    with pytest.raises(ContractSemanticError) as refusal:
+        decode_service_endpoint_descriptor(descriptor_wire(published_at=offset))
+    assert str(refusal.value) == "published_at is not a canonical RFC 3339 UTC Timestamp"
+
+    publish(tmp_path, descriptor_wire(published_at=offset))
+    with pytest.raises(ProtocolError) as caught:
+        discover(tmp_path, RecordingTransport(descriptor()))
+    assert str(caught.value) == "descriptor document is not an accepted public descriptor"
 
 
 @pytest.mark.parametrize(
