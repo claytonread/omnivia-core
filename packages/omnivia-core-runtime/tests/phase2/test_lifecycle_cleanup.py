@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from omnivia_core_runtime.ownership.discovery import (
-    ReadinessState,
-    ServiceDescriptor,
-    discover,
-    publish,
-)
+from omnivia_core_runtime.ownership.discovery import discover, publish
 from omnivia_core_runtime.ownership.fencing import (
     close_guard,
     fenced_transaction,
@@ -40,12 +36,16 @@ from omnivia_core_runtime.service.lifecycle import (
     ServiceLifecycle,
     ServiceState,
 )
-from omnivia_core_runtime.service.runner import (
-    API_VERSION,
-    ServiceRunner,
-    ServiceSettings,
-)
+from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.transport import endpoint_for_path
+from omnivia_core_runtime.service.versions import (
+    API_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_VERSION,
+    supported_api_versions,
+    supported_workspace_versions,
+    workspace_contract_version,
+)
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
@@ -58,11 +58,47 @@ from omnivia_core_runtime.storage.migrations import (
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
+from omnivia_core.contracts.v1 import (
+    ServiceEndpointDescriptor,
+    ServiceProcessEvidence,
+)
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 
 from .conftest import SERVICE_INSTANCE, WORKSPACE_ID
 
 CORE_VERSION = "0.1.0"
+WORKSPACE_FORMAT_ORDINAL = "1"
+WORKSPACE_FORMAT_VERSION = workspace_contract_version(WORKSPACE_FORMAT_ORDINAL)
+
+
+def descriptor(
+    *,
+    instance: str,
+    installation: str,
+    endpoint: str,
+    pid: int,
+    generation: int = 2,
+) -> ServiceEndpointDescriptor:
+    """A ready descriptor in the shape the service actually publishes."""
+    return ServiceEndpointDescriptor(
+        descriptor_version=API_VERSION,
+        workspace_id=WORKSPACE_ID,
+        service_instance_id=instance,
+        installation_id=installation,
+        endpoint_uri=endpoint,
+        protocol_version=PROTOCOL_VERSION,
+        server_version=SERVER_VERSION,
+        supported_api_versions=supported_api_versions(),
+        supported_workspace_versions=supported_workspace_versions(
+            WORKSPACE_FORMAT_ORDINAL
+        ),
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+        ready=True,
+        lifecycle_state=ServiceState.READY.value,
+        fencing_generation=generation,
+        published_at="2026-08-04T00:00:00Z",
+        process=ServiceProcessEvidence(pid=pid, start_time="100", boot_id="boot-a"),
+    )
 
 
 @pytest.fixture
@@ -235,7 +271,8 @@ def test_lc02_lc03_readiness_requires_all_nine_preconditions(
         # Readiness is advertised only after the state is READY.
         found = discover(installation.runtime_for(WORKSPACE_ID))
         assert found is not None and found.ready
-        assert found.api_version == API_VERSION
+        assert found.descriptor_version == API_VERSION
+        assert found.supported_api_versions == supported_api_versions()
         assert found.fencing_generation == report.fencing_generation
     finally:
         runner.stop()
@@ -607,21 +644,18 @@ def test_startup_coordination_rediscovers_after_taking_the_mutex(
     runtime.mkdir(parents=True)
 
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as first:
         assert first.outcome is StartupOutcome.SPAWN
 
     publish(
         runtime,
-        ServiceDescriptor(
-            workspace_id=WORKSPACE_ID,
-            service_instance_id="svc-other",
-            installation_id="inst-other",
-            fencing_generation=2,
+        descriptor(
+            instance="svc-other",
+            installation="inst-other",
             endpoint=live_endpoint,
-            readiness=ReadinessState.READY.value,
-            api_version=API_VERSION,
-            workspace_format_version="1",
             # A live pid: the descriptor stands for a service that is actually
             # running, which is what "another launcher won" means. An arbitrary
             # number here made the case depend on dead descriptors being trusted.
@@ -629,14 +663,16 @@ def test_startup_coordination_rediscovers_after_taking_the_mutex(
         ),
     )
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as second:
         assert second.outcome is StartupOutcome.USE_EXISTING
         assert second.existing is not None
 
     # An incompatible running service is not usable.
     with coordinated_startup(
-        runtime, api_version="9.9", workspace_format_version="1"
+        runtime, api_version="9.9", workspace_format_version=WORKSPACE_FORMAT_VERSION
     ) as third:
         assert third.outcome is StartupOutcome.REFUSED_INCOMPATIBLE
 
@@ -655,19 +691,25 @@ def test_sb08_a_second_launcher_cannot_also_spawn_while_the_first_holds_the_mute
     runtime.mkdir(parents=True)
 
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as first:
         assert first.should_spawn
         # Still inside the first launcher's spawn-and-wait window.
         with coordinated_startup(
-            runtime, api_version=API_VERSION, workspace_format_version="1"
+            runtime,
+            api_version=API_VERSION,
+            workspace_format_version=WORKSPACE_FORMAT_VERSION,
         ) as second:
             assert not second.should_spawn
             assert second.outcome is StartupOutcome.REFUSED_MUTEX_UNAVAILABLE
 
     # Once the winner is finished, the mutex is available again.
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as third:
         assert third.should_spawn
 
@@ -684,15 +726,10 @@ def test_sb08_the_mutex_is_released_on_every_exit_path(
     if not outcome_is_spawn:
         publish(
             runtime,
-            ServiceDescriptor(
-                workspace_id=WORKSPACE_ID,
-                service_instance_id="svc-other",
-                installation_id="inst-other",
-                fencing_generation=2,
+            descriptor(
+                instance="svc-other",
+                installation="inst-other",
                 endpoint="unix:///tmp/other.sock",
-                readiness=ReadinessState.READY.value,
-                api_version=API_VERSION,
-                workspace_format_version="1",
                 pid=999,
             ),
         )
@@ -700,14 +737,18 @@ def test_sb08_the_mutex_is_released_on_every_exit_path(
     with (
         pytest.raises(RuntimeError, match="launcher exploded"),
         coordinated_startup(
-            runtime, api_version=API_VERSION, workspace_format_version="1"
+            runtime,
+            api_version=API_VERSION,
+            workspace_format_version=WORKSPACE_FORMAT_VERSION,
         ),
     ):
         raise RuntimeError("launcher exploded")
 
     # A leaked mutex would refuse the next launcher instead of answering it.
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as after:
         assert after.outcome is not StartupOutcome.REFUSED_MUTEX_UNAVAILABLE
 
@@ -794,20 +835,17 @@ def test_srb05_a_descriptor_naming_a_dead_process_is_not_used(
     runtime.mkdir(parents=True)
     publish(
         runtime,
-        ServiceDescriptor(
-            workspace_id=WORKSPACE_ID,
-            service_instance_id="svc-maybe-dead",
-            installation_id="inst",
-            fencing_generation=2,
+        descriptor(
+            instance="svc-maybe-dead",
+            installation="inst",
             endpoint=live_endpoint,
-            readiness=ReadinessState.READY.value,
-            api_version=API_VERSION,
-            workspace_format_version="1",
             pid=pid,
         ),
     )
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as decision:
         assert decision.outcome is expected
 
@@ -823,21 +861,49 @@ def test_srb07_a_live_pid_with_a_dead_endpoint_is_not_used(tmp_path: Path) -> No
     runtime.mkdir(parents=True)
     publish(
         runtime,
-        ServiceDescriptor(
-            workspace_id=WORKSPACE_ID,
-            service_instance_id="svc-recycled-pid",
-            installation_id="inst",
-            fencing_generation=2,
+        descriptor(
+            instance="svc-recycled-pid",
+            installation="inst",
             # This process is alive, and is not a Core service.
             endpoint="unix:///nonexistent/omnivia-srb07.sock",
-            readiness=ReadinessState.READY.value,
-            api_version=API_VERSION,
-            workspace_format_version="1",
             pid=os.getpid(),
         ),
     )
     with coordinated_startup(
-        runtime, api_version=API_VERSION, workspace_format_version="1"
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
+    ) as decision:
+        assert decision.outcome is StartupOutcome.SPAWN
+
+
+def test_a_descriptor_without_process_evidence_is_not_used(
+    tmp_path: Path, live_endpoint: str
+) -> None:
+    """`process` is optional in the contract shape; liveness is not optional here.
+
+    The pid check and the endpoint probe are independent, and a descriptor that
+    carries no process block has not passed the first one, it has skipped it. Even
+    with an endpoint that genuinely answers, it is not adopted.
+    """
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(parents=True)
+    publish(
+        runtime,
+        replace(
+            descriptor(
+                instance="svc-no-evidence",
+                installation="inst",
+                endpoint=live_endpoint,
+                pid=os.getpid(),
+            ),
+            process=None,
+        ),
+    )
+    with coordinated_startup(
+        runtime,
+        api_version=API_VERSION,
+        workspace_format_version=WORKSPACE_FORMAT_VERSION,
     ) as decision:
         assert decision.outcome is StartupOutcome.SPAWN
 

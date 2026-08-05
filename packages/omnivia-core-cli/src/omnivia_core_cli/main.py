@@ -53,7 +53,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(
             json.dumps(
                 {
-                    "endpoint": service.endpoint,
+                    # The output key stays `endpoint`: the value moved to
+                    # `endpoint_uri` in the published document, what it means to a
+                    # caller of this command did not, and renaming it would break
+                    # every script reading this JSON for no gain.
+                    "endpoint": service.endpoint_uri,
                     "workspace_id": service.workspace_id,
                     "service_instance_id": service.service_instance_id,
                     "fencing_generation": service.fencing_generation,

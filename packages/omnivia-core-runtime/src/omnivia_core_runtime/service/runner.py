@@ -17,12 +17,7 @@ from pathlib import Path
 
 from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, ServiceProcessEvidence
 from omnivia_core.workspace.compatibility import evaluate_compatibility
-from omnivia_core_runtime.ownership.discovery import (
-    ReadinessState,
-    ServiceDescriptor,
-    compare_and_clean,
-    publish,
-)
+from omnivia_core_runtime.ownership.discovery import compare_and_clean, publish
 from omnivia_core_runtime.ownership.fencing import (
     assert_guards_intact,
     close_guard,
@@ -56,9 +51,7 @@ from omnivia_core_runtime.service.lifecycle import (
 )
 from omnivia_core_runtime.service.probes import ServiceFacts
 from omnivia_core_runtime.service.versions import (
-    API_VERSION as PUBLIC_API_VERSION,
-)
-from omnivia_core_runtime.service.versions import (
+    API_VERSION,
     PROTOCOL_VERSION,
     SERVER_VERSION,
     supported_api_versions,
@@ -81,8 +74,6 @@ from omnivia_core_runtime.storage.migrations import (
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 from omnivia_core_runtime.workspace.manifest_store import read_manifest
-
-API_VERSION = "1.0"
 
 
 @dataclass(frozen=True)
@@ -301,21 +292,19 @@ class ServiceRunner:
             self._start_transport(serve)
 
         # 8. Readiness is advertised last.
-        publish(
-            self.installation.runtime_for(manifest.workspace_id),
-            ServiceDescriptor(
-                workspace_id=manifest.workspace_id,
-                service_instance_id=self.identity.service_instance_id,
-                installation_id=installation_identity.installation_id,
-                fencing_generation=lease.fencing_generation,
-                endpoint=settings.endpoint or "in-process",
-                readiness=ReadinessState.READY.value,
-                api_version=API_VERSION,
-                workspace_format_version=manifest.compatibility.workspace_format_version,
-                pid=os.getpid(),
-            ),
+        #
+        # Nothing is advertised when this instance has no endpoint to advertise.
+        # `endpoint_uri` is a dialable address, and an in-process runner has none
+        # to give: the descriptor's whole purpose is to tell another process where
+        # to connect, so publishing one that names nowhere would be advertising a
+        # service no reader can reach. The same condition already governs the
+        # discovery probe, and it is the same descriptor.
+        descriptor = self._endpoint_descriptor(
+            self._observed_at(), ready=self.lifecycle.advertises_writable
         )
-        self.lifecycle.resources.push("discovery_descriptor", self._clean_discovery)
+        if descriptor is not None:
+            publish(self.installation.runtime_for(manifest.workspace_id), descriptor)
+            self.lifecycle.resources.push("discovery_descriptor", self._clean_discovery)
 
         return StartupReport(
             ready=True,
@@ -337,46 +326,69 @@ class ServiceRunner:
         if failed:
             raise RuntimeError("local service transport start failed")
 
+    def _observed_at(self) -> str:
+        return self.clock.wall_time().astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    def _endpoint_descriptor(
+        self, published_at: str, *, ready: bool
+    ) -> ServiceEndpointDescriptor | None:
+        """This instance as the public descriptor, or None with nothing to advertise.
+
+        One construction, two consumers: the document `publish()` writes and the
+        descriptor the `service.discover` probe answers with are the same value
+        built from the same facts. Building it twice is how a reader of the file
+        and a caller of the probe end up being told two different things about one
+        service.
+
+        `ready` is passed in rather than read here. It is live state that a
+        concurrent drain or stop moves, so a caller that also reports it -- the
+        probe does, as its own `status` -- must read it once and hand the same
+        value to both, or a single probe can answer `pass` beside a descriptor
+        that says `ready: false`.
+
+        None when any fact is still missing, and in particular when no endpoint was
+        configured -- see the publication step for why that is a refusal to
+        advertise rather than a placeholder.
+        """
+        if (
+            self.identity is None
+            or self.workspace_id is None
+            or self.workspace_format_ordinal is None
+            or self.generation is None
+            or self.settings.endpoint is None
+        ):
+            return None
+        return ServiceEndpointDescriptor(
+            descriptor_version=API_VERSION,
+            workspace_id=self.workspace_id,
+            service_instance_id=self.identity.service_instance_id,
+            installation_id=self.identity.installation_id,
+            endpoint_uri=self.settings.endpoint,
+            protocol_version=PROTOCOL_VERSION,
+            server_version=SERVER_VERSION,
+            supported_api_versions=supported_api_versions(),
+            supported_workspace_versions=supported_workspace_versions(
+                self.workspace_format_ordinal
+            ),
+            workspace_format_version=workspace_contract_version(
+                self.workspace_format_ordinal
+            ),
+            ready=ready,
+            lifecycle_state=self.lifecycle.state.value,
+            fencing_generation=self.generation,
+            published_at=published_at,
+            process=ServiceProcessEvidence(
+                pid=self.identity.process.pid,
+                start_time=self.identity.process.start_time,
+                boot_id=self.identity.process.boot_id,
+            ),
+        )
+
     def probe_facts(self) -> ServiceFacts:
         """Project this live instance into the accepted public probe snapshot."""
-        observed_at = (
-            self.clock.wall_time().astimezone(UTC).isoformat().replace("+00:00", "Z")
-        )
+        observed_at = self._observed_at()
         ready = self.lifecycle.advertises_writable
-        descriptor = None
-        if (
-            self.identity is not None
-            and self.workspace_id is not None
-            and self.workspace_format_ordinal is not None
-            and self.generation is not None
-            and self.settings.endpoint is not None
-        ):
-            workspace_version = workspace_contract_version(
-                self.workspace_format_ordinal
-            )
-            descriptor = ServiceEndpointDescriptor(
-                descriptor_version=PUBLIC_API_VERSION,
-                workspace_id=self.workspace_id,
-                service_instance_id=self.identity.service_instance_id,
-                installation_id=self.identity.installation_id,
-                endpoint_uri=self.settings.endpoint,
-                protocol_version=PROTOCOL_VERSION,
-                server_version=SERVER_VERSION,
-                supported_api_versions=supported_api_versions(),
-                supported_workspace_versions=supported_workspace_versions(
-                    self.workspace_format_ordinal
-                ),
-                workspace_format_version=workspace_version,
-                ready=ready,
-                lifecycle_state=self.lifecycle.state.value,
-                fencing_generation=self.generation,
-                published_at=observed_at,
-                process=ServiceProcessEvidence(
-                    pid=self.identity.process.pid,
-                    start_time=self.identity.process.start_time,
-                    boot_id=self.identity.process.boot_id,
-                ),
-            )
+        descriptor = self._endpoint_descriptor(observed_at, ready=ready)
         status = "pass" if ready else "fail"
         return ServiceFacts(
             observed_at=observed_at,
@@ -513,4 +525,4 @@ class ServiceRunner:
         )
 
 
-__all__ = ["API_VERSION", "ServiceRunner", "ServiceSettings", "StartupReport"]
+__all__ = ["ServiceRunner", "ServiceSettings", "StartupReport"]

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from omnivia_core_cli.client import build_request
-from omnivia_core_runtime.ownership.discovery import discover
+from omnivia_core_runtime.ownership.discovery import discover, publish
 from omnivia_core_runtime.service.authorization import (
     AuthorizationDenied,
     Grant,
@@ -39,11 +39,24 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketTransport,
     endpoint_for_path,
 )
+from omnivia_core_runtime.service.versions import (
+    API_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_VERSION,
+    supported_api_versions,
+    supported_workspace_versions,
+    workspace_contract_version,
+)
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.legacy import migrate_legacy_database
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
-from omnivia_core.contracts.v1 import ErrorResponseEnvelope, SuccessResponseEnvelope
+from omnivia_core.contracts.v1 import (
+    ErrorResponseEnvelope,
+    ServiceEndpointDescriptor,
+    ServiceProcessEvidence,
+    SuccessResponseEnvelope,
+)
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 
 from .conftest import SERVICE_INSTANCE, WORKSPACE_ID
@@ -334,6 +347,113 @@ def test_the_cli_reports_no_service_rather_than_crashing(tmp_path: Path) -> None
     assert code == 1
 
 
+def cli_descriptor(
+    *, endpoint: str = "unix:///tmp/omnivia-cli.sock", generation: int = 7
+) -> ServiceEndpointDescriptor:
+    """What a running service advertises, in the shape it advertises it."""
+    return ServiceEndpointDescriptor(
+        descriptor_version=API_VERSION,
+        workspace_id=WORKSPACE_ID,
+        service_instance_id=SERVICE_INSTANCE,
+        installation_id="inst-cli",
+        endpoint_uri=endpoint,
+        protocol_version=PROTOCOL_VERSION,
+        server_version=SERVER_VERSION,
+        supported_api_versions=supported_api_versions(),
+        supported_workspace_versions=supported_workspace_versions("1"),
+        workspace_format_version=workspace_contract_version("1"),
+        ready=True,
+        lifecycle_state="ready",
+        fencing_generation=generation,
+        published_at="2026-08-04T00:00:00Z",
+        process=ServiceProcessEvidence(pid=4242, start_time="100", boot_id="boot-a"),
+    )
+
+
+def test_the_cli_reads_the_descriptor_the_runtime_publishes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI's reader and the Runtime's writer must agree on one document.
+
+    Every CLI discovery case above this one runs against an empty runtime
+    directory and asserts the "no service is advertised" branch, so when the
+    published document moved to the public `ServiceEndpointDescriptor` shape the
+    CLI began reporting every live service as absent and every suite in the
+    repository stayed green. A reader test that never sees a real descriptor is
+    not a test of the reader, which is why the descriptor here is written by the
+    real `publish()` rather than assembled as a fixture document.
+    """
+    from omnivia_core_cli.client import read_descriptor
+    from omnivia_core_cli.main import main
+
+    runtime = tmp_path / "runtime" / WORKSPACE_ID
+    publish(runtime, cli_descriptor())
+
+    service = read_descriptor(runtime)
+    assert service is not None, "the CLI reported a published service as absent"
+    assert service.endpoint_uri == "unix:///tmp/omnivia-cli.sock"
+    assert service.workspace_id == WORKSPACE_ID
+    assert service.service_instance_id == SERVICE_INSTANCE
+    assert service.fencing_generation == 7
+    assert service.ready is True
+
+    # And what the user is actually shown, not just what the reader returns.
+    assert main(["--runtime-state", str(runtime), "discover"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "endpoint": "unix:///tmp/omnivia-cli.sock",
+        "workspace_id": WORKSPACE_ID,
+        "service_instance_id": SERVICE_INSTANCE,
+        "fencing_generation": 7,
+        "ready": True,
+    }
+
+    # The descriptor's other consumer: the workspace a request is addressed to.
+    assert main(["--runtime-state", str(runtime), "health"]) == 0
+    request = json.loads(capsys.readouterr().out)
+    assert request["metadata"]["workspace_id"] == WORKSPACE_ID
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "{not json",
+        '{"workspace_id": "x"}',
+        "[]",
+        json.dumps(
+            {
+                "endpoint": "unix:///tmp/omnivia-cli.sock",
+                "workspace_id": WORKSPACE_ID,
+                "service_instance_id": SERVICE_INSTANCE,
+                "fencing_generation": 1,
+                "api_version": "1.0",
+                "readiness": "ready",
+            }
+        ),
+    ],
+    ids=["garbage", "incomplete", "not-an-object", "the-legacy-shape"],
+)
+def test_the_cli_reports_an_unreadable_descriptor_as_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], document: str
+) -> None:
+    """Failure semantics are unchanged, including for the shape this replaces.
+
+    The legacy document is in this list deliberately. One left behind by an older
+    service is not a descriptor this build can read, and the answer to it is the
+    same "no service is advertised" as to any other unreadable file -- not a
+    crash, and not a shim that decodes both shapes.
+    """
+    from omnivia_core_cli.client import read_descriptor
+    from omnivia_core_cli.main import main
+
+    runtime = tmp_path / "runtime" / WORKSPACE_ID
+    runtime.mkdir(parents=True)
+    (runtime / "service.json").write_text(document, encoding="utf-8")
+
+    assert read_descriptor(runtime) is None
+    assert main(["--runtime-state", str(runtime), "discover"]) == 1
+    assert "no service is advertised" in capsys.readouterr().out
+
+
 def test_the_cli_builds_a_contract_valid_request(tmp_path: Path) -> None:
     """The CLI cannot invent a shape the service would reject."""
 
@@ -465,8 +585,9 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
 
         # It is discoverable, and the pid it advertises is this live process.
         assert found is not None and found.ready
-        assert found.pid == process.pid
-        assert found.endpoint == endpoint.url
+        assert found.process is not None
+        assert found.process.pid == process.pid
+        assert found.endpoint_uri == endpoint.url
 
         # And something is actually listening there, speaking the real contract.
         response = LocalSocketTransport(endpoint=endpoint).call(

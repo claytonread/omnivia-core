@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 from omnivia_core_runtime.ownership.discovery import (
-    ReadinessState,
-    ServiceDescriptor,
     compare_and_clean,
     descriptor_path,
     discover,
@@ -35,13 +33,27 @@ from omnivia_core_runtime.ownership.lease import (
     read_lease,
     release_lease,
 )
+from omnivia_core_runtime.service.versions import (
+    API_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_VERSION,
+    supported_api_versions,
+    supported_workspace_versions,
+    workspace_contract_version,
+)
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
 from omnivia_core_runtime.storage.migrations import (
     bootstrap_generation_one,
     read_workspace_state,
 )
 
+from omnivia_core.contracts.v1 import (
+    ServiceEndpointDescriptor,
+    ServiceProcessEvidence,
+)
+
 WORKSPACE_ID = "ws-lease-0001"
+WORKSPACE_FORMAT_ORDINAL = "1"
 
 
 def evidence_for(pid: int, start: str = "100", boot: str = "boot-a") -> ProcessEvidence:
@@ -447,17 +459,27 @@ def test_fresh_lease_refuses_takeover_even_with_the_lock_free(
 # --- discovery: BD-09, BD-10, BD-11 ------------------------------------------
 
 
-def descriptor(instance: str = "svc-one", generation: int = 2, ready: bool = True) -> ServiceDescriptor:
-    return ServiceDescriptor(
+def descriptor(
+    instance: str = "svc-one", generation: int = 2, ready: bool = True
+) -> ServiceEndpointDescriptor:
+    return ServiceEndpointDescriptor(
+        descriptor_version=API_VERSION,
         workspace_id=WORKSPACE_ID,
         service_instance_id=instance,
         installation_id="inst-one",
+        endpoint_uri="unix:///tmp/omnivia.sock",
+        protocol_version=PROTOCOL_VERSION,
+        server_version=SERVER_VERSION,
+        supported_api_versions=supported_api_versions(),
+        supported_workspace_versions=supported_workspace_versions(
+            WORKSPACE_FORMAT_ORDINAL
+        ),
+        workspace_format_version=workspace_contract_version(WORKSPACE_FORMAT_ORDINAL),
+        ready=ready,
+        lifecycle_state="ready" if ready else "starting",
         fencing_generation=generation,
-        endpoint="unix:///tmp/omnivia.sock",
-        readiness=(ReadinessState.READY if ready else ReadinessState.STARTING).value,
-        api_version="1.0",
-        workspace_format_version="1",
-        pid=1111,
+        published_at="2026-08-04T00:00:00Z",
+        process=ServiceProcessEvidence(pid=1111, start_time="100", boot_id="boot-a"),
     )
 
 
@@ -513,11 +535,32 @@ def test_bd11_discovery_reports_absent_for_missing_or_malformed_descriptors(
 
 
 def test_incompatible_service_is_not_treated_as_usable(tmp_path: Path) -> None:
-    """A running service of the wrong version is not one this client can use."""
+    """A running service of the wrong version is not one this client can use.
+
+    Both versions are now public `major.minor` contract versions rather than the
+    API literal and the private workspace ordinal the legacy descriptor carried,
+    and both are asked as window containment. The cases are the same three: the
+    build's own versions are usable, and a foreign major of either is not.
+    """
     found = descriptor()
-    assert is_compatible(found, api_version="1.0", workspace_format_version="1")
-    assert not is_compatible(found, api_version="2.0", workspace_format_version="1")
-    assert not is_compatible(found, api_version="1.0", workspace_format_version="2")
+    workspace_version = workspace_contract_version(WORKSPACE_FORMAT_ORDINAL)
+    assert is_compatible(
+        found, api_version=API_VERSION, workspace_format_version=workspace_version
+    )
+    assert not is_compatible(
+        found, api_version="2.0", workspace_format_version=workspace_version
+    )
+    assert not is_compatible(
+        found, api_version=API_VERSION, workspace_format_version="2.0"
+    )
+    # A version outside the published window is refused even within the same major,
+    # and an unreadable one is refused rather than raising.
+    assert not is_compatible(
+        found, api_version="1.0", workspace_format_version=workspace_version
+    )
+    assert not is_compatible(
+        found, api_version="not-a-version", workspace_format_version=workspace_version
+    )
 
 
 def test_descriptor_round_trips_through_json(tmp_path: Path) -> None:
