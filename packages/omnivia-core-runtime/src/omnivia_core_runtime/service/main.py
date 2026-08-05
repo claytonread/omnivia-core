@@ -20,6 +20,13 @@ from typing import Protocol
 
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.http_transport import (
+    CredentialResolver,
+    HttpBind,
+    HttpTransportError,
+    LoopbackHttpServer,
+    parse_http_endpoint,
+)
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -74,6 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--http-endpoint",
+        default=None,
+        help=(
+            "additionally serve HTTP v1 at this loopback endpoint, as a URL: "
+            "http://127.0.0.1:<port> or http://[::1]:<port>. A non-loopback or "
+            "wildcard host refuses startup, and so does serving without a trusted "
+            "credential resolver"
+        ),
+    )
+    parser.add_argument(
         "--core-version", default="0.1.0", help="Core version for compatibility checks"
     )
     parser.add_argument(
@@ -100,8 +117,34 @@ def _endpoint_to_serve(endpoint: str | None) -> LocalEndpoint | None:
     return parsed
 
 
-def main(argv: list[str] | None = None) -> int:
+def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
+    """The HTTP bind this lane may serve, or `None` when none was asked for.
+
+    Refused before startup rather than after, for the reason the local endpoint is:
+    a refusal that arrives once the process is live has already advertised a service
+    it cannot honour. A wildcard or non-loopback host, a URL carrying a credential and
+    a URL naming a path all raise out of `parse_http_endpoint`, and this lane
+    implements no TLS, so none of them can be served.
+    """
+    if endpoint is None:
+        return None
+    return parse_http_endpoint(endpoint)
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    resolve_credential: CredentialResolver | None = None,
+) -> int:
     """Own one workspace until told to stop.
+
+    `resolve_credential` is the trusted credential resolver seam. It is a parameter
+    rather than something read from the environment or a file because this lane
+    deliberately ships no credential store, no token format and no principal registry:
+    whoever embeds this service supplies the resolver, and until one exists
+    `--http-endpoint` refuses startup instead of serving an unauthenticated HTTP
+    listener. The console-script entry point passes none, so HTTP is off unless it is
+    both asked for and resolvable.
 
     The advertised endpoint has to be served by this process and the descriptor has
     to die with it. Returning 0 straight after printing readiness -- which is what
@@ -125,6 +168,21 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("refusing to serve: local service endpoint is invalid\n")
         return 2
 
+    try:
+        http_bind = None if args.check_only else _http_bind_to_serve(args.http_endpoint)
+    except HttpTransportError:
+        # The refusal's own message is not repeated: it is derived from the endpoint
+        # string a caller supplied, and this one names the rule instead.
+        sys.stderr.write(
+            "refusing to serve: HTTP endpoint is not an accepted loopback endpoint\n"
+        )
+        return 2
+    if http_bind is not None and resolve_credential is None:
+        sys.stderr.write(
+            "refusing to serve: HTTP needs a trusted credential resolver\n"
+        )
+        return 2
+
     def serve(started: ServiceRunner) -> None:
         """Start the endpoint, and hand its shutdown to the resource stack.
 
@@ -142,12 +200,24 @@ def main(argv: list[str] | None = None) -> int:
             ),
             started,
         )
-        server = LocalSocketServer(
-            router=_router_for(started, dispatcher),
-            endpoint=endpoint,
-        )
+        # One router, handed to both transports. That is the whole of how HTTP shares
+        # the probe router and the application dispatcher rather than growing its own:
+        # there is one object, and neither transport knows the other exists.
+        router = _router_for(started, dispatcher)
+        server = LocalSocketServer(router=router, endpoint=endpoint)
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
+        if http_bind is not None:
+            http = LoopbackHttpServer(
+                router=router,
+                # The principal this endpoint's dispatcher acts as, so HTTP can
+                # refuse a session for anyone else rather than run it as this one.
+                principal=LOCAL_PRINCIPAL,
+                resolver=resolve_credential,
+                bind=http_bind,
+            )
+            http.start()
+            started.lifecycle.resources.push("http_server", http.stop)
 
     report = runner.start(serve=None if args.check_only else serve)
     sys.stdout.write(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")

@@ -1,0 +1,212 @@
+{
+  "description": "P2b HTTP v1 loopback transport-refusal corpus, as exact request bytes. Every case here is refused by the adapter before the shared router is reached, so a run of the whole table must leave the injected dispatcher with zero invocations. `head` is the request line followed by headers, joined with CRLF; `{length}` is replaced by the byte length of the composed body. `body.document` names a canonical document the test builds from the public contract rather than transcribing, so the fixture cannot drift from the accepted DTOs.",
+  "cases": [
+    {
+      "name": "wrong_method_on_the_probe_route",
+      "head": ["GET /v1/probe HTTP/1.1", "Host: localhost"],
+      "body": {"text": ""},
+      "expect_status": 405
+    },
+    {
+      "name": "wrong_method_on_the_application_route",
+      "head": ["PUT /v1/application HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "application"},
+      "expect_status": 405
+    },
+    {
+      "name": "delete_on_the_application_route",
+      "head": ["DELETE /v1/application HTTP/1.1", "Host: localhost"],
+      "body": {"text": ""},
+      "expect_status": 405
+    },
+    {
+      "name": "an_invented_verb_is_not_implemented",
+      "head": ["PLANTEDVERB /v1/probe HTTP/1.1", "Host: localhost"],
+      "body": {"text": ""},
+      "expect_status": 501
+    },
+    {
+      "name": "unknown_path",
+      "head": ["POST /v1/health HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 404
+    },
+    {
+      "name": "the_root_path",
+      "head": ["POST / HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 404
+    },
+    {
+      "name": "a_query_string_is_not_one_of_the_two_routes",
+      "head": ["POST /v1/probe?access_token=planted HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 404
+    },
+    {
+      "name": "a_trailing_slash_is_a_different_path",
+      "head": ["POST /v1/probe/ HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 404
+    },
+    {
+      "name": "an_absolute_request_uri_is_not_one_of_the_two_routes",
+      "head": ["POST http://elsewhere.invalid/v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 404
+    },
+    {
+      "name": "unsupported_media_type",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: text/plain", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 415
+    },
+    {
+      "name": "absent_media_type",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 415
+    },
+    {
+      "name": "canonical_media_type_at_a_charset_canonical_json_is_not",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json; charset=iso-8859-1", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 415
+    },
+    {
+      "name": "missing_content_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json"],
+      "body": {"text": ""},
+      "expect_status": 411
+    },
+    {
+      "name": "chunked_body",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Transfer-Encoding: chunked"],
+      "body": {"text": "1a\r\n{\"probe\":\"service.health\"}\r\n0\r\n\r\n"},
+      "expect_status": 411
+    },
+    {
+      "name": "chunked_body_stated_alongside_a_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}", "Transfer-Encoding: chunked"],
+      "body": {"document": "probe"},
+      "expect_status": 411
+    },
+    {
+      "name": "duplicate_content_length_headers",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "disagreeing_content_length_headers",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}", "Content-Length: 3"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "ambiguous_folded_content_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 26, 26"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "content_length_that_is_not_a_number",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: twenty-six"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "signed_content_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: +26"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "negative_content_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: -1"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "non_decimal_digit_content_length",
+      "comment": "U+00B2 is `isdigit()` in Python and is not a value `int()` will convert, so a length check written as `isdigit()` alone accepts it and then raises inside the conversion. Latin-1 is the header encoding, so this byte reaches the parser as the character it was sent as.",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: ²6"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "oversized_declared_body",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 4194305"],
+      "body": {"text": ""},
+      "expect_status": 413
+    },
+    {
+      "name": "zero_length_body",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 0"],
+      "body": {"text": ""},
+      "expect_status": 400
+    },
+    {
+      "name": "non_canonical_json_body",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"text": "{ \"probe\" : \"service.health\" }"},
+      "expect_status": 400
+    },
+    {
+      "name": "json_array_root",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"text": "[]"},
+      "expect_status": 400
+    },
+    {
+      "name": "json_scalar_root",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"text": "\"service.health\""},
+      "expect_status": 400
+    },
+    {
+      "name": "body_that_is_not_utf8",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"hex": "7b2270726f6265223a22ff227d"},
+      "expect_status": 400
+    },
+    {
+      "name": "body_shorter_than_the_declared_length",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: 4096"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "an_application_document_on_the_unauthenticated_probe_route",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "application"},
+      "expect_status": 400
+    },
+    {
+      "name": "a_document_claiming_both_branches_on_the_probe_route",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "both"},
+      "expect_status": 400
+    },
+    {
+      "name": "a_document_claiming_neither_branch_on_the_probe_route",
+      "head": ["POST /v1/probe HTTP/1.1", "Host: localhost", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "neither"},
+      "expect_status": 400
+    },
+    {
+      "name": "a_probe_document_on_the_application_route",
+      "bearer": "accepted",
+      "head": ["POST /v1/application HTTP/1.1", "Host: localhost", "Authorization: Bearer {bearer}", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "probe"},
+      "expect_status": 400
+    },
+    {
+      "name": "a_document_claiming_neither_branch_on_the_application_route",
+      "bearer": "accepted",
+      "head": ["POST /v1/application HTTP/1.1", "Host: localhost", "Authorization: Bearer {bearer}", "Content-Type: application/json", "Content-Length: {length}"],
+      "body": {"document": "neither"},
+      "expect_status": 400
+    }
+  ]
+}
