@@ -272,11 +272,12 @@ class RawPipeChannel:
                     self.handle, buffer, len(buffer), remaining_time, write=False
                 )
             except EOFError:
-                if allow_empty and remaining == count:
-                    return None
-                raise WindowsPipeError(
-                    "raw pipe closed with a truncated OVC1 frame"
-                ) from None
+                # A closed pipe and a zero-length transfer are the same event, so
+                # they take the same branch below rather than a duplicate of it.
+                # That also puts the raise outside the handler, where no exception
+                # is being handled: `from None` here would have left the `EOFError`
+                # on `__context__` of the error a caller catches.
+                received = 0
             if received <= 0:
                 if allow_empty and remaining == count:
                     return None

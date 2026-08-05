@@ -24,6 +24,7 @@ import re
 import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,8 @@ from omnivia_core.contracts.v1 import (
     ServiceProbeRequest,
     ServiceProcessEvidence,
     VersionWindow,
+    validate_service_endpoint_descriptor,
+    validate_version_window,
     version_in_window,
 )
 
@@ -1744,22 +1747,89 @@ def test_no_refusal_repeats_the_value_it_refused() -> None:
             assert leaked not in message
 
 
-def test_a_refusal_carries_no_nested_exception_text() -> None:
-    """The contract's own errors quote what they refused; these do not pass it on."""
-    facts = _facts(
-        descriptor=replace(
-            _descriptor(),
-            supported_workspace_versions=VersionWindow(minimum="9.9", maximum="1.0"),
-        )
-    )
+#: An endpoint the accepted policy refuses, carrying a credential in the position a
+#: naive Runtime would put one. Distinct from `ENDPOINT_URI`, which is meant to travel.
+CREDENTIALED_ENDPOINT_URI = f"http://127.0.0.1/?access_token={SECRET_TOKEN}"
+
+
+def _nested_text(check: Callable[[], object]) -> str:
+    """What the nested check actually says when it fails.
+
+    Read off the real check rather than transcribed, so this stays a leak assertion
+    if the contract or the interpreter rewords its message. A check that stopped
+    failing would leave nothing to assert about, so that is a failure here too.
+    """
+    with pytest.raises(Exception) as raised:
+        check()
+    text = str(raised.value)
+    assert text
+    return text
+
+
+#: Every nested check `_validate_facts` reaches through: the snapshot that fails it,
+#: the fixed refusal that answers it, and the real exception it must not carry.
+NESTED_CHECKS = [
+    pytest.param(
+        _facts(observed_at="2026-13-01T00:00:00Z"),
+        "service facts observed_at is malformed",
+        lambda: datetime.fromisoformat("2026-13-01T00:00:00+00:00"),
+        id="timestamp",
+    ),
+    pytest.param(
+        _facts(
+            descriptor=replace(
+                _descriptor(), endpoint_uri=CREDENTIALED_ENDPOINT_URI
+            )
+        ),
+        "service facts descriptor endpoint_uri is not an approved transport endpoint",
+        lambda: validate_service_endpoint_descriptor(
+            replace(_descriptor(), endpoint_uri=CREDENTIALED_ENDPOINT_URI)
+        ),
+        id="endpoint",
+    ),
+    pytest.param(
+        _facts(
+            descriptor=replace(
+                _descriptor(),
+                supported_workspace_versions=VersionWindow(
+                    minimum="9.9", maximum="1.0"
+                ),
+            )
+        ),
+        "service facts descriptor supported_workspace_versions is malformed",
+        lambda: validate_version_window(VersionWindow(minimum="9.9", maximum="1.0")),
+        id="version-window",
+    ),
+]
+
+
+@pytest.mark.parametrize(("facts", "refusal", "check"), NESTED_CHECKS)
+def test_a_refusal_carries_no_nested_exception_text(
+    facts: ServiceFacts, refusal: str, check: Callable[[], object]
+) -> None:
+    """The nested errors quote what they refused; these do not pass it on.
+
+    Not by any route, which is the whole of the point. `raise ... from None` at these
+    three sites passed every assertion below but one: it clears `__cause__` and sets
+    `__suppress_context__`, so `rendered` stays quiet while the original exception --
+    and the frames of the validator that produced it, holding the descriptor -- stay
+    on `__context__`, one attribute access away for anything that logs, serializes or
+    reports the error an unauthenticated caller catches.
+    """
+    nested = _nested_text(check)
     with pytest.raises(ProbeError) as raised:
         _router(facts).route(ServiceProbeRequest(probe=PROBE_DISCOVER))
 
-    assert (
-        str(raised.value)
-        == "service facts descriptor supported_workspace_versions is malformed"
+    error = raised.value
+    assert str(error) == refusal
+    rendered = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
     )
-    assert raised.value.__cause__ is None
+    for surface in (str(error), repr(error), repr(error.args), rendered):
+        for leaked in (nested, *PLANTED):
+            assert leaked not in surface
+    assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 # --- what an injected provider's own failure is allowed to say -----------------
