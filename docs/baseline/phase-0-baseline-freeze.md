@@ -272,7 +272,7 @@ These are recorded facts about the current tree, not proposed changes.
 | GAP-003 | surface | omnivia-dev | closed | Base CLI command list and baseline mapping recorded from reviewed Dev source. Remainder → GAP-008. |
 | GAP-004 | capability | omnivia-platform | open | Core has no health primitive, and the neutral route table has no readiness route. |
 | GAP-005 | capability | omnivia-platform | open | Context pack assembly is not implemented in Core; `context.pack` freezes the storage schema, not a pack response. |
-| GAP-006 | process | omnivia-pm | closed | Codex reviewed and applied the accepted T-0627 task, the readiness assessment, and ADR-036, ADR-037, ADR-038. |
+| GAP-006 | process | omnivia-pm | closed | Codex reviewed and applied the accepted T-0627 task, the readiness assessment, and PM ADR-036, PM ADR-037, PM ADR-038. |
 | GAP-007 | evidence | omnivia-platform | open | No live Platform HTTP response body has been captured. |
 | GAP-008 | evidence | omnivia-dev | open | No live MCP tool result or CLI command output has been captured. |
 

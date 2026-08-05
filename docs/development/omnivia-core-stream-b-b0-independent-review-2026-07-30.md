@@ -237,12 +237,12 @@ landing mid-review (+31 policy-compiler tests, +54 validation-contract tests = +
 
 ## 4. Answers to the plan §10 review checklist
 
-### 1. Do the 14 commits match ADR-036 and the Phase 0/1 task packets?
+### 1. Do the 14 commits match PM ADR-036 and the Phase 0/1 task packets?
 
 **Yes.** The lineage maps cleanly onto T-0628's declared work streams: `117cf83`
 = Phase 0 freeze (T-0627 predecessor), `e93fb12` = work stream A (package
 boundaries), `f6e84fe` = work stream B (provider-neutral contracts), and
-`509b0f0`…`a7cd551` = the canonical domain/contract migration. ADR-036's four
+`509b0f0`…`a7cd551` = the canonical domain/contract migration. PM ADR-036's four
 verification expectations are each satisfied or accounted for (§4.4, §4.5, §4.8).
 
 One packet reconciliation: T-0628 records "22 package-boundary tests passed" at

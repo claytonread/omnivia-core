@@ -4,7 +4,7 @@
 Core package topology.
 
 This package currently has **no operational behavior**. It exists to
-establish the compile-time dependency boundary defined by ADR-036: the MCP
+establish the compile-time dependency boundary defined by PM ADR-036: the MCP
 surface depends on the public `omnivia-core` contracts, and nothing in
 `omnivia-core` may depend back on this package.
 

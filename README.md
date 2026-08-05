@@ -237,7 +237,7 @@ Canonical source and generated artifacts:
   `CompatibilityStatus` vocabulary is deliberately left unconstrained, so a
   newer peer's unseen status still decodes. Standard library only.
 - `src/omnivia_core/contracts/v1/semantics.py` — pure semantic validation for
-  the workspace and governed-memory DTOs (A2.2, ADR-038/ADR-039): domain-scope
+  the workspace and governed-memory DTOs (A2.2, PM ADR-038/PM ADR-039): domain-scope
   and identifier/open-code shape checks, temporal ordering, evidence/
   currentness/supersession/authority coherence, `memory.create` proposed-only
   result-tuple enforcement (including the reserved-field decode guard), and
@@ -254,7 +254,7 @@ Canonical source and generated artifacts:
   dataclass raises `ContractSemanticError`, never a raw
   `TypeError`/`AttributeError`. Standard library only.
 - `src/omnivia_core/contracts/v1/semantics_evidence.py` — pure semantic
-  validation for the L0 `evidence.search` DTOs (A2.3, ADR-039): evidence
+  validation for the L0 `evidence.search` DTOs (A2.3, PM ADR-039): evidence
   artifact integrity, tombstone rules, and sensitivity/leakage enforcement.
   An artifact's optional `import_run_id` is validated as an `OpaqueToken`,
   the same token domain a job id and an import completion's `import_run_id`
@@ -262,7 +262,7 @@ Canonical source and generated artifacts:
   the run that produced the evidence. Standard library only.
 - `src/omnivia_core/contracts/v1/semantics_knowledge.py` — pure semantic
   validation for the governed-knowledge, graph, and Context Pack DTOs (A2.3,
-  ADR-039): `knowledge.search` default-canonical-view leak prevention, the
+  PM ADR-039): `knowledge.search` default-canonical-view leak prevention, the
   governance-transition closure shared by `knowledge.propose` /
   `candidate.approve` / `candidate.reject` / `record.supersede` (frozen
   state/authority/reviewer matrices, precondition binding, exactly-one audit
@@ -358,7 +358,7 @@ Canonical source and generated artifacts:
   *raw* payload before the tolerant decode, rather than silently handing back a
   synchronous pack to a caller who asked for a persisted or paginated one. That
   refusal covers the request's *top-level* members and stops there, which is the
-  ADR-038 rule rather than an omission: an additive unknown optional field is
+  PM ADR-038 rule rather than an omission: an additive unknown optional field is
   dropped whole by the tolerant decoder, so a `future_envelope.snapshot_id`
   never reaches the five scalar fields `ContextPackBuildInput` has and cannot be
   honoured in part — while rejecting it would fail a document a compatible later
@@ -540,9 +540,9 @@ Canonical source and generated artifacts:
   sent. `validate_context_pack_build_result` and
   `compute_context_pack_artifact_digest` take an already-strict trusted value and
   document that they cannot recover what an earlier parser discarded. Ordinary,
-  non-integrity decoding stays tolerant exactly as ADR-038 requires.
+  non-integrity decoding stays tolerant exactly as PM ADR-038 requires.
 - `src/omnivia_core/contracts/v1/semantics_jobs.py` — pure semantic validation
-  for the durable-job and provider-neutral import DTOs (A2.4, ADR-039):
+  for the durable-job and provider-neutral import DTOs (A2.4, PM ADR-039):
   `import.start`, `job.get`, `job.cancel`, `job.retry`, and `job.events`.
   Standard library only.
 
@@ -744,7 +744,7 @@ Canonical source and generated artifacts:
   statement about one durable job, so a separate schema would add a document
   boundary where no boundary exists.
 - `src/omnivia_core/contracts/v1/semantics_operations.py` — the narrow read
-  surface over the generated operation catalogue (A2.5, ADR-038/ADR-039).
+  surface over the generated operation catalogue (A2.5, PM ADR-038/PM ADR-039).
   Standard library only, and three functions wide:
 
   - `get_operation_metadata(operation)` returns the frozen catalogue entry for

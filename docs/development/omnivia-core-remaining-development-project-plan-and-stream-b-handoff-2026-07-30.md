@@ -2,7 +2,7 @@
 
 Date: 2026-07-30
 Status: Active development plan
-Architecture authority: accepted ADR-036, ADR-037, ADR-038 and OmniVia Core architecture specification v0.6
+Architecture authority: accepted PM ADR-036, PM ADR-037, PM ADR-038 and OmniVia Core architecture specification v0.6
 Current implementation branch: `codex/ui-residual-risk-closure`
 Current reviewed committed checkpoint: `a1b1466`
 
@@ -74,7 +74,7 @@ the facade cutover advances.
 - `a1b1466` was a clean implementation checkpoint, and this status document was
   the only change prepared on top of it for the terminal handoff record.
 - The work is locally accepted and verified but is not yet merged, published or released.
-- The accepted PM copies of ADR-036, ADR-037, ADR-038 and specification v0.6 are authoritative. Copies previously supplied from Downloads must not override the accepted PM versions.
+- The accepted PM copies of PM ADR-036, PM ADR-037, PM ADR-038 and specification v0.6 are authoritative. Copies previously supplied from Downloads must not override the accepted PM versions.
 
 **Stream B baseline reconciliation.** Sections 6, 10, 11 and immediate action 4
 deliberately retain `10fa17b` as the Stream B coordination baseline, with the
@@ -287,7 +287,7 @@ later route inherits:
 
 #### Deprecation metadata, dependency and wheel proofs
 
-`services/omnivia-memory/pyproject.toml` now carries the ADR-036 deprecation
+`services/omnivia-memory/pyproject.toml` now carries the PM ADR-036 deprecation
 notice in release metadata rather than at runtime. The distribution summary
 announces the deprecated facade and names `omnivia_core` as the replacement;
 `[project.urls] Migration` pins a non-placeholder repository URL intended to hold
@@ -351,7 +351,7 @@ are converted and verified, and runtime-owned behavior remains deliberately
 routed and legacy-owned. The fourth is not. **No first-party consumer migration
 has been performed**, in this repository or any other, and none is authorized.
 Cross-repository consumer cutover remains Phase 5 work behind its own approval
-gate, so the compatibility facade must stay in place under the ADR-036
+gate, so the compatibility facade must stay in place under the PM ADR-036
 deprecation and removal conditions.
 
 ### 3.7 What completion has not yet proved
@@ -465,7 +465,7 @@ Final facade-cutover exit, tracked after T-0628:
 - **Met locally at `a1b1466`:** no parallel public domain model remains;
 - **Met locally at `a1b1466`:** runtime-owned paths remain explicit and functional;
 - **Not met:** affected consumers complete separately authorized migrations — none has been authorized or started;
-- **Preserved, not yet exercised:** deprecation and eventual removal conditions from ADR-036 are declared in the compatibility distribution's metadata and README.
+- **Preserved, not yet exercised:** deprecation and eventual removal conditions from PM ADR-036 are declared in the compatibility distribution's metadata and README.
 
 ### A2 — Complete the provider-neutral application contract
 
@@ -836,7 +836,7 @@ The following must not run as competing write lanes:
 
 The receiving agent should produce a short review report answering:
 
-1. Do the 20 commits from `117cf83` through `10fa17b` match ADR-036, ADR-038 and the Phase 0/1 task packets?
+1. Do the 20 commits from `117cf83` through `10fa17b` match PM ADR-036, PM ADR-038 and the Phase 0/1 task packets?
 2. Do the 85 control-plane behavior cases accurately preserve the 54 validation and 31 pure policy-compiler cases from their frozen legacy sources?
 3. Does the 47-route compatibility inventory make exact identity, collision routing, hybrid/runtime ownership and the version-only canonical root enforceable without proxies or duplicate models?
 4. Do all four packages build and install independently?
@@ -854,7 +854,7 @@ Any blocker must cite an exact file, test or acceptance criterion. Review observ
 
 Use the following as the receiving agent's task:
 
-> You own Stream B — Workspace Authority and Standalone Runtime — for OmniVia Core. Codex owns Stream A — Contracts, Compatibility and Integration. The architecture authority is the accepted PM copies of ADR-036, ADR-037, ADR-038 and architecture specification v0.6. The owner approved Phases 0–2 only. Do not implement broad Phase 3 service operations, the full CLI/MCP, consumer cutover or production distribution without their later approved task packets.
+> You own Stream B — Workspace Authority and Standalone Runtime — for OmniVia Core. Codex owns Stream A — Contracts, Compatibility and Integration. The architecture authority is the accepted PM copies of PM ADR-036, PM ADR-037, PM ADR-038 and architecture specification v0.6. The owner approved Phases 0–2 only. Do not implement broad Phase 3 service operations, the full CLI/MCP, consumer cutover or production distribution without their later approved task packets.
 >
 > The current Stream A review baseline is the 20 committed checkpoints from `117cf83` through `10fa17b` on branch `codex/ui-residual-risk-closure`. `10fa17b` is the current reviewed committed checkpoint. The plan itself is committed at `5679e3c` and refreshed at `a80ef6a`; the control-plane behavior proof is at `55f2489`; the accepted facade foundation is at `4bbed05`; and the local acceptance workflow is at `10fa17b`. Stream B is already in progress independently; do not restart or redirect it merely because this Stream A baseline advanced.
 >

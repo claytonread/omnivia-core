@@ -11,7 +11,7 @@ it. Either way the object is the same one: `omnivia_memory.X is
 omnivia_core.<the module named below>.X` holds for all of them, and switching an
 import changes nothing about the objects your code receives. Importing this package emits no
 warning and writes nothing to stdout, stderr, or a logger: the deprecation notice
-lives in this file and in the release metadata (ADR-036), never in runtime
+lives in this file and in the release metadata (PM ADR-036), never in runtime
 behaviour.
 
 ## Migration
