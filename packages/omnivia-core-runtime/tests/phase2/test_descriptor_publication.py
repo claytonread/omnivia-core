@@ -17,6 +17,16 @@ read back. The client refuses an object whose *owner* is not itself, and ownersh
 is carried by neither the mode nor the DACL, so the first case reads the owner
 separately -- `st_uid` on POSIX, the owner SID on Windows.
 
+That read is only worth making from a state it can fail in. A process owns what it
+creates, so an owner assertion made against a chain this process built is green
+whether the writer's `/setowner` runs or not -- which is why a green Windows row
+was, until this seeding, no evidence that it ran. The first case therefore hands
+the two directories the client validates to `BUILTIN\\Administrators` before
+publishing, which is the shape an elevated installer leaves behind, and the owner
+assertions then hold only because `/setowner` repaired them. POSIX has neither a
+foreign owner a test may produce nor an ownership step in the writer to falsify;
+see `leave_owned_by_another_principal`.
+
 The umask-hostile case publishes under `umask(0o000)`. Without it the whole repair
 passes on any machine whose umask happens to be restrictive and fails in the field,
 because the defect was never the mode that was asked for -- it was that no mode was
@@ -102,6 +112,14 @@ INHERITED_DESCRIPTOR_MODE = 0o666
 #: that is not this account, granted in a form the publication has to remove. Spelt
 #: as a SID so no localized account name has to be resolved to seed it.
 EVERYONE = "S-1-1-0"
+
+#: `BUILTIN\\Administrators`, numerically. The owner an elevated Windows process
+#: leaves on everything it creates, which is the field failure `/setowner` exists
+#: for, and the one foreign owner a test can produce on demand: an owner may be set
+#: only to a SID already carried by the setting process's own token, absent
+#: `SeRestorePrivilege`. So a member of that group may hand an object to it, and a
+#: process outside it has no foreign owner available at all.
+ADMINISTRATORS = "S-1-5-32-544"
 
 #: A SID in the string form `whoami` and `ConvertSidToStringSidW` both report it in.
 SID_RE = re.compile(r"S-1-[0-9-]+")
@@ -338,6 +356,51 @@ def open_up(path: Path, *, directory: bool) -> None:
         )
 
 
+def leave_owned_by_another_principal(path: Path) -> None:
+    """Leave `path` owned by a principal the accepted client refuses.
+
+    The companion to `open_up`, and there for the same reason: an assertion is worth
+    only the state it starts from. A process owns what it creates, so a publication
+    into a chain this test built satisfies every ownership assertion below with the
+    writer's `/setowner` deleted -- the property would be asserted and never
+    exercised, which is what a green Windows row meant until this ran.
+
+    Two things produce a refusable owner in the field. A token whose `TokenOwner` is
+    `BUILTIN\\Administrators` -- the ordinary shape of an elevated administrator --
+    owns everything it creates that way, and no process can arrange that from the
+    inside. A chain built by some *other* principal has the same effect, and an
+    installer running elevated is exactly that. Handing the directories to
+    `BUILTIN\\Administrators` reproduces the second, so the case does not depend on
+    which token the row happens to run under, and does not have to establish it.
+
+    A host that cannot produce that owner fails here rather than skipping. Naming a
+    new owner takes a SID the calling token already carries, so a process outside
+    the Administrators group cannot make any object foreign-owned -- on such a host
+    the property is genuinely not falsifiable, and that is a result to see rather
+    than one to pass over. The read-back is the half that matters: `icacls` exiting
+    zero and the owner having actually changed are two different facts, and only the
+    second one licenses the assertions downstream.
+
+    POSIX needs no counterpart and has none. Ownership is fixed at creation from the
+    process's uid, handing a file to another uid is root's to do, and `_restrict` is
+    a bare `chmod` there -- there is no POSIX ownership step for a foreign owner to
+    falsify, and the mode is what every other case in this module already proves.
+    """
+    if not WINDOWS:
+        return
+    try:
+        icacls(path, "/setowner", f"*{ADMINISTRATORS}", "/q")
+    except OracleUnavailable as unavailable:
+        raise OracleUnavailable(
+            f"this host cannot give {path} an owner other than itself, so it cannot "
+            f"falsify the writer's /setowner: naming {ADMINISTRATORS} as an owner "
+            f"needs that SID in this process's own token.\n{unavailable}"
+        ) from unavailable
+    assert windows_owner_sid(path) != windows_account_sid(), (
+        f"{path} is still owned by this account, so /setowner has nothing to repair"
+    )
+
+
 def descriptor() -> ServiceEndpointDescriptor:
     """A valid descriptor: these cases are about the file's access, not its contents."""
     return ServiceEndpointDescriptor(
@@ -386,8 +449,20 @@ def test_the_descriptor_and_its_directory_chain_are_owner_only(tmp_path: Path) -
     validates proves the property, and repeating it in the other six would assert
     the same call six more times. The reason is redundancy rather than cost: the
     owner read is now a native call rather than a process launch, and cheap.
+
+    The two directories start owned by another principal, and that is the whole of
+    what makes those assertions evidence rather than decoration -- see
+    `leave_owned_by_another_principal`. The published file is not seeded the same
+    way and cannot be: it does not exist until `publish` creates it, and a created
+    object's owner comes from the token rather than from its directory. So on a row
+    whose token owns what it creates, the file's assertion is the weakest of the
+    three and the directories are what carries the falsification. They are enough --
+    the writer sets the owner of every object it touches from one call site, so an
+    owner left unrepaired on a directory is the same defect as one left on the file.
     """
     runtime = inherited_chain(tmp_path)
+    for existing in (runtime.parent, runtime):
+        leave_owned_by_another_principal(existing)
     assert owner_only_evidence(runtime) != owner_only(directory=True), (
         "the chain starts open"
     )
