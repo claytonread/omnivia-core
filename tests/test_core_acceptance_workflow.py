@@ -34,6 +34,7 @@ repository tree.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -948,3 +949,137 @@ def test_the_client_compatibility_test_keeps_its_unique_basename() -> None:
         "tests/contracts/test_compatibility.py basename"
     )
     assert (REPO_ROOT / "tests" / "contracts" / "test_compatibility.py").is_file()
+
+
+# --------------------------------------------------------------------------
+# Ruff version coupling.
+#
+# `[tool.ruff] required-version` in the root pyproject aborts Ruff outright when
+# the running version falls outside it: exit 2, before a single file is linted.
+# That is safe only while the Ruff the gate installs is bounded to the same
+# range, and nothing in the workflow mentions `required-version` -- the `Run Ruff`
+# step just calls `python -m ruff`, and the version it gets was decided several
+# steps earlier by a dependency of a different distribution.
+#
+# So the coupling is derived here rather than written down as a convention. The
+# defect these exist for was real and shipped for one revision: the bound was
+# declared in the root `[dependency-groups]`, which is PEP 735 and which pip
+# cannot install, so CI's only Ruff came from an unbounded `ruff>=0.4.0` and the
+# first release outside the required range would have aborted `Run Ruff` on every
+# pull request.
+# --------------------------------------------------------------------------
+
+# Where a requirement's name ends and its version specifier begins.
+_SPECIFIER_START = "<>=!~"
+
+# Directory names never searched for a pyproject: virtual environments and
+# dotted tool directories (all skipped by the leading-dot rule), plus installed
+# or built trees that carry copies of this repository's own metadata.
+_UNSEARCHED = {"node_modules", "build", "dist"}
+
+
+def _repository_pyprojects() -> list[Path]:
+    """Every `pyproject.toml` this repository owns, discovered from the tree."""
+    found = [
+        path
+        for path in sorted(REPO_ROOT.glob("**/pyproject.toml"))
+        if not any(
+            part.startswith(".") or part in _UNSEARCHED
+            for part in path.relative_to(REPO_ROOT).parts
+        )
+    ]
+    assert found, "no pyproject.toml files found"
+    return found
+
+
+def _required_ruff_version() -> str:
+    document = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    required = document["tool"]["ruff"]["required-version"]
+    assert isinstance(required, str)
+    return required
+
+
+def _ruff_declarations() -> list[tuple[Path, str, str]]:
+    """Every declared `ruff` requirement, as (pyproject, how-pip-reaches-it, specifier).
+
+    The middle element is the extra name pip would have to be given to install
+    the requirement, or `""` for a PEP 735 dependency group -- which pip cannot
+    install by any invocation, and which is therefore never reachable from CI.
+    """
+    declarations: list[tuple[Path, str, str]] = []
+    for pyproject in _repository_pyprojects():
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        tables: list[tuple[str, object]] = [
+            (name, table)
+            for name, table in document.get("project", {}).get("optional-dependencies", {}).items()
+        ]
+        tables += [("", table) for table in document.get("dependency-groups", {}).values()]
+        for extra, table in tables:
+            assert isinstance(table, list)
+            for requirement in table:
+                assert isinstance(requirement, str)
+                index = min(
+                    (
+                        requirement.index(character)
+                        for character in _SPECIFIER_START
+                        if character in requirement
+                    ),
+                    default=len(requirement),
+                )
+                if requirement[:index].strip().lower() != "ruff":
+                    continue
+                declarations.append((pyproject, extra, requirement[index:].strip()))
+    return declarations
+
+
+def test_every_declared_ruff_version_matches_the_required_version() -> None:
+    """Every `ruff` requirement in the tree is string-identical to
+    `[tool.ruff] required-version`.
+
+    String equality rather than specifier arithmetic: comparing PEP 440 ranges
+    properly needs `packaging`, which this repository does not declare, and the
+    invariant wanted here is stricter anyway. One declared range, restated
+    verbatim wherever it appears, is the only shape in which "these move
+    together" is checkable at all.
+    """
+    required = _required_ruff_version()
+    declarations = _ruff_declarations()
+    assert declarations, (
+        "no `ruff` requirement is declared anywhere in the tree, so nothing bounds "
+        f"the version the gate installs against required-version {required!r}"
+    )
+    for pyproject, _, specifier in declarations:
+        assert specifier == required, (
+            f"{pyproject.relative_to(REPO_ROOT)}: declares ruff{specifier}, but the root "
+            f"[tool.ruff] required-version is {required!r}. Ruff aborts (exit 2, nothing "
+            f"linted) on a version outside required-version, so every declared bound must "
+            f"restate it verbatim."
+        )
+
+
+def test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs() -> None:
+    """At least one bounded `ruff` requirement is actually installed by the gate.
+
+    Matching ranges are worth nothing if pip never sees them. This walks the real
+    path: the `Install local packages` step's commands, the extra each one asks
+    for, and whether any of those extras is where a `ruff` bound is declared.
+
+    It fails on both halves of the original defect -- a bound declared only in a
+    PEP 735 group (pip cannot install those, so `extra` is empty and no command
+    can match), and a bound declared in a real extra that the workflow has
+    stopped installing.
+    """
+    commands = _commands(_step(_steps(), "Install local packages"))
+    reachable = []
+    for pyproject, extra, specifier in _ruff_declarations():
+        if not extra:
+            continue
+        target = f"{pyproject.parent.relative_to(REPO_ROOT).as_posix()}[{extra}]"
+        if any(target in command for command in commands):
+            reachable.append((target, specifier))
+
+    assert reachable, (
+        "the acceptance gate installs no distribution whose extra carries a bounded "
+        "`ruff` requirement, so the Ruff it runs is whatever pip resolves. Declared "
+        f"ruff requirements: {_ruff_declarations()}; install commands: {commands}"
+    )

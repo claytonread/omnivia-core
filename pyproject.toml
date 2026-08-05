@@ -71,12 +71,30 @@ extend-exclude = ["benchmarks"]
 # baseline here would *narrow* the accepted policy by 409 rules while reading
 # like a tightening.
 #
-# `required-version` pins it instead. A Ruff release that changes its default
-# selection now stops the run with `Required version ... does not match`, which
-# is a decision someone has to make deliberately, rather than a lint result that
-# moved on its own. It also forces local and CI onto the same Ruff, which is the
-# other half of "same scope": the workflow resolves Ruff from a `>=0.4.0` range
-# and would otherwise float independently of any developer's machine.
+# `required-version` pins it instead, and Ruff is pre-1.0, so a minor bump is
+# where its rule selection is allowed to move -- `<0.17` is that boundary, not an
+# arbitrary one. Patch releases inside 0.16.x are accepted.
+#
+# What this does and does not do. It does NOT by itself stop a newer Ruff from
+# reaching the gate: it aborts the run -- exit 2, before a single file is linted
+# -- when one already has. The thing that keeps a newer Ruff out is the matching
+# bound on `services/omnivia-memory[dev]`'s `ruff` requirement, which is the only
+# Ruff requirement in this repository that pip can install and therefore the only
+# one that decides what the acceptance gate runs. This entry is the consistency
+# check on that bound: it catches Ruff arriving from anywhere the bound does not
+# govern -- a workflow that installs Ruff directly, a transitive dependency, a
+# developer's globally installed copy.
+#
+# Left as an abort with no matching bound, this line is a scheduled outage: the
+# day Ruff 0.17.0 publishes, every pull request fails at `Run Ruff`. It was
+# exactly that for one revision of this file. The two ranges are held identical
+# by `test_every_declared_ruff_version_matches_the_required_version` in
+# `tests/test_core_acceptance_workflow.py`, which reads them both from the tree,
+# and the bound is held reachable by
+# `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs`.
+#
+# The accepted maintenance cost: adopting a new Ruff minor means editing two
+# strings, and the tests above name the second one if it is missed.
 required-version = ">=0.16.1,<0.17"
 
 [tool.ruff.lint]
@@ -135,14 +153,22 @@ ignore = ["B904"]
 # already. Without them those tests fail at setup for a missing build backend --
 # an environment gap that reads exactly like a product defect. The CI workflow
 # installs both explicitly for `scripts/check-package-builds.sh`; declaring them
-# here makes a plain `uv sync`/`pip install -e ".[dev]"` environment able to run
-# the suite too. Both stay development-only: runtime dependencies remain empty.
+# here makes a `uv sync` environment able to run the suite too. Both stay
+# development-only: runtime dependencies remain empty.
 #
-# `ruff` is pinned to the same range `[tool.ruff] required-version` declares
-# above, so a clean environment built from this file can actually run the
-# canonical `ruff check`. Without it the only in-repo source of Ruff is
-# `services/omnivia-memory[dev]`'s unbounded `ruff>=0.4.0`, which can resolve to a
-# release `required-version` then refuses. The two ranges have to move together.
+# Reachability, because it is not obvious and a previous revision of this comment
+# got it wrong. This is a PEP 735 `[dependency-groups]` table, not
+# `[project.optional-dependencies]`. `uv sync` installs it by default. **pip
+# cannot install it at all**: this project declares no extras, so
+# `pip install -e ".[dev]"` emits `WARNING: omnivia-core 0.1.0 does not provide
+# the extra 'dev'` and installs nothing from here, and the built wheel carries
+# zero `Requires-Dist` and zero `Provides-Extra` lines. Both measured.
+#
+# So `ruff` below serves `uv sync` users, who get a version satisfying
+# `[tool.ruff] required-version` and can run the canonical bare `ruff check`. It
+# does **not** reach CI, which installs with pip. The bound that governs CI lives
+# in `services/omnivia-memory/pyproject.toml`; all three strings are held
+# identical by `tests/test_core_acceptance_workflow.py`.
 dev = [
     "build>=1.2,<2",
     "hatchling>=1.26,<2",

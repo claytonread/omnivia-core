@@ -32,7 +32,21 @@ Migration = "https://github.com/claytonread/omnivia-core/tree/main/services/omni
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.4.0",
+    # This is the only `ruff` requirement in the repository that pip can reach,
+    # and therefore the only thing that decides which Ruff the acceptance gate
+    # runs: `.github/workflows/core-acceptance.yml` installs this extra and never
+    # names Ruff itself. The root pyproject's `[dependency-groups] dev` entry is
+    # PEP 735 and pip does not install it.
+    #
+    # The bound must stay string-identical to `[tool.ruff] required-version` in
+    # the root pyproject, which aborts Ruff outright -- exit 2, nothing linted --
+    # when the running version falls outside it. Left unbounded, the first Ruff
+    # release outside that range would be installed here and abort the gate on
+    # every pull request. `test_every_declared_ruff_version_matches_the_required_version`
+    # in `tests/test_core_acceptance_workflow.py` fails if the two drift apart,
+    # and `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs` fails
+    # if the workflow stops installing this extra.
+    "ruff>=0.16.1,<0.17",
     "mypy>=1.10.0",
 ]
 
@@ -45,21 +59,27 @@ target-version = "py311"
 line-length = 100
 
 # Lint semantics are declared explicitly so they do not float with the Ruff
-# version. The dev extra pins only ``ruff>=0.4.0``, and Ruff's implicit rule set
-# widens between releases, so an unstated selection makes CI results depend on
-# whichever Ruff the runner resolves. E4/E7/E9/F is the intended baseline:
-# import errors, statement-level errors, syntax errors, and pyflakes. This
-# matches the declaration Platform carries for its sibling service, so the
-# cross-repo `ship:preflight` Python lint applies one rule set to both trees.
+# version. E4/E7/E9/F is the intended baseline for this tree: import errors,
+# statement-level errors, syntax errors, and pyflakes. This matches the
+# declaration Platform carries for its sibling service, so the cross-repo
+# `ship:preflight` Python lint applies one rule set to both trees.
 #
 # Scope note: this file is the nearest Ruff configuration for the whole
 # `services/omnivia-memory` tree, which is the deprecated compatibility facade
 # (ADR-036). Core's own acceptance gate lints the canonical trees (`src`,
 # `packages`, `baseline`, `tests`, `scripts`) plus a named list of converted
 # files under this tree; the rest of the legacy tree is deliberately out of that
-# clean scope. Those canonical trees resolve no `[tool.ruff]` of their own and
-# are intentionally left on Ruff's implicit set, which they satisfy -- narrowing
-# them here is not in scope and would reduce, not restore, their coverage.
+# clean scope.
+#
+# Correction: this note used to say Ruff's implicit rule set is E4/E7/E9/F and
+# that the canonical trees are "intentionally left on Ruff's implicit set". Both
+# halves were wrong by the time they were read. Ruff 0.16.1's default selection
+# is 413 rules across 37 families -- measured, not assumed -- and the canonical
+# trees satisfy all of them with zero findings. So the four families selected
+# here make this legacy tree *narrower* than the canonical trees, not the shared
+# baseline the original wording implied. The canonical trees now resolve the
+# root `[tool.ruff]`, which pins the version rather than restating the rule list;
+# widening or narrowing this tree's own selection remains out of scope.
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
