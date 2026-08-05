@@ -46,16 +46,18 @@ this is the one suite the platform matrix runs, and an import it cannot satisfy
 fails collection for every case in the file, not just the one that needed it. The
 Windows helpers below are that constraint's other consequence -- the client already
 reads a DACL and this module may not borrow it, so the oracle here is `icacls` for
-the DACL and `Get-Acl` for the owner, neither of which is the mechanism the writer
-uses and neither of which is a copy of the client's.
+the DACL and the object's own security descriptor for the owner -- neither of which
+is the mechanism the writer uses to set them.
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import stat
 import subprocess
+from ctypes import wintypes
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -101,8 +103,14 @@ INHERITED_DESCRIPTOR_MODE = 0o666
 #: as a SID so no localized account name has to be resolved to seed it.
 EVERYONE = "S-1-1-0"
 
-#: A SID in the string form `whoami` and `Get-Acl` both report it in.
+#: A SID in the string form `whoami` and `ConvertSidToStringSidW` both report it in.
 SID_RE = re.compile(r"S-1-[0-9-]+")
+
+#: `SE_FILE_OBJECT` and `OWNER_SECURITY_INFORMATION`: name a filesystem object, ask
+#: for its owner and nothing else. Spelt here rather than imported -- the client
+#: package has its own copies and this module may not import that package.
+SE_FILE_OBJECT = 1
+OWNER_SECURITY_INFORMATION = 0x00000001
 
 
 def mode_of(path: Path) -> int:
@@ -171,44 +179,84 @@ def windows_account_sid() -> str:
 
 
 def windows_owner_sid(path: Path) -> str:
-    """The owner SID of `path`, read back through neither the writer's tool nor the
-    client's.
+    """The owner SID of `path`, read from the object's own security descriptor.
 
-    `icacls` prints ACEs and never the owner, so the DACL oracle above cannot answer
-    this at all -- which is exactly how a wrong owner could have passed a green row
-    while the client refused the descriptor in the field. `dir /q` does carry an
-    owner column, but it is whitespace-delimited inside a localized table whose
-    account names contain spaces themselves (`NT AUTHORITY\\SYSTEM`), and for a
-    directory it reports the directory's *contents* rather than the directory. Only
-    `Get-Acl` answers directly, and asking it for the SID rather than the account
-    name keeps every name-spelling and localization question out of the comparison.
+    Three readers were tried and the two that failed are why this one is native.
+    `icacls` prints ACEs and never the owner. `Get-Acl` prints it and does not run
+    on the hosted image at all -- `The 'Get-Acl' command was found in the module
+    'Microsoft.PowerShell.Security', but the module could not be loaded` -- so every
+    PowerShell route inherits that image's module system, and behind it the
+    execution policy and the language mode, none of which this repository controls.
+    `dir /q` avoids PowerShell but prints a localized fixed-width table that
+    truncates long account names, and for a directory lists its contents rather than
+    itself.
 
-    An unreadable or unparseable answer fails here, as `OracleUnavailable` rather
-    than as a wrong owner. An owner nobody could read is not an owner anyone may
-    call correct.
+    `GetNamedSecurityInfoW` asks the object. No process launch, no module, no
+    locale, no parsing, and the answer arrives already in the form the accepted
+    client compares against its own `TokenUser`. `ctypes` is standard library, and
+    the reason it was refused for the *writer* does not carry here: a wrong call
+    there silently mis-secures a real file, while a wrong call in an oracle fails a
+    test loudly and secures nothing.
 
-    The command string is deliberately unchanged from the one the first hosted
-    Windows row rejected with `exit status 1`. Rewriting it would buy a different
-    failure rather than an explanation of the observed one, and the run that
-    explains it is the same run that would have been spent on the guess.
+    `WinDLL` rather than `windll`, deliberately. `windll` is a process-wide cache,
+    so the argtypes set here would be shared with every other caller in the
+    interpreter -- including the accepted client, which configures this same entry
+    point for its own reader.
     """
-    command = (
-        f"(Get-Acl -LiteralPath '{path}')"
-        ".GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.ConvertSidToStringSidW.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel.LocalFree.restype = wintypes.HLOCAL
+
+    owner = wintypes.LPVOID()
+    descriptor = wintypes.LPVOID()
+    # `GetNamedSecurityInfoW` returns a Win32 error code rather than setting one,
+    # so the failure carries the code itself.
+    result = advapi.GetNamedSecurityInfoW(
+        str(path),
+        SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION,
+        ctypes.pointer(owner),
+        None,
+        None,
+        None,
+        ctypes.pointer(descriptor),
     )
-    owner = run_tool(
-        [
-            system32("WindowsPowerShell\\v1.0\\powershell.exe"),
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ],
-        timeout=120,
-    ).strip()
-    if not SID_RE.fullmatch(owner):
-        raise OracleUnavailable(f"the owner of {path} did not read as a SID: {owner!r}")
-    return owner
+    if result != 0 or not owner:
+        raise OracleUnavailable(
+            f"GetNamedSecurityInfoW({path}) returned {result}, owner {owner}"
+        )
+    try:
+        text = wintypes.LPWSTR()
+        if not advapi.ConvertSidToStringSidW(owner, ctypes.pointer(text)):
+            raise OracleUnavailable(
+                f"ConvertSidToStringSidW failed: {ctypes.get_last_error()}"
+            )
+        try:
+            sid = str(text.value)
+        finally:
+            kernel.LocalFree(text)
+    finally:
+        kernel.LocalFree(descriptor)
+    if not SID_RE.fullmatch(sid):
+        raise OracleUnavailable(f"the owner of {path} did not read as a SID: {sid!r}")
+    return sid
 
 
 def assert_owned_by_this_account(path: Path) -> None:
@@ -335,8 +383,9 @@ def test_the_descriptor_and_its_directory_chain_are_owner_only(tmp_path: Path) -
 
     Ownership is asserted here and only here. It is set by the same call for every
     object a publication touches, so one case covering the three the client
-    validates proves the property; repeating it in the other six would buy a
-    `Get-Acl` launch each and no evidence.
+    validates proves the property, and repeating it in the other six would assert
+    the same call six more times. The reason is redundancy rather than cost: the
+    owner read is now a native call rather than a process launch, and cheap.
     """
     runtime = inherited_chain(tmp_path)
     assert owner_only_evidence(runtime) != owner_only(directory=True), (
