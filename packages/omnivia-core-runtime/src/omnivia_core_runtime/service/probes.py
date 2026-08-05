@@ -87,7 +87,7 @@ P0 froze `endpoint_uri` as the coordination fact a client needs to dial the
 instance at all, and froze *which* endpoints may be published as one: Core's
 generated `ServiceEndpointUri` pattern is the single authority, compiled directly
 by every binding so that no runtime adds acceptance rules of its own. So the
-descriptor is handed to `validate_service_endpoint_descriptor` rather than assessed
+endpoint URI is handed to `validate_service_endpoint_uri` rather than assessed
 again here. The permissive rule that used to sit in its place was a second policy
 in all but name, and it disagreed: it published `file:///.../workspace.sqlite`, a
 credential-bearing query and an unapproved scheme, because each of those is a
