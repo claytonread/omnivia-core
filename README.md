@@ -1015,6 +1015,7 @@ TSC=/path/to/tsc scripts/check-application-typescript.sh   # explicit override
 
 ## Docs Map
 
+- [Changelog](CHANGELOG.md) — accepted lanes and current v0.6 development state.
 - [Portable Knowledge ADR](docs/adr/portable-knowledge-substrate.md)
 - [Portable Knowledge Contract Spec](docs/specs/portable-knowledge-contract.md)
 - [Obsidian-like Compatibility](docs/compatibility/obsidian-like.md)
