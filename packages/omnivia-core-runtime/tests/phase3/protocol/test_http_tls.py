@@ -32,6 +32,7 @@ import traceback
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
@@ -43,6 +44,7 @@ from omnivia_core_runtime.service.http_transport import (
     HttpTls,
     HttpTransportError,
     LoopbackHttpServer,
+    parse_http_endpoint,
 )
 from omnivia_core_runtime.service.operations import success
 from omnivia_core_runtime.service.ovc1 import canonical_json_bytes
@@ -63,9 +65,12 @@ WORKSPACE = "ws-1"
 PRINCIPAL = "local-user"
 ACCEPTED_CREDENTIAL = "accepted-credential"
 
-#: Planted into a certificate path, because `ssl` quotes the file it could not read and
-#: a certificate path is a filesystem layout this process may not publish.
-PLANTED_PATH_FRAGMENT = "planted-credential-hunter2"
+#: The planted values, spelled exactly as `test_http_security.py` spells them so the
+#: cleartext and TLS redaction proofs are searching for the same two strings.
+#: `PLANTED_CREDENTIAL` doubles as a certificate filename below -- `ssl` quotes the file
+#: it could not read, and a path is a filesystem layout this process may not publish.
+PLANTED_CREDENTIAL = "planted-credential-hunter2"
+PLANTED_PATH = "/Users/alice/private/tokens.json"
 
 
 # --- the router behind the listener -------------------------------------------
@@ -302,12 +307,13 @@ def _serve(
     *,
     host: str = "127.0.0.1",
     deadline: float = 10.0,
+    resolver: Any = _resolver,
 ) -> Serving:
     dispatch = CountingDispatch()
     server = LoopbackHttpServer(
         router=_router(dispatch),
         principal=PRINCIPAL,
-        resolver=_resolver,
+        resolver=resolver,
         bind=HttpBind(host=host, tls=tls),
         request_deadline=deadline,
     )
@@ -326,8 +332,14 @@ def serving(material: Material) -> Iterator[Serving]:
 
 def _tls_exchange(
     context: ssl.SSLContext, host: str, port: int, head: list[str], body: bytes
-) -> tuple[int, bytes, str]:
-    """One request over TLS. Status, body, and the version actually negotiated."""
+) -> tuple[int, bytes, bytes, str]:
+    """One request over TLS. Status, response head, body, and the negotiated version.
+
+    The head is returned as well as the body, which the merged cleartext helper does
+    not do. A refusal carries no body by construction, so a diagnostic header is the
+    one place in a *response* a planted value could still survive -- and the redaction
+    proof below asserts on both halves rather than on the half that is empty anyway.
+    """
     raw = ("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + body
     with (
         socket.create_connection((host, port), timeout=20) as plain,
@@ -344,7 +356,7 @@ def _tls_exchange(
     response = b"".join(chunks)
     head_bytes, _, response_body = response.partition(b"\r\n\r\n")
     status = int(head_bytes.split(b"\r\n", 1)[0].split(b" ")[1])
-    return status, response_body, negotiated
+    return status, head_bytes, response_body, negotiated
 
 
 def _tls_post(
@@ -355,7 +367,7 @@ def _tls_post(
     body: bytes,
     *,
     credential: str | None = None,
-) -> tuple[int, bytes, str]:
+) -> tuple[int, bytes, bytes, str]:
     head = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -394,7 +406,7 @@ def test_a_tls_listener_answers_a_strict_client_anchored_on_the_issuing_ca(
     the same strict context every negative case runs and gets an accepted envelope
     back through it.
     """
-    status, body, negotiated = _tls_post(
+    status, _, body, negotiated = _tls_post(
         _client(material),
         serving.host,
         serving.port,
@@ -424,7 +436,7 @@ def test_a_non_loopback_bind_with_tls_starts_and_serves_that_same_client(
     live = _serve(material.tls, host=routable)
     try:
         assert live.url.startswith(f"https://{routable}:")
-        status, body, _ = _tls_post(
+        status, _, body, _ = _tls_post(
             _client(material),
             routable,
             live.port,
@@ -448,7 +460,7 @@ def test_an_unauthenticated_request_over_tls_still_never_reaches_dispatch(
     TLS is a transport, so it must not have moved the credential check. Asserted on the
     dispatcher, as the merged loopback suite does, not on the number 401.
     """
-    status, body, _ = _tls_post(
+    status, _, body, _ = _tls_post(
         _client(material),
         serving.host,
         serving.port,
@@ -709,7 +721,7 @@ def test_a_peer_that_never_finishes_the_handshake_does_not_hold_the_listener(
         silent = socket.create_connection((live.host, live.port), timeout=20)
         try:
             started = time.monotonic()
-            status, _, _ = _tls_post(
+            status, _, _, _ = _tls_post(
                 _client(material),
                 live.host,
                 live.port,
@@ -770,7 +782,7 @@ def test_the_request_deadline_still_releases_a_tls_drip_and_frees_the_listener(
                 # which is the property that matters on a serialized server and the
                 # one closing the drip socket first would hide.
                 next_started = time.monotonic()
-                status, _, _ = _tls_post(
+                status, _, _, _ = _tls_post(
                     _client(material),
                     live.host,
                     live.port,
@@ -794,6 +806,183 @@ def test_the_request_deadline_still_releases_a_tls_drip_and_frees_the_listener(
 
 
 # --- and never publishing what it read ----------------------------------------
+#
+# Packet 5.5 item 9 asks for the merged redaction proof re-run *over TLS*. It lives
+# here rather than in `test_http_security.py` because the machinery each side needs
+# points that way: the redaction assertions are a dozen lines of string search, while
+# reaching them over TLS needs the session-scoped issuing CA, the strict client and
+# `_serve` -- all of which already exist in this module. Copying a certificate
+# authority into the security suite to reuse `_assert_hides` is the larger duplication,
+# and importing across two test modules that are collected under bare basenames rather
+# than as a package is exactly the fragility `tests/test_core_acceptance_workflow.py`
+# already guards against. So: the plants are spelled identically to the merged suite's,
+# and the surfaces asserted are the same ones -- response, output, `args`, `__cause__`,
+# `__context__`, formatted traceback -- with the response *head* added, which the
+# cleartext helpers discard.
+
+
+def test_a_rejected_credential_over_tls_reaches_no_response_and_no_output(
+    material: Material, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The merged planted-credential proof, re-run over the TLS transport.
+
+    The hole this closes is specific. The merged suite never crosses TLS code, so a
+    diagnostic added to the accept, handshake or error path would leak a bearer from a
+    routable listener with the cleartext redaction suite entirely green. Two of those
+    paths are reachable *only* over TLS: `_expire` unwinds a TLS handler into
+    `handle_error` rather than answering `411`, and `get_request` is the only place a
+    connection is touched before a handler exists.
+
+    Every exchange below carries the planted credential in an `Authorization` header
+    and the planted path in the URL, and the resolver raises quoting both -- the worst
+    case, because a raising resolver is the one thing holding the credential in an
+    exception's message while the adapter decides what to do with it.
+
+    The response *head* is asserted as well as the body. A refusal carries no body by
+    construction, so the body assertion is nearly free; a diagnostic header is where a
+    planted value would actually survive, and neither merged helper returns one.
+    """
+    live = _serve(
+        material.tls,
+        resolver=lambda credential: (_ for _ in ()).throw(
+            RuntimeError(f"resolver read {PLANTED_PATH} for {credential}")
+        ),
+        deadline=1.0,
+    )
+    seen: list[bytes] = []
+    try:
+        context = _client(material)
+        for path in (
+            APPLICATION_PATH,
+            f"/v1/{PLANTED_CREDENTIAL}",
+            f"{PROBE_PATH}?token={PLANTED_CREDENTIAL}",
+        ):
+            status, head, body, _ = _tls_post(
+                context,
+                live.host,
+                live.port,
+                path,
+                _request_bytes(),
+                credential=PLANTED_CREDENTIAL,
+            )
+            assert status in (401, 404)
+            seen.extend((head, body))
+
+        # An invented verb reaches `BaseHTTPRequestHandler`'s own error path, which by
+        # default renders the method into an HTML body -- over TLS this time.
+        _, head, body, _ = _tls_exchange(
+            context,
+            live.host,
+            live.port,
+            [
+                f"{PLANTED_CREDENTIAL.upper().replace('-', '')} {PROBE_PATH} HTTP/1.1",
+                f"Host: {live.host}",
+                f"Authorization: Bearer {PLANTED_CREDENTIAL}",
+            ],
+            b"",
+        )
+        seen.extend((head, body))
+
+        # The TLS-only route into `handle_error`: a handler that has already parsed the
+        # `Authorization` header, cut off by the deadline. Over cleartext this answers
+        # `411` and never reaches `handle_error` at all, so nothing merged covers it.
+        with (
+            socket.create_connection((live.host, live.port), timeout=20) as plain,
+            context.wrap_socket(plain, server_hostname=live.host) as client,
+        ):
+            client.sendall(
+                f"POST {APPLICATION_PATH} HTTP/1.1\r\n"
+                f"Authorization: Bearer {PLANTED_CREDENTIAL}\r\n"
+                "X-Drip: ".encode("latin-1")
+            )
+            client.settimeout(10.0)
+            try:
+                while chunk := client.recv(65536):
+                    seen.append(chunk)
+            except OSError:
+                pass
+    finally:
+        live.server.stop()
+
+    captured = capfd.readouterr()
+    for secret in (PLANTED_CREDENTIAL, PLANTED_PATH, PLANTED_CREDENTIAL.upper()):
+        assert all(secret.encode() not in part for part in seen), secret
+        assert secret not in captured.out
+        assert secret not in captured.err
+    assert live.dispatch.calls == []
+
+
+def test_an_accepted_credential_over_tls_publishes_nothing_either(
+    material: Material, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """The other direction: a verified credential is still a credential.
+
+    Four lines' worth of coverage for the half of the surface a "rejected credential"
+    test cannot see -- the accepted path runs further, through the claims gate and into
+    dispatch, and `AuthenticatedSession` carries no field for the credential precisely
+    so it stops at the adapter.
+    """
+    live = _serve(
+        material.tls,
+        resolver=lambda credential: (
+            _resolver(ACCEPTED_CREDENTIAL) if credential == PLANTED_CREDENTIAL else None
+        ),
+    )
+    try:
+        status, head, body, _ = _tls_post(
+            _client(material),
+            live.host,
+            live.port,
+            APPLICATION_PATH,
+            _request_bytes(),
+            credential=PLANTED_CREDENTIAL,
+        )
+    finally:
+        live.server.stop()
+
+    captured = capfd.readouterr()
+    assert status == 200
+    assert PLANTED_CREDENTIAL.encode() not in head + body
+    assert PLANTED_CREDENTIAL not in captured.out + captured.err
+    # Nothing carried it into the request the dispatcher was handed either.
+    assert PLANTED_CREDENTIAL not in repr(live.dispatch.calls[0])
+
+
+def test_an_https_endpoint_refusal_hides_a_credential_carried_in_the_url(
+    material: Material,
+) -> None:
+    """The exception surfaces, on the parse path this lane newly opened.
+
+    `https://` used to be refused at the scheme check, one line before the `userinfo`
+    check could ever run. It now parses past that, so a credential in an `https` URL
+    reaches the credential refusal for the first time -- a new surface, and the one
+    place on the TLS path where an exception a *caller holds* can have seen a bearer.
+
+    Both refusal orders are asserted: with material stated the endpoint reaches the
+    `userinfo` rule, and without it the scheme/material rule fires first. Neither may
+    quote what it was handed, through `args`, `__cause__`, `__context__` or a rendered
+    traceback -- `raise ... from None` clears the first and leaves the second.
+    """
+    endpoint = f"https://alice:{PLANTED_CREDENTIAL}@127.0.0.1:8080"
+
+    for stated in (material.tls, None):
+        with pytest.raises(HttpTransportError) as caught:
+            parse_http_endpoint(endpoint, tls=stated)
+
+        error = caught.value
+        rendered = "".join(
+            (
+                str(error),
+                repr(error.args),
+                repr(error.__cause__),
+                repr(error.__context__),
+                "".join(traceback.format_exception(error)),
+            )
+        )
+        assert PLANTED_CREDENTIAL not in rendered
+        assert "alice" not in rendered
+        assert error.__cause__ is None
+        assert error.__context__ is None
 
 
 def test_a_tls_material_refusal_publishes_no_certificate_path(tmp_path: Path) -> None:
@@ -804,7 +993,7 @@ def test_a_tls_material_refusal_publishes_no_certificate_path(tmp_path: Path) ->
     it clears `__cause__` and leaves `__context__` referencing the original, one
     attribute access from anything that logs the refusal.
     """
-    planted = tmp_path / f"{PLANTED_PATH_FRAGMENT}.pem"
+    planted = tmp_path / f"{PLANTED_CREDENTIAL}.pem"
     server = LoopbackHttpServer(
         router=_router(CountingDispatch()),
         principal=PRINCIPAL,
@@ -825,7 +1014,7 @@ def test_a_tls_material_refusal_publishes_no_certificate_path(tmp_path: Path) ->
             "".join(traceback.format_exception(error)),
         )
     )
-    assert PLANTED_PATH_FRAGMENT not in rendered
+    assert PLANTED_CREDENTIAL not in rendered
     assert str(tmp_path) not in rendered
     assert error.__cause__ is None
     assert error.__context__ is None
@@ -841,14 +1030,14 @@ def test_a_failed_handshake_prints_nothing_and_does_not_stop_the_listener(
     the listener answers on its own thread, where `capsys` would see nothing.
     """
     with socket.create_connection((serving.host, serving.port), timeout=20) as client:
-        client.sendall(b"not a tls record at all: " + PLANTED_PATH_FRAGMENT.encode())
+        client.sendall(b"not a tls record at all: " + PLANTED_CREDENTIAL.encode())
         try:
             client.recv(65536)
         except OSError:
             pass
 
     # Still serving, and the successful caller proves the listener survived.
-    status, _, _ = _tls_post(
+    status, _, _, _ = _tls_post(
         _client(material),
         serving.host,
         serving.port,
@@ -860,7 +1049,7 @@ def test_a_failed_handshake_prints_nothing_and_does_not_stop_the_listener(
     assert status == 200
     assert captured.out == ""
     assert captured.err == ""
-    assert PLANTED_PATH_FRAGMENT not in captured.out + captured.err
+    assert PLANTED_CREDENTIAL not in captured.out + captured.err
 
 
 def test_nothing_this_module_generates_lands_in_the_work_tree(

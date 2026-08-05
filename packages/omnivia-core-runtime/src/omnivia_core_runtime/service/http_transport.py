@@ -76,11 +76,23 @@ request are claims: each must name something the session already holds, so a cla
 select a subset and can never add. This is a gate in front of dispatch, not a second
 authorization vocabulary -- it produces a status code, never an envelope.
 
-**The route/document agreement.** A probe is answered unauthenticated on loopback, so
-the probe route must not become a way to reach the application path. The document's
-own branch field therefore has to agree with the URL it arrived on: an `operation`
-document posted to `/v1/probe` is refused before routing rather than dispatched by a
-router that would, correctly, see an application request.
+**The route/document agreement.** A probe is answered unauthenticated, so the probe
+route must not become a way to reach the application path. The document's own branch
+field therefore has to agree with the URL it arrived on: an `operation` document
+posted to `/v1/probe` is refused before routing rather than dispatched by a router
+that would, correctly, see an application request.
+
+That rule is unchanged, but the sentence that used to justify it -- "unauthenticated
+*on loopback*" -- no longer describes every bind this module can serve. A non-loopback
+TLS listener answers `/v1/probe` to any peer that completes the handshake, and the
+handshake asks for no client certificate, so `ServiceFacts` -- health, readiness,
+`server_version`, `api_version` -- is now reachable off-host in a way it was not in
+any previous configuration. The premise widened; the behaviour did not. **Whether that
+surface is intended is an owner decision and is recorded rather than resolved here**:
+gating the probe would be a new authentication rule for a route the accepted freeze
+deliberately leaves open, which is not this lane's to make. The rule above stands on
+its own without the loopback premise -- an unauthenticated route must not reach the
+authenticated one, wherever it is bound.
 
 Concurrency is deliberately absent. `HTTPServer`, not `ThreadingHTTPServer`: the local
 transport serves one connection at a time and the merged P2b review recorded that
@@ -884,7 +896,21 @@ class _Handler(BaseHTTPRequestHandler):
 
 @dataclass
 class LoopbackHttpServer:
-    """The loopback HTTP v1 listener.
+    """The HTTP v1 listener: loopback in the clear, or any address over TLS.
+
+    **The name is now wrong, and it is kept deliberately.** `Loopback` described the
+    only bind this class could serve until TLS landed; a bind carrying
+    :class:`HttpTls` may be routable, so the name understates what an instance can do
+    and no one should read it as a guarantee -- :class:`HttpBind` is where the bind
+    policy actually lives. Renaming it is the honest fix and it is *foreclosed*, not
+    declined: the only importer outside this module's own tests is
+    `omnivia_core_runtime.service.main`, which this lane's manifest makes immutable
+    because the adapter is embedder-only for v0.6 and its startup wiring is a settled
+    decision. A rename that cannot touch its importer is a rename that breaks the
+    build, so the decision recorded here is: **do not rename in this lane; rename
+    mechanically in the lane that may edit `main.py`.** Recorded rather than left
+    silent because a class whose name contradicts its behaviour is exactly the kind of
+    thing a later reader trusts.
 
     Constructed with the *same* :class:`DocumentRouter` the local transport is given,
     which is the whole of how the two share a probe router and an application
