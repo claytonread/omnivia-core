@@ -80,9 +80,16 @@ jobs:
           # protocol foundation in its own, so the suite below cannot import
           # either unless all four are installed.
           python -m pip install -e packages/omnivia-core-runtime
+          # The client goes in before the CLI, and the order is the content of
+          # these two lines. `omnivia-core-cli` now declares
+          # `omnivia-core-client>=0.1.0,<0.2.0` -- its transport is the first
+          # concrete `ClientTransport` -- and `omnivia-core-client` is
+          # unpublished, so installing the CLI first sends pip to the index for a
+          # distribution no index has. This is the same rule the root package's
+          # comment above states, applied one edge further down the topology.
+          python -m pip install -e packages/omnivia-core-client
           python -m pip install -e packages/omnivia-core-cli
           python -m pip install -e packages/omnivia-core-mcp
-          python -m pip install -e packages/omnivia-core-client
 
       - name: Install Node dependencies
         run: npm ci
@@ -168,6 +175,7 @@ jobs:
         run: |
           python -m pytest services tests \
             packages/omnivia-core-runtime/tests \
+            packages/omnivia-core-cli/tests \
             packages/omnivia-core-client/tests -q
 
       - name: Run benchmark tests

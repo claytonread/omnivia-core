@@ -1,24 +1,35 @@
 # omnivia-core-cli
 
-`omnivia-core-cli` is the skeleton CLI surface distribution in the OmniVia
-Core package topology.
+`omnivia-core-cli` is the `omnivia` CLI distribution in the OmniVia Core
+package topology. It is a Core Service client: it discovers a running service,
+builds contract envelopes, calls, and reports what it is told. It never owns a
+workspace, holds no lease, takes no lock and opens no database.
 
-This package currently has **no operational behavior**. It exists to
-establish the compile-time dependency boundary defined by PM ADR-036: the CLI
+The compile-time dependency boundary is the one PM ADR-036 defines: this
 surface depends on the public `omnivia-core` contracts, and nothing in
-`omnivia-core` may depend back on this package.
+`omnivia-core` may depend back on it.
+
+## Commands
+
+- `omnivia --runtime-state <dir> discover` — show the advertised service, if any.
+- `omnivia --runtime-state <dir> health|readiness` — emit the request envelope.
+- `omnivia --runtime-state <dir> workspace show` — call `workspace.inspect` on
+  the running service over the installation-local OVC1 endpoint and render the
+  workspace descriptor.
 
 ## Dependency direction
 
 ```text
-omnivia-core-cli  -->  omnivia-core
+omnivia-core-cli  -->  omnivia-core-client  -->  omnivia-core
 ```
 
-- `omnivia-core-cli` depends on `omnivia-core`.
+- `omnivia-core-cli` depends on `omnivia-core` and on `omnivia-core-client`.
 - `omnivia-core` must never depend on or import `omnivia_core_cli`.
 - `omnivia-core-cli` must never depend on or import `omnivia_core_runtime`.
 
 ## Status
 
-Skeleton only. No CLI entry point or command behavior has been added yet.
-Do not depend on this package for CLI functionality.
+`workspace show` is the first subcommand that calls a service rather than
+printing the envelope it would have sent. It is local IPC only: a `pipe://`
+endpoint is refused rather than dialled, so the command does not work on
+Windows yet.
