@@ -4,7 +4,7 @@ Date: 2026-07-30
 Author: Claude (Stream B implementation agent)
 Status: **read-only preparation. No T-0629 implementation code is authorized or included.**
 Basis commit for all inventory line numbers: `55f248945ecee5bb4c36cf7ffd4c155b550cc09e`
-Authority: ADR-037; T-0629 packet
+Authority: PM ADR-037; T-0629 packet
 `/Users/claytonread/Projects/omnivia-pm/docs/tasks/2026-07-29-t0629-omnivia-core-phase-2-workspace-migrations-and-fencing.md`
 
 This is the concurrent preparation the handoff brief authorizes while the T-0628
@@ -262,16 +262,16 @@ outcome, not merely that a call did not raise.
 | LE-08 | `test_takeover_requires_endpoint_evidence_where_available` | Endpoint probe consulted |
 | LE-09 | `test_takeover_requires_process_start_evidence` | Process-start compared |
 | LE-10 | `test_pid_reuse_does_not_prove_owner_liveness` | Same PID, different start time → not alive |
-| LE-11 | `test_suspended_owner_resuming_after_takeover_is_rejected` | The core ADR-037 scenario |
+| LE-11 | `test_suspended_owner_resuming_after_takeover_is_rejected` | The core PM ADR-037 scenario |
 | LE-12 | `test_stale_owner_cannot_reclaim_authority` | Old generation refused |
 | LE-13 | `test_heartbeat_is_monotonic_where_available` | Monotonic clock used |
 | LE-14 | `test_wall_clock_adjustment_does_not_expire_a_live_lease` | Clock jump tolerated |
 | LE-15 | `test_graceful_handover_transfers_without_data_loss` | Clean handover |
-| LE-16 | `test_lease_record_carries_every_required_evidence_field` | Full ADR-037 lease record |
+| LE-16 | `test_lease_record_carries_every_required_evidence_field` | Full PM ADR-037 lease record |
 | LE-17 | `test_lease_release_on_shutdown_records_shutdown_state` | Clean shutdown recorded |
 | LE-18 | `test_readiness_requires_the_exact_current_lease_tuple` | Tuple identity enforced |
 | LE-19 | `test_no_newer_recorded_generation_exists_before_readiness` | Final pre-readiness check |
-| LE-20 | `test_lease_acquisition_after_storage_lock_and_connection_only` | Ordering invariant (ADR-037 #17) |
+| LE-20 | `test_lease_acquisition_after_storage_lock_and_connection_only` | Ordering invariant (PM ADR-037 #17) |
 | LE-21 | `test_debugger_suspended_owner_is_not_declared_dead` | Suspension ≠ death |
 | LE-22 | `test_failed_migration_during_takeover_leaves_no_partial_authority` | Takeover + migration failure is safe |
 
@@ -315,7 +315,7 @@ outcome, not merely that a call did not raise.
 | FM-21 | `test_control_plane_and_scheduler_mutations_are_guarded` | All 9 control-plane sites |
 | FM-22 | `test_no_normal_path_can_write_the_implicit_home_database` | `get_database()` fallback removed |
 
-**Threat-model boundary — do not overclaim.** ADR-037 states plainly that
+**Threat-model boundary — do not overclaim.** PM ADR-037 states plainly that
 persisted triggers are "not a security boundary against arbitrary code running as
 the workspace-owning OS principal", and that Core does not claim to prevent that
 principal from terminating the service, changing ACLs, using another VFS, or
@@ -363,7 +363,7 @@ asserting something the architecture explicitly disclaims.
 |---|---|---|
 | LC-01 | `test_all_ten_lifecycle_states_are_reachable_and_distinct` | stopped/starting/recovering/migrating/ready/running/draining/maintenance/failed/stopped |
 | LC-02 | `test_writable_readiness_is_published_last` | Ordering |
-| LC-03 | `test_readiness_requires_all_nine_preconditions_at_one_instance` | Full ADR-037 readiness set |
+| LC-03 | `test_readiness_requires_all_nine_preconditions_at_one_instance` | Full PM ADR-037 readiness set |
 | LC-04 | `test_failed_transition_releases_resources_in_reverse_order` | Reverse-order cleanup |
 | LC-05 | `test_failed_instance_publishes_no_readiness` | No readiness on failure |
 | LC-06 | `test_scheduler_revalidates_generation_after_resume` | Resume revalidation |
@@ -491,7 +491,7 @@ catches — using wall time for expiry — would be invisible.
 
 ### 4.2 Process evidence
 
-ADR-037: "PID identity alone is insufficient because of PID reuse."
+PM ADR-037: "PID identity alone is insufficient because of PID reuse."
 
 ```text
 ProcessEvidence:

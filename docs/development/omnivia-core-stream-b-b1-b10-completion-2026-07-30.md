@@ -74,7 +74,7 @@ Delivered instead, because none of it depends on the catalogue:
 - the transport-neutral dispatcher over the existing envelope contracts;
 - the authorization boundary — fixed principal, workspace allowlist, granted
   operation allowlist;
-- the three service-lifecycle operations ADR-037 keeps distinct from product
+- the three service-lifecycle operations PM ADR-037 keeps distinct from product
   operations: `core.health`, `core.readiness`, `core.discovery`;
 - the `omnivia` CLI and the first-party MCP adapter as service clients, with
   AST-enforced proof that neither imports the runtime, opens SQLite, or can acquire
@@ -95,7 +95,7 @@ The operational MCP adapter that existed at `b9005e1` is **not** part of this
 candidate. It imported `omnivia_core_cli.client`, and making that installable meant
 declaring a dependency on a sibling distribution, which the approved topology does
 not permit — Runtime, MCP and CLI each depend only on `omnivia-core`. Placing shared
-service-client primitives in an approved lower-level surface is an ADR-036 decision,
+service-client primitives in an approved lower-level surface is a PM ADR-036 decision,
 so the adapter waits for the Phase 4 packet rather than shipping with a prohibited
 edge.
 
@@ -152,7 +152,7 @@ sufficient and was used here because it changes nothing in Stream A's environmen
 
 ## 7. Threat-model boundary
 
-No test claims to prevent tampering by the workspace-owning OS principal. ADR-037
+No test claims to prevent tampering by the workspace-owning OS principal. PM ADR-037
 disclaims that guarantee explicitly: that principal can terminate the service, alter
 guard triggers offline or rewrite database bytes. Persisted triggers are fail-closed
 defence against ordinary unregistered DML, and schema or trigger drift is **detected

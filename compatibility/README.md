@@ -282,7 +282,7 @@ encode are enforced by other gates in the same acceptance run:
   its source — with `omnivia_memory` not merely unimported but absent from the
   environment.
 - **Deprecation metadata.**
-  `tests/compatibility/test_root_facade_distribution.py` checks the ADR-036
+  `tests/compatibility/test_root_facade_distribution.py` checks the PM ADR-036
   deprecation notice where it actually ships — the wheel's `Summary`, its
   `Project-URL` migration link, and the README that travels as its description —
   and that the packaged root still carries no import-time notice.

@@ -100,7 +100,7 @@ cannot be decoded. A sender needing an integer identity that large must carry it
 as a string.
 
 **This is a transport rule and it changes nothing about the canonical form.**
-Core's canonicalizer is frozen (ADR-039) and is not touched: `2^60` still has the
+Core's canonicalizer is frozen (PM ADR-039) and is not touched: `2^60` still has the
 same RFC 8785 canonical bytes, and code content-addressing a document rather than
 sending one should call `canonical_bytes` directly and will see no difference.
 Nor is the boundary a JavaScript-safe-integer range — the admission rule remains

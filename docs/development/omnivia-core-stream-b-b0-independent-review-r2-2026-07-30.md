@@ -214,7 +214,7 @@ programme wants, not a mechanical fix.
 
 ## 6. Answers to the plan §10 checklist
 
-1. **Do the commits match ADR-036 and the packets?** Yes. The 22 commits since
+1. **Do the commits match PM ADR-036 and the packets?** Yes. The 22 commits since
    `55f2489` are the facade cutover A1 describes, plus the acceptance-CI gate and
    status records. §3.6 of the plan now defines the closeout boundary explicitly.
 2. **Are canonical contracts behaviourally different from frozen legacy source?**
