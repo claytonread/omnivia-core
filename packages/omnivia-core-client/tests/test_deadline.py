@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+import traceback
 from collections.abc import Callable
 
 import pytest
@@ -104,6 +105,35 @@ def test_a_timeout_that_is_not_a_number_at_all_is_a_type_error(timeout: object) 
 def test_a_timeout_too_large_to_be_a_float_is_a_value_error_not_an_overflow() -> None:
     with pytest.raises(ValueError, match="too large"):
         Deadline.after(UNRENDERABLE_INTEGER, clock=FakeClock())
+
+
+def test_the_conversion_failure_is_not_chained_onto_the_refusal() -> None:
+    """The `OverflowError` is dropped, not merely hidden from a printed traceback.
+
+    CPython's own `int too large to convert to float` names no value, which is why
+    this plants one: `float()` defers to `__float__` on a subclass, so the message
+    is whatever the operand's own code chose to say. `raise ... from None` would
+    clear `__cause__` and set `__suppress_context__` -- enough to keep the text out
+    of `rendered` below, and not enough to keep it off `__context__`, where
+    anything that logs or serializes the refusal still reaches it.
+    """
+    planted = "int 0xDEADBEEF from /Users/someone/secret/budget.conf"
+
+    class PoisonedInt(int):
+        def __float__(self) -> float:
+            raise OverflowError(planted)
+
+    with pytest.raises(ValueError) as raised:
+        Deadline.after(PoisonedInt(1), clock=FakeClock())
+
+    error = raised.value
+    rendered = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+    for surface in (str(error), repr(error), repr(error.args), rendered):
+        assert planted not in surface
+    assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 @pytest.mark.parametrize("timeout", [1.5, "5", None, True, False, [1]])

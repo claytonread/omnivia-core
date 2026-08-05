@@ -33,6 +33,15 @@ original exception -- with its text -- reachable on the error a caller catches. 
 translation therefore happens after the handler has exited, where there is no
 current exception to chain.
 
+That is the rule for every nested failure this module answers, not only a provider's.
+The contract validators reached from `_validate_descriptor`, and the calendar check in
+`_timestamp`, are caught the same way and answered the same way: a sentinel set inside
+the handler, the refusal raised once it has exited. Three of them used `from None`, and
+two of those said in their own words -- `_endpoint` in its docstring, `_version_window`
+in an inline comment -- that this kept the nested text off the caller's error. It did
+not, by the argument two paragraphs up, and a comment claiming a security property the
+code does not have is worse than no comment at all.
+
 The injected clock is held to the same standard, one step earlier. Its readings are
 arithmetic operands, so a reading that is not an integer, or a second reading behind
 the first, is refused before the subtraction rather than after: a wrong type would
@@ -549,12 +558,21 @@ def _timestamp(value: object, label: str) -> None:
     Parsing is not clock-reading. This reads a value the caller handed over; the
     router still owns no clock, and the only time it knows is the monotonic one
     injected for deadlines.
+
+    Refused after the handler exits, like every other nested failure here. What
+    `fromisoformat` says on a pattern-conforming string is a calendar range --
+    `month must be in 1..12` -- and not the value itself, but that is a property
+    of `_scalar` having already run and of this interpreter's wording, neither of
+    which is a thing to hang a boundary on. The refusal names the field and stops.
     """
     text = _scalar(value, label, _TIMESTAMP)
+    malformed = False
     try:
         datetime.fromisoformat(f"{text[:-1]}+00:00")
     except ValueError:
-        raise ProbeError(f"{label} is malformed") from None
+        malformed = True
+    if malformed:
+        raise ProbeError(f"{label} is malformed")
 
 
 def _endpoint(descriptor: ServiceEndpointDescriptor, label: str) -> None:
@@ -574,16 +592,26 @@ def _endpoint(descriptor: ServiceEndpointDescriptor, label: str) -> None:
     `http://host/?access_token=...` all answered yes -- a second, laxer policy that
     read like the same one.
 
-    The refusal is local and fixed. Core names no value in its own message either,
-    but a probe answers before authentication, so what that caller is told is
-    decided at this boundary rather than inherited from a library raising to its
-    caller: `from None` keeps the contract's text off the error a caller catches,
-    and the message names the field and stops there.
+    The refusal is local and fixed. Core names no value in its own message today
+    either, but a probe answers before authentication, so what that caller is told
+    is decided at this boundary rather than inherited from a library raising to its
+    caller, and it stays decided here whatever Core's wording becomes.
+
+    Which is why the contract's error is dropped rather than chained, and why that
+    is done by raising after the handler has exited. `raise ... from None` would
+    read as the same thing and is not: it clears `__cause__` and sets
+    `__suppress_context__`, so a rendered traceback stays quiet while the
+    contract's exception -- and the frames inside the validator that produced it --
+    remain on `__context__`, one attribute access away for anything that logs or
+    serializes the error a caller catches.
     """
+    approved = True
     try:
         validate_service_endpoint_descriptor(descriptor)
     except ContractSemanticError:
-        raise ProbeError(f"{label} is not an approved transport endpoint") from None
+        approved = False
+    if not approved:
+        raise ProbeError(f"{label} is not an approved transport endpoint")
 
 
 def _bounded_int(value: object, label: str, minimum: int) -> None:
@@ -605,15 +633,22 @@ def _version_window(window: object, label: str) -> None:
         raise ProbeError(f"{label} is not a version window")
     _scalar(window.minimum, f"{label} minimum", _CONTRACT_VERSION)
     _scalar(window.maximum, f"{label} maximum", _CONTRACT_VERSION)
+    # Refused with a message of this module's own, and the contract's is not
+    # carried along either. Its text quotes the bounds it rejected -- `version
+    # window is reversed: minimum '9.9' exceeds maximum '1.0'` -- which is right
+    # for a library raising to its caller and wrong here: nothing nested is vetted
+    # for what an unauthenticated caller may be told, so nothing nested is passed
+    # on. The sentinel is what makes that true. `from None` would clear
+    # `__cause__` and silence the rendering of `__context__` while leaving the
+    # quoted bounds reachable on the error a caller catches; raising once the
+    # handler has exited means there is no exception being handled to chain to.
+    ordered = True
     try:
         validate_version_window(window)
     except ContractSemanticError:
-        # Refused with a message of this module's own, and `from None` so the
-        # contract's is not carried along either. The contract's text quotes the
-        # bounds it rejected, which is right for a library raising to its caller
-        # and wrong here: nothing nested is vetted for what an unauthenticated
-        # caller may be told, so nothing nested is passed on.
-        raise ProbeError(f"{label} is malformed") from None
+        ordered = False
+    if not ordered:
+        raise ProbeError(f"{label} is malformed")
 
 
 def _validate_request(request: ServiceProbeRequest) -> None:

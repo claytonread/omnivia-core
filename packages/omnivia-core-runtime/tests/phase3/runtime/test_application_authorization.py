@@ -33,6 +33,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import traceback
 
 import pytest
 from omnivia_core_runtime.service import authorization
@@ -62,12 +63,14 @@ from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
     ClientIdentity,
     ContractDecodeError,
+    ContractSemanticError,
     MutationPrecondition,
     PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
     decode_request,
     encode_request,
+    get_operation_metadata,
     validate_operation_error,
 )
 
@@ -432,6 +435,30 @@ def test_an_unknown_operation_is_an_invalid_request() -> None:
 
     # Including the service-lifecycle probes, which are a separate contract.
     assert refusal(entry, operation="core.health").code == ERROR_CODE_INVALID_REQUEST
+
+
+def test_the_catalogues_refusal_of_an_unknown_operation_is_not_chained_on() -> None:
+    """The catalogue quotes the operation it was handed; this seam does not.
+
+    An operation name is caller-supplied, so a client that puts a credential there --
+    by templating one in, or by sending the wrong field -- must not have it read back
+    out of the refusal. `raise ... from None` would keep it out of a printed traceback
+    and leave `ContractSemanticError`, with the name embedded, on `__context__`.
+    """
+    spoofed = f"memory.{SECRET_CREDENTIAL}"
+    with pytest.raises(ContractSemanticError) as nested:
+        get_operation_metadata(spoofed)
+    assert spoofed in str(nested.value)
+
+    error = refusal(by_name(READ), operation=spoofed)
+    assert error.code == ERROR_CODE_INVALID_REQUEST
+    rendered = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
+    for surface in (str(error), error.message, repr(error.args), rendered):
+        assert spoofed not in surface
+    assert error.__cause__ is None
+    assert error.__context__ is None
 
 
 def test_a_malformed_principal_claim_is_an_invalid_request() -> None:
@@ -995,12 +1022,14 @@ def test_a_malformed_direct_fact_is_refused_exactly_as_the_wire_decoder_refuses_
 
     error = refuse_envelope(envelope)
     assert error.code == ERROR_CODE_INVALID_REQUEST
-    # Neither the offending value nor the decoder's own message reaches the refusal.
+    # Neither the offending value nor the decoder's own message reaches the refusal --
+    # and the decoder's exception is not reachable *from* the refusal either. Both
+    # attributes are asserted `None` rather than tolerated-and-suppressed:
+    # `raise ... from None` would satisfy the second half by hiding the exception from
+    # a printed traceback, and leave it on `__context__` for everything else.
     assert "170" not in error.message
     assert error.__cause__ is None
-    if error.__context__ is not None:
-        assert error.__suppress_context__ is True
-        assert str(error.__context__) not in error.message
+    assert error.__context__ is None
 
 
 def test_metadata_that_is_not_request_metadata_is_an_invalid_request() -> None:
@@ -1229,10 +1258,11 @@ def test_no_secret_or_raw_exception_reaches_a_refusal_message(entry) -> None:
         assert SECRET_IDEMPOTENCY_KEY not in error.message
         assert SECRET_RECORD_VERSION not in error.message
         assert error.__cause__ is None
-        swallowed = error.__context__
-        if swallowed is not None:
-            assert error.__suppress_context__ is True
-            assert str(swallowed) not in error.message
+        # Nor on `__context__`. The validator's exception quotes the key it refused,
+        # so leaving it attached would republish it to anything that logs or
+        # serializes the refusal -- which `raise ... from None` does, since it only
+        # suppresses the *rendering* of a chained exception.
+        assert error.__context__ is None
 
 
 # --- presence semantics stay delegated, and stay untightened -------------------
@@ -1859,13 +1889,12 @@ def test_no_caller_or_server_value_reaches_any_refusal_family(entry) -> None:
     for error in secret_refusals(entry):
         assert_not_echoed(error, *ALL_SECRETS)
 
-        # And nothing arrives by the other route either: a wrapped cause would carry
-        # the validator's or the decoder's own message, which quotes what a refusal
-        # must not repeat.
+        # And nothing arrives by the other route either: a chained exception would
+        # carry the validator's or the decoder's own message, which quotes what a
+        # refusal must not repeat. Neither attribute is set, rather than one of them
+        # being set and merely hidden from a printed traceback.
         assert error.__cause__ is None
-        if error.__context__ is not None:
-            assert error.__suppress_context__ is True
-            assert str(error.__context__) not in error.message
+        assert error.__context__ is None
 
 
 #: Every message the seam publishes, read off the module rather than restated here, so

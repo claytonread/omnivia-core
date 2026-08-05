@@ -89,39 +89,17 @@ RUNTIME_SERVICE = "packages/omnivia-core-runtime/src/omnivia_core_runtime/servic
 CLIENT = "packages/omnivia-core-client/src/omnivia_core_client"
 
 # path -> (accepted count, why it is accepted today)
-ACCEPTED_SITES: dict[str, tuple[int, str]] = {
-    f"{RUNTIME_SERVICE}/authorization.py": (
-        4,
-        (
-            "request encode/decode and catalogue refusals; the suppressed "
-            "ContractDecodeError and ContractSemanticError quote the caller's "
-            "own field values, so these are live instances rather than benign "
-            "ones"
-        ),
-    ),
-    f"{RUNTIME_SERVICE}/probes.py": (
-        3,
-        (
-            "timestamp, endpoint and version-window refusals; the suppressed "
-            "ValueError and ContractSemanticError quote the value they "
-            "rejected, which the same module's `_provided` deliberately avoids"
-        ),
-    ),
-    f"{RUNTIME_SERVICE}/windows_pipe.py": (
-        1,
-        (
-            "truncated-frame refusal suppressing an EOFError raised by this "
-            "package's own overlapped transfer, which quotes no caller value"
-        ),
-    ),
-    f"{CLIENT}/deadline.py": (
-        1,
-        (
-            "OverflowError from `float()` on an out-of-range int; its message "
-            "names no caller value"
-        ),
-    ),
-}
+#
+# Empty, and that is the point. This started with nine entries recording the
+# sites that predated the check. They were repaired in the lane that landed
+# beside it, and the ratchet is what proved the repair complete: it failed
+# until every entry was removed, because a count that no longer matches the
+# tree is stale in either direction.
+#
+# Add an entry only to record a site that genuinely cannot be repaired yet,
+# with the reason. An entry added to silence a finding is the failure this
+# structure exists to prevent.
+ACCEPTED_SITES: dict[str, tuple[int, str]] = {}
 
 
 @dataclass(frozen=True)

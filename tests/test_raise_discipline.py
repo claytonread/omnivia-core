@@ -153,17 +153,28 @@ def test_a_raise_outside_any_handler_is_not_flagged() -> None:
     assert discipline.scan_source(source, STUB) == []
 
 
-@pytest.fixture
-def ratchet_root(tmp_path: Path) -> Path:
-    """A tree carrying exactly the recorded sites, and nothing else.
+#: A debt record invented for these tests, deliberately not the real one.
+#:
+#: The ratchet mechanism has to stay pinned whether or not the repo currently
+#: carries any accepted site. Deriving the fixture from the live
+#: ``ACCEPTED_SITES`` made the mechanism untestable the moment the debt was
+#: paid off -- the tests below went from passing to erroring on an empty
+#: mapping, which is precisely backwards: paying the debt should not retire the
+#: guard that protects it. Whether the *real* record matches the *real* tree is
+#: a different question, pinned by ``test_the_scoped_trees_are_clean``.
+SYNTHETIC_ACCEPTED: dict[str, tuple[int, str]] = {
+    f"{discipline.SCOPED_TREES[0]}/legacy_two.py": (2, "synthetic: two accepted"),
+    f"{discipline.SCOPED_TREES[1]}/legacy_one.py": (1, "synthetic: one accepted"),
+}
 
-    Generated from ``ACCEPTED_SITES`` on purpose: this fixture tests the ratchet
-    *mechanism*. Whether those counts match reality is pinned separately by
-    ``test_the_scoped_trees_are_clean`` against the real checkout.
-    """
+
+@pytest.fixture
+def ratchet_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A tree carrying exactly ``SYNTHETIC_ACCEPTED``, and nothing else."""
+    monkeypatch.setattr(discipline, "ACCEPTED_SITES", SYNTHETIC_ACCEPTED)
     for tree in discipline.SCOPED_TREES:
         (tmp_path / tree).mkdir(parents=True, exist_ok=True)
-    for relative, (count, _reason) in discipline.ACCEPTED_SITES.items():
+    for relative, (count, _reason) in SYNTHETIC_ACCEPTED.items():
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(LEAK * count, encoding="utf-8")
@@ -171,7 +182,7 @@ def ratchet_root(tmp_path: Path) -> Path:
 
 
 def _first_accepted() -> tuple[str, int]:
-    relative, (count, _reason) = next(iter(discipline.ACCEPTED_SITES.items()))
+    relative, (count, _reason) = next(iter(SYNTHETIC_ACCEPTED.items()))
     return relative, count
 
 
