@@ -21,14 +21,37 @@ transport is given, so there is one probe router and one application dispatcher 
 both, and no second error catalogue can grow here: this module constructs no
 `ApiError`, no `ErrorResponseEnvelope` and no error code at all.
 
-Four things are decided here rather than inherited, and each of them is a refusal.
+Five things are decided here rather than inherited, and each of them is a refusal.
 
-**The bind.** Loopback IP literals only, checked with `ipaddress` rather than by
-spelling. `0.0.0.0` and `::` are not loopback and are refused; so is a *hostname*,
-including `localhost`, because a name resolves and what it resolves to is not this
-module's to assume. TLS, certificate verification and the credential configuration
-that would let a non-loopback listener exist are out of this lane entirely, so a bind
-that would need them refuses startup instead of quietly serving without them.
+**The bind.** IP literals only, checked with `ipaddress` rather than by spelling. A
+*hostname*, including `localhost`, is refused rather than resolved, because what a
+name resolves to is host configuration and a bind policy an `/etc/hosts` line can move
+is not one. A non-loopback address -- wildcard included -- is refused *unless
+server-side TLS is configured on the bind itself*. The configuration lives there, and
+not on the server, so the refusal stays at construction where it already was: there is
+still no state in which an unconfigured listener is up. Cleartext loopback is
+unchanged and needs nothing.
+
+**TLS.** Stated or absent, never inferred and never defaulted. :class:`HttpTls` names
+a certificate chain and a private key; a bind carries one or carries nothing, so a
+half-configured listener is unrepresentable rather than refused. The context is built
+from it in :meth:`LoopbackHttpServer.start` *before a socket exists*, so material that
+is missing, unreadable or mismatched refuses with nothing bound rather than with a
+listener up and a handshake that fails one caller at a time. The floor is stated
+rather than inherited from whatever the platform default is this year:
+`minimum_version` is TLS 1.2. It is a floor rather than 1.3 because two modern peers
+negotiate 1.3 regardless, while a 1.3 *minimum* refuses a peer legitimately capped at
+1.2 -- that is a compatibility cliff, not a security gain, and what actually needs
+excluding is 1.1 and below. `maximum_version` is left alone for the same reason in the
+other direction. Client certificates are out of scope -- there is no mutual TLS in
+this lane -- so `PROTOCOL_TLS_SERVER`'s own `CERT_NONE` stands as a deliberate
+boundary rather than an oversight.
+
+And there is no downgrade. :meth:`_HttpService.get_request` branches on what the bind
+*asked for*, not on what was loaded, so a TLS bind whose context is somehow absent
+closes the connection rather than falling through to the cleartext return above it.
+Neither failing path constructs a handler, so a plaintext byte cannot be answered by a
+listener that was asked for TLS.
 
 **The credential.** Every application request carries a verified bearer credential,
 loopback included. Verification is an injected :data:`CredentialResolver`: this module
@@ -53,11 +76,23 @@ request are claims: each must name something the session already holds, so a cla
 select a subset and can never add. This is a gate in front of dispatch, not a second
 authorization vocabulary -- it produces a status code, never an envelope.
 
-**The route/document agreement.** A probe is answered unauthenticated on loopback, so
-the probe route must not become a way to reach the application path. The document's
-own branch field therefore has to agree with the URL it arrived on: an `operation`
-document posted to `/v1/probe` is refused before routing rather than dispatched by a
-router that would, correctly, see an application request.
+**The route/document agreement.** A probe is answered unauthenticated, so the probe
+route must not become a way to reach the application path. The document's own branch
+field therefore has to agree with the URL it arrived on: an `operation` document
+posted to `/v1/probe` is refused before routing rather than dispatched by a router
+that would, correctly, see an application request.
+
+That rule is unchanged, but the sentence that used to justify it -- "unauthenticated
+*on loopback*" -- no longer describes every bind this module can serve. A non-loopback
+TLS listener answers `/v1/probe` to any peer that completes the handshake, and the
+handshake asks for no client certificate, so `ServiceFacts` -- health, readiness,
+`server_version`, `api_version` -- is now reachable off-host in a way it was not in
+any previous configuration. The premise widened; the behaviour did not. **Whether that
+surface is intended is an owner decision and is recorded rather than resolved here**:
+gating the probe would be a new authentication rule for a route the accepted freeze
+deliberately leaves open, which is not this lane's to make. The rule above stands on
+its own without the loopback premise -- an unauthenticated route must not reach the
+authenticated one, wherever it is bound.
 
 Concurrency is deliberately absent. `HTTPServer`, not `ThreadingHTTPServer`: the local
 transport serves one connection at a time and the merged P2b review recorded that
@@ -81,11 +116,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import ssl
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any, Final, Self, TypeAlias
 from urllib.parse import urlsplit
 
@@ -145,8 +182,31 @@ class HttpTransportError(Exception):
 
 
 @dataclass(frozen=True)
+class HttpTls:
+    """The server-side TLS material a listener presents. Both halves or neither.
+
+    One value rather than two optional fields on :class:`HttpBind`, so "a chain and no
+    key" is a state that cannot be written down instead of a state that has to be
+    caught. Absent is then the only other state, and absent means cleartext loopback.
+
+    Paths, not a caller-built :class:`ssl.SSLContext`. A context handed in cannot be
+    checked here -- one with nothing loaded is indistinguishable from a good one until
+    a peer connects, which is a listener already bound and a refusal that arrives one
+    handshake at a time rather than at startup -- and its protocol floor would be
+    whoever built it's, not this module's. Taking the material and building the context
+    is what makes "require valid server-side TLS configuration" a startup fact.
+
+    Nothing is read here. Validation is deliberately at :func:`_tls_context`, called
+    from `start` before a socket exists, so constructing a bind touches no filesystem.
+    """
+
+    certificate_chain: Path
+    private_key: Path
+
+
+@dataclass(frozen=True)
 class HttpBind:
-    """Where this adapter listens. Loopback only, in this lane.
+    """Where this adapter listens, and whether it terminates TLS.
 
     `host` is an IP literal, never a name. `ipaddress` decides whether it is loopback,
     so the rule is the address family's own rather than a list of spellings someone
@@ -156,7 +216,16 @@ class HttpBind:
     A hostname is refused rather than resolved. `localhost` usually resolves to
     loopback and is under no obligation to: resolution is the host's configuration,
     not this process's, and a bind policy that can be moved by an `/etc/hosts` line is
-    not a bind policy.
+    not a bind policy. That holds under TLS too -- a server binds an *address*, and the
+    hostname is the peer's concern and the certificate's subject.
+
+    `tls` is the one thing that opens a non-loopback bind, and it is stated rather than
+    implied. Without it the refusal below is the merged one, unchanged and at
+    construction: `HttpBind(host="192.0.2.1")` still raises, so there is no state in
+    which a routable listener is up without TLS and no reachable path that answers a
+    non-loopback caller in the clear. With it, one rule covers wildcard and routable
+    alike -- non-loopback needs TLS -- rather than a second rule about `0.0.0.0` that
+    would have to be justified and pinned separately.
 
     Port `0` means "the OS picks", which is what a test binds and what
     :attr:`LoopbackHttpServer.url` reports back after binding.
@@ -164,6 +233,7 @@ class HttpBind:
 
     host: str = DEFAULT_HOST
     port: int = 0
+    tls: HttpTls | None = None
 
     def __post_init__(self) -> None:
         # Parsed here and raised below, outside the handler. `ip_address` quotes the
@@ -178,11 +248,11 @@ class HttpBind:
             pass
         if address is None:
             raise HttpTransportError("HTTP bind host must be a loopback IP literal")
-        if not address.is_loopback:
-            # Wildcard and every routable address land here. Serving one needs TLS,
-            # certificate and hostname verification and a credential configuration
-            # this lane does not implement, so it refuses rather than serving a
-            # non-loopback listener without them.
+        if not address.is_loopback and self.tls is None:
+            # Wildcard and every routable address land here. Serving one in the clear
+            # is what is refused, not serving one at all: TLS on the bind is the whole
+            # of what opens this, and its absence keeps the merged refusal exactly
+            # where it was.
             raise HttpTransportError("HTTP bind host is not a loopback address")
         if not 0 <= self.port <= 65535:
             raise HttpTransportError("HTTP bind port is out of range")
@@ -192,13 +262,55 @@ class HttpBind:
         return isinstance(ipaddress.ip_address(self.host), ipaddress.IPv6Address)
 
 
-def parse_http_endpoint(endpoint: str) -> HttpBind:
-    """The bind an advertised `http://host:port` names, or a refusal.
+def _tls_context(tls: HttpTls) -> ssl.SSLContext:
+    """The server-side context this material configures, or a refusal.
+
+    Called from `start` before anything is bound, which is what turns "unusable TLS
+    configuration" into a startup refusal with no socket in existence.
+
+    The floor is set here rather than inherited. `PROTOCOL_TLS_SERVER` picks up
+    whatever the linked OpenSSL considers acceptable this year, which is a number this
+    module has not decided and cannot pin; `minimum_version` states it. TLS 1.2 rather
+    than 1.3, because 1.3 is what two modern peers negotiate anyway and a 1.3 *floor*
+    only adds a refusal of peers capped at 1.2. `verify_mode` is left at
+    `PROTOCOL_TLS_SERVER`'s `CERT_NONE`: mutual TLS is not in this lane, and asking for
+    a client certificate nothing verifies would be a ceremony rather than a check.
+
+    `load_cert_chain` quotes the file it could not read -- a `FileNotFoundError` names
+    the path, and an `SSLError` from a key that does not match its chain names it too.
+    So the refusal is built outside the handler, exactly as the bind, the endpoint
+    parser and `start` build theirs: `from None` clears `__cause__` and leaves
+    `__context__` referencing the original, one attribute access from anything that
+    logs the refusal, and a certificate path is a filesystem layout this process is not
+    entitled to publish.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    failed = False
+    try:
+        context.load_cert_chain(certfile=tls.certificate_chain, keyfile=tls.private_key)
+    except (OSError, ValueError):
+        failed = True
+    if failed:
+        raise HttpTransportError("HTTP TLS material could not be loaded")
+    return context
+
+
+def parse_http_endpoint(endpoint: str, *, tls: HttpTls | None = None) -> HttpBind:
+    """The bind an advertised `http://host:port` or `https://host:port` names.
 
     Nothing but scheme, host and port is accepted. A path, a query, a fragment or
     anything in the `userinfo` position is refused rather than ignored: a credential
     must never travel in a URL, and the way to guarantee that is to refuse a URL with
     a place to put one instead of parsing it and looking away.
+
+    A URL cannot carry a certificate, so `tls` is a separate argument and the two have
+    to *agree*. `https` with no material refuses, because a scheme is a promise and a
+    listener that cannot keep it must not be built; `http` with material refuses too,
+    because the honest reading of "here is a key, serve it in the clear" is that one of
+    the two is a mistake, and guessing which would be guessing whether to downgrade.
+    Neither direction has a fallback. A non-loopback `http://` endpoint then refuses in
+    :class:`HttpBind` as it always has -- reaching TLS is the only way past it.
 
     `urlsplit` itself raises, which is easy to miss because it looks like a total
     function. A bracketed netloc is validated during the split -- `http://[<text>]:1`
@@ -216,8 +328,12 @@ def parse_http_endpoint(endpoint: str) -> HttpBind:
         pass
     if parts is None:
         raise HttpTransportError("HTTP endpoint is not a well-formed URL")
-    if parts.scheme != "http":
-        raise HttpTransportError("HTTP endpoint must name the http scheme")
+    if parts.scheme not in ("http", "https"):
+        raise HttpTransportError("HTTP endpoint must name the http or https scheme")
+    if parts.scheme == "https" and tls is None:
+        raise HttpTransportError("HTTPS endpoint states no TLS material")
+    if parts.scheme == "http" and tls is not None:
+        raise HttpTransportError("HTTP endpoint states TLS material it cannot serve")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
         raise HttpTransportError("HTTP endpoint must name a host and port only")
     host: str | None = None
@@ -236,7 +352,7 @@ def parse_http_endpoint(endpoint: str) -> HttpBind:
         raise HttpTransportError("HTTP endpoint must carry no credential")
     if host is None or port is None:
         raise HttpTransportError("HTTP endpoint must state a host and a port")
-    return HttpBind(host=host, port=port)
+    return HttpBind(host=host, port=port, tls=tls)
 
 
 def _resolved(
@@ -384,6 +500,49 @@ class _HttpService(HTTPServer):
     """The listener, carrying the adapter the handler answers from."""
 
     adapter: LoopbackHttpServer
+    #: The server-side context, installed by `start` before the serving thread exists.
+    #: `None` is a *cleartext* listener and nothing else -- see `get_request`, which
+    #: reads the bind rather than this to decide whether TLS was asked for.
+    tls: ssl.SSLContext | None = None
+
+    def get_request(self) -> tuple[Any, Any]:
+        """Accept one connection, and finish the handshake before a handler exists.
+
+        The handshake happens before there is a request, so the total request budget
+        `_Handler.setup` arms cannot bound it: a peer that connects and never speaks
+        would hold this *serialized* listener for as long as it liked, with every
+        other caller behind it. That is the unbounded-wait class the OVC1 lane fixed,
+        reintroduced one layer lower down, so the accepted socket is given the same
+        budget a request gets before the handshake is attempted. `_Handler.setup`
+        replaces that with the per-operation floor once there is a handler, which is
+        what the merged deadline already does for a cleartext connection.
+
+        `socketserver._handle_request_noblock` catches `OSError` out of here and moves
+        on without constructing a handler, calling `handle_error` or stopping the
+        listener -- and `ssl.SSLError` and `TimeoutError` are both `OSError`. So a
+        failed, refused or abandoned handshake is one dropped connection. It does not
+        `shutdown_request` what it never received, though, so the accepted socket is
+        closed here or it is leaked once per failed handshake.
+
+        The branch is on `bind.tls` -- what the caller *asked for* -- and not on
+        `self.tls`, which is what was loaded. A listener asked for TLS with no context
+        therefore refuses the connection instead of falling through to the cleartext
+        return above, and neither failing path reaches a handler. That is what makes
+        "a TLS bind never answers plaintext" a property of this function rather than
+        of the order of two assignments in `start`.
+        """
+        sock, address = super().get_request()
+        if self.adapter.bind.tls is None:
+            return sock, address
+        sock.settimeout(self.adapter.request_deadline)
+        context = self.tls
+        try:
+            if context is None:
+                raise OSError("HTTP TLS was asked for and no context was loaded")
+            return context.wrap_socket(sock, server_side=True), address
+        except OSError:
+            sock.close()
+            raise
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         """Contain one connection's failure, and print nothing.
@@ -465,6 +624,17 @@ class _Handler(BaseHTTPRequestHandler):
         a handler that is merely slow is not cut off by a deadline meant for a client
         that will not finish speaking. Every remaining read returns EOF, which is an
         unfinished header block answered `411` or a short body answered `400`.
+
+        Over TLS it is not a half-close, and that is assessed rather than assumed:
+        `ssl.SSLSocket.shutdown` sets `self._sslobj = None` before delegating, so the
+        session ends in both directions and the next read finds no SSL object at all.
+        The handler unwinds into `handle_error`, which prints nothing, and the caller
+        gets a close rather than a `411`. Stricter containment, not weaker, and the
+        bound is the same one -- the caller is let go of on time and the serialized
+        listener is free for the next, which is the property the OVC1 lane's fix is
+        about. Reaching around `SSLSocket.shutdown` for a true half-close would mean
+        driving stdlib internals to buy a status code on a request that never finished
+        arriving, and the merged deadline never promised one.
         """
         try:
             self.connection.shutdown(socket.SHUT_RD)
@@ -726,7 +896,21 @@ class _Handler(BaseHTTPRequestHandler):
 
 @dataclass
 class LoopbackHttpServer:
-    """The loopback HTTP v1 listener.
+    """The HTTP v1 listener: loopback in the clear, or any address over TLS.
+
+    **The name is now wrong, and it is kept deliberately.** `Loopback` described the
+    only bind this class could serve until TLS landed; a bind carrying
+    :class:`HttpTls` may be routable, so the name understates what an instance can do
+    and no one should read it as a guarantee -- :class:`HttpBind` is where the bind
+    policy actually lives. Renaming it is the honest fix and it is *foreclosed*, not
+    declined: the only importer outside this module's own tests is
+    `omnivia_core_runtime.service.main`, which this lane's manifest makes immutable
+    because the adapter is embedder-only for v0.6 and its startup wiring is a settled
+    decision. A rename that cannot touch its importer is a rename that breaks the
+    build, so the decision recorded here is: **do not rename in this lane; rename
+    mechanically in the lane that may edit `main.py`.** Recorded rather than left
+    silent because a class whose name contradicts its behaviour is exactly the kind of
+    thing a later reader trusts.
 
     Constructed with the *same* :class:`DocumentRouter` the local transport is given,
     which is the whole of how the two share a probe router and an application
@@ -781,6 +965,10 @@ class LoopbackHttpServer:
         """Bind, serve, and return the URL actually bound."""
         if self._service is not None:
             raise HttpTransportError("HTTP transport is already started")
+        # Before the socket, deliberately. Material that cannot be loaded refuses with
+        # nothing bound at all, rather than with a listener up and a refusal that
+        # arrives one handshake at a time -- which is a live port answering nothing.
+        tls = None if self.bind.tls is None else _tls_context(self.bind.tls)
         service_class = _HttpService6 if self.bind.is_ipv6 else _HttpService
         service: _HttpService | None = None
         failed = False
@@ -796,6 +984,7 @@ class LoopbackHttpServer:
             raise HttpTransportError("HTTP transport could not bind")
         assert service is not None
         service.adapter = self
+        service.tls = tls
         self._service = service
         self._thread = threading.Thread(
             target=service.serve_forever,
@@ -812,13 +1001,22 @@ class LoopbackHttpServer:
 
         Read from the bound socket rather than from `bind`, so a port of `0` reports
         the port the OS chose instead of the request that it choose one.
+
+        The scheme is read the same way -- from the configuration that decides what is
+        served -- rather than written as a literal. A hardcoded `http://` became a
+        defect the moment TLS landed: it is what a caller connects to, and pointing a
+        cleartext client at a TLS listener is a downgrade attempt this adapter would
+        have invited itself.
         """
         service = self._service
         host, port = self.bind.host, self.bind.port
         if service is not None:
             address = service.server_address
             host, port = str(address[0]), int(address[1])
-        return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
+        scheme = "http" if self.bind.tls is None else "https"
+        if ":" in host:
+            return f"{scheme}://[{host}]:{port}"
+        return f"{scheme}://{host}:{port}"
 
     def stop(self) -> None:
         service, thread = self._service, self._thread
@@ -846,6 +1044,7 @@ __all__ = [
     "PROBE_PATH",
     "CredentialResolver",
     "HttpBind",
+    "HttpTls",
     "HttpTransportError",
     "LoopbackHttpServer",
     "parse_http_endpoint",
