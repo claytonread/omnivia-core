@@ -8,6 +8,7 @@ exercises its individual checks against the real repository layout.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -16,6 +17,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check-package-boundaries.py"
+CORE_SRC = REPO_ROOT / "src"
+#: The interpreter running this suite, never a hardcoded ``.venv/bin/python``:
+#: a green result has to be about the environment actually under test.
+PYTHON = sys.executable
 
 
 def _load_boundary_module() -> ModuleType:
@@ -380,3 +385,117 @@ def test_core_wheel_packages_the_approved_host_contract_resource_count() -> None
         "host-contract-v1.schema.json"
     ]
     assert len(list(fixtures.rglob("*.json"))) == 20
+
+
+# --------------------------------------------------------------------------
+# Lane 1A authority is reachable by MCP, which means reachable without the
+# runtime distribution. `check_mcp_and_cli_do_not_depend_on_runtime` above
+# proves the MCP *distribution* declares and imports no runtime; these prove
+# the other half, which that check cannot see: that the authority modules an
+# MCP consumer needs are in Core's own wheel package and import from `src`
+# alone, in a fresh isolated process, pulling in nothing forbidden. A module
+# placed under `packages/omnivia-core-runtime/` would satisfy every check above
+# and fail here.
+# --------------------------------------------------------------------------
+
+#: The identity, session and Workspace-selection authority an MCP consumer must
+#: be able to reach with only `omnivia-core` installed.
+MCP_REACHABLE_AUTHORITY_MODULES = (
+    "omnivia_core.identity",
+    "omnivia_core.identity.models",
+    "omnivia_core.identity.lifecycle",
+    "omnivia_core.session",
+    "omnivia_core.session.context",
+    "omnivia_core.workspace.lifecycle",
+)
+
+#: Nothing a pure authority module may legitimately reach: the runtime, MCP and
+#: CLI sibling distributions, the legacy runtime package, and storage.
+FORBIDDEN_FOR_AUTHORITY_MODULES = (
+    "omnivia_core_runtime",
+    "omnivia_core_mcp",
+    "omnivia_core_cli",
+    "omnivia_memory",
+    "sqlalchemy",
+)
+
+
+def _authority_import_script(module: str) -> str:
+    """A script that imports ``module`` from ``src`` alone and audits the result."""
+    return "\n".join(
+        [
+            "import sys",
+            "import pathlib",
+            f"sys.path.insert(0, {str(CORE_SRC)!r})",
+            f"import {module}",
+            f"core_src = pathlib.Path({str(CORE_SRC)!r}).resolve()",
+            "outside = []",
+            "for name, loaded in sorted(sys.modules.items()):",
+            '    if name != "omnivia_core" and not name.startswith("omnivia_core."):',
+            "        continue",
+            '    path = getattr(loaded, "__file__", None)',
+            "    if path is None:",
+            "        continue",
+            "    try:",
+            "        pathlib.Path(path).resolve().relative_to(core_src)",
+            "    except ValueError:",
+            '        outside.append(name)',
+            "if outside:",
+            '    raise SystemExit("loaded from outside src: " + ", ".join(outside))',
+            f"forbidden = {FORBIDDEN_FOR_AUTHORITY_MODULES!r}",
+            'loaded_roots = {name.split(".")[0] for name in sys.modules}',
+            "leaked = sorted(set(forbidden) & loaded_roots)",
+            "if leaked:",
+            '    raise SystemExit(f"forbidden modules loaded: {leaked}")',
+            'print("OK")',
+        ]
+    )
+
+
+@pytest.mark.parametrize("module", MCP_REACHABLE_AUTHORITY_MODULES, ids=lambda name: name)
+def test_authority_module_imports_without_the_runtime(module: str) -> None:
+    """One isolated subprocess per module, run with ``-I -S`` so it starts with
+    no ``PYTHONPATH``, no user site-packages and no third-party path entry: the
+    only thing on the path is this checkout's ``src``. A shared process would
+    hide a module that only imports because an earlier one pulled in what it
+    silently needs."""
+    result = subprocess.run(
+        [PYTHON, "-I", "-S", "-c", _authority_import_script(module)],
+        cwd=REPO_ROOT,
+        env={},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"isolated import of {module} failed\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert result.stdout.strip() == "OK"
+
+
+@pytest.mark.parametrize("module", MCP_REACHABLE_AUTHORITY_MODULES, ids=lambda name: name)
+def test_authority_module_ships_in_the_core_wheel_package(module: str) -> None:
+    """Reachability is decided by where the file lives, so the location is
+    asserted directly: inside `src/omnivia_core`, which is the one path
+    `pyproject.toml` selects into the `omnivia-core` wheel."""
+    relative = Path(*module.split("."))
+    leaf = CORE_SRC / relative.with_suffix(".py")
+    package = CORE_SRC / relative / "__init__.py"
+    assert leaf.is_file() or package.is_file(), f"{module} has no source under {CORE_SRC}"
+    assert boundaries.CORE.src_root == CORE_SRC
+
+
+def test_no_authority_module_has_a_counterpart_under_the_runtime_distribution() -> None:
+    """A duplicate under `packages/omnivia-core-runtime/` would let a consumer
+    import the runtime copy and never notice the dependency it had taken."""
+    runtime_src = REPO_ROOT / "packages" / "omnivia-core-runtime" / "src"
+    duplicates = []
+    for module in MCP_REACHABLE_AUTHORITY_MODULES:
+        relative = Path(*module.replace("omnivia_core", "omnivia_core_runtime", 1).split("."))
+        if (runtime_src / relative.with_suffix(".py")).exists() or (
+            runtime_src / relative / "__init__.py"
+        ).exists():
+            duplicates.append(module)
+    assert duplicates == []
