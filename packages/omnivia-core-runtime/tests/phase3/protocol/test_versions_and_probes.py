@@ -1168,6 +1168,33 @@ def test_a_descriptor_field_outside_its_public_grammar_is_never_published(
     }
 
 
+def test_the_endpoint_refusal_answers_for_the_endpoint_uri_and_nothing_else() -> None:
+    """A label that names one field may only ever answer for that field.
+
+    `_endpoint` asks Core rather than judging the URI itself, and Core's
+    *descriptor* validator refuses a descriptor without saying which field it
+    refused. While that validator checked `endpoint_uri` alone the distinction did
+    not exist; once it also checked `published_at`, catching it here reported a
+    malformed timestamp to an unauthenticated caller as an unapproved transport
+    endpoint -- naming the one field that was fine.
+
+    So the descriptor below is refused by Core for a reason that is not its
+    endpoint, and the refusal a caller receives must still name `published_at`.
+    Reverting `_endpoint` to the whole-descriptor question fails here, and keeps
+    failing however many more of the descriptor's value domains Core enforces.
+    """
+    descriptor = replace(_descriptor(), published_at="not-a-timestamp")
+    with pytest.raises(ContractSemanticError):
+        validate_service_endpoint_descriptor(descriptor)
+
+    with pytest.raises(ProbeError) as raised:
+        _router(_facts(descriptor=descriptor)).route(
+            ServiceProbeRequest(probe=PROBE_DISCOVER)
+        )
+    assert str(raised.value) == "service facts descriptor published_at is malformed"
+    assert "endpoint_uri" not in str(raised.value)
+
+
 def _refused_endpoint(endpoint_uri: str) -> str:
     """Refuse `endpoint_uri` through the router, and return what the caller is told."""
     facts = _facts(descriptor=replace(_descriptor(), endpoint_uri=endpoint_uri))

@@ -626,6 +626,7 @@ from .semantics_service import (
     encode_service_endpoint_descriptor,
     encode_service_probe_result,
     validate_service_endpoint_descriptor,
+    validate_service_endpoint_uri,
     validate_service_probe_result,
 )
 
@@ -1208,6 +1209,7 @@ __all__ = [
     "validate_record_temporal_metadata",
     "validate_request_idempotency",
     "validate_service_endpoint_descriptor",
+    "validate_service_endpoint_uri",
     "validate_service_probe_result",
     "validate_synchronous_job_response_job_reference",
     "validate_version_capability_envelope",
