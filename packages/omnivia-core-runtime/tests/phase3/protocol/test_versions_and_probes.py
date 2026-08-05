@@ -31,7 +31,11 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 from omnivia_core_runtime import __version__ as PACKAGE_VERSION
-from omnivia_core_runtime.service.operations import ApplicationOperationRegistry
+from omnivia_core_runtime.service import operations
+from omnivia_core_runtime.service.operations import (
+    ApplicationOperationRegistry,
+    response_metadata,
+)
 from omnivia_core_runtime.service.probes import (
     CANONICAL_PROBES,
     PROBE_DISCOVER,
@@ -63,13 +67,17 @@ from omnivia_core.contracts.v1 import (
     OPERATION_CATALOGUE,
     RELEASE_VERSION_PATTERN,
     CapabilityRef,
+    ClientIdentity,
     ContractSemanticError,
+    RequestEnvelope,
+    RequestMetadata,
     ServiceComponentStatus,
     ServiceEndpointDescriptor,
     ServiceProbeRequest,
     ServiceProcessEvidence,
     VersionWindow,
     validate_service_endpoint_descriptor,
+    validate_version_capability_envelope,
     validate_version_window,
     version_in_window,
 )
@@ -465,6 +473,102 @@ def test_supported_windows_are_derived_not_transcribed() -> None:
     )
     with pytest.raises(WorkspaceVersionError):
         supported_workspace_versions("1.0")
+
+
+# --- the versions a response states -------------------------------------------
+
+
+def _request(api_version: str) -> RequestEnvelope:
+    """A request claiming `api_version`, built without a client package.
+
+    Assembled from the public contract types directly: this is a phase2/phase3
+    protocol module, and the point is what a *server* asserts in reply to an
+    arbitrary claim, not what any particular client happens to send.
+    """
+    return RequestEnvelope(
+        operation="core.health",
+        metadata=RequestMetadata(
+            request_id="req-versions",
+            correlation_id="req-versions",
+            trace_id="req-versions",
+            api_version=api_version,
+            client=ClientIdentity(id="probe-test", version="0.1.0"),
+            workspace_id="ws-versions-0001",
+            scopes=(),
+            purpose="test",
+            required_capabilities=(),
+        ),
+        input={},
+    )
+
+
+def test_a_response_states_derived_versions_not_the_callers_claim() -> None:
+    """The response's version facts are anchored to the same sources the descriptor
+    and the probes are anchored to.
+
+    Anchored to `CONTRACT_VERSION` and the package's own `__version__` rather than
+    to the runtime helpers that produce them, so this cannot be satisfied by a
+    response and a helper agreeing with each other about a wrong value. The claim is
+    a version this build does not serve, which is what the old code echoed into all
+    of these fields.
+    """
+    metadata = response_metadata(_request("1.0"), principal="p", granted=("core.health",))
+    envelope = metadata.version
+    assert envelope.compatibility.supported_api_versions == VersionWindow(
+        minimum=CONTRACT_VERSION, maximum=CONTRACT_VERSION
+    )
+    assert envelope.api_version == CONTRACT_VERSION
+    assert envelope.compatibility.selected_api_version == CONTRACT_VERSION
+    # `server_version` was a transcribed `"0.1.0"` in the response builder while the
+    # descriptor derived its own from the package. Two literals that happened to
+    # match is not the same as one source.
+    assert envelope.server_version == PACKAGE_VERSION
+    assert [ref.version for ref in envelope.capabilities.supported] == [CONTRACT_VERSION]
+    assert envelope.workspace_format_version == SUPPORTED_WORKSPACE_ORDINALS[1]
+
+
+def test_the_selected_version_is_negotiated_against_the_window_not_echoed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The selected version comes from a different source than the served window.
+
+    This build serves a one-version window, so every claim resolves to the same
+    string and the negotiation rule cannot be told apart from a constant. Widening
+    the window this build reports is the only way to make the rule observable, so
+    that is what this does -- and with it observable, both halves hold: a claim the
+    server serves is the version it applies, and a claim it does not serve is
+    replaced by the best it does, never carried through.
+
+    That distinction is the whole repair. While the window, the selected version and
+    the in-force version were all computed from one claimed value, they agreed no
+    matter what was claimed, and `validate_version_capability_envelope` -- which
+    checks that the selected version falls inside the published window -- could not
+    fail. Here the two sides are independent, so the assertion below is a real one.
+    """
+    wide = build_version_window("1.0", "1.3")
+    monkeypatch.setattr(operations, "supported_api_versions", lambda: wide)
+
+    for claim, selected, status in (
+        ("1.0", "1.0", "compatible"),
+        ("1.3", "1.3", "compatible"),
+        # Same major, above the window: no revision the caller named exists here.
+        ("1.4", "1.3", "upgrade_required"),
+        # A major that can never be negotiated.
+        ("2.0", "1.3", "incompatible"),
+    ):
+        envelope = response_metadata(
+            _request(claim), principal="p", granted=()
+        ).version
+        assert envelope.compatibility.selected_api_version == selected, claim
+        assert envelope.api_version == selected, claim
+        assert envelope.compatibility.status == status, claim
+        assert envelope.compatibility.supported_api_versions == wide, claim
+        # The rule the validator enforces, now that it has two sources to compare.
+        validate_version_capability_envelope(envelope)
+        assert version_in_window(
+            envelope.compatibility.selected_api_version,
+            envelope.compatibility.supported_api_versions,
+        ), claim
 
 
 # --- the three canonical probes ----------------------------------------------
