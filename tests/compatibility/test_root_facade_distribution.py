@@ -315,12 +315,19 @@ def test_resolver_smoke_is_a_standalone_script_outside_pytest_collection() -> No
     assert os.access(RESOLVER_SCRIPT, os.X_OK), "the gate script is not executable"
 
     config = _pytest_config()
-    assert config["testpaths"] == ["services", "tests"]
+    # Deliberately not pinned to a literal list. `testpaths` is the canonical
+    # collection scope and grows whenever a tree of tests is added -- it now names
+    # `packages`, `baseline/tests` and `benchmarks/tests` as well. The fact this
+    # test needs is narrower and survives that: no entry, whatever the list
+    # becomes, contains this script. The loop below checks exactly that.
+    testpaths = config["testpaths"]
+    assert isinstance(testpaths, list)
+    assert testpaths, "testpaths must not be empty"
     assert "python_files" not in config, (
         "a python_files override could make scripts/ collectable; the argument above "
         "assumes pytest's defaults"
     )
-    for entry in config["testpaths"]:
+    for entry in testpaths:
         assert not str(RESOLVER_SCRIPT).startswith(str(REPO_ROOT / str(entry)))
     assert not RESOLVER_SCRIPT.name.startswith("test_")
     assert not RESOLVER_SCRIPT.name.endswith("_test.py")

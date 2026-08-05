@@ -66,17 +66,19 @@ GATE_STEPS = (
         "python scripts/check-root-facade-resolver.py",
     ),
     ("Verify Phase 0 baseline", "PYTHON=python scripts/check-core-baseline.sh"),
-    # The full suite, pinned exactly so a narrowed scope fails here. It names its
-    # paths because everything under `packages/` lives outside `testpaths`
-    # (`services` and `tests`), so a bare `pytest -q` reported a green
-    # full-repository run while collecting none of it. Each distribution's whole
-    # `tests` tree is named rather than one phase inside it: pinning
-    # `tests/phase2` kept the accepted Phase 3 authorization and protocol suites
-    # off the gate even though they were committed. Naming paths disables
-    # `testpaths`, so `services` and `tests` are listed explicitly rather than
-    # inherited, and the four must stay one invocation: several of these modules
-    # import public barrels, and splitting the run is what hid the barrel-namespace
-    # drift.
+    # The full suite, pinned exactly so a narrowed scope fails here. Naming paths
+    # disables `testpaths` entirely, so `services` and `tests` are listed here
+    # rather than inherited. `testpaths` used to be `["services", "tests"]`, which
+    # is why a bare `pytest -q` reported a green full-repository run while
+    # collecting nothing under `packages/`; it now names `packages` as well, and
+    # `scripts/check-test-collection.py` keeps a bare run complete. This step
+    # still names its paths so the gate's scope is visible in the gate itself
+    # rather than depending on a configuration file it does not read. Each
+    # distribution's whole `tests` tree is named rather than one phase inside it:
+    # pinning `tests/phase2` kept the accepted Phase 3 authorization and protocol
+    # suites off the gate even though they were committed. The four must stay one
+    # invocation: several of these modules import public barrels, and splitting
+    # the run is what hid the barrel-namespace drift.
     (
         "Run full repository test suite",
         (
@@ -907,9 +909,10 @@ def test_every_local_distribution_is_installed_editable() -> None:
 
 
 def test_every_local_distribution_with_tests_is_in_the_broad_pytest_run() -> None:
-    """`testpaths` covers `services` and `tests` only, so a distribution's tests are
-    collected only if the broad run names them. The whole `tests` tree must be
-    named, not a directory inside it: naming the runtime's `tests/phase2` kept
+    """Naming paths disables `testpaths`, so a distribution's tests are collected
+    on the gate only if the broad run names them -- `testpaths` covering
+    `packages` fixes a bare local run, not this step. The whole `tests` tree must
+    be named, not a directory inside it: naming the runtime's `tests/phase2` kept
     every Phase 3 suite beside it off the gate while this file still read as if
     the runtime were covered."""
     targets = _full_suite_command().split()
