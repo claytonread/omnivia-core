@@ -503,19 +503,28 @@ def test_6c_the_workspace_specific_binding_refuses_a_second_granted_workspace() 
     assert response.error.message == message("_MESSAGE_WORKSPACE_ENDPOINT_MISMATCH")
 
 
-def test_6d_the_input_payload_cannot_name_a_workspace() -> None:
-    """`WorkspaceInspectInput` is `{}`; an extra key decides nothing.
+def test_6d_the_input_payload_is_not_read_before_the_handler_is_reached() -> None:
+    """A foreign id in the *payload* does not redirect the request.
 
-    The answer is the *bound* workspace either way, which is what "no second,
-    independent workspace identifier" means in practice.
+    This half proves only that the payload cannot cause a *refusal*: the request
+    is authorised, so it reaches the handler, and the handler refuses for the
+    absent served workspace rather than for the workspace grant. The half that
+    proves the answer is the bound workspace needs a served workspace and lives
+    in the companion module as
+    ``test_the_input_payload_cannot_redirect_the_answered_workspace``.
+
+    An earlier revision put ``OTHER_WORKSPACE_ID`` in the *metadata*, so check 8
+    refused it before any handler ran and the assertion was satisfied by the
+    workspace mismatch. A handler trusting ``context.request.input`` passed it
+    unchanged, because the handler was never invoked at all.
     """
     response = dispatcher().dispatch(
-        request_for(
-            workspace_id=OTHER_WORKSPACE_ID, input={"workspace_id": WORKSPACE_ID}
-        )
+        request_for(input={"workspace_id": OTHER_WORKSPACE_ID})
     )
 
-    assert refusal(response).error.code == ERROR_CODE_WORKSPACE_NOT_GRANTED
+    refused = refusal(response)
+    assert refused.error.code != ERROR_CODE_WORKSPACE_NOT_GRANTED
+    assert refused.error.message == "this service instance is not serving a workspace"
 
 
 # --- 7. the binding clause ----------------------------------------------------

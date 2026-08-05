@@ -157,6 +157,7 @@ def production_path(
 def request_for(**overrides: Any) -> RequestEnvelope:
     """A `workspace.inspect` request built from the frozen catalogue entry."""
     operation = overrides.pop("operation", WORKSPACE_INSPECT_OPERATION)
+    payload = overrides.pop("input", {})
     fields_: dict[str, Any] = {
         "request_id": "req-vertical-1",
         "correlation_id": "corr-vertical-1",
@@ -179,7 +180,7 @@ def request_for(**overrides: Any) -> RequestEnvelope:
     }
     fields_.update(overrides)
     return RequestEnvelope(
-        operation=operation, metadata=RequestMetadata(**fields_), input={}
+        operation=operation, metadata=RequestMetadata(**fields_), input=payload
     )
 
 
@@ -217,6 +218,30 @@ def test_the_full_authorised_path_answers_with_a_workspace_descriptor(
     # The whole response re-encodes, which is the check an in-process assertion alone
     # would miss: a private ordinal where a ContractVersion belongs encodes to nothing.
     assert "workspace" in encode_response(response)["result"]
+
+
+def test_the_input_payload_cannot_redirect_the_answered_workspace(
+    served: ServedWorkspace,
+) -> None:
+    """A foreign workspace id in the payload does not change what is answered.
+
+    `WorkspaceInspectInput` is `{}`, and the dispatcher hands the handler the
+    *original* request rather than a decoded input -- so the raw mapping is what
+    a successor handler sees, and the payload is the first place one would reach
+    for a workspace id. The bound workspace is answered regardless.
+
+    Falsifier: a handler reading `context.request.input["workspace_id"]` answers
+    `ws-vertical-9999` here and fails. The companion module's refusal half
+    cannot make this assertion, because it serves no workspace to answer with.
+    """
+    response = answered(
+        production_path(served).dispatch(
+            request_for(input={"workspace_id": "ws-vertical-9999"})
+        )
+    )
+
+    result = WorkspaceInspectResult.from_wire(response.result)
+    assert result.workspace.workspace_id == WORKSPACE_ID
 
 
 def test_the_authorized_context_carries_the_expected_effective_authority(
