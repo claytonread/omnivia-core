@@ -1,14 +1,14 @@
-"""Transports over the one dispatcher (B9).
+"""In-process and ADR-040 raw local-IPC transports.
 
 B9's exit condition is that in-process **and** service transports pass the same
 conformance suite. One dispatcher with two transports in front of it is what makes
 that testable: if the transports shared no implementation, "the same suite" would be
 two suites that happen to agree today.
 
-The wire format is the contract's canonical JSON, newline-delimited. A length-prefix
-would be marginally faster and considerably harder to debug; newline-delimited JSON
-can be read with `nc` while diagnosing a stuck service, which matters more for a
-local IPC endpoint than throughput does.
+The advertised local endpoint carries one OVC1 request and one OVC1 response on a
+fresh connection.  Unix sockets and Windows named pipes carry the eight-byte OVC1
+header and canonical body as raw bytes: no newline delimiter and no Python-private
+message prefix is part of the protocol.
 
 No HTTP, no framework. ADR-036 keeps Core free of transport dependencies, and local
 IPC needs none. Two mechanisms carry the same frames: a Unix domain socket on POSIX,
@@ -34,24 +34,36 @@ import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self
+from time import monotonic
+from typing import Any, Protocol, Self
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope, codec
 from omnivia_core_runtime.ownership.locks import IS_WINDOWS, LockRole, create_lock
 from omnivia_core_runtime.service.dispatch import Dispatcher
-
-if TYPE_CHECKING:  # pragma: no cover - types only
-    # Imported for annotations alone so a POSIX process never pays for
-    # `multiprocessing` at import time. The named-pipe code imports it where it
-    # runs, the same way the lock module imports `msvcrt` where it runs.
-    from multiprocessing.connection import Connection, Listener
+from omnivia_core_runtime.service.ovc1 import (
+    HEADER_BYTES,
+    MAGIC,
+    MAXIMUM_JSON_BYTES,
+    OVC1Error,
+    decode_frame,
+    encode_frame,
+)
+from omnivia_core_runtime.service.protocol import DocumentRouter
 
 #: Refuse a frame larger than this rather than buffering without limit. A local
 #: client that sends an unbounded frame is malfunctioning, and treating it as
 #: malfunctioning is safer than growing memory until something else fails.
-MAX_FRAME_BYTES = 4 * 1024 * 1024
+MAX_FRAME_BYTES = MAXIMUM_JSON_BYTES
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
+
+# OVC1 is unary on a fresh connection.  A stream has no packet boundary, so an
+# immediate non-blocking peek can only reject bytes already scheduled by the kernel;
+# a second write a few milliseconds later would otherwise arrive after dispatch and
+# receive a valid response.  Hold the response for one small, fixed quiet window so
+# separately written trailing traffic is deterministically refused without changing
+# OVC1 framing or waiting without a bound.
+UNARY_BOUNDARY_SECONDS = 0.05
 
 #: Unix domain socket paths are bounded by `sockaddr_un.sun_path`: 104 bytes on
 #: macOS and BSD, 108 on Linux. The lower bound is used so a workspace that works on
@@ -119,7 +131,9 @@ class InProcessTransport:
         response = self.dispatcher.dispatch(request)
         if not self.normalise:
             return response
-        return codec.decode_response(json.loads(codec.to_canonical_json(codec.encode_response(response))))
+        return codec.decode_response(
+            json.loads(codec.to_canonical_json(codec.encode_response(response)))
+        )
 
 
 # --- endpoints ----------------------------------------------------------------
@@ -150,7 +164,7 @@ class LocalEndpoint:
 
     def __post_init__(self) -> None:
         if self.scheme is EndpointScheme.PIPE and not _SAFE_PIPE_NAME.match(self.name):
-            raise TransportError(f"not a usable named-pipe name: {self.name!r}")
+            raise TransportError("named-pipe endpoint name is invalid")
         if self.scheme is EndpointScheme.UNIX and not self.name:
             raise TransportError("a unix endpoint needs a socket path")
 
@@ -245,27 +259,7 @@ def assert_socket_path_fits(path: Path) -> None:
     """
     encoded = len(str(path).encode("utf-8"))
     if encoded > MAX_SOCKET_PATH_BYTES:
-        raise TransportError(
-            f"socket path is {encoded} bytes, over the {MAX_SOCKET_PATH_BYTES}-byte "
-            f"AF_UNIX limit: {path}. Place the socket under a shorter directory."
-        )
-
-
-# --- frames -------------------------------------------------------------------
-
-
-def encode_frame(payload: dict[str, object]) -> bytes:
-    return (codec.to_canonical_json(payload) + "\n").encode("utf-8")
-
-
-def decode_frame(raw: bytes) -> dict[str, object]:
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as error:
-        raise TransportError(f"frame is not valid JSON: {error}") from error
-    if not isinstance(value, dict):
-        raise TransportError("frame must be a JSON object")
-    return value
+        raise TransportError("local service endpoint path is too long")
 
 
 class _Channel(Protocol):
@@ -277,6 +271,8 @@ class _Channel(Protocol):
 
     def read_frame(self, *, limit: int = MAX_FRAME_BYTES) -> bytes | None: ...
 
+    def ensure_unary_boundary(self) -> None: ...
+
     def send_frame(self, payload: bytes) -> None: ...
 
     def close(self) -> None: ...
@@ -284,64 +280,85 @@ class _Channel(Protocol):
 
 @dataclass
 class _SocketChannel:
-    """Newline-delimited frames over a stream socket."""
+    """Raw OVC1 bytes over one stream connection."""
 
     connection: socket.socket
 
     def read_frame(self, *, limit: int = MAX_FRAME_BYTES) -> bytes | None:
-        """Read one newline-delimited frame, or None when the peer closes."""
+        timeout = self.connection.gettimeout()
+        deadline = None if timeout is None else monotonic() + timeout
+        try:
+            header = self._read_exact(HEADER_BYTES, allow_empty=True, deadline=deadline)
+            if header is None:
+                return None
+            if header[: len(MAGIC)] != MAGIC:
+                raise TransportError("connection does not begin with the OVC1 magic")
+            length = int.from_bytes(header[len(MAGIC) :], "big")
+            if length == 0:
+                raise TransportError("connection declares a zero-byte OVC1 body")
+            if length > limit:
+                raise TransportError(
+                    f"connection declares more than {limit} OVC1 body bytes"
+                )
+            body = self._read_exact(length, deadline=deadline)
+            assert body is not None
+            self.ensure_unary_boundary()
+            return header + body
+        finally:
+            self.connection.settimeout(timeout)
+
+    def _read_exact(
+        self,
+        count: int,
+        *,
+        allow_empty: bool = False,
+        deadline: float | None = None,
+    ) -> bytes | None:
         chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = self.connection.recv(4096)
+        remaining = count
+        while remaining:
+            if deadline is not None:
+                remaining_time = deadline - monotonic()
+                if remaining_time <= 0:
+                    raise TransportError(
+                        "connection timed out while reading an OVC1 frame"
+                    )
+                self.connection.settimeout(remaining_time)
+            try:
+                chunk = self.connection.recv(remaining)
+            except TimeoutError:
+                chunk = None
+            if chunk is None:
+                raise TransportError("connection timed out while reading an OVC1 frame")
             if not chunk:
-                return b"".join(chunks) or None
-            total += len(chunk)
-            if total > limit:
-                raise TransportError(f"frame exceeds {limit} bytes")
+                if allow_empty and remaining == count:
+                    return None
+                raise TransportError("connection closed with a truncated OVC1 frame")
             chunks.append(chunk)
-            if b"\n" in chunk:
-                return b"".join(chunks).split(b"\n", 1)[0]
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def ensure_unary_boundary(self) -> None:
+        """Require one bounded quiet window at the current exchange boundary."""
+        timeout = self.connection.gettimeout()
+        self.connection.settimeout(UNARY_BOUNDARY_SECONDS)
+        try:
+            trailing = self.connection.recv(1, socket.MSG_PEEK)
+        except TimeoutError:
+            trailing = b""
+        finally:
+            # Restored here rather than left at the boundary's own 50ms window --
+            # a caller that writes a response right after this check (`_handle`
+            # does, for the response write) must write under its own configured
+            # deadline, not the quiet window this check used internally.
+            self.connection.settimeout(timeout)
+        if trailing:
+            raise TransportError(
+                "connection carries trailing bytes after one OVC1 frame"
+            )
 
     def send_frame(self, payload: bytes) -> None:
         self.connection.sendall(payload)
-
-    def close(self) -> None:
-        self.connection.close()
-
-
-@dataclass
-class _PipeChannel:
-    """The same frames over a Windows named pipe.
-
-    `multiprocessing.connection` opens the pipe in message mode and adds no framing
-    of its own, so one `send_bytes` puts exactly `encode_frame`'s bytes on the wire
-    and one `recv_bytes` takes exactly those bytes off it. The wire format is
-    therefore the same document on both platforms, not merely an equivalent one.
-
-    The read is bounded twice. `poll` bounds the wait, because a pipe read otherwise
-    blocks forever and one stalled client would take the sole accept loop with it;
-    `maxlength` bounds the size, at the limit the socket reader enforces.
-    """
-
-    connection: Connection
-    timeout: float
-
-    def read_frame(self, *, limit: int = MAX_FRAME_BYTES) -> bytes | None:
-        if not self.connection.poll(self.timeout):
-            raise TransportError(f"no frame within {self.timeout} seconds")
-        try:
-            raw = self.connection.recv_bytes(maxlength=limit)
-        except EOFError:
-            return None
-        except OSError as error:
-            raise TransportError(f"frame exceeds {limit} bytes or is unreadable: {error}") from error
-        # Split as the socket reader splits, so a client that packs trailing bytes
-        # after the newline is read identically on both platforms.
-        return raw.split(b"\n", 1)[0]
-
-    def send_frame(self, payload: bytes) -> None:
-        self.connection.send_bytes(payload)
 
     def close(self) -> None:
         self.connection.close()
@@ -411,20 +428,9 @@ def _probe_unix(endpoint: LocalEndpoint, *, timeout: float) -> EndpointProbe:
 
 
 def _probe_pipe(endpoint: LocalEndpoint) -> EndpointProbe:
-    from multiprocessing import connection as pipes
+    from omnivia_core_runtime.service.windows_pipe import probe_pipe
 
-    try:
-        client = pipes.Client(endpoint.address, family="AF_PIPE")
-    except FileNotFoundError:
-        # No instance of this name exists, so nothing is listening on it.
-        return EndpointProbe.REFUSED
-    except OSError:
-        # A pipe of this name exists but would not open for us -- a foreign owner's
-        # security descriptor, or every instance busy past the client's own retry.
-        # Neither says the endpoint is dead.
-        return EndpointProbe.UNKNOWN
-    client.close()
-    return EndpointProbe.ANSWERING
+    return EndpointProbe(probe_pipe(endpoint.address, timeout=1.0))
 
 
 # --- listeners ----------------------------------------------------------------
@@ -447,13 +453,14 @@ class _Listener(Protocol):
 @dataclass
 class _SocketListener:
     server: socket.socket
+    timeout: float
 
     def accept(self) -> _Channel | None:
         try:
             connection, _ = self.server.accept()
         except TimeoutError:
             return None
-        connection.settimeout(DEFAULT_TIMEOUT_SECONDS)
+        connection.settimeout(self.timeout)
         return _SocketChannel(connection)
 
     def wake(self) -> None:
@@ -463,67 +470,28 @@ class _SocketListener:
         self.server.close()
 
 
-@dataclass
-class _PipeListener:
-    listener: Listener
-    address: str
+def _open_pipe_listener(endpoint: LocalEndpoint, *, timeout: float) -> _Listener:
+    """Create an exclusive first-instance raw byte-mode named pipe."""
+    from omnivia_core_runtime.service.windows_pipe import (
+        WindowsPipeError,
+        open_pipe_listener,
+    )
 
-    def accept(self) -> _Channel | None:
-        return _PipeChannel(self.listener.accept(), DEFAULT_TIMEOUT_SECONDS)
-
-    def wake(self) -> None:
-        """Be the client the accept is waiting for.
-
-        A named-pipe accept blocks in `ConnectNamedPipe` with no timeout, and closing
-        the listener does not close the handle it is already waiting on -- that handle
-        was taken out of the listener's queue before the wait began. Connecting once
-        and hanging up is the way to end the wait from another thread; the accept loop
-        then sees the stop flag and leaves.
-
-        `OSError` here is the expected case, not a masked failure: by the time a stop
-        reaches this the name may already be gone. It is caught on one best-effort
-        call, never around anything that serves a client.
-        """
-        from multiprocessing import connection as pipes
-
-        try:
-            pipes.Client(self.address, family="AF_PIPE").close()
-        except OSError:
-            return
-
-    def close(self) -> None:
-        self.listener.close()
-
-
-def _open_pipe_listener(endpoint: LocalEndpoint) -> _Listener:
-    """Create the named pipe, claiming the name exclusively.
-
-    The standard library creates the first instance with
-    `FILE_FLAG_FIRST_PIPE_INSTANCE`, so the kernel refuses this call outright when
-    any other process already owns the name. That is the guarantee the POSIX side
-    buys with a bind lock around probe-and-rename, except the OS makes it: there is no
-    lock to take and no window to lose, two services cannot both serve one name, and
-    the loser finds out here.
-    """
-    from multiprocessing import connection as pipes
-
+    listener: _Listener | None = None
+    failed = False
     try:
-        listener = pipes.Listener(endpoint.address, family="AF_PIPE")
-    except PermissionError as error:
-        raise TransportError(
-            f"refusing to bind the endpoint: {endpoint.url} is already owned by "
-            "another process, so claiming it could strand a live service."
-        ) from error
-    except OSError as error:
-        raise TransportError(f"could not create the endpoint {endpoint.url}: {error}") from error
-    return _PipeListener(listener, endpoint.address)
+        listener = open_pipe_listener(endpoint.address, timeout=timeout)
+    except WindowsPipeError:
+        failed = True
+    if failed:
+        raise TransportError("local named-pipe listener start failed")
+    assert listener is not None
+    return listener
 
 
 def _refuse_live_endpoint(endpoint: LocalEndpoint) -> TransportError:
-    return TransportError(
-        f"refusing to bind the endpoint: {endpoint.url} is answering or cannot be "
-        "shown to be dead, so replacing it could strand a live service."
-    )
+    del endpoint
+    return TransportError("local service endpoint is already in use")
 
 
 # --- the service side ---------------------------------------------------------
@@ -551,14 +519,22 @@ class LocalSocketServer:
     as one parsed out of a discovery descriptor.
     """
 
-    dispatcher: Dispatcher
+    dispatcher: Dispatcher | None = None
+    router: DocumentRouter | None = None
     path: Path | None = None
     endpoint: LocalEndpoint | None = None
+    timeout: float = DEFAULT_TIMEOUT_SECONDS
     _listener: _Listener | None = None
     _thread: threading.Thread | None = None
     _stop: threading.Event | None = None
+    _active_channel: _Channel | None = None
+    _owned_socket_identity: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
+        if (self.dispatcher is None) == (self.router is None):
+            raise TransportError("the server needs exactly one dispatcher= or router=")
+        if self.timeout <= 0:
+            raise TransportError("the server timeout must be positive")
         if self.endpoint is not None and self.path is not None:
             raise TransportError("the server takes path= or endpoint=, not both")
         if self.endpoint is None:
@@ -579,18 +555,41 @@ class LocalSocketServer:
         if self._listener is not None:
             raise TransportError("transport is already started")
         endpoint = self._endpoint()
-        if endpoint.scheme is EndpointScheme.UNIX:
-            self._begin_serving(self._bind_unix(endpoint))
-        else:
-            self._begin_serving(self._bind_pipe(endpoint))
+        listener: _Listener | None = None
+        failure: TransportError | None = None
+        try:
+            if endpoint.scheme is EndpointScheme.UNIX:
+                listener = self._bind_unix(endpoint)
+            else:
+                listener = self._bind_pipe(endpoint)
+            self._begin_serving(listener)
+        except TransportError as error:
+            failure = error
+        except Exception:  # noqa: BLE001 - public start errors are normalized below
+            failure = TransportError("local service transport start failed")
+        if failure is not None:
+            self._clean_failed_start(listener)
+            raise failure
         return endpoint.url
+
+    def _clean_failed_start(self, listener: _Listener | None) -> None:
+        """Best-effort unwind without replacing the fixed public start failure."""
+        try:
+            if listener is not None:
+                listener.close()
+        except BaseException:  # noqa: BLE001,S110 - preserve the primary refusal
+            pass
+        self._listener = None
+        self._thread = None
+        self._stop = None
+        try:
+            self._remove_socket_file()
+        except BaseException:  # noqa: BLE001,S110 - preserve the primary refusal
+            pass
 
     def _bind_unix(self, endpoint: LocalEndpoint) -> _Listener:
         if not _HAS_AF_UNIX:
-            raise TransportError(
-                f"this platform cannot serve a unix socket: {endpoint.url}. "
-                f"Use a {LOCAL_SCHEME.value}:// endpoint."
-            )
+            raise TransportError("this platform cannot serve the requested endpoint")
         path = Path(endpoint.name)
         assert_socket_path_fits(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -601,12 +600,11 @@ class LocalSocketServer:
         # after it went live -- the stranding the probe exists to prevent, moved a
         # few microseconds later. The lock makes the reclaim a single decision: the
         # loser re-probes, finds a live socket, and refuses.
-        bind_lock = create_lock(path.with_name(f".{path.name}.bind"), LockRole.BOOTSTRAP_MUTEX)
+        bind_lock = create_lock(
+            path.with_name(f".{path.name}.bind"), LockRole.BOOTSTRAP_MUTEX
+        )
         if not bind_lock.acquire():
-            raise TransportError(
-                f"refusing to bind the endpoint: another process is claiming "
-                f"{path} right now."
-            )
+            raise TransportError("local service endpoint bind is already in progress")
         try:
             return self._bind_socket(endpoint, path)
         finally:
@@ -620,10 +618,7 @@ class LocalSocketServer:
             # its owner kept an flock on the now-unlinked inode, so once the socket
             # was cleaned up a successor created a fresh lock file and acquired it --
             # two live writers on one workspace.
-            raise TransportError(
-                f"refusing to bind the endpoint: {path} already exists and is "
-                "not a socket. The endpoint must be a path this service owns."
-            )
+            raise TransportError("local service endpoint path is already occupied")
         if path.is_socket() and probe_endpoint(endpoint) is not EndpointProbe.REFUSED:
             raise _refuse_live_endpoint(endpoint)
 
@@ -647,7 +642,9 @@ class LocalSocketServer:
                 staging.unlink()
             raise
         server.settimeout(0.2)
-        return _SocketListener(server)
+        identity = path.stat()
+        self._owned_socket_identity = (identity.st_dev, identity.st_ino)
+        return _SocketListener(server, self.timeout)
 
     def _bind_pipe(self, endpoint: LocalEndpoint) -> _Listener:
         # Probed first for the reason the socket side probes: a name that answers
@@ -657,12 +654,14 @@ class LocalSocketServer:
         # no window here in which a second binder could also succeed.
         if probe_endpoint(endpoint) is not EndpointProbe.REFUSED:
             raise _refuse_live_endpoint(endpoint)
-        return _open_pipe_listener(endpoint)
+        return _open_pipe_listener(endpoint, timeout=self.timeout)
 
     def _begin_serving(self, listener: _Listener) -> None:
         self._listener = listener
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, name="omnivia-ipc", daemon=True)
+        self._thread = threading.Thread(
+            target=self._serve, name="omnivia-ipc", daemon=True
+        )
         self._thread.start()
 
     def _serve(self) -> None:
@@ -680,6 +679,7 @@ class LocalSocketServer:
                 # going down. Either way it is closed rather than served.
                 channel.close()
                 break
+            self._active_channel = channel
             try:
                 self._handle(channel)
             except Exception:  # noqa: BLE001, S112 - see below
@@ -703,34 +703,68 @@ class LocalSocketServer:
                 continue
             finally:
                 channel.close()
+                self._active_channel = None
 
     def _handle(self, channel: _Channel) -> None:
         raw = channel.read_frame()
         if raw is None:
             return
-        request = codec.decode_request(decode_frame(raw))
-        response = self.dispatcher.dispatch(request)
-        channel.send_frame(encode_frame(codec.encode_response(response)))
+        document = decode_frame(raw)
+        if self.router is not None:
+            result = self.router.route(document)
+            payload = result.to_wire()
+        else:
+            assert self.dispatcher is not None
+            request = codec.decode_request(document)
+            response = self.dispatcher.dispatch(request)
+            payload = codec.encode_response(response)
+        # Reading the frame checked the initial unary boundary, but dispatch may run
+        # longer than that quiet window.  Recheck after all router/dispatcher work and
+        # immediately before the response write so traffic pipelined during dispatch
+        # cannot receive a valid response.
+        channel.ensure_unary_boundary()
+        channel.send_frame(encode_frame(payload))
 
     def stop(self) -> None:
         served = self._listener is not None
         if self._stop is not None:
             self._stop.set()
+        if self._active_channel is not None:
+            self._active_channel.close()
         if self._listener is not None:
-            # Woken in bounded attempts rather than joined once for a long time: the
-            # wake has to land after the stop flag is set, and on a slow start the
-            # accept it unblocks may not have reached its wait when the first arrives.
-            for _ in range(3):
+            # Woken in bounded attempts rather than joined once for a long time.  A
+            # client can be accepted between the first active-channel check above and
+            # the wake, so each attempt rechecks and closes the channel after giving
+            # the serving thread a short opportunity to publish it.
+            for _ in range(20):
                 if self._thread is None or not self._thread.is_alive():
                     break
                 self._listener.wake()
-                self._thread.join(timeout=2)
+                self._thread.join(timeout=0.005)
+                if self._active_channel is not None:
+                    self._active_channel.close()
+                self._thread.join(timeout=0.005)
         self._thread = None
-        if self._listener is not None:
-            self._listener.close()
-            self._listener = None
+        cleanup_failed = False
         if served:
-            self._remove_socket_file()
+            # Unlink the Unix name while the listener that owns it is still open.
+            # Closing first creates a replacement window in which another process can
+            # bind the same name and then be deleted by this instance's cleanup.
+            try:
+                self._remove_socket_file()
+            except Exception:  # noqa: BLE001 - normalized after listener teardown
+                cleanup_failed = True
+        listener = self._listener
+        close_failed = False
+        try:
+            if listener is not None:
+                listener.close()
+        except Exception:  # noqa: BLE001 - fixed public cleanup diagnostic below
+            close_failed = True
+        finally:
+            self._listener = None
+        if cleanup_failed or close_failed:
+            raise TransportError("local service transport cleanup failed")
 
     def _remove_socket_file(self) -> None:
         """Remove what this instance created, and only that.
@@ -741,8 +775,15 @@ class LocalSocketServer:
         cannot delete a file it does not own.
         """
         path = self._endpoint().path
-        if path is not None and path.exists():
+        if path is None or self._owned_socket_identity is None:
+            return
+        try:
+            identity = path.stat()
+        except FileNotFoundError:
+            return
+        if (identity.st_dev, identity.st_ino) == self._owned_socket_identity:
             path.unlink()
+        self._owned_socket_identity = None
 
     def __enter__(self) -> Self:
         self.start()
@@ -785,18 +826,49 @@ class LocalSocketTransport:
         return self.endpoint
 
     def call(self, request: RequestEnvelope) -> ResponseEnvelope:
-        channel = _connect(self._endpoint(), timeout=self.timeout)
+        channel: _Channel | None = None
+        connect_failure: TransportError | None = None
+        try:
+            channel = _connect(self._endpoint(), timeout=self.timeout)
+        except TransportError as error:
+            connect_failure = error
+        except OSError:
+            connect_failure = TransportError("could not access local service endpoint")
+        if connect_failure is not None:
+            raise connect_failure
+        assert channel is not None
+        raw: bytes | None = None
+        failed = False
         try:
             channel.send_frame(encode_frame(codec.encode_request(request)))
             raw = channel.read_frame()
-        except OSError as error:
-            raise TransportError(f"transport failed: {error}") from error
+        except OSError:
+            failed = True
         finally:
-            channel.close()
+            try:
+                channel.close()
+            except OSError:
+                failed = True
 
+        if failed:
+            raise TransportError("local service transport call failed")
         if raw is None:
             raise TransportError("service closed the connection without responding")
-        return codec.decode_response(decode_frame(raw))
+        document: dict[str, Any] | None = None
+        try:
+            document = decode_frame(raw)
+        except OVC1Error:
+            pass
+        if document is None:
+            # Fixed and non-disclosing, and raised once `except` has exited: `raw`
+            # may carry a caller's own document content, and OVC1Error's message
+            # is not folded in here, so no text from either reaches a caller. The
+            # raise sits outside the `except` block on purpose -- inside it, Python
+            # would set this error's `__context__` to the OVC1Error being handled,
+            # and that error is reachable through `__context__` even when nothing
+            # renders it.
+            raise TransportError("service response was not a valid OVC1 frame")
+        return codec.decode_response(document)
 
 
 def _connect(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:
@@ -808,33 +880,45 @@ def _connect(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:
 def _connect_unix(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:
     if not _HAS_AF_UNIX:
         raise TransportError(
-            f"this platform cannot open a unix socket: {endpoint.url}. "
-            f"Use a {LOCAL_SCHEME.value}:// endpoint."
+            "this platform cannot open the requested local service endpoint"
         )
     path = Path(endpoint.name)
     assert_socket_path_fits(path)
     if not path.exists():
-        raise TransportError(f"no service endpoint at {endpoint.url}")
+        raise TransportError("local service endpoint is unavailable")
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.settimeout(timeout)
+    failed = False
     try:
         connection.connect(endpoint.address)
-    except OSError as error:
+    except OSError:
+        failed = True
+    if failed:
         connection.close()
-        raise TransportError(f"transport failed: {error}") from error
+        raise TransportError("could not connect to local service endpoint")
     return _SocketChannel(connection)
 
 
 def _connect_pipe(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:
-    from multiprocessing import connection as pipes
+    from omnivia_core_runtime.service.windows_pipe import (
+        WindowsPipeError,
+        open_pipe_client,
+    )
 
+    channel: _Channel | None = None
+    missing = False
+    failed = False
     try:
-        pipe = pipes.Client(endpoint.address, family="AF_PIPE")
-    except FileNotFoundError as error:
-        raise TransportError(f"no service endpoint at {endpoint.url}") from error
-    except OSError as error:
-        raise TransportError(f"transport failed: {error}") from error
-    return _PipeChannel(pipe, timeout)
+        channel = open_pipe_client(endpoint.address, timeout=timeout)
+    except WindowsPipeError as error:
+        missing = error.code == 2
+        failed = not missing
+    if missing:
+        raise TransportError("local service endpoint is unavailable")
+    if failed:
+        raise TransportError("could not connect to local service endpoint")
+    assert channel is not None
+    return channel
 
 
 __all__ = [

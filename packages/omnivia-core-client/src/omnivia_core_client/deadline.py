@@ -101,8 +101,13 @@ def _require_real(value: object, name: str) -> float:
     except OverflowError:
         # An `int` above the binary64 range. `math.isfinite` would raise the same
         # `OverflowError` a moment later, so the conversion is done here where it
-        # can be turned into a statement about this argument.
-        raise ValueError(f"{name} is too large to convert to a finite number") from None
+        # can be turned into a statement about this argument. The handler ends
+        # here so the `ValueError` below is raised with no exception being handled:
+        # CPython's own `int too large to convert to float` names no value, but an
+        # `__float__` on a subclass raises whatever it likes, and `from None` would
+        # leave that on `__context__` of the error the caller catches.
+        pass
+    raise ValueError(f"{name} is too large to convert to a finite number")
 
 
 @dataclass(frozen=True, slots=True)

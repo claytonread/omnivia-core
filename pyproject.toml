@@ -26,9 +26,118 @@ packages = ["src/omnivia_core"]
 "contracts/host/v1/schemas" = "omnivia_core/host_contract/v1/resources/schemas"
 "contracts/host/v1/fixtures" = "omnivia_core/host_contract/v1/resources/fixtures"
 
+# Canonical collection scope. Every tree in this checkout that holds tests is
+# named here, so a bare `pytest -q` from the repository root is the whole suite
+# and not a subset of it.
+#
+# It used to read `["services", "tests"]`, which silently excluded everything
+# under `packages/` -- the runtime, client, CLI and MCP distributions. A bare run
+# reported a green 9358-test pass while collecting none of the 3828 cases in
+# those trees, and the acceptance workflow hid the gap because it names its paths
+# explicitly (naming paths disables `testpaths` entirely). `baseline/tests` and
+# `benchmarks/tests` were outside it for the same reason and are now included:
+# both have their own gate step, and neither needs anything a bare run does not
+# already provide.
+#
+# `scripts/check-test-collection.py` holds this open. It compares the files a
+# bare run actually collects against every test file on disk, so a tree added
+# outside this list fails rather than disappearing.
 [tool.pytest.ini_options]
-testpaths = ["services", "tests"]
+testpaths = ["services", "tests", "packages", "baseline/tests", "benchmarks/tests"]
 pythonpath = ["src"]
+
+# Ruff resolves the *nearest* `[tool.ruff]` above each file, so this section is
+# the configuration for every canonical tree -- `src`, `packages`, `baseline`,
+# `tests`, `scripts` -- and for anything added beside them.
+# `services/omnivia-memory` keeps its own narrower declaration (ADR-036 legacy
+# facade) and is unaffected by this one.
+#
+# Scope. A bare `ruff check` from the repository root now lints exactly what the
+# acceptance workflow's `Run Ruff` step lints, so a clean local run means a clean
+# gate. `benchmarks` is the one tree excluded: it has never been in the accepted
+# clean scope and currently carries 37 findings. Excluding it here makes that a
+# recorded decision rather than an accident of which paths the workflow happened
+# to name, and an explicit `ruff check benchmarks` still lints it -- Ruff applies
+# `exclude` to directory walks, not to paths given on the command line.
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["benchmarks"]
+
+# The rule set is not pinned by enumerating it, because it cannot honestly be:
+# Ruff 0.16.1's default selection is 413 rules across 37 families -- not the
+# `E4`/`E7`/`E9`/`F` that this repository's prose and its sibling
+# `services/omnivia-memory` configuration both still describe. The canonical
+# trees satisfy all 413 with zero findings, so restating the old four-family
+# baseline here would *narrow* the accepted policy by 409 rules while reading
+# like a tightening.
+#
+# `required-version` pins it instead, and Ruff is pre-1.0, so a minor bump is
+# where its rule selection is allowed to move -- `<0.17` is that boundary, not an
+# arbitrary one. Patch releases inside 0.16.x are accepted.
+#
+# What this does and does not do. It does NOT by itself stop a newer Ruff from
+# reaching the gate: it aborts the run -- exit 2, before a single file is linted
+# -- when one already has. The thing that keeps a newer Ruff out is the matching
+# bound on `services/omnivia-memory[dev]`'s `ruff` requirement, which is the only
+# Ruff requirement in this repository that pip can install and therefore the only
+# one that decides what the acceptance gate runs. This entry is the consistency
+# check on that bound: it catches Ruff arriving from anywhere the bound does not
+# govern -- a workflow that installs Ruff directly, a transitive dependency, a
+# developer's globally installed copy.
+#
+# Left as an abort with no matching bound, this line is a scheduled outage: the
+# day Ruff 0.17.0 publishes, every pull request fails at `Run Ruff`. It was
+# exactly that for one revision of this file. The two ranges are held identical
+# by `test_every_declared_ruff_version_matches_the_required_version` in
+# `tests/test_core_acceptance_workflow.py`, which reads them both from the tree,
+# and the bound is held reachable by
+# `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs`.
+#
+# The accepted maintenance cost: adopting a new Ruff minor means editing two
+# strings, and the tests above name the second one if it is missed.
+required-version = ">=0.16.1,<0.17"
+
+[tool.ruff.lint]
+# Deliberately not enabled, with reasons.
+#
+# `B904` (`raise-without-from-inside-except`) is not in Ruff's default selection
+# today, and this entry is what keeps it out if that changes or if someone adds
+# it via `select`/`extend-select` -- `ignore` wins over both. It is the one rule
+# that would actively contradict an accepted repository decision. Its own message
+# is the proof: "raise exceptions with `raise ... from err` or `raise ... from
+# None`". The second of those is exactly what
+# `scripts/check-raise-discipline.py` forbids on the unauthenticated seams,
+# because `from None` clears `__cause__` while leaving the original exception --
+# and whatever caller-supplied text it quoted -- reachable on `__context__`.
+# Enabling B904 would therefore drive authors toward the disclosure defect that
+# script exists to catch. Verified both ways: B904 passes a `raise X from None`
+# handler, and fires on the compliant `raise X`.
+#
+# `TRY200` was the same rule under its old code and no longer exists in Ruff, so
+# there is nothing to list for it. See that script's module docstring for the
+# disclosure defects behind the convention.
+ignore = ["B904"]
+
+# Not enabled, and not a policy conflict -- just too large to adopt in this lane.
+# Measured with `ruff check --select ALL` over `src packages baseline tests
+# scripts`, which reports 28429 findings in total. The families worth a separate
+# decision, with their counts:
+#
+#   S      7129  (S101 `assert` alone is 6875 -- tests are the whole tree)
+#   E      6662  (E501 line-too-long is 6658; there is no formatter gate here)
+#   D      4859  (docstring style; 2669 are undocumented public functions)
+#   COM    4201  (missing trailing comma; a formatter decision, not a lint one)
+#   EM     1293
+#   TRY    1280  (1273 are TRY003 raise-vanilla-args)
+#   ANN     605
+#   PLR     517
+#   CPY     271
+#   PT      234
+#
+# The plausible small ones, for a follow-up that wants cheap coverage:
+# `RUF` 97, `C` 96, `Q` 82, `PERF` 73, `SIM` 41, `N` 38, `PLW` 18, `PTH` 16,
+# `SLOT` 8, `I` 5, `A` 5, `B` 4 (all B905; B904 has zero sites today), `PGH` 3,
+# `ERA` 3, `ISC` 1, `ICN` 1.
 
 [dependency-groups]
 # Development-only tooling. Runtime dependencies stay empty: the public
@@ -44,11 +153,26 @@ pythonpath = ["src"]
 # already. Without them those tests fail at setup for a missing build backend --
 # an environment gap that reads exactly like a product defect. The CI workflow
 # installs both explicitly for `scripts/check-package-builds.sh`; declaring them
-# here makes a plain `uv sync`/`pip install -e ".[dev]"` environment able to run
-# the suite too. Both stay development-only: runtime dependencies remain empty.
+# here makes a `uv sync` environment able to run the suite too. Both stay
+# development-only: runtime dependencies remain empty.
+#
+# Reachability, because it is not obvious and a previous revision of this comment
+# got it wrong. This is a PEP 735 `[dependency-groups]` table, not
+# `[project.optional-dependencies]`. `uv sync` installs it by default. **pip
+# cannot install it at all**: this project declares no extras, so
+# `pip install -e ".[dev]"` emits `WARNING: omnivia-core 0.1.0 does not provide
+# the extra 'dev'` and installs nothing from here, and the built wheel carries
+# zero `Requires-Dist` and zero `Provides-Extra` lines. Both measured.
+#
+# So `ruff` below serves `uv sync` users, who get a version satisfying
+# `[tool.ruff] required-version` and can run the canonical bare `ruff check`. It
+# does **not** reach CI, which installs with pip. The bound that governs CI lives
+# in `services/omnivia-memory/pyproject.toml`; all three strings are held
+# identical by `tests/test_core_acceptance_workflow.py`.
 dev = [
     "build>=1.2,<2",
     "hatchling>=1.26,<2",
     "jsonschema[format]>=4.25,<5",
+    "ruff>=0.16.1,<0.17",
     "types-jsonschema>=4.25,<5",
 ]

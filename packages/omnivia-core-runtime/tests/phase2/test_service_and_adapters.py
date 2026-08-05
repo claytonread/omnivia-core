@@ -14,11 +14,12 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from omnivia_core_cli.client import build_request
-from omnivia_core_runtime.ownership.discovery import discover
+from omnivia_core_runtime.ownership.discovery import discover, is_compatible, publish
 from omnivia_core_runtime.service.authorization import (
     AuthorizationDenied,
     Grant,
@@ -39,11 +40,24 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketTransport,
     endpoint_for_path,
 )
+from omnivia_core_runtime.service.versions import (
+    API_VERSION,
+    PROTOCOL_VERSION,
+    SERVER_VERSION,
+    supported_api_versions,
+    supported_workspace_versions,
+    workspace_contract_version,
+)
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.legacy import migrate_legacy_database
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
-from omnivia_core.contracts.v1 import ErrorResponseEnvelope, SuccessResponseEnvelope
+from omnivia_core.contracts.v1 import (
+    ErrorResponseEnvelope,
+    ServiceEndpointDescriptor,
+    ServiceProcessEvidence,
+    SuccessResponseEnvelope,
+)
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 
 from .conftest import SERVICE_INSTANCE, WORKSPACE_ID
@@ -73,6 +87,18 @@ def request_for(operation: str, *, workspace: str = WORKSPACE, principal: str | 
         workspace_id=workspace,
         request_id="req-1",
         principal=principal,
+    )
+
+
+def claiming(operation: str, api_version: object, *, workspace: str = WORKSPACE):
+    """A request identical to `request_for`'s but for the version it claims.
+
+    Built by replacing the field rather than through `build_request`, because the
+    point is to vary the one thing a client controls and a server must not trust.
+    """
+    request = request_for(operation, workspace=workspace)
+    return replace(
+        request, metadata=replace(request.metadata, api_version=api_version)
     )
 
 
@@ -167,14 +193,114 @@ def test_readiness_reports_unmet_preconditions_rather_than_a_bare_false() -> Non
 def test_response_metadata_correlates_with_the_request() -> None:
     """A transport must be able to match a response to its request."""
     dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
-    request = request_for("core.health")
+    # The claim is stated here rather than taken from whatever the CLI happens to
+    # send. What this test needs is *a* claim the service does not serve, and
+    # borrowing another package's constant for it makes this test pass or fail on
+    # that package's release schedule: it held only while the CLI was stale, and
+    # went vacuous the moment the CLI started claiming the served version.
+    request = claiming("core.health", "1.0")
     response = dispatcher.dispatch(request)
     assert response.metadata.request_id == request.metadata.request_id
     assert response.metadata.correlation_id == request.metadata.correlation_id
     # ResponseMetadata carries no trace_id: the contract correlates by request and
     # correlation id, and the trace is a request-side concern.
     assert not hasattr(response.metadata, "trace_id")
-    assert response.metadata.version.api_version == request.metadata.api_version
+    # Correlation is by id. `api_version` is *not* a correlation field, and this
+    # line used to assert the response echoed the request's -- which is how the
+    # service came to report a supported window the caller had chosen for it. What
+    # the response states is the revision this build applied, and the request here
+    # claims a different one, so the echo is refused in both directions.
+    assert response.metadata.version.api_version == API_VERSION
+    assert request.metadata.api_version != API_VERSION
+    assert response.metadata.version.api_version != request.metadata.api_version
+
+
+def test_no_version_fact_in_a_response_comes_from_the_callers_claim() -> None:
+    """The mechanism, stated as the property it violated.
+
+    `response_metadata` derived the served window, the selected version and every
+    capability version from `request.metadata.api_version` -- the caller's own
+    assertion about itself -- so any client could make the service report any
+    window about itself. Two requests differing *only* in that claim must produce
+    byte-identical version facts, and those facts must be this build's own.
+    """
+    dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
+    served = supported_api_versions()
+
+    versions = []
+    for claim in ("1.0", "1.9"):
+        response = dispatcher.dispatch(claiming("core.health", claim))
+        assert isinstance(response, SuccessResponseEnvelope)
+        envelope = response.metadata.version
+        assert envelope.compatibility.supported_api_versions == served
+        assert envelope.api_version == envelope.compatibility.selected_api_version
+        assert envelope.api_version == API_VERSION
+        assert envelope.server_version == SERVER_VERSION
+        # The granted operations travel as capability refs, and their version is a
+        # server fact too -- it was the caller's claim as well.
+        assert [ref.version for ref in envelope.capabilities.granted] == [
+            API_VERSION
+        ] * len(SERVICE_OPERATIONS)
+        # The workspace notation is translated from the frozen ordinal table, not
+        # restated and not taken from the request either.
+        assert envelope.workspace_format_version == workspace_contract_version("1")
+        assert (
+            envelope.compatibility.supported_workspace_versions
+            == supported_workspace_versions("1")
+        )
+        versions.append(envelope)
+
+    assert versions[0] == versions[1], "a version fact still tracks the caller's claim"
+
+
+@pytest.mark.parametrize(
+    ("claim", "status", "upgrade"),
+    [
+        (API_VERSION, "compatible", "none"),
+        # What the CLI claims today: same major, below the served window.
+        ("1.0", "upgrade_required", "required"),
+        # A major this build cannot negotiate at all.
+        ("2.0", "incompatible", "required"),
+        # Nothing validates `api_version` past a pattern check on the decoding
+        # path, and an in-process caller skips even that. Unreadable means no,
+        # never a crashed dispatch.
+        ("not-a-version", "incompatible", "required"),
+        # And "unreadable" is not only a malformed string. `decode_request` refuses
+        # a non-string on the wire, but an in-process caller reaches this with the
+        # field set to anything at all, and these fail the version match with a
+        # TypeError rather than a ValueError -- a different crash through the same
+        # hole.
+        (None, "incompatible", "required"),
+        (42, "incompatible", "required"),
+        (b"1.2", "incompatible", "required"),
+    ],
+    ids=[
+        "served",
+        "below-window",
+        "other-major",
+        "unreadable",
+        "none",
+        "not-a-string",
+        "bytes",
+    ],
+)
+def test_a_claim_outside_the_served_window_is_reported_as_such(
+    claim: object, status: str, upgrade: str
+) -> None:
+    """`status` was hardcoded `"compatible"`, so it agreed with every caller.
+
+    `authorize_application_request` is not wired, so nothing refuses a claim
+    outside the served window before it gets here: the response is the only place
+    the caller is told. Every expected value is one the contract's own
+    `x-omnivia-compatibility-statuses` / `x-omnivia-upgrade-states` freeze.
+    """
+    response = Dispatcher.for_service_operations(grant(), FakeService()).dispatch(
+        claiming("core.health", claim)
+    )
+    assert isinstance(response, SuccessResponseEnvelope)
+    negotiated = response.metadata.version.compatibility
+    assert negotiated.status == status
+    assert negotiated.upgrade_state.value == upgrade
 
 
 def test_registry_refuses_duplicate_registration() -> None:
@@ -334,6 +460,113 @@ def test_the_cli_reports_no_service_rather_than_crashing(tmp_path: Path) -> None
     assert code == 1
 
 
+def cli_descriptor(
+    *, endpoint: str = "unix:///tmp/omnivia-cli.sock", generation: int = 7
+) -> ServiceEndpointDescriptor:
+    """What a running service advertises, in the shape it advertises it."""
+    return ServiceEndpointDescriptor(
+        descriptor_version=API_VERSION,
+        workspace_id=WORKSPACE_ID,
+        service_instance_id=SERVICE_INSTANCE,
+        installation_id="inst-cli",
+        endpoint_uri=endpoint,
+        protocol_version=PROTOCOL_VERSION,
+        server_version=SERVER_VERSION,
+        supported_api_versions=supported_api_versions(),
+        supported_workspace_versions=supported_workspace_versions("1"),
+        workspace_format_version=workspace_contract_version("1"),
+        ready=True,
+        lifecycle_state="ready",
+        fencing_generation=generation,
+        published_at="2026-08-04T00:00:00Z",
+        process=ServiceProcessEvidence(pid=4242, start_time="100", boot_id="boot-a"),
+    )
+
+
+def test_the_cli_reads_the_descriptor_the_runtime_publishes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The CLI's reader and the Runtime's writer must agree on one document.
+
+    Every CLI discovery case above this one runs against an empty runtime
+    directory and asserts the "no service is advertised" branch, so when the
+    published document moved to the public `ServiceEndpointDescriptor` shape the
+    CLI began reporting every live service as absent and every suite in the
+    repository stayed green. A reader test that never sees a real descriptor is
+    not a test of the reader, which is why the descriptor here is written by the
+    real `publish()` rather than assembled as a fixture document.
+    """
+    from omnivia_core_cli.client import read_descriptor
+    from omnivia_core_cli.main import main
+
+    runtime = tmp_path / "runtime" / WORKSPACE_ID
+    publish(runtime, cli_descriptor())
+
+    service = read_descriptor(runtime)
+    assert service is not None, "the CLI reported a published service as absent"
+    assert service.endpoint_uri == "unix:///tmp/omnivia-cli.sock"
+    assert service.workspace_id == WORKSPACE_ID
+    assert service.service_instance_id == SERVICE_INSTANCE
+    assert service.fencing_generation == 7
+    assert service.ready is True
+
+    # And what the user is actually shown, not just what the reader returns.
+    assert main(["--runtime-state", str(runtime), "discover"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "endpoint": "unix:///tmp/omnivia-cli.sock",
+        "workspace_id": WORKSPACE_ID,
+        "service_instance_id": SERVICE_INSTANCE,
+        "fencing_generation": 7,
+        "ready": True,
+    }
+
+    # The descriptor's other consumer: the workspace a request is addressed to.
+    assert main(["--runtime-state", str(runtime), "health"]) == 0
+    request = json.loads(capsys.readouterr().out)
+    assert request["metadata"]["workspace_id"] == WORKSPACE_ID
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "{not json",
+        '{"workspace_id": "x"}',
+        "[]",
+        json.dumps(
+            {
+                "endpoint": "unix:///tmp/omnivia-cli.sock",
+                "workspace_id": WORKSPACE_ID,
+                "service_instance_id": SERVICE_INSTANCE,
+                "fencing_generation": 1,
+                "api_version": "1.0",
+                "readiness": "ready",
+            }
+        ),
+    ],
+    ids=["garbage", "incomplete", "not-an-object", "the-legacy-shape"],
+)
+def test_the_cli_reports_an_unreadable_descriptor_as_absent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], document: str
+) -> None:
+    """Failure semantics are unchanged, including for the shape this replaces.
+
+    The legacy document is in this list deliberately. One left behind by an older
+    service is not a descriptor this build can read, and the answer to it is the
+    same "no service is advertised" as to any other unreadable file -- not a
+    crash, and not a shim that decodes both shapes.
+    """
+    from omnivia_core_cli.client import read_descriptor
+    from omnivia_core_cli.main import main
+
+    runtime = tmp_path / "runtime" / WORKSPACE_ID
+    runtime.mkdir(parents=True)
+    (runtime / "service.json").write_text(document, encoding="utf-8")
+
+    assert read_descriptor(runtime) is None
+    assert main(["--runtime-state", str(runtime), "discover"]) == 1
+    assert "no service is advertised" in capsys.readouterr().out
+
+
 def test_the_cli_builds_a_contract_valid_request(tmp_path: Path) -> None:
     """The CLI cannot invent a shape the service would reject."""
 
@@ -349,6 +582,37 @@ def test_the_cli_builds_a_contract_valid_request(tmp_path: Path) -> None:
     assert decoded.operation == "core.health"
     assert decoded.metadata.workspace_id == WORKSPACE
     assert decoded.metadata.client.id == "omnivia-cli"
+
+
+def test_the_cli_claims_an_api_version_the_service_advertises() -> None:
+    """The version stamped on every CLI request must be one this build serves.
+
+    It was the literal `"1.0"`, transcribed once and then left behind when the
+    contract moved to 1.2 — the same defect the Runtime's own `API_VERSION` already
+    carried and fixed by deriving. Nothing on the request path validates the field,
+    so the stale claim was never refused: it was accepted, dispatched, and then used
+    to build the response's whole version envelope, so the service reported its
+    supported window as `[1.0, 1.0]` while the descriptor beside it advertised
+    `[1.2, 1.2]`.
+
+    `is_compatible` is the one comparison in the tree that reads a claimed API
+    version against a service's advertised window, and it is asserted here rather
+    than an equality against `CONTRACT_VERSION`: what has to be true is that the
+    claim falls inside what the service supports, which stays the right question if
+    that window ever widens beyond one version.
+    """
+    claimed = build_request(
+        "core.health", workspace_id=WORKSPACE, request_id="cli-api-version"
+    ).metadata.api_version
+
+    assert is_compatible(
+        cli_descriptor(),
+        api_version=claimed,
+        workspace_format_version=workspace_contract_version("1"),
+    ), (
+        f"the CLI claims api_version {claimed!r}, which is outside the "
+        f"{supported_api_versions()} this build advertises"
+    )
 
 
 def test_the_cli_and_the_dispatcher_agree_on_the_envelope(tmp_path: Path) -> None:
@@ -465,8 +729,9 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
 
         # It is discoverable, and the pid it advertises is this live process.
         assert found is not None and found.ready
-        assert found.pid == process.pid
-        assert found.endpoint == endpoint.url
+        assert found.process is not None
+        assert found.process.pid == process.pid
+        assert found.endpoint_uri == endpoint.url
 
         # And something is actually listening there, speaking the real contract.
         response = LocalSocketTransport(endpoint=endpoint).call(
@@ -692,6 +957,59 @@ def test_srb02_the_endpoint_starts_before_the_descriptor_is_published(
         # And it is advertised once startup completes.
         found = discover(runtime_directory)
         assert found is not None and found.ready
+    finally:
+        runner.stop()
+
+
+def test_a_response_and_the_published_descriptor_cannot_disagree(
+    tmp_path: Path, migrated
+) -> None:
+    """One service, two documents, one supported window.
+
+    This is the property that was violated. The descriptor advertised the window
+    `versions.supported_api_versions()` gives it, while a response built the window
+    out of `request.metadata.api_version` -- so a client claiming "1.0" was told by
+    the response that the service supported {1.0, 1.0} and by the descriptor that it
+    supported the real one. Both sides here are the production article: the
+    descriptor is read back off disk after a real `ServiceRunner.start` published
+    it, and the response comes from a real dispatch, so neither can be satisfied by
+    a fixture that agrees with itself.
+
+    The request deliberately claims a version the service does not serve, because
+    that is the case the old code got wrong: an agreeing claim would have made the
+    two documents match by accident.
+    """
+    workspace, installation = migrated
+    runtime_directory = installation.runtime_for(WORKSPACE_ID)
+    settings = ServiceSettings(
+        workspace_root=workspace.root,
+        installation_root=installation.root,
+        core_version="0.1.0",
+        endpoint=endpoint_for_path(tmp_path / "omnivia-window.sock").url,
+    )
+    runner = ServiceRunner(settings)
+    assert runner.start(serve=lambda _started: None).ready
+    try:
+        published = discover(runtime_directory)
+        assert published is not None
+        response = Dispatcher.for_service_operations(
+            grant(workspaces=(WORKSPACE_ID,)), runner
+        ).dispatch(claiming("core.health", "1.0", workspace=WORKSPACE_ID))
+        assert isinstance(response, SuccessResponseEnvelope), response
+        negotiated = response.metadata.version.compatibility
+        assert "1.0" != published.supported_api_versions.maximum, (
+            "the claim must be one the service does not serve, or this proves nothing"
+        )
+        assert negotiated.supported_api_versions == published.supported_api_versions
+        assert (
+            negotiated.supported_workspace_versions
+            == published.supported_workspace_versions
+        )
+        assert (
+            response.metadata.version.workspace_format_version
+            == published.workspace_format_version
+        )
+        assert response.metadata.version.server_version == published.server_version
     finally:
         runner.stop()
 

@@ -329,7 +329,6 @@ def test_no_concrete_transport_is_exported() -> None:
         "connect",
         "dial",
         "discover",
-        "discover_endpoint",
         "start_service",
         "ensure_service",
         "retry",

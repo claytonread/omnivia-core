@@ -1,4 +1,19 @@
-"""Service startup coordination (T-0629G, ADR-037).
+"""Service startup coordination (T-0629G, PM ADR-037).
+
+**Staged, not orphaned.** `coordinated_startup` has no production caller yet, and
+that is a decision rather than an oversight: the owner has declared it staged and
+retained as a platform-neutral runtime bootstrap API. The named consumers, in
+order, are `omnivia-core-cli` managed-local start as the required first Core-owned
+production caller, then official MCP managed stdio mode, then `omnivia-platform`'s
+App Shell Host or Core Connectivity adapter. Nothing here may grow Electron,
+Desktop user-interface, Platform account, licensing or Module entitlement
+concerns, and it must never acquire or act as the authoritative workspace service
+lease holder -- the Core Service remains the only workspace lease owner. A
+milestone delivery target and a removal trigger govern how long that stays true,
+and both are normative, so this module is not to be deleted as unreferenced code
+without reading them:
+
+    docs/development/omnivia-core-staged-startup-and-embedder-only-http-2026-08-05.md
 
 The startup sequence is:
 
@@ -33,9 +48,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from omnivia_core.contracts.v1 import ServiceEndpointDescriptor, parse_contract_version
 from omnivia_core.workspace.compatibility import CompatibilityOutcome
 from omnivia_core_runtime.ownership.discovery import (
-    ServiceDescriptor,
     discover,
     is_compatible,
 )
@@ -65,7 +80,7 @@ class StartupDecision:
 
     outcome: StartupOutcome
     reason: str
-    existing: ServiceDescriptor | None = None
+    existing: ServiceEndpointDescriptor | None = None
 
     @property
     def should_spawn(self) -> bool:
@@ -77,7 +92,7 @@ def coordinated_startup(
     runtime_directory: Path,
     *,
     api_version: str,
-    workspace_format_version: str,
+    workspace_contract_version: str,
 ) -> Iterator[StartupDecision]:
     """Coordinate startup, holding the bootstrap mutex for as long as the decision stands.
 
@@ -90,11 +105,25 @@ def coordinated_startup(
     The mutex is therefore released when the caller leaves this block -- after it has
     spawned and waited, or after it has failed -- and not before. It still grants no
     write authority; it serialises launching, nothing else.
+
+    `workspace_contract_version` is named for the notation it requires: the public
+    `major.minor` ContractVersion, not the private workspace manifest's bare ordinal
+    (`"1"`). A launcher holding the manifest's ordinal must translate it first, with
+    `omnivia_core_runtime.service.versions.workspace_contract_version` -- the one
+    place that translation happens. Both this and `api_version` are validated as
+    `major.minor` ContractVersions before anything else runs, so passing the
+    ordinal through unconverted raises immediately and plainly rather than
+    producing a `REFUSED_INCOMPATIBLE` decision whose reason quotes a window the
+    caller's intended version would in fact have matched.
+
+    This has no production caller yet by decision, not by neglect. See the module
+    docstring for the staged declaration, the named consumers and the removal
+    trigger before concluding it is unreferenced.
     """
     decision, mutex = _decide(
         runtime_directory,
         api_version=api_version,
-        workspace_format_version=workspace_format_version,
+        workspace_contract_version=workspace_contract_version,
     )
     try:
         yield decision
@@ -103,19 +132,41 @@ def coordinated_startup(
             mutex.release()
 
 
+def _require_contract_version(version: str, label: str) -> None:
+    """Raise plainly unless `version` is a `major.minor` ContractVersion.
+
+    `api_version` and `workspace_contract_version` are the caller's own input,
+    never the discovered descriptor's, so a value that will not parse is a
+    caller mistake -- most commonly the private workspace manifest's bare
+    ordinal (`"1"`) handed over where the public `major.minor` notation
+    (`"1.0"`) is required. Validating here, before discovery or `is_compatible`
+    ever run, turns that mistake into an immediate, precise `ValueError` instead
+    of a `REFUSED_INCOMPATIBLE` decision: `is_compatible` fails closed on an
+    unreadable version exactly the same as it does on a genuine mismatch, so by
+    the time that path could report anything, the distinction is already gone.
+    """
+    try:
+        parse_contract_version(version)
+    except ValueError as error:
+        raise ValueError(f"{label}={version!r}: {error}") from error
+
+
 def _decide(
     runtime_directory: Path,
     *,
     api_version: str,
-    workspace_format_version: str,
+    workspace_contract_version: str,
 ) -> tuple[StartupDecision, FileLock | None]:
     """Decide, returning the held mutex when this launcher won the right to spawn."""
+    _require_contract_version(api_version, "api_version")
+    _require_contract_version(workspace_contract_version, "workspace_contract_version")
+
     first = _live(discover(runtime_directory))
     if first is not None and first.ready:
         if is_compatible(
             first,
             api_version=api_version,
-            workspace_format_version=workspace_format_version,
+            workspace_format_version=workspace_contract_version,
         ):
             return (
                 StartupDecision(
@@ -129,8 +180,11 @@ def _decide(
             StartupDecision(
                 outcome=StartupOutcome.REFUSED_INCOMPATIBLE,
                 reason=(
-                    f"a service is ready but incompatible (api {first.api_version}, "
-                    f"workspace format {first.workspace_format_version})"
+                    "a service is ready but incompatible (api "
+                    f"{first.supported_api_versions.minimum}-"
+                    f"{first.supported_api_versions.maximum}, workspace format "
+                    f"{first.supported_workspace_versions.minimum}-"
+                    f"{first.supported_workspace_versions.maximum})"
                 ),
                 existing=first,
             ),
@@ -160,7 +214,7 @@ def _decide(
             if is_compatible(
                 second,
                 api_version=api_version,
-                workspace_format_version=workspace_format_version,
+                workspace_format_version=workspace_contract_version,
             ):
                 decision = StartupDecision(
                     outcome=StartupOutcome.ANOTHER_LAUNCHER_WON,
@@ -192,7 +246,9 @@ def _decide(
     )
 
 
-def _live(descriptor: ServiceDescriptor | None) -> ServiceDescriptor | None:
+def _live(
+    descriptor: ServiceEndpointDescriptor | None,
+) -> ServiceEndpointDescriptor | None:
     """The descriptor, unless the process it names is gone.
 
     A descriptor outlives its process whenever a service is killed before it can
@@ -214,12 +270,25 @@ def _live(descriptor: ServiceDescriptor | None) -> ServiceDescriptor | None:
     a connect, and the endpoint probe covers pid reuse. Neither can prove the service
     is healthy, only that the claim is not obviously dead, so this only ever
     downgrades a claim -- what survives still has to pass compatibility.
+
+    Process evidence is optional in the contract shape, and a descriptor without it
+    is not usable here. The two checks are independent on purpose -- SRB-07 is the
+    record of the endpoint probe alone being insufficient -- so a descriptor that
+    supplies no answer to "is the process that wrote this still running" has not
+    passed the check, it has skipped it. Refusing costs at most one adoption that a
+    launcher then re-establishes by spawning, and the lifetime storage lock still
+    prevents two owners; trusting instead would reinstate the stuck-behind-a-dead-
+    endpoint failure for any descriptor that simply omits the block. Every
+    descriptor this Runtime publishes carries it.
     """
     if descriptor is None:
         return None
-    if not process_is_alive(descriptor.pid):
+    process = descriptor.process
+    if process is None:
         return None
-    if not _endpoint_answers(descriptor.endpoint):
+    if not process_is_alive(process.pid):
+        return None
+    if not _endpoint_answers(descriptor.endpoint_uri):
         return None
     return descriptor
 

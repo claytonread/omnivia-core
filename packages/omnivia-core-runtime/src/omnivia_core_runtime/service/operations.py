@@ -26,7 +26,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from omnivia_core.contracts.v1 import (
+    COMPATIBILITY_STATUS_COMPATIBLE,
+    COMPATIBILITY_STATUS_INCOMPATIBLE,
     OPERATION_CATALOGUE,
+    UPGRADE_STATE_NONE,
+    UPGRADE_STATE_REQUIRED,
     ApiError,
     CapabilityRef,
     CapabilitySet,
@@ -39,7 +43,14 @@ from omnivia_core.contracts.v1 import (
     SuccessResponseEnvelope,
     UpgradeState,
     VersionCapabilityEnvelope,
-    VersionWindow,
+    classify_version_compatibility,
+)
+from omnivia_core_runtime.service.versions import (
+    API_VERSION,
+    SERVER_VERSION,
+    build_version_window,
+    supported_api_versions,
+    workspace_contract_version,
 )
 
 #: The only operations this runtime implements today. Deliberately not product
@@ -169,14 +180,27 @@ class ApplicationOperationRegistry:
             )
 
 
-SERVER_VERSION = "0.1.0"
-
 #: The workspace format as a *contract* version. The manifest records the workspace
 #: format as "1" (a single ordinal), but the envelope's ContractVersion requires
 #: `major.minor`, so the two notations are mapped rather than shared. Using "1" here
 #: produced a valid in-process response that failed to encode - a divergence only the
 #: serialising transport could catch.
-WORKSPACE_FORMAT_CONTRACT_VERSION = "1.0"
+#:
+#: Translated through `versions.workspace_contract_version` rather than written out,
+#: so this and the descriptor `runner.py` publishes read the same frozen table. The
+#: ordinal is named here because a response is built without a service handle: the
+#: dispatcher hands `response_metadata` a request and a grant and nothing else, so
+#: the live workspace's own ordinal is not reachable on this path. Ordinal `1` is the
+#: only workspace format this build translates at all, so naming it asserts nothing
+#: the descriptor could contradict today - but see the module residual: once a second
+#: ordinal exists, this must come from the served workspace rather than from here.
+WORKSPACE_FORMAT_CONTRACT_VERSION = workspace_contract_version(1)
+
+#: The workspace-format window this build serves, built with the same helper and the
+#: same bounds `versions.supported_workspace_versions` gives the descriptor.
+_SUPPORTED_WORKSPACE_VERSIONS = build_version_window(
+    WORKSPACE_FORMAT_CONTRACT_VERSION, WORKSPACE_FORMAT_CONTRACT_VERSION
+)
 
 
 def response_metadata(
@@ -191,33 +215,111 @@ def response_metadata(
     granted-authority record. Populating them properly is the point of consuming the
     public contract rather than inventing a thinner one: a caller can negotiate
     versions and see its effective authority from any response.
+
+    **Every version fact in here is the server's own.** It used to derive the served
+    window, the selected version, each capability version and the compatibility
+    status from `request.metadata.api_version` -- the caller's claim about itself --
+    so a client asking in "1.0" was told the service supported exactly {1.0, 1.0}
+    while the descriptor `runner.py` publishes advertised the real window. Two
+    documents about one service, disagreeing, with the client's own assertion
+    deciding which. The claim is still read, because a server that never looked at
+    it could not tell the caller whether it was usable -- but only ever *through*
+    the served window: it is classified against that window, and it is selected only
+    when the window contains it. A claim outside what this build serves reaches no
+    field of the response.
     """
-    api_version = request.metadata.api_version
-    window = VersionWindow(minimum=api_version, maximum=api_version)
+    served = supported_api_versions()
+    # The one question the caller's claim is allowed to decide: is it inside what
+    # this build serves? `classify_version_compatibility` is the contract's own
+    # answer to that, built on the `version_in_window` that `ownership.discovery`
+    # asks the mirror-image question with, and it returns only the statuses
+    # `x-omnivia-compatibility-statuses` freezes. Nothing here invents a status.
+    #
+    # A claim that is not a contract version at all is refused the same way a
+    # descriptor that cannot be compared is: unreadable means no. Nothing validates
+    # `api_version` beyond a pattern check on the decoding path, and an in-process
+    # caller skips even that, so this is reachable -- and letting the error out would
+    # turn a bad claim into a crashed dispatch instead of a truthful response.
+    #
+    # Both exception types, because there are two ways to not be a version and only
+    # catching one leaves the crash this guard exists to prevent: a malformed string
+    # fails the pattern match (`ValueError`), while a value that is not a string at
+    # all -- `None`, an int, bytes, a list -- fails inside `re.fullmatch` with a
+    # `TypeError`. `ownership.discovery._within` catches the same pair for the same
+    # reason.
+    claimed = request.metadata.api_version
+    try:
+        status = classify_version_compatibility(claimed, served)
+    except (TypeError, ValueError):
+        status = COMPATIBILITY_STATUS_INCOMPATIBLE
+
+    # Negotiation, in the only form this path has one, and *not* an echo: the
+    # revision the server applied is the claimed one when the server actually serves
+    # it, and otherwise the best revision it does serve. The claim can only survive
+    # this by passing through the served window, so nothing outside what this build
+    # implements can ever be selected -- which is the whole difference from the
+    # value this used to publish.
+    #
+    # Both frozen negotiation fixtures state exactly this rule.
+    # `compatible-negotiation.json` selects the caller's `1.2` from a `[1.0, 1.3]`
+    # window; `incompatible-major.json` answers a caller asking for `2.0` with
+    # `selected_api_version: "1.3"` -- the top of the same window -- alongside
+    # `status: "incompatible"`. A response says which revision produced it even when
+    # it is refusing the caller's.
+    #
+    # Membership is read off `status` rather than asked again: that keeps this and
+    # `ownership.discovery.is_compatible` answering one question through one helper.
+    selected = claimed if status == COMPATIBILITY_STATUS_COMPATIBLE else served.maximum
     # A granted operation is reported as a versioned CapabilityRef, not a bare
     # string: the contract's capability model carries a version so a client can tell
-    # which revision of an operation it was granted.
+    # which revision of an operation it was granted. That version is a server fact --
+    # `authorize_application_request` takes it from what the server supports, never
+    # from the request -- and the only version this build holds for its own
+    # service-lifecycle operations is the contract revision it implements them under.
+    #
+    # ponytail: API_VERSION stands in for a per-capability version table. The
+    # application catalogue's capabilities carry their own `required_capability`
+    # versions; when those handlers are registered, their refs come from the
+    # catalogue and a supported-capability snapshot, not from here.
     refs = tuple(
-        CapabilityRef(id=operation, version=api_version) for operation in granted
+        CapabilityRef(id=operation, version=API_VERSION) for operation in granted
     )
     capabilities = CapabilitySet(supported=refs, granted=refs, effective=refs)
     return ResponseMetadata(
         request_id=request.metadata.request_id,
         correlation_id=request.metadata.correlation_id,
         version=VersionCapabilityEnvelope(
-            api_version=api_version,
+            # The revision in force on this document is the revision negotiation
+            # selected; the contract requires the two to agree, so there is one
+            # value and it is stated twice, not two values that could drift.
+            #
+            # This is also where `validate_version_capability_envelope` starts
+            # earning its keep. Its rule -- selected must fall inside the published
+            # supported window -- was unfalsifiable while both sides were computed
+            # from the caller's one claimed value: they agreed by construction no
+            # matter what was claimed, so a forged "9.9" passed it. `selected` now
+            # comes from negotiating a claim against the window and the window comes
+            # from what this build serves, so the check finally compares two things
+            # that can disagree, and it fails closed if the negotiation above is
+            # ever changed to prefer the claim over the window.
+            api_version=selected,
             server_version=SERVER_VERSION,
             workspace_format_version=WORKSPACE_FORMAT_CONTRACT_VERSION,
             compatibility=CompatibilityMetadata(
-                selected_api_version=api_version,
+                selected_api_version=selected,
                 selected_workspace_version=WORKSPACE_FORMAT_CONTRACT_VERSION,
-                supported_api_versions=window,
-                supported_workspace_versions=VersionWindow(
-                    minimum=WORKSPACE_FORMAT_CONTRACT_VERSION,
-                    maximum=WORKSPACE_FORMAT_CONTRACT_VERSION,
+                supported_api_versions=served,
+                supported_workspace_versions=_SUPPORTED_WORKSPACE_VERSIONS,
+                status=status,
+                # Moves with `status` or the response contradicts itself: a caller
+                # told `upgrade_required` cannot also be told it needs no upgrade.
+                # The previous `"current"` was in neither this vocabulary nor the
+                # contract's `x-omnivia-upgrade-states`.
+                upgrade_state=UpgradeState(
+                    value=UPGRADE_STATE_NONE
+                    if status == COMPATIBILITY_STATUS_COMPATIBLE
+                    else UPGRADE_STATE_REQUIRED
                 ),
-                status="compatible",
-                upgrade_state=UpgradeState(value="current"),
                 deprecations=(),
             ),
             capabilities=capabilities,

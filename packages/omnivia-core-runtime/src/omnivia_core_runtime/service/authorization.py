@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Final, TypeGuard
+from typing import Any, Final, TypeGuard
 
 from omnivia_core.contracts.v1 import (
     CAPABILITY_ID_PATTERN,
@@ -686,16 +686,31 @@ def _normalized_request(request: object) -> RequestEnvelope:
     # with `AttributeError` and a non-iterable where the contract states a list fails it
     # with `TypeError`; those are the whole of what the encode can raise once the two
     # types above are established. Everything that survives to be decoded is refused by
-    # the decoder's own error. `from None` throughout: both messages name the offending
-    # field *and* quote the value, and this seam does not echo what a caller sent it.
+    # the decoder's own error.
+    #
+    # Neither original is chained on. What they say today is narrower than it once read
+    # here -- decoding is structural, so it names a field path and a type rather than a
+    # value -- but a refusal at this seam does not rest on another package's choice of
+    # wording, and `from None` would not be the way to rest on it: it clears `__cause__`
+    # and suppresses the *display* of `__context__` while leaving the original, and the
+    # frames that produced it, one attribute access away on the error a caller catches.
+    # So the sentinel is set inside the handler and the refusal raised after it exits,
+    # where there is no exception being handled and neither attribute is set at all.
+    wire: dict[str, Any] | None
     try:
         wire = encode_request(request)
     except (AttributeError, TypeError):
-        raise _invalid_request(_MESSAGE_MALFORMED_REQUEST) from None
+        wire = None
+    if wire is None:
+        raise _invalid_request(_MESSAGE_MALFORMED_REQUEST)
+
+    normalized: RequestEnvelope | None
     try:
         normalized = decode_request(wire)
     except ContractDecodeError:
-        raise _invalid_request(_MESSAGE_MALFORMED_REQUEST) from None
+        normalized = None
+    if normalized is None:
+        raise _invalid_request(_MESSAGE_MALFORMED_REQUEST)
 
     _require_canonical_metadata(normalized.metadata)
     return normalized
@@ -862,8 +877,16 @@ def authorize_application_request(
     scope, purpose, workspace id, capability id or version, raw exception text,
     filesystem path, SQL, lease or fencing value can reach one, by construction rather
     than by inspection of each raise site. Refusals from the catalogue validator and
-    from the wire decoder are re-raised with `from None` rather than wrapped for the
-    same reason: their messages quote the very values a refusal must not repeat.
+    from the wire decoder are dropped rather than wrapped for the same reason: their
+    messages quote the very values a refusal must not repeat.
+
+    Dropped means dropped. Each is caught, recorded in a sentinel, and answered with
+    this seam's own error *after* the handler has exited, so the original is attached
+    as neither `__cause__` nor `__context__`. `raise ... from None` inside the handler
+    is not the same thing and was what stood here: it clears `__cause__` and sets
+    `__suppress_context__`, which quiets a rendered traceback while leaving the
+    original exception -- with the value it quoted -- reachable on `__context__` for
+    anything that logs, serializes or reports the error a caller catches.
     """
     # 1. A session is the precondition for every other question.
     if session is None:
@@ -880,20 +903,34 @@ def authorize_application_request(
     # transport caller is and neither is held only to a shape.
     request = _normalized_request(request)
 
-    # 4. Catalogue resolution.
+    # 4. Catalogue resolution. The contract's own refusal quotes the operation the
+    # caller named, so it is dropped rather than chained -- see the note in step 5.
+    catalogue_entry: OperationMetadata | None
     try:
         catalogue_entry = get_operation_metadata(request.operation)
     except ContractSemanticError:
-        raise _invalid_request(_MESSAGE_UNKNOWN_OPERATION) from None
+        catalogue_entry = None
+    if catalogue_entry is None:
+        raise _invalid_request(_MESSAGE_UNKNOWN_OPERATION)
 
     # 5. Metadata agreement, delegated whole. Workspace-id agreement with the scope
     # kind, the required scopes, the required-capability declaration and the
     # idempotency/precondition presence rules and value domains all belong to the
     # catalogue validator, and are not restated or tightened here.
+    #
+    # The validator quotes the offending value -- a malformed idempotency key or
+    # record version arrives here already embedded in the exception's own message --
+    # so nothing of it is carried on. The sentinel is set inside the handler and the
+    # refusal raised after it exits: `from None` would clear `__cause__` and silence
+    # the rendering of `__context__` while leaving the quoted value one attribute
+    # access away on the error a caller catches.
+    well_formed = True
     try:
         validate_operation_request_metadata(catalogue_entry.name, request.metadata)
     except ContractSemanticError:
-        raise _invalid_request(_MESSAGE_METADATA_NOT_WELL_FORMED) from None
+        well_formed = False
+    if not well_formed:
+        raise _invalid_request(_MESSAGE_METADATA_NOT_WELL_FORMED)
     metadata = request.metadata
 
     # 6. Identity. The claim can only narrow.

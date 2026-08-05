@@ -16,13 +16,17 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import re
 import subprocess
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
+
+from omnivia_core.contracts.v1 import IDENTIFIER_PATTERN
 
 INSTALLATION_ID_FILE = "installation-id"
 
@@ -176,29 +180,113 @@ def _os_principal() -> str:
         return str(os.getuid()) if hasattr(os, "getuid") else "unknown"
 
 
-def _boot_id() -> str:
-    """An identifier that changes when the machine reboots."""
+#: The public `Identifier` grammar, imported rather than restated. `boot_id` is an
+#: `Identifier` on the wire, and `service/probes.py` holds it to this pattern before
+#: any `service.discover` answer leaves the process -- so a value that fails it is
+#: not a cosmetic problem, it refuses the whole discovery handshake on that
+#: platform. The check lives here, at the single point values are produced, because
+#: that is the fix: what was published was a platform string that had never been
+#: held to the grammar it had to satisfy.
+_IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
+
+#: Characters the grammar does not admit, replaced with `-` in the last-resort
+#: label. Only the node name can carry them, and `platform.node()` is whatever the
+#: host is called: a space or an apostrophe is legal in a hostname and illegal here.
+_NOT_IN_IDENTIFIER: Final = re.compile(r"[^A-Za-z0-9._:-]")
+
+
+def _sysctl(name: str) -> str | None:
+    """One `sysctl -n` reading, or None if it could not be taken.
+
+    Also the seam the boot-identifier tests inject through. A second boot cannot be
+    arranged inside a test run; a second kernel reading can.
+    """
+    try:
+        completed = subprocess.run(
+            ["sysctl", "-n", name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:  # noqa: BLE001 - an unreadable sysctl is evidence of nothing
+        return None
+    return completed.stdout.strip() or None
+
+
+def _boot_id_candidates() -> Iterator[str]:
+    """What this platform can offer as a per-boot value, best first, unvalidated.
+
+    Windows yields nothing, deliberately. It exposes no unprivileged, dependency-free
+    per-boot identity: uptime counters answer "how long", so a boot instant recovered
+    by subtracting one from the wall clock disagrees between two processes by their
+    drift, and the ntdll and registry routes that do hold a fixed value cannot be
+    exercised from any host this lane can run on. Guessing there is the expensive
+    mistake, because the two ways to be wrong are not symmetric: a boot id that is
+    too *stable* makes stale evidence look current, while one that is too *unstable*
+    makes a live lease owner look dead, which is the direction that *permits* a
+    takeover. Not one that completes it on its own: `lease.py::evaluate_takeover`
+    reaches the process-evidence conjunct only once the heartbeat has expired and the
+    storage flock is free, and refuses with `STORAGE_LOCK_UNAVAILABLE` before then --
+    a suspended owner still holds its lock. A wrong boot id removes the last barrier,
+    it does not admit a second writer by itself. Windows also needs
+    it least -- its start time is a 100-nanosecond `FILETIME` from `GetProcessTimes`,
+    so a recycled pid repeating its predecessor's start time exactly is not a case
+    boot corroboration is rescuing. Linux jiffies-since-boot and the second-resolution
+    `ps -o lstart` are the coarse ones, and both of those platforms answer here.
+    """
     system = platform.system()
     if system == "Linux":
-        for candidate in (Path("/proc/sys/kernel/random/boot_id"),):
-            try:
-                return candidate.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-    if system == "Darwin":
         try:
-            output = subprocess.run(
-                ["sysctl", "-n", "kern.boottime"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            ).stdout.strip()
-            return output
-        except Exception:  # noqa: BLE001,S110  # pragma: no cover - fall through to the labelled unknown
-            pass
-    # Last resort: not reboot-stable, so it is labelled rather than pretending.
-    return f"unknown-boot:{platform.node()}"
+            yield (
+                Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+            )
+        except OSError:  # pragma: no cover - /proc is present on every supported Linux
+            return
+    elif system == "Darwin":
+        # `kern.bootsessionuuid` is the exact analogue of Linux's boot_id: a UUID
+        # minted for this boot session, already an `Identifier` as it stands.
+        # `kern.boottime` is the second choice rather than the first because it is
+        # not a boot identity at all, it is a calendar time -- XNU re-derives it
+        # whenever the clock is set, so an NTP step moves it mid-boot and two
+        # processes of the same boot disagree about which boot they are on.
+        session = _sysctl("kern.bootsessionuuid")
+        if session is not None:
+            yield session
+        # The seconds field, found by name. The layout of this reading --
+        # `{ sec = 1784972067, usec = 282194 } Sat Jul 25 19:34:27 2026` -- is a
+        # human-readable rendering and not an interface, so nothing here depends on
+        # its field order or spacing. `\bsec` cannot match inside `usec`: there is
+        # no word boundary between `u` and `s`.
+        boottime = _sysctl("kern.boottime")
+        seconds = None if boottime is None else re.search(r"\bsec\s*=\s*(\d+)", boottime)
+        if seconds is not None:
+            yield f"boot-{seconds.group(1)}"
+
+
+def _boot_id() -> str:
+    """An identifier that changes when the machine reboots.
+
+    Every candidate is held to the public grammar and the first conforming one wins,
+    so a platform reading that arrives malformed costs the corroboration rather than
+    the handshake.
+
+    Never None, and that is a decision rather than an omission. `ProcessEvidence`
+    and the public `ServiceProcessEvidence` both require the pid, start time and
+    boot id together, so there is no "omit the boot id" -- there is only omitting
+    the whole evidence block, and `service/bootstrap.py::_live` reads a descriptor
+    with no process block as not live. A `None` here would therefore stop every
+    launcher adopting a service that is running perfectly well, on exactly the
+    platforms that could not answer the question. The last resort is instead a value
+    that says what it is: `unknown-boot:` claims no reboot stability, and the two
+    facts beside it still carry the identity.
+    """
+    for candidate in _boot_id_candidates():
+        if _IDENTIFIER_RE.fullmatch(candidate):
+            return candidate
+    # Truncated to keep the whole label inside the 128-character `Identifier` bound
+    # whatever the host is called.
+    return f"unknown-boot:{_NOT_IN_IDENTIFIER.sub('-', platform.node())[:64]}"
 
 
 # --- Windows process probes ---------------------------------------------------
