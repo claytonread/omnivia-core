@@ -89,6 +89,16 @@ class ContextIssuer:
     """
 
     current: ShellContext
+    #: Context IDs this session has already retired.
+    #:
+    #: `is_handle_valid` decides validity by comparing a handle's context ID to
+    #: the published one, so re-issuing a retired ID makes every handle bound to
+    #: it valid again -- under a Workspace it was never admitted to. The codec
+    #: cannot see this: `validate_context_rotation` compares only the outgoing
+    #: record to the incoming one, so a replay two switches later looks lawful.
+    #: A caller may supply `context_id` for determinism; it may not supply one
+    #: this session has already used.
+    retired_context_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if type(self.current) is not ShellContext:
@@ -121,8 +131,17 @@ class ContextIssuer:
         if type(new) is not ShellContext:
             raise ContextIssuerError("a rotation requires a ShellContext")
         _require_organisation_unchanged(self.current, new)
+        if new.context_id in self.retired_context_ids:
+            raise ContextIssuerError(
+                "a retired context ID cannot be re-issued: handles bound to it "
+                "would become valid again under a Workspace they were never "
+                "admitted to"
+            )
         validate_context_rotation(self.current, new)
-        return ContextIssuer(current=new)
+        return ContextIssuer(
+            current=new,
+            retired_context_ids=self.retired_context_ids | {self.current.context_id},
+        )
 
     def switch_workspace(
         self,

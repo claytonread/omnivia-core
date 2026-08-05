@@ -294,3 +294,34 @@ def test_the_issuer_is_immutable_so_the_old_authority_still_has_a_moment() -> No
     assert before.current.workspace_ref == "workspace-001"
     with pytest.raises(FrozenInstanceError):
         before.current = after.current  # type: ignore[misc]
+
+
+def test_a_retired_context_id_cannot_be_re_issued() -> None:
+    """Replaying a retired ID revives every handle bound to it.
+
+    `is_handle_valid` compares a handle's context ID to the published one, and
+    `validate_context_rotation` only ever compares the outgoing record to the
+    incoming one -- so a replay two switches later is lawful to the codec and
+    catastrophic in effect: a handle admitted under Workspace A becomes valid
+    again under Workspace C.
+    """
+    opened = issuer()
+    first = opened.current.context_id
+
+    second = opened.switch_workspace("workspace-002", issued_at=LATER.isoformat())
+    assert not second.handle_is_valid(first, now=LATER)
+
+    with pytest.raises(ContextIssuerError, match="retired context ID"):
+        second.switch_workspace("workspace-003", issued_at=LATER.isoformat(), context_id=first)
+
+    # And the session is unchanged by the refusal.
+    assert second.current.workspace_ref == "workspace-002"
+    assert not second.handle_is_valid(first, now=LATER)
+
+
+def test_a_caller_supplied_context_id_still_works_when_it_is_fresh() -> None:
+    # The parameter exists for determinism; refusing replays must not refuse it.
+    rotated = issuer().switch_workspace(
+        "workspace-002", issued_at=LATER.isoformat(), context_id="ctx-chosen"
+    )
+    assert rotated.current.context_id == "ctx-chosen"
