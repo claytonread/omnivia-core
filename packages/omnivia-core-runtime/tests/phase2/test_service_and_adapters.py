@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 from omnivia_core_cli.client import build_request
-from omnivia_core_runtime.ownership.discovery import discover, publish
+from omnivia_core_runtime.ownership.discovery import discover, is_compatible, publish
 from omnivia_core_runtime.service.authorization import (
     AuthorizationDenied,
     Grant,
@@ -469,6 +469,37 @@ def test_the_cli_builds_a_contract_valid_request(tmp_path: Path) -> None:
     assert decoded.operation == "core.health"
     assert decoded.metadata.workspace_id == WORKSPACE
     assert decoded.metadata.client.id == "omnivia-cli"
+
+
+def test_the_cli_claims_an_api_version_the_service_advertises() -> None:
+    """The version stamped on every CLI request must be one this build serves.
+
+    It was the literal `"1.0"`, transcribed once and then left behind when the
+    contract moved to 1.2 — the same defect the Runtime's own `API_VERSION` already
+    carried and fixed by deriving. Nothing on the request path validates the field,
+    so the stale claim was never refused: it was accepted, dispatched, and then used
+    to build the response's whole version envelope, so the service reported its
+    supported window as `[1.0, 1.0]` while the descriptor beside it advertised
+    `[1.2, 1.2]`.
+
+    `is_compatible` is the one comparison in the tree that reads a claimed API
+    version against a service's advertised window, and it is asserted here rather
+    than an equality against `CONTRACT_VERSION`: what has to be true is that the
+    claim falls inside what the service supports, which stays the right question if
+    that window ever widens beyond one version.
+    """
+    claimed = build_request(
+        "core.health", workspace_id=WORKSPACE, request_id="cli-api-version"
+    ).metadata.api_version
+
+    assert is_compatible(
+        cli_descriptor(),
+        api_version=claimed,
+        workspace_format_version=workspace_contract_version("1"),
+    ), (
+        f"the CLI claims api_version {claimed!r}, which is outside the "
+        f"{supported_api_versions()} this build advertises"
+    )
 
 
 def test_the_cli_and_the_dispatcher_agree_on_the_envelope(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
     ClientIdentity,
     PrincipalClaim,
     RequestEnvelope,
@@ -28,7 +29,21 @@ from omnivia_core.contracts.v1 import (
     decode_service_endpoint_descriptor,
 )
 
-API_VERSION = "1.0"
+#: The application-contract revision this CLI claims on every request. Derived from
+#: the contract this build links against, never restated. The literal `"1.0"` that
+#: used to sit here was already two revisions stale, and nothing on the request path
+#: validates the field -- so the stale claim produced no refusal, it just travelled:
+#: the service builds the whole response version envelope *from it*, so a caller was
+#: told the supported window was `[1.0, 1.0]` while the descriptor beside it
+#: advertised `[1.2, 1.2]`. `ownership.discovery.is_compatible`, the one comparison
+#: that reads a claimed version against an advertised window, answered `False` for
+#: every request this CLI built. `omnivia_core_runtime.service.versions.API_VERSION`
+#: and `omnivia_core_client.compatibility.CLIENT_API_VERSION` are derived the same
+#: way, for the same reason.
+API_VERSION = CONTRACT_VERSION
+
+#: This distribution's own identity, which stays literal: neither is a contract
+#: version and neither can be derived from one.
 CLIENT_NAME = "omnivia-cli"
 CLIENT_VERSION = "0.1.0"
 
