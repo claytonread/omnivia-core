@@ -1,0 +1,161 @@
+{
+  "format": "omnivia.descriptor-published-at-policy.v1",
+  "valid": [
+    {
+      "id": "whole-second",
+      "published_at": "2026-07-30T00:00:00Z"
+    },
+    {
+      "id": "one-fractional-digit",
+      "published_at": "2026-07-30T11:59:58.1Z"
+    },
+    {
+      "id": "millisecond",
+      "published_at": "2026-07-30T11:59:58.123Z"
+    },
+    {
+      "id": "nine-fractional-digits",
+      "published_at": "2026-07-30T11:59:58.123456789Z"
+    },
+    {
+      "id": "leap-day",
+      "published_at": "2024-02-29T23:59:59Z"
+    },
+    {
+      "id": "epoch-boundary",
+      "published_at": "1970-01-01T00:00:00Z"
+    }
+  ],
+  "invalid": [
+    {
+      "id": "reported-defect",
+      "published_at": "not-a-timestamp",
+      "error": "semantic",
+      "reason": "not_a_timestamp"
+    },
+    {
+      "id": "bare-date",
+      "published_at": "2026-07-30",
+      "error": "semantic",
+      "reason": "no_time_of_day"
+    },
+    {
+      "id": "naive-no-offset",
+      "published_at": "2026-07-30T11:59:58",
+      "error": "semantic",
+      "reason": "no_offset"
+    },
+    {
+      "id": "utc-numeric-offset",
+      "published_at": "2026-07-30T11:59:58+00:00",
+      "error": "semantic",
+      "reason": "offset_not_literal_z"
+    },
+    {
+      "id": "non-utc-offset",
+      "published_at": "2026-07-30T11:59:58+05:30",
+      "error": "semantic",
+      "reason": "offset_not_literal_z"
+    },
+    {
+      "id": "lowercase-z",
+      "published_at": "2026-07-30T11:59:58z",
+      "error": "semantic",
+      "reason": "offset_not_literal_z"
+    },
+    {
+      "id": "trailing-newline",
+      "published_at": "2026-07-30T11:59:58Z\n",
+      "error": "semantic",
+      "reason": "trailing_character"
+    },
+    {
+      "id": "empty",
+      "published_at": "",
+      "error": "semantic",
+      "reason": "not_a_timestamp"
+    },
+    {
+      "id": "ten-fractional-digits",
+      "published_at": "2026-07-30T11:59:58.1234567890Z",
+      "error": "semantic",
+      "reason": "fractional_precision_out_of_range"
+    },
+    {
+      "id": "calendar-invalid-month",
+      "published_at": "2026-13-01T00:00:00Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "calendar-invalid-day",
+      "published_at": "2024-02-30T00:00:00Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "non-leap-year-february-29",
+      "published_at": "2026-02-29T00:00:00Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "leap-second",
+      "published_at": "2016-12-31T23:59:60Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "integer",
+      "published_at": 0,
+      "error": "decode",
+      "reason": "not_a_string"
+    },
+    {
+      "id": "null",
+      "published_at": null,
+      "error": "decode",
+      "reason": "not_a_string"
+    },
+    {
+      "id": "boolean",
+      "published_at": true,
+      "error": "decode",
+      "reason": "not_a_string"
+    }
+  ],
+  "missing": [
+    {
+      "id": "published-at-absent",
+      "error": "decode",
+      "reason": "missing_required_field"
+    }
+  ],
+  "compatibility": [
+    {
+      "id": "service-semantics-suite",
+      "published_at": "2026-07-30T00:00:00Z",
+      "source": "tests/contracts/test_service_semantics.py"
+    },
+    {
+      "id": "client-discovery-fixture",
+      "published_at": "2026-07-30T11:59:58Z",
+      "source": "packages/omnivia-core-client/tests/fixtures/ovc1-v1.json"
+    },
+    {
+      "id": "runtime-phase2-suite",
+      "published_at": "2026-08-04T00:00:00Z",
+      "source": "packages/omnivia-core-runtime/tests/phase2/test_descriptor_publication.py"
+    },
+    {
+      "id": "long-stale",
+      "published_at": "2001-01-01T00:00:00Z",
+      "source": "packages/omnivia-core-client/tests/test_discovery.py"
+    },
+    {
+      "id": "far-future",
+      "published_at": "2099-12-31T23:59:59Z",
+      "source": "packages/omnivia-core-client/tests/test_discovery.py"
+    }
+  ]
+}

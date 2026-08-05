@@ -126,7 +126,7 @@ from omnivia_core.contracts.v1 import (
     ServiceProcessEvidence,
     VersionWindow,
     duplicate_capability_ids,
-    validate_service_endpoint_descriptor,
+    validate_service_endpoint_uri,
     validate_version_window,
 )
 from omnivia_core_runtime.service.versions import API_VERSION, SERVER_VERSION
@@ -604,10 +604,21 @@ def _endpoint(descriptor: ServiceEndpointDescriptor, label: str) -> None:
     contract's exception -- and the frames inside the validator that produced it --
     remain on `__context__`, one attribute access away for anything that logs or
     serializes the error a caller catches.
+
+    Core is asked about the endpoint URI, not about the descriptor. This label names
+    one field, so it may only ever answer for one field. Asking
+    `validate_service_endpoint_descriptor` was indistinguishable from asking about
+    the URI while that validator checked `endpoint_uri` and nothing else, and became
+    a wrong answer the moment it also checked `published_at`: a malformed timestamp
+    was reported to an unauthenticated caller as an unapproved transport endpoint,
+    naming the one field that was fine. Every other published field is held to its
+    own grammar by :func:`_validate_descriptor` and reports under its own name, so
+    the narrow question is also the only one whose answer this label can carry --
+    and it stays correct as Core enforces more of the descriptor's value domains.
     """
     approved = True
     try:
-        validate_service_endpoint_descriptor(descriptor)
+        validate_service_endpoint_uri(descriptor.endpoint_uri)
     except ContractSemanticError:
         approved = False
     if not approved:
