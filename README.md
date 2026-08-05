@@ -1026,6 +1026,70 @@ TSC=/path/to/tsc scripts/check-application-typescript.sh   # explicit override
 
 ## Checks
 
+### The canonical test command
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+That is the whole suite. `testpaths` in `pyproject.toml` names every tree that
+holds tests — `services`, `tests`, `packages`, `baseline/tests` and
+`benchmarks/tests` — so a bare run needs no path arguments and passing any would
+be narrower, not wider: **naming a path on the command line makes pytest ignore
+`testpaths` entirely.**
+
+This is worth stating because it was wrong for a long time. `testpaths` read
+`["services", "tests"]`, so a bare run collected 9358 of 13955 cases and reported
+a green full-repository pass while skipping every distribution under `packages/`.
+Nothing revealed it, because the acceptance workflow names its paths explicitly.
+
+The guard that holds it open:
+
+```bash
+.venv/bin/python scripts/check-test-collection.py
+```
+
+It compares every test file on disk against the files a bare run actually
+collects, and fails naming any that are unreachable. It checks no count — a
+literal floor rots, and a ratcheting one still passes a run that dropped a whole
+tree while another grew past the difference.
+
+### The canonical CI command
+
+`.github/workflows/core-acceptance.yml` runs the same suite, but split across
+several steps and with its paths named explicitly:
+
+```bash
+python -m pytest services tests \
+  packages/omnivia-core-runtime/tests \
+  packages/omnivia-core-client/tests -q
+python -m pytest benchmarks/tests -q
+PYTHON=python scripts/check-core-baseline.sh   # runs baseline/tests
+```
+
+The union is the same set a bare local run collects. It stays named rather than
+inherited so that a step cannot silently widen or narrow, and
+`tests/test_core_acceptance_workflow.py` discovers the distributions under
+`packages/` from the tree and asserts each one's `tests` directory appears in
+that command. Adding a distribution with tests therefore requires both this
+workflow entry and nothing at all in `testpaths`, which already covers
+`packages`.
+
+### Lint
+
+```bash
+.venv/bin/python -m ruff check          # no paths: the configured scope
+.venv/bin/python -m mypy --strict src/omnivia_core
+```
+
+A bare `ruff check` lints exactly the trees the acceptance gate's `Run Ruff` step
+lints. `[tool.ruff]` in `pyproject.toml` carries the scope, the excluded trees
+and the rules deliberately left off, including why `B904` must stay off —
+it is satisfied by the `raise ... from None` that
+`scripts/check-raise-discipline.py` forbids on the unauthenticated seams.
+
+### Legacy compatibility tree
+
 Install the public Core package locally for development:
 
 ```bash
@@ -1038,12 +1102,6 @@ Run the focused contract checks:
 PYTHONPATH=services/omnivia-memory/src python3 -m pytest \
   services/omnivia-memory/tests/test_public_api.py \
   services/omnivia-memory/tests/test_knowledge_contract.py
-```
-
-Run the full package suite:
-
-```bash
-PYTHONPATH=services/omnivia-memory/src python3 -m pytest services/omnivia-memory/tests
 ```
 
 Verify the Phase 0 baseline freeze (public exports, storage schema, dependency
