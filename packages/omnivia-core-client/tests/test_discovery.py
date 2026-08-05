@@ -194,6 +194,68 @@ def publish(root: Path, document: object | None = None) -> Path:
     return path
 
 
+def plant(path: Path, document: object | None = None) -> Path:
+    """Write a well-formed descriptor at an arbitrary path.
+
+    ``publish`` writes the *canonical* descriptor for a root. This writes the
+    same document somewhere discovery must never look, which is the only way to
+    tell "not found" apart from "found nothing because the fixture was empty".
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(descriptor_wire() if document is None else document),
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        path.chmod(0o600)
+    return path
+
+
+NOBODY_UID = 65534
+
+
+def foreign_owned_directory() -> Path | None:
+    """A real directory on this host owned by another uid, already tightly moded.
+
+    Ownership has to be the *only* rule such a directory breaks. A world-readable
+    one -- ``/usr`` at ``0o755`` -- fails the mode rule as well and would prove
+    nothing about the owner rule, so only ``0o700``-class directories qualify.
+    Returns ``None`` where the host has none.
+    """
+    mine = os.geteuid()
+    for parent in ("/var", "/etc", "/usr", "/opt", "/var/lib", "/var/db"):
+        try:
+            with os.scandir(parent) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if (
+                stat.S_ISDIR(metadata.st_mode)
+                and metadata.st_uid != mine
+                and stat.S_IMODE(metadata.st_mode) & 0o077 == 0
+            ):
+                return Path(entry.path)
+    return None
+
+
+def foreign_uid() -> int | None:
+    """A uid that exists on this host and is not this process's own."""
+    mine = os.geteuid()
+    for candidate in ("/", "/usr", "/etc", "/var"):
+        try:
+            uid = os.stat(candidate).st_uid
+        except OSError:
+            continue
+        if uid != mine:
+            return uid
+    return NOBODY_UID if mine != NOBODY_UID else None
+
+
 def discover(
     root: Path, transport: RecordingTransport | None = None
 ) -> DiscoveredEndpoint | None:
@@ -549,6 +611,107 @@ def test_malformed_descriptors_fail_with_sanitized_errors(
     assert_sanitized(caught.value, str(path))
 
 
+def test_unknown_optional_fields_are_tolerated_and_never_carried_forward(
+    tmp_path: Path,
+) -> None:
+    """A newer peer's additive minor still decodes here, and adds nothing.
+
+    Within a major, a minor release only adds optional fields, so refusing a
+    document for carrying one this build has never heard of would make every
+    additive release a breaking one. The other half matters just as much: the
+    unknown members are dropped, not smuggled into the value handed back, so
+    nothing downstream can start depending on a field this build cannot validate.
+    """
+    publish(
+        tmp_path,
+        descriptor_wire(
+            unknown_future_field="additive-minor-value",
+            process={
+                "pid": 4821,
+                "start_time": "1785412798.42",
+                "boot_id": "boot-7f3c",
+                "unknown_evidence": ["anything"],
+            },
+            supported_api_versions={
+                "minimum": f"{CONTRACT_VERSION.split('.')[0]}.0",
+                "maximum": CONTRACT_VERSION,
+                "unknown_bound": "1.9",
+            },
+        ),
+    )
+
+    found = discover(tmp_path)
+
+    assert found is not None
+    assert found.descriptor == descriptor()
+
+
+@pytest.mark.parametrize(
+    "decoy",
+    [
+        "implicit-home",
+        "dot-directory-under-home",
+        "workspace-storage",
+        "installation-root",
+        "runtime-root",
+        "current-directory",
+    ],
+)
+def test_a_hostile_root_cannot_redirect_discovery_into_workspace_or_home_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decoy: str
+) -> None:
+    """One derived path, and no second place to look when it comes up empty.
+
+    Each decoy here is a perfectly valid descriptor sitting where some other
+    local-state convention would put it: an implicit home, a dotted directory
+    under it, this installation's workspace storage, the installation root
+    itself, the runtime directory without a workspace below it, and the process's
+    current directory. A fallback to any of them would let whoever controls that
+    location choose the endpoint this client dials, which is the descriptor being
+    used as authority rather than as coordination.
+
+    The positive control at the end is what makes the absence meaningful: the
+    same fixture finds the canonical descriptor, so "not found" is a statement
+    about where discovery looked and not about a fixture that never worked.
+    """
+    installation = tmp_path / "installation"
+    (installation / "runtime").mkdir(parents=True, mode=0o700)
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    for variable in (
+        "HOME",
+        "USERPROFILE",
+        "XDG_STATE_HOME",
+        "APPDATA",
+        "LOCALAPPDATA",
+    ):
+        monkeypatch.setenv(variable, str(home))
+
+    if decoy == "implicit-home":
+        publish(home)
+    elif decoy == "dot-directory-under-home":
+        (home / ".omnivia").mkdir(mode=0o700)
+        publish(home / ".omnivia")
+    elif decoy == "workspace-storage":
+        plant(installation / "workspaces" / WORKSPACE_ID / "service.json")
+    elif decoy == "installation-root":
+        plant(installation / "service.json")
+    elif decoy == "runtime-root":
+        plant(installation / "runtime" / "service.json")
+    else:
+        working = tmp_path / "working"
+        working.mkdir(mode=0o700)
+        publish(working)
+        monkeypatch.chdir(working)
+
+    transport = RecordingTransport()
+    assert discover(installation, transport) is None
+    assert transport.probes == []
+
+    publish(installation)
+    assert discover(installation) is not None
+
+
 def test_credential_bearing_and_direct_storage_endpoints_are_refused_without_leakage(
     tmp_path: Path,
 ) -> None:
@@ -702,6 +865,10 @@ def test_posix_rejects_symlinks_wrong_file_kinds_and_accessible_or_foreign_files
 
     path.chmod(0o600)
     original = path.stat()
+    # SYNTHESIZED owner, not a real one: this host cannot chown a file to another
+    # uid without privilege. Real foreign-owner evidence lives in
+    # `test_posix_refuses_a_real_foreign_owned_directory_and_accepts_an_owned_one`
+    # and in the chown-gated public-path test beside it.
     foreign = os.stat_result(
         (
             original.st_mode,
@@ -720,21 +887,115 @@ def test_posix_rejects_symlinks_wrong_file_kinds_and_accessible_or_foreign_files
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
+@pytest.mark.parametrize("mode", [0o750, 0o701, 0o711], ids=("0o750", "0o701", "0o711"))
 def test_posix_rejects_group_or_other_access_on_each_derived_parent(
-    tmp_path: Path,
+    tmp_path: Path, mode: int
 ) -> None:
+    """Any group or other bit on a traversed parent refuses.
+
+    ``0o701`` and ``0o711`` are the world-*searchable* cases, and they are the
+    interesting ones: neither grants a read of the directory, only the right to
+    traverse into it and name what is inside. That is enough for another local
+    account to reach the descriptor, so a directory that grants it is not a
+    directory this client will read a coordination file out of.
+    """
     path = publish(tmp_path)
     for parent in (tmp_path / "runtime", path.parent):
-        parent.chmod(0o750)
+        parent.chmod(mode)
         with pytest.raises(TransportError, match="provenance"):
             discover(tmp_path)
         parent.chmod(0o700)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
-def test_posix_owner_mismatch_is_rejected_through_the_public_discovery_path(
+@pytest.mark.parametrize("mode", [0o640, 0o644, 0o666], ids=("0o640", "0o644", "0o666"))
+def test_posix_rejects_any_group_or_other_access_on_the_descriptor_file(
+    tmp_path: Path, mode: int
+) -> None:
+    """The file half of the same rule: group read, other read and world write.
+
+    ``0o644`` and ``0o666`` are what an ordinary ``open()`` produces under a
+    default and a cleared umask, so they are the two modes a real publisher is
+    most likely to write by accident rather than by attack -- which is precisely
+    why the refusal cannot be reserved for the deliberate-looking ones.
+    """
+    path = publish(tmp_path)
+    path.chmod(mode)
+    transport = RecordingTransport()
+
+    with pytest.raises(TransportError, match="provenance") as caught:
+        discover(tmp_path, transport)
+
+    assert_sanitized(caught.value, str(path))
+    assert transport.probes == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
+def test_posix_refuses_a_real_foreign_owned_directory_and_accepts_an_owned_one(
+    tmp_path: Path,
+) -> None:
+    """Real foreign ownership, read off a real inode, with nothing mocked.
+
+    An unprivileged process cannot manufacture a foreign-owned file: ``chown`` to
+    another uid needs root. What every ordinary host does have is directories
+    another uid already owns, and the owner rule can be judged against one of
+    those directly. The pair of assertions is the evidence: two directories with
+    the same owner-only mode and the same kind, differing in nothing but uid, and
+    only one of them survives. So it is ownership that decided it, not the mode.
+    """
+    foreign = foreign_owned_directory()
+    if foreign is None:
+        pytest.skip("this host has no foreign-owned directory with an owner-only mode")
+    ours = tmp_path / "ours"
+    ours.mkdir(mode=0o700)
+    foreign_metadata = os.stat(foreign)
+
+    assert foreign_metadata.st_uid != os.geteuid()
+    assert stat.S_IMODE(foreign_metadata.st_mode) & 0o077 == 0
+    assert _is_secure_posix(os.stat(ours), directory=True)
+    assert not _is_secure_posix(foreign_metadata, directory=True)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
+def test_posix_real_foreign_owner_is_refused_through_the_public_discovery_path(
+    tmp_path: Path,
+) -> None:
+    """The same rule end to end, against provenance the kernel actually recorded.
+
+    Only a privileged process can hand a file to another uid, so this runs where
+    the suite has that privilege and skips where it does not, saying which. The
+    skip is not a gap being waved past: the sibling above proves the owner rule
+    against a real foreign inode without privilege, and the monkeypatched test
+    below is labelled as the stand-in for exactly this path.
+    """
+    path = publish(tmp_path)
+    uid = foreign_uid()
+    if uid is None:
+        pytest.skip("no uid other than this process's own is available to chown to")
+    try:
+        os.chown(path, uid, -1)
+    except OSError:
+        pytest.skip("this host does not permit chown to a foreign uid")
+    assert path.stat().st_uid == uid
+
+    with pytest.raises(TransportError, match="provenance"):
+        discover(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX provenance")
+def test_posix_mocked_owner_mismatch_is_rejected_through_the_public_discovery_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """MOCK -- ``os.fstat`` is monkeypatched to report a uid the file does not have.
+
+    Labelled as a mock on purpose. The cross-platform expectations forbid mocking
+    for final acceptance, and this is not offered as acceptance evidence: it is
+    the only way to reach the *public* path's owner branch on a developer machine
+    that cannot ``chown``. The two tests above carry the real evidence -- a real
+    foreign-owned inode judged by the real rule, and this same public path where
+    the host permits a genuine ``chown``. Read this one as coverage of the
+    branch's wiring, not of its behaviour against real provenance.
+    """
     publish(tmp_path)
     real_fstat = os.fstat
 
@@ -899,19 +1160,45 @@ def test_descriptor_replacement_during_the_bounded_read_fails_closed(
     assert replaced
 
 
-def test_descriptor_incompatibility_is_refused_before_connection(
-    tmp_path: Path,
-) -> None:
-    transport = RecordingTransport()
-    for override in (
+@pytest.mark.parametrize(
+    "override",
+    [
         {"descriptor_version": "2.0"},
         {"protocol_version": "2.0"},
+        {"protocol_version": "1.1"},
         {"supported_api_versions": {"minimum": "9.0", "maximum": "9.9"}},
-    ):
-        publish(tmp_path, descriptor_wire(**override))
-        with pytest.raises(CompatibilityError):
-            discover(tmp_path, transport)
-        assert transport.probes == []
+        {"supported_api_versions": {"minimum": "1.1", "maximum": "1.0"}},
+    ],
+    ids=(
+        "descriptor-major",
+        "protocol-major",
+        "protocol-minor",
+        "non-overlapping-api-window",
+        "malformed-api-window",
+    ),
+)
+def test_descriptor_incompatibility_is_refused_before_connection(
+    tmp_path: Path, override: dict[str, object]
+) -> None:
+    """Every version disagreement is settled from the file, before any dial.
+
+    A protocol *minor* is refused for a different reason than a major, and both
+    reasons are real: a major is a different frame format, while a minor this
+    build does not implement is a claim about frames it has never seen. Neither
+    is negotiable -- OVC1 is this package's own frozen format, not a window.
+
+    The malformed window's bounds are individually well formed and both sit
+    inside the client's major; the only fault is that they are reversed. That is
+    bad input rather than a window matching nothing, and it is refused as such
+    rather than being passed through to read as "no overlap" later.
+    """
+    publish(tmp_path, descriptor_wire(**override))
+    transport = RecordingTransport()
+
+    with pytest.raises(CompatibilityError):
+        discover(tmp_path, transport)
+
+    assert transport.probes == []
 
 
 @pytest.mark.parametrize(
@@ -985,6 +1272,91 @@ def test_stale_pid_is_only_corroboration_when_live_identity_matches(
     found = discover(tmp_path)
     assert found is not None
     assert found.descriptor.service_instance_id == SERVICE_INSTANCE_ID
+
+
+@pytest.mark.parametrize(
+    "published_at",
+    ["2001-01-01T00:00:00Z", "2099-12-31T23:59:59Z", "2026-07-30T11:59:58+05:30"],
+    ids=("long-stale", "far-future", "offset-timezone"),
+)
+def test_publication_time_never_decides_discovery_in_either_direction(
+    tmp_path: Path, published_at: str
+) -> None:
+    """A publication timestamp is not evidence, however it reads.
+
+    Years stale, dated in the future, or written in an offset this installation
+    never uses: none of it is a reason to refuse an endpoint whose live identity
+    agrees, and none of it is a reason to accept one whose live identity does
+    not. A clock is the one input an attacker and a badly configured host produce
+    identically, so nothing here may turn on it.
+    """
+    publish(tmp_path, descriptor_wire(published_at=published_at))
+
+    found = discover(
+        tmp_path, RecordingTransport(descriptor(published_at=published_at))
+    )
+    assert found is not None
+    assert found.descriptor.published_at == published_at
+
+    planted = "service-instance-secret-token"
+    live = descriptor(service_instance_id=planted, published_at=published_at)
+    with pytest.raises(TransportError, match="live identity") as caught:
+        discover(tmp_path, RecordingTransport(live))
+    assert_sanitized(caught.value, planted)
+
+
+@pytest.mark.parametrize(
+    ("status", "live_overrides", "live_process", "expected"),
+    [
+        ("fail", {}, "same", "live discovery"),
+        ("pass", {"service_instance_id": "service-instance-other"}, "same", "identity"),
+        ("pass", {"workspace_id": "workspace-other"}, "rebooted", "identity"),
+    ],
+    ids=("failed-probe", "instance-mismatch", "workspace-mismatch-after-reboot"),
+)
+def test_process_evidence_is_corroboration_and_never_rescues_a_live_failure(
+    tmp_path: Path,
+    status: str,
+    live_overrides: dict[str, object],
+    live_process: str,
+    expected: str,
+) -> None:
+    """Process evidence is all-or-none corroboration, never sufficient on its own.
+
+    The corroboration offered here is as strong as it gets: a PID that is
+    genuinely running -- this interpreter's own, so it cannot be dismissed as a
+    stale or reused number -- with a start time and boot identifier the file and
+    the live answer agree on exactly. A failed probe stays failed and a mismatched
+    identity stays mismatched anyway, because the live identity probe is the thing
+    being corroborated and there is nothing to corroborate without it.
+    """
+    evidence = {
+        "pid": os.getpid(),
+        "start_time": "1785412798.42",
+        "boot_id": "boot-7f3c",
+    }
+    publish(tmp_path, descriptor_wire(process=evidence))
+    live = descriptor(
+        process=(
+            evidence if live_process == "same" else {**evidence, "boot_id": "boot-9a11"}
+        ),
+        **live_overrides,
+    )
+    transport = FixedResultTransport(
+        ServiceProbeResult(
+            probe="service.discover",
+            status=status,
+            server_version="1.2.5",
+            api_version=CONTRACT_VERSION,
+            observed_at="2026-07-30T12:00:00Z",
+            descriptor=live,
+        )
+    )
+
+    with pytest.raises(TransportError, match=expected):
+        discover(tmp_path, transport)
+
+    assert len(transport.probes) == 1
 
 
 def test_failed_discovery_status_is_refused_even_with_a_descriptor(
