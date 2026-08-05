@@ -143,8 +143,15 @@ def main(
     deliberately ships no credential store, no token format and no principal registry:
     whoever embeds this service supplies the resolver, and until one exists
     `--http-endpoint` refuses startup instead of serving an unauthenticated HTTP
-    listener. The console-script entry point passes none, so HTTP is off unless it is
-    both asked for and resolvable.
+    listener. The console-script entry point passes none, so no HTTP bind asked for
+    through it can be resolvable and every one of them exits 2.
+
+    That is the v0.6 decision rather than an unfinished wiring: HTTP is embedder-only
+    and intentionally unreachable from the standard Core service, because no approved
+    credential source or bearer-session resolver has been defined yet. It does not
+    remove authenticated HTTP from the target architecture. See:
+
+        docs/development/omnivia-core-staged-startup-and-embedder-only-http-2026-08-05.md
 
     The advertised endpoint has to be served by this process and the descriptor has
     to die with it. Returning 0 straight after printing readiness -- which is what
