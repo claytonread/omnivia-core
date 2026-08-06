@@ -1,4 +1,4 @@
-"""Loopback HTTP v1 in front of the same router local IPC uses (P2b).
+"""HTTP v1 in front of the same router local IPC uses (P2b).
 
 **Embedder-only for v0.6.** This adapter exists, is exercised, and is not served by
 the standard Core service, which is a decision rather than an unfinished wiring:
@@ -39,7 +39,7 @@ unchanged and needs nothing.
 **TLS.** Stated or absent, never inferred and never defaulted. :class:`HttpTls` names
 a certificate chain and a private key; a bind carries one or carries nothing, so a
 half-configured listener is unrepresentable rather than refused. The context is built
-from it in :meth:`LoopbackHttpServer.start` *before a socket exists*, so material that
+from it in :meth:`HttpListener.start` *before a socket exists*, so material that
 is missing, unreadable or mismatched refuses with nothing bound rather than with a
 listener up and a handshake that fails one caller at a time. The floor is stated
 rather than inherited from whatever the platform default is this year:
@@ -232,7 +232,7 @@ class HttpBind:
     would have to be justified and pinned separately.
 
     Port `0` means "the OS picks", which is what a test binds and what
-    :attr:`LoopbackHttpServer.url` reports back after binding.
+    :attr:`HttpListener.url` reports back after binding.
     """
 
     host: str = DEFAULT_HOST
@@ -480,7 +480,7 @@ def _dispatch_principal(router: DocumentRouter) -> str | None:
     double or any other plain callable, and it is why an unreadable dispatcher is not
     itself a refusal. What is refused is a *disagreement*: a dispatcher that states a
     principal and an adapter that declares a different one. See
-    :meth:`LoopbackHttpServer.__post_init__`.
+    :meth:`HttpListener.__post_init__`.
 
     The reads are guarded because this walks an object of unknown shape on purpose,
     and "unknown shape" includes one that raises. `getattr`'s default covers only
@@ -503,7 +503,7 @@ def _dispatch_principal(router: DocumentRouter) -> str | None:
 class _HttpService(HTTPServer):
     """The listener, carrying the adapter the handler answers from."""
 
-    adapter: LoopbackHttpServer
+    adapter: HttpListener
     #: The server-side context, installed by `start` before the serving thread exists.
     #: `None` is a *cleartext* listener and nothing else -- see `get_request`, which
     #: reads the bind rather than this to decide whether TLS was asked for.
@@ -778,7 +778,7 @@ class _Handler(BaseHTTPRequestHandler):
     # --- what a request has to carry ------------------------------------------
 
     @property
-    def server_adapter(self) -> LoopbackHttpServer:
+    def server_adapter(self) -> HttpListener:
         service = self.server
         assert isinstance(service, _HttpService)
         return service.adapter
@@ -899,22 +899,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @dataclass
-class LoopbackHttpServer:
+class HttpListener:
     """The HTTP v1 listener: loopback in the clear, or any address over TLS.
 
-    **The name is now wrong, and it is kept deliberately.** `Loopback` described the
-    only bind this class could serve until TLS landed; a bind carrying
-    :class:`HttpTls` may be routable, so the name understates what an instance can do
-    and no one should read it as a guarantee -- :class:`HttpBind` is where the bind
-    policy actually lives. Renaming it is the honest fix and it is *foreclosed*, not
-    declined: the only importer outside this module's own tests is
-    `omnivia_core_runtime.service.main`, which this lane's manifest makes immutable
-    because the adapter is embedder-only for v0.6 and its startup wiring is a settled
-    decision. A rename that cannot touch its importer is a rename that breaks the
-    build, so the decision recorded here is: **do not rename in this lane; rename
-    mechanically in the lane that may edit `main.py`.** Recorded rather than left
-    silent because a class whose name contradicts its behaviour is exactly the kind of
-    thing a later reader trusts.
+    **The name states no bind policy, because this class holds none.** The policy
+    lives on :class:`HttpBind`, which is what refuses a hostname, refuses a
+    non-loopback address in the clear, and admits one carrying :class:`HttpTls` --
+    so a bind handed to this listener may well be routable, and nothing about an
+    instance of it should be read as a promise that the address is local.
 
     Constructed with the *same* :class:`DocumentRouter` the local transport is given,
     which is the whole of how the two share a probe router and an application
@@ -1048,8 +1040,8 @@ __all__ = [
     "PROBE_PATH",
     "CredentialResolver",
     "HttpBind",
+    "HttpListener",
     "HttpTls",
     "HttpTransportError",
-    "LoopbackHttpServer",
     "parse_http_endpoint",
 ]

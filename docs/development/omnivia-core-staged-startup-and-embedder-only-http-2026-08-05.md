@@ -137,7 +137,7 @@ The declaration above is checkable against three facts in this tree:
 - `main()` therefore exits `2` for every run that would actually serve an HTTP
   bind reached through the console script — either the endpoint is not an
   accepted loopback endpoint, or there is no trusted credential resolver — and
-  `LoopbackHttpServer` refuses construction without a resolver as a second lock.
+  `HttpListener` refuses construction without a resolver as a second lock.
 
 > **Correction, 2026-08-06.** The third bullet read "for every HTTP bind reached
 > through the console script", with no qualifier. That absolute was wrong, and

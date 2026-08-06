@@ -35,8 +35,8 @@ from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
     HttpBind,
+    HttpListener,
     HttpTransportError,
-    LoopbackHttpServer,
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.operations import (
@@ -311,7 +311,7 @@ def main(
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
         if http_bind is not None:
-            http = LoopbackHttpServer(
+            http = HttpListener(
                 router=router,
                 # The principal this endpoint's dispatcher acts as, so HTTP can
                 # refuse a session for anyone else rather than run it as this one.

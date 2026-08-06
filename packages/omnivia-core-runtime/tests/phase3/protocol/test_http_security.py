@@ -31,8 +31,8 @@ from omnivia_core_runtime.service.http_transport import (
     CONTENT_TYPE,
     PROBE_PATH,
     HttpBind,
+    HttpListener,
     HttpTransportError,
-    LoopbackHttpServer,
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS, success
@@ -178,7 +178,7 @@ def _request(
 
 
 class _Serving:
-    def __init__(self, server: LoopbackHttpServer, router: CountingRouter) -> None:
+    def __init__(self, server: HttpListener, router: CountingRouter) -> None:
         self.server = server
         self.router = router
         self.dispatch = router.dispatch
@@ -187,7 +187,7 @@ class _Serving:
 
 def _serving(resolver: Any = _resolver, *, deadline: float = 10.0) -> _Serving:
     router = CountingRouter(CountingDispatch())
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=router,  # type: ignore[arg-type]
         principal=PRINCIPAL,
         resolver=resolver,
@@ -559,11 +559,11 @@ def test_the_declared_principal_must_agree_with_the_dispatcher_behind_the_router
     )
 
     with pytest.raises(HttpTransportError, match="does not act as"):
-        LoopbackHttpServer(router=router, principal="alice", resolver=_resolver)
+        HttpListener(router=router, principal="alice", resolver=_resolver)
 
     # The agreeing wiring builds, which is what makes the refusal above a refusal
     # rather than this check being broken in the useful direction.
-    agreeing = LoopbackHttpServer(
+    agreeing = HttpListener(
         router=router, principal=PRINCIPAL, resolver=_resolver
     )
     assert agreeing.principal == PRINCIPAL
@@ -605,7 +605,7 @@ def test_a_grant_that_raises_on_access_cannot_say_rather_than_escaping() -> None
         def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
             return success(request, {"ok": True}, principal=PRINCIPAL)
 
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router_over(HostileDispatcher().dispatch),
         principal=PRINCIPAL,
         resolver=_resolver,
@@ -624,7 +624,7 @@ def test_the_principal_has_no_default_and_must_be_stated() -> None:
     router = _router_over(CountingDispatch())
 
     with pytest.raises(TypeError, match="principal"):
-        LoopbackHttpServer(router=router, resolver=_resolver)  # type: ignore[call-arg]
+        HttpListener(router=router, resolver=_resolver)  # type: ignore[call-arg]
 
 
 def test_a_session_granted_nothing_can_do_nothing() -> None:
@@ -774,7 +774,7 @@ def test_a_start_refusal_hides_the_address_it_could_not_bind() -> None:
     taken.listen(1)
     port = taken.getsockname()[1]
     router = CountingRouter(CountingDispatch())
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=router,  # type: ignore[arg-type]
         principal=PRINCIPAL,
         resolver=_resolver,
