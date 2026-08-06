@@ -4,11 +4,20 @@ A Core Service client and nothing more. It discovers a service, builds contract
 envelopes and reports what it is told. It holds no lease, takes no lock and opens no
 database.
 
-`workspace show` is the first subcommand that actually *calls* a service rather
-than printing the envelope it would have sent. It reaches the authorised
+Every subcommand but `discover` *calls* a service rather than printing the
+envelope it would have sent. `workspace show` reaches the authorised
 application path: `workspace.inspect`, under the fixed local-owner session the
 service constructs for itself at startup, over the installation-local OVC1
-endpoint.
+endpoint. `health` and `readiness` reach the service-lifecycle operations
+`core.health` and `core.readiness` over that same endpoint, through that same
+call path. `discover` answers from the published descriptor alone, which is the
+whole of what it claims to report.
+
+A command that cannot reach the service fails, and says so on stderr with a
+non-zero exit. None of these report on a service they did not dial: `health`
+and `readiness` printed their own request envelope and exited 0 for a service
+that was never contacted, which is a success-shaped answer that proves nothing
+and which a launcher polling readiness would believe.
 
 Two claims it states and one it does not. It states the purpose
 `workspace_inspection`, and it states the scope and capability requirement the
@@ -105,8 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _workspace_show(runtime_state: Path, service: ServiceEndpointDescriptor) -> int:
-    """Call `workspace.inspect` on the discovered service and render the answer.
+def _call(
+    runtime_state: Path,
+    service: ServiceEndpointDescriptor,
+    operation: str,
+    *,
+    principal: str | None = None,
+    scopes: tuple[str, ...] = (),
+    purpose: str = "cli",
+    required_capabilities: tuple[CapabilityRequirement, ...] = (),
+) -> int:
+    """Call one operation on the discovered service and render the answer.
+
+    Every subcommand that dials goes through here. The claims differ per
+    operation -- `workspace.inspect` states a scope, a capability and a purpose
+    its catalogue entry obliges, the service-lifecycle operations state none --
+    but the dialling does not, and a second copy of it is a second set of
+    discovery checks to keep in step with these.
 
     `service` is the descriptor `read_descriptor` already located under
     `--runtime-state`, and it is the authority for what gets dialled. Discovery
@@ -119,11 +143,11 @@ def _workspace_show(runtime_state: Path, service: ServiceEndpointDescriptor) -> 
     read, or nothing is called at all.
 
     The client is imported here rather than at module scope, and the reason is
-    not style. The subcommands that predate this one are proven on a
-    three-operating-system matrix that installs this distribution but not
+    not style. `discover` answers from the published descriptor alone and must
+    keep answering where this distribution is installed without
     `omnivia-core-client`; a module-scope import would make
-    `omnivia_core_cli.main` unimportable there and take `discover`, `health` and
-    `readiness` down with it.
+    `omnivia_core_cli.main` unimportable there and take `discover` and `--help`
+    down with it.
     """
     from omnivia_core_client import ClientError, Deadline, discover_endpoint
 
@@ -163,13 +187,13 @@ def _workspace_show(runtime_state: Path, service: ServiceEndpointDescriptor) -> 
         sys.stderr.write("the advertised service did not pass its discovery checks\n")
         return 1
 
-    scopes, required_capabilities = _inspect_claims()
     request = build_request(
-        WORKSPACE_INSPECT_OPERATION,
+        operation,
         workspace_id=discovered.descriptor.workspace_id,
         request_id=f"cli-{uuid.uuid4()}",
+        principal=principal,
         scopes=scopes,
-        purpose=WORKSPACE_INSPECTION_PURPOSE,
+        purpose=purpose,
         required_capabilities=required_capabilities,
     )
     try:
@@ -242,16 +266,44 @@ def main(argv: list[str] | None = None) -> int:
         # workspace to name. Neither is chosen here and neither comes from an
         # argument: this CLI cannot ask about a workspace other than the one the
         # endpoint it found was launched to serve.
-        return _workspace_show(args.runtime_state, service)
+        scopes, required_capabilities = _inspect_claims()
+        return _call(
+            args.runtime_state,
+            service,
+            WORKSPACE_INSPECT_OPERATION,
+            scopes=scopes,
+            purpose=WORKSPACE_INSPECTION_PURPOSE,
+            required_capabilities=required_capabilities,
+        )
 
-    request = build_request(
+    if args.json:
+        # The one path that still prints instead of calling, and it is now the
+        # opt-in the flag always advertised rather than the default. What comes
+        # out is the envelope this CLI *would* send: a request, not an answer,
+        # and no evidence whatsoever about the service.
+        request = build_request(
+            f"core.{args.command}",
+            workspace_id=service.workspace_id,
+            request_id=f"cli-{uuid.uuid4()}",
+            principal=args.principal,
+        )
+        sys.stdout.write(encode(request) + "\n")
+        return 0
+
+    # `health` and `readiness` are the service-lifecycle operations, and they
+    # state no scope, no capability and no purpose beyond the default: they are
+    # dispatched against the service's own grant rather than the catalogue, so
+    # there is no frozen entry obliging a caller to declare anything. Printing
+    # the envelope here instead of sending it -- which is what this branch used
+    # to do unconditionally -- answered "alive" and "ready" with exit 0 for a
+    # service that was never dialled, and a launcher polling readiness would act
+    # on it.
+    return _call(
+        args.runtime_state,
+        service,
         f"core.{args.command}",
-        workspace_id=service.workspace_id,
-        request_id=f"cli-{uuid.uuid4()}",
         principal=args.principal,
     )
-    sys.stdout.write(encode(request) + "\n")
-    return 0
 
 
 if __name__ == "__main__":

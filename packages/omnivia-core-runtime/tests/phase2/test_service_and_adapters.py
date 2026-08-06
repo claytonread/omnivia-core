@@ -527,7 +527,13 @@ def test_the_cli_reads_the_descriptor_the_runtime_publishes(
     }
 
     # The descriptor's other consumer: the workspace a request is addressed to.
-    assert main(["--runtime-state", str(runtime), "health"]) == 0
+    # `--json` is what emits the request envelope. Bare `health` now dials the
+    # endpoint the descriptor names, and this descriptor names a socket nothing
+    # is listening on -- so it would fail here, which is a statement about a
+    # service that was never started rather than about the reader this test is
+    # for. The claim below is unchanged: the workspace id the runtime published
+    # is the one the CLI addresses its request to.
+    assert main(["--runtime-state", str(runtime), "health", "--json"]) == 0
     request = json.loads(capsys.readouterr().out)
     assert request["metadata"]["workspace_id"] == WORKSPACE_ID
 

@@ -1113,7 +1113,18 @@ def test_a_response_correlating_to_another_request_is_refused(
 
     monkeypatch.setattr(LocalIpcTransport, "call", answer_a_different_request)
 
-    assert cli_main._workspace_show(live_service.runtime_directory, service) == 1
+    scopes, required_capabilities = cli_main._inspect_claims()
+    assert (
+        cli_main._call(
+            live_service.runtime_directory,
+            service,
+            WORKSPACE_INSPECT_OPERATION,
+            scopes=scopes,
+            purpose=WORKSPACE_INSPECTION_PURPOSE,
+            required_capabilities=required_capabilities,
+        )
+        == 1
+    )
     captured = capsys.readouterr()
     assert "answered a different request" in captured.err
     assert captured.out == ""
@@ -1137,3 +1148,96 @@ def test_neither_guard_fires_on_the_paths_a_correct_service_produces(
         assert "did not pass its discovery checks" not in result.stderr
         assert "answered a different request" not in result.stderr
         assert json.loads(result.stdout)["workspace"]["workspace_id"] == WORKSPACE_ID
+
+
+# ---------------------------------------------------------------------------
+# `health` and `readiness` answer from the service, or not at all
+# ---------------------------------------------------------------------------
+
+
+def test_health_answers_from_the_live_service(live_service: LiveService) -> None:
+    """`health` reports what the service said, not what the CLI would have asked.
+
+    The regression this pins: `health` used to build a `core.health` envelope
+    and print it, so its stdout was a *request* -- no `status`, no `state`, and
+    exit 0 whether or not anything was listening.
+    """
+    result = _run_cli(live_service.runtime_directory, "health")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    reported = json.loads(result.stdout)
+    assert reported["status"] == "alive"
+    assert reported["state"] == "ready"
+    # The envelope's own keys must not be here: their presence would mean the
+    # request was rendered instead of the answer.
+    assert "operation" not in reported
+    assert "metadata" not in reported
+
+
+def test_readiness_answers_from_the_live_service(live_service: LiveService) -> None:
+    """`readiness` reports the service's own writable-readiness verdict."""
+    result = _run_cli(live_service.runtime_directory, "readiness")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    reported = json.loads(result.stdout)
+    assert reported["ready"] is True
+    assert reported["state"] == "ready"
+    assert reported["unmet"] == []
+    assert "operation" not in reported
+
+
+@pytest.mark.parametrize("command", ["health", "readiness"])
+def test_health_and_readiness_fail_when_the_advertised_service_is_gone(
+    live_service: LiveService, tmp_path: Path, command: str
+) -> None:
+    """The launcher trap, pinned.
+
+    A descriptor advertising `ready: true` outlives the process that published
+    it -- a crash, a kill, a stale installation -- and it is the only thing a
+    client has to go on. Before the fix both commands parsed that descriptor,
+    printed the envelope they would have sent and exited **0**, so a launcher
+    polling `readiness` was told a dead service was ready.
+
+    Nothing is listening on the endpoint this descriptor names. The command has
+    to fail visibly: a non-zero exit and no success-shaped object on stdout.
+    """
+    published = json.loads(
+        (live_service.runtime_directory / "service.json").read_text(encoding="utf-8")
+    )
+    assert published["ready"] is True, "the fixture must advertise a ready service"
+
+    # A real, short, and deliberately unbound socket path: the endpoint exists as
+    # a claim in the descriptor and as nothing else.
+    dead = _short_socket_directory()
+    try:
+        published["endpoint_uri"] = f"unix://{dead / 'gone.sock'}"
+        assert not (dead / "gone.sock").exists()
+        (tmp_path / "service.json").write_text(
+            json.dumps(published), encoding="utf-8"
+        )
+
+        result = _run_cli(tmp_path, command)
+
+        assert result.returncode != 0, (result.stdout, result.stderr)
+        assert result.stdout == "", "a service that was never reached was reported on"
+        assert result.stderr.strip() != ""
+        assert "Traceback" not in result.stderr
+    finally:
+        shutil.rmtree(dead, ignore_errors=True)
+
+
+def test_json_prints_the_envelope_without_dialling(live_service: LiveService) -> None:
+    """`--json` is the opt-in the flag always advertised, and it is not an answer.
+
+    The flag was declared `emit the request envelope` and never read, while the
+    command emitted the envelope unconditionally. Now it is the only way to get
+    the envelope, and what comes out is a request: an `operation` and a
+    `metadata`, and none of the service's own fields.
+    """
+    result = _run_cli(live_service.runtime_directory, "health", "--json")
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    envelope = json.loads(result.stdout)
+    assert envelope["operation"] == "core.health"
+    assert envelope["metadata"]["workspace_id"] == WORKSPACE_ID
+    assert "status" not in envelope
