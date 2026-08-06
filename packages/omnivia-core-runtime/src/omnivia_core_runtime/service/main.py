@@ -1,10 +1,15 @@
 """`omnivia-core-service` entry point (T-0629G).
 
 Minimal by design. This owns and advertises one writable workspace and nothing
-else. A2 has frozen the product operation catalogue, but building against it is the
-separately approved Phase 4 packet, so no product operation is registered here.
-Health, readiness and discovery are deliberately distinct from product operations,
-per ADR-037.
+else. Health, readiness and discovery are deliberately distinct from product
+operations, per ADR-037, and stay on the probe dispatcher unchanged.
+
+One product operation is now registered, and it is registered on a *second* path:
+`workspace.inspect`, the first authorised application operation, is decided by
+`authorize_application_request` through `service.application`. It is not in
+`SERVICE_OPERATIONS`, not in `build_service_registry()` and not in the probe grant,
+and it cannot be: the owner's binding clause forbids routing it through the probe
+`Dispatcher`, and the two operation sets are disjoint by construction.
 """
 
 from __future__ import annotations
@@ -18,7 +23,14 @@ import time
 from pathlib import Path
 from typing import Protocol
 
-from omnivia_core_runtime.service.authorization import Grant
+from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
+from omnivia_core_runtime.service.application import (
+    LOCAL_TRANSPORT_ADAPTER,
+    ApplicationDispatcher,
+    build_application_registry,
+    local_owner_session,
+)
+from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
@@ -27,7 +39,10 @@ from omnivia_core_runtime.service.http_transport import (
     LoopbackHttpServer,
     parse_http_endpoint,
 )
-from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
+from omnivia_core_runtime.service.operations import (
+    SERVICE_OPERATIONS,
+    server_capability_snapshot,
+)
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
@@ -38,9 +53,21 @@ from omnivia_core_runtime.service.transport import (
     parse_endpoint,
 )
 
-#: The service serves the OS user that started it. There is no multi-principal
-#: story yet, and inventing one here would be a security surface with no design
-#: behind it.
+#: The one principal this service instance acts as, on both its paths. Fixed by
+#: trusted installation-local service configuration -- not by anything a request
+#: carries, and not by the operating-system identity this process runs as.
+#:
+#: It is **not** a verified operating-system peer identity and must not be described
+#: as one: this repository holds no peer-credential primitive, so what is true is that
+#: a caller reached a protected local endpoint, and that access to that endpoint
+#: establishes permission to act as this principal for a bounded Personal-mode local
+#: deployment. The filesystem permissions on the socket and the descriptor are channel
+#: trust, not proof of who connected. Verified peer identity is the recorded deferral
+#: `LOCAL-IPC-PEER-IDENTITY-DEFERRED`, required before shared-host, multi-user or
+#: Organisation-mode local deployment.
+#:
+#: Still one principal, not many. The application session below narrows this one; it
+#: does not introduce a second.
 LOCAL_PRINCIPAL = "local-user"
 
 
@@ -48,7 +75,21 @@ class _ProbeFactsSource(Protocol):
     def probe_facts(self) -> ServiceFacts: ...
 
 
-def _router_for(started: _ProbeFactsSource, dispatcher: Dispatcher) -> DocumentRouter:
+class _ApplicationDispatch(Protocol):
+    """An object that can answer one decoded application request.
+
+    Widened from `Dispatcher` when the application path arrived, because the router
+    now receives the object that holds *both* paths. Stated as a protocol rather than
+    a union so the router keeps knowing nothing about authority, which is the whole
+    reason `DocumentRouter` takes a plain callable.
+    """
+
+    def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
+
+
+def _router_for(
+    started: _ProbeFactsSource, dispatcher: _ApplicationDispatch
+) -> DocumentRouter:
     """Compose the accepted structural router around the existing dispatcher."""
     return DocumentRouter(
         probes=ProbeRouter(
@@ -199,6 +240,7 @@ def main(
         is about to die.
         """
         assert endpoint is not None and started.workspace_id is not None
+        assert started.identity is not None
         dispatcher = Dispatcher.for_service_operations(
             Grant(
                 principal=LOCAL_PRINCIPAL,
@@ -207,10 +249,48 @@ def main(
             ),
             started,
         )
+        # The application session, constructed here and only here: once per served
+        # endpoint, at startup, from facts this process already holds -- the configured
+        # principal, the installation identity persisted under the installation-local
+        # state root, and the one workspace this endpoint was launched to own. No field
+        # of it comes from a request, and no handler builds one.
+        installation_id = started.identity.installation_id
+        registry = build_application_registry()
+        application = ApplicationDispatcher(
+            registry=registry,
+            session=local_owner_session(
+                principal_id=LOCAL_PRINCIPAL,
+                installation_id=installation_id,
+                workspace_id=started.workspace_id,
+            ),
+            # `workspace_id` is set deliberately. This endpoint fronts exactly one
+            # workspace, and setting it arms the seam's second, independent workspace
+            # check: reaching this endpoint and naming a different workspace is refused
+            # even if the session's grant ever widened.
+            binding=ServiceBinding(
+                installation_id=installation_id, workspace_id=started.workspace_id
+            ),
+            # The server's own snapshot of what this build supports, derived from the
+            # handlers actually registered above. Never the per-response
+            # `CapabilitySet`, which is built from the caller's own claimed version.
+            supported_capabilities=server_capability_snapshot(registry),
+            # Stated rather than inferred: a dispatch callable is handed a request and
+            # nothing else, so it cannot see which adapter carried it. This names the
+            # adapter this vertical is authorised behind.
+            transport=LOCAL_TRANSPORT_ADAPTER,
+            probe=dispatcher,
+            # No caller-recording sink. This repository configures no logging at all,
+            # and standing one up under this packet would be an observability substrate
+            # with no design behind it; `None` states that as a choice rather than
+            # leaving an argument out. The record itself is built and proved by the
+            # lane's evidence, and wiring a sink is a successor lane.
+            record=None,
+            service=started,
+        )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:
         # there is one object, and neither transport knows the other exists.
-        router = _router_for(started, dispatcher)
+        router = _router_for(started, application)
         server = LocalSocketServer(router=router, endpoint=endpoint)
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)

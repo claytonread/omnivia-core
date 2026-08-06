@@ -289,9 +289,15 @@ def test_a_claim_outside_the_served_window_is_reported_as_such(
 ) -> None:
     """`status` was hardcoded `"compatible"`, so it agreed with every caller.
 
-    `authorize_application_request` is not wired, so nothing refuses a claim
-    outside the served window before it gets here: the response is the only place
-    the caller is told. Every expected value is one the contract's own
+    This is the *probe* path, and on it `authorize_application_request` is still not
+    wired: nothing refuses a claim outside the served window before it gets here, so
+    the response is the only place the caller is told. That used to be true of every
+    path. It is now true of this one only -- V06-2 Lane A put the application
+    operations behind the accepted seam, which refuses an unreadable `api_version` as
+    a malformed request rather than reporting it in a successful response, and
+    `test_workspace_inspect_vertical.py` holds the positive counterpart.
+
+    Every expected value is one the contract's own
     `x-omnivia-compatibility-statuses` / `x-omnivia-upgrade-states` freeze.
     """
     response = Dispatcher.for_service_operations(grant(), FakeService()).dispatch(
