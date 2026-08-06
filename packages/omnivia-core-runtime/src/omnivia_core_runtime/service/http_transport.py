@@ -3,10 +3,14 @@
 **Embedder-only for v0.6.** This adapter exists, is exercised, and is not served by
 the standard Core service, which is a decision rather than an unfinished wiring:
 `--http-endpoint` defaults to `None`, the console-script entry point supplies no
-credential resolver, and so every HTTP bind reached that way exits 2. Only an
-approved embedder or conformance harness calling `service.main.main` with a
-resolver of its own can bring this listener up. The reason is that no approved
-credential source or bearer-session resolver has been defined yet, and it does not
+credential resolver, and so every run that would actually serve one that way exits
+2. `--check-only` is outside that rule rather than an exception to it: it serves
+nothing, so it never reaches this adapter and never parses the endpoint it was
+given -- a wildcard host, an `https` URL and unparseable text all exit 0 there on a
+ready workspace. Only an approved embedder or conformance harness calling
+`service.main.main` with a resolver of its own can bring this listener up. The
+reason is that no approved credential source or bearer-session resolver has been
+defined yet, and it does not
 remove authenticated HTTP from the target architecture, which still needs it for
 LAN, NAS, private-server, Cloud and hybrid Desktop-to-remote-Core operation. The
 declaration, the credential-source boundary and the revisit trigger are in:

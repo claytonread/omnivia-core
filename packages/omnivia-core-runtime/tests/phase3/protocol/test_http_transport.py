@@ -822,6 +822,35 @@ def test_http_without_a_trusted_credential_resolver_refuses_startup(
     )
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    ["http://0.0.0.0:8080", "https://127.0.0.1:8080", "nonsense", "http://[::1"],
+)
+def test_check_only_does_not_parse_the_http_endpoint_it_was_given(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], endpoint: str
+) -> None:
+    """What `--check-only`'s help text now states, held to the code.
+
+    Each of these exits 2 with a named refusal when the run would actually serve --
+    asserted here first, so the pair is a contrast rather than a bare exit code. Add
+    `--check-only` and the argument never reaches `_http_bind_to_serve`: nothing
+    parses it, so the exit reports the workspace alone. It is 1 here because no
+    workspace exists; on a ready workspace these exit 0.
+
+    This mode has always ignored `--endpoint` the same way. The silence was the
+    defect -- `--check-only --http-endpoint nonsense` told an operator nothing --
+    and the fix was to say so in both help texts, so this pins the behaviour those
+    texts now describe.
+    """
+    argv = _service_argv(tmp_path, endpoint)
+
+    assert service_main(argv) == 2
+    assert "loopback" in capsys.readouterr().err
+
+    assert service_main([*argv, "--check-only"]) == 1
+    assert capsys.readouterr().err == ""
+
+
 def test_the_local_transport_still_starts_with_no_http_endpoint_asked_for(
     tmp_path: Path,
 ) -> None:

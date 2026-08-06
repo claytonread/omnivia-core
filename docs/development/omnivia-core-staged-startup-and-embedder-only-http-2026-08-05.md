@@ -134,10 +134,30 @@ The declaration above is checkable against three facts in this tree:
   for (`service/main.py`);
 - the console-script entry point calls `main()` with no `resolve_credential`, so
   an embedder is the only caller that can supply one;
-- `main()` therefore exits `2` for every HTTP bind reached through the console
-  script — either the endpoint is not an accepted loopback endpoint, or there is
-  no trusted credential resolver — and `LoopbackHttpServer` refuses construction
-  without a resolver as a second lock.
+- `main()` therefore exits `2` for every run that would actually serve an HTTP
+  bind reached through the console script — either the endpoint is not an
+  accepted loopback endpoint, or there is no trusted credential resolver — and
+  `LoopbackHttpServer` refuses construction without a resolver as a second lock.
+
+> **Correction, 2026-08-06.** The third bullet read "for every HTTP bind reached
+> through the console script", with no qualifier. That absolute was wrong, and
+> the same absolute had been copied into the `--http-endpoint` help text, the
+> `http_transport` module docstring and `main()`'s docstring; all four now carry
+> the qualifier.
+>
+> `--check-only` serves nothing, so `main()` never calls `_http_bind_to_serve`
+> and never parses `--http-endpoint` at all. Measured on a ready workspace,
+> `--check-only --http-endpoint <value>` exits `0` with empty stderr for
+> `http://0.0.0.0:8080`, `https://127.0.0.1:8080`, `http://198.51.100.7:8080`,
+> `http://[::1` and unparseable text alike — so the endpoint rule that section
+> 2.3 relies on is not applied in that mode either. `--endpoint` has always been
+> ignored there in the same way; the silence was undocumented, and both flags'
+> help texts now state it.
+>
+> The decision in 2.1 and the normative declaration in 2.2 are unaffected and
+> are not reopened: nothing is served under `--check-only` either, which is what
+> they govern. What was wrong is the absolute that was stated alongside them,
+> not the declaration itself.
 
 ### 2.4 Future architectural role
 
