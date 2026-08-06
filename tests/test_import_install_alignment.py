@@ -5,12 +5,15 @@ not a valid Python identifier, so it cannot be imported normally) and exercises
 it against the real repository *and* against a reconstruction of the defect it
 exists to catch.
 
-The reconstruction carries the **real** ``phase2-platform.yml``, copied
-verbatim, so the install list under test is the one CI actually uses rather than
-a restatement of it. Its falsifier is the same tree with the client added to
-that workflow's install line: the finding has to disappear, which is what
-distinguishes a check that reads the install list from one that simply bans an
-import.
+The reconstruction carries a **real** workflow, copied verbatim, so the install
+list under test is the one CI actually uses rather than a restatement of it.
+
+It reconstructed the M2 defect against ``phase2-platform.yml`` until packet
+section 17b.2 added the client to that install list; 17b.3 deletes those tests
+rather than replacing them, because the condition can no longer arise there. The
+detection is unchanged and still proven -- now against
+``core-performance-report.yml``, the one real workflow left whose collected tree
+can import a local distribution its own job does not install.
 """
 
 from __future__ import annotations
@@ -28,23 +31,18 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "check-import-install-alignment.py"
 
 PHASE2_WORKFLOW = ".github/workflows/phase2-platform.yml"
 ACCEPTANCE_WORKFLOW = ".github/workflows/core-acceptance.yml"
+PERFORMANCE_WORKFLOW = ".github/workflows/core-performance-report.yml"
 PHASE2_TESTS = "packages/omnivia-core-runtime/tests/phase2"
-PHASE3_TESTS = "packages/omnivia-core-runtime/tests/phase3"
+BENCHMARK_TESTS = "benchmarks/tests"
 
 # The M2 defect, in the shape it actually shipped: not a module-level import
 # anyone would spot in the header, but one buried in a function body. pytest
 # resolves it at collection time regardless, taking down every case in the file.
 FUNCTION_LOCAL_IMPORT = """
-def test_the_real_client_accepts_the_real_descriptor() -> None:
-    from omnivia_core_client.discovery import discover_service
+def test_a_benchmark_reaches_for_the_runtime() -> None:
+    from omnivia_core_runtime.ownership import discovery
 
-    assert discover_service is not None
-"""
-
-MODULE_LEVEL_IMPORT = """
-from omnivia_core_client.discovery import discover_service
-
-assert discover_service is not None
+    assert discovery is not None
 """
 
 
@@ -92,19 +90,6 @@ def phase2_root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _install_the_client(root: Path) -> None:
-    """Add the client to the copied workflow's install list, and nothing else."""
-    path = root / PHASE2_WORKFLOW
-    text = path.read_text(encoding="utf-8")
-    anchor = "python -m pip install -e packages/omnivia-core-mcp"
-    assert anchor in text
-    updated = text.replace(
-        anchor,
-        f"{anchor}\n          python -m pip install -e packages/omnivia-core-client",
-    )
-    path.write_text(updated, encoding="utf-8")
-
-
 def test_the_repository_is_aligned() -> None:
     assert alignment.run_checks() == []
 
@@ -131,9 +116,11 @@ def test_the_real_workflows_parse_into_their_install_lists_and_test_paths() -> N
     assert phase2.name == "phase2-platform"
     assert phase2.test_paths == (PHASE2_TESTS,)
     assert "packages/omnivia-core-runtime" in phase2.install_targets
-    # The gap this whole check exists for, read out of the workflow rather than
-    # written down here.
-    assert "packages/omnivia-core-client" not in phase2.install_targets
+    # Read out of the workflow rather than written down here. This used to assert
+    # the client's *absence* -- the gap the check existed for. Packet section
+    # 17b.2 closes it, so the fact is now the opposite one, and asserting it here
+    # is what keeps this file honest about which workflow installs what.
+    assert "packages/omnivia-core-client" in phase2.install_targets
 
     acceptance = jobs[ACCEPTANCE_WORKFLOW]
     assert "packages/omnivia-core-client" in acceptance.install_targets
@@ -141,51 +128,56 @@ def test_the_real_workflows_parse_into_their_install_lists_and_test_paths() -> N
     assert "packages/omnivia-core-runtime/tests" in acceptance.test_paths
 
 
-def test_a_function_local_client_import_under_phase2_is_caught(
-    phase2_root: Path,
-) -> None:
-    _write(phase2_root / PHASE2_TESTS / "test_publication.py", FUNCTION_LOCAL_IMPORT)
 
-    findings = alignment.run_checks(phase2_root)
+
+
+
+@pytest.fixture
+def performance_root(tmp_path: Path) -> Path:
+    """A miniature checkout carrying the real `core-performance-report.yml`.
+
+    That job installs the root distribution and `omnivia-memory` only, while
+    collecting `benchmarks/tests` -- the one real install gap left to prove the
+    detection against.
+    """
+    _write(
+        tmp_path / PERFORMANCE_WORKFLOW,
+        (REPO_ROOT / PERFORMANCE_WORKFLOW).read_text(encoding="utf-8"),
+    )
+    _distribution(tmp_path, ".", "omnivia_core")
+    _distribution(tmp_path, "services/omnivia-memory", "omnivia_memory")
+    for name in ("runtime", "cli", "mcp", "client"):
+        _distribution(tmp_path, f"packages/omnivia-core-{name}", f"omnivia_core_{name}")
+    _write(tmp_path / BENCHMARK_TESTS / "conftest.py", "")
+    return tmp_path
+
+
+def test_an_import_the_collecting_job_does_not_install_is_caught(
+    performance_root: Path,
+) -> None:
+    """The detection, still live, on a real workflow with a real install gap.
+
+    Three properties, one fixture: the finding is raised; it is raised for a
+    *function-local* import, the shape the original defect had and the reason
+    this check walks the AST rather than reading the header; and a module outside
+    the collected path is not judged.
+    """
+    _write(performance_root / BENCHMARK_TESTS / "test_speed.py", FUNCTION_LOCAL_IMPORT)
+
+    findings = alignment.run_checks(performance_root)
 
     assert len(findings) == 1
     finding = findings[0]
-    assert f"{PHASE2_TESTS}/test_publication.py:3" in finding
-    assert "omnivia_core_client" in finding
-    assert "packages/omnivia-core-client" in finding
-    assert "phase2-platform.yml [phase2-platform]" in finding
+    assert f"{BENCHMARK_TESTS}/test_speed.py:3" in finding
+    assert "omnivia_core_runtime" in finding
+    assert "packages/omnivia-core-runtime" in finding
+    assert "core-performance-report.yml [performance-report]" in finding
 
-
-def test_the_same_import_is_clean_once_the_workflow_installs_the_client(
-    phase2_root: Path,
-) -> None:
-    """The falsifier: the finding must come from the install list, not the name."""
-    _write(phase2_root / PHASE2_TESTS / "test_publication.py", FUNCTION_LOCAL_IMPORT)
-    assert alignment.run_checks(phase2_root) != []
-
-    _install_the_client(phase2_root)
-
-    assert alignment.run_checks(phase2_root) == []
-
-
-def test_a_module_level_client_import_under_phase2_is_caught(
-    phase2_root: Path,
-) -> None:
-    _write(phase2_root / PHASE2_TESTS / "test_publication.py", MODULE_LEVEL_IMPORT)
-
-    findings = alignment.run_checks(phase2_root)
-
-    assert len(findings) == 1
-    assert f"{PHASE2_TESTS}/test_publication.py:2" in findings[0]
-
-
-def test_a_module_outside_the_collected_path_is_not_judged(phase2_root: Path) -> None:
-    """Path precision: phase2 names `tests/phase2`, so `tests/phase3` is not its
-    problem. That is the arrangement the real repository relies on to keep the
-    end-to-end client proof collectable under acceptance and not under phase2."""
-    _write(phase2_root / PHASE3_TESTS / "test_client_discovery.py", MODULE_LEVEL_IMPORT)
-
-    assert alignment.run_checks(phase2_root) == []
+    # Path precision: the same import outside the collected tree is not this
+    # job's problem, so the finding count does not move.
+    _write(performance_root / "packages/omnivia-core-runtime/tests/test_x.py",
+           FUNCTION_LOCAL_IMPORT)
+    assert len(alignment.run_checks(performance_root)) == 1
 
 
 def test_an_installed_distribution_may_be_imported(phase2_root: Path) -> None:

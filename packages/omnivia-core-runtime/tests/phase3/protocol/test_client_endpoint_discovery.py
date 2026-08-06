@@ -9,17 +9,31 @@ descriptor, refuses anything that is not this platform's local IPC endpoint,
 negotiates all three versions, and verifies the result against a live
 `service.discover` probe carried over the service's own socket.
 
-It lives in phase3 rather than beside the permission evidence in phase2 because it
-imports `omnivia_core_client`. `phase2-platform.yml` installs the runtime, the CLI
-and MCP but not the client package, so a phase2 module importing it fails to
-collect on every row of that matrix -- which is exactly what happened. phase3 is
-collected by `core-acceptance.yml`'s broad run, which does install the client, and
-is not collected by the platform matrix at all.
+**Why this lives in phase3, and why the original reason is no longer the reason.**
 
-Splitting by dependency rather than marking the import optional is deliberate. A
-`pytest.importorskip` here would have turned the same CI failure into a silent
-skip, and an end-to-end proof that quietly does not run is the failure mode this
-whole lane exists to prevent.
+It used to be a dependency fact: `phase2-platform.yml` installed the runtime, the
+CLI and MCP but not the client, so a phase2 module importing `omnivia_core_client`
+failed to collect on every row of that matrix -- which is exactly what happened.
+Packet section 17b.2 adds the client to that install list, so that fact is spent.
+A phase2 module importing the client would now collect on all three rows.
+
+The placement is therefore a **choice**, and it is deliberate: the reason is
+qualification, not installability. `phase2-platform.yml` is a three-operating-system
+matrix, and nothing on this path has ever been qualified on macOS or Windows --
+cross-platform qualification of the authorised vertical is a named successor, not
+something this suite has evidence for. Moving this module to `tests/phase2` would
+put an unqualified end-to-end proof onto two rows that have never run it, and the
+first failure would be read as a platform defect rather than as an unqualified
+test. phase3 is collected by `core-acceptance.yml`'s broad run on Ubuntu only,
+which is the surface this proof actually has evidence for.
+
+So: do not move this file to `tests/phase2` on the grounds that the client is now
+installed there. That removes the obstacle, not the reason.
+
+Splitting by dependency rather than marking the import optional was deliberate and
+still is. A `pytest.importorskip` here would have turned the original CI failure
+into a silent skip, and an end-to-end proof that quietly does not run is the
+failure mode this whole lane exists to prevent.
 """
 
 from __future__ import annotations

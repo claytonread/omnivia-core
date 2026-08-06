@@ -17,9 +17,10 @@ reached from a correct server -- a correct server never sends a truncated frame
 bytes are real and the failure is the transport's own.
 
 `packages/omnivia-core-cli/tests` is collected by `core-acceptance.yml`'s
-full-suite step, and by nothing else. That step is where the client distribution
-is installed; `phase2-platform.yml` does not install it and does not name this
-tree. The acceptance guard
+full-suite step, and by nothing else. `phase2-platform.yml` does not name this
+tree -- it names `packages/omnivia-core-runtime/tests/phase2` only. It does now
+install the client, per packet section 17b.2, but that is so its own CLI install
+can resolve; it collects nothing from here either way. The acceptance guard
 `tests/test_core_acceptance_workflow.py::test_every_local_distribution_with_tests_is_in_the_broad_pytest_run`
 fails closed if this directory exists and that step does not name it.
 """
@@ -40,7 +41,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from omnivia_core_cli.client import build_request
+from omnivia_core_cli.client import build_request, read_descriptor
 from omnivia_core_cli.main import (
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
@@ -51,6 +52,7 @@ from omnivia_core_client import (
     DeadlineExceededError,
     ProtocolError,
     TransportError,
+    decode_frame,
     encode_frame,
 )
 from omnivia_core_client.deadline import CancellationToken
@@ -924,3 +926,214 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
             if isinstance(node, ast.Attribute) and node.attr in {"getenv", "environ"}:
                 raise AssertionError(f"{path.name} reads the environment")
     assert os.name in {"posix", "nt"}
+
+
+# ---------------------------------------------------------------------------
+# The two guards, in the direction they fire
+# ---------------------------------------------------------------------------
+#
+# Both defend against something a correct service never does, so neither can be
+# provoked by a well-behaved peer. That is not a reason to leave them untested --
+# it is the reason to be explicit about the seam each test substitutes, and to
+# substitute the smallest thing that makes the guard's own scenario real.
+
+
+def _recv_exact(connection: socket.socket, count: int) -> bytes | None:
+    buffer = b""
+    while len(buffer) < count:
+        chunk = connection.recv(count - len(buffer))
+        if not chunk:
+            return None
+        buffer += chunk
+    return buffer
+
+
+def _recv_frame(connection: socket.socket) -> bytes | None:
+    """One whole OVC1 frame as raw bytes, header included."""
+    header = _recv_exact(connection, 8)
+    if header is None:
+        return None
+    body = _recv_exact(connection, int.from_bytes(header[4:8], "big"))
+    return None if body is None else header + body
+
+
+class RelayingPeer:
+    """A listener that forwards every frame to the real service and back, verbatim.
+
+    The point is that it is *honest on the wire*: because it relays the discovery
+    probe unchanged, discovery genuinely succeeds -- provenance, directory modes,
+    scheme, version negotiation and the live identity check all pass, against the
+    real descriptor. Nothing is stubbed and no check is bypassed. What it changes
+    is only which socket the CLI was pointed at.
+
+    It records the operation of every frame it is asked to carry, so a test can
+    assert what did and did not reach it.
+    """
+
+    def __init__(self, target_path: str) -> None:
+        self.directory = _short_socket_directory()
+        self.path = self.directory / "relay.sock"
+        self.operations: list[str] = []
+        self._target = target_path
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(str(self.path))
+        self._server.listen(8)
+        self._server.settimeout(1.0)
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._thread.start()
+
+    @property
+    def endpoint_uri(self) -> str:
+        return f"unix://{self.path}"
+
+    def _accept_loop(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                connection, _ = self._server.accept()
+            except TimeoutError:
+                continue
+            except OSError:  # pragma: no cover - teardown
+                return
+            threading.Thread(target=self._carry, args=(connection,), daemon=True).start()
+
+    def _carry(self, client: socket.socket) -> None:
+        with client:
+            client.settimeout(30)
+            frame = _recv_frame(client)
+            if frame is None:  # pragma: no cover - client gave up
+                return
+            try:
+                document = decode_frame(frame)
+                self.operations.append(
+                    str(document.get("operation") or document.get("probe") or "?")
+                )
+            except Exception:  # noqa: BLE001 - a test recorder, not a decoder
+                self.operations.append("?")
+            upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            upstream.settimeout(30)
+            try:
+                with upstream:
+                    upstream.connect(self._target)
+                    upstream.sendall(frame)
+                    reply = _recv_frame(upstream)
+                if reply is not None:
+                    client.sendall(reply)
+            except OSError:  # pragma: no cover - service went away
+                return
+
+    def close(self) -> None:
+        self._stopped.set()
+        self._server.close()
+        self._thread.join(timeout=5)
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+def test_a_descriptor_discovery_never_validated_is_not_dialled(
+    live_service: LiveService,
+) -> None:
+    """The descriptor-equality refusal, in the direction it fires.
+
+    A second descriptor is planted beside the real one, byte-identical except
+    that `endpoint_uri` points at a relay rather than at the service. Pointing
+    `--runtime-state` at it splits the two halves of the call apart: discovery
+    re-derives its path from the installation root and so reads and validates the
+    *real* descriptor, and it succeeds honestly, because the relay forwards its
+    probe to the real socket. The transport, meanwhile, was built from the
+    descriptor that was actually read.
+
+    That is the whole hazard in one sentence -- discovery vetted descriptor A
+    while the transport would dial descriptor B -- and the only thing that stops
+    it is comparing the two. Whoever controls the relay would otherwise receive
+    an authorised `workspace.inspect` and could answer it with anything.
+
+    Asserting the refusal alone would be weak, because a discovery failure would
+    produce the same exit code and the same message. So the relay's own record is
+    asserted in both directions: the probe reached it, which is what proves
+    discovery really ran and really passed, and no `workspace.inspect` ever did.
+    """
+    published = json.loads(
+        (live_service.runtime_directory / "service.json").read_text(encoding="utf-8")
+    )
+    relay = RelayingPeer(socket_path_for(live_service.endpoint_uri))
+    decoy_directory = live_service.runtime_directory.parent / "decoy"
+    try:
+        published["endpoint_uri"] = relay.endpoint_uri
+        decoy_directory.mkdir(mode=0o700, exist_ok=True)
+        decoy = decoy_directory / "service.json"
+        decoy.write_text(json.dumps(published), encoding="utf-8")
+        decoy.chmod(0o600)
+
+        result = _run_cli(decoy_directory, "workspace", "show")
+
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "did not pass its discovery checks" in result.stderr
+        assert result.stdout == ""
+        # Discovery genuinely ran and genuinely passed -- so the refusal is the
+        # equality check, not a discovery failure wearing the same message.
+        assert "service.discover" in relay.operations, relay.operations
+        # And the authorised request never left this process.
+        assert WORKSPACE_INSPECT_OPERATION not in relay.operations, relay.operations
+    finally:
+        relay.close()
+        shutil.rmtree(decoy_directory, ignore_errors=True)
+
+
+def test_a_response_correlating_to_another_request_is_refused(
+    live_service: LiveService,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The correlation refusal, in the direction it fires.
+
+    A correct service echoes the correlation id it was sent, and this transport
+    opens a fresh connection per call, so nothing a real peer does can produce a
+    mismatch -- which is exactly why the substituted seam is the *response* and
+    nothing else. The service is real, the socket is real, the frame is real, the
+    request is the one the CLI built; only the answer's correlation id is
+    rewritten on the way back, which is the one condition the guard exists for.
+
+    Run in-process rather than as a subprocess because the substitution has to
+    sit between the transport and the caller, which is inside the CLI.
+    """
+    from omnivia_core_cli import main as cli_main
+
+    service = read_descriptor(live_service.runtime_directory)
+    assert service is not None
+
+    genuine_call = LocalIpcTransport.call
+
+    def answer_a_different_request(
+        self: LocalIpcTransport, request: object, **keywords: object
+    ) -> object:
+        response = genuine_call(self, request, **keywords)  # type: ignore[arg-type]
+        document = json.loads(json.dumps(codec.encode_response(response)))
+        document["metadata"]["correlation_id"] = "cli-somebody-elses-call"
+        return codec.decode_response(document)
+
+    monkeypatch.setattr(LocalIpcTransport, "call", answer_a_different_request)
+
+    assert cli_main._workspace_show(live_service.runtime_directory, service) == 1
+    captured = capsys.readouterr()
+    assert "answered a different request" in captured.err
+    assert captured.out == ""
+
+
+def test_neither_guard_fires_on_the_paths_a_correct_service_produces(
+    live_service: LiveService, tmp_path: Path
+) -> None:
+    """Both refusals are silent on every legitimate shape, direct and symlinked.
+
+    The companion to the two tests above: a guard that fires when it should is
+    only half the property, and a guard that fires when it should not would be
+    caught here rather than by a user.
+    """
+    linked = tmp_path / "runtime-link"
+    linked.symlink_to(live_service.runtime_directory, target_is_directory=True)
+
+    for runtime_state in (live_service.runtime_directory, linked):
+        result = _run_cli(runtime_state, "workspace", "show")
+        assert result.returncode == 0, (runtime_state, result.stdout, result.stderr)
+        assert "did not pass its discovery checks" not in result.stderr
+        assert "answered a different request" not in result.stderr
+        assert json.loads(result.stdout)["workspace"]["workspace_id"] == WORKSPACE_ID

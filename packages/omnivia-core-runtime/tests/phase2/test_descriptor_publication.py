@@ -48,12 +48,13 @@ already present, and a directory this code did not create is one it will not
 re-permission.
 
 The end-to-end proof that closes M2 -- the real writer's file read and accepted by
-the real P1b client -- is deliberately *not* here. It imports
-`omnivia_core_client`, which `phase2-platform.yml` does not install, so it lives in
-`tests/phase3/protocol/test_client_endpoint_discovery.py` where the workflow that
-collects it installs the client. Nothing in this module may import that package:
-this is the one suite the platform matrix runs, and an import it cannot satisfy
-fails collection for every case in the file, not just the one that needed it. The
+the real P1b client -- is deliberately *not* here. It lives in
+`tests/phase3/protocol/test_client_endpoint_discovery.py`, and that file's own
+docstring states why. The reason used to be that `phase2-platform.yml` did not
+install `omnivia_core_client`; packet section 17b.2 adds it, so the reason is now
+qualification rather than installability -- this is a three-operating-system
+matrix and nothing on that path is qualified beyond Ubuntu. Keep the proof there.
+Nothing in this module needs that package either way. The
 Windows helpers below are that constraint's other consequence -- the client already
 reads a DACL and this module may not borrow it, so the oracle here is `icacls` for
 the DACL and the object's own security descriptor for the owner -- neither of which

@@ -251,6 +251,9 @@ PHASE2_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
     "python -m pip install -e packages/omnivia-core-runtime",
+    # Packet section 17b.2: installed here only so the CLI install after it can
+    # resolve the dependency it declares. No suite this matrix runs imports it.
+    "python -m pip install -e packages/omnivia-core-client",
     "python -m pip install -e packages/omnivia-core-cli",
     "python -m pip install -e packages/omnivia-core-mcp",
 )

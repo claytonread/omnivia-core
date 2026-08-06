@@ -17,10 +17,13 @@ off this host. Change across boots is proved by construction: a second boot cann
 be arranged inside a test run, so the kernel reading is injected through `_sysctl`
 instead, and the platform branch is forced. Nothing here reboots anything.
 
-Runtime-only, deliberately. `phase2-platform.yml` installs the runtime, the CLI and
-MCP but not `omnivia-core-client`, so a module here that imported the client would
-fail collection on all three rows. The client-level end-to-end lives in
-`tests/phase3/protocol/test_client_endpoint_discovery.py`.
+Runtime-only, deliberately. That used to be forced -- `phase2-platform.yml` did
+not install `omnivia-core-client`, so a module here importing it failed collection
+on all three rows. Packet section 17b.2 adds the client to that install list, so
+the constraint is gone and this module simply has no use for the package. The
+client-level end-to-end stays in
+`tests/phase3/protocol/test_client_endpoint_discovery.py`, for the reason that
+file now gives: it is unqualified beyond Ubuntu, not uninstallable here.
 """
 
 from __future__ import annotations
