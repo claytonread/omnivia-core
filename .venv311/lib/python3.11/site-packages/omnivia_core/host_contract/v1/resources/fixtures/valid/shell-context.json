@@ -1,0 +1,13 @@
+{
+  "contextId": "ctx-001",
+  "contextVersion": 1,
+  "principalRef": "principal-local-001",
+  "organisationRef": "org-001",
+  "workspaceRef": "workspace-001",
+  "entitlementSummaryRef": "entitlements-001",
+  "permissionSummaryRef": "permissions-001",
+  "runtimeId": "desktop-runtime-001",
+  "environmentId": "local-environment-001",
+  "target": "desktop",
+  "issuedAt": "2026-08-03T00:00:00Z"
+}

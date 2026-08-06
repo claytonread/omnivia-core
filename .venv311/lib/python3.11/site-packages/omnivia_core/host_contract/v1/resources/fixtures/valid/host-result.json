@@ -1,0 +1,8 @@
+{
+  "contractVersion": "1.0.0",
+  "requestId": "req-001",
+  "outcome": "success",
+  "data": { "routeId": "workspace.home" },
+  "correlationId": "corr-001",
+  "auditRef": "audit-001"
+}

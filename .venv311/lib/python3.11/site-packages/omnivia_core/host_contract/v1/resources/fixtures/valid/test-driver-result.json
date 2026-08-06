@@ -1,0 +1,7 @@
+{
+  "driverVersion": "1.0.0",
+  "requestId": "driver-request-001",
+  "outcome": "passed",
+  "evidenceRefs": ["evidence-screenshot-001", "evidence-a11y-001"],
+  "correlationId": "corr-driver-001"
+}

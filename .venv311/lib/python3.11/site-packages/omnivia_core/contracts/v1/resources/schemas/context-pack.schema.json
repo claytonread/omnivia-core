@@ -1,0 +1,688 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
+  "title": "OmniVia Core Application Contract v1 - context pack",
+  "description": "Provider-neutral wire shapes for the `context_pack.build` operation. A Context Pack is a reproducible, content-addressed application artifact, never canonical knowledge in its own right: it selects from, cites, and organizes existing L0 evidence and governed records, but a citation is never a substitute for re-authorizing access to what it cites. In v1 the operation is a synchronous, non-persisting read: this document therefore declares no persistence, expiry, retention, snapshot, pagination, or job control at all, and the artifact's identity is a checksum over its own content rather than a server-issued handle. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "ContextPackMode": {
+      "title": "ContextPackMode",
+      "description": "Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a compatible minor release can add vocabulary, but trust-sensitive: v1 recognizes exactly one value, `deterministic_view` (a regenerated, non-persisted, deterministic view), and semantic validation fails closed on every other value rather than guessing at it. `immutable_snapshot` is deliberately not a v1 mode -- persistence is an operation posture this read does not have -- and `returned_artifact` was never a wire mode at all.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ContextPackTokenCount": {
+      "title": "ContextPackTokenCount",
+      "description": "A bounded, non-negative count of tokens actually observed: the tokens one section's model-facing content occupies, or the total a whole pack consumed. Distinct from `ContextPackTokenBudget`, which is what a caller asked for: zero is a meaningful observation (an empty pack consumed nothing) but never a meaningful request.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000000
+    },
+    "ContextPackTokenBudget": {
+      "title": "ContextPackTokenBudget",
+      "description": "A bounded, strictly positive token budget a caller asks a pack to be built against. Zero is excluded rather than merely discouraged: a pack built against no budget at all can carry no content, so a zero budget states a request no build could usefully answer.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000000
+    },
+    "ContextPackDigest": {
+      "title": "ContextPackDigest",
+      "description": "A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque server token a client round-trips but a value an independent implementation must be able to recompute and compare byte for byte, so exactly one algorithm, one length, and one letter case are admitted.",
+      "type": "string",
+      "minLength": 71,
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+    },
+    "ContextPackEvidenceReference": {
+      "title": "ContextPackEvidenceReference",
+      "description": "A precise pointer to one exact L0 evidence artifact: which artifact, and the content checksum that artifact carried. Both are required, so the pointer names a specific immutable content state rather than whatever the identifier resolves to later. Distinct from `records.EvidenceReference`, which points at a source a record drew on rather than at a captured L0 artifact.",
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId",
+          "description": "Identifier of the referenced L0 evidence artifact."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum",
+          "description": "The exact content checksum the referenced artifact carried, so this reference names one immutable content state rather than an identifier whose content may since have been recaptured."
+        }
+      },
+      "required": ["evidence_id", "content_checksum"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackEvidenceCitation": {
+      "title": "ContextPackEvidenceCitation",
+      "description": "One citation binding a pack section to an exact L0 evidence artifact, optionally at a precise location inside it. Possessing this citation grants no access on its own: following it always requires fresh authorization against the cited evidence.",
+      "type": "object",
+      "properties": {
+        "citation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this citation within this pack, unique across `citations` and referenced by section, conflict, and uncertainty citation-id lists."
+        },
+        "evidence_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackEvidenceReference",
+          "description": "The exact evidence artifact and content checksum this citation points at."
+        },
+        "content_pointer": {
+          "type": "string",
+          "description": "Optional bounded, opaque locator within the cited artifact's content, such as a JSON Pointer. v1 states its length bound and nothing about its syntax: resolving a locator is target-specific and is not guessed at by this provider-neutral layer.",
+          "maxLength": 2048
+        },
+        "source_span": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceSpan",
+          "description": "Optional addressable position within the cited artifact, reusing the same structural and semantic rules `records.SourceSpan` already carries rather than restating them as an unvalidated string."
+        },
+        "excerpt": {
+          "type": "string",
+          "description": "Optional short excerpt substantiating what this citation supports. Not a stable interface.",
+          "maxLength": 4096
+        }
+      },
+      "required": ["citation_id", "evidence_reference"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackRecordCitation": {
+      "title": "ContextPackRecordCitation",
+      "description": "One citation binding a pack section to an exact governed record version, optionally at a precise location inside it. Possessing this citation grants no access on its own: following it always requires fresh authorization against the cited record.",
+      "type": "object",
+      "properties": {
+        "citation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this citation within this pack, unique across `citations` and referenced by section, conflict, and uncertainty citation-id lists."
+        },
+        "record_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference",
+          "description": "The exact governed record version this citation points at."
+        },
+        "content_pointer": {
+          "type": "string",
+          "description": "Optional bounded, opaque locator within the cited record's opaque content, such as a JSON Pointer. v1 states its length bound and nothing about its syntax: resolving a locator is target-specific and is not guessed at by this provider-neutral layer.",
+          "maxLength": 2048
+        },
+        "source_span": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/SourceSpan",
+          "description": "Optional addressable position within the cited record, reusing the same structural and semantic rules `records.SourceSpan` already carries rather than restating them as an unvalidated string."
+        },
+        "excerpt": {
+          "type": "string",
+          "description": "Optional short excerpt substantiating what this citation supports. Not a stable interface.",
+          "maxLength": 4096
+        }
+      },
+      "required": ["citation_id", "record_reference"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackCitation": {
+      "title": "ContextPackCitation",
+      "description": "One exact citation in a pack: either an evidence citation or a governed-record citation, never both and never neither. The two branches are distinct object shapes rather than one shape with two optional pointers, so what a citation points at is settled structurally by the wire document instead of being left to a semantic agreement check.",
+      "oneOf": [
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackEvidenceCitation"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackRecordCitation"
+        }
+      ]
+    },
+    "ContextPackSection": {
+      "title": "ContextPackSection",
+      "description": "One model-facing section of a Context Pack: its identity, what kind of section it is, its content, the citations that content rests on, and the tokens that content occupies. Every section is substantiated: `citation_ids` is never empty, so no part of a pack's model-facing content is unattributable.",
+      "type": "object",
+      "properties": {
+        "section_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this section within this pack, unique across `sections`. Section identifiers and citation identifiers are independent namespaces; the same string may appear in both."
+        },
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what kind of section this is, such as `summary` or `evidence_digest`. Open by design; an unrecognized kind must be preserved, not coerced."
+        },
+        "title": {
+          "type": "string",
+          "description": "Optional human-readable heading for this section. Not a stable interface, and not counted by `token_count`.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "content": {
+          "type": "string",
+          "description": "The exact model-facing content of this section. Never empty: a section that contributes no content contributes nothing a caller could act on.",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "citation_ids": {
+          "type": "array",
+          "description": "The citations this section's content rests on, by `citation_id`, in deterministic ascending order and free of duplicates. Never empty, and every identifier must resolve to a citation this pack actually returned.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true
+        },
+        "token_count": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenCount",
+          "description": "Tokens the exact `content` string occupies under the tokenizer named by `reproducibility.tokenizer_id` at `reproducibility.tokenizer_version`. Covers `content` and nothing else: `title` and any excerpt carried by a cited citation are deliberately excluded, so a caller can reconcile this count against the string it actually sends to a model."
+        }
+      },
+      "required": ["section_id", "kind", "content", "citation_ids", "token_count"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackConflict": {
+      "title": "ContextPackConflict",
+      "description": "A stated conflict between two or more citations this pack returned, which the pack surfaces rather than resolving on the caller's behalf. Stated in citation identifiers rather than record references so evidence and governed records are addressed by the one reference system this pack already publishes, instead of a second, competing one that could name something the pack never cited.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable statement of the conflict. Not a stable interface.",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "conflicting_citation_ids": {
+          "type": "array",
+          "description": "The citations that conflict with one another, by `citation_id`, in deterministic ascending order and free of duplicates. At least two, since a conflict needs two sides, and every identifier must resolve to a citation this pack actually returned.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "minItems": 2,
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": ["description", "conflicting_citation_ids"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackUncertainty": {
+      "title": "ContextPackUncertainty",
+      "description": "A stated uncertainty this pack surfaces rather than silently resolving or hiding, anchored to the citations it concerns.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable statement of the uncertainty. Not a stable interface.",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "related_citation_ids": {
+          "type": "array",
+          "description": "The citations this uncertainty concerns, by `citation_id`, in deterministic ascending order and free of duplicates. At least one: an uncertainty anchored to nothing this pack returned cannot be acted on or checked, and every identifier must resolve to a citation this pack actually returned.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          },
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": ["description", "related_citation_ids"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackBudget": {
+      "title": "ContextPackBudget",
+      "description": "Token budget accounting for one Context Pack: the positive budget it was built against, and the non-negative amount its sections actually consumed.",
+      "type": "object",
+      "properties": {
+        "token_budget": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenBudget",
+          "description": "The token budget this pack was built against, exactly as requested."
+        },
+        "tokens_used": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenCount",
+          "description": "Tokens actually consumed, exactly the sum of every section's `token_count`."
+        }
+      },
+      "required": ["token_budget", "tokens_used"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackAuthorizationContext": {
+      "title": "ContextPackAuthorizationContext",
+      "description": "The complete authority context one Context Pack was produced under, recorded so the build can be reproduced and audited. Historical reproducibility context only, and never a live grant: possessing it authorizes nothing, and following any citation still requires fresh authorization against the cited evidence or record. Recorded structurally rather than as an opaque fingerprint so a reviewer can actually check which principal, roles, capabilities, scopes, purpose, and policy versions were in force, instead of comparing two hashes and learning only that they differ.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "The workspace this pack was produced for."
+        },
+        "authority": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/GrantedAuthority",
+          "description": "The validated principal, roles, and capabilities the build actually executed under. A historical record of that authority, not a restatement of it that a later reader may act on."
+        },
+        "scopes": {
+          "type": "array",
+          "description": "The scopes in force for the build, in deterministic ascending order and free of duplicates. Never empty: a build that names no scope states nothing checkable about what narrowed it. Scopes narrow a request; recording them never widens what this artifact permits.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Scope"
+          },
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "purpose": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Purpose",
+          "description": "The purpose-limitation token the build was performed under."
+        },
+        "policy_versions": {
+          "type": "object",
+          "description": "Open map of policy or ACL name to the opaque policy version applied while producing this pack. At least one policy must be named: a pack that states no policy version states nothing checkable about what filtered it.",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
+          "additionalProperties": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken"
+          }
+        },
+        "pre_ranking_authorization_enforced": {
+          "type": "boolean",
+          "description": "Always true: ACL and sensitivity authorization were applied to the candidate set before ranking and selection, not merely afterwards. An attestation about how the build ran, never itself a grant, and never an implication that filtering after ranking would have sufficed."
+        },
+        "authorized_candidate_set_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackDigest",
+          "description": "Digest of the authorized candidate set that ranking and selection actually ran over, so a reproduction can prove it started from the same authorized material rather than a wider one. Independently recomputable rather than merely stated: it is exactly the digest `ContextPackAuthorizedCandidateSetManifest` defines, over the complete authorized frontier frozen before the first ranking, reranking, selection, or budget decision. A verifier checks it by recomputing that digest from a manifest supplied out of band and comparing; reading this value back out of the pack and comparing it with itself verifies nothing."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "authority",
+        "scopes",
+        "purpose",
+        "policy_versions",
+        "pre_ranking_authorization_enforced",
+        "authorized_candidate_set_checksum"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ContextPackAuthorizedEvidenceCandidate": {
+      "title": "ContextPackAuthorizedEvidenceCandidate",
+      "description": "One L0 evidence artifact on the authorized candidate frontier, named by immutable identity alone. Exactly three members and nothing else: the partition it was authorized in, the artifact, and the exact content state that artifact carried. Content, excerpts, provenance, spans, scores, distances, ranks, tie-breaks, selection flags, citations, sections, query and normalization state, and every authority, policy, configuration, or projection version are all deliberately absent -- a candidate-set digest must depend on which authorized material existed and on nothing a later ranking or selection step could change.",
+      "type": "object",
+      "properties": {
+        "partition": {
+          "type": "string",
+          "description": "Always `evidence`: the L0 partition this candidate was authorized in. Carried explicitly rather than inferred from the member names so the digest preimage separates the four partitions itself, and so an unknown partition fails closed instead of being guessed at.",
+          "const": "evidence"
+        },
+        "evidence_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceId",
+          "description": "Identifier of the authorized L0 evidence artifact. Exactly an `evidence.EvidenceId` -- the same domain the artifact it names is drawn from, not a widened one. A digest preimage that admitted identities the items themselves cannot carry would attest to a frontier no artifact could be a member of, so the domain is shared rather than restated."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceChecksum",
+          "description": "The exact content checksum that artifact carried, so the candidate names one immutable content state rather than an identifier whose content may since have been recaptured. Exactly an `evidence.EvidenceChecksum`, for the reason `evidence_id` states."
+        }
+      },
+      "required": ["partition", "evidence_id", "content_checksum"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackAuthorizedRecordCandidate": {
+      "title": "ContextPackAuthorizedRecordCandidate",
+      "description": "One governed record version on the authorized candidate frontier, named by immutable identity alone. Exactly three members and nothing else: which governed partition it was authorized in, the record, and the version. The same exclusions `ContextPackAuthorizedEvidenceCandidate` states apply here for the same reason. Two different versions of one record are two independent candidates whenever both were independently eligible; the same version twice, in one partition or across two, is a contradiction rather than a set.",
+      "type": "object",
+      "properties": {
+        "partition": {
+          "type": "string",
+          "description": "Which governed partition this candidate was authorized in: `records` for a current canonical L2 version, `history` for a historical canonical L2 version, `context_models` for a current canonical L3 context model. Closed to exactly these three; an unknown partition fails closed.",
+          "enum": ["records", "history", "context_models"]
+        },
+        "record_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId",
+          "description": "Identifier of the authorized governed record. Exactly a `records.RecordId`, the same domain the record it names is drawn from, for the reason `ContextPackAuthorizedEvidenceCandidate.evidence_id` states."
+        },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersion",
+          "description": "The exact version of that record, so the candidate names one immutable governed version rather than whatever the record identifier resolves to later. Exactly a `records.RecordVersion`, for the same reason."
+        }
+      },
+      "required": ["partition", "record_id", "version"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackAuthorizedCandidate": {
+      "title": "ContextPackAuthorizedCandidate",
+      "description": "One member of the authorized candidate frontier: either an L0 evidence candidate or a governed record candidate, never both and never neither. Two distinct object shapes rather than one shape with optional pointers, so what a candidate names is settled structurally by the document instead of by a later agreement check.",
+      "oneOf": [
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedEvidenceCandidate"
+        },
+        {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedRecordCandidate"
+        }
+      ]
+    },
+    "ContextPackAuthorizedCandidateSetManifest": {
+      "title": "ContextPackAuthorizedCandidateSetManifest",
+      "description": "The exact preimage `ContextPackAuthorizationContext.authorized_candidate_set_checksum` is a digest of. It names the complete post-retrieval, post-request-scope, post-workspace/scope/purpose/capability/policy/ACL/sensitivity-authorization candidate frontier, frozen before the first ranking, reranking, selection, or budget decision: not the whole workspace, and not merely the items a pack ended up selecting. Unauthorized, request-filtered, tombstoned, and invalid-at-resolution material is absent; nothing may be introduced into a pack after this frontier is frozen, so every selected item is a member of it under its own exact partition. This is trusted in-process input to a verifier, never a response field and never logged: it is the independent statement a checksum copied out of the pack itself could never be. The digest is `sha256:` followed by the lowercase hex SHA-256 of the RFC 8785 canonical UTF-8 bytes of this document, with `candidates` sorted by partition and then by the remaining identity members in the order they are declared, comparing each component by unsigned UTF-16 code unit with no Unicode normalization. That sort makes the digest order-insensitive; a duplicate is refused outright rather than collapsed, so sorting never has to decide what a repeated identity meant. RFC 8785 orders object member names but never array elements, so that element sort is part of this definition rather than of the canonicalization. UTF-16 code-unit comparison is normative because it is the ordering RFC 8785 already imposes on member names, and a preimage ordered by one rule and canonicalized under another would be two rules pretending to be one; note that every v1 identity alphabet here is ASCII (`EvidenceId`, `RecordId`), printable ASCII (`RecordVersion`), or an ASCII-restricted checksum (`EvidenceChecksum`), so no valid v1 candidate can distinguish UTF-16 order from code-point order -- the rule is stated for the canonicalizer it must agree with, not because a v1 identity could exercise the difference. The empty candidate set is valid and has a well-defined digest.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string",
+          "description": "Always `omnivia.context-pack.authorized-candidate-set.v1`, and part of the hashed preimage rather than a header around it: a digest that did not cover the name of the thing it digests could be replayed against a differently shaped set of the same members.",
+          "const": "omnivia.context-pack.authorized-candidate-set.v1"
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "The workspace this frontier was authorized in, and the only domain separation the preimage carries. Two workspaces that authorized identical identities must not share a digest."
+        },
+        "candidates": {
+          "type": "array",
+          "description": "The complete authorized frontier, as a set: element order carries no meaning on the wire and is normalized before hashing, so a shuffled manifest digests identically while a changed, added, or removed identity never does. Free of duplicates -- an exactly repeated tuple, one evidence identifier paired with two content checksums, or one governed `(record_id, version)` repeated within a partition or across two governed partitions is a contradiction rather than a set, and is refused. May be empty.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizedCandidate"
+          },
+          "maxItems": 20000,
+          "uniqueItems": true
+        }
+      },
+      "required": ["format", "workspace_id", "candidates"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackNormalizedRequest": {
+      "title": "ContextPackNormalizedRequest",
+      "description": "The exact normalized request one Context Pack was built from: the server-produced normalized query and the version of the normalization that produced it, the mode, the resolved record view, the token budget, and any selection filters. The single normalized form of a request -- the original caller query stays on the result's own `query` field, and nothing else restates it. Query normalization itself is server-owned and versioned: this contract requires the normalized query to be non-empty and pins which normalization produced it, and deliberately specifies no normalization algorithm of its own.",
+      "type": "object",
+      "properties": {
+        "normalized_query": {
+          "type": "string",
+          "description": "The normalized form of the caller's query that this build actually ran. Never empty: a build that normalized a query to nothing has no request left to reproduce.",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackMode",
+          "description": "The mode this build ran in, bound exactly to the validated request's mode."
+        },
+        "view": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordView",
+          "description": "The governed-record view the build resolved to. In v1 this is always `current_canonical`: a Context Pack selects current canonical knowledge plus the history and context models that support it, and the request carries no view selector that could widen that."
+        },
+        "token_budget": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenBudget",
+          "description": "The token budget this build ran against, bound exactly to the validated request's budget."
+        },
+        "normalization_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the query normalization that produced `normalized_query`. Without it the normalized query is unreproducible, since a later normalization of the same caller query may differ."
+        },
+        "domain_scope": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope",
+          "description": "The domain-scope filter the build applied, present exactly when the request carried one."
+        },
+        "record_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordType",
+          "description": "The record-type filter the build applied, present exactly when the request carried one."
+        }
+      },
+      "required": ["normalized_query", "mode", "view", "token_budget", "normalization_version"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackReproducibility": {
+      "title": "ContextPackReproducibility",
+      "description": "Everything a second build needs to reproduce one Context Pack byte for byte: the pack format version, the builder, the normalized request, the authority context the build ran under, the exact evidence and record versions selected, the projection the read was served from, the retrieval/ranking/reranking/selection/tokenizer/summarizer/model versions applied, the instant the canonical knowledge was resolved at, and the canonicalization and checksum that make the result content-addressed. With every one of these unchanged, rebuilding must reproduce the identical pack. Carries no audit reference: the response envelope owns audit linkage, and folding a per-request audit identifier into a content-addressed artifact would make two identical builds hash differently.",
+      "type": "object",
+      "properties": {
+        "pack_format_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "The Context Pack artifact format this pack is written in. Frozen at `1.0` for v1: the checksum rule below is defined against exactly this format, so a reader must know which format it is verifying before it verifies anything. Format `1.0` also pins the numeric admission profile the canonicalization runs under -- lossless binary64. Every number in an admitted pack must be a finite IEEE 754 binary64 value, and an integer is admitted only when it converts to binary64 without loss, so `2**53 + 1` is refused rather than silently signed under the name of `2**53`; non-finite values (NaN, the infinities) have no JSON form and are refused outright. This belongs to the format rather than to the checksum because it decides *which documents have a canonical form at all*: two implementations that agreed on the hash but disagreed on whether a given number was admissible would not agree on which packs exist. A future format may widen or narrow that profile, which is exactly why the format is named inside the artifact and read before anything is verified."
+        },
+        "builder_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the pack builder that assembled this artifact."
+        },
+        "normalized_request": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackNormalizedRequest",
+          "description": "The exact normalized request this pack was built from."
+        },
+        "authorization_context": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackAuthorizationContext",
+          "description": "The complete authority context the build ran under. Historical reproducibility context, never a live grant."
+        },
+        "evidence_versions": {
+          "type": "array",
+          "description": "Exactly the L0 evidence identities this pack selected, in deterministic ascending order by identifier then checksum, with no duplicate, addition, or omission. Not a superset of what was selected and not a summary of it: the set itself, so a reproduction can be checked rather than believed.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackEvidenceReference"
+          },
+          "maxItems": 500
+        },
+        "record_versions": {
+          "type": "array",
+          "description": "Exactly the union of the governed-record identities this pack selected across `records`, `history`, and `context_models`, in deterministic ascending order by record identifier then version, with no duplicate, addition, or omission.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordVersionReference"
+          },
+          "maxItems": 1500
+        },
+        "freshness": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionFreshness",
+          "description": "The projection versions and watermarks this pack was actually served from, under the same strict rule every other projection-served read in this contract states."
+        },
+        "retrieval_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the retrieval configuration that produced the candidate set."
+        },
+        "ranking_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the ranking configuration applied to the authorized candidate set."
+        },
+        "reranking_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the reranking configuration applied after ranking."
+        },
+        "selection_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the selection configuration that chose what fit the budget."
+        },
+        "tokenizer_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the tokenizer every `token_count` in this pack was measured with."
+        },
+        "tokenizer_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of that tokenizer. Token counts are only reproducible against an exact tokenizer identity and version."
+        },
+        "summarizer_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Version of the summarizer applied while producing this pack, or the literal `disabled` when none was used. Required either way: an absent field would leave a reader unable to tell a build that summarized nothing from one whose summarizer was simply never recorded."
+        },
+        "model_versions": {
+          "type": "object",
+          "description": "Open map of model role to the exact model version used in that role. Required but allowed to be empty, which is how a build that used no model at all states so explicitly rather than by omission.",
+          "propertyNames": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode"
+          },
+          "additionalProperties": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier"
+          }
+        },
+        "canonical_resolution_time": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "The instant the canonical knowledge in this pack was resolved at. Every selected item is judged current, historical, valid, or superseded against exactly this instant, and it is additionally an inclusive upper bound on every event and provenance instant a selected item carries: equality passes, strictly later is refused. For a selected `evidence.EvidenceArtifact` that covers `temporal.event_at`, `observed_at`, `ingested_at`, and `recorded_at`, `source.retrieved_at`, every `provenance_history[].occurred_at`, and every `provenance_history[].evidence[].source.retrieved_at`. For a selected `memory.GovernedRecord` in `records`, `history`, or `context_models` it covers `provenance.temporal.event_at`, `observed_at`, `ingested_at`, and `recorded_at`, every `provenance.sources[].retrieved_at`, every `provenance.history[].occurred_at`, every `provenance.history[].evidence[].source.retrieved_at`, `provenance.assertion.asserted_at`, every `provenance.assertion.evidence[].source.retrieved_at`, and `provenance.extraction.extracted_at`. It deliberately does not bound `provenance.assertion.proposed_valid_from` or `proposed_valid_until`: those are proposed effective dates, and an assertion about the future is a claim rather than an act that had not happened. This bound applies to selection into a pack only; the generic record and evidence rules are unchanged, and an out-of-range instant is a refusal to select, never a repair -- provenance is append-only, so nothing is dropped or truncated to make an item selectable."
+        },
+        "generated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this pack was generated. Equal to `canonical_resolution_time`: a deterministic build is logically complete at the instant it resolved at, and letting wall-clock generation time drift from it would make two otherwise identical builds hash differently."
+        },
+        "artifact_canonicalization": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming the canonicalization the checksum below was computed over. Frozen at `rfc8785` in v1: a checksum is only checkable against a stated, exactly specified canonical form, and an unrecognized value fails closed rather than being verified under a guessed one. Pack format 1.0 applies RFC 8785 byte serialization to an admitted I-JSON data model: every number must be a finite binary64 before canonicalization, and any number token written in integer form -- and any direct host-language integral value -- is admitted only when converting it to binary64 and back to the mathematical integer is exact. Decimal and exponent tokens are read as finite binary64 under ordinary JCS rules, with no requirement of an exact decimal rational representation. So `9007199254740992` and `1152921504606846976` are admitted while `9007199254740993` and `1152921504606846977` are refused, `1e400` is refused as non-finite, and `0.1` and `1e+21` are admitted. This is an admission rule, not a safe-integer range: exact larger integers such as powers of two stay valid. It refuses silent rounding of an integer identity or count without changing the RFC 8785 bytes any admitted document serializes to."
+        },
+        "artifact_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackDigest",
+          "description": "SHA-256 of the RFC 8785 canonical UTF-8 bytes of this complete result with exactly two members removed: the result's own `pack_id` and this field. Nothing else is excluded -- not the generation time, the authority context, the freshness statement, the policy or configuration versions, the budget, the sections, the citations, or any selected content -- so any change to any of them changes the digest. What is hashed is the *admitted v1 data model's* RFC 8785 canonical UTF-8 bytes, not the bytes as they happened to arrive: the document is first admitted under the numeric profile `pack_format_version` pins and the rest of the v1 data model (object member names are strings and no member name is duplicated, strings are valid Unicode scalar sequences with no lone surrogate), and only then canonicalized and hashed. So received whitespace, member order, number spelling, and optional string escaping do not reach the digest -- RFC 8785 defines them away -- while a document that is not admissible at all has no digest rather than a digest of some repaired version of itself. Member names are ordered by unsigned UTF-16 code unit and numbers rendered by ECMAScript `Number::toString`, both as RFC 8785 requires."
+        }
+      },
+      "required": [
+        "pack_format_version",
+        "builder_version",
+        "normalized_request",
+        "authorization_context",
+        "evidence_versions",
+        "record_versions",
+        "freshness",
+        "retrieval_version",
+        "ranking_version",
+        "reranking_version",
+        "selection_version",
+        "tokenizer_id",
+        "tokenizer_version",
+        "summarizer_version",
+        "model_versions",
+        "canonical_resolution_time",
+        "generated_at",
+        "artifact_canonicalization",
+        "artifact_checksum"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ContextPackBuildInput": {
+      "title": "ContextPackBuildInput",
+      "description": "Input for `context_pack.build`. Workspace-scoped: the workspace, principal, scopes, and purpose are the request envelope's; this payload never carries a second, independent copy of any of them, and selecting content never grants new authority beyond what the envelope already carries. Deliberately minimal: no view selector, no point-in-time selector, no pagination, and no persistence, expiry, retention, snapshot, or job control. The v1 operation resolves the current canonical view synchronously and persists nothing, so none of those controls has a meaning here, and a payload that smuggles one in is rejected rather than ignored.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryQuery",
+          "description": "Original caller query this pack is built for. The server normalizes it; the normalized form appears only on the result's `reproducibility.normalized_request`."
+        },
+        "mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackMode",
+          "description": "How to build the pack. v1 recognizes only `deterministic_view`."
+        },
+        "token_budget": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackTokenBudget",
+          "description": "Bounded, strictly positive maximum token budget for the built pack."
+        },
+        "domain_scope": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/RecordDomainScope",
+          "description": "Restrict governed-record selection to this domain scope, when set."
+        },
+        "record_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecordType",
+          "description": "Restrict governed-record selection to this record type, when set."
+        }
+      },
+      "required": ["query", "mode", "token_budget"],
+      "unevaluatedProperties": false
+    },
+    "ContextPackBuildResult": {
+      "title": "ContextPackBuildResult",
+      "description": "Result of `context_pack.build`: the original query, the model-facing sections, the selected L0 evidence, current canonical L2 records, supporting history and L3 context models, the exact citations every section and selected item rests on, the conflicts and uncertainties the pack surfaces rather than resolving, the policy and budget omissions, token accounting, and the complete reproducibility record. Selecting and citing this content never grants new authority: `fresh_authorization_required` is always true, and possessing `pack_id` grants nothing on its own -- it is a content digest anyone can recompute, not a capability.",
+      "type": "object",
+      "properties": {
+        "pack_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackDigest",
+          "description": "Content-addressed identity of this pack, exactly equal to `reproducibility.artifact_checksum`. Two builds that produce the same content produce the same identity, and a changed pack can never keep an old one."
+        },
+        "mode": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackMode",
+          "description": "The mode this pack was built in, bound exactly to the request's mode."
+        },
+        "query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/MemoryQuery",
+          "description": "The original caller query this pack was built for, bound exactly to the request's query."
+        },
+        "sections": {
+          "type": "array",
+          "description": "The model-facing sections of this pack, ordered deterministically by `section_id`. May be empty for a valid pack that found nothing to say; every section that is present is non-empty and cited.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackSection"
+          },
+          "maxItems": 256
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Selected L0 evidence artifacts, ordered deterministically by identifier then content checksum. Every artifact is held to the complete resolution-time closure: `canonical_resolution_time` is an inclusive upper bound on every act and observation the artifact carries, not only on the instants this partition's own rule reads -- `temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`, `source.retrieved_at`, every `provenance_history[].occurred_at`, and every `provenance_history[].evidence[].source.retrieved_at`. Equality passes and only a strictly later instant is refused, and the refusal is a refusal rather than a repair: provenance is append-only, so an out-of-range instant is never dropped or truncated to make the artifact selectable. Its validity must contain the resolution instant inclusively -- `temporal.valid_from` no later than it and `temporal.valid_until` no earlier than it, both boundaries accepted at equality. `temporal.superseded_at` must be absent or strictly after the resolution instant: supersession is exclusive where the closure is inclusive, because an artifact replaced *at* the instant a pack resolved was already not the live one, so equality is rejected here rather than accepted.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/EvidenceArtifact"
+          },
+          "maxItems": 500
+        },
+        "records": {
+          "type": "array",
+          "description": "Selected current, canonical L2 governed records, ordered deterministically by record identifier then version. Every record is held to the complete resolution-time closure: `canonical_resolution_time` is an inclusive upper bound on every act and observation nested anywhere in its provenance, not only on the instants this partition's own rule reads -- `provenance.temporal.event_at`, `observed_at`, `ingested_at` and `recorded_at`, every `provenance.sources[].retrieved_at`, every `provenance.history[].occurred_at`, every `provenance.history[].evidence[].source.retrieved_at`, `provenance.assertion.asserted_at`, every `provenance.assertion.evidence[].source.retrieved_at`, and `provenance.extraction.extracted_at`. Equality passes and only a strictly later instant is refused, and the refusal is a refusal rather than a repair. Its validity must contain the resolution instant inclusively -- `provenance.temporal.valid_from` no later than it and `provenance.temporal.valid_until` no earlier than it, both boundaries accepted at equality; a version whose validity begins only afterwards was not yet in force, and one that expired before it was no longer the answer. The version must be current and unsuperseded at that instant: `currentness` exactly `current`, and `provenance.temporal.superseded_at` absent outright, irrespective of timestamp. Not merely absent at or before the resolution instant: a current version records no supersession at all, so a `superseded_at` strictly after the resolution instant is refused exactly as one at or before it is. A version that states when it was replaced belongs to `history`, whichever side of the resolution instant that statement falls on. `provenance.assertion.proposed_valid_from`/`proposed_valid_until` are deliberately not bounded by any of this -- a proposed effective date is a claim about the future rather than an act that had to have happened, and a record valid now may propose taking effect later.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
+          },
+          "maxItems": 500
+        },
+        "history": {
+          "type": "array",
+          "description": "Selected historical canonical L2 governed record versions -- versions that were canonical knowledge and had already been superseded at the canonical-resolution time -- ordered deterministically by record identifier then version. May be empty. Every version is held to the same complete resolution-time closure `records` states, over exactly the same nested provenance paths, inclusive at equality and refused rather than repaired past it. `provenance.temporal.superseded_at` is required and must be at or before the resolution instant, with equality *accepted*: a version replaced exactly at the instant a pack resolved was already history by it, and one superseded only afterwards was still canonical then and is not this partition's to carry. That is the mirror image of the `evidence` rule, where equality is rejected, and the two differ because they are asking opposite questions about the same boundary. Validity containment is deliberately *not* required here: a historical version's validity window may have closed long before the resolution instant -- that is what makes it historical -- so demanding containment would empty the partition of exactly the versions it exists to carry. Note also that `recorded_at <= superseded_at <= resolution` already follows from the intrinsic record rules composed with the supersession bound above, so a future `ingested_at`/`recorded_at` on a historical version is refused by those before the nested closure is ever consulted.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
+          },
+          "maxItems": 500
+        },
+        "context_models": {
+          "type": "array",
+          "description": "Selected current, canonical L3 context-model governed records, ordered deterministically by record identifier then version. May be empty. Held to exactly the same current rules `records` states, at L3 rather than L2: the same complete resolution-time closure over the same nested provenance paths, inclusive at equality and refused rather than repaired past it; the same inclusive validity containment of the resolution instant at both boundaries; and the same requirement to be current and unsuperseded at that instant, with `provenance.temporal.superseded_at` absent outright, irrespective of timestamp -- a value strictly after the resolution instant is refused exactly as one at or before it is. Only the governance layer differs -- `layer` exactly `l3` -- and a context model is otherwise no more selectable than an L2 record would be under the same temporal facts.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/memory.schema.json#/$defs/GovernedRecord"
+          },
+          "maxItems": 500
+        },
+        "citations": {
+          "type": "array",
+          "description": "Exact citations binding this pack's sections and selected content to immutable evidence or governed record versions, ordered deterministically by `citation_id`. May be empty only when this pack selected nothing and states no section.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackCitation"
+          },
+          "maxItems": 2000
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "Conflicts among cited content this pack surfaces rather than silently resolving, in deterministic order. May be empty.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackConflict"
+          },
+          "maxItems": 256
+        },
+        "uncertainties": {
+          "type": "array",
+          "description": "Uncertainties this pack surfaces rather than silently resolving, in deterministic order. May be empty.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackUncertainty"
+          },
+          "maxItems": 256
+        },
+        "omissions": {
+          "type": "array",
+          "description": "Policy or budget reasons content the caller might otherwise expect was left out of this pack, in deterministic order. May be empty.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Omission"
+          },
+          "maxItems": 256
+        },
+        "budget": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackBudget",
+          "description": "Token budget accounting for this pack."
+        },
+        "reproducibility": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/context-pack.schema.json#/$defs/ContextPackReproducibility",
+          "description": "Everything a second build needs to reproduce this pack byte for byte, including the checksum that makes it content-addressed."
+        },
+        "fresh_authorization_required": {
+          "type": "boolean",
+          "description": "Always true: following any citation in this pack always requires fresh authorization against the cited evidence or record. Possessing this pack, or `pack_id`, grants no access on its own."
+        }
+      },
+      "required": [
+        "pack_id",
+        "mode",
+        "query",
+        "sections",
+        "evidence",
+        "records",
+        "history",
+        "context_models",
+        "citations",
+        "conflicts",
+        "uncertainties",
+        "omissions",
+        "budget",
+        "reproducibility",
+        "fresh_authorization_required"
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

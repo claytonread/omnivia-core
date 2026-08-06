@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
+  "title": "OmniVia Core Application Contract v1 - release and operation compatibility matrix",
+  "description": "Shapes for stating which component releases implement which contract and workspace-format version windows, which operations exist at which contract version and lifecycle state, and which capabilities exist at which contract version -- each qualified by how thoroughly it has actually been verified. This document declares no root type and registers no concrete releases, operations, or capabilities of its own; it is a definition container only.",
+  "$defs": {
+    "OperationCompatibilityState": {
+      "title": "OperationCompatibilityState",
+      "description": "Open, dot-namespaced code naming an operation's lifecycle state, such as `stable` or `experimental` or `deprecated` or `removed`. Open by design so a compatible minor release can add states without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "QualificationState": {
+      "title": "QualificationState",
+      "description": "Open, dot-namespaced code naming how thoroughly a release or capability combination has actually been verified, such as `development` or `unverified` or `qualified` or `supported`. Open by design so a compatible minor release can add states without breaking existing decoders. A combination absent this state, or carrying anything other than an explicitly verified state, must never be treated as supported: an empty or `unverified` entry is not evidence of support.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ComponentKind": {
+      "title": "ComponentKind",
+      "description": "Open, dot-namespaced code naming which component a compatibility entry describes, such as `core` or `runtime` or `cli` or `mcp` or `sdk`. Open by design so a compatible minor release can add components without breaking existing decoders.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ReleaseCompatibilityEntry": {
+      "title": "ReleaseCompatibilityEntry",
+      "description": "One concrete component release, the contract and workspace-format version windows it supports, and how thoroughly that support has been qualified. An entry's mere presence is not itself support evidence; `qualification_state` is.",
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/ComponentKind",
+          "description": "Which component this release identity names, such as `core` or `runtime` or `cli` or `mcp` or `sdk`."
+        },
+        "release_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Concrete build version of this release."
+        },
+        "api_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version this release applies by default."
+        },
+        "supported_api_versions": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow",
+          "description": "Inclusive API contract version window this release supports."
+        },
+        "supported_workspace_versions": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/VersionWindow",
+          "description": "Inclusive workspace format version window this release supports."
+        },
+        "qualification_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/QualificationState",
+          "description": "How thoroughly this release's declared support windows have actually been verified. A development or unverified state must never be read as supported."
+        }
+      },
+      "required": [
+        "component",
+        "release_version",
+        "api_version",
+        "supported_api_versions",
+        "supported_workspace_versions",
+        "qualification_state"
+      ],
+      "unevaluatedProperties": false
+    },
+    "CapabilityCompatibilityEntry": {
+      "title": "CapabilityCompatibilityEntry",
+      "description": "One capability's compatibility posture: the concrete capability and version, when it was introduced, and how thoroughly it has been qualified. Mirrors `ReleaseCompatibilityEntry`'s qualification discipline: presence in this list is not itself support evidence.",
+      "type": "object",
+      "properties": {
+        "capability": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/CapabilityRef",
+          "description": "The concrete capability and version this entry describes."
+        },
+        "introduced_in": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version in which this capability first appeared."
+        },
+        "qualification_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/QualificationState",
+          "description": "How thoroughly this capability has actually been verified. A development or unverified state must never be read as supported."
+        }
+      },
+      "required": ["capability", "introduced_in", "qualification_state"],
+      "unevaluatedProperties": false
+    },
+    "OperationCompatibilityEntry": {
+      "title": "OperationCompatibilityEntry",
+      "description": "One operation's compatibility posture: when it was introduced, its current lifecycle state, and how thoroughly that lifecycle state has actually been verified. `state` and `qualification_state` are deliberately separate axes: an operation's mere presence in this list, or its lifecycle being `stable`, must never be read as evidence that it has been qualified -- only `qualification_state` is that evidence.",
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/OperationName",
+          "description": "Operation this entry describes."
+        },
+        "introduced_in": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version in which this operation first appeared."
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityState",
+          "description": "This operation's current lifecycle state (`stable`, `experimental`, `deprecated`, `removed`). Independent of `qualification_state`: a `stable` lifecycle state is not itself qualification evidence."
+        },
+        "qualification_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/QualificationState",
+          "description": "How thoroughly this operation has actually been verified, independent of its lifecycle `state`. A development or unverified state must never be read as supported."
+        },
+        "deprecation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/compatibility.schema.json#/$defs/Deprecation",
+          "description": "Deprecation notice, present when `state` marks this operation as deprecated."
+        }
+      },
+      "required": ["operation", "introduced_in", "state", "qualification_state"],
+      "unevaluatedProperties": false
+    },
+    "CompatibilityMatrix": {
+      "title": "CompatibilityMatrix",
+      "description": "The compatibility matrix foundation: every known release's supported version windows, every known operation's introduction version, lifecycle state, and qualification state, and every known capability's compatibility posture. This shape is not itself evidence that anything it lists is supported -- each entry's own `qualification_state` is the only thing a caller may treat as a support claim; neither an entry's mere presence nor an operation's lifecycle `state` implies qualification, and an empty or unverified matrix must never be read as 'nothing is unsupported'.",
+      "type": "object",
+      "properties": {
+        "releases": {
+          "type": "array",
+          "description": "Known component releases and the version windows and qualification state they support.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/ReleaseCompatibilityEntry"
+          },
+          "maxItems": 1024
+        },
+        "operations": {
+          "type": "array",
+          "description": "Known operations and their compatibility posture.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/OperationCompatibilityEntry"
+          },
+          "maxItems": 4096
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Known capabilities and their compatibility posture.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CapabilityCompatibilityEntry"
+          },
+          "maxItems": 4096
+        }
+      },
+      "required": ["releases", "operations", "capabilities"],
+      "unevaluatedProperties": false
+    }
+  }
+}
