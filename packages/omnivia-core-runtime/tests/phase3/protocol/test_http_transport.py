@@ -31,9 +31,9 @@ from omnivia_core_runtime.service.http_transport import (
     CONTENT_TYPE,
     PROBE_PATH,
     HttpBind,
+    HttpListener,
     HttpTls,
     HttpTransportError,
-    LoopbackHttpServer,
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.main import build_parser
@@ -221,7 +221,7 @@ def _post(
 class _Serving:
     """One started adapter, its port, and the dispatcher behind it."""
 
-    def __init__(self, server: LoopbackHttpServer, dispatch: CountingDispatch) -> None:
+    def __init__(self, server: HttpListener, dispatch: CountingDispatch) -> None:
         self.server = server
         self.dispatch = dispatch
         self.port = int(server.url.rsplit(":", 1)[1])
@@ -230,7 +230,7 @@ class _Serving:
 @pytest.fixture
 def serving() -> Iterator[_Serving]:
     dispatch = CountingDispatch()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
     )
     server.start()
@@ -414,7 +414,7 @@ def test_local_ipc_and_http_answer_the_same_accepted_bytes_identically() -> None
         finally:
             local.stop()
 
-        http = LoopbackHttpServer(
+        http = HttpListener(
             router=router, principal=PRINCIPAL, resolver=_resolver
         )
         http.start()
@@ -450,7 +450,7 @@ def test_a_slow_client_is_bounded_by_a_total_deadline_not_a_per_read_one() -> No
     server let go, rather than the moment the client noticed.
     """
     dispatch = CountingDispatch()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(dispatch),
         principal=PRINCIPAL,
         resolver=_resolver,
@@ -517,7 +517,7 @@ def test_the_request_deadline_defaults_to_the_local_transport_s_reviewed_value()
     None
 ):
     """The number is inherited from the reviewed local transport; the semantics are not."""
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(CountingDispatch()), principal=PRINCIPAL, resolver=_resolver
     )
 
@@ -529,7 +529,7 @@ def test_the_request_deadline_defaults_to_the_local_transport_s_reviewed_value()
 
 def test_the_default_bind_is_ipv4_loopback_and_serves() -> None:
     dispatch = CountingDispatch()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(dispatch), principal=PRINCIPAL, resolver=_resolver
     )
 
@@ -549,7 +549,7 @@ def test_the_default_bind_is_ipv4_loopback_and_serves() -> None:
 @pytest.mark.skipif(not socket.has_ipv6, reason="requires IPv6")
 def test_ipv6_loopback_is_opt_in_and_binds() -> None:
     dispatch = CountingDispatch()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(dispatch),
         principal=PRINCIPAL,
         resolver=_resolver,
@@ -596,11 +596,11 @@ def test_a_port_outside_the_range_refuses(port: int) -> None:
 def test_the_adapter_refuses_to_exist_without_a_credential_resolver() -> None:
     """Absent is a configuration error, never a permissive default."""
     with pytest.raises(HttpTransportError, match="credential resolver"):
-        LoopbackHttpServer(router=_router(CountingDispatch()), principal=PRINCIPAL)
+        HttpListener(router=_router(CountingDispatch()), principal=PRINCIPAL)
 
 
 def test_starting_twice_is_refused() -> None:
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(CountingDispatch()), principal=PRINCIPAL, resolver=_resolver
     )
     server.start()
@@ -957,20 +957,20 @@ def test_the_shared_router_object_is_handed_to_both_transports() -> None:
         for node in ast.walk(serve)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id in {"LocalSocketServer", "LoopbackHttpServer", "Grant"}
+        and node.func.id in {"LocalSocketServer", "HttpListener", "Grant"}
     }
-    assert set(calls) == {"LocalSocketServer", "LoopbackHttpServer", "Grant"}
+    assert set(calls) == {"LocalSocketServer", "HttpListener", "Grant"}
     assert calls["LocalSocketServer"]["router"] == "router"
-    assert calls["LoopbackHttpServer"]["router"] == "router"
+    assert calls["HttpListener"]["router"] == "router"
 
     # And the declared principal is the *same name* the dispatcher's Grant is built
     # from. Passing a literal here, or a different constant, would declare one
     # principal over a dispatcher acting as another -- which admits sessions for the
     # declared one and then runs them as the Grant's. The adapter refuses that
     # combination at construction, so this pins the shipped wiring never to reach it.
-    assert calls["LoopbackHttpServer"]["principal"] == "LOCAL_PRINCIPAL"
+    assert calls["HttpListener"]["principal"] == "LOCAL_PRINCIPAL"
     assert calls["Grant"]["principal"] == "LOCAL_PRINCIPAL"
-    assert calls["LoopbackHttpServer"]["principal"] == calls["Grant"]["principal"]
+    assert calls["HttpListener"]["principal"] == calls["Grant"]["principal"]
 
 
 def test_the_operation_field_names_the_application_branch() -> None:

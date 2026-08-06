@@ -41,9 +41,9 @@ from omnivia_core_runtime.service.http_transport import (
     CONTENT_TYPE,
     PROBE_PATH,
     HttpBind,
+    HttpListener,
     HttpTls,
     HttpTransportError,
-    LoopbackHttpServer,
     parse_http_endpoint,
 )
 from omnivia_core_runtime.service.operations import success
@@ -291,7 +291,7 @@ def _client(material: Material) -> ssl.SSLContext:
 
 
 class Serving:
-    def __init__(self, server: LoopbackHttpServer, dispatch: CountingDispatch) -> None:
+    def __init__(self, server: HttpListener, dispatch: CountingDispatch) -> None:
         self.server = server
         self.dispatch = dispatch
         self.url = server.url
@@ -310,7 +310,7 @@ def _serve(
     resolver: Any = _resolver,
 ) -> Serving:
     dispatch = CountingDispatch()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(dispatch),
         principal=PRINCIPAL,
         resolver=resolver,
@@ -602,7 +602,7 @@ def test_a_non_loopback_bind_without_tls_leaves_nothing_listening(
     port = _reserved_port()
 
     with pytest.raises(HttpTransportError):
-        LoopbackHttpServer(
+        HttpListener(
             router=_router(CountingDispatch()),
             principal=PRINCIPAL,
             resolver=_resolver,
@@ -635,7 +635,7 @@ def test_tls_material_that_cannot_be_loaded_refuses_startup_and_binds_no_socket(
         ),
     }[case]
     port = _reserved_port()
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(CountingDispatch()),
         principal=PRINCIPAL,
         resolver=_resolver,
@@ -994,7 +994,7 @@ def test_a_tls_material_refusal_publishes_no_certificate_path(tmp_path: Path) ->
     attribute access from anything that logs the refusal.
     """
     planted = tmp_path / f"{PLANTED_CREDENTIAL}.pem"
-    server = LoopbackHttpServer(
+    server = HttpListener(
         router=_router(CountingDispatch()),
         principal=PRINCIPAL,
         resolver=_resolver,
