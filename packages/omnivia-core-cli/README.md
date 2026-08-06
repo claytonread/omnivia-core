@@ -12,10 +12,17 @@ surface depends on the public `omnivia-core` contracts, and nothing in
 ## Commands
 
 - `omnivia --runtime-state <dir> discover` — show the advertised service, if any.
-- `omnivia --runtime-state <dir> health|readiness` — emit the request envelope.
+  Answers from the published descriptor alone; it dials nothing.
+- `omnivia --runtime-state <dir> health|readiness` — call `core.health` /
+  `core.readiness` on the running service over the installation-local OVC1
+  endpoint and render what it answers. Pass `--json` to print the request
+  envelope instead of sending it.
 - `omnivia --runtime-state <dir> workspace show` — call `workspace.inspect` on
   the running service over the installation-local OVC1 endpoint and render the
   workspace descriptor.
+
+A command that dials exits non-zero when the service cannot be reached. None of
+them reports on a service it did not contact.
 
 ## Dependency direction
 
@@ -29,7 +36,10 @@ omnivia-core-cli  -->  omnivia-core-client  -->  omnivia-core
 
 ## Status
 
-`workspace show` is the first subcommand that calls a service rather than
-printing the envelope it would have sent. It is local IPC only: a `pipe://`
-endpoint is refused rather than dialled, so the command does not work on
-Windows yet.
+The calling subcommands are local IPC only: a `pipe://` endpoint is refused
+rather than dialled, so `health`, `readiness` and `workspace show` do not work
+on Windows yet. `discover` reads the descriptor and is unaffected.
+
+The product operation catalogue remains out of scope here, per the B9/B10
+completion record: `workspace.inspect` and the three service-lifecycle
+operations are what this CLI can reach.
