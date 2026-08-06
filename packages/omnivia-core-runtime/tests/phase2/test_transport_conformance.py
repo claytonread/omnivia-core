@@ -21,6 +21,7 @@ from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.ovc1 import MAGIC, OVC1Error
 from omnivia_core_runtime.service.transport import (
     LOCAL_SCHEME,
+    MAX_SOCKET_PATH_BYTES,
     EndpointProbe,
     EndpointScheme,
     InProcessTransport,
@@ -29,6 +30,7 @@ from omnivia_core_runtime.service.transport import (
     LocalSocketTransport,
     Transport,
     TransportError,
+    _staging_socket_path,
     decode_frame,
     encode_frame,
     endpoint_for_path,
@@ -275,6 +277,101 @@ def test_the_socket_is_not_world_accessible(socket_dir: Path) -> None:
             return
         mode = socket_path.stat().st_mode & 0o777
     assert mode == 0o600, f"socket mode is {oct(mode)}"
+
+
+def _socket_path_of_length(directory: Path, length: int) -> Path:
+    """A socket path under `directory` that is exactly `length` bytes."""
+    fill = length - len(str(directory).encode("utf-8")) - len("/.sock")
+    path = directory / f"{'s' * fill}.sock"
+    assert len(str(path).encode("utf-8")) == length
+    return path
+
+
+def _kernel_binds(path: Path) -> bool:
+    """Whether this kernel accepts `path` in `sockaddr_un.sun_path`.
+
+    The oracle for the guard: a real `bind`, not a restatement of the constant the
+    guard is derived from.
+    """
+    import socket as socket_module
+
+    probe = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    try:
+        probe.bind(str(path))
+    except OSError:
+        return False
+    else:
+        path.unlink()
+        return True
+    finally:
+        probe.close()
+
+
+@pytest.mark.skipif(
+    LOCAL_SCHEME is not EndpointScheme.UNIX,
+    reason="a `sun_path` cap is a Unix-socket limit; a pipe name is bounded by "
+    "construction",
+)
+def test_every_accepted_socket_path_length_really_binds(socket_dir: Path) -> None:
+    """The length guard and the kernel agree, byte for byte, at the boundary.
+
+    Sweeping real `start()` calls across the boundary is the point. The two existing
+    over-length cases use paths far past the cap -- 120 filler characters, or three
+    40-character directory components -- so neither ever lands in the window where
+    the guard and the kernel disagreed: `start()` binds a *staging* name 11 to 15
+    bytes longer than the endpoint, so on macOS every endpoint from 89 to 104 bytes
+    passed the guard and then failed the bind, surfacing as the generic
+    "transport start failed" rather than as a length problem. That window is where
+    a shipping app lives: `~/Library/Application Support/OmniVia/runtime/<ws-id>/
+    service.sock` is 92 bytes on a normal macOS account.
+
+    Nothing here hardcodes 104. The accepted set is discovered by asking the code,
+    and the kernel's own cap is discovered by binding.
+    """
+    # Every length here is a real bind, so the sweep is bracketed rather than run
+    # from the shortest possible name: the cap cannot fall outside 86-92 bytes for
+    # any pid width a kernel will issue, and 24 bytes of margin below the field size
+    # brackets that on both platforms.
+    shortest = max(
+        len(str(socket_dir).encode("utf-8")) + len("/.sock") + 1,
+        MAX_SOCKET_PATH_BYTES - 24,
+    )
+    longest_accepted = 0
+    refused: list[int] = []
+    for length in range(shortest, MAX_SOCKET_PATH_BYTES + 4):
+        candidate = _socket_path_of_length(socket_dir, length)
+        server = LocalSocketServer(dispatcher=make_dispatcher(), path=candidate)
+        try:
+            server.start()
+        except TransportError as error:
+            assert str(error) == "local service endpoint path is too long", (
+                f"{length}-byte endpoint failed for an unstated reason: {error}"
+            )
+            refused.append(length)
+        else:
+            server.stop()
+            assert not refused, (
+                f"{length} bound after {refused[0]} was refused: the cap is not a cap"
+            )
+            longest_accepted = length
+
+    assert longest_accepted >= shortest, "nothing was accepted; the sweep proves nothing"
+    assert refused, "nothing was refused; the sweep never reached the cap"
+    assert refused[0] == longest_accepted + 1
+
+    # And the guard is not merely conservative: the first length it refuses is one
+    # the kernel would refuse too. Only where `sun_path` is exactly
+    # MAX_SOCKET_PATH_BYTES -- macOS and BSD. On Linux it is 108, and this guard is
+    # deliberately the macOS floor so a workspace that works there works here, which
+    # leaves real headroom above the first refusal.
+    sun_path_is_the_floor = not _kernel_binds(
+        _socket_path_of_length(socket_dir, MAX_SOCKET_PATH_BYTES)
+    )
+    if sun_path_is_the_floor:
+        assert _kernel_binds(_socket_path_of_length(socket_dir, longest_accepted))
+        assert not _kernel_binds(
+            _staging_socket_path(_socket_path_of_length(socket_dir, refused[0]))
+        )
 
 
 def test_calling_an_absent_socket_reports_it_without_disclosing_the_path(
