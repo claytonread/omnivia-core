@@ -65,11 +65,16 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 # OVC1 framing or waiting without a bound.
 UNARY_BOUNDARY_SECONDS = 0.05
 
-#: Unix domain socket paths are bounded by `sockaddr_un.sun_path`: 104 bytes on
-#: macOS and BSD, 108 on Linux. The lower bound is used so a workspace that works on
-#: Linux is not silently unservable on macOS. This is an OS limit, not something the
-#: runtime can engineer away, so it is reported clearly instead of surfacing as a
-#: bare "AF_UNIX path too long".
+#: The size of the `sockaddr_un.sun_path` field: 104 bytes on macOS and BSD, 108 on
+#: Linux. The lower bound is used so a workspace that works on Linux is not silently
+#: unservable on macOS. This is an OS limit, not something the runtime can engineer
+#: away, so it is reported clearly instead of surfacing as a bare "AF_UNIX path too
+#: long".
+#:
+#: It is the size of the field, *not* the longest usable path: `sun_path` is
+#: NUL-terminated, so the last byte is the terminator. Measured by raw `bind()` on
+#: macOS 25.5: 103 bytes binds, 104 raises "AF_UNIX path too long". Callers go
+#: through `assert_socket_path_fits`, which accounts for the terminator.
 MAX_SOCKET_PATH_BYTES = 104
 
 #: The local machine's named-pipe namespace. Written escaped rather than as a raw
@@ -250,16 +255,42 @@ def parse_endpoint(endpoint: str) -> LocalEndpoint | None:
 
 
 def assert_socket_path_fits(path: Path) -> None:
-    """Refuse a socket path the OS cannot represent, with the numbers.
+    """Refuse a socket path the OS cannot represent.
 
-    A deeply nested workspace genuinely hits this, so the message names the limit and
-    the actual length rather than leaving a caller to discover the cap by reading
-    `man unix`. Unix domain sockets only: a pipe name is derived and bounded by
-    construction, so there is no equivalent cap to hit.
+    `path` is the string that will actually reach `bind` or `connect`, which is not
+    always the endpoint a caller named: a server binds the longer staging name from
+    `_staging_socket_path` and renames it into place, so on that side it is the
+    staging name that has to fit. Checking the string that is about to be handed to
+    the kernel is what keeps this guard and the kernel in agreement; a constant
+    budget for the staging suffix could not, because its width follows the pid.
+
+    Unix domain sockets only: a pipe name is derived and bounded by construction, so
+    there is no equivalent cap to hit.
+
+    The refusal deliberately carries no numbers and no path. It is reached from
+    endpoint strings this runtime did not choose, and
+    `test_overlong_endpoint_diagnostics_are_fixed_and_non_disclosing` pins the exact
+    text; `man unix` documents the cap for anyone who needs the figure.
     """
     encoded = len(str(path).encode("utf-8"))
-    if encoded > MAX_SOCKET_PATH_BYTES:
+    # `+ 1` is the NUL terminator: `sun_path` is a fixed-size C string, so a path of
+    # exactly MAX_SOCKET_PATH_BYTES has nowhere to put the terminator and the kernel
+    # refuses it. A plain `>` here accepted that path and let the bind fail instead.
+    if encoded + 1 > MAX_SOCKET_PATH_BYTES:
         raise TransportError("local service endpoint path is too long")
+
+
+def _staging_socket_path(path: Path) -> Path:
+    """The private name a socket is bound on before being renamed onto `path`.
+
+    Single-sourced because the length guard and the bind have to agree on the exact
+    string: this name is 11 to 15 bytes longer than the endpoint it becomes, and how
+    much longer depends on how many digits the pid has. Guarding the endpoint instead
+    left a window -- 89 to 104 bytes on macOS with a five-digit pid -- where the
+    guard passed and the bind then failed, and the width of that window moved between
+    launches of the same command.
+    """
+    return path.with_name(f".{path.name}.{os.getpid()}.binding")
 
 
 class _Channel(Protocol):
@@ -591,7 +622,11 @@ class LocalSocketServer:
         if not _HAS_AF_UNIX:
             raise TransportError("this platform cannot serve the requested endpoint")
         path = Path(endpoint.name)
-        assert_socket_path_fits(path)
+        # The staging name, not `path`: that is the string `_bind_socket` hands to
+        # `bind`, and it is the longer of the two. Checked here rather than there so
+        # a workspace that can never be served is refused before this creates
+        # directories and a bind lock for it.
+        assert_socket_path_fits(_staging_socket_path(path))
         path.parent.mkdir(parents=True, exist_ok=True)
 
         # Probe, bind and rename happen under one lock on the endpoint name.
@@ -627,7 +662,7 @@ class LocalSocketServer:
         # caller connecting there fails, and a racing service can bind the free name
         # and then be silently unlinked by this one. `rename` is atomic: the name
         # either refers to the previous socket or to this one, never to nothing.
-        staging = path.with_name(f".{path.name}.{os.getpid()}.binding")
+        staging = _staging_socket_path(path)
         if os.path.lexists(staging):
             staging.unlink()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
