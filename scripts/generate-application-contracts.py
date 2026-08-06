@@ -1415,6 +1415,74 @@ def typescript_doc(description: str, indent: str) -> list[str]:
     return [f"{indent}/**", *wrapped, f"{indent} */"]
 
 
+#: The emitted `Timestamp` guard: the declared `pattern`, then the calendar the
+#: pattern cannot express. Held here as a literal block rather than assembled
+#: from `lines.append` calls because the body is prose-heavy and the reason for
+#: every clause is the point.
+#:
+#: `Date.parse` is deliberately absent. It is the obvious way to ask ECMAScript
+#: whether a timestamp names an instant and it gives the wrong answer: on the
+#: pinned `descriptor-published-at-policy-v1` corpus a bare `Date.parse` accepts
+#: `2024-02-30T00:00:00Z` and `2026-02-29T00:00:00Z`, both of which the canonical
+#: schema and the Python binding refuse, because the ECMAScript Date constructor
+#: normalizes an out-of-range field by rolling forward instead of failing. The
+#: parse is therefore used only to *compute* a date, and the verdict comes from
+#: comparing that date's UTC fields back to the literals they were built from --
+#: any normalization shows up as a field that no longer matches, which is what
+#: makes a rolled-forward day, a 24th hour, a 60th minute and a leap second all
+#: refusals rather than silent corrections.
+#:
+#: `Date.UTC` is likewise avoided: it maps years 0-99 onto 1900-1999, so it would
+#: refuse `0050-06-15T00:00:00Z`, which the schema and Python both accept.
+#: `setUTCFullYear` carries the literal year through unmapped. Year 0000 is the
+#: one value the round-trip alone cannot separate -- ECMAScript can represent it
+#: and reports it back unchanged -- and the canonical schema's `format: date-time`
+#: refuses it, so the floor is stated explicitly.
+TYPESCRIPT_TIMESTAMP_GUARD = """\
+/**
+ * Return whether a value is a canonical RFC 3339 UTC `Timestamp` that names a real instant.
+ *
+ * `TIMESTAMP_PATTERN` fixes the spelling and cannot fix the calendar: `2026-13-01T00:00:00Z`
+ * satisfies it character for character. `Date.parse` is not the missing half -- it accepts
+ * `2024-02-30T00:00:00Z` and `2026-02-29T00:00:00Z` by rolling them forward into March, so a
+ * guard that trusted it would admit values this contract's other bindings refuse. The date is
+ * built from the literal fields instead, and every field is compared back: any value the
+ * constructor had to normalize disagrees with the literal it came from and is refused.
+ */
+export function isTimestamp(value: unknown): value is Timestamp {
+  if (typeof value !== "string" || !new RegExp(TIMESTAMP_PATTERN).test(value)) {
+    return false;
+  }
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const hour = Number(value.slice(11, 13));
+  const minute = Number(value.slice(14, 16));
+  const second = Number(value.slice(17, 19));
+  // Year 0000 is representable here and is not a `date-time` the canonical schema accepts.
+  if (year < 1) {
+    return false;
+  }
+  // `setUTCFullYear` rather than `Date.UTC`, which would remap years 0-99 onto 1900-1999.
+  const at = new Date(0);
+  at.setUTCFullYear(year, month - 1, day);
+  at.setUTCHours(hour, minute, second, 0);
+  return (
+    at.getUTCFullYear() === year &&
+    at.getUTCMonth() === month - 1 &&
+    at.getUTCDate() === day &&
+    at.getUTCHours() === hour &&
+    at.getUTCMinutes() === minute &&
+    at.getUTCSeconds() === second
+  );
+}"""
+
+
+def typescript_timestamp_guard() -> list[str]:
+    """The emitted `Timestamp` guard, as generator output lines."""
+    return TYPESCRIPT_TIMESTAMP_GUARD.split("\n")
+
+
 def typescript_catalogue_lines(value: CatalogueValue, indent: int) -> list[str]:
     """Render one validated catalogue value as TypeScript source lines.
 
@@ -1565,6 +1633,8 @@ def emit_typescript(contract: Contract) -> str:
                     )
                     lines.append("  }")
                     lines.append("}")
+                elif definition.name == "Timestamp":
+                    lines += typescript_timestamp_guard()
             lines.append("")
         elif definition.kind == "integer":
             lines += typescript_doc(definition.description, "")
@@ -1594,14 +1664,20 @@ def emit_typescript(contract: Contract) -> str:
             if definition.name == "ServiceEndpointDescriptor":
                 lines.append("")
                 lines += typescript_doc(
-                    "Return whether a structurally decoded descriptor satisfies mandatory endpoint semantics.",
+                    "Return whether a structurally decoded descriptor satisfies mandatory endpoint "
+                    "semantics. Checks exactly the fields `validate_service_endpoint_descriptor` "
+                    "checks in Python: a descriptor one binding publishes and the other refuses is "
+                    "two contracts, not one.",
                     "",
                 )
                 lines.append(
                     "export function isServiceEndpointDescriptorSemanticallyValid("
                     "value: ServiceEndpointDescriptor): boolean {"
                 )
-                lines.append("  return isServiceEndpointUri(value.endpoint_uri);")
+                lines.append(
+                    "  return isServiceEndpointUri(value.endpoint_uri) && "
+                    "isTimestamp(value.published_at);"
+                )
                 lines.append("}")
                 lines.append("")
                 lines += typescript_doc(

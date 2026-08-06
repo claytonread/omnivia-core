@@ -155,6 +155,43 @@ export type Timestamp = string;
 export const TIMESTAMP_PATTERN: string =
   "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]" +
   "{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])";
+/**
+ * Return whether a value is a canonical RFC 3339 UTC `Timestamp` that names a real instant.
+ *
+ * `TIMESTAMP_PATTERN` fixes the spelling and cannot fix the calendar: `2026-13-01T00:00:00Z`
+ * satisfies it character for character. `Date.parse` is not the missing half -- it accepts
+ * `2024-02-30T00:00:00Z` and `2026-02-29T00:00:00Z` by rolling them forward into March, so a
+ * guard that trusted it would admit values this contract's other bindings refuse. The date is
+ * built from the literal fields instead, and every field is compared back: any value the
+ * constructor had to normalize disagrees with the literal it came from and is refused.
+ */
+export function isTimestamp(value: unknown): value is Timestamp {
+  if (typeof value !== "string" || !new RegExp(TIMESTAMP_PATTERN).test(value)) {
+    return false;
+  }
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const hour = Number(value.slice(11, 13));
+  const minute = Number(value.slice(14, 16));
+  const second = Number(value.slice(17, 19));
+  // Year 0000 is representable here and is not a `date-time` the canonical schema accepts.
+  if (year < 1) {
+    return false;
+  }
+  // `setUTCFullYear` rather than `Date.UTC`, which would remap years 0-99 onto 1900-1999.
+  const at = new Date(0);
+  at.setUTCFullYear(year, month - 1, day);
+  at.setUTCHours(hour, minute, second, 0);
+  return (
+    at.getUTCFullYear() === year &&
+    at.getUTCMonth() === month - 1 &&
+    at.getUTCDate() === day &&
+    at.getUTCHours() === hour &&
+    at.getUTCMinutes() === minute &&
+    at.getUTCSeconds() === second
+  );
+}
 
 /**
  * A bounded non-negative duration in milliseconds.
@@ -2665,9 +2702,11 @@ export interface ServiceEndpointDescriptor {
 
 /**
  * Return whether a structurally decoded descriptor satisfies mandatory endpoint semantics.
+ * Checks exactly the fields `validate_service_endpoint_descriptor` checks in Python: a
+ * descriptor one binding publishes and the other refuses is two contracts, not one.
  */
 export function isServiceEndpointDescriptorSemanticallyValid(value: ServiceEndpointDescriptor): boolean {
-  return isServiceEndpointUri(value.endpoint_uri);
+  return isServiceEndpointUri(value.endpoint_uri) && isTimestamp(value.published_at);
 }
 
 /**

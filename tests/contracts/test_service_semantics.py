@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -434,3 +436,130 @@ def _boundary_accepts(published_at: object) -> bool:
     except (ContractDecodeError, ContractSemanticError):
         return False
     return True
+
+
+# --------------------------------------------------------------------------
+# The same descriptor, the same verdict, in both generated bindings
+#
+# The two languages had drifted apart once already and nothing said so: the
+# `published_at` check was added to Python alone, so for a year and a leap day
+# the generated TypeScript published descriptors this module refuses. Neither
+# existing parity gate could see it. `test_scalar_anchor_parity` compares the
+# *patterns* under both regex engines, and `test_service_endpoint_policy`
+# executes the compiled module against the *endpoint URI* corpus -- so both
+# stayed green while the descriptor validators checked different field sets.
+#
+# What is compared here is therefore the verdict on a whole descriptor, over
+# every string field crossed with every pinned probe value. That makes the gate
+# field-agnostic: enforcing any of the eight remaining patterned fields in one
+# binding and not the other fails here on a named field, without this test
+# needing to know which fields are enforced today.
+# --------------------------------------------------------------------------
+
+TYPESCRIPT_PATH = (
+    REPO_ROOT / "generated" / "typescript" / "application" / "v1" / "index.ts"
+)
+
+
+def _descriptor_probe_corpus() -> list[tuple[str, dict[str, Any]]]:
+    """Every string descriptor field, crossed with every pinned probe value.
+
+    Probes come from both policy fixtures rather than from invented strings, so a
+    case that separates the two bindings is one the contract already names.
+    """
+    endpoint_cases = _fixture()
+    probes = [
+        *(case["endpoint_uri"] for case in endpoint_cases["accepted"]),
+        *(case["endpoint_uri"] for case in endpoint_cases["rejected"]),
+        *(
+            case["published_at"]
+            for group in ("valid", "invalid", "compatibility")
+            for case in PUBLISHED_AT_CASES[group]
+            if isinstance(case["published_at"], str)
+        ),
+    ]
+    baseline = _descriptor_document(POLICY_CLEAN_ENDPOINT)
+    corpus = [("baseline", baseline)]
+    corpus += [
+        (f"{field}={probe!r}", {**baseline, field: probe})
+        for field, value in baseline.items()
+        if isinstance(value, str)
+        for probe in probes
+    ]
+    return corpus
+
+
+def _descriptor_verdict(document: dict[str, Any]) -> bool:
+    """Python's verdict on a structurally decodable descriptor document."""
+    descriptor = ServiceEndpointDescriptor.from_wire(document)
+    try:
+        validate_service_endpoint_descriptor(descriptor)
+    except ContractSemanticError:
+        return False
+    return True
+
+
+def test_the_generated_typescript_checks_the_same_fields_this_module_checks(
+    tmp_path: Path,
+) -> None:
+    """The generated bindings agree on every descriptor in the probe corpus.
+
+    Compiled with the pinned `tsc` and executed, not pattern-matched out of the
+    emitted source: a guard that reads correctly and computes something else is
+    exactly the failure a source-level assertion cannot see.
+    """
+    tsc = REPO_ROOT / "node_modules" / ".bin" / "tsc"
+    node = shutil.which("node")
+    assert tsc.is_file(), "run npm ci so the pinned TypeScript compiler is available"
+    assert node is not None, (
+        "node is required for the executable TypeScript parity gate"
+    )
+
+    subprocess.run(
+        [
+            str(tsc),
+            "--strict",
+            "--skipLibCheck",
+            "--target",
+            "ES2022",
+            "--module",
+            "commonjs",
+            "--outDir",
+            str(tmp_path),
+            str(TYPESCRIPT_PATH),
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    corpus = _descriptor_probe_corpus()
+    script = """
+const contracts = require(process.argv[1]);
+const corpus = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(
+  corpus.map((document) =>
+    contracts.isServiceEndpointDescriptorSemanticallyValid(document)),
+));
+"""
+    finished = subprocess.run(
+        [node, "-e", script, str(tmp_path / "index.js")],
+        input=json.dumps([document for _, document in corpus]),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    typescript = json.loads(finished.stdout)
+
+    python = [_descriptor_verdict(document) for _, document in corpus]
+    # Both outcomes must be reachable, or an all-refusing guard would pass here.
+    assert any(python) and not all(python)
+    disagreements = [
+        label
+        for (label, _), accepted, admitted in zip(
+            corpus, typescript, python, strict=True
+        )
+        if accepted is not admitted
+    ]
+    assert not disagreements, disagreements

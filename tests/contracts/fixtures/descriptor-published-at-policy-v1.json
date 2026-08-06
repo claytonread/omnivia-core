@@ -24,6 +24,14 @@
     {
       "id": "epoch-boundary",
       "published_at": "1970-01-01T00:00:00Z"
+    },
+    {
+      "id": "first-representable-year",
+      "published_at": "0001-01-01T00:00:00Z"
+    },
+    {
+      "id": "two-digit-year",
+      "published_at": "0050-06-15T00:00:00Z"
     }
   ],
   "invalid": [
@@ -102,6 +110,24 @@
     {
       "id": "leap-second",
       "published_at": "2016-12-31T23:59:60Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "year-zero",
+      "published_at": "0000-01-01T00:00:00Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "hour-twenty-four",
+      "published_at": "2026-07-30T24:00:00Z",
+      "error": "semantic",
+      "reason": "names_no_instant"
+    },
+    {
+      "id": "minute-sixty",
+      "published_at": "2026-07-30T11:60:00Z",
       "error": "semantic",
       "reason": "names_no_instant"
     },
