@@ -49,7 +49,7 @@ pythonpath = ["src"]
 # Ruff resolves the *nearest* `[tool.ruff]` above each file, so this section is
 # the configuration for every canonical tree -- `src`, `packages`, `baseline`,
 # `tests`, `scripts` -- and for anything added beside them.
-# `services/omnivia-memory` keeps its own narrower declaration (ADR-036 legacy
+# `services/omnivia-memory` keeps its own separate declaration (ADR-036 legacy
 # facade) and is unaffected by this one.
 #
 # Scope. A bare `ruff check` from the repository root now lints exactly what the
@@ -64,12 +64,25 @@ target-version = "py311"
 extend-exclude = ["benchmarks"]
 
 # The rule set is not pinned by enumerating it, because it cannot honestly be:
-# Ruff 0.16.1's default selection is 413 rules across 37 families -- not the
-# `E4`/`E7`/`E9`/`F` that this repository's prose and its sibling
-# `services/omnivia-memory` configuration both still describe. The canonical
-# trees satisfy all 413 with zero findings, so restating the old four-family
-# baseline here would *narrow* the accepted policy by 409 rules while reading
-# like a tightening.
+# Ruff 0.16.1's default selection is 413 rules -- 38 code prefixes, 34 upstream
+# linters -- and the canonical trees satisfy all of them with zero findings.
+# `E4`/`E7`/`E9`/`F`, which `services/omnivia-memory` selects for the ADR-036
+# legacy facade, resolves to 59, and the two sets are not nested: 41 in both,
+# 372 only in the default, 18 only in the facade selection. So restating the
+# four-family baseline here would not narrow policy -- it would change it in
+# both directions, dropping 372 rules and adding 18, while reading like a
+# tightening.
+#
+# Open decision, recorded not taken. Those 18 go unchecked in `src`, `packages`,
+# `baseline`, `tests` and `scripts` today, and they are correctness rules rather
+# than style -- `== None`, `== True`, `type(x) ==`, `lambda` assignment,
+# ambiguous names, imports after code, star imports:
+#
+#   E401 E402 E701 E702 E703 E711 E712 E713 E714 E721
+#   E731 E741 E742 E743 F403 F405 F406 F722
+#
+# `extend-select`-ing exactly those is the small, measurable version of
+# declaring a selection here. It is the owner's call, and it has not been made.
 #
 # `required-version` pins it instead, and Ruff is pre-1.0, so a minor bump is
 # where its rule selection is allowed to move -- `<0.17` is that boundary, not an
