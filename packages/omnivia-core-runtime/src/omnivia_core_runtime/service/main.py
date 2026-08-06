@@ -125,10 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--http-endpoint",
         default=None,
         help=(
-            "additionally serve HTTP v1 at this loopback endpoint, as a URL: "
-            "http://127.0.0.1:<port> or http://[::1]:<port>. A non-loopback or "
-            "wildcard host refuses startup, and so does serving without a trusted "
-            "credential resolver"
+            "loopback endpoint for HTTP v1, as a URL: http://127.0.0.1:<port> or "
+            "http://[::1]:<port>. Through this console script no value serves: "
+            "a non-loopback or wildcard host refuses on the endpoint rule, and "
+            "every remaining value refuses on the trusted credential resolver "
+            "this script does not supply, so a run that would serve exits 2 "
+            "either way. Only an embedder calling main() with a resolver can "
+            "bring the listener up. Ignored under --check-only, which does not "
+            "parse it"
         ),
     )
     parser.add_argument(
@@ -137,7 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check-only",
         action="store_true",
-        help="run startup, report readiness as JSON, then stop without serving",
+        help=(
+            "run startup, report readiness as JSON, then stop without serving. "
+            "This checks the workspace, not the invocation: neither --endpoint "
+            "nor --http-endpoint is parsed or validated in this mode"
+        ),
     )
     return parser
 
@@ -185,7 +193,15 @@ def main(
     whoever embeds this service supplies the resolver, and until one exists
     `--http-endpoint` refuses startup instead of serving an unauthenticated HTTP
     listener. The console-script entry point passes none, so no HTTP bind asked for
-    through it can be resolvable and every one of them exits 2.
+    through it can be resolvable and every run that would actually serve one exits 2.
+
+    `--check-only` is outside that rule rather than an exception to it. It serves
+    nothing, so it never reaches `_http_bind_to_serve`: the argument is not parsed,
+    not validated and not bound, and the exit code reports the workspace alone.
+    `--check-only --http-endpoint <anything>` therefore exits 0 on a ready
+    workspace -- measured for a wildcard host, an `https` URL and unparseable text
+    alike, each with empty stderr. The same is already true of `--endpoint`, which
+    this mode has always ignored, and both flags now say so in their help text.
 
     That is the v0.6 decision rather than an unfinished wiring: HTTP is embedder-only
     and intentionally unreachable from the standard Core service, because no approved

@@ -125,8 +125,9 @@ incomplete say so.
 - **V06-4 P2b HTTP v1 loopback** — loopback HTTP adapter, refused by default.
   ([#33](https://github.com/claytonread/omnivia-core/pull/33), `2fd5155`)
   Lane incomplete. Present but **not served**: `--http-endpoint` defaults to
-  `None` and the console script supplies no credential resolver, so any HTTP
-  bind exits 2. It is a seam an embedder can wire, not a boundary this service
+  `None` and the console script supplies no credential resolver, so any run that
+  would serve one exits 2; `--check-only` serves nothing and does not parse the
+  flag at all. It is a seam an embedder can wire, not a boundary this service
   serves. The non-loopback TLS half remains blocked on infrastructure.
 - **Raise-site repairs** — nine suppressed exceptions no longer reachable
   through `__context__`; the accepted-site ratchet is empty and passing.
