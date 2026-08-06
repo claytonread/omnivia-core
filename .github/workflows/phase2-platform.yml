@@ -47,10 +47,16 @@ jobs:
       - name: Install Python tooling and local packages
         # Order is the whole content of this step. `omnivia-core` is unpublished,
         # so the only thing that can satisfy the `omnivia-core>=0.1.0,<0.2.0`
-        # dependency of `omnivia-memory` and of the three local packages is this
+        # dependency of `omnivia-memory` and of the four local packages is this
         # checkout -- installed first, or pip goes to the index and fails to
         # resolve it. `omnivia-memory[dev]` itself was missing entirely, which is
         # why FM-22's `import omnivia_memory` failed on macOS and Windows.
+        #
+        # `omnivia-core-client` obeys that same rule one edge further down: it is
+        # as unpublished as `omnivia-core`, and `omnivia-core-cli` declares it, so
+        # the CLI install below resolves against the index and fails unless the
+        # client precedes it. Packet section 17b.2. No suite this job runs imports
+        # the client; it is installed so the line after it can succeed.
         #
         # Every argument is quoted so the one line with shell metacharacters
         # (`[`, `]`, `>`, `<`) is a literal in bash, zsh and PowerShell alike; the
@@ -61,6 +67,7 @@ jobs:
           python -m pip install -e .
           python -m pip install -e "services/omnivia-memory[dev]"
           python -m pip install -e packages/omnivia-core-runtime
+          python -m pip install -e packages/omnivia-core-client
           python -m pip install -e packages/omnivia-core-cli
           python -m pip install -e packages/omnivia-core-mcp
 

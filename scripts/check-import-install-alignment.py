@@ -7,13 +7,17 @@ currently compares: the distributions it installs, and the paths it hands to
 job did not install, pytest fails at *collection*, which takes down every case
 in the file rather than the one that needed the import.
 
-That is not hypothetical. ``phase2-platform.yml`` installs the runtime, CLI and
-MCP distributions but not ``omnivia-core-client``, and the M2 lane wrote a
-phase2 module that imported the client. It passed on every developer machine,
-because a development environment has all five installed, and failed only in
-CI. ``packages/omnivia-core-runtime/tests/phase2/test_descriptor_publication.py``
-records the rule in prose in its module docstring; this script is that rule
-mechanised.
+That is not hypothetical. ``phase2-platform.yml`` once installed the runtime, CLI
+and MCP but not ``omnivia-core-client``, and the M2 lane wrote a phase2 module
+that imported the client: green on every developer machine, red only in CI. This
+script is that rule mechanised.
+
+Packet section 17b.2 adds the client to that install list, closing that gap, and
+17b.3 records the rule -- a guard is worth its weight only while the thing it
+catches can still happen -- so the tests that pinned it are deleted, not replaced.
+The check itself was never phase2-specific, and the reachable case today is
+``core-performance-report.yml``, which installs the root distribution and
+``omnivia-memory`` only while collecting ``benchmarks/tests``.
 
 Both halves are derived from the tree, never hardcoded:
 

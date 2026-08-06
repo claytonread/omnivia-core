@@ -220,9 +220,15 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
 # separately approved Phase 4 packet. Its operational adapter imported
 # `omnivia_core_cli`, a sibling, which the approved topology does not permit.
 install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp"
+# `transport.py` is named explicitly because neither module above reaches it:
+# `main` imports it inside the one subcommand that calls a service, so importing
+# `main` resolves nothing. It is the only module that imports `omnivia-core-client`,
+# so without this line the CLI's Requires-Dist is never exercised at wheel level --
+# which is verbatim the failure this script's comment above says it exists to catch.
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
   "omnivia_core_cli.client" \
-  "omnivia_core_cli.main"
+  "omnivia_core_cli.main" \
+  "omnivia_core_cli.transport"
 # The client's whole surface is operational: every module below is imported by a
 # caller on the first call it makes, so each one has to resolve from the wheel
 # plus its single declared `omnivia-core` dependency and nothing else.

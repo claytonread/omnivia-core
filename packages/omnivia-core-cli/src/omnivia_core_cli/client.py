@@ -20,6 +20,7 @@ from typing import Any
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
+    CapabilityRequirement,
     ClientIdentity,
     PrincipalClaim,
     RequestEnvelope,
@@ -86,12 +87,30 @@ def build_request(
     request_id: str,
     principal: str | None = None,
     scopes: tuple[str, ...] = (),
+    purpose: str = "cli",
+    required_capabilities: tuple[CapabilityRequirement, ...] = (),
     payload: dict[str, Any] | None = None,
 ) -> RequestEnvelope:
     """Build a contract-valid request envelope.
 
     Constructed from the public contract types, so the CLI cannot invent a shape the
     service would not accept.
+
+    `purpose` keeps its previous literal as the default, so every existing caller
+    builds byte-identical requests to the ones it built before. It is a parameter
+    now because the authorised application path grants a fixed allowlist of
+    purposes and refuses anything outside it, and `"cli"` is not in that
+    allowlist -- an operation-specific purpose has to be stated rather than
+    assumed. Like every other field here it is only a *claim*: the service
+    decides from its own grant whether the purpose it was handed is one this
+    session may act under.
+
+    `required_capabilities` defaults to empty for the same reason, and for
+    catalogue operations it is not optional: the catalogue validator requires a
+    request to declare exactly the capability its operation's frozen entry names,
+    and refuses one that declares none. Callers derive it from that entry rather
+    than writing an id and a version down here, so this CLI cannot claim a
+    requirement the catalogue does not state.
     """
     return RequestEnvelope(
         operation=operation,
@@ -103,8 +122,8 @@ def build_request(
             client=ClientIdentity(id=CLIENT_NAME, version=CLIENT_VERSION),
             workspace_id=workspace_id,
             scopes=tuple(scopes),
-            purpose="cli",
-            required_capabilities=(),
+            purpose=purpose,
+            required_capabilities=tuple(required_capabilities),
             # A claimed principal is a contract object, and it is only a
             # *claim*: the service decides authority from its own grant.
             principal_claim=(

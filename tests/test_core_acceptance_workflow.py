@@ -84,7 +84,7 @@ GATE_STEPS = (
         "Run full repository test suite",
         (
             "python -m pytest services tests packages/omnivia-core-runtime/tests "
-            "packages/omnivia-core-client/tests -q"
+            "packages/omnivia-core-cli/tests packages/omnivia-core-client/tests -q"
         ),
     ),
     ("Run benchmark tests", "python -m pytest benchmarks/tests -q"),
@@ -227,13 +227,18 @@ REQUIRED_TOOLING_PINS = (
 # dependency this checkout satisfies. Every distribution under `packages/` is
 # listed: the acceptance suite imports each one, and an uninstalled distribution
 # fails at collection rather than being skipped.
+# The client now precedes the CLI, and that is a dependency edge rather than a
+# preference: `omnivia-core-cli` declares `omnivia-core-client>=0.1.0,<0.2.0` for
+# its concrete transport, and `omnivia-core-client` is as unpublished as
+# `omnivia-core` is. Installing the CLI first sends pip to an index that has
+# neither. Same rule as the root install below, one edge further down.
 REQUIRED_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
     "python -m pip install -e packages/omnivia-core-runtime",
+    "python -m pip install -e packages/omnivia-core-client",
     "python -m pip install -e packages/omnivia-core-cli",
     "python -m pip install -e packages/omnivia-core-mcp",
-    "python -m pip install -e packages/omnivia-core-client",
 )
 
 # The same ordering constraint in the other two workflows, pinned because both
@@ -246,6 +251,9 @@ PHASE2_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
     "python -m pip install -e packages/omnivia-core-runtime",
+    # Packet section 17b.2: installed here only so the CLI install after it can
+    # resolve the dependency it declares. No suite this matrix runs imports it.
+    "python -m pip install -e packages/omnivia-core-client",
     "python -m pip install -e packages/omnivia-core-cli",
     "python -m pip install -e packages/omnivia-core-mcp",
 )
