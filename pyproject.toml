@@ -73,16 +73,15 @@ extend-exclude = ["benchmarks"]
 # both directions, dropping 372 rules and adding 18, while reading like a
 # tightening.
 #
-# Open decision, recorded not taken. Those 18 go unchecked in `src`, `packages`,
-# `baseline`, `tests` and `scripts` today, and they are correctness rules rather
-# than style -- `== None`, `== True`, `type(x) ==`, `lambda` assignment,
-# ambiguous names, imports after code, star imports:
-#
-#   E401 E402 E701 E702 E703 E711 E712 E713 E714 E721
-#   E731 E741 E742 E743 F403 F405 F406 F722
-#
-# `extend-select`-ing exactly those is the small, measurable version of
-# declaring a selection here. It is the owner's call, and it has not been made.
+# Decision taken. Those 18 went unchecked in `src`, `packages`, `baseline`,
+# `tests` and `scripts`, and they are correctness rules rather than style --
+# `== None`, `== True`, `type(x) ==`, `lambda` assignment, ambiguous names,
+# imports after code, star imports. They are now enabled by name in
+# `[tool.ruff.lint] extend-select` below: the small, measurable version of
+# declaring a selection, which closes the facade-only gap without restating the
+# 413 defaults. Adopting them cost four findings, every one of them E402 and
+# every one the deliberate `sys.path` bootstrap in `scripts/`, suppressed at the
+# four sites rather than by a rule- or path-wide exclusion.
 #
 # `required-version` pins it instead, and Ruff is pre-1.0, so a minor bump is
 # where its rule selection is allowed to move -- `<0.17` is that boundary, not an
@@ -111,6 +110,16 @@ extend-exclude = ["benchmarks"]
 required-version = ">=0.16.1,<0.17"
 
 [tool.ruff.lint]
+# The 18 rules that `services/omnivia-memory`'s `E4`/`E7`/`E9`/`F` selection
+# catches and Ruff's default selection does not -- the facade-only side of the
+# gap measured under `[tool.ruff]` above. Enabled by name so the canonical trees
+# are held to them too. `extend-select` adds to the default selection instead of
+# replacing it, so all 413 defaults stay in force and are not restated here.
+extend-select = [
+    "E401", "E402", "E701", "E702", "E703", "E711", "E712", "E713", "E714",
+    "E721", "E731", "E741", "E742", "E743", "F403", "F405", "F406", "F722",
+]
+
 # Deliberately not enabled, with reasons.
 #
 # `B904` (`raise-without-from-inside-except`) is not in Ruff's default selection

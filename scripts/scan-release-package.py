@@ -55,7 +55,9 @@ source_root = REPO_ROOT / "src"
 if source_root.is_dir():
     sys.path.insert(0, str(source_root))
 
-from omnivia_core.host_contract.v1 import publication
+# E402: this import must follow the `sys.path` insert above for the checkout to
+# win over an installed copy, so it cannot move to the top of the file.
+from omnivia_core.host_contract.v1 import publication  # noqa: E402
 
 
 class UnreadablePackageError(Exception):
