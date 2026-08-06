@@ -101,12 +101,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from baseline.facade_manifest import (
+# E402: these imports resolve only through the `sys.path` insert above, so they
+# cannot move to the top of the file.
+from baseline.facade_manifest import (  # noqa: E402
     ROOT_FACADE_ALL,
     ROOT_FACADE_HIDDEN_BINDINGS,
     load_manifest,
 )
-from baseline.inventory import FACADE_ROUTES
+from baseline.inventory import FACADE_ROUTES  # noqa: E402
 
 CORE_DIR = REPO_ROOT
 MEMORY_DIR = REPO_ROOT / "services" / "omnivia-memory"
