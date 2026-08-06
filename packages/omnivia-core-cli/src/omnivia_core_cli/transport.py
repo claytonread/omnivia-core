@@ -79,6 +79,11 @@ LOCAL_IPC_SCHEME = "unix://"
 #: read below is bounded by an exact remaining count, never by this.
 _READ_CHUNK = 64 * 1024
 
+#: The quiet window that has to follow one frame. The same value the server's own
+#: ``ensure_unary_boundary`` uses, because it is the same invariant seen from the
+#: other end of the connection.
+_UNARY_BOUNDARY_SECONDS = 0.05
+
 
 def socket_path_for(endpoint_uri: str) -> str:
     """The filesystem path a ``unix://`` endpoint URI names.
@@ -149,29 +154,67 @@ def _read_exact(connection: socket.socket, count: int, deadline: Deadline) -> by
     return b"".join(chunks)
 
 
+def _ensure_nothing_follows(connection: socket.socket, deadline: Deadline) -> None:
+    """Require one bounded quiet window after the frame, as the server does.
+
+    :func:`~omnivia_core_client.decode_frame` owns the trailing-byte rule, but it
+    can only apply it to bytes it is *given*, and this transport gives it exactly
+    the frame it declared -- so that branch could never fire from here. Without
+    this check a peer that replies with two frames has the first one accepted and
+    the second silently dropped, which is a stale answer being returned as a
+    fresh one.
+
+    The server enforces the same invariant in the request direction with
+    ``ensure_unary_boundary``; this is its mirror in the response direction, with
+    the same 50 ms window and the same `MSG_PEEK` so the byte is not consumed.
+    """
+    window = min(_UNARY_BOUNDARY_SECONDS, deadline.remaining_seconds())
+    connection.settimeout(window)
+    try:
+        trailing = connection.recv(1, socket.MSG_PEEK)
+    except TimeoutError:
+        return
+    except OSError:
+        return
+    if trailing:
+        raise ProtocolError("the response carries trailing bytes after one OVC1 frame")
+
+
 def _read_frame(connection: socket.socket, deadline: Deadline) -> dict[str, object]:
     """One complete OVC1 frame, admitted by the client's own decoder.
 
-    Exactly one rule is applied here, and it is the one that cannot be applied
-    anywhere else: the declared length is checked against the frozen maximum
-    *before* the body is read, so a peer cannot make this process wait on, or
-    allocate against, a number it made up.
+    Three rules are applied here, and each is here because it is about *order* or
+    about the stream, which is precisely what a decoder handed a finished buffer
+    cannot reach:
 
-    Every other admission rule -- the magic, the zero-length body, the trailing
-    bytes, the UTF-8, the JSON, the canonical byte form -- belongs to
-    :func:`~omnivia_core_client.decode_frame` and is left there. Restating one
-    here would be a second copy of the frozen format's rules inside the caller
-    that is supposed to be reusing them, free to drift from the accepted decoder
-    and answering for it when it did.
+    1. the magic is checked before the length is used, so four bytes of a foreign
+       protocol are never read as a byte count -- a wrong-protocol listener
+       squatting the endpoint is named immediately instead of holding this
+       process until the deadline and then being reported as a slow service;
+    2. the declared length is checked against the frozen maximum before the body
+       is read, so a peer cannot make this process wait on, or allocate against,
+       a number it made up;
+    3. nothing may follow the frame -- see :func:`_ensure_nothing_follows`.
+
+    Everything else -- the zero-length body, the UTF-8, the JSON, the canonical
+    byte form, and the trailing-byte rule as it applies to a finished buffer --
+    belongs to :func:`~omnivia_core_client.decode_frame` and is left there.
     """
     header = _read_exact(connection, HEADER_BYTES, deadline)
+    if header[: len(MAGIC)] != MAGIC:
+        # No part of the header is quoted. Four bytes of an unknown stream are
+        # peer material like any other, and rendering them -- as a decimal, as
+        # text, or as hex -- would put them somewhere they can be logged.
+        raise ProtocolError("the response does not begin with the OVC1 magic")
     length = int.from_bytes(header[len(MAGIC) :], "big")
     if length > MAXIMUM_JSON_BYTES:
         raise ProtocolError(
             f"the response declares {length} OVC1 body bytes, above the "
             f"{MAXIMUM_JSON_BYTES}-byte maximum"
         )
-    return decode_frame(header + _read_exact(connection, length, deadline))
+    frame = decode_frame(header + _read_exact(connection, length, deadline))
+    _ensure_nothing_follows(connection, deadline)
+    return frame
 
 
 @dataclass(frozen=True, slots=True)

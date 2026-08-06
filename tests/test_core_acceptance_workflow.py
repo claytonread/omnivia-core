@@ -251,11 +251,6 @@ PHASE2_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
     "python -m pip install -e packages/omnivia-core-runtime",
-    # Installed for the same unpublished-dependency rule the root install obeys,
-    # and for nothing else: no suite this matrix runs imports the client. It is
-    # here because `omnivia-core-cli` declares it, so the CLI install after it
-    # resolves against this checkout rather than against an index.
-    "python -m pip install -e packages/omnivia-core-client",
     "python -m pip install -e packages/omnivia-core-cli",
     "python -m pip install -e packages/omnivia-core-mcp",
 )

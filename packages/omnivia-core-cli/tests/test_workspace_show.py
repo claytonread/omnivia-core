@@ -229,6 +229,30 @@ def test_workspace_show_reports_no_service_when_none_is_advertised(
     assert "Traceback" not in result.stderr
 
 
+def test_a_symlinked_runtime_state_answers_the_same_as_a_direct_one(
+    live_service: LiveService, tmp_path: Path
+) -> None:
+    """One flag, one answer. `discover` and `workspace show` must not disagree.
+
+    `workspace show` has to re-derive the installation root to call discovery,
+    and deriving it from the *unresolved* path makes a symlinked
+    `--runtime-state` land somewhere else -- so `discover` exits 0 and prints the
+    endpoint while `workspace show` exits 1 on the same argument. Worse than the
+    inconsistency: when the two paths reach different files, discovery runs its
+    provenance, mode, scheme and liveness checks on one descriptor while the
+    call is dialled from the other.
+    """
+    linked = tmp_path / "runtime-link"
+    linked.symlink_to(live_service.runtime_directory, target_is_directory=True)
+
+    discovered = _run_cli(linked, "discover")
+    shown = _run_cli(linked, "workspace", "show")
+
+    assert discovered.returncode == 0, (discovered.stdout, discovered.stderr)
+    assert shown.returncode == 0, (shown.stdout, shown.stderr)
+    assert json.loads(shown.stdout)["workspace"]["workspace_id"] == WORKSPACE_ID
+
+
 def test_the_subcommands_that_predate_this_lane_still_behave(
     live_service: LiveService,
 ) -> None:
@@ -278,9 +302,14 @@ def _authorisation_outcome(endpoint_uri: str, request: object) -> str:
 
     The correlation identifiers echo the request, so two runs of the same session
     inputs differ in them by construction; leaving them in would make this
-    compare request ids rather than authority. What is left is the decision: the
-    error code and its frozen message where there is one, the granted authority,
-    the capability envelope, and whether a result was produced at all.
+    compare request ids rather than authority. They are the *only* thing removed.
+
+    Everything else the answer carries is compared, including the two a narrower
+    projection would have dropped for no reason: `retry_class`, which is what a
+    caller branches on to decide whether retrying is even meaningful, and the
+    whole `result` body rather than a flag saying one existed. Neither is a
+    correlation identifier and both are constant for constant inputs, so
+    comparing them costs nothing and closes the gap where a difference could hide.
     """
     transport = LocalIpcTransport(endpoint_uri=endpoint_uri)
     response = transport.call(request, deadline=Deadline.after(CALL_TIMEOUT))  # type: ignore[arg-type]
@@ -291,9 +320,11 @@ def _authorisation_outcome(endpoint_uri: str, request: object) -> str:
         {
             "code": error.get("code"),
             "message": error.get("message"),
+            "retry_class": error.get("retry_class"),
             "authority": metadata["authority"],
             "capabilities": metadata["version"]["capabilities"],
             "answered": "result" in document,
+            "result": document.get("result"),
         },
         sort_keys=True,
     )
@@ -386,7 +417,15 @@ class ScriptedPeer:
     asserted rather than assumed.
     """
 
-    def __init__(self, reply: bytes | None) -> None:
+    def __init__(
+        self,
+        reply: bytes | None,
+        *,
+        hold: bool = False,
+        dribble_seconds: float | None = None,
+    ) -> None:
+        self.hold = hold
+        self.dribble_seconds = dribble_seconds
         self.directory = _short_socket_directory()
         self.path = self.directory / "s.sock"
         self.received = b""
@@ -431,9 +470,22 @@ class ScriptedPeer:
                 self._released.wait(timeout=30)
                 return
             try:
-                connection.sendall(self._reply)
+                if self.dribble_seconds is None:
+                    connection.sendall(self._reply)
+                else:
+                    # One byte at a time, slowly. Every individual read succeeds,
+                    # so only a budget that spans the whole call can end this.
+                    for index in range(len(self._reply)):
+                        connection.sendall(self._reply[index : index + 1])
+                        time.sleep(self.dribble_seconds)
             except OSError:  # pragma: no cover - client may have gone
                 pass
+            if self.hold:
+                # Stay open after answering. A close would hand the client an
+                # end-of-stream, which is a different thing from a peer that has
+                # simply not said any more yet -- and it is the second one that
+                # a bounded quiet window has to be able to tell apart.
+                self._released.wait(timeout=30)
 
     def close(self) -> None:
         self._released.set()
@@ -446,8 +498,8 @@ class ScriptedPeer:
 def scripted_peer() -> Iterator[object]:
     peers: list[ScriptedPeer] = []
 
-    def make(reply: bytes | None) -> ScriptedPeer:
-        peer = ScriptedPeer(reply)
+    def make(reply: bytes | None, **options: object) -> ScriptedPeer:
+        peer = ScriptedPeer(reply, **options)  # type: ignore[arg-type]
         peers.append(peer)
         return peer
 
@@ -467,6 +519,108 @@ def test_a_reply_with_the_wrong_magic_is_a_protocol_error(scripted_peer: object)
         LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
             _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
         )
+
+
+def test_a_wrong_protocol_listener_is_named_at_once_and_not_waited_out(
+    scripted_peer: object,
+) -> None:
+    """The magic is checked before the length is used, or a squatter wins.
+
+    The peer sends eight bytes that are not an OVC1 header and then says nothing
+    more, holding the connection open. Those four length bytes are a foreign
+    protocol's payload, not a byte count -- and a transport that reads them as
+    one blocks for the whole budget and then reports a deadline, telling an
+    operator the service was slow when a wrong-protocol listener was squatting
+    the endpoint.
+
+    The test above cannot catch this: it *sends* the body, so the read completes
+    and `decode_frame` is reached whatever the order. Withholding the body is
+    what makes the ordering observable.
+
+    The elapsed assertion is the whole point. A generous ceiling, because it has
+    to separate "refused immediately" from "waited out a 5-second budget", not
+    measure anything finer.
+    """
+    peer = scripted_peer(b"HELO" + (1024).to_bytes(4, "big"), hold=True)  # type: ignore[operator]
+
+    started = time.monotonic()
+    with pytest.raises(ProtocolError, match="magic"):
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
+            _probe_request(), deadline=Deadline.after(5.0)  # type: ignore[arg-type]
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0, f"refusal waited {elapsed:.3f}s instead of being immediate"
+
+
+def test_no_diagnostic_renders_bytes_from_a_foreign_stream(
+    scripted_peer: object,
+) -> None:
+    """A refusal quotes no part of a header it did not recognise.
+
+    `b"HTTP/1.1"` is eight bytes of somebody else's protocol. Read as a header it
+    yields a declared length of 791752241, and reporting that number puts four
+    bytes of peer material into a diagnostic in a module whose stated rule is
+    that peer material is discarded -- and calls them "OVC1 body bytes" of a
+    frame that is not one.
+    """
+    peer = scripted_peer(b"HTTP/1.1", hold=True)  # type: ignore[operator]
+
+    with pytest.raises(ProtocolError) as raised:
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
+            _probe_request(), deadline=Deadline.after(5.0)  # type: ignore[arg-type]
+        )
+
+    message = str(raised.value)
+    assert "791752241" not in message
+    assert "HTTP" not in message
+    assert "magic" in message
+
+
+def test_a_second_frame_after_the_answer_is_refused_rather_than_ignored(
+    scripted_peer: object,
+) -> None:
+    """A stale first frame must not win by arriving first.
+
+    `decode_frame` owns the trailing-byte rule, but it only ever sees the bytes
+    this transport hands it -- exactly one declared frame -- so that branch can
+    never fire from here. Without a check on the stream itself, a peer replying
+    with two frames has the first accepted and the second silently dropped, and
+    a caller is handed a stale answer with no indication anything was discarded.
+    """
+    stale = encode_frame({"answer": "STALE"})
+    fresh = encode_frame({"answer": "real"})
+    peer = scripted_peer(stale + fresh, hold=True)  # type: ignore[operator]
+
+    with pytest.raises(ProtocolError, match="trailing bytes"):
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
+            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
+        )
+
+
+def test_a_peer_that_dribbles_a_legal_frame_is_cut_off_by_the_whole_call_budget(
+    scripted_peer: object,
+) -> None:
+    """Every wait is bounded by what is *left*, not by a fresh budget each time.
+
+    The frame is legal and every individual byte arrives well inside any
+    per-read timeout, so nothing but a deadline re-read on each pass can end
+    this. Hoisting the deadline check out of the read loop -- the one refactor
+    the loop's docstring warns against -- leaves every other test in this file
+    green and lets a peer hold the process for as long as it keeps dribbling.
+    """
+    body = b'{"a":"bb"}'
+    frame = b"OVC1" + len(body).to_bytes(4, "big") + body
+    peer = scripted_peer(frame, dribble_seconds=0.6, hold=True)  # type: ignore[operator]
+
+    started = time.monotonic()
+    with pytest.raises(DeadlineExceededError):
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
+            _probe_request(), deadline=Deadline.after(2.0)  # type: ignore[arg-type]
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 4.0, f"the call ran {elapsed:.2f}s past a 2.00s deadline"
 
 
 def test_a_reply_declaring_a_zero_byte_body_is_a_protocol_error(
@@ -677,7 +831,9 @@ def test_the_client_package_still_ships_no_socket() -> None:
     import omnivia_core_client
 
     client_root = Path(omnivia_core_client.__file__).resolve().parent
-    for path in sorted(client_root.glob("*.py")):
+    # `rglob`, not `glob`: a socket transport added to the client as a
+    # subpackage would sit under a directory this test must still see.
+    for path in sorted(client_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -700,8 +856,11 @@ FORBIDDEN_IN_EMITTED_STRINGS = ("peer", "authenticat", "verified", "os user")
 
 def _cli_modules() -> list[Path]:
     source_root = Path(__file__).resolve().parents[1] / "src" / "omnivia_core_cli"
-    modules = sorted(path for path in source_root.rglob("*.py") if path.stem != "__init__")
+    modules = sorted(source_root.rglob("*.py"))
     assert modules, "the CLI source tree was not found"
+    # `__init__.py` is included deliberately. Excluding it left the one module
+    # these scans never read, and it is exactly where a stale claim survived.
+    assert any(path.name == "__init__.py" for path in modules)
     return modules
 
 

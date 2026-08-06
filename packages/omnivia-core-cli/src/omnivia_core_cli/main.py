@@ -30,6 +30,7 @@ from pathlib import Path
 
 from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
+    ServiceEndpointDescriptor,
     codec,
     get_operation_metadata,
 )
@@ -104,38 +105,46 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _workspace_show(runtime_state: Path, endpoint_uri: str, workspace_id: str) -> int:
+def _workspace_show(runtime_state: Path, service: ServiceEndpointDescriptor) -> int:
     """Call `workspace.inspect` on the discovered service and render the answer.
 
-    Imported here rather than at module scope, and the reason is not style. The
-    subcommands that predate this one are proven on a three-operating-system
-    matrix that installs this distribution but not `omnivia-core-client`; a
-    module-scope import would make `omnivia_core_cli.main` unimportable there and
-    take `discover`, `health` and `readiness` down with it. Keeping the import on
-    the one path that needs it is what leaves the existing behaviour exactly as
-    strong as it was.
+    `service` is the descriptor `read_descriptor` already located under
+    `--runtime-state`, and it is the authority for what gets dialled. Discovery
+    re-derives its own path from an installation root, so the two can name
+    different files -- a symlinked `--runtime-state` is enough to separate them.
+    When they do, discovery's provenance, mode, scheme and liveness checks land
+    on one descriptor while the call would go to the other, which is exactly the
+    gap those checks exist to close. So the root is derived from the *resolved*
+    path, and the descriptor discovery validated must equal the one that was
+    read, or nothing is called at all.
+
+    The client is imported here rather than at module scope, and the reason is
+    not style. The subcommands that predate this one are proven on a
+    three-operating-system matrix that installs this distribution but not
+    `omnivia-core-client`; a module-scope import would make
+    `omnivia_core_cli.main` unimportable there and take `discover`, `health` and
+    `readiness` down with it.
     """
     from omnivia_core_client import ClientError, Deadline, discover_endpoint
 
     from omnivia_core_cli.transport import LocalIpcTransport
 
     deadline = Deadline.after(CALL_TIMEOUT_SECONDS)
-    transport = LocalIpcTransport(endpoint_uri=endpoint_uri)
+    transport = LocalIpcTransport(endpoint_uri=service.endpoint_uri)
 
     try:
         # Discovery is not a formality standing between the descriptor and the
-        # call. It re-derives the descriptor path from the installation root,
-        # checks the file's provenance and the mode of the directories above it,
-        # refuses an endpoint that is not this platform's local IPC, negotiates
-        # all three versions, and proves the descriptor describes the process
-        # that is actually listening -- before anything is asked of it.
+        # call. It checks the file's provenance and the mode of the directories
+        # above it, refuses an endpoint that is not this platform's local IPC,
+        # negotiates all three versions, and proves the descriptor describes the
+        # process that is actually listening -- before anything is asked of it.
         discovered = discover_endpoint(
-            runtime_state.parent.parent,
-            workspace_id,
+            runtime_state.resolve().parent.parent,
+            service.workspace_id,
             transport=transport,
             deadline=deadline,
         )
-    except (ClientError, ValueError):
+    except (ClientError, ValueError, OSError):
         # The diagnostic is discarded rather than rendered: the client's failures
         # are payload-free by construction, but a `ValueError` from the public
         # decoder is a statement about a document and can quote it.
@@ -147,6 +156,11 @@ def _workspace_show(runtime_state: Path, endpoint_uri: str, workspace_id: str) -
         return 1
     if discovered is None:
         sys.stderr.write("no service is advertised; start omnivia-core-service first\n")
+        return 1
+    if discovered.descriptor != service:
+        # Two descriptors, so the checks above were applied to a file this call
+        # would not have used. Refuse rather than pick one.
+        sys.stderr.write("the advertised service did not pass its discovery checks\n")
         return 1
 
     scopes, required_capabilities = _inspect_claims()
@@ -162,6 +176,14 @@ def _workspace_show(runtime_state: Path, endpoint_uri: str, workspace_id: str) -
         response = transport.call(request, deadline=deadline)
     except ClientError:
         sys.stderr.write("the service did not answer\n")
+        return 1
+
+    if response.metadata.correlation_id != request.metadata.correlation_id:
+        # The answer correlates to a different request. On a strictly unary
+        # connection that should be impossible, which is the reason to say so
+        # rather than to render it: an answer that does not correlate is not this
+        # call's answer, whatever it contains.
+        sys.stderr.write("the service answered a different request\n")
         return 1
 
     error = getattr(response, "error", None)
@@ -220,9 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         # workspace to name. Neither is chosen here and neither comes from an
         # argument: this CLI cannot ask about a workspace other than the one the
         # endpoint it found was launched to serve.
-        return _workspace_show(
-            args.runtime_state, service.endpoint_uri, service.workspace_id
-        )
+        return _workspace_show(args.runtime_state, service)
 
     request = build_request(
         f"core.{args.command}",
