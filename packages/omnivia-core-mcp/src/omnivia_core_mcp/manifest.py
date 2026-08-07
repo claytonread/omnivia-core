@@ -30,7 +30,7 @@ not ship a mutation tool with a wrong comment; the package fails to import.
 contract, reached through the catalogue entry's own ``input_schema_ref``: the
 ``#/$defs/<Name>`` fragment names the generated contract dataclass, which is
 looked up in the public package rather than transcribed. See
-:func:`_input_schema` for what that projection can and cannot express today, and
+:func:`input_schema` for what that projection can and cannot express today, and
 :mod:`omnivia_core_mcp.server` for why no output schema is projected.
 """
 
@@ -50,6 +50,7 @@ __all__ = [
     "MANIFEST_VERSION",
     "ExposedOperation",
     "exposed_by_tool_name",
+    "input_schema",
     "tools",
 ]
 
@@ -151,8 +152,12 @@ def _contract_type(schema_ref: str) -> type[Any]:
     return contract_type
 
 
-def _input_schema(entry: OperationMetadata) -> dict[str, Any]:
+def input_schema(entry: OperationMetadata) -> dict[str, Any]:
     """Project one operation's input contract as a JSON Schema object.
+
+    Public because :mod:`omnivia_core_mcp.server` enforces the document this
+    returns at call time. What `tools/list` advertises and what `_request` accepts
+    have to be one projection, not two that agree by inspection.
 
     **This projects the empty payload and refuses everything else, on purpose.**
     The packaged JSON Schema documents (``read_schema``) are force-included into
@@ -191,7 +196,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
         name=exposed.tool_name,
         title=exposed.title,
         description=exposed.description,
-        input_schema=_input_schema(entry),
+        input_schema=input_schema(entry),
         annotations=types.ToolAnnotations(
             title=exposed.title,
             # Read off the catalogue, not asserted here. `_admit` has already
