@@ -253,6 +253,57 @@ def test_the_advertised_tool_is_read_only_and_takes_no_arguments(
 # --- calling ------------------------------------------------------------------
 
 
+async def _one_call(service: LiveService, workspace_id: str) -> dict[str, object]:
+    """One tool call against the live service, naming a workspace of our choosing."""
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=[
+            str(PROBE),
+            "--endpoint",
+            service.endpoint_uri,
+            "--workspace-id",
+            workspace_id,
+        ],
+    )
+    async with (
+        stdio_client(parameters) as (read_stream, write_stream),
+        ClientSession(read_stream, write_stream) as session,
+    ):
+        await session.initialize()
+        called = await session.call_tool("workspace_inspect", {})
+        return called.model_dump(mode="json")
+
+
+def test_a_service_refusal_is_relayed_as_the_services_own_error(
+    live_service: LiveService,
+) -> None:
+    """The other live branch: the service answers *no*, and MCP relays that.
+
+    `test_a_tool_absent_from_the_manifest_is_not_callable` covers a refusal MCP
+    makes for itself, before a request exists. This covers the one MCP does not
+    make: a well-formed request the service itself declines. The two are different
+    code paths -- the first never reaches a transport, this one completes a full
+    round trip and comes back an error envelope rather than a success one.
+
+    Untested until now, because a stand-in that returns a `SuccessResponseEnvelope`
+    can never produce it. The workspace named below is real to the request builder
+    and unknown to the service, so the refusal is the service's own judgement,
+    carried back over the same socket as any answer.
+    """
+    called = anyio.run(
+        lambda: _one_call(live_service, "ws-a-workspace-this-service-does-not-own")
+    )
+
+    assert called["is_error"] is True
+    message = called["content"][0]["text"]
+    assert "was refused by the service" in message
+    # The service's own error contract, relayed intact rather than flattened to a
+    # string: a model can branch on `retry_class` exactly as the CLI does.
+    refusal = json.loads(message.split("was refused by the service: ", 1)[1])
+    assert refusal["error"]["code"] == "workspace_not_granted"
+    assert refusal["error"]["retry_class"] == "non_retryable"
+
+
 def test_an_allow_listed_tool_calls_its_catalogue_operation(
     observed: dict[str, object],
 ) -> None:
