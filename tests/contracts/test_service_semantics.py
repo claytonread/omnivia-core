@@ -563,3 +563,180 @@ process.stdout.write(JSON.stringify(
         if accepted is not admitted
     ]
     assert not disagreements, disagreements
+
+
+# --------------------------------------------------------------------------
+# `ServiceProbeResult.observed_at`
+#
+# No second fixture. `observed_at` and `published_at` are the same declared value
+# domain -- both are `Timestamp` -- so the corpus that pins one pins the other, and
+# a second copy of it is a second thing to keep in step. Section 5.3's standard is
+# "one fixture, four surfaces", and the reason the `compatibility` group is worth
+# having at all is that tightening the policy then fails in *one* obvious place;
+# splitting the same domain across two files is what that group exists to prevent.
+# What is genuinely different about `observed_at` is not its corpus but its
+# attribution -- which field a refusal names -- and that is asserted below.
+# --------------------------------------------------------------------------
+
+#: The stable refusal a caller may match on. Written out rather than imported, for
+#: the same reason `PUBLISHED_AT_REFUSAL` is.
+OBSERVED_AT_REFUSAL = "observed_at is not a canonical RFC 3339 UTC Timestamp"
+
+
+def _document_with_observed_at(observed_at: object) -> dict[str, Any]:
+    document = _probe_result_document(POLICY_CLEAN_ENDPOINT)
+    document["observed_at"] = observed_at
+    return document
+
+
+@pytest.mark.parametrize("case", CONFORMING_CASES, ids=lambda case: case["id"])
+def test_a_conforming_observed_at_is_accepted(case: dict[str, Any]) -> None:
+    """Every instant the fixture pins as publishable is publishable here too.
+
+    The `compatibility` group is included: those are literals other suites already
+    publish, and a tightening that refuses one of them is a defect in the guard
+    rather than a correction to the suite.
+    """
+    document = _document_with_observed_at(case["published_at"])
+    assert decode_service_probe_result(document).observed_at == case["published_at"]
+
+
+@pytest.mark.parametrize("case", SEMANTIC_REJECTS, ids=lambda case: case["id"])
+def test_a_non_timestamp_observed_at_is_refused(case: dict[str, Any]) -> None:
+    """Decoded structurally, then refused semantically, under its own message."""
+    document = _document_with_observed_at(case["published_at"])
+    with pytest.raises(ContractSemanticError) as caught:
+        decode_service_probe_result(document)
+    assert str(caught.value) == OBSERVED_AT_REFUSAL
+    with pytest.raises(ContractSemanticError) as raised:
+        encode_service_probe_result(ServiceProbeResult.from_wire(document))
+    assert str(raised.value) == OBSERVED_AT_REFUSAL
+
+
+@pytest.mark.parametrize("case", DECODE_REJECTS, ids=lambda case: case["id"])
+def test_a_wrongly_typed_observed_at_stays_a_structural_decode_error(
+    case: dict[str, Any],
+) -> None:
+    """A non-string never reaches the semantic boundary, exactly as for `published_at`."""
+    document = _document_with_observed_at(case["published_at"])
+    with pytest.raises(ContractDecodeError):
+        decode_service_probe_result(document)
+
+
+def test_an_observed_at_refusal_names_its_own_field_and_not_the_descriptor() -> None:
+    """The attribution, which is the whole reason this is not the descriptor's message.
+
+    A caller that catches `ContractSemanticError` cannot otherwise tell which field
+    produced it. Reporting a probe-result fault as a descriptor fault is the same
+    misattribution that once published a malformed `published_at` to an
+    unauthenticated caller as an endpoint-URI fault.
+    """
+    document = _document_with_observed_at("2026-13-01T00:00:00Z")
+    with pytest.raises(ContractSemanticError) as caught:
+        decode_service_probe_result(document)
+    message = str(caught.value)
+    assert "observed_at" in message
+    assert "published_at" not in message
+    assert "descriptor" not in message
+    assert "endpoint_uri" not in message
+
+    # And the converse, so the two are not merely both refused under one label.
+    nested = _probe_result_document(POLICY_CLEAN_ENDPOINT)
+    nested["descriptor"]["published_at"] = "2026-13-01T00:00:00Z"
+    with pytest.raises(ContractSemanticError) as raised:
+        decode_service_probe_result(nested)
+    assert str(raised.value) == PUBLISHED_AT_REFUSAL
+
+
+def test_an_observed_at_refusal_never_echoes_the_rejected_value() -> None:
+    """A probe is answered before authentication, so the refusal is a fixed sentence."""
+    secret = "2026-99-99T00:00:00Z-tenant-acme-shard-7"
+    document = _document_with_observed_at(secret)
+    with pytest.raises(ContractSemanticError) as caught:
+        decode_service_probe_result(document)
+    assert secret not in str(caught.value)
+    assert str(caught.value) == OBSERVED_AT_REFUSAL
+
+
+def test_the_generated_typescript_agrees_on_every_observed_at_case(
+    tmp_path: Path,
+) -> None:
+    """Surface four, for `observed_at`: compiled and executed, not string-compared.
+
+    `assertServiceProbeResultSemantics` is the TypeScript counterpart of
+    `validate_service_probe_result`, and this compares the two over every pinned
+    timestamp. It is the assertion that would have caught the `published_at`
+    divergence had it existed for that field, applied to the sibling field one
+    field away that was unenforced in both bindings.
+    """
+    tsc = REPO_ROOT / "node_modules" / ".bin" / "tsc"
+    node = shutil.which("node")
+    assert tsc.is_file(), "run npm ci so the pinned TypeScript compiler is available"
+    assert node is not None, (
+        "node is required for the executable TypeScript parity gate"
+    )
+
+    subprocess.run(
+        [
+            str(tsc),
+            "--strict",
+            "--skipLibCheck",
+            "--target",
+            "ES2022",
+            "--module",
+            "commonjs",
+            "--outDir",
+            str(tmp_path),
+            str(TYPESCRIPT_PATH),
+        ],
+        check=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    cases = [
+        (case["id"], case["published_at"])
+        for group in ("valid", "invalid", "compatibility")
+        for case in PUBLISHED_AT_CASES[group]
+        if isinstance(case["published_at"], str)
+    ]
+    documents = [_document_with_observed_at(value) for _, value in cases]
+
+    script = """
+const contracts = require(process.argv[1]);
+const corpus = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(corpus.map((document) => {
+  try {
+    contracts.assertServiceProbeResultSemantics(document);
+    return true;
+  } catch (error) {
+    return false;
+  }
+})));
+"""
+    finished = subprocess.run(
+        [node, "-e", script, str(tmp_path / "index.js")],
+        input=json.dumps(documents),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    typescript = json.loads(finished.stdout)
+
+    def python_verdict(document: dict[str, Any]) -> bool:
+        try:
+            validate_service_probe_result(ServiceProbeResult.from_wire(document))
+        except ContractSemanticError:
+            return False
+        return True
+
+    python = [python_verdict(document) for document in documents]
+    # Both outcomes must be reachable, or an all-refusing guard would pass here.
+    assert any(python) and not all(python)
+    disagreements = [
+        case_id
+        for (case_id, _), accepted, admitted in zip(cases, typescript, python, strict=True)
+        if accepted is not admitted
+    ]
+    assert not disagreements, disagreements

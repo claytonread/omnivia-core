@@ -31,11 +31,27 @@ instead of silently producing wrong types:
   ``array`` with ``items``, and ``object`` with ``additionalProperties`` (an
   open map).
 
-Everything the generator emits is structural. Pattern, length, and range
-constraints are *not* re-implemented in the decoders: strict conformance is
-JSON Schema's job (see ``scripts/check-application-contracts.py``), while the
-generated ``from_wire`` functions are the tolerant production path that ignores
-unknown fields and preserves unknown open string values.
+Pattern, length, and range constraints are *not* applied by the decoders: strict
+conformance is JSON Schema's job (see ``scripts/check-application-contracts.py``),
+while the generated ``from_wire`` functions are the tolerant production path that
+ignores unknown fields and preserves unknown open string values. That posture is
+about decoders and is unchanged.
+
+What the generator does emit, beside the structural types, is one *value-domain
+guard* per patterned scalar ``$defs`` entry -- ``is_<snake>`` in Python,
+``is<Name>`` in TypeScript -- applying the declared ``pattern`` as a full match
+together with the declared ``minLength``/``maxLength``, and, for a declared
+``format: date-time``, the calendar the pattern cannot express. The guards are
+emitted from the declaration rather than from a list of definition names, in both
+languages from the same loop, so a value one binding publishes and the other
+refuses is not a state this generator can reach.
+
+Nothing calls a guard from ``from_wire``. A guard is a primitive for a caller that
+needs the declared domain -- a public boundary, a publication path -- so that such
+a caller has one function to call instead of compiling the published pattern
+constant a fourth time. Composite and cross-field invariants ("this must not be
+after that") are not derivable from the schema and stay hand-maintained in
+``src/omnivia_core/contracts/v1/semantics_*.py``.
 """
 
 from __future__ import annotations
@@ -140,6 +156,12 @@ class Definition:
     description: str
     properties: tuple[Property, ...] = ()
     pattern: str | None = None
+    #: ``minLength``/``maxLength``/``format`` as the schema declares them, carried
+    #: so the value-domain guards are emitted from the declaration rather than from
+    #: a table of definition names kept in step by hand.
+    min_length: int | None = None
+    max_length: int | None = None
+    string_format: str | None = None
     members: tuple[str, ...] = ()
     discriminators: tuple[tuple[str, str], ...] = ()
     dependencies: frozenset[str] = field(default_factory=frozenset)
@@ -310,6 +332,15 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
         pattern = node.get("pattern")
         if pattern is not None and not isinstance(pattern, str):
             raise UnsupportedSchemaError(f"{location}: pattern must be a string")
+        min_length = node.get("minLength")
+        if min_length is not None and not isinstance(min_length, int):
+            raise UnsupportedSchemaError(f"{location}: minLength must be an integer")
+        max_length = node.get("maxLength")
+        if max_length is not None and not isinstance(max_length, int):
+            raise UnsupportedSchemaError(f"{location}: maxLength must be an integer")
+        string_format = node.get("format")
+        if string_format is not None and not isinstance(string_format, str):
+            raise UnsupportedSchemaError(f"{location}: format must be a string")
         return Definition(
             name=name,
             kind="string",
@@ -317,6 +348,9 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
             order=order,
             description=description,
             pattern=pattern,
+            min_length=min_length,
+            max_length=max_length,
+            string_format=string_format,
         )
     if node_type == "integer":
         return Definition(
@@ -1192,6 +1226,110 @@ def emit_python_union(definition: Definition) -> list[str]:
     return lines
 
 
+def patterned_strings(contract: Contract) -> list[Definition]:
+    """Every patterned scalar definition, in emission order.
+
+    One list, walked by both emitters and by the guard emitters below, so a
+    definition cannot acquire a constant in one language and a guard in neither.
+    """
+    return [
+        definition
+        for definition in sorted(
+            contract.definitions, key=lambda item: (item.source, item.order)
+        )
+        if definition.kind == "string" and definition.pattern
+    ]
+
+
+def python_length_clause(definition: Definition) -> str | None:
+    """Render the declared length bounds as a Python comparison, if any are declared."""
+    low, high = definition.min_length, definition.max_length
+    if low is not None and high is not None:
+        return f"{low} <= len(value) <= {high}"
+    if high is not None:
+        return f"len(value) <= {high}"
+    if low is not None:
+        return f"len(value) >= {low}"
+    return None
+
+
+def emit_python_scalar_guards(contract: Contract) -> tuple[list[str], list[str]]:
+    """Emit one value-domain guard per patterned scalar definition.
+
+    The rule is the schema, not a list of names: every ``type: string`` definition
+    that declares a ``pattern`` gets a guard, and the ``minLength``/``maxLength`` it
+    declares are applied where declared. A definition added to the contract acquires
+    a guard by being added, which is the property a hand-maintained table cannot have.
+
+    The guards are *not* wired into ``from_wire``. Decoding stays tolerant; these
+    exist so a caller who needs the declared domain has one to call rather than
+    compiling the published constant a fourth time.
+    """
+    lines: list[str] = []
+    exported: list[str] = []
+    for definition in patterned_strings(contract):
+        constant = f"{screaming_snake(definition.name)}_PATTERN"
+        compiled = f"_{screaming_snake(definition.name)}_RE"
+        function = f"is_{snake(definition.name)}"
+        calendar = definition.string_format == "date-time"
+
+        lines.append(f"{compiled}: Final = re.compile({constant})")
+        lines.append("")
+        lines.append("")
+        lines.append(f"def {function}(value: object) -> bool:")
+        lines.append(f'    """Return whether `value` is a well-formed `{definition.name}`.')
+        lines.append("")
+        summary = (
+            "The declared pattern and length bounds, applied as a full match. The "
+            "generated decoders do not call this: it is the primitive a caller "
+            "validates with, not a step in the tolerant decode path."
+        )
+        if calendar:
+            summary += (
+                " `format: date-time` is the second half -- the pattern fixes the "
+                "spelling and cannot fix the calendar, so a pattern-conforming value "
+                "that names no instant is refused here."
+            )
+        lines += wrap(summary, "    ")
+        lines.append('    """')
+
+        clauses = ['isinstance(value, str)']
+        length = python_length_clause(definition)
+        if length is not None:
+            clauses.append(length)
+        clauses.append(f"{compiled}.fullmatch(value) is not None")
+        joined = " and ".join(clauses)
+        if calendar:
+            if len(f"    if not ({joined}):") <= MAX_LINE_LENGTH:
+                lines.append(f"    if not ({joined}):")
+            else:
+                lines.append("    if not (")
+                for index, clause in enumerate(clauses):
+                    prefix = "        " if index == 0 else "        and "
+                    lines.append(f"{prefix}{clause}")
+                lines.append("    ):")
+            lines.append("        return False")
+            lines.append("    try:")
+            lines.append("        datetime.fromisoformat(value)")
+            lines.append("    except ValueError:")
+            lines.append("        return False")
+            lines.append("    return True")
+        elif len(f"    return {joined}") <= MAX_LINE_LENGTH:
+            lines.append(f"    return {joined}")
+        else:
+            lines.append("    return (")
+            for index, clause in enumerate(clauses):
+                prefix = "        " if index == 0 else "        and "
+                lines.append(f"{prefix}{clause}")
+            lines.append("    )")
+        lines.append("")
+        lines.append("")
+        exported.append(function)
+    if lines:
+        lines = lines[:-2]
+    return lines, exported
+
+
 def emit_python(contract: Contract) -> str:
     """Emit the whole generated Python module."""
     by_name = {definition.name: definition for definition in contract.definitions}
@@ -1216,8 +1354,10 @@ def emit_python(contract: Contract) -> str:
     )
     lines += ['"""', "", "from __future__ import annotations", ""]
     lines += [
+        "import re",
         "from collections.abc import Mapping, Sequence",
         "from dataclasses import dataclass",
+        "from datetime import datetime",
         "from math import isfinite",
         "from types import MappingProxyType",
         "from typing import Any, Final, TypeAlias, cast",
@@ -1330,18 +1470,33 @@ def emit_python(contract: Contract) -> str:
         "# ",
     )
     body.append("")
-    for definition in sorted(contract.definitions, key=lambda item: (item.source, item.order)):
-        if definition.kind == "string" and definition.pattern:
-            name = f"{screaming_snake(definition.name)}_PATTERN"
-            single = f"{name}: Final = {definition.pattern!r}"
-            if len(single) <= MAX_LINE_LENGTH:
-                body.append(single)
-            else:
-                body.append(f"{name}: Final = (")
-                for piece in chunk_string(definition.pattern, 72):
-                    body.append(f"    {piece!r}")
-                body.append(")")
-            exported.append(name)
+    for definition in patterned_strings(contract):
+        name = f"{screaming_snake(definition.name)}_PATTERN"
+        single = f"{name}: Final = {definition.pattern!r}"
+        if len(single) <= MAX_LINE_LENGTH:
+            body.append(single)
+        else:
+            body.append(f"{name}: Final = (")
+            for piece in chunk_string(definition.pattern or "", 72):
+                body.append(f"    {piece!r}")
+            body.append(")")
+        exported.append(name)
+    body.append("")
+    body.append("")
+
+    body.append("# --- value-domain guards ---------------------------------------------------")
+    body.append("#")
+    body += wrap(
+        "One guard per patterned scalar definition, emitted from the declaration "
+        "rather than from a list of names. These are not called by `from_wire`: "
+        "decoding stays tolerant, and a caller that needs the declared value domain "
+        "calls the guard instead of compiling the published pattern again.",
+        "# ",
+    )
+    body.append("")
+    guard_lines, guard_exports = emit_python_scalar_guards(contract)
+    body += guard_lines
+    exported += guard_exports
     body.append("")
     body.append("")
 
@@ -1415,10 +1570,12 @@ def typescript_doc(description: str, indent: str) -> list[str]:
     return [f"{indent}/**", *wrapped, f"{indent} */"]
 
 
-#: The emitted `Timestamp` guard: the declared `pattern`, then the calendar the
-#: pattern cannot express. Held here as a literal block rather than assembled
-#: from `lines.append` calls because the body is prose-heavy and the reason for
-#: every clause is the point.
+#: The calendar half of a `format: date-time` guard, appended to the general
+#: scalar guard emitted for every patterned definition. Keyed on the declared
+#: `format`, not on a definition name: `Timestamp` is the only `date-time` in the
+#: v1 contract, and a second one would acquire this tail by declaring the format.
+#: Held here as a literal block rather than assembled from `lines.append` calls
+#: because the body is prose-heavy and the reason for every clause is the point.
 #:
 #: `Date.parse` is deliberately absent. It is the obvious way to ask ECMAScript
 #: whether a timestamp names an instant and it gives the wrong answer: on the
@@ -1438,21 +1595,7 @@ def typescript_doc(description: str, indent: str) -> list[str]:
 #: one value the round-trip alone cannot separate -- ECMAScript can represent it
 #: and reports it back unchanged -- and the canonical schema's `format: date-time`
 #: refuses it, so the floor is stated explicitly.
-TYPESCRIPT_TIMESTAMP_GUARD = """\
-/**
- * Return whether a value is a canonical RFC 3339 UTC `Timestamp` that names a real instant.
- *
- * `TIMESTAMP_PATTERN` fixes the spelling and cannot fix the calendar: `2026-13-01T00:00:00Z`
- * satisfies it character for character. `Date.parse` is not the missing half -- it accepts
- * `2024-02-30T00:00:00Z` and `2026-02-29T00:00:00Z` by rolling them forward into March, so a
- * guard that trusted it would admit values this contract's other bindings refuse. The date is
- * built from the literal fields instead, and every field is compared back: any value the
- * constructor had to normalize disagrees with the literal it came from and is refused.
- */
-export function isTimestamp(value: unknown): value is Timestamp {
-  if (typeof value !== "string" || !new RegExp(TIMESTAMP_PATTERN).test(value)) {
-    return false;
-  }
+TYPESCRIPT_DATE_TIME_TAIL = """\
   const year = Number(value.slice(0, 4));
   const month = Number(value.slice(5, 7));
   const day = Number(value.slice(8, 10));
@@ -1474,13 +1617,67 @@ export function isTimestamp(value: unknown): value is Timestamp {
     at.getUTCHours() === hour &&
     at.getUTCMinutes() === minute &&
     at.getUTCSeconds() === second
-  );
-}"""
+  );"""
 
 
-def typescript_timestamp_guard() -> list[str]:
-    """The emitted `Timestamp` guard, as generator output lines."""
-    return TYPESCRIPT_TIMESTAMP_GUARD.split("\n")
+def typescript_scalar_guard(definition: Definition) -> list[str]:
+    """Emit one TypeScript value-domain guard for a patterned scalar definition.
+
+    The mirror of :func:`emit_python_scalar_guards`, clause for clause and bound for
+    bound, because a value one binding publishes and the other refuses is two
+    contracts rather than one. The same schema fields drive both, so the two cannot
+    drift without the schema changing under them.
+    """
+    name = definition.name
+    constant = f"{screaming_snake(name)}_PATTERN"
+    calendar = definition.string_format == "date-time"
+
+    summary = (
+        f"Return whether a value is a well-formed `{name}`: the declared pattern and "
+        "length bounds, applied as a full match. The generated decoders do not call "
+        "this -- decoding stays tolerant, and this is the primitive a caller "
+        "validates with."
+    )
+    if calendar:
+        summary += (
+            f" `{constant}` fixes the spelling and cannot fix the calendar: "
+            "`2026-13-01T00:00:00Z` satisfies it character for character. `Date.parse` is "
+            "not the missing half -- it accepts `2024-02-30T00:00:00Z` and "
+            "`2026-02-29T00:00:00Z` by rolling them forward into March, so a guard that "
+            "trusted it would admit values this contract's other bindings refuse. The date "
+            "is built from the literal fields instead, and every field is compared back: "
+            "any value the constructor had to normalize disagrees with the literal it came "
+            "from and is refused."
+        )
+
+    conditions = ['typeof value === "string"']
+    if definition.min_length is not None:
+        conditions.append(f"value.length >= {definition.min_length}")
+    if definition.max_length is not None:
+        conditions.append(f"value.length <= {definition.max_length}")
+    conditions.append(f"new RegExp({constant}).test(value)")
+
+    lines = typescript_doc(summary, "")
+    lines.append(f"export function is{name}(value: unknown): value is {name} {{")
+    if calendar:
+        lines.append("  if (")
+        lines.append("    !(")
+        for index, condition in enumerate(conditions):
+            suffix = " &&" if index < len(conditions) - 1 else ""
+            lines.append(f"      {condition}{suffix}")
+        lines.append("    )")
+        lines.append("  ) {")
+        lines.append("    return false;")
+        lines.append("  }")
+        lines += TYPESCRIPT_DATE_TIME_TAIL.split("\n")
+    else:
+        lines.append("  return (")
+        for index, condition in enumerate(conditions):
+            suffix = " &&" if index < len(conditions) - 1 else ""
+            lines.append(f"    {condition}{suffix}")
+        lines.append("  );")
+    lines.append("}")
+    return lines
 
 
 def typescript_catalogue_lines(value: CatalogueValue, indent: int) -> list[str]:
@@ -1604,19 +1801,13 @@ def emit_typescript(contract: Contract) -> str:
                     for index, piece in enumerate(pieces):
                         terminator = ";" if index == len(pieces) - 1 else " +"
                         lines.append(f"  {json.dumps(piece)}{terminator}")
+                lines.append("")
+                lines += typescript_scalar_guard(definition)
                 if definition.name == "ServiceEndpointUri":
-                    lines += typescript_doc(
-                        "Return whether a value is a canonical credential-free dialable Core endpoint URI.",
-                        "",
-                    )
-                    lines.append(
-                        "export function isServiceEndpointUri(value: unknown): value is ServiceEndpointUri {"
-                    )
-                    lines.append(
-                        '  return typeof value === "string" && value.length <= 2048 && '
-                        "new RegExp(SERVICE_ENDPOINT_URI_PATTERN).test(value);"
-                    )
-                    lines.append("}")
+                    # The one scalar `assert`, kept named rather than generalized: its
+                    # refusal string names `endpoint_uri` and is matched on by tests and
+                    # by Runtime's probe boundary, and no rule over the schema can derive
+                    # a per-field sentence. The `is` half above is the general rule.
                     lines.append("")
                     lines += typescript_doc(
                         "Assert the endpoint policy without including a rejected value in the error.",
@@ -1633,8 +1824,6 @@ def emit_typescript(contract: Contract) -> str:
                     )
                     lines.append("  }")
                     lines.append("}")
-                elif definition.name == "Timestamp":
-                    lines += typescript_timestamp_guard()
             lines.append("")
         elif definition.kind == "integer":
             lines += typescript_doc(definition.description, "")
@@ -1699,13 +1888,23 @@ def emit_typescript(contract: Contract) -> str:
             elif definition.name == "ServiceProbeResult":
                 lines.append("")
                 lines += typescript_doc(
-                    "Assert nested descriptor semantics before a probe result reaches a public boundary.",
+                    "Assert probe-result semantics before it reaches a public boundary. Checks "
+                    "exactly what `validate_service_probe_result` checks in Python: its own "
+                    "`observed_at`, then the nested descriptor. `observed_at` is refused under "
+                    "its own message rather than the descriptor's, because a caller cannot "
+                    "otherwise tell which field was unusable.",
                     "",
                 )
                 lines.append(
                     "export function assertServiceProbeResultSemantics("
                     "value: ServiceProbeResult): void {"
                 )
+                lines.append("  if (!isTimestamp(value.observed_at)) {")
+                lines.append(
+                    '    throw new TypeError("observed_at is not a canonical RFC 3339 UTC '
+                    'Timestamp");'
+                )
+                lines.append("  }")
                 lines.append("  const descriptor = value.descriptor;")
                 lines.append("  if (descriptor !== undefined && descriptor !== null) {")
                 lines.append("    assertServiceEndpointDescriptorSemantics(descriptor);")
