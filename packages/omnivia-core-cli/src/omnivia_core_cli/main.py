@@ -22,10 +22,19 @@ and which a launcher polling readiness would believe.
 `start`, `stop` and `status` make the service usable without the desktop
 application, which is what shipping Core open source and driving it over MCP
 requires. They stay inside the same boundary as everything else here: the
-service is *spawned* as the console script `omnivia-core-service` and signalled
+console script `omnivia-core-service` is *launched* and the service is signalled
 by pid, never imported, and every question about its state is asked by dialling
 it. ADR-036 admits exactly that division -- locate or launch the executable,
 communicate only through the application API.
+
+`start` does not do the starting. R004-08 puts managed start in the service
+package so the CLI and the MCP adapter share one implementation of discovery, the
+bootstrap mutex, spawn, readiness and failed-child cleanup, and this command
+reaches it by launching `omnivia-core-service --managed-start` and reading the one
+versioned JSON document it answers with. That removed the accepted duplicate-spawn
+race: two `start` commands running together used to both spawn, with the loser
+refused by the lifetime storage lock; now the loser waits for the mutex holder and
+attaches to the service it started.
 
 `status` is the one that has to be careful. The descriptor is written once, at
 startup, and never rewritten, so its `ready` and `lifecycle_state` fields freeze
@@ -48,7 +57,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 import uuid
@@ -65,8 +73,6 @@ from omnivia_core_cli.client import build_request, encode, read_descriptor
 from omnivia_core_cli.lifecycle import (
     IDENTITY_DIFFERENT,
     IDENTITY_UNREADABLE,
-    POLL_SECONDS,
-    START_TIMEOUT_SECONDS,
     STOP_TIMEOUT_SECONDS,
     Installation,
     LifecycleError,
@@ -74,8 +80,8 @@ from omnivia_core_cli.lifecycle import (
     home_directory,
     process_identity,
     process_is_gone,
+    request_managed_start,
     request_stop,
-    spawn_service,
 )
 
 #: The whole-call budget for one `workspace show`, covering discovery's live probe
@@ -328,22 +334,6 @@ def _call(
     return 0
 
 
-def _report_child_output(installation: Installation) -> None:
-    """Put the started process's own words in front of the caller.
-
-    `service/main.py` prints its `StartupReport` -- and in particular `unmet`,
-    which names the readiness precondition that failed -- before it exits. Without
-    this, a failed `start` reports only that something went wrong, and the one
-    document that says *what* sits unread in a log file.
-    """
-    try:
-        recorded = installation.log_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    if recorded.strip():
-        sys.stderr.write(recorded if recorded.endswith("\n") else recorded + "\n")
-
-
 def _live_service(
     runtime_state: Path | None, *, quiet: bool
 ) -> tuple[ServiceEndpointDescriptor, dict[str, Any]] | None:
@@ -386,85 +376,77 @@ def _describe(service: ServiceEndpointDescriptor, answer: dict[str, Any]) -> str
     return "".join(line + "\n" for line in lines)
 
 
-def _start(installation: Installation, runtime_state: Path | None) -> int:
-    """Spawn the service and wait until it answers, or say why it did not.
+def _start(installation: Installation) -> int:
+    """Ask the shared managed-start path for a service, and report what it answered.
 
-    Four things this waits on, and each is here because waiting on fewer reports
-    a lie:
+    **This command no longer does the starting.** R004-08 makes managed start a
+    service-owned path so that the CLI and the MCP adapter run one implementation
+    rather than two, and R004-09 makes it the first production caller of
+    `coordinated_startup`. So the whole of `start` is now: launch
+    `omnivia-core-service --managed-start`, read its one JSON document, and put it
+    into words. Discovery, compatibility, the bootstrap mutex, the recheck, the
+    spawn, the readiness wait and the failed-child cleanup all happen behind that
+    subprocess -- and the boundary is unchanged, because a subprocess is a
+    subprocess whether it serves or arbitrates.
 
-    - an **existing** service is dialled before anything is spawned, so a second
-      `start` reports what is running instead of racing it;
-    - readiness, not `Popen` returning. `Popen` returns as soon as the child is
-      forked, which is before the migration, the recovery and the endpoint;
-    - `poll()` on every pass, so a child that *exited* is reported as an exit with
-      its own output rather than being waited out to the timeout and reported as
-      a slow start;
-    - a live call, not the descriptor's `ready` field, for the same reason
-      `status` does not trust it.
+    What a user sees is deliberately the same as before. `already running` when one
+    is up, `started (pid N)` when one was made, the same five-line description, and
+    on a failure the started process's own words. The one thing that is different is
+    what happens when two `start` commands race: the accepted duplicate spawn is
+    gone, because the launcher that loses the mutex waits for the winner and then
+    attaches to the service the winner started.
 
-    The accepted race: two `start` commands running together both find nothing
-    advertised and both spawn. The loser is refused by the lifetime storage lock
-    in `runner.py` -- "another service holds the lifetime storage lock" -- so
-    there is no split brain, only a process that exits at once. The mutex that
-    would prevent even that lives in the runtime, behind the boundary this CLI
-    may not cross, so the cost is one wasted process and a message that says what
-    happened.
+    The description's `state` and `writable` come from the launcher's live
+    `core.readiness` answer, not from the descriptor's frozen fields, for the same
+    reason `status` does not trust them.
     """
-    running = _live_service(runtime_state or _advertised(installation), quiet=True)
-    if running is not None:
-        sys.stdout.write("already running\n" + _describe(*running))
-        return 0
-
     try:
-        process = spawn_service(installation, endpoint_uri=installation.endpoint_uri)
+        result = request_managed_start(
+            installation, endpoint_uri=installation.endpoint_uri
+        )
     except LifecycleError as refusal:
         sys.stderr.write(f"{refusal}\n")
         return 1
 
-    deadline = time.monotonic() + START_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        exited = process.poll()
-        if exited is not None:
-            sys.stderr.write(
-                f"omnivia-core-service exited with status {exited} before it "
-                "was ready\n"
-            )
-            _report_child_output(installation)
-            return 1
-        started = _live_service(runtime_state or _advertised(installation), quiet=True)
-        if started is not None:
-            sys.stdout.write(f"started (pid {process.pid})\n" + _describe(*started))
-            return 0
-        time.sleep(POLL_SECONDS)
+    status = result.get("status")
+    service = result.get("service")
+    if status in ("attached", "started") and isinstance(service, dict):
+        headline = "already running" if status == "attached" else "started"
+        pid = service.get("pid")
+        if status == "started" and pid is not None:
+            headline = f"started (pid {pid})"
+        sys.stdout.write(headline + "\n" + _describe_service(service))
+        return 0
 
-    # Nothing else will clean this up. The child was spawned by this command and
-    # never became ready, so leaving it running would leave a process holding the
-    # storage lock that no `stop` can find -- it advertises no descriptor.
-    process.terminate()
-    try:
-        process.wait(timeout=STOP_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:  # pragma: no cover - only on a wedged child
-        process.kill()
-        process.wait(timeout=10)
-    sys.stderr.write(
-        f"omnivia-core-service did not become ready within "
-        f"{START_TIMEOUT_SECONDS:.0f}s; the process this command started was stopped\n"
-    )
-    _report_child_output(installation)
+    sys.stderr.write(f"{result.get('reason') or 'the service could not be started'}\n")
+    child_output = result.get("child_output")
+    if isinstance(child_output, str) and child_output.strip():
+        sys.stderr.write(child_output.rstrip("\n") + "\n")
     return 1
 
 
-def _advertised(installation: Installation) -> Path | None:
-    """The installation's one runtime directory, or None while it has none yet.
+def _describe_service(service: dict[str, Any]) -> str:
+    """One running service, rendered from the managed-start result.
 
-    `start` asks this before the service exists, when there is legitimately
-    nothing there, so the refusal `runtime_state()` raises is an answer here
-    rather than an error.
+    The same five-to-seven lines `_describe` renders from a descriptor and a live
+    readiness answer, because they are the same facts: the launcher already dialled
+    `core.readiness` and put the answer in the result, so dialling again here would
+    be a second opinion about a service this command did not start and cannot
+    improve on.
     """
-    try:
-        return installation.runtime_state()
-    except LifecycleError:
-        return None
+    unmet = service.get("unmet") or []
+    lines = [
+        f"endpoint: {service.get('endpoint_uri')}",
+        f"workspace: {service.get('workspace_id')}",
+        f"service instance: {service.get('service_instance_id')}",
+        f"state: {service.get('state')}",
+        f"writable: {'yes' if service.get('ready') else 'no'}",
+    ]
+    if service.get("pid") is not None:
+        lines.append(f"pid: {service['pid']}")
+    if unmet:
+        lines.append(f"unmet: {', '.join(str(name) for name in unmet)}")
+    return "".join(line + "\n" for line in lines)
 
 
 def _stop(runtime_state: Path) -> int:
@@ -569,7 +551,12 @@ def main(argv: list[str] | None = None) -> int:
     installation = Installation(home_directory(args.home))
 
     if args.command == "start":
-        return _start(installation, args.runtime_state)
+        # `--runtime-state` is not passed on. The managed-start path derives the one
+        # runtime directory from the installation root and the workspace the
+        # manifest names, which is the path a service actually publishes to; the
+        # flag only ever selected which descriptor this command *polled*, and
+        # pointing it elsewhere never changed where the started service wrote.
+        return _start(installation)
 
     runtime_state = args.runtime_state
     if runtime_state is None:
