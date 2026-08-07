@@ -35,10 +35,11 @@ import pytest
 
 WORKSPACE_ID = "ws-lifecycle-tests-0001"
 
-#: Kept short deliberately. `sockaddr_un` caps a socket address at 104 bytes, of
-#: which 103 are usable, and the runtime binds a longer staging name before
-#: renaming -- so pytest's own `tmp_path` is too deep to serve from. The same
-#: reason `test_transport_conformance.py` uses a short `mkdtemp`.
+#: Kept short deliberately. R004-15 caps a local endpoint at `MAX_ENDPOINT_PATH_BYTES`
+#: encoded bytes -- what `sockaddr_un`'s 104-byte `sun_path` leaves once the NUL
+#: terminator and the runtime's fixed-width staging name are taken -- so pytest's own
+#: `tmp_path` is too deep to serve from. The same reason
+#: `test_transport_conformance.py` uses a short `mkdtemp`.
 HOME_PREFIX = "ovl-"
 
 
@@ -200,6 +201,58 @@ def test_status_refuses_a_service_that_died_without_unwinding(home: Path) -> Non
 
     assert result.returncode == 1, "a dead service was reported as running"
     assert "not running" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the byte ceiling is a Unix-socket limit")
+def test_the_cli_refuses_one_byte_past_the_endpoint_ceiling_and_not_at_it() -> None:
+    """The CLI's own copy of R004-15's ceiling, at both boundaries.
+
+    This guard exists because ADR-036 forbids this package importing the runtime, so
+    it restates the number. It used to restate 104 -- the raw `sun_path` field size
+    -- and check the endpoint against it, leaving it 11 to 17 bytes looser than the
+    runtime's guard: precisely the paths that passed here and then failed to bind in
+    the service this command spawns.
+    `test_socket_path_ceiling.py::test_the_cli_restates_the_runtime_ceiling_exactly`
+    fails if the two numbers drift; this fails if the comparison around one of them
+    does.
+
+    Nothing is created on disk: the length check runs before the executable and
+    manifest checks, so the boundary is reachable without a bootstrapped workspace
+    and without spawning anything. The accepted case asserts only that the refusal is
+    *not* the length one -- what is under test is where the line falls, and
+    `test_start_then_status_then_stop` already covers what happens on the good side
+    of it.
+    """
+    from omnivia_core_cli.lifecycle import (
+        MAX_ENDPOINT_PATH_BYTES,
+        Installation,
+        LifecycleError,
+        request_managed_start,
+    )
+
+    root = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+
+    def installation_of(total: int) -> Installation:
+        fill = total - len(str(root).encode()) - len("//run/s.sock")
+        assert fill >= 1, f"{root} is too deep for a {total}-byte endpoint"
+        made = Installation(home=root / ("h" * fill))
+        assert len(str(made.socket_path).encode()) == total
+        return made
+
+    try:
+        with pytest.raises(LifecycleError) as at_the_line:
+            request_managed_start(
+                installation_of(MAX_ENDPOINT_PATH_BYTES), endpoint_uri="unix:///x"
+            )
+        assert "byte limit" not in str(at_the_line.value)
+
+        with pytest.raises(LifecycleError, match="byte limit") as past_it:
+            request_managed_start(
+                installation_of(MAX_ENDPOINT_PATH_BYTES + 1), endpoint_uri="unix:///x"
+            )
+        assert str(MAX_ENDPOINT_PATH_BYTES) in str(past_it.value)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_start_recovers_from_a_descriptor_left_by_a_dead_service(home: Path) -> None:

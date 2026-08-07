@@ -77,9 +77,11 @@ CALL_TIMEOUT = 10.0
 def _short_socket_directory() -> Path:
     """A socket directory outside `tmp_path`.
 
-    `sockaddr_un` caps a path at 104 bytes on macOS, and pytest's `tmp_path`
-    nests deep enough to exceed it. Only the socket has the limit, so only the
-    socket gets the short path.
+    R004-15 caps a local endpoint at 86 encoded bytes -- what `sockaddr_un`'s
+    104-byte `sun_path` leaves after the NUL terminator and the runtime's
+    fixed-width staging name -- and pytest's `tmp_path` nests deep enough to
+    exceed it. Only the socket has the limit, so only the socket gets the short
+    path.
     """
     return Path(tempfile.mkdtemp(prefix="ovb-", dir=tempfile.gettempdir()))
 

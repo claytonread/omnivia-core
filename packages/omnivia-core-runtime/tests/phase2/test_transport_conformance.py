@@ -318,20 +318,26 @@ def test_every_accepted_socket_path_length_really_binds(socket_dir: Path) -> Non
     Sweeping real `start()` calls across the boundary is the point. The two existing
     over-length cases use paths far past the cap -- 120 filler characters, or three
     40-character directory components -- so neither ever lands in the window where
-    the guard and the kernel disagreed: `start()` binds a *staging* name 11 to 15
-    bytes longer than the endpoint, so on macOS every endpoint from 89 to 104 bytes
-    passed the guard and then failed the bind, surfacing as the generic
-    "transport start failed" rather than as a length problem. That window is where
-    a shipping app lives: `~/Library/Application Support/OmniVia/runtime/<ws-id>/
-    service.sock` is 92 bytes on a normal macOS account.
+    the guard and the kernel disagreed: `start()` binds a *staging* name longer than
+    the endpoint, so on macOS every endpoint from 89 to 104 bytes passed the guard
+    and then failed the bind, surfacing as the generic "transport start failed"
+    rather than as a length problem. That window is where a shipping app lives:
+    `~/Library/Application Support/OmniVia/runtime/<ws-id>/service.sock` is 92 bytes
+    on a normal macOS account.
 
-    Nothing here hardcodes 104. The accepted set is discovered by asking the code,
-    and the kernel's own cap is discovered by binding.
+    R004-15 closed the window from the other side as well, by fixing the staging
+    suffix at a constant width: it was 11 to 17 bytes depending on how many digits
+    the pid had, so the cap the sweep finds here used to move between runs of this
+    very test. `test_socket_path_ceiling.py` pins the resulting number and its real
+    bind; this sweep proves it is a *cap* -- that nothing above the first refusal
+    binds -- which a two-point boundary test cannot.
+
+    Nothing here hardcodes 104 or 86. The accepted set is discovered by asking the
+    code, and the kernel's own cap is discovered by binding.
     """
     # Every length here is a real bind, so the sweep is bracketed rather than run
-    # from the shortest possible name: the cap cannot fall outside 86-92 bytes for
-    # any pid width a kernel will issue, and 24 bytes of margin below the field size
-    # brackets that on both platforms.
+    # from the shortest possible name: 24 bytes of margin below the field size
+    # brackets the cap on both platforms.
     shortest = max(
         len(str(socket_dir).encode("utf-8")) + len("/.sock") + 1,
         MAX_SOCKET_PATH_BYTES - 24,
@@ -359,11 +365,12 @@ def test_every_accepted_socket_path_length_really_binds(socket_dir: Path) -> Non
     assert refused, "nothing was refused; the sweep never reached the cap"
     assert refused[0] == longest_accepted + 1
 
-    # And the guard is not merely conservative: the first length it refuses is one
-    # the kernel would refuse too. Only where `sun_path` is exactly
-    # MAX_SOCKET_PATH_BYTES -- macOS and BSD. On Linux it is 108, and this guard is
-    # deliberately the macOS floor so a workspace that works there works here, which
-    # leaves real headroom above the first refusal.
+    # And the guard is not merely conservative: the first endpoint length it refuses
+    # is one whose staging name -- the string `start()` really binds -- the kernel
+    # would refuse too. Only where `sun_path` is exactly MAX_SOCKET_PATH_BYTES --
+    # macOS and BSD. On Linux it is 108, and this guard is deliberately the macOS
+    # floor so a workspace that works there works here, which leaves real headroom
+    # above the first refusal.
     sun_path_is_the_floor = not _kernel_binds(
         _socket_path_of_length(socket_dir, MAX_SOCKET_PATH_BYTES)
     )
@@ -377,7 +384,11 @@ def test_every_accepted_socket_path_length_really_binds(socket_dir: Path) -> Non
 def test_calling_an_absent_socket_reports_it_without_disclosing_the_path(
     socket_dir: Path,
 ) -> None:
-    missing = socket_dir / "credential-hunter2-missing.sock"
+    # Short on purpose: R004-15 caps an endpoint at 86 encoded bytes on both sides,
+    # and `socket_dir` plus the old `credential-hunter2-missing.sock` came to 93 on
+    # macOS -- so this asserted the length refusal rather than the absent-endpoint
+    # one. The name only has to look like a secret; its length proves nothing here.
+    missing = socket_dir / "cred-hunter2.sock"
     transport = LocalSocketTransport(path=missing)
     with pytest.raises(
         TransportError, match="service endpoint is unavailable"
