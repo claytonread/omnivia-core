@@ -473,6 +473,36 @@ def test_an_unrecognised_installation_state_is_refused_and_left_alone(
     assert not (tmp_path / "workspace").exists()
 
 
+@pytest.mark.parametrize("litter", [".DS_Store", "Thumbs.db", "._workspace.json"])
+def test_a_file_manager_visiting_the_home_does_not_make_it_somebody_elses(
+    tmp_path: Path, litter: str
+) -> None:
+    """Opening `~/.omnivia` in Finder used to make `omnivia init` refuse for good.
+
+    A `.DS_Store` in `workspace/` was counted as content a person had put there and
+    refused as `UNRELATED_DIRECTORY`; the same file in `installation-state/` was
+    refused as `UNRECOGNISED_INSTALLATION_STATE`. Neither is recoverable by any
+    shipped command, and the default home is precisely the directory a user is most
+    likely to open in a file manager. Both are checked in one run because the two
+    refusals are decided by different code and both had it.
+
+    The file is asserted still present afterwards: ignoring it is a judgement about
+    whose directory this is, not a licence to tidy it away.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / litter).write_bytes(b"\x00\x01")
+    installation = tmp_path / "installation-state"
+    installation.mkdir(parents=True)
+    (installation / litter).write_bytes(b"\x00\x01")
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED, result.reason
+    assert (workspace / litter).read_bytes() == b"\x00\x01"
+    assert (installation / litter).read_bytes() == b"\x00\x01"
+
+
 def test_an_installation_state_this_command_made_is_not_unrecognised(
     tmp_path: Path,
 ) -> None:

@@ -11,26 +11,31 @@ refuses an unbootstrapped one with "workspace has no ownership substrate; migrat
 it before serving", and both routes that could produce one were private Python
 API, so `omnivia start` on a fresh machine had nothing to start.
 
-**The sequence, established against the code rather than taken on trust.**
+**The sequence, established against the code rather than taken on trust.** The
+database comes first and the filesystem last, which is the opposite of the
+obvious order and is deliberate -- see "Non-destructive" below.
 
-    1. `create_workspace(root, manifest)` -- the portable five-path layout and an
-       atomically written `workspace.json`. It creates **no database**.
-    2. `InstallationLayout(installation_root).create(workspace_id)` -- the
-       installation-local backups, attempts and runtime directories.
-    3. Create the database *file*. This step is easy to miss and it is why the
+    1. Take the workspace's lifetime storage lock, creating only `locks/` to put
+       it in.
+    2. Create the database *file*. This step is easy to miss and it is why the
        obvious sequence does not run: `open_database` only creates a file in
        `OpenMode.EPHEMERAL` -- `may_create` is that mode and no other -- so
        opening a fresh workspace `SERVICE_OWNED` raises `StorageError: no
        workspace database at ...` instead of bootstrapping one.
-    4. `open_database(..., OpenMode.EXCLUSIVE_MAINTENANCE)`. Exclusive, which is
+    3. `open_database(..., OpenMode.EXCLUSIVE_MAINTENANCE)`. Exclusive, which is
        what `bootstrap_generation_one` requires, and *not* `SERVICE_OWNED`: this
        process is not a service, does not advertise readiness and does not hold
        the workspace for a lifetime. It is the same mode `migrate_legacy_database`
        uses for the same reason.
-    5. `bootstrap_generation_one(..., expect_phase0_baseline=False)` -- the
+    4. `bootstrap_generation_one(..., expect_phase0_baseline=False)` -- the
        pristine branch, which materialises the frozen Phase 0 scaffolding so the
        migrations from 0002 onward have the tables they add triggers to.
-    6. `apply_pending_migrations(...)`.
+    5. `apply_pending_migrations(...)`.
+    6. `create_workspace(root, manifest)` -- the portable five-path layout and an
+       atomically written `workspace.json`. It creates **no database**, which is
+       what lets it run this late.
+    7. `InstallationLayout(installation_root).create(workspace_id)` -- the
+       installation-local backups, attempts and runtime directories.
 
 `migrate_legacy_database` is the *other* route and is not this one: it requires an
 existing Phase 0-fingerprinted SQLite file to adopt.
@@ -47,6 +52,25 @@ one path only: when there is none. An existing manifest is read and kept. Nothin
 here deletes, truncates or overwrites anything, and the three cases R004-10 names
 are refused before any of it starts.
 
+**And a refusal leaves the tree as it found it.** That is a stronger claim than
+"nothing is overwritten" and it used not to hold. `init` wrote the manifest and the
+installation-state tree first and consulted the database last, so a workspace whose
+manifest was lost while its database survived had a *fresh* `workspace_id` minted
+and written -- `layout.exists()` asks about the manifest path -- before the
+exclusive open discovered it disagreeing. The refusal was correct and the manifest
+it had just written stayed, so every later run refused too and no shipped command
+could initialise that installation again. The order above is the fix, and it is an
+order rather than a rollback: nothing is written until the database work has
+succeeded, so there is nothing to take back and no window in which a crash could
+leave a half-taken-back tree. `WORKSPACE_BUSY` was the same defect with a different
+trigger -- it created ten directories on its way to refusing -- and the same
+reordering closes it.
+
+**What "changed" counts.** `apply_pending_migrations` is a third thing that moves,
+separately from the manifest and the substrate row, and it is reported. A run that
+applied every pending migration to an interrupted bootstrap used to answer
+"already initialised; nothing was changed".
+
 **This starts no service.** `init` establishes state; `start` or MCP managed start
 establishes the process.
 """
@@ -55,6 +79,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -108,6 +133,39 @@ DEFAULT_WORKSPACE_NAME: Final = "OmniVia workspace"
 #: source of all three names.
 INSTALLATION_ENTRIES: Final = frozenset({BACKUPS_DIR, ATTEMPTS_DIR, RUNTIME_DIR})
 
+#: Entries an operating system or file manager writes on its own, which say nothing
+#: about whose directory this is.
+#:
+#: Both refusals below used to count these as somebody else's content, and the
+#: consequence was not theoretical: opening `~/.omnivia` in Finder writes a
+#: `.DS_Store`, and one of those was enough to make `omnivia init` refuse that
+#: installation permanently -- `UNRELATED_DIRECTORY` for the workspace,
+#: `UNRECOGNISED_INSTALLATION_STATE` for the installation state -- with no shipped
+#: command able to clear it.
+#:
+#: A closed list of names rather than "ignore every dotfile", because the refusal is
+#: worth keeping for everything a *person* put here: a `.git` directory in a
+#: workspace root is somebody's repository and mixing a workspace into it is exactly
+#: what R004-10's second refusal exists to prevent. `._` is the AppleDouble prefix a
+#: copy onto a non-native filesystem leaves beside each file, so it is matched by
+#: prefix rather than enumerated.
+OS_GENERATED_ENTRIES: Final = frozenset(
+    {
+        ".DS_Store",  # macOS Finder
+        ".localized",  # macOS
+        ".Spotlight-V100",  # macOS
+        ".fseventsd",  # macOS
+        ".Trashes",  # macOS
+        ".apdisk",  # macOS
+        "Thumbs.db",  # Windows Explorer
+        "desktop.ini",  # Windows Explorer
+        ".directory",  # KDE Dolphin
+    }
+)
+
+#: The AppleDouble sidecar prefix. See `OS_GENERATED_ENTRIES`.
+OS_GENERATED_PREFIX: Final = "._"
+
 #: What the lock this holds is recorded as. It is not a service instance -- no
 #: service exists yet -- and the value is diagnostic only.
 LOCK_HOLDER: Final = "omnivia-core-service --init"
@@ -124,15 +182,25 @@ class WorkspaceInitStatus(str, Enum):
 class WorkspaceInitRefusal(str, Enum):
     """Why nothing was written. Closed on purpose, like managed start's set.
 
-    The first three are the cases R004-10 names by hand. The last two cover the
+    The first three are the cases R004-10 names by hand. The last three cover the
     ways the sequence can stop once it has started, and are separate names rather
     than one bucket because an adapter's advice differs: a busy workspace means a
-    service already owns it, and a write failure means the filesystem said no.
+    service already owns it, an identity mismatch means the manifest and the
+    database disagree about which workspace this is, and a write failure means the
+    filesystem said no.
+
+    `WORKSPACE_IDENTITY_MISMATCH` is the newest and was carved out of
+    `WRITE_FAILURE`, which is where it used to surface. Two reasons, and the second
+    is the one that mattered: nothing failed to write, so a name meaning "the
+    filesystem said no" was untrue; and the state it names has its own remedy --
+    restore the manifest the database's workspace had, or point `--workspace`
+    somewhere else -- which is not the remedy for a full disk.
     """
 
     INCOMPATIBLE_MANIFEST = "incompatible_manifest"
     UNRELATED_DIRECTORY = "unrelated_directory"
     UNRECOGNISED_INSTALLATION_STATE = "unrecognised_installation_state"
+    WORKSPACE_IDENTITY_MISMATCH = "workspace_identity_mismatch"
     WORKSPACE_BUSY = "workspace_busy"
     WRITE_FAILURE = "write_failure"
 
@@ -210,7 +278,7 @@ def initialise_workspace(
             return existing
         manifest, minted = existing, False
     else:
-        unrelated = layout.unexpected_entries()
+        unrelated = _chosen_by_somebody(layout.unexpected_entries())
         if unrelated:
             return WorkspaceInitResult(
                 status=WorkspaceInitStatus.REFUSED,
@@ -241,10 +309,23 @@ def _unrecognised_installation_state(root: Path) -> str | None:
     """
     if not root.is_dir():
         return None
-    foreign = sorted(
-        entry.name for entry in root.iterdir() if entry.name not in INSTALLATION_ENTRIES
+    foreign = _chosen_by_somebody(
+        sorted(
+            entry.name
+            for entry in root.iterdir()
+            if entry.name not in INSTALLATION_ENTRIES
+        )
     )
     return ", ".join(foreign) if foreign else None
+
+
+def _chosen_by_somebody(names: Iterable[str]) -> list[str]:
+    """`names` without the entries no person put there. See `OS_GENERATED_ENTRIES`."""
+    return [
+        name
+        for name in names
+        if name not in OS_GENERATED_ENTRIES and not name.startswith(OS_GENERATED_PREFIX)
+    ]
 
 
 def _existing_manifest(
@@ -318,21 +399,50 @@ def _bootstrap(
     database. Without it, running `init` against a workspace a service already owns
     would meet that service's exclusive SQLite lock as a busy timeout rather than
     as an answer, and two concurrent inits would race on the substrate.
-    """
-    if minted:
-        create_workspace(layout.root, manifest)
-    else:
-        # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/` is
-        # created; the manifest already on disk is untouched.
-        layout.create_directories()
-    InstallationLayout(root=installation_root).create(manifest.workspace_id)
 
-    lock = create_lock(
-        layout.locks_path / "storage.lock",
-        LockRole.LIFETIME_STORAGE,
-        {"holder": LOCK_HOLDER},
-    )
+    **The order below is the whole of "a refusal leaves the tree as it found it",
+    and it is an order rather than a rollback.** Both refusals reachable from here
+    are decided before the manifest, the layout directories and the
+    installation-state tree are created, so there is nothing to undo and no window
+    in which a crash could leave a half-undone one behind. It used to run the other
+    way round, and both refusals wrote:
+
+    - `WORKSPACE_BUSY` created ten directories and, on a workspace with no manifest,
+      wrote one -- so refusing a workspace a running service owned left a tree
+      behind on every attempt.
+    - `WORKSPACE_IDENTITY_MISMATCH` did not exist. A workspace whose manifest was
+      lost while its database survived took the mint branch, because `layout.exists()`
+      asks about the manifest *path*; a fresh `workspace_id` was invented, written to
+      disk by `create_workspace`, and only then found to disagree with the database
+      by the exclusive open. **The manifest survived the refusal**, so every later
+      run refused against it and no shipped command could initialise that
+      installation again.
+
+    Two things are created ahead of the refusals, and the claim is bounded rather
+    than absolute: `locks/`, because a lock is held through a file inside it, and
+    the empty database file, because `open_database` creates one in `EPHEMERAL`
+    alone. Neither is an exception to the rule, for the same reason in both cases --
+    **a refusal is unreachable on the tree where this call is what created them.** A
+    workspace with no `locks/` has no lock holder, so `WORKSPACE_BUSY` cannot be the
+    answer; a workspace with no database cannot hold the wrong workspace, cannot be
+    somebody else's and cannot disagree with this manifest, so neither
+    `WORKSPACE_IDENTITY_MISMATCH` nor the storage layer's own refusals can be
+    either.
+
+    Two residuals, stated rather than papered over. Two `init` runs racing on a
+    genuinely fresh tree can have the loser refuse `WORKSPACE_BUSY` over a `locks/`
+    the winner made -- and the winner is creating the whole workspace anyway. And an
+    `OSError` writing the manifest *after* the database was successfully bootstrapped
+    leaves a database with no manifest; the next run then refuses
+    `WORKSPACE_IDENTITY_MISMATCH` naming the workspace the database holds, having
+    written nothing, which is a stuck state that reports itself accurately rather
+    than one that grows worse on every attempt.
+    """
+    lock_path = layout.locks_path / "storage.lock"
     try:
+        layout.root.mkdir(parents=True, exist_ok=True)
+        layout.locks_path.mkdir(exist_ok=True)
+        lock = create_lock(lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER})
         held = lock.acquire()
     except OSError as failure:
         return _write_failure(layout, manifest, installation_root, failure)
@@ -351,57 +461,133 @@ def _bootstrap(
         )
 
     try:
-        # `open_database` creates a file in `EPHEMERAL` alone, so a fresh workspace
-        # needs one to exist before an exclusive open can be asked for. SQLite reads
-        # a zero-byte file as an empty database, which is precisely what the pristine
-        # branch of `bootstrap_generation_one` requires.
-        layout.database_path.touch()
-        connection = open_database(layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE)
         try:
-            # The substrate, read out of the database. This is what makes a repeat
-            # run idempotent rather than short-circuited: a workspace whose manifest
-            # exists but whose database was never bootstrapped is finished here,
-            # and that is the state `runner.py` refuses to serve.
-            bootstrapped = read_workspace_state(connection) is None
-            state = bootstrap_generation_one(
-                connection,
-                workspace_id=manifest.workspace_id,
-                workspace_format_version=(
-                    manifest.compatibility.workspace_format_version
-                ),
-                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-                expect_phase0_baseline=False,
+            # `open_database` creates a file in `EPHEMERAL` alone, so a fresh
+            # workspace needs one to exist before an exclusive open can be asked
+            # for. SQLite reads a zero-byte file as an empty database, which is
+            # precisely what the pristine branch of `bootstrap_generation_one`
+            # requires. This is the second and last thing created ahead of a
+            # refusal, and like `locks/` it is not an exception to the rule: it
+            # runs only when there was no database, and a database that does not
+            # exist cannot be the wrong one, cannot be somebody else's and cannot
+            # hold a workspace this manifest disagrees with. Every refusal below
+            # needs a database that was already there.
+            layout.database_path.touch()
+            connection = open_database(
+                layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE
             )
-            apply_pending_migrations(
-                connection,
-                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-                service_instance_id=LOCK_HOLDER,
-                fencing_generation=state.fencing_generation,
-                workspace_id=manifest.workspace_id,
-            )
-        finally:
-            connection.close()
-    except (StorageError, OSError) as failure:
-        return _write_failure(layout, manifest, installation_root, failure)
+            try:
+                # The substrate, read out of the database. This is what makes a
+                # repeat run idempotent rather than short-circuited: a workspace
+                # whose manifest exists but whose database was never bootstrapped is
+                # finished here, and that is the state `runner.py` refuses to serve.
+                existing = read_workspace_state(connection)
+                if (
+                    existing is not None
+                    and existing.workspace_id != manifest.workspace_id
+                ):
+                    return _identity_mismatch(
+                        layout, installation_root, existing.workspace_id, minted
+                    )
+                bootstrapped = existing is None
+                state = bootstrap_generation_one(
+                    connection,
+                    workspace_id=manifest.workspace_id,
+                    workspace_format_version=(
+                        manifest.compatibility.workspace_format_version
+                    ),
+                    mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                    expect_phase0_baseline=False,
+                )
+                applied = apply_pending_migrations(
+                    connection,
+                    mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                    service_instance_id=LOCK_HOLDER,
+                    fencing_generation=state.fencing_generation,
+                    workspace_id=manifest.workspace_id,
+                )
+            finally:
+                connection.close()
+
+            # The filesystem, last, and that ordering is the repair. Every refusal
+            # this function can reach is decided above, so until this line runs
+            # there is nothing written to take back -- and it takes no enumeration
+            # of what the storage layer refuses to keep it that way, which a
+            # pre-check duplicating `bootstrap_generation_one`'s conditions would
+            # have needed and would have drifted from.
+            if minted:
+                create_workspace(layout.root, manifest)
+            else:
+                # Repair, not rewrite. A missing `blobs/`, `indexes/` or `locks/`
+                # is created; the manifest already on disk is untouched.
+                layout.create_directories()
+            InstallationLayout(root=installation_root).create(manifest.workspace_id)
+        except (StorageError, OSError) as failure:
+            return _write_failure(layout, manifest, installation_root, failure)
     finally:
         lock.release()
 
+    # **What "changed" counts, and what it used to.** This was `minted or
+    # bootstrapped`, which sees the manifest and the workspace-state row and
+    # nothing else. The migration ledger is a third thing that moves, and it moves
+    # on its own: `bootstrap_generation_one` and `apply_pending_migrations` are
+    # separate transactions, so an interruption between them leaves the substrate
+    # row committed and every migration pending. A run against that state applied
+    # ten migrations and reported "already initialised; nothing was changed".
     created = minted or bootstrapped
+    pending = len(applied)
+    if created:
+        reason = f"initialised {manifest.workspace_id} at {layout.root}"
+    elif pending:
+        reason = (
+            f"completed {manifest.workspace_id} at {layout.root}: applied {pending} "
+            f"pending migration{'' if pending == 1 else 's'}"
+        )
+    else:
+        reason = f"{layout.root} is already initialised; nothing was changed"
+
     return WorkspaceInitResult(
         status=(
             WorkspaceInitStatus.INITIALISED
-            if created
+            if created or pending
             else WorkspaceInitStatus.ALREADY_INITIALISED
         ),
-        reason=(
-            f"initialised {manifest.workspace_id} at {layout.root}"
-            if created
-            else f"{layout.root} is already initialised; nothing was changed"
-        ),
+        reason=reason,
         workspace_id=manifest.workspace_id,
         workspace_root=layout.root,
         installation_root=installation_root,
         workspace_format_version=manifest.compatibility.workspace_format_version,
+    )
+
+
+def _identity_mismatch(
+    layout: WorkspaceLayout,
+    installation_root: Path,
+    holder: str,
+    minted: bool,
+) -> WorkspaceInitResult:
+    """The database and the manifest name different workspaces. Nothing was written.
+
+    The identity reported is the *database's*, not the one this run would have
+    claimed: it is the recoverable fact, and the one a user needs in order to put
+    the right manifest back.
+    """
+    claim = (
+        "no manifest names it and this run would have created a new workspace here"
+        if minted
+        else f"but {layout.manifest_path} names another"
+    )
+    return WorkspaceInitResult(
+        status=WorkspaceInitStatus.REFUSED,
+        refusal=WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH,
+        reason=(
+            f"{layout.database_path} already holds workspace {holder}: {claim}. "
+            "Nothing was written -- restore that workspace's manifest, or pass a "
+            "different location"
+        ),
+        workspace_id=holder,
+        workspace_root=layout.root,
+        installation_root=installation_root,
     )
 
 
