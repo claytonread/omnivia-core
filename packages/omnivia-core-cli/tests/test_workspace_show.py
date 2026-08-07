@@ -915,9 +915,19 @@ def test_no_string_the_cli_emits_claims_a_verified_operating_system_peer() -> No
 def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
     """No caller-selected path, and no ambient one either.
 
-    `--runtime-state` is the only way in. An environment lookup would be an
-    unrestricted filesystem path arriving by another name, which is a stop
-    condition for this packet.
+    **The property is that no unrestricted ambient filesystem path is accepted**,
+    which is not the same sentence this docstring used to carry. It said
+    `--runtime-state` was "the only way in", and R004-11 corrects that: explicit
+    arguments -- `--runtime-state` and `--home` -- and deterministic built-in
+    defaults are both admitted path sources, and `~/.omnivia` is now the accepted
+    zero-argument convention. A fixed convention is bounded and identical on every
+    machine; there is nothing an attacker can point somewhere else.
+
+    What stays prohibited is unchanged, and it is what this test enforces: an
+    environment lookup would be an unrestricted filesystem path arriving by another
+    name, and `$OMNIVIA_HOME` and every other environment-derived path root remain
+    a stop condition for this packet. The scan below is not weakened -- it still
+    fails on any `getenv` or `environ` access anywhere in the CLI tree.
     """
     import ast
 

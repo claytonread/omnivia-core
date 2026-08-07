@@ -12,7 +12,9 @@ takes a lease; the started process owns all three, as ADR-037 requires.
 **The path convention.** Core had none: every caller passed `--workspace` and
 `--installation-state` explicitly, which is workable for a launcher and useless
 for an MCP client where no human types flags. One convention, rooted at a single
-directory:
+directory, and `request_init` is what makes it exist on a machine that has never
+run Core -- R004-10, because until it landed no shipped command created a
+workspace and `omnivia start` on a fresh machine had nothing to start:
 
 ```text
 ~/.omnivia                    (an explicit flag still wins)
@@ -58,6 +60,7 @@ from omnivia_core_cli.client import read_descriptor
 
 __all__ = [
     "DEFAULT_HOME_DIRECTORY",
+    "INIT_TIMEOUT_SECONDS",
     "SERVICE_EXECUTABLE",
     "START_TIMEOUT_SECONDS",
     "STOP_TIMEOUT_SECONDS",
@@ -68,6 +71,8 @@ __all__ = [
     "locate_service",
     "process_identity",
     "process_is_gone",
+    "refuse_over_long_endpoint",
+    "request_init",
     "request_managed_start",
     "request_stop",
 ]
@@ -86,6 +91,11 @@ START_TIMEOUT_SECONDS = 90.0
 
 #: How long `stop` waits for the service to unwind and take its descriptor with it.
 STOP_TIMEOUT_SECONDS = 30.0
+
+#: How long `init` waits for the bootstrap to finish. Creating the substrate and
+#: applying every migration on a pristine database is bounded work on local
+#: storage, so this is generous rather than tuned.
+INIT_TIMEOUT_SECONDS = 120.0
 
 #: Gap between polls, for both waits.
 POLL_SECONDS = 0.1
@@ -150,10 +160,11 @@ def home_directory(override: Path | None = None) -> Path:
     convention is a different thing -- it is bounded, it is the same on every
     machine, and there is nothing an attacker can point somewhere else.
 
-    That test's docstring also says `--runtime-state` is "the only way in". This
-    default makes that sentence inaccurate rather than false: a flag still wins,
-    and no caller-supplied ambient path is admitted. Whether the packet should be
-    amended to record the convention is the owner's call, not this module's.
+    R004-11 settled the record that used to be an open question here: this
+    convention is accepted, explicit arguments and deterministic built-in defaults
+    are both admitted path sources, and the environment lookup stays prohibited.
+    That test's docstring has been corrected to state the property it enforces
+    rather than the narrower sentence it carried.
     """
     if override is not None:
         return override.expanduser()
@@ -353,6 +364,74 @@ def request_managed_start(
     # saying so before hunting for an executable or a manifest names the problem the
     # user actually has. It is also what makes the boundary reachable from a test
     # without a bootstrapped workspace or a spawned service.
+    refuse_over_long_endpoint(installation)
+    manifest = installation.workspace_root / MANIFEST_NAME
+    if not manifest.is_file():
+        raise LifecycleError(
+            f"no workspace manifest at {manifest}; this command starts an existing "
+            "workspace and creates none -- run omnivia init first"
+        )
+
+    installation.run_directory.mkdir(parents=True, exist_ok=True)
+    return _ask_service(
+        "--managed-start",
+        [
+            "--workspace",
+            str(installation.workspace_root),
+            "--installation-state",
+            str(installation.installation_state),
+            "--endpoint",
+            endpoint_uri,
+            "--managed-start-log",
+            str(installation.log_path),
+        ],
+        # The launcher runs its own bounded wait and cleans up after itself, so this
+        # budget only has to outlast it. Killing the launcher mid-spawn is what would
+        # leave an orphan, which is why it is not the shorter number.
+        timeout=START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS,
+    )
+
+
+def request_init(installation: Installation) -> dict[str, Any]:
+    """Ask the service package to make this installation's workspace, and report.
+
+    **The CLI does not do the bootstrapping, and that is the point of R004-10.**
+    Creating a workspace means writing a manifest, creating a database file and
+    holding the sole exclusive connection to it while the ownership substrate and
+    every migration are applied. All three are things this package may not do:
+    ADR-036 forbids it importing the runtime, and nothing here opens a database or
+    takes a lock. So the one shared implementation is invoked the only way that
+    admits -- `omnivia-core-service --init` is located and launched, never imported,
+    and it answers with one versioned JSON document on stdout.
+
+    The endpoint-ceiling refusal is made here rather than left to `start`, because a
+    home that can be initialised but never served is a worse answer than a refusal:
+    the workspace would be real, and every subsequent `omnivia start` would fail on
+    a fact that was already knowable at `init`.
+
+    No `--endpoint` is passed. Nothing is bound and no service is started -- `init`
+    establishes state, and `start` establishes the process.
+    """
+    refuse_over_long_endpoint(installation)
+    return _ask_service(
+        "--init",
+        [
+            "--workspace",
+            str(installation.workspace_root),
+            "--installation-state",
+            str(installation.installation_state),
+        ],
+        timeout=INIT_TIMEOUT_SECONDS,
+    )
+
+
+def refuse_over_long_endpoint(installation: Installation) -> None:
+    """Refuse a home whose derived socket path could never be bound.
+
+    R004-15's ceiling, checked on this side so an over-long default is refused with
+    the reason and the flag that fixes it, rather than as an opaque transport
+    failure from a process that got as far as trying to bind.
+    """
     if os.name != "nt" and len(str(installation.socket_path).encode()) > (
         MAX_ENDPOINT_PATH_BYTES
     ):
@@ -361,65 +440,53 @@ def request_managed_start(
             f"{MAX_ENDPOINT_PATH_BYTES}-byte limit a local socket address allows; "
             "pass --home with a shorter directory"
         )
+
+
+def _ask_service(mode: str, arguments: list[str], *, timeout: float) -> dict[str, Any]:
+    """Launch one non-serving mode of the service script and read its one document.
+
+    Shared by `request_managed_start` and `request_init` because the division of
+    labour is identical: this package locates and launches, the service package
+    does the work, and the answer is a single JSON object on stdout with every
+    human word on stderr. A second copy of the launch-and-parse would be a second
+    set of failure messages to keep in step with these.
+    """
     executable = locate_service()
     if executable is None:
         raise LifecycleError(
             f"{SERVICE_EXECUTABLE} was found neither on PATH nor beside "
             f"{Path(sys.executable).parent}; install omnivia-core-runtime"
         )
-    manifest = installation.workspace_root / MANIFEST_NAME
-    if not manifest.is_file():
-        raise LifecycleError(
-            f"no workspace manifest at {manifest}; this command starts an existing "
-            "workspace and creates none -- migrate or create one first"
-        )
-
-    installation.run_directory.mkdir(parents=True, exist_ok=True)
     try:
         completed = subprocess.run(
-            [
-                executable,
-                "--managed-start",
-                "--workspace",
-                str(installation.workspace_root),
-                "--installation-state",
-                str(installation.installation_state),
-                "--endpoint",
-                endpoint_uri,
-                "--managed-start-log",
-                str(installation.log_path),
-            ],
+            [executable, mode, *arguments],
             capture_output=True,
             text=True,
-            # The launcher runs its own bounded wait and cleans up after itself, so
-            # this budget only has to outlast it. Killing the launcher mid-spawn is
-            # what would leave an orphan, which is why it is not the shorter number.
-            timeout=START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as expired:
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start did not answer within "
-            f"{START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS:.0f}s"
+            f"{SERVICE_EXECUTABLE} {mode} did not answer within {timeout:.0f}s"
         ) from expired
     except OSError as failure:
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start could not be run: {failure}"
+            f"{SERVICE_EXECUTABLE} {mode} could not be run: {failure}"
         ) from failure
 
     try:
         result = json.loads(completed.stdout)
     except ValueError as malformed:
         # stdout carries protocol data and nothing else, so unparseable stdout is a
-        # broken launcher rather than a failed start. Its stderr is the human half
-        # and is the useful thing to show.
+        # broken launcher rather than a failed run. Its stderr is the human half and
+        # is the useful thing to show.
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start did not answer with a result "
-            f"document ({malformed}); it said: {completed.stderr.strip()}"
+            f"{SERVICE_EXECUTABLE} {mode} did not answer with a result document "
+            f"({malformed}); it said: {completed.stderr.strip()}"
         ) from malformed
     if not isinstance(result, dict):
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start answered with a "
+            f"{SERVICE_EXECUTABLE} {mode} answered with a "
             f"{type(result).__name__}, not a result document"
         )
     return result

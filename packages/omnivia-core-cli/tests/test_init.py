@@ -1,0 +1,279 @@
+"""`omnivia init`, driven as real processes (R004-10, R004-11, Packet B).
+
+The five acceptance items owner resolution 004 §11 lists for `omnivia init` split
+in two. The three that are claims about the bootstrap itself -- the substrate is
+created, repeating is idempotent, existing content is not overwritten -- are proved
+as function calls in
+`packages/omnivia-core-runtime/tests/phase3/runtime/test_workspace_init.py`. The
+two that are claims about *processes* are here, because neither can be shown any
+other way:
+
+- **A fresh default home becomes startable.** `test_a_fresh_home_is_initialised_and_then_starts`
+  runs `omnivia init` and then `omnivia start` on a directory that did not exist,
+  as the two commands a user would type, and requires a real service to come up
+  writable-ready on it. Every other test in this repository that starts a service
+  builds its workspace with private Python API first -- `_bootstrap()` in
+  `test_lifecycle.py` says so in its own docstring -- so this is the only test that
+  proves the shipped commands are sufficient on their own.
+- **Missing-workspace startup fails with an actionable message and no persistent
+  mutation.** §11 words that against MCP, which does not exist yet;
+  `test_start_on_an_uninitialised_home_refuses_and_creates_nothing` proves the
+  equivalent for the adapter that does.
+
+`ps -eww` is not decoration. `ps` truncates each line to the terminal width, which
+is 80 columns when nothing owns a tty, and the argv searched for here is far longer
+than that -- without it these tests pass locally and fail in CI having found no
+process for a service that started perfectly well.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+#: Kept short deliberately. R004-15 caps a local endpoint at 86 encoded bytes --
+#: what `sockaddr_un`'s 104-byte `sun_path` leaves once the NUL terminator and the
+#: runtime's fixed-width staging name are taken -- so pytest's own `tmp_path` is
+#: too deep to serve from.
+HOME_PREFIX = "ovi-"
+
+
+def _cli(home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "omnivia_core_cli.main", "--home", str(home), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+
+
+def _service_pids(home: Path) -> list[int]:
+    """Every live `omnivia-core-service` serving this installation, by its own argv.
+
+    Scoped to the home directory rather than to the executable name, so a service
+    another test or another checkout left running cannot be counted or killed.
+    """
+    listing = subprocess.run(
+        ["ps", "-eww", "-o", "pid=,args="], capture_output=True, text=True, check=False
+    ).stdout
+    marker = str(home / "installation-state")
+    found = []
+    for line in listing.splitlines():
+        pid, _, args = line.strip().partition(" ")
+        if not pid.isdigit() or marker not in args:
+            continue
+        if "omnivia-core-service" not in args or "--managed-start" in args:
+            continue
+        if "--init" in args:
+            # An `init` run is not a service and never becomes one, but it does run
+            # the same executable against the same installation.
+            continue
+        found.append(int(pid))
+    return found
+
+
+def _tree(root: Path) -> list[str]:
+    """Every path under `root`, as a sorted list of relative names."""
+    if not root.exists():
+        return []
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+
+@pytest.fixture
+def home() -> Iterator[Path]:
+    """An installation root that does **not** exist yet.
+
+    The opposite of `test_lifecycle.py`'s fixture, and that is the point of this
+    file: nothing here is bootstrapped in advance, because what is under test is
+    whether the shipped commands can bootstrap it.
+    """
+    parent = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    root = parent / "h"
+    try:
+        yield root
+    finally:
+        for pid in _service_pids(root):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:  # pragma: no cover - already gone
+                pass
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def test_a_fresh_home_is_initialised_and_then_starts(home: Path) -> None:
+    """§11: a fresh default home becomes startable. The whole point of Packet B.
+
+    Two commands, in the order a user would type them, against a directory that
+    does not exist -- and a real service answering `core.readiness` writable-ready
+    at the end of it. Before this, `omnivia start` on a fresh machine had nothing
+    to start and no shipped command could give it one.
+    """
+    initialised = _cli(home, "init")
+    assert initialised.returncode == 0, initialised.stderr
+    assert "initialised" in initialised.stdout
+    # `init` establishes state; `start` establishes the process. Nothing yet.
+    assert _service_pids(home) == []
+
+    started = _cli(home, "start")
+    assert started.returncode == 0, started.stderr + started.stdout
+    assert "started" in started.stdout
+    assert "writable: yes" in started.stdout
+    assert len(_service_pids(home)) == 1
+
+    status = _cli(home, "status")
+    assert status.returncode == 0, status.stderr
+    assert "running" in status.stdout
+
+    stopped = _cli(home, "stop")
+    assert stopped.returncode == 0, stopped.stderr
+    assert _service_pids(home) == []
+
+
+def test_repeating_init_is_safe_and_says_so(home: Path) -> None:
+    """§11: repeating init is safe and idempotent, through the shipped command.
+
+    The identity is compared across the two runs. A second run that minted a fresh
+    `workspace_id` would leave a workspace whose database state row, runtime
+    directory and manifest disagreed, and the exit code alone would not show it.
+    """
+    first = _cli(home, "init")
+    assert first.returncode == 0, first.stderr
+
+    second = _cli(home, "init")
+    assert second.returncode == 0, second.stderr
+    assert "already initialised" in second.stdout
+
+    def workspace_line(output: str) -> str:
+        return next(
+            line for line in output.splitlines() if line.startswith("workspace: ")
+        )
+
+    assert workspace_line(second.stdout) == workspace_line(first.stdout)
+
+    # And it is still startable after the repeat, which is the property that would
+    # break if the second run had half-rewritten anything.
+    started = _cli(home, "start")
+    assert started.returncode == 0, started.stderr + started.stdout
+    assert _cli(home, "stop").returncode == 0
+
+
+def test_start_on_an_uninitialised_home_refuses_and_creates_nothing(
+    home: Path,
+) -> None:
+    """§11's missing-workspace item, for the adapter that exists today.
+
+    Three things, and the third is the one that is easy to lose: it refuses, the
+    refusal names the command that fixes it, and nothing whatsoever is left on
+    disk. A `start` that created its run directory or an installation-state tree on
+    the way to failing would leave a half-installation behind on every mistyped
+    `--home`.
+    """
+    home.mkdir(parents=True)
+    before = _tree(home)
+
+    result = _cli(home, "start")
+
+    assert result.returncode == 1
+    assert "omnivia init" in result.stderr
+    assert _tree(home) == before == []
+    assert _service_pids(home) == []
+
+
+def test_init_refuses_an_unrelated_directory_through_the_shipped_command(
+    home: Path,
+) -> None:
+    """R004-10's second refusal, end to end and with the file still there.
+
+    The runtime suite proves the refusal; this proves it survives the trip through
+    the CLI, the subprocess boundary and the result document, and arrives as a
+    non-zero exit with the reason on stderr rather than as an empty failure.
+    """
+    workspace = home / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "taxes.txt").write_text("2025 return", encoding="utf-8")
+
+    result = _cli(home, "init")
+
+    assert result.returncode == 1
+    assert "taxes.txt" in result.stderr
+    assert (workspace / "taxes.txt").read_text(encoding="utf-8") == "2025 return"
+    assert not (workspace / "workspace.json").exists()
+
+
+def test_the_zero_argument_home_is_the_fixed_convention(tmp_path: Path) -> None:
+    """R004-11, and the reason `omnivia init` needs no flags at all.
+
+    The paths are derived, never touched: this asserts the convention itself, and
+    creating anything under a real `~/.omnivia` from a test would be initialising a
+    workspace on the machine running it. An explicit `--home` still wins, which is
+    the other half of R004-11 and the half every other test in this file relies on.
+
+    The environment is deliberately absent from both branches, and
+    `test_workspace_show.py::test_the_cli_reads_no_environment_variable_to_find_a_service`
+    is what keeps it that way.
+    """
+    from omnivia_core_cli.lifecycle import (
+        DEFAULT_HOME_DIRECTORY,
+        Installation,
+        home_directory,
+    )
+
+    assert home_directory() == Path.home() / DEFAULT_HOME_DIRECTORY
+    assert DEFAULT_HOME_DIRECTORY == ".omnivia"
+
+    default = Installation(home_directory())
+    assert default.workspace_root == Path.home() / ".omnivia" / "workspace"
+    assert default.installation_state == Path.home() / ".omnivia" / "installation-state"
+    assert not default.workspace_root.exists() or default.workspace_root.is_dir()
+
+    assert home_directory(tmp_path) == tmp_path
+
+
+def test_the_init_result_document_is_the_whole_of_the_services_stdout(
+    home: Path,
+) -> None:
+    """The output contract R004-10 shares with managed start.
+
+    The service's stdout is one JSON document and nothing else, so an adapter can
+    read it without a parser that skips prose. This runs the service mode directly
+    -- the same way the CLI does -- because the CLI's own stdout is deliberately
+    human text, and the machine-readable half is what an MCP adapter would consume.
+    """
+    executable = shutil.which("omnivia-core-service") or str(
+        Path(sys.executable).parent / "omnivia-core-service"
+    )
+    if not os.access(executable, os.X_OK):
+        pytest.skip("omnivia-core-service is not installed in this environment")
+
+    completed = subprocess.run(
+        [
+            executable,
+            "--init",
+            "--workspace",
+            str(home / "workspace"),
+            "--installation-state",
+            str(home / "installation-state"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(completed.stdout)
+    assert document["status"] == "initialised"
+    assert document["refusal"] is None
+    assert document["workspace"]["workspace_id"].startswith("ws-")
+    # No endpoint was passed and none was invented: `init` binds nothing.
+    assert "endpoint" not in json.dumps(document)
