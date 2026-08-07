@@ -96,6 +96,19 @@ def _digest(root: Path) -> dict[str, str]:
     return entries
 
 
+def _applied(layout: WorkspaceLayout) -> set[int]:
+    """The migration versions the ledger records, read read-only."""
+    connection = open_database(layout.database_path, OpenMode.READ_ONLY)
+    try:
+        return set(applied_migrations(connection))
+    finally:
+        connection.close()
+
+
+def _shipped() -> set[int]:
+    return {migration.version for migration in load_migrations()}
+
+
 def _substrate(layout: WorkspaceLayout) -> tuple[str, int] | None:
     """The workspace state the database itself holds, read read-only."""
     if not layout.database_path.is_file():
@@ -137,14 +150,9 @@ def test_a_fresh_workspace_gets_the_ownership_substrate_a_service_needs(
     substrate = _substrate(layout)
     assert substrate == (result.workspace_id, 1)
 
-    connection = open_database(layout.database_path, OpenMode.READ_ONLY)
-    try:
-        applied = applied_migrations(connection)
-    finally:
-        connection.close()
     # Every shipped migration, not merely the substrate: a workspace missing one
     # would start and then fail on the first operation that needs its table.
-    assert set(applied) == {migration.version for migration in load_migrations()}
+    assert _applied(layout) == _shipped()
 
 
 def test_the_installation_state_root_is_created_for_the_new_workspace(
@@ -230,6 +238,134 @@ def test_idempotence_is_read_from_the_database_not_from_the_manifest(
     assert second.status is WorkspaceInitStatus.INITIALISED
     assert second.workspace_id == first.workspace_id
     assert _substrate(layout) == (first.workspace_id, 1)
+
+
+def test_a_database_whose_manifest_is_gone_is_refused_before_anything_is_written(
+    tmp_path: Path,
+) -> None:
+    """The refusal that used to write, and permanently brick the workspace.
+
+    `layout.exists()` is a check on the manifest *path*, so a workspace whose
+    manifest was lost while its database survived took the mint branch: a fresh
+    `workspace_id` was invented, `create_workspace` wrote it to disk, and only then
+    did the exclusive open find it disagreeing with the database. The refusal itself
+    was right; what was wrong is that the manifest it had just written survived it,
+    so every later `init` refused against a manifest no user had ever asked for.
+    Recoverable by hand before the first `omnivia init`, and un-initialisable by any
+    shipped command after it.
+
+    The identity is now compared before anything is written, which is why this is a
+    refusal rather than a rollback: there is nothing to roll back. The run is
+    repeated because the defect was not the first refusal but the second -- one run
+    that refuses cleanly proves nothing about a state the run itself created.
+    """
+    first = _init(tmp_path)
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    layout.manifest_path.unlink()
+    before = _digest(tmp_path)
+
+    for attempt in (1, 2):
+        result = _init(tmp_path)
+        assert result.status is WorkspaceInitStatus.REFUSED, attempt
+        assert result.refusal is WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH
+        # The database's own identity, named so it can be recovered by hand -- and
+        # not an identity this run minted, which is what used to reach disk.
+        assert first.workspace_id is not None
+        assert first.workspace_id in result.reason
+        assert not layout.manifest_path.exists()
+        assert _digest(tmp_path) == before, attempt
+
+
+def test_a_busy_workspace_is_refused_before_any_directory_is_created(
+    tmp_path: Path,
+) -> None:
+    """`WORKSPACE_BUSY` used to refuse having written a manifest and ten directories.
+
+    `_bootstrap` ran `create_workspace`, `create_directories` and
+    `InstallationLayout.create` and only then took the lock, so a refusal for a
+    workspace a service already owns left the whole tree behind it.
+    `test_a_workspace_another_process_owns_is_refused_without_waiting` cannot see
+    that: it initialises first, so everything already exists and creating it again
+    is a no-op.
+
+    Here the only thing on disk is the `locks/` directory the lock file must live
+    in. That is the smallest tree in which a lock can be held at all, and it is the
+    one shape in which "created nothing" is a claim with content.
+    """
+    from omnivia_core_runtime.ownership.locks import LockRole, create_lock
+
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    layout.locks_path.mkdir(parents=True)
+    before = _digest(tmp_path)
+
+    held = create_lock(layout.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
+    assert held.acquire()
+    try:
+        result = _init(tmp_path)
+    finally:
+        held.release()
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
+    assert _digest(tmp_path) == before
+    assert not layout.manifest_path.exists()
+    assert not (tmp_path / "installation-state").exists()
+
+
+def test_a_workspace_missing_its_migrations_is_finished_and_reported_as_changed(
+    tmp_path: Path,
+) -> None:
+    """"nothing was changed" used to be emitted after applying every pending migration.
+
+    `bootstrap_generation_one` and `apply_pending_migrations` are separate
+    transactions, so a workspace holding the substrate row and none of the
+    migrations is reachable by any interruption between them. `created = minted or
+    bootstrapped` counted the substrate row alone and never the ledger, so this run
+    applied ten migrations and told the user the workspace was already initialised
+    and nothing had changed.
+
+    The count is asserted in the reason rather than merely a different status: a
+    caller reading the sentence is the one the lie was told to.
+    """
+    from omnivia_core_runtime.storage.migrations import bootstrap_generation_one
+    from omnivia_core_runtime.workspace.manifest_store import create_workspace
+
+    from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
+
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    manifest = WorkspaceManifest(
+        workspace_id="ws-interrupted-between-two-transactions",
+        created_at="2026-01-01T00:00:00+00:00",
+        name="OmniVia workspace",
+        compatibility=CoreCompatibility(
+            workspace_format_version=WORKSPACE_FORMAT_VERSION,
+            min_core_version="0.1.0",
+        ),
+    )
+    create_workspace(layout.root, manifest)
+    layout.database_path.touch()
+    connection = open_database(layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE)
+    try:
+        bootstrap_generation_one(
+            connection,
+            workspace_id=manifest.workspace_id,
+            workspace_format_version=WORKSPACE_FORMAT_VERSION,
+            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+            expect_phase0_baseline=False,
+        )
+    finally:
+        connection.close()
+
+    pending = _shipped() - _applied(layout)
+    assert pending, "the substrate alone must leave migrations pending"
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert result.refusal is None
+    assert "nothing was changed" not in result.reason
+    assert f"applied {len(pending)} pending migration" in result.reason
+    assert _applied(layout) == _shipped()
 
 
 def test_a_repeat_run_repairs_a_missing_layout_directory(tmp_path: Path) -> None:
