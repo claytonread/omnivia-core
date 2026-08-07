@@ -10,6 +10,14 @@ One product operation is now registered, and it is registered on a *second* path
 `SERVICE_OPERATIONS`, not in `build_service_registry()` and not in the probe grant,
 and it cannot be: the owner's binding clause forbids routing it through the probe
 `Dispatcher`, and the two operation sets are disjoint by construction.
+
+**One console script, two kinds of process.** `--managed-start` (R004-08) does not
+serve: it arbitrates through the bootstrap mutex, starts an independent service
+when one is needed, waits for that service to answer a live readiness call, prints
+a versioned result document and exits. Every other mode here belongs to a process
+that *is* the service. The CLI and, later, the MCP adapter both reach the shared
+managed-start path by launching this script -- never by importing the runtime -- so
+there is one implementation of process control rather than one per adapter.
 """
 
 from __future__ import annotations
@@ -40,6 +48,11 @@ from omnivia_core_runtime.service.http_transport import (
     HttpListener,
     HttpTransportError,
     parse_http_endpoint,
+)
+from omnivia_core_runtime.service.managed_start import (
+    ManagedStartStatus,
+    managed_start,
+    render_result,
 )
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
@@ -149,6 +162,27 @@ def build_parser() -> argparse.ArgumentParser:
             "nor --http-endpoint is parsed or validated in this mode"
         ),
     )
+    parser.add_argument(
+        "--managed-start",
+        action="store_true",
+        help=(
+            "do not serve; make sure a service exists for this workspace and "
+            "print a versioned machine-readable result on stdout. Attaches to a "
+            "compatible ready service, or spawns an independent one and waits "
+            "for it to answer. This process exits; the service it started does "
+            "not. Requires --endpoint, and takes precedence over --check-only, "
+            "which is a mode of a process that serves"
+        ),
+    )
+    parser.add_argument(
+        "--managed-start-log",
+        default=None,
+        type=Path,
+        help=(
+            "where a service started by --managed-start writes its own output. "
+            "Defaults to service.log beside the discovery descriptor"
+        ),
+    )
     return parser
 
 
@@ -180,6 +214,43 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     if endpoint is None:
         return None
     return parse_http_endpoint(endpoint)
+
+
+def _managed_start(args: argparse.Namespace) -> int:
+    """Run the shared managed-start path and write its result to stdout.
+
+    **Protocol data and human logs are separate streams, and that is the output
+    contract rather than a convention.** The versioned result document is the whole
+    of stdout, so an adapter can read it without a parser that skips prose; the
+    child's own words -- which are a human diagnostic -- go to stderr. R004-08.
+
+    `--endpoint` is required here even though it is optional for a serving run,
+    because it is the address the started service will bind and advertise, and there
+    is nothing sensible to default it to from inside the runtime.
+
+    Exit code 0 covers both attaching and starting: an adapter that only checks the
+    status line still learns which happened, and one that only checks the exit code
+    learns whether it has a usable service.
+    """
+    if args.endpoint is None:
+        sys.stderr.write("--managed-start needs --endpoint: the address to serve\n")
+        return 2
+
+    result = managed_start(
+        workspace_root=args.workspace,
+        installation_root=args.installation_state,
+        endpoint_uri=args.endpoint,
+        core_version=args.core_version,
+        log_path=args.managed_start_log,
+    )
+    sys.stdout.write(render_result(result))
+    sys.stdout.flush()
+    if result.status is ManagedStartStatus.FAILED:
+        sys.stderr.write(result.reason + "\n")
+        if result.child_output:
+            sys.stderr.write(result.child_output + "\n")
+        return 1
+    return 0
 
 
 def main(
@@ -219,6 +290,13 @@ def main(
     the next launcher discovered it, believed it and connected to nothing.
     """
     args = build_parser().parse_args(argv)
+
+    if args.managed_start:
+        # This process serves nothing and owns nothing. It arbitrates, may start an
+        # independent service, waits for that service to answer, and exits. Every
+        # branch below belongs to a process that *is* the service.
+        return _managed_start(args)
+
     settings = ServiceSettings(
         workspace_root=args.workspace,
         installation_root=args.installation_state,

@@ -40,6 +40,7 @@ identical on every machine; an override is not. Only an explicit flag overrides.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 import shutil
@@ -49,6 +50,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from omnivia_core.contracts.v1 import ServiceProcessEvidence
 from omnivia_core_cli.client import read_descriptor
@@ -65,8 +67,8 @@ __all__ = [
     "locate_service",
     "process_identity",
     "process_is_gone",
+    "request_managed_start",
     "request_stop",
-    "spawn_service",
 ]
 
 #: The default installation root under the user's home directory.
@@ -312,20 +314,29 @@ def request_stop(pid: int) -> None:
     os.kill(pid, break_event)  # pragma: no cover - Windows only
 
 
-def spawn_service(
+def request_managed_start(
     installation: Installation, *, endpoint_uri: str
-) -> subprocess.Popen[bytes]:
-    """Start `omnivia-core-service` as a detached child, logging to `run/service.log`.
+) -> dict[str, Any]:
+    """Ask the service package to make a service exist, and return its result.
 
-    Detached because the started service outlives this command: on POSIX
-    `start_new_session=True` puts it in its own session, so the terminal that ran
-    `omnivia start` cannot deliver its own `SIGINT` to it, and on Windows a new
-    process group is what makes `CTRL_BREAK_EVENT` deliverable later.
+    **This command no longer spawns the service itself, and that is the point of
+    R004-08.** It used to run `omnivia-core-service` directly, holding no mutex, so
+    two `omnivia start` commands running together both found nothing advertised and
+    both spawned -- the loser refused by the lifetime storage lock in `runner.py`,
+    which is a backstop and not a mechanism. The mutex that prevents even that lives
+    in the runtime, behind the boundary this package may not cross.
 
-    Output goes to a file rather than a pipe. A pipe whose read end dies when this
-    command exits leaves the service writing into a closed descriptor, and the
-    file is also what `start` reads back when a startup fails -- the report
-    `service/main.py` prints names which readiness precondition was unmet.
+    So the one shared implementation is invoked the only way ADR-036 admits:
+    `omnivia-core-service --managed-start` is *located and launched*, never
+    imported, and it answers with one versioned JSON document on stdout. The same
+    path the MCP adapter will call. Nothing here opens a database, takes a lease or
+    holds a lock; the service the launcher starts owns all three.
+
+    The two refusals below stay on this side because they are about *this
+    installation's convention* -- where the CLI decided the workspace and the socket
+    live -- and answering them here names the directory a user can act on rather
+    than surfacing a launcher failure class. The launcher checks the workspace
+    again; a check on both sides of a subprocess boundary is the cheap one.
     """
     executable = locate_service()
     if executable is None:
@@ -349,28 +360,54 @@ def spawn_service(
         )
 
     installation.run_directory.mkdir(parents=True, exist_ok=True)
-    # Truncated per start, so what the file holds is this run's own output and a
-    # failure diagnostic cannot be read off a previous attempt.
-    log = installation.log_path.open("wb")
     try:
-        return subprocess.Popen(
+        completed = subprocess.run(
             [
                 executable,
+                "--managed-start",
                 "--workspace",
                 str(installation.workspace_root),
                 "--installation-state",
                 str(installation.installation_state),
                 "--endpoint",
                 endpoint_uri,
+                "--managed-start-log",
+                str(installation.log_path),
             ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=os.name != "nt",
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            capture_output=True,
+            text=True,
+            # The launcher runs its own bounded wait and cleans up after itself, so
+            # this budget only has to outlast it. Killing the launcher mid-spawn is
+            # what would leave an orphan, which is why it is not the shorter number.
+            timeout=START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS,
+            check=False,
         )
-    finally:
-        log.close()
+    except subprocess.TimeoutExpired as expired:
+        raise LifecycleError(
+            f"{SERVICE_EXECUTABLE} --managed-start did not answer within "
+            f"{START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS:.0f}s"
+        ) from expired
+    except OSError as failure:
+        raise LifecycleError(
+            f"{SERVICE_EXECUTABLE} --managed-start could not be run: {failure}"
+        ) from failure
+
+    try:
+        result = json.loads(completed.stdout)
+    except ValueError as malformed:
+        # stdout carries protocol data and nothing else, so unparseable stdout is a
+        # broken launcher rather than a failed start. Its stderr is the human half
+        # and is the useful thing to show.
+        raise LifecycleError(
+            f"{SERVICE_EXECUTABLE} --managed-start did not answer with a result "
+            f"document ({malformed}); it said: {completed.stderr.strip()}"
+        ) from malformed
+    if not isinstance(result, dict):
+        raise LifecycleError(
+            f"{SERVICE_EXECUTABLE} --managed-start answered with a "
+            f"{type(result).__name__}, not a result document"
+        )
+    return result
 
 
 def descriptor_is_gone(runtime_state: Path, deadline: float) -> bool:

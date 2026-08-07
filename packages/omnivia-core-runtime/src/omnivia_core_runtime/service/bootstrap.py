@@ -1,17 +1,25 @@
 """Service startup coordination (T-0629G, PM ADR-037).
 
-**Staged, not orphaned.** `coordinated_startup` has no production caller yet, and
-that is a decision rather than an oversight: the owner has declared it staged and
-retained as a platform-neutral runtime bootstrap API. The named consumers, in
-order, are `omnivia-core-cli` managed-local start as the required first Core-owned
-production caller, then official MCP managed stdio mode, then `omnivia-platform`'s
-App Shell Host or Core Connectivity adapter. Nothing here may grow Electron,
-Desktop user-interface, Platform account, licensing or Module entitlement
-concerns, and it must never acquire or act as the authoritative workspace service
-lease holder -- the Core Service remains the only workspace lease owner. A
-milestone delivery target and a removal trigger govern how long that stays true,
-and both are normative, so this module is not to be deleted as unreferenced code
-without reading them:
+**No longer staged: this has a production caller.** Owner resolution 004 R004-09
+makes the service-owned managed-start path the required first production caller of
+`coordinated_startup`, and `service/managed_start.py` is it. The staged
+declaration and its removal trigger are discharged; R004-09 disarms the trigger
+permanently once managed start is landed with production integration evidence.
+
+**The record correction R004-09 requires is that the caller is not the CLI.** The
+earlier staging record named `omnivia-core-cli` managed-local start as the first
+Core-owned production caller, which would have obliged the CLI package to import
+runtime code. It does not and may not. The intended user entry point is still
+`omnivia start`; the legal production caller beneath it is the service-side
+managed-start controller, which the CLI invokes by subprocess. The remaining named
+consumers are unchanged in order: official MCP managed stdio mode, then
+`omnivia-platform`'s App Shell Host or Core Connectivity adapter, both through
+that same service-side path rather than through a second copy of it.
+
+Nothing here may grow Electron, Desktop user-interface, Platform account,
+licensing or Module entitlement concerns, and it must never acquire or act as the
+authoritative workspace service lease holder -- the Core Service remains the only
+workspace lease owner. The originating record:
 
     docs/development/omnivia-core-staged-startup-and-embedder-only-http-2026-08-05.md
 
@@ -106,6 +114,17 @@ def coordinated_startup(
     spawned and waited, or after it has failed -- and not before. It still grants no
     write authority; it serialises launching, nothing else.
 
+    `REFUSED_MUTEX_UNAVAILABLE` is not an error. Another launcher is mid-spawn, and
+    the caller's right response is to wait and ask again rather than to fail beside
+    it; that retry is what makes several concurrent starters converge on the one
+    service the winner creates.
+
+    Steps 5 to 8 of R004-08 -- spawn, wait for live readiness, hand back the usable
+    descriptor, clean up a failed child -- are the caller's, and
+    `service/managed_start.py` is the caller that owns them. This function stays a
+    focused helper for discovery, the mutex and compatibility, which R004-08
+    explicitly admits.
+
     `workspace_contract_version` is named for the notation it requires: the public
     `major.minor` ContractVersion, not the private workspace manifest's bare ordinal
     (`"1"`). A launcher holding the manifest's ordinal must translate it first, with
@@ -115,10 +134,6 @@ def coordinated_startup(
     ordinal through unconverted raises immediately and plainly rather than
     producing a `REFUSED_INCOMPATIBLE` decision whose reason quotes a window the
     caller's intended version would in fact have matched.
-
-    This has no production caller yet by decision, not by neglect. See the module
-    docstring for the staged declaration, the named consumers and the removal
-    trigger before concluding it is unreferenced.
     """
     decision, mutex = _decide(
         runtime_directory,
