@@ -26,9 +26,10 @@ directory:
 
 `~/.omnivia` follows the only precedent in the tree,
 `src/omnivia_core/workspace/models.py`'s `Path.home() / ".omnivia"`. `run/` is
-short on purpose: `sockaddr_un` caps a socket path at 104 bytes -- 103 usable,
-and fewer still once the staging name is counted -- so a deep default would
-refuse to bind at all.
+short on purpose: R004-15 publishes 86 encoded bytes as the hard maximum local
+endpoint path -- what is left of `sockaddr_un`'s 104-byte `sun_path` once the NUL
+terminator and the runtime's fixed-width staging name are subtracted -- so a deep
+default would refuse to bind at all.
 
 **No environment variable.** The convention is fixed, and
 `test_the_cli_reads_no_environment_variable_to_find_a_service` is why: an
@@ -89,11 +90,20 @@ STOP_TIMEOUT_SECONDS = 30.0
 #: Gap between polls, for both waits.
 POLL_SECONDS = 0.1
 
-#: `sockaddr_un.sun_path`, checked here so an over-long default is refused with the
-#: reason rather than as an opaque transport failure from the started process. The
-#: same number the runtime's own `MAX_SOCKET_PATH_BYTES` holds; it is a kernel
-#: structure size, and the boundary forbids importing the module that states it.
-MAX_SOCKET_PATH_BYTES = 104
+#: R004-15's published ceiling, checked here so an over-long default is refused with
+#: the reason rather than as an opaque transport failure from the started process.
+#: The same number the runtime's `MAX_ENDPOINT_PATH_BYTES` derives; ADR-036 forbids
+#: this package importing the module that states it, so it is restated.
+#:
+#: This used to read 104 -- the raw `sun_path` field size -- and check the endpoint
+#: against it, which made the CLI's guard 11 to 17 bytes looser than the runtime's
+#: and let through exactly the paths that then failed to bind. Restating a number
+#: is only safe while something fails when the two drift:
+#: `packages/omnivia-core-runtime/tests/phase2/test_socket_path_ceiling.py`'s
+#: `test_the_cli_restates_the_runtime_ceiling_exactly` imports both and compares
+#: them. It lives on the runtime's side of the boundary because that is the side
+#: allowed to see both.
+MAX_ENDPOINT_PATH_BYTES = 86
 
 #: The workspace manifest's filename, mirroring the runtime's `MANIFEST_NAME` for
 #: the same reason: it cannot be imported, and checking for it before spawning
@@ -332,12 +342,25 @@ def request_managed_start(
     path the MCP adapter will call. Nothing here opens a database, takes a lease or
     holds a lock; the service the launcher starts owns all three.
 
-    The two refusals below stay on this side because they are about *this
+    The three refusals below stay on this side because they are about *this
     installation's convention* -- where the CLI decided the workspace and the socket
     live -- and answering them here names the directory a user can act on rather
     than surfacing a launcher failure class. The launcher checks the workspace
     again; a check on both sides of a subprocess boundary is the cheap one.
     """
+    # First, because it is the one fact about this installation that no amount of
+    # setting up will change: an endpoint over the ceiling can never be bound, so
+    # saying so before hunting for an executable or a manifest names the problem the
+    # user actually has. It is also what makes the boundary reachable from a test
+    # without a bootstrapped workspace or a spawned service.
+    if os.name != "nt" and len(str(installation.socket_path).encode()) > (
+        MAX_ENDPOINT_PATH_BYTES
+    ):
+        raise LifecycleError(
+            f"the local endpoint path under {installation.home} is longer than the "
+            f"{MAX_ENDPOINT_PATH_BYTES}-byte limit a local socket address allows; "
+            "pass --home with a shorter directory"
+        )
     executable = locate_service()
     if executable is None:
         raise LifecycleError(
@@ -349,14 +372,6 @@ def request_managed_start(
         raise LifecycleError(
             f"no workspace manifest at {manifest}; this command starts an existing "
             "workspace and creates none -- migrate or create one first"
-        )
-    if os.name != "nt" and len(str(installation.socket_path).encode()) + 1 > (
-        MAX_SOCKET_PATH_BYTES
-    ):
-        raise LifecycleError(
-            f"the local endpoint path under {installation.home} is longer than the "
-            f"{MAX_SOCKET_PATH_BYTES}-byte limit a local socket address allows; "
-            "pass --home with a shorter directory"
         )
 
     installation.run_directory.mkdir(parents=True, exist_ok=True)
