@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass
+from typing import NoReturn
 
 from omnivia_core.contracts.v1 import (
     ContractDecodeError,
@@ -109,26 +110,74 @@ def socket_path_for(endpoint_uri: str) -> str:
     return path
 
 
+#: Raised from outside the ``except`` blocks that decide on them, never inside.
+#:
+#: ``raise X from None`` inside a handler clears ``__cause__`` but leaves
+#: ``__context__`` pointing at the exception being handled -- and here that is an
+#: ``OSError`` whose message names a local socket path. This module's stated rule
+#: is that a failure "keeps its kind and loses its words"; one attribute access on
+#: ``__context__`` would have recovered the words. Raising after the handler ends
+#: means there is no exception being handled, so ``__context__`` is genuinely
+#: ``None``. Same shape as ``discovery.py``'s ``_raise_*`` helpers, and
+#: ``scripts/check-raise-discipline.py`` is what keeps it that way.
+
+
+def _raise_connect_deadline() -> NoReturn:
+    raise DeadlineExceededError(
+        "the deadline passed while connecting to the local endpoint"
+    )
+
+
+def _raise_unreachable() -> NoReturn:
+    raise TransportError("the local endpoint could not be reached")
+
+
+def _raise_read_deadline() -> NoReturn:
+    raise DeadlineExceededError("the deadline passed while reading the response frame")
+
+
+def _raise_dropped_mid_frame() -> NoReturn:
+    raise TransportError("the local endpoint dropped the call mid-frame")
+
+
+def _raise_send_deadline() -> NoReturn:
+    raise DeadlineExceededError("the deadline passed while sending the request frame")
+
+
+def _raise_dropped_before_send() -> NoReturn:
+    raise TransportError("the local endpoint dropped the call before it was sent")
+
+
+def _raise_not_a_response_envelope() -> NoReturn:
+    raise ProtocolError("the answer is not a well-formed response envelope")
+
+
+def _raise_not_a_probe_result() -> NoReturn:
+    raise ProtocolError("the answer is not a well-formed probe result")
+
+
 def _connect(path: str, timeout: float) -> socket.socket:
     """One fresh connected stream socket, or the declared transport failure."""
     if not hasattr(socket, "AF_UNIX"):  # pragma: no cover - POSIX-only suite
         raise TransportError("local socket endpoints are not supported on this platform")
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    timed_out = False
     try:
         connection.settimeout(timeout)
         connection.connect(path)
     except TimeoutError:
         connection.close()
-        raise DeadlineExceededError(
-            "the deadline passed while connecting to the local endpoint"
-        ) from None
+        timed_out = True
     except OSError:
         # The operating system's own message names a local path and is outside
         # the payload-free rule the client's diagnostics keep, so the failure
         # keeps its kind and loses its words.
         connection.close()
-        raise TransportError("the local endpoint could not be reached") from None
-    return connection
+    else:
+        return connection
+    if timed_out:
+        _raise_connect_deadline()
+    _raise_unreachable()
 
 
 def _read_exact(connection: socket.socket, count: int, deadline: Deadline) -> bytes:
@@ -143,14 +192,18 @@ def _read_exact(connection: socket.socket, count: int, deadline: Deadline) -> by
     remaining = count
     while remaining > 0:
         connection.settimeout(deadline.assert_not_expired(operation="read"))
+        chunk = b""
+        failure = ""
         try:
             chunk = connection.recv(min(remaining, _READ_CHUNK))
         except TimeoutError:
-            raise DeadlineExceededError(
-                "the deadline passed while reading the response frame"
-            ) from None
+            failure = "deadline"
         except OSError:
-            raise TransportError("the local endpoint dropped the call mid-frame") from None
+            failure = "dropped"
+        if failure == "deadline":
+            _raise_read_deadline()
+        if failure == "dropped":
+            _raise_dropped_mid_frame()
         if not chunk:
             raise TransportError(
                 f"the local endpoint closed after {count - remaining} of {count} bytes"
@@ -250,16 +303,17 @@ class LocalIpcTransport:
         connection = _connect(socket_path_for(self.endpoint_uri), remaining)
         try:
             connection.settimeout(deadline.assert_not_expired(operation=operation))
+            failure = ""
             try:
                 connection.sendall(frame)
             except TimeoutError:
-                raise DeadlineExceededError(
-                    "the deadline passed while sending the request frame"
-                ) from None
+                failure = "deadline"
             except OSError:
-                raise TransportError(
-                    "the local endpoint dropped the call before it was sent"
-                ) from None
+                failure = "dropped"
+            if failure == "deadline":
+                _raise_send_deadline()
+            if failure == "dropped":
+                _raise_dropped_before_send()
             # Nothing further is written on this connection. The server refuses
             # a connection carrying trailing bytes after one frame, so a
             # speculative second write would be read as pipelining and refused.
@@ -289,12 +343,15 @@ class LocalIpcTransport:
             cancellation=cancellation,
             operation=request.operation,
         )
+        decoded = False
         try:
-            return codec.decode_response(document)
+            response = codec.decode_response(document)
+            decoded = True
         except ContractDecodeError:
-            raise ProtocolError(
-                "the answer is not a well-formed response envelope"
-            ) from None
+            pass
+        if not decoded:
+            _raise_not_a_response_envelope()
+        return response
 
     def probe(
         self,
@@ -310,9 +367,12 @@ class LocalIpcTransport:
             cancellation=cancellation,
             operation=str(request.probe),
         )
+        decoded = False
         try:
-            return decode_service_probe_result(document)
+            result = decode_service_probe_result(document)
+            decoded = True
         except ContractDecodeError:
-            raise ProtocolError(
-                "the answer is not a well-formed probe result"
-            ) from None
+            pass
+        if not decoded:
+            _raise_not_a_probe_result()
+        return result

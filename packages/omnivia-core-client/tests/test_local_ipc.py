@@ -466,3 +466,37 @@ def test_an_endpoint_naming_no_path_is_refused() -> None:
 def test_the_socket_path_is_the_endpoints_own_path() -> None:
     assert socket_path_for("unix:///run/omnivia/s.sock") == "/run/omnivia/s.sock"
 
+
+# ---------------------------------------------------------------------------
+# The failure carries no exception it was translated from
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception(
+    tmp_path: Path,
+) -> None:
+    """`__context__` is `None`, not merely a quiet traceback.
+
+    The module's rule is that a failure "keeps its kind and loses its words".
+    `raise X from None` inside the handler would have satisfied a rendered
+    traceback and still left `__context__` pointing at an `OSError` whose message
+    names this socket path -- one attribute access from anything that logs or
+    serialises the error a caller caught. `scripts/check-raise-discipline.py`
+    enforces the shape; this asserts the property that shape exists for.
+
+    The path is asserted absent from every string the exception offers, because
+    the point is disclosure, not tidiness.
+    """
+    missing = tmp_path / "absent.sock"
+
+    with pytest.raises(TransportError) as raised:
+        LocalIpcTransport(endpoint_uri=f"unix://{missing}").call(
+            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)
+        )
+
+    error = raised.value
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert str(missing) not in str(error)
+    assert str(missing) not in repr(error)
+
