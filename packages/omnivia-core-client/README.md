@@ -274,9 +274,8 @@ traceback rendering hides them.
 
 None of the following exists in this package, and no caller may assume it:
 
-- **integrated discovery over a real local endpoint** — this packet verifies through
-  an injected transport because no concrete Client local transport ships yet;
-- **local socket transport** — Unix domain socket or Windows named pipe;
+- **a Windows named-pipe transport** — `LocalIpcTransport` dials `unix://`
+  endpoints and refuses `pipe://` explicitly rather than half-supporting it;
 - **HTTP transport**;
 - **retry, backoff, or idempotent replay**;
 - **managed service startup** — launching or supervising a service;
