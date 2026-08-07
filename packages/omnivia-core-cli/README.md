@@ -18,8 +18,9 @@ These work with no flags at all, against the default installation at
 
 - `omnivia init` — create the workspace this installation's service will own, if
   there is not one already. Safe to repeat: an already-initialised workspace is
-  reported as such and nothing is changed. It **starts no service** — `init`
-  establishes state, `start` establishes the process.
+  reported as such and nothing is changed, and one whose bootstrap was
+  interrupted is finished and reported as changed. It **starts no service** —
+  `init` establishes state, `start` establishes the process.
 - `omnivia start` — start the service if it is not already running, and wait for
   it to be genuinely ready. Reports `already running` rather than racing when one
   is up. The service is **launched, never imported**: `omnivia-core-service` is
@@ -73,7 +74,17 @@ declined with the reason and nothing is written:
 - an `installation-state` directory that is not one of ours.
 
 A fourth refusal covers a workspace a running service already owns: stop it
-first. Nothing here ever deletes, truncates or overwrites.
+first. A fifth covers a workspace whose database and manifest name different
+workspaces — most likely a manifest that was lost while its database survived —
+which is declined naming the workspace the database holds, so the right manifest
+can be put back. Nothing here ever deletes, truncates or overwrites.
+
+**A refusal leaves the tree as it found it**, which is stronger than "nothing is
+overwritten" and is the property to rely on when scripting `init`: repeating it
+after a refusal is as safe as repeating it after a success, because a declined
+run writes nothing for the next one to trip over. A directory a file manager has
+visited is not "something else": a `.DS_Store` or a `Thumbs.db` is discounted,
+while anything a person put there is still refused.
 
 `omnivia start` against a home with no workspace refuses and names `omnivia
 init`. It creates nothing on the way to that refusal — not the run directory, not
