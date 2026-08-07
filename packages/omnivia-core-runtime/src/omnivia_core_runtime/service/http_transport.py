@@ -89,14 +89,30 @@ that would, correctly, see an application request.
 That rule is unchanged, but the sentence that used to justify it -- "unauthenticated
 *on loopback*" -- no longer describes every bind this module can serve. A non-loopback
 TLS listener answers `/v1/probe` to any peer that completes the handshake, and the
-handshake asks for no client certificate, so `ServiceFacts` -- health, readiness,
-`server_version`, `api_version` -- is now reachable off-host in a way it was not in
-any previous configuration. The premise widened; the behaviour did not. **Whether that
-surface is intended is an owner decision and is recorded rather than resolved here**:
-gating the probe would be a new authentication rule for a route the accepted freeze
-deliberately leaves open, which is not this lane's to make. The rule above stands on
-its own without the loopback premise -- an unauthenticated route must not reach the
+handshake asks for no client certificate, so a probe is now reachable off-host in a
+way it was not in any previous configuration. The rule above stands on its own
+without the loopback premise -- an unauthenticated route must not reach the
 authenticated one, wherever it is bound.
+
+**Which probe answers unauthenticated.** That question was recorded here rather than
+resolved, and the owner has now settled it: `service.health` and `service.readiness`
+answer unauthenticated, `service.discover` does not. The two that stay open publish
+only the caller's own echoed request id and the frozen public status facts, and they
+are what an operator needs *before* authenticating -- limited unauthenticated service
+fingerprinting, accepted as such. Discovery is not fingerprinting: it publishes the
+endpoint descriptor whole, which is a location and identity document naming the
+workspace, the installation, the service instance, the dialable endpoint and the
+process behind it. So the discovery probe is held to the same bearer credential the
+application route is, resolved by the same injected :data:`CredentialResolver` and
+refused with the same `401`; there is no second authentication mechanism here.
+
+The check for it necessarily runs *after* the body is read, because the probe kind is
+in the body -- there is nothing in the request line or headers that says which probe
+is being asked. It still runs before the router, so an unauthenticated caller reaches
+no descriptor; what it does not carry is the application route's stronger "refused
+before a byte was read" property. Nothing past the credential check applies:
+`_session_admits` reads a `RequestEnvelope`, and a probe document is not one, so
+authenticating discovery grants no operation, workspace, purpose or scope.
 
 Concurrency is deliberately absent. `HTTPServer`, not `ThreadingHTTPServer`: the local
 transport serves one connection at a time and the merged P2b review recorded that
@@ -140,7 +156,7 @@ from omnivia_core_runtime.service.ovc1 import (
     canonical_json_bytes,
     decode_frame,
 )
-from omnivia_core_runtime.service.probes import ProbeError
+from omnivia_core_runtime.service.probes import PROBE_DISCOVER, ProbeError
 from omnivia_core_runtime.service.protocol import (
     OPERATION_FIELD,
     PROBE_FIELD,
@@ -721,6 +737,20 @@ class _Handler(BaseHTTPRequestHandler):
         )
         if wanted not in document or refused in document:
             self._refuse(HTTPStatus.BAD_REQUEST)
+            return
+
+        # Discovery is authenticated; health and readiness are not. The probe kind
+        # is in the body and nowhere else, so this cannot join the check above --
+        # but it still runs before the router, so an unauthenticated caller reaches
+        # no descriptor. The session is deliberately not kept: `_session_admits`
+        # reads a `RequestEnvelope`, which a probe document is not, so verifying the
+        # credential is the whole of what a caller gets by presenting one here.
+        if (
+            path == PROBE_PATH
+            and document.get(PROBE_FIELD) == PROBE_DISCOVER
+            and self._session() is None
+        ):
+            self._refuse(HTTPStatus.UNAUTHORIZED)
             return
 
         if session is not None and not self._session_admits_request(document, session):
