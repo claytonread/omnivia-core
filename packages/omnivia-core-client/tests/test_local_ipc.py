@@ -472,9 +472,7 @@ def test_the_socket_path_is_the_endpoints_own_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception(
-    tmp_path: Path,
-) -> None:
+def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception() -> None:
     """`__context__` is `None`, not merely a quiet traceback.
 
     The module's rule is that a failure "keeps its kind and loses its words".
@@ -486,13 +484,23 @@ def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception(
 
     The path is asserted absent from every string the exception offers, because
     the point is disclosure, not tidiness.
-    """
-    missing = tmp_path / "absent.sock"
 
-    with pytest.raises(TransportError) as raised:
-        LocalIpcTransport(endpoint_uri=f"unix://{missing}").call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)
-        )
+    `_short_socket_directory`, not `tmp_path`: under `tmp_path` the connect fails
+    with "AF_UNIX path too long" before it ever reaches the endpoint, so this
+    would exercise the 86-byte ceiling while claiming to exercise a refused dial.
+    Both land in the same `except OSError`, which is what made the substitution
+    invisible -- and both leak, so the assertion held either way and the name did
+    not.
+    """
+    directory = _short_socket_directory()
+    missing = directory / "absent.sock"
+    try:
+        with pytest.raises(TransportError) as raised:
+            LocalIpcTransport(endpoint_uri=f"unix://{missing}").call(
+                _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)
+            )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
     error = raised.value
     assert error.__context__ is None
