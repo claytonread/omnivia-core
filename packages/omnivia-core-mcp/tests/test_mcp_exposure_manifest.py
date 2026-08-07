@@ -139,16 +139,38 @@ def test_each_tool_schema_is_projected_from_the_operation_contract() -> None:
     the generated dataclass of that name in the public contracts package. A
     payload type renamed upstream therefore fails here rather than projecting a
     stale shape.
+
+    **The payoff line used to compare nothing to nothing.** It read
+    `sorted(projected["properties"]) == sorted(field.name for field in fields)`,
+    which looks like a projection check and is not one: `_input_schema` *raises*
+    whenever the contract has fields, so on every input that reaches the
+    comparison both sides are `[]`. It passed for every possible argument,
+    including a `_input_schema` advertising `additionalProperties: True` -- a real
+    defect, since the server would then be promising to accept arguments it has no
+    projector for. Only the literal-dict assertion in `test_mcp_stdio_end_to_end`
+    caught that.
+
+    So the projection is asserted against the document it must produce. This is
+    deliberately the same literal as the end-to-end test's, and the duplication is
+    the point: that one asserts one named tool over the wire, this one runs over
+    every entry in `EXPOSURE_MANIFEST`, so a second exposed tool is covered here
+    the day it is added and in the end-to-end test only if somebody remembers.
     """
     for entry in manifest.EXPOSURE_MANIFEST:
         catalogue = get_operation_metadata(entry.operation)
         contract = manifest._contract_type(catalogue.input_schema_ref)
         assert dataclasses.is_dataclass(contract)
         assert contract.__name__ == catalogue.input_schema_ref.rsplit("/", 1)[-1]
-        projected = manifest._input_schema(catalogue)
-        assert sorted(projected["properties"]) == sorted(
-            field.name for field in dataclasses.fields(contract)
-        )
+        # Reaching here at all means the contract has no fields -- `_input_schema`
+        # raises otherwise -- so state that as the premise rather than leaving it
+        # to be inferred from an empty-to-empty comparison.
+        assert dataclasses.fields(contract) == ()
+        assert manifest._input_schema(catalogue) == {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
 
 
 def test_an_input_with_fields_is_refused_rather_than_guessed_at() -> None:
