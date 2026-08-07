@@ -2045,7 +2045,7 @@
           },
           "records": [
             {
-              "authority_level": "proposed",
+              "authority_level": "canonical",
               "content": {
                 "fact": "hello"
               },
@@ -2055,8 +2055,8 @@
                 "history": [],
                 "identity": {
                   "currentness": "current",
-                  "governance_state": "proposed",
-                  "layer": "l1",
+                  "governance_state": "accepted",
+                  "layer": "l2",
                   "record_id": "rec-1",
                   "version": "v1"
                 },
@@ -2072,10 +2072,16 @@
                 }
               },
               "record_type": "memory.fact",
+              "reviewer": "reviewer-1",
               "workspace_id": "ws-1"
             }
           ]
         }
+      },
+      "trusted": {
+        "authorized_views": [
+          "current_canonical"
+        ]
       }
     },
     {
@@ -4399,7 +4405,7 @@
           "page": {},
           "records": [
             {
-              "authority_level": "proposed",
+              "authority_level": "canonical",
               "content": {
                 "fact": "hello"
               },
@@ -4409,8 +4415,8 @@
                 "history": [],
                 "identity": {
                   "currentness": "current",
-                  "governance_state": "proposed",
-                  "layer": "l1",
+                  "governance_state": "accepted",
+                  "layer": "l2",
                   "record_id": "rec-1",
                   "version": "v1"
                 },
@@ -4426,10 +4432,16 @@
                 }
               },
               "record_type": "memory.fact",
+              "reviewer": "reviewer-1",
               "workspace_id": "ws-1"
             }
           ]
         }
+      },
+      "trusted": {
+        "authorized_views": [
+          "current_canonical"
+        ]
       }
     },
     {

@@ -124,6 +124,8 @@ from omnivia_core.contracts.v1.semantics_knowledge import (
     validate_knowledge_propose_result,
     validate_knowledge_search_input,
     validate_knowledge_search_result,
+    validate_memory_search_input,
+    validate_memory_search_result,
     validate_projection_freshness,
     validate_record_supersede_input,
     validate_record_supersede_result,
@@ -178,6 +180,7 @@ _INPUT_SEMANTICS: Final[dict[str, Callable[[Any], None]]] = {
     "knowledge.propose": validate_knowledge_propose_input,
     "knowledge.search": validate_knowledge_search_input,
     "memory.create": validate_memory_create_input,
+    "memory.search": validate_memory_search_input,
     "record.supersede": validate_record_supersede_input,
 }
 
@@ -1918,6 +1921,17 @@ def _result_semantics_table() -> dict[str, Callable[[_ResultContext], None]]:
             c.canonical_resolution_time,
             # A declared view set is a *set*: the corpus states it as a JSON
             # array because JSON has no set, so it is converted at the boundary.
+            c.string_set("authorized_views"),
+        ),
+        # The same trusted fact, for the same reason: `memory.search` declares the
+        # same `view` selector, so what a resolved view is allowed to contain is
+        # judged against the views a capability layer authorized, never against
+        # the view string the request itself named.
+        "memory.search": lambda c: validate_memory_search_result(
+            c.decoded_result,
+            c.decoded_input,
+            c.case.workspace_id,
+            c.canonical_resolution_time,
             c.string_set("authorized_views"),
         ),
         "context_pack.build": lambda c: validate_context_pack_build_result(
