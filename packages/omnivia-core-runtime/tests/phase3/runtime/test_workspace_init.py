@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -65,17 +66,34 @@ LOCK_PAYLOAD = "workspace/locks/storage.lock"
 
 
 def _digest(root: Path) -> dict[str, str]:
-    """Every file under `root`, by relative path and content digest.
+    """Every entry under `root`, by relative path, mode and content.
 
     The whole tree rather than one file: "non-destructive" is a claim about
     everything that was there, and a refusal that removed a sibling while leaving
     the file a test happened to name would satisfy a narrower check.
+
+    **Directories, symlinks and modes are in it, and that is the repair.** This
+    used to filter on `path.is_file()`, which made an empty directory invisible:
+    a refusal that created the whole installation-state tree and the three
+    workspace subdirectories on its way to refusing compared equal to one that
+    created nothing, and every "nothing was written" assertion in this file passed
+    under it. `lstat().st_mode` carries the entry's type and permissions together,
+    and it is `lstat` rather than `stat` so a dangling symlink is a value here
+    rather than an error.
     """
-    return {
-        name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and (name := str(path.relative_to(root))) != LOCK_PAYLOAD
-    }
+    entries: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        name = str(path.relative_to(root))
+        if name == LOCK_PAYLOAD:
+            continue
+        if path.is_symlink():
+            content = f"-> {os.readlink(path)}"
+        elif path.is_dir():
+            content = "directory"
+        else:
+            content = hashlib.sha256(path.read_bytes()).hexdigest()
+        entries[name] = f"{path.lstat().st_mode:o} {content}"
+    return entries
 
 
 def _substrate(layout: WorkspaceLayout) -> tuple[str, int] | None:
@@ -145,14 +163,27 @@ def test_the_installation_state_root_is_created_for_the_new_workspace(
 
 
 def test_init_starts_no_service_and_advertises_nothing(tmp_path: Path) -> None:
-    """R004-10: `init` establishes state; `start` establishes the process."""
+    """R004-10: `init` establishes state; `start` establishes the process.
+
+    The last two assertions replace `assert not (tmp_path / "run").exists()`, which
+    could not fail: `run/` is the *CLI's* convention, named nowhere in the runtime,
+    so nothing this function calls could ever create one and the assertion held for
+    a reason unconnected to the property. What is asserted instead is falsifiable
+    over the whole tree in the two ways this claim can break -- a bound socket
+    anywhere, and a published descriptor anywhere -- rather than the absence of one
+    named directory a service would not have used.
+
+    The end-to-end proof that no *process* results is `test_init.py`'s
+    `_service_pids`, which is unchanged and stays the stronger evidence.
+    """
     result = _init(tmp_path)
     assert result.workspace_id is not None
     runtime = tmp_path / "installation-state" / "runtime" / result.workspace_id
     assert runtime.is_dir()
     # No descriptor, so nothing discovers a service, and no socket was bound.
     assert list(runtime.iterdir()) == []
-    assert not (tmp_path / "run").exists()
+    assert [path for path in tmp_path.rglob("*") if path.is_socket()] == []
+    assert list(tmp_path.rglob("service.json")) == []
 
 
 # ---------------------------------------------------------------------------
