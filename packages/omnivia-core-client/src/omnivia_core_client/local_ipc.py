@@ -1,20 +1,26 @@
-"""One concrete :class:`ClientTransport` over the installation-local IPC endpoint.
+"""The one concrete :class:`ClientTransport` over the installation-local IPC endpoint.
 
-``omnivia-core-client`` defines the transport contract and deliberately ships no
-implementation of it: its accepted import allowlist admits the standard library
-subset it needs and the public ``omnivia_core`` contracts, and names ``socket``,
-``ssl`` and ``urllib`` as forbidden. A distribution that opened a socket would
-stop being a protocol foundation and start being a transport, which is the
-boundary that test enforces. So the concrete transport lives here, in the caller
-that dials, and satisfies the protocol structurally rather than by inheritance.
+Owner resolution 005 R005-01 places this here. It was filed in ``omnivia-core-cli``
+on the reasoning that a distribution which opens a socket stops being a protocol
+foundation -- but the code was never CLI-coupled, and leaving it there meant every
+other caller either imported the CLI or wrote a second dial loop. It belongs beside
+the :class:`~omnivia_core_client.ClientTransport` protocol it satisfies, the OVC1
+framing it carries, the discovery that hands it an endpoint, and the
+:class:`~omnivia_core_client.TransportError` it raises. The CLI and MCP both
+construct it from here; neither owns a copy.
+
+This is the only module in this package permitted to import ``socket``, and
+``tests/test_package_isolation.py`` pins that to this file by name. The rest of
+the package remains socket-free: the boundary that matters is the *distribution*
+dependency edge -- still exactly ``omnivia-core`` -- not the standard library.
 
 **Nothing here is reimplemented.** The frame is
 :func:`omnivia_core_client.encode_frame` and :func:`~omnivia_core_client.decode_frame`
 -- the accepted OVC1 wire, byte for byte, including its canonical-JSON admission
 rule. The envelope is the public ``omnivia_core`` codec. What this module adds is
-exactly the part the client package may not hold: a file descriptor, a connect, a
-bounded read, and the mapping from an operating-system failure onto the client's
-declared error types.
+exactly the part the rest of the package does not hold: a file descriptor, a
+connect, a bounded read, and the mapping from an operating-system failure onto the
+package's declared error types.
 
 The connection model matches the server's, which is strictly unary: one
 connection carries one frame out and one frame back, and is then closed. The
@@ -39,19 +45,20 @@ from __future__ import annotations
 import socket
 from dataclasses import dataclass
 
-from omnivia_core_client import (
-    HEADER_BYTES,
-    MAGIC,
-    MAXIMUM_JSON_BYTES,
-    CancellationToken,
-    Deadline,
+from omnivia_core_client.deadline import CancellationToken, Deadline
+from omnivia_core_client.errors import (
     DeadlineExceededError,
     ProtocolError,
     TransportError,
+)
+from omnivia_core_client.framing import (
+    HEADER_BYTES,
+    MAGIC,
+    MAXIMUM_JSON_BYTES,
     decode_frame,
     encode_frame,
-    enforce_send_preconditions,
 )
+from omnivia_core_client.transport import enforce_send_preconditions
 
 from omnivia_core.contracts.v1 import (
     ContractDecodeError,
