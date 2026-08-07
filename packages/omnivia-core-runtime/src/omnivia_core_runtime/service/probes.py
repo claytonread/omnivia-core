@@ -104,19 +104,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Final, TypeAlias, TypeVar
 
 from omnivia_core.contracts.v1 import (
-    CAPABILITY_ID_PATTERN,
-    CONTRACT_VERSION_PATTERN,
-    IDENTIFIER_PATTERN,
-    OPEN_CODE_PATTERN,
-    PROBE_STATUS_PATTERN,
-    RELEASE_VERSION_PATTERN,
-    REQUEST_ID_PATTERN,
-    TIMESTAMP_PATTERN,
-    WORKSPACE_ID_PATTERN,
     CapabilityRef,
     ContractSemanticError,
     ServiceComponentStatus,
@@ -126,6 +116,15 @@ from omnivia_core.contracts.v1 import (
     ServiceProcessEvidence,
     VersionWindow,
     duplicate_capability_ids,
+    is_capability_id,
+    is_contract_version,
+    is_identifier,
+    is_open_code,
+    is_probe_status,
+    is_release_version,
+    is_request_id,
+    is_timestamp,
+    is_workspace_id,
     validate_service_endpoint_uri,
     validate_version_window,
 )
@@ -163,27 +162,20 @@ _NS_PER_MS: Final = 1_000_000
 
 # --- the public bounds a published value has to fit -------------------------
 #
-# The patterns come from the contract's own exported constants, so this module and
-# the schema cannot describe two different languages. The *lengths* are not
-# exported alongside them, so they are pinned here against the packaged schema and
-# held there by `test_versions_and_probes.py`, which reads
-# `contracts/application/v1/schemas` and fails if either side moves. Restating a
-# bound is a real risk; restating it with a test reading the canonical document is
-# the cheapest way to make the restatement provably faithful.
+# A schema-declared scalar restates nothing here: its grammar *and* its length
+# bounds are both applied by the contract's own generated guard, which the
+# generator emits from the declaration. A bound this module cannot restate is a
+# bound this module cannot get wrong, and the four it used to restate by hand are
+# gone with the `(pattern, minimum, maximum)` table that held them.
+#
+# What is left below is bounds the generated guards do not carry: an array's
+# `maxItems`, an integer's `maximum`, and the one published string the schema
+# bounds without patterning.
 
-#: `maxLength` of the 128-bounded scalars published here: `Identifier`,
-#: `WorkspaceId`, `CapabilityId`, `ProbeStatus`, `OpenCode`, `RequestId`,
-#: `ReleaseVersion`, and `ServiceProcessEvidence.start_time`.
+#: `maxLength` of the 128-bounded scalars, applied only to the two values with no
+#: generated guard of their own: `ServiceProcessEvidence.start_time`, and the probe
+#: kind on an unvalidated inbound request.
 _BOUNDED_MAX: Final = 128
-
-#: `ContractVersion.maxLength`. Narrower than the rest: `major.minor` and nothing.
-_CONTRACT_VERSION_MAX: Final = 32
-
-#: `Timestamp.maxLength`, wide enough for nine fractional digits and no wider.
-_TIMESTAMP_MAX: Final = 40
-
-#: `CapabilityId.minLength`: `a.b` is the shortest namespaced capability there is.
-_CAPABILITY_ID_MIN: Final = 3
 
 #: `maxItems` on both published arrays -- `components` and
 #: `supported_capabilities`. A snapshot naming more subsystems than the contract
@@ -195,44 +187,32 @@ _MAX_PUBLISHED_ITEMS: Final = 256
 #: `DurationMs.maximum`, in milliseconds: twenty-four hours.
 _DURATION_MS_MAX: Final = 86_400_000
 
-#: One frozen scalar type: the grammar its values must fullmatch, and the inclusive
-#: length bounds they must fit. Kept as data rather than one function per type so
-#: every call site reads as "this field holds one of these", and so a field that
-#: gains a bound gains it in one place.
-_Scalar: TypeAlias = tuple[re.Pattern[str], int, int]
-
-_IDENTIFIER: Final[_Scalar] = (re.compile(IDENTIFIER_PATTERN), 1, _BOUNDED_MAX)
-_WORKSPACE_ID: Final[_Scalar] = (re.compile(WORKSPACE_ID_PATTERN), 1, _BOUNDED_MAX)
-_PROBE_STATUS: Final[_Scalar] = (re.compile(PROBE_STATUS_PATTERN), 1, _BOUNDED_MAX)
-_OPEN_CODE: Final[_Scalar] = (re.compile(OPEN_CODE_PATTERN), 1, _BOUNDED_MAX)
-_REQUEST_ID: Final[_Scalar] = (re.compile(REQUEST_ID_PATTERN), 1, _BOUNDED_MAX)
-_RELEASE_VERSION: Final[_Scalar] = (
-    re.compile(RELEASE_VERSION_PATTERN),
-    1,
-    _BOUNDED_MAX,
-)
-_CONTRACT_VERSION: Final[_Scalar] = (
-    re.compile(CONTRACT_VERSION_PATTERN),
-    1,
-    _CONTRACT_VERSION_MAX,
-)
-_CAPABILITY_ID: Final[_Scalar] = (
-    re.compile(CAPABILITY_ID_PATTERN),
-    _CAPABILITY_ID_MIN,
-    _BOUNDED_MAX,
-)
-_TIMESTAMP: Final[_Scalar] = (re.compile(TIMESTAMP_PATTERN), 1, _TIMESTAMP_MAX)
+#: One value domain: a predicate that is true of the values it admits. The
+#: schema-declared domains are the contract's own generated guards -- `is_identifier`,
+#: `is_timestamp` and the rest -- called rather than re-implemented, so this module
+#: cannot hold a published field to a grammar or a bound the contract does not
+#: declare. That is what this module used to do: a local `(pattern, minimum,
+#: maximum)` table restating bounds the schema already states, which is a third
+#: independent copy of "apply the declared value domain" and the copy most likely to
+#: fall behind, because nothing failed when it did.
+_Guard: TypeAlias = Callable[[object], bool]
 
 #: `ServiceProcessEvidence.start_time` is the one published string the schema
 #: bounds without patterning: its spelling is whatever the host platform reports,
-#: so there is no grammar to hold it to. Control characters are still refused --
-#: a value carrying a newline or an ANSI escape is not a platform reading, it is
-#: something that will be pasted into an operator's terminal.
-_OPAQUE_TEXT: Final[_Scalar] = (
-    re.compile(r"[^\x00-\x1f\x7f-\x9f]+"),
-    1,
-    _BOUNDED_MAX,
-)
+#: so there is no grammar to hold it to, and no generated guard exists for it.
+#: Control characters are still refused -- a value carrying a newline or an ANSI
+#: escape is not a platform reading, it is something that will be pasted into an
+#: operator's terminal.
+_OPAQUE_TEXT_RE: Final = re.compile(r"[^\x00-\x1f\x7f-\x9f]+")
+
+
+def _is_opaque_text(value: object) -> bool:
+    """The one domain declared by no schema pattern, in the generated guards' shape."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= _BOUNDED_MAX
+        and _OPAQUE_TEXT_RE.fullmatch(value) is not None
+    )
 
 
 class ProbeError(Exception):
@@ -522,26 +502,23 @@ def _public_components(
     )
 
 
-def _scalar(value: object, label: str, scalar: _Scalar) -> str:
-    """Return `value` when it is a publishable instance of `scalar`, else refuse.
+def _scalar(value: object, label: str, guard: _Guard) -> str:
+    """Return `value` when it is a publishable instance of `guard`'s domain, else refuse.
 
-    The type is narrowed before the length is measured and the length before the
-    pattern is matched, in that order and never any other. `re.fullmatch` raises
-    `TypeError` on a non-string and a pattern walks the whole of whatever it is
-    given, so checking the grammar of an unvetted value is both the way a wrong
-    type escapes as the wrong exception and the way an oversized one is paid for
-    twice.
+    The type is narrowed before `guard` runs, so a non-string is refused as one
+    rather than as a malformed string. Everything after that -- the declared length
+    bounds, the declared grammar, and for a declared `format: date-time` the calendar
+    -- is the guard's, applied in the guard's order, which is the same order in the
+    contract's other binding because one loop over the schema emits both.
 
     A message names the field and stops. Not the value, not its length, not the
     grammar it failed: a probe answers before authentication, so the whole of what
-    this can safely say is *which* field a caller's snapshot got wrong.
+    this can safely say is *which* field a caller's snapshot got wrong. That is why
+    the refusal is one fixed sentence per field and not the guard's own verdict.
     """
-    pattern, minimum, maximum = scalar
     if not isinstance(value, str):
         raise ProbeError(f"{label} is not a string")
-    if not minimum <= len(value) <= maximum:
-        raise ProbeError(f"{label} is malformed")
-    if pattern.fullmatch(value) is None:
+    if not guard(value):
         raise ProbeError(f"{label} is malformed")
     return value
 
@@ -551,28 +528,19 @@ def _timestamp(value: object, label: str) -> None:
 
     A pattern is not a calendar. `2026-13-45T99:99:99Z` satisfies
     `TIMESTAMP_PATTERN` character for character and names no moment that has ever
-    existed, so the pattern is the first half of the check and parsing is the
-    second -- the same two halves the contract's own conformance checker applies to
-    a declared `format: date-time`.
+    existed. Both halves now live in the generated `is_timestamp`, which the
+    contract's TypeScript binding mirrors clause for clause, so this boundary and a
+    TypeScript caller refuse the same instants -- they did not before, and nothing
+    here could have told you so.
 
     Parsing is not clock-reading. This reads a value the caller handed over; the
     router still owns no clock, and the only time it knows is the monotonic one
     injected for deadlines.
 
-    Refused after the handler exits, like every other nested failure here. What
-    `fromisoformat` says on a pattern-conforming string is a calendar range --
-    `month must be in 1..12` -- and not the value itself, but that is a property
-    of `_scalar` having already run and of this interpreter's wording, neither of
-    which is a thing to hang a boundary on. The refusal names the field and stops.
+    Kept as its own name rather than inlined at the eight call sites: it is the
+    field-labelled refusal, and `_scalar` is where the label is applied.
     """
-    text = _scalar(value, label, _TIMESTAMP)
-    malformed = False
-    try:
-        datetime.fromisoformat(f"{text[:-1]}+00:00")
-    except ValueError:
-        malformed = True
-    if malformed:
-        raise ProbeError(f"{label} is malformed")
+    _scalar(value, label, is_timestamp)
 
 
 def _endpoint(descriptor: ServiceEndpointDescriptor, label: str) -> None:
@@ -642,8 +610,8 @@ def _version_window(window: object, label: str) -> None:
     """Refuse a window that is not two contract versions in negotiable order."""
     if not isinstance(window, VersionWindow):
         raise ProbeError(f"{label} is not a version window")
-    _scalar(window.minimum, f"{label} minimum", _CONTRACT_VERSION)
-    _scalar(window.maximum, f"{label} maximum", _CONTRACT_VERSION)
+    _scalar(window.minimum, f"{label} minimum", is_contract_version)
+    _scalar(window.maximum, f"{label} maximum", is_contract_version)
     # Refused with a message of this module's own, and the contract's is not
     # carried along either. Its text quotes the bounds it rejected -- `version
     # window is reversed: minimum '9.9' exceeds maximum '1.0'` -- which is right
@@ -693,7 +661,7 @@ def _validate_request(request: ServiceProbeRequest) -> None:
     if len(request.probe) > _BOUNDED_MAX:
         raise ProbeError("probe request names a probe kind that is out of range")
     if request.request_id is not None:
-        _scalar(request.request_id, "probe request request_id", _REQUEST_ID)
+        _scalar(request.request_id, "probe request request_id", is_request_id)
 
     deadline_ms = request.deadline_ms
     if deadline_ms is None:
@@ -725,7 +693,7 @@ def _validate_facts(facts: ServiceFacts) -> None:
         ("readiness_status", facts.readiness_status),
         ("discovery_status", facts.discovery_status),
     ):
-        _scalar(status, f"service facts {label}", _PROBE_STATUS)
+        _scalar(status, f"service facts {label}", is_probe_status)
 
     components = facts.components
     # Narrowed before it is walked. `enumerate` raises on an int and silently
@@ -743,8 +711,8 @@ def _validate_facts(facts: ServiceFacts) -> None:
                 f"service facts component {index} is not a component status"
             )
         where = f"service facts component {index}"
-        _scalar(component.id, f"{where} id", _IDENTIFIER)
-        _scalar(component.status, f"{where} status", _PROBE_STATUS)
+        _scalar(component.id, f"{where} id", is_identifier)
+        _scalar(component.status, f"{where} status", is_probe_status)
         _timestamp(component.observed_at, f"{where} observed_at")
 
     descriptor = facts.descriptor
@@ -772,14 +740,14 @@ def _validate_descriptor(descriptor: ServiceEndpointDescriptor) -> None:
     """
     label = "service facts descriptor"
     _scalar(
-        descriptor.descriptor_version, f"{label} descriptor_version", _CONTRACT_VERSION
+        descriptor.descriptor_version, f"{label} descriptor_version", is_contract_version
     )
-    _scalar(descriptor.workspace_id, f"{label} workspace_id", _WORKSPACE_ID)
-    _scalar(descriptor.service_instance_id, f"{label} service_instance_id", _IDENTIFIER)
-    _scalar(descriptor.installation_id, f"{label} installation_id", _IDENTIFIER)
+    _scalar(descriptor.workspace_id, f"{label} workspace_id", is_workspace_id)
+    _scalar(descriptor.service_instance_id, f"{label} service_instance_id", is_identifier)
+    _scalar(descriptor.installation_id, f"{label} installation_id", is_identifier)
     _endpoint(descriptor, f"{label} endpoint_uri")
-    _scalar(descriptor.protocol_version, f"{label} protocol_version", _CONTRACT_VERSION)
-    _scalar(descriptor.server_version, f"{label} server_version", _RELEASE_VERSION)
+    _scalar(descriptor.protocol_version, f"{label} protocol_version", is_contract_version)
+    _scalar(descriptor.server_version, f"{label} server_version", is_release_version)
     _version_window(
         descriptor.supported_api_versions, f"{label} supported_api_versions"
     )
@@ -789,11 +757,11 @@ def _validate_descriptor(descriptor: ServiceEndpointDescriptor) -> None:
     _scalar(
         descriptor.workspace_format_version,
         f"{label} workspace_format_version",
-        _CONTRACT_VERSION,
+        is_contract_version,
     )
     if not isinstance(descriptor.ready, bool):
         raise ProbeError(f"{label} ready is not a boolean")
-    _scalar(descriptor.lifecycle_state, f"{label} lifecycle_state", _OPEN_CODE)
+    _scalar(descriptor.lifecycle_state, f"{label} lifecycle_state", is_open_code)
     _bounded_int(descriptor.fencing_generation, f"{label} fencing_generation", 1)
     _timestamp(descriptor.published_at, f"{label} published_at")
 
@@ -803,8 +771,8 @@ def _validate_descriptor(descriptor: ServiceEndpointDescriptor) -> None:
     if not isinstance(process, ServiceProcessEvidence):
         raise ProbeError(f"{label} process is not process evidence")
     _bounded_int(process.pid, f"{label} process pid", 1)
-    _scalar(process.start_time, f"{label} process start_time", _OPAQUE_TEXT)
-    _scalar(process.boot_id, f"{label} process boot_id", _IDENTIFIER)
+    _scalar(process.start_time, f"{label} process start_time", _is_opaque_text)
+    _scalar(process.boot_id, f"{label} process boot_id", is_identifier)
 
 
 def _validated_capabilities(
@@ -835,8 +803,8 @@ def _validated_capabilities(
             raise ProbeError(
                 f"supported capability {index} is not a capability reference"
             )
-        _scalar(ref.id, f"supported capability {index} id", _CAPABILITY_ID)
-        _scalar(ref.version, f"supported capability {index} version", _CONTRACT_VERSION)
+        _scalar(ref.id, f"supported capability {index} id", is_capability_id)
+        _scalar(ref.version, f"supported capability {index} version", is_contract_version)
     duplicates = duplicate_capability_ids(refs)
     if duplicates:
         raise ProbeError(

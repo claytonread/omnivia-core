@@ -2328,10 +2328,13 @@ def test_versions_and_probes_import_no_storage_or_transport_code(module: str) ->
 def test_the_probe_router_owns_no_clock_of_its_own() -> None:
     """`time` is absent above; this pins *why* it is absent.
 
-    `datetime` *is* imported, to prove a caller's `Timestamp` names a real instant.
-    That is parsing, and it is one attribute away from being clock-reading, so the
-    difference is pinned in the syntax tree rather than left to a reviewer noticing
-    the import and having to guess which of the two it is for.
+    A caller's `Timestamp` is still proved to name a real instant, and that is still
+    parsing rather than clock-reading. The parse moved: it is now the second half of
+    the contract's generated `is_timestamp`, which this module calls instead of
+    compiling the pattern and parsing again on its own. So the property is pinned in
+    two places rather than one -- this module reads no clock and does not parse, and
+    the guard it delegates to does parse and reads no clock either. Asserting only
+    the first half would let the calendar check be dropped entirely and still pass.
     """
     source = (SERVICE_DIR / "probes.py").read_text(encoding="utf-8")
     assert "time" not in imported_modules(SERVICE_DIR / "probes.py")
@@ -2342,7 +2345,26 @@ def test_the_probe_router_owns_no_clock_of_its_own() -> None:
         if isinstance(node, ast.Attribute)
     }
     assert read.isdisjoint({"now", "utcnow", "today", "monotonic", "monotonic_ns"})
-    assert "fromisoformat" in read
+
+    # The calendar half, where it now lives. `_timestamp` delegates to the generated
+    # guard, and the guard parses -- neither half is optional for a real instant.
+    assert "is_timestamp" in source
+    generated_source = (
+        REPO_ROOT / "src" / "omnivia_core" / "contracts" / "v1" / "generated.py"
+    ).read_text(encoding="utf-8")
+    guard = ast.parse(generated_source)
+    timestamp_guard = next(
+        node
+        for node in ast.walk(guard)
+        if isinstance(node, ast.FunctionDef) and node.name == "is_timestamp"
+    )
+    guard_reads = {
+        node.attr
+        for node in ast.walk(timestamp_guard)
+        if isinstance(node, ast.Attribute)
+    }
+    assert "fromisoformat" in guard_reads
+    assert guard_reads.isdisjoint({"now", "utcnow", "today", "monotonic", "monotonic_ns"})
 
     with pytest.raises(TypeError):
         ProbeRouter(facts=_facts, capabilities=tuple)  # type: ignore[call-arg]
