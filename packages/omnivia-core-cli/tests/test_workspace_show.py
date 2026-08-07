@@ -979,16 +979,31 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
     An environment lookup is exactly that -- a path of the caller's choosing
     arriving by another name -- and it stays a stop condition for this packet.
 
-    Two path sources are admitted, and neither is ambient: an explicit argument,
-    which the caller states and a reader can see; and a deterministic built-in
-    default, which is the same on every machine and which nothing outside this
-    source can redirect. Owner resolution 004 R004-11 admits both and keeps the
-    environment prohibition, and it also required this docstring corrected --
-    it previously said `--runtime-state` was "the only way in", which stopped
-    being true when the `~/.omnivia` convention shipped.
+    Two path sources are admitted: an explicit argument, which the caller states
+    and a reader can see; and a deterministic built-in default, fixed relative to
+    the user's home directory *as the operating system reports it*. Owner
+    resolution 004 R004-11 admits both and keeps the environment prohibition, and
+    it also required this docstring corrected -- it previously said
+    `--runtime-state` was "the only way in", which stopped being true when the
+    `~/.omnivia` convention shipped.
 
-    The assertion below is unchanged. R004-11 says so in terms: do not weaken or
-    delete the test merely to make the current implementation pass.
+    **`$HOME` is accepted, and the earlier wording claiming otherwise was false.**
+    This paragraph used to say the default was one "which nothing outside this
+    source can redirect". `Path.home()` follows `$HOME`, so `~/.omnivia` is
+    environment-derived in substance and that sentence was not true. The owner's
+    ruling is that `$HOME` is the operating system's own notion of which user this
+    is -- every Unix tool respects it, and hardening against it would break
+    containers, CI runners and this suite's own fixtures -- and not an OmniVia
+    redirect knob. What stays prohibited is an OmniVia-specific variable:
+    `$OMNIVIA_HOME` or anything like it would be a path of the caller's choosing
+    arriving by another name, and it is that class the assertion below refuses.
+
+    The assertion is unchanged and still fails on any `getenv` or `environ` in the
+    CLI source, `$HOME` included -- so the accepted route to the home directory
+    remains `Path.home()` and never a lookup this package performs itself.
+    R004-11 says so in terms: do not weaken or delete the test merely to make the
+    current implementation pass.
+
     """
     import ast
 

@@ -33,11 +33,19 @@ endpoint path -- what is left of `sockaddr_un`'s 104-byte `sun_path` once the NU
 terminator and the runtime's fixed-width staging name are subtracted -- so a deep
 default would refuse to bind at all.
 
-**No environment variable.** The convention is fixed, and
+**No OmniVia environment variable.** The convention is fixed, and
 `test_the_cli_reads_no_environment_variable_to_find_a_service` is why: an
-environment lookup is an unrestricted filesystem path arriving by another name,
-which that packet makes a stop condition. A fixed convention is bounded and
-identical on every machine; an override is not. Only an explicit flag overrides.
+environment lookup performed by this package is an unrestricted filesystem path
+arriving by another name, which that packet makes a stop condition. `$OMNIVIA_HOME`
+and anything like it stay prohibited; only an explicit flag overrides.
+
+`~` is the user's home directory as the operating system reports it, which on Unix
+means `$HOME`. That is the OS's own notion of which user this is rather than an
+OmniVia redirect knob -- every Unix tool respects it, and hardening against it
+would break containers, CI runners and this repository's own tests -- so it is
+accepted, per owner resolution 004. The distinction the guard enforces is not
+"nothing environmental" but "nothing this package looks up itself": the home comes
+from `Path.home()` and never from a variable read here.
 """
 
 from __future__ import annotations
@@ -153,12 +161,19 @@ def locate_service() -> str | None:
 def home_directory(override: Path | None = None) -> Path:
     """The installation root: an explicit flag, otherwise one fixed convention.
 
-    Deliberately *not* an environment variable.
-    `test_the_cli_reads_no_environment_variable_to_find_a_service` forbids it and
-    gives the reason: an environment lookup is "an unrestricted filesystem path
-    arriving by another name", which that packet makes a stop condition. A fixed
-    convention is a different thing -- it is bounded, it is the same on every
-    machine, and there is nothing an attacker can point somewhere else.
+    Deliberately *not* an OmniVia environment variable.
+    `test_the_cli_reads_no_environment_variable_to_find_a_service` forbids one and
+    gives the reason: a lookup this package performs is "an unrestricted filesystem
+    path arriving by another name", which that packet makes a stop condition.
+
+    `Path.home()` follows `$HOME`, so the default is environment-derived in
+    substance and this docstring no longer claims otherwise. Owner resolution 004
+    accepts it: `$HOME` is the operating system's answer to "which user is this",
+    not a knob this programme invented, and hardening against it would break
+    containers, CI runners and this repository's own tests. `$OMNIVIA_HOME` and any
+    other OmniVia-specific variable remain prohibited, and the guard still fails on
+    any `getenv` or `environ` in this tree -- including `$HOME` -- so the home
+    arrives through `Path.home()` and through nothing this package reads itself.
 
     R004-11 settled the record that used to be an open question here: this
     convention is accepted, explicit arguments and deterministic built-in defaults
