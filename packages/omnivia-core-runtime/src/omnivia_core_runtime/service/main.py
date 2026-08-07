@@ -25,7 +25,9 @@ from typing import Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
 from omnivia_core_runtime.service.application import (
+    EVIDENCE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
+    WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
     local_owner_session,
@@ -278,6 +280,15 @@ def main(
                 principal_id=LOCAL_PRINCIPAL,
                 installation_id=installation_id,
                 workspace_id=started.workspace_id,
+                # The production grant, as a literal at the wiring site. This is the
+                # one place the local owner's authority is decided, and it is here
+                # rather than inside `local_owner_session` so that widening it is a
+                # visible edit to the service's own startup rather than a change of
+                # default one module away. Scopes, capabilities and purposes all follow
+                # from these two names -- none of them is written out anywhere.
+                operations=frozenset(
+                    {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+                ),
             ),
             # `workspace_id` is set deliberately. This endpoint fronts exactly one
             # workspace, and setting it arms the seam's second, independent workspace
