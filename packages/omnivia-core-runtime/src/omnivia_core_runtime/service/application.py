@@ -47,8 +47,9 @@ or Organisation-mode local deployment.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final, TypeAlias
 
 from omnivia_core.contracts.v1 import (
@@ -68,6 +69,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize_application_request,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
@@ -77,15 +79,36 @@ from omnivia_core_runtime.service.operations import (
     success,
 )
 
-#: The one authorised application operation of this vertical, ratified by the owner.
-#: Named once here so the session grant, the registry and the evidence all read the
-#: same string, and so widening the grant is one visible edit rather than a drift.
+#: The authorised application operations of this vertical, ratified by the owner. Named
+#: once here so the session grant, the registry and the evidence all read the same
+#: string, and so widening the grant is one visible edit rather than a drift.
 WORKSPACE_INSPECT_OPERATION: Final = "workspace.inspect"
+EVIDENCE_SEARCH_OPERATION: Final = "evidence.search"
 
-#: The fixed purpose allowlist. There is no purpose registry in the contract --
-#: purposes are pattern-validated at the boundary and then checked against
-#: `session.purposes` -- so the session's set *is* the allowlist, and this is it.
+#: The purpose each granted operation is served under. There is no purpose registry in
+#: the contract -- purposes are pattern-validated at the boundary and then checked
+#: against `session.purposes` -- so the session's set *is* the allowlist, and this map
+#: is what fixes it.
+#:
+#: Two entries, and that is the whole V06-3 vocabulary (§20.2): `workspace.inspect`
+#: **retains** `workspace_inspection` rather than migrating, and one purpose,
+#: `knowledge_retrieval`, covers all five V06-3 read and Context Pack composition
+#: operations. Not one purpose per operation -- the owner corrected §6.2's constraint 4
+#: to exactly this shape.
+#:
+#: This is the only knob in this file that is *policy* rather than catalogue-derived,
+#: and it is a map rather than a set because a session that granted an operation with
+#: no purpose behind it would be refused by check 11 at the first request. A lane
+#: widening the grant adds the operation here in the same edit or its own operation
+#: cannot be served.
 WORKSPACE_INSPECTION_PURPOSE: Final = "workspace_inspection"
+KNOWLEDGE_RETRIEVAL_PURPOSE: Final = "knowledge_retrieval"
+OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        WORKSPACE_INSPECT_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
+        EVIDENCE_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+    }
+)
 
 #: Where the principal comes from, recorded verbatim as the owner fixed it. Not the
 #: operating-system identity this service runs as, and not anything a request carries.
@@ -110,57 +133,131 @@ _MESSAGE_NO_HANDLER: Final = "this build cannot serve an operation it authorized
 
 
 def local_owner_session(
-    *, principal_id: str, installation_id: str, workspace_id: str
+    *,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    operations: frozenset[str],
 ) -> AuthenticatedSession:
     """The session this endpoint serves every application request under.
 
-    Built once, at startup, from three facts the service process already holds: the
+    Built once, at startup, from three facts the service process already holds -- the
     principal fixed by installation-local service configuration, the installation
     identity persisted under the installation-local state root, and the single
-    workspace this endpoint was launched to own. Nothing here is read from a request,
-    and this function is never called from inside a handler.
+    workspace this endpoint was launched to own -- plus the operation set its caller
+    names. Nothing here is read from a request, and this function is never called from
+    inside a handler.
 
-    Every grant is stated, because `AuthenticatedSession` defaults each one to empty
-    and an unstated grant refuses. Every grant is also *narrow on purpose*:
+    **Why `operations` is a parameter, and what it is not.** V06-2 baked
+    `workspace.inspect` into this constructor as a module-level `Final`, which was
+    correct while the grant was one name and became a false constraint the moment the
+    accepted grant was two. The owner accepted the parameterised shape (§20.2) with the
+    binding constraint that **the operation set is a literal in the constructor's
+    caller** -- never a request field, and never `APPLICATION_OPERATIONS`, which is all
+    twenty and would hand a read-only local owner every mutation in the catalogue. The
+    production literal is at `service/main.py`'s `serve`, where the grant is visible at
+    the wiring site rather than buried one module away.
+
+    The grant is also *incremental per lane* rather than decided once: *"Grant only
+    operations whose handlers are implemented and accepted."* A session naming an
+    operation this build has no handler for is a grant with nothing behind it.
+
+    Every grant is stated, because `AuthenticatedSession` defaults each one to empty and
+    an unstated grant refuses. Every grant is also narrow on purpose:
 
     * `roles` is empty. There is no role model, so any claimed role is refused --
       claims narrow, and there is nothing here to narrow to.
-    * `operations` holds exactly one name. Not `APPLICATION_OPERATIONS`, which is all
-      twenty and would hand a read-only local owner every mutation in the catalogue.
-    * `scopes` and `capabilities` are read off the frozen catalogue entry rather than
-      transcribed, so they cannot drift from what the operation actually requires,
-      and the read-only capability `workspace.read` is reused rather than a new
-      identifier being invented.
-    * `purposes` is the fixed allowlist of one.
+    * `operations` is exactly what the caller named, after this function has refused
+      any name the catalogue does not know and any name with a side effect.
+    * `scopes` and `capabilities` are **derived** from each granted operation's frozen
+      catalogue entry, never transcribed. A literal `"memory:read"` or `"evidence.read"`
+      appearing in this constructor is a stop condition (§20.2), and this is the
+      property that makes the session structurally incapable of drifting from the
+      catalogue: widening the grant widens the scopes and capabilities with it, in the
+      same expression, or not at all.
+    * `purposes` is derived from `OPERATION_PURPOSES`, which is policy rather than
+      catalogue -- the contract declares no purposes -- and is the one thing here a
+      reviewer has to check against the owner's table rather than against the tree.
 
     The single granted workspace is also stated a second time, independently, on the
-    `ServiceBinding` the caller of this function builds. That is deliberate: reaching
-    a workspace-specific endpoint and naming a different workspace is refused by the
+    `ServiceBinding` the caller of this function builds. That is deliberate: reaching a
+    workspace-specific endpoint and naming a different workspace is refused by the
     binding even if a session grant were ever widened.
+
+    Raises `ValueError` on a grant this function may not build. Both refusals are
+    construction-time and neither is reachable through a request: a wiring that names an
+    operation with `side_effect != "none"` is refused before the endpoint serves,
+    because a read-only local owner holding a mutation is the failure this whole path
+    exists to prevent and discovering it at the first mutating request would be too
+    late.
     """
-    entry = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
-    required = entry.required_capability
+    if not operations:
+        raise ValueError(
+            "a session granting no operation cannot serve anything; state the grant"
+        )
+
+    entries = tuple(get_operation_metadata(name) for name in sorted(operations))
+
+    # Asserted from the catalogue, never from the literal list, so this is a property of
+    # what was granted rather than a restatement of it (§6.2 constraint 3). One line,
+    # and it makes the parameterised shape structurally unable to grant a mutation.
+    mutating = tuple(entry.name for entry in entries if entry.scope.side_effect != "none")
+    if mutating:
+        raise ValueError(
+            "a local-owner session grants read-only operations; "
+            f"{mutating!r} declare a side effect"
+        )
+
+    missing_purpose = tuple(
+        entry.name for entry in entries if entry.name not in OPERATION_PURPOSES
+    )
+    if missing_purpose:
+        raise ValueError(
+            "every granted operation needs a declared purpose; "
+            f"{missing_purpose!r} have none"
+        )
+
     return AuthenticatedSession(
         principal_id=principal_id,
         roles=frozenset(),
         installations=frozenset({installation_id}),
         workspaces=frozenset({workspace_id}),
-        operations=frozenset({entry.name}),
-        scopes=frozenset(entry.scope.required_scopes),
-        purposes=frozenset({WORKSPACE_INSPECTION_PURPOSE}),
-        capabilities=(CapabilityRef(id=required.id, version=required.minimum_version),),
+        operations=frozenset(entry.name for entry in entries),
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(OPERATION_PURPOSES[entry.name] for entry in entries),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
     )
 
 
 def build_application_registry() -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    One entry. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
+    Two entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
     and it registers nothing into the probe registry.
+
+    This function and the production session grant have to agree, and they are two
+    separate statements rather than one derived from the other on purpose: registering a
+    handler is a claim about what this build can *serve*, and the grant is a claim about
+    what the local owner may *ask for*. Deriving either from the other would make a
+    mistake in one invisible in the other.
     """
     registry = ApplicationOperationRegistry()
     registry.register(WORKSPACE_INSPECT_OPERATION, workspace_inspect)
+    registry.register(EVIDENCE_SEARCH_OPERATION, evidence_search)
     return registry
 
 
@@ -456,7 +553,10 @@ class ApplicationDispatcher:
 
 __all__ = [
     "CHANNEL_TRUST",
+    "EVIDENCE_SEARCH_OPERATION",
+    "KNOWLEDGE_RETRIEVAL_PURPOSE",
     "LOCAL_TRANSPORT_ADAPTER",
+    "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
     "WORKSPACE_INSPECTION_PURPOSE",
     "WORKSPACE_INSPECT_OPERATION",

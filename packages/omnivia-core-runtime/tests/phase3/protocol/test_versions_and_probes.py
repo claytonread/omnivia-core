@@ -23,7 +23,7 @@ import json
 import re
 import traceback
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -880,6 +880,76 @@ def test_the_published_component_fields_are_exactly_the_allowlist() -> None:
     wire = _router().route(ServiceProbeRequest(probe=PROBE_HEALTH)).to_wire()
     for component in wire["components"]:
         assert tuple(component) == PUBLIC_COMPONENT_FIELDS
+
+
+def test_the_published_discovery_fields_are_exactly_the_pinned_set() -> None:
+    """The descriptor's equivalent of the allowlist above, which it does not have.
+
+    A component is *rebuilt* field by field, so `PUBLIC_COMPONENT_FIELDS` is both the
+    projection and the pin. The descriptor is the one injected value discovery
+    publishes whole -- `ProbeRouter._build` hands `facts.descriptor` straight to the
+    result with no projection step in between -- so its own declaration *is* the
+    published surface, and until this test nothing anywhere wrote that surface down.
+
+    The canonical schema is not a second opinion on it. The DTO below is generated
+    *from* that schema, so a field added the normal way updates both sides at once
+    and every conformance check stays green while an unauthenticated-facing document
+    grows a field no one decided to publish.
+
+    Which is why the declared fields are asserted and not only the wire keys. A new
+    *optional* field defaults to `None`, so `to_wire` omits it and a wire-only pin
+    would never notice; `fields()` notices whatever the default is.
+    """
+    descriptor_fields = (
+        "descriptor_version",
+        "workspace_id",
+        "service_instance_id",
+        "installation_id",
+        "endpoint_uri",
+        "protocol_version",
+        "server_version",
+        "supported_api_versions",
+        "supported_workspace_versions",
+        "workspace_format_version",
+        "ready",
+        "lifecycle_state",
+        "fencing_generation",
+        "published_at",
+        "process",
+    )
+    process_fields = ("pid", "start_time", "boot_id")
+
+    assert tuple(f.name for f in fields(ServiceEndpointDescriptor)) == descriptor_fields
+    assert tuple(f.name for f in fields(ServiceProcessEvidence)) == process_fields
+
+    # Every optional field a discovery answer can carry is present, so what is
+    # pinned is the widest document this router will ever publish rather than the
+    # narrowest one a default fixture happens to produce.
+    wire = _published(
+        _facts(
+            descriptor=replace(
+                _descriptor(),
+                process=ServiceProcessEvidence(
+                    pid=4242, start_time="1728000000", boot_id="boot-1"
+                ),
+            )
+        ),
+        probe=PROBE_DISCOVER,
+        capabilities=(CapabilityRef(id="memory.search", version=API_VERSION),),
+        request_id="req-42",
+    )
+    assert tuple(wire) == (
+        "probe",
+        "status",
+        "server_version",
+        "api_version",
+        "observed_at",
+        "supported_capabilities",
+        "descriptor",
+        "details",
+    )
+    assert tuple(wire["descriptor"]) == descriptor_fields
+    assert tuple(wire["descriptor"]["process"]) == process_fields
 
 
 def test_the_injected_component_is_projected_rather_than_forwarded() -> None:
@@ -2258,10 +2328,13 @@ def test_versions_and_probes_import_no_storage_or_transport_code(module: str) ->
 def test_the_probe_router_owns_no_clock_of_its_own() -> None:
     """`time` is absent above; this pins *why* it is absent.
 
-    `datetime` *is* imported, to prove a caller's `Timestamp` names a real instant.
-    That is parsing, and it is one attribute away from being clock-reading, so the
-    difference is pinned in the syntax tree rather than left to a reviewer noticing
-    the import and having to guess which of the two it is for.
+    A caller's `Timestamp` is still proved to name a real instant, and that is still
+    parsing rather than clock-reading. The parse moved: it is now the second half of
+    the contract's generated `is_timestamp`, which this module calls instead of
+    compiling the pattern and parsing again on its own. So the property is pinned in
+    two places rather than one -- this module reads no clock and does not parse, and
+    the guard it delegates to does parse and reads no clock either. Asserting only
+    the first half would let the calendar check be dropped entirely and still pass.
     """
     source = (SERVICE_DIR / "probes.py").read_text(encoding="utf-8")
     assert "time" not in imported_modules(SERVICE_DIR / "probes.py")
@@ -2272,7 +2345,26 @@ def test_the_probe_router_owns_no_clock_of_its_own() -> None:
         if isinstance(node, ast.Attribute)
     }
     assert read.isdisjoint({"now", "utcnow", "today", "monotonic", "monotonic_ns"})
-    assert "fromisoformat" in read
+
+    # The calendar half, where it now lives. `_timestamp` delegates to the generated
+    # guard, and the guard parses -- neither half is optional for a real instant.
+    assert "is_timestamp" in source
+    generated_source = (
+        REPO_ROOT / "src" / "omnivia_core" / "contracts" / "v1" / "generated.py"
+    ).read_text(encoding="utf-8")
+    guard = ast.parse(generated_source)
+    timestamp_guard = next(
+        node
+        for node in ast.walk(guard)
+        if isinstance(node, ast.FunctionDef) and node.name == "is_timestamp"
+    )
+    guard_reads = {
+        node.attr
+        for node in ast.walk(timestamp_guard)
+        if isinstance(node, ast.Attribute)
+    }
+    assert "fromisoformat" in guard_reads
+    assert guard_reads.isdisjoint({"now", "utcnow", "today", "monotonic", "monotonic_ns"})
 
     with pytest.raises(TypeError):
         ProbeRouter(facts=_facts, capabilities=tuple)  # type: ignore[call-arg]

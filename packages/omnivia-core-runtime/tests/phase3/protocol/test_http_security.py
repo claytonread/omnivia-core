@@ -37,7 +37,13 @@ from omnivia_core_runtime.service.http_transport import (
 )
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS, success
 from omnivia_core_runtime.service.ovc1 import canonical_json_bytes
-from omnivia_core_runtime.service.probes import PROBE_HEALTH, ProbeRouter, ServiceFacts
+from omnivia_core_runtime.service.probes import (
+    PROBE_DISCOVER,
+    PROBE_HEALTH,
+    PROBE_READINESS,
+    ProbeRouter,
+    ServiceFacts,
+)
 from omnivia_core_runtime.service.protocol import PROBE_FIELD, DocumentRouter
 from omnivia_core_runtime.service.versions import API_VERSION
 
@@ -361,6 +367,72 @@ def test_an_application_document_cannot_be_smuggled_through_the_probe_route(
     assert status == 400
     assert body == b""
     assert serving.router.routed == []
+    assert serving.dispatch.calls == []
+
+
+@pytest.mark.parametrize(
+    ("name", "authorization"),
+    [
+        ("absent", None),
+        ("not_a_bearer_scheme", ["Basic YWxpY2U6c2VjcmV0"]),
+        ("bearer_with_no_credential", ["Bearer "]),
+        ("forged_credential", ["Bearer forged-credential"]),
+        ("expired_credential", [f"Bearer {EXPIRED}"]),
+        ("two_headers_one_of_them_valid", [f"Bearer {ACCEPTED}", "Bearer other"]),
+    ],
+)
+def test_discovery_without_a_verified_credential_never_reaches_the_probe_router(
+    serving: _Serving, name: str, authorization: list[str] | None
+) -> None:
+    """The owner's ruling, asserted on the router rather than on the number 401.
+
+    `service.discover` publishes the endpoint descriptor whole -- workspace,
+    installation, service instance, the dialable endpoint and the process behind it
+    -- so it is held to the same bearer credential the application route is. A
+    refusal that never routes cannot have answered with a descriptor.
+    """
+    status, body = _post(
+        serving.port,
+        PROBE_PATH,
+        canonical_json_bytes({PROBE_FIELD: PROBE_DISCOVER}),
+        authorization=authorization,
+    )
+
+    assert status == 401
+    assert body == b""
+    assert serving.router.routed == []
+    assert serving.dispatch.calls == []
+
+
+@pytest.mark.parametrize("probe", [PROBE_HEALTH, PROBE_READINESS])
+def test_health_and_readiness_still_answer_with_no_credential_at_all(
+    serving: _Serving, probe: str
+) -> None:
+    """Not narrowed. These two are the accepted unauthenticated fingerprint, and
+    they are what an operator needs *before* authenticating."""
+    status, body = _post(
+        serving.port, PROBE_PATH, canonical_json_bytes({PROBE_FIELD: probe})
+    )
+
+    assert status == 200
+    assert probe.encode() in body
+    assert len(serving.router.routed) == 1
+
+
+def test_discovery_with_a_verified_credential_is_answered(serving: _Serving) -> None:
+    """The counterweight: the refusals above are a gate, not a broken route."""
+    status, body = _post(
+        serving.port,
+        PROBE_PATH,
+        canonical_json_bytes({PROBE_FIELD: PROBE_DISCOVER}),
+        authorization=[f"Bearer {ACCEPTED}"],
+    )
+
+    assert status == 200
+    assert PROBE_DISCOVER.encode() in body
+    assert len(serving.router.routed) == 1
+    # Authenticating a probe grants nothing else: the session is verified and
+    # dropped, and no application operation was reachable through this route.
     assert serving.dispatch.calls == []
 
 

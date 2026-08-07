@@ -33,6 +33,7 @@ from omnivia_core_runtime.service import application as application_module
 from omnivia_core_runtime.service import main as main_module
 from omnivia_core_runtime.service.application import (
     CHANNEL_TRUST,
+    EVIDENCE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
     PRINCIPAL_SOURCE,
     WORKSPACE_INSPECT_OPERATION,
@@ -81,6 +82,14 @@ WORKSPACE_NAME = "Vertical fixture"
 CREATED_AT = "2026-08-05T00:00:00+00:00"
 CLIENT = ClientIdentity(id="omnivia-core-cli", version="0.1.0")
 ENTRY = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
+
+#: The Lane A production grant, as `service.main.serve` states it. `production_path`
+#: composes the application path exactly as `serve` does, so it has to pass the grant
+#: `serve` passes -- the point of the parameterised shape is that the caller decides,
+#: and a test that quietly passed a narrower set would be composing a different service.
+PRODUCTION_OPERATIONS = frozenset(
+    {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+)
 
 
 class ServedWorkspace:
@@ -135,6 +144,7 @@ def production_path(
             principal_id=LOCAL_PRINCIPAL,
             installation_id=INSTALLATION_ID,
             workspace_id=WORKSPACE_ID,
+            operations=PRODUCTION_OPERATIONS,
         ),
         binding=ServiceBinding(
             installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID
@@ -265,11 +275,22 @@ def test_the_authorized_context_carries_the_expected_effective_authority(
 
 
 def test_the_session_is_exactly_the_accepted_policy() -> None:
-    """The session record, field by field, so a widening is visible by inspection."""
+    """The session record, field by field, so a widening is visible by inspection.
+
+    This test builds its **own** session from its **own** operations literal, and that
+    is why every assertion below is unchanged by Lane A's widening: under the accepted
+    parameterised shape the constructor derives scopes, capabilities and purposes from
+    whatever set its caller names, so a one-operation argument still produces exactly
+    the one-operation session this asserts. It is a test of the derivation, not of the
+    production grant -- `test_workspace_inspect_refusals.py` holds that one -- and
+    "fixing" it to the production grant would delete the only place the narrow case is
+    still exercised.
+    """
     session = local_owner_session(
         principal_id=LOCAL_PRINCIPAL,
         installation_id=INSTALLATION_ID,
         workspace_id=WORKSPACE_ID,
+        operations=frozenset({WORKSPACE_INSPECT_OPERATION}),
     )
 
     assert session.principal_id == LOCAL_PRINCIPAL
@@ -680,6 +701,7 @@ def test_the_two_halves_of_the_wiring_cannot_act_as_different_principals(
                 principal_id="someone-else",
                 installation_id=INSTALLATION_ID,
                 workspace_id=WORKSPACE_ID,
+                operations=PRODUCTION_OPERATIONS,
             ),
             binding=ServiceBinding(
                 installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID
