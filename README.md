@@ -152,11 +152,22 @@ Run the boundary checks (manifest and AST-based) and their tests:
 .venv/bin/python scripts/check-package-boundaries.py
 ```
 
-Run a clean, isolated build/install check for all five distributions. This
-builds a temporary wheelhouse and installs each distribution into its own
-temporary virtual environment — offline, `--no-index`, from the wheelhouse
-alone — then imports its operational modules; it writes nothing under the
-repository tree:
+Run a clean, isolated build/install check for all five distributions. It runs in
+two phases, and the distinction is load-bearing (owner resolution 005 R005-03):
+
+1. **Acquisition and staging — reaches the configured index on purpose.** Builds
+   the five wheels into a temporary wheelhouse and stages the declared
+   third-party closure beside them, wheels only (`--only-binary=:all:`) at the
+   exact reviewed versions in `scripts/mcp-wheelhouse-constraints.txt`, recording
+   every staged name, version and SHA-256.
+2. **Installation — no index.** Installs each distribution into its own
+   temporary virtual environment from the wheelhouse alone (`--no-index
+   --only-binary=:all: --find-links`) and imports its operational modules.
+
+The merge-blocking property this proves is that **a prepared wheelhouse is
+sufficient for installation without an index**. It is not evidence that the
+wheels can be *obtained* offline — phase 1 is online by design. It writes nothing
+under the repository tree:
 
 ```bash
 PYTHON=.venv/bin/python scripts/check-package-builds.sh
