@@ -88,9 +88,16 @@ def _service_pids(home: Path) -> list[int]:
 
     Scoped to the home directory rather than to the executable name, so a service
     another test or another checkout left running cannot be counted or killed.
+
+    `-ww` is load-bearing, not decoration. `ps` truncates each line to the
+    terminal width, which is 80 columns when nothing owns a tty -- and the
+    argv this searches for is ~219 characters, with the installation-state
+    marker starting around column 136. Without it, every one of these tests
+    passes on a developer's terminal and fails in CI, having found no process
+    for a service that started perfectly well.
     """
     listing = subprocess.run(
-        ["ps", "-eo", "pid=,args="], capture_output=True, text=True, check=False
+        ["ps", "-eww", "-o", "pid=,args="], capture_output=True, text=True, check=False
     ).stdout
     marker = str(home / "installation-state")
     found = []
