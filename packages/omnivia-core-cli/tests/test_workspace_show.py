@@ -796,6 +796,23 @@ def test_the_socket_path_is_the_endpoints_own_path() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: Names that turn a module identifier from something a reader can see into
+#: something computed at run time. The CLI uses none of them and has no reason to,
+#: so their presence anywhere in this tree is a stop condition rather than a thing
+#: to inspect -- which is the only form in which a *static* scan can say anything
+#: about dynamic loading at all. See the docstring below for what that buys.
+DYNAMIC_IMPORT_MACHINERY = (
+    "import_module",
+    "__import__",
+    "load_module",
+    "exec_module",
+    "spec_from_file_location",
+    "exec",
+    "eval",
+    "compile",
+)
+
+
 def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() -> None:
     """Refusal 8, restated over the files this lane adds.
 
@@ -805,6 +822,31 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
     reader of *this* lane should be able to see the boundary held without
     leaving it, and if the CLI tree ever moves out from under that walk, this
     fails too.
+
+    **What this test can and cannot catch.** It reads source and nothing else, so
+    it catches exactly what is written down: a literal `import sqlite3` or `import
+    omnivia_core_runtime`, a call to one of the four named lock and lease
+    primitives, and -- the addition -- any use of the machinery that would let a
+    module name be computed rather than written. It cannot catch a computed import
+    that reaches the interpreter by some route not named in
+    `DYNAMIC_IMPORT_MACHINERY`, it cannot evaluate anything, and it cannot see what
+    a C extension does. It also says nothing about *behaviour*: a module can be
+    imported and never used, or used and never reach storage.
+
+    That limit is not theoretical. `importlib.import_module("sql" + "ite3")` in
+    `lifecycle.py` passed this file at its exact baseline and left an 8 KB database
+    on disk, because the name never appears as a name. The three checks below
+    would now fail on `import_module`, but the general case does not close: the
+    machinery list is a list, and any list of names can be gone round.
+
+    **So the claim itself is proved elsewhere, by execution.**
+    `test_init.py::test_no_command_opens_a_database_or_imports_the_runtime_in_this_process`
+    runs `init`, `start`, `status` and `stop` under a CPython audit hook and
+    asserts no `sqlite3.connect` event was raised by any route. This test is the
+    cheap, readable, whole-tree half; that one is the half that is actually
+    load-bearing for "the CLI opens no database". Neither is redundant: this one
+    reads every module including ones no command exercises, and that one sees
+    through any amount of indirection in the four commands it runs.
     """
     import ast
 
@@ -829,8 +871,14 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
 
         assert "omnivia_core_runtime" not in imported, f"{path} imports the runtime"
         assert "sqlite3" not in imported, f"{path} imports sqlite3"
+        assert "importlib" not in imported, f"{path} imports importlib"
         for forbidden in ("acquire_lease", "flock", "open_guard", "create_lock"):
             assert forbidden not in called, f"{path} calls {forbidden}"
+        for machinery in DYNAMIC_IMPORT_MACHINERY:
+            assert machinery not in called, (
+                f"{path} calls {machinery}: a computed module name is outside what "
+                "any source scan can decide, so it is refused rather than inspected"
+            )
 
 
 def test_the_client_package_still_ships_no_socket() -> None:

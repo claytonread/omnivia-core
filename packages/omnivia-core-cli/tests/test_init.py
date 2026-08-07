@@ -239,6 +239,94 @@ def test_the_zero_argument_home_is_the_fixed_convention(tmp_path: Path) -> None:
     assert home_directory(tmp_path) == tmp_path
 
 
+#: The one claim in this packet a source scan cannot finish, run as a program.
+#:
+#: `test_workspace_show.py`'s AST guards read the CLI tree for literal `import
+#: sqlite3` and four call names, and a dynamic import walks past them in one line:
+#: `importlib.import_module("sql" + "ite3").connect(...)` passed this suite at its
+#: exact baseline and left an 8 KB database on disk. No static scan closes that --
+#: the module name is a value, and a value can be computed.
+#:
+#: So the property is checked at runtime instead, by the interpreter rather than by
+#: a reader of the source. `sqlite3.connect` is a CPython audit event raised inside
+#: the C implementation on every connection, whatever route reached it: literal
+#: import, computed import, `__import__`, a C extension calling the module, an
+#: `exec` of a string assembled at runtime. The hook is installed before
+#: `omnivia_core_cli` is imported, so nothing the CLI does afterwards is outside it.
+#:
+#: **What this cannot see, stated so the guard is not read as more than it is.**
+#: Only this process: `init` and `start` launch `omnivia-core-service`, which opens
+#: the database as its whole job, and audit hooks are not inherited across `exec`.
+#: That is the division being asserted, not a gap. Only the commands run below, so
+#: a database opened by a code path none of them reach is not covered. And only
+#: SQLite -- a CLI that opened a Postgres socket would raise no audit event and is
+#: caught, if at all, by the AST scan's import check.
+AUDIT_PROBE = '''
+import json
+import sys
+
+observed = []
+
+
+def watch(event, arguments):
+    """Record every SQLite connection and every forbidden import, and nothing else."""
+    if event.startswith("sqlite3."):
+        observed.append(event)
+    elif event == "import" and arguments and str(arguments[0]).split(".")[0] in (
+        "sqlite3",
+        "omnivia_core_runtime",
+    ):
+        observed.append("import " + str(arguments[0]))
+
+
+sys.addaudithook(watch)
+
+from omnivia_core_cli.main import main
+
+home, report = sys.argv[1], sys.argv[2]
+codes = {}
+for command in ("init", "start", "status", "stop"):
+    codes[command] = main(["--home", home, command])
+
+with open(report, "w", encoding="utf-8") as handle:
+    json.dump({"codes": codes, "observed": observed}, handle)
+'''
+
+
+def test_no_command_opens_a_database_or_imports_the_runtime_in_this_process(
+    home: Path,
+) -> None:
+    """ADR-036's boundary, proved by running rather than by reading. See `AUDIT_PROBE`.
+
+    The four commands are run in one audited interpreter because the boundary is a
+    claim about the CLI, not about `init`: the mutation that motivated this went into
+    `request_init`, but `start`, `status` and `stop` are the same package and the same
+    rule. Their exit codes are asserted too -- an audit trace from four commands that
+    all failed early would be a clean bill of health for a process that did nothing.
+    """
+    workspace = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    probe = workspace / "audited.py"
+    report = workspace / "audit.json"
+    probe.write_text(AUDIT_PROBE, encoding="utf-8")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(probe), str(home), str(report)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        audited = json.loads(report.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    # The commands really ran and really succeeded, so the empty trace below is a
+    # fact about a working CLI rather than about one that refused four times.
+    assert audited["codes"] == {"init": 0, "start": 0, "status": 0, "stop": 0}
+    assert audited["observed"] == [], audited["observed"]
+
+
 def test_the_init_result_document_is_the_whole_of_the_services_stdout(
     home: Path,
 ) -> None:
