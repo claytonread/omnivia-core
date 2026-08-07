@@ -23,13 +23,17 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import inspect
 import json
+import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
 from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
+    EVIDENCE_SEARCH_OPERATION,
+    KNOWLEDGE_RETRIEVAL_PURPOSE,
     LOCAL_TRANSPORT_ADAPTER,
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
@@ -82,6 +86,7 @@ OTHER_WORKSPACE_ID = "ws-inspect-0002"
 INSTALLATION_ID = "inst-inspect-0001"
 CLIENT = ClientIdentity(id="omnivia-core-cli", version="0.1.0")
 ENTRY = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
+EVIDENCE_ENTRY = get_operation_metadata(EVIDENCE_SEARCH_OPERATION)
 
 #: A mutating, workspace-scoped catalogue operation, chosen from the catalogue rather
 #: than named here so the test still means something if the catalogue's mutation set
@@ -91,6 +96,14 @@ MUTATING_ENTRY = next(
     for entry in OPERATION_CATALOGUE
     if entry.scope.side_effect != "none"
     and entry.scope.scope_kind == ENTRY.scope.scope_kind
+)
+
+#: The Lane A production grant (§20.2): `workspace.inspect` and `evidence.search`, and
+#: nothing else. Stated here as the literal `service.main.serve` states, not derived
+#: from the registry -- deriving it would make the two agree by construction and this
+#: file's whole job is to notice when the grant and the build disagree.
+PRODUCTION_OPERATIONS = frozenset(
+    {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
 )
 
 _DEFAULT: Any = object()
@@ -113,11 +126,19 @@ def production_session(**overrides: Any) -> AuthenticatedSession:
 
     Widening is how a refusal is falsified: a test that denies something has to be
     able to show the same request succeeding once the grant it depends on is opened.
+
+    `operations` is passed here because `service.main.serve` passes it: under the
+    accepted parameterised shape the operation set is a literal in the constructor's
+    caller, so a test that wants *the production session* has to state the production
+    literal rather than take a default. `test_the_production_grant_is_the_lane_a_grant`
+    below pins this tuple against `main.py`'s own, so the two cannot drift apart
+    silently -- which is the failure mode a hand-copied literal invites.
     """
     session = local_owner_session(
         principal_id=LOCAL_PRINCIPAL,
         installation_id=INSTALLATION_ID,
         workspace_id=WORKSPACE_ID,
+        operations=PRODUCTION_OPERATIONS,
     )
     if not overrides:
         return session
@@ -299,9 +320,19 @@ def test_2b_a_capability_this_server_does_not_support_is_denied() -> None:
 
 
 def test_2c_a_build_that_registers_no_handler_supports_no_capability() -> None:
-    """The snapshot is derived from registration, so an empty build fails closed."""
+    """The snapshot is derived from registration, so an empty build fails closed.
+
+    The second assertion is the widened *exact* tuple, not a membership test. It became
+    false by construction when Lane A registered a second handler -- packet §22.1's
+    carve-out -- and the replacement it prescribes is the wider exact set, because a
+    membership test would still pass with a handler this build never meant to ship.
+    """
     assert server_capability_snapshot(ApplicationOperationRegistry()) == ()
     assert server_capability_snapshot(build_application_registry()) == (
+        CapabilityRef(
+            id=EVIDENCE_ENTRY.required_capability.id,
+            version=EVIDENCE_ENTRY.required_capability.minimum_version,
+        ),
         CapabilityRef(
             id=ENTRY.required_capability.id,
             version=ENTRY.required_capability.minimum_version,
@@ -354,8 +385,22 @@ def test_3_a_purpose_outside_the_fixed_allowlist_is_denied(purpose: str) -> None
     assert purpose not in wire_text(response)
 
 
-def test_3b_the_allowlist_is_exactly_one_purpose() -> None:
-    assert production_session().purposes == frozenset({WORKSPACE_INSPECTION_PURPOSE})
+def test_3b_the_allowlist_is_exactly_the_two_accepted_purposes() -> None:
+    """The widened exact set, and the literals as well as the constants.
+
+    Two purposes from Lane A onward and no more (§20.2): `workspace.inspect` **retains**
+    `workspace_inspection` rather than migrating, and one purpose,
+    `knowledge_retrieval`, covers every V06-3 read and Context Pack operation. Read
+    through the constants alone this would agree with whatever they were renamed to,
+    and there is no purpose registry anywhere in the contract to pin them against -- the
+    owner's table is the only thing that fixes these two strings, so the literals are
+    asserted beside them.
+    """
+    assert WORKSPACE_INSPECTION_PURPOSE == "workspace_inspection"
+    assert KNOWLEDGE_RETRIEVAL_PURPOSE == "knowledge_retrieval"
+    assert production_session().purposes == frozenset(
+        {"workspace_inspection", "knowledge_retrieval"}
+    )
 
 
 # --- 4. a request cannot replace or expand the authenticated principal --------
@@ -413,15 +458,105 @@ def test_4c_a_matching_claim_narrows_and_the_answer_runs_as_the_session() -> Non
 # --- 5. a read-only session cannot be promoted into mutation authority --------
 
 
-def test_5a_the_granted_operation_set_holds_exactly_one_read_only_name() -> None:
-    """Not `APPLICATION_OPERATIONS`, which is all twenty and includes every mutation."""
+def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None:
+    """Not `APPLICATION_OPERATIONS`, which is all twenty and includes every mutation.
+
+    This is the assertion packet §11.1 predicted would be got wrong. It asserted a
+    single name; the Lane A grant is two, so it became false **by design**. The
+    replacement is the widened exact set -- deleting it, or softening it to
+    `WORKSPACE_INSPECT_OPERATION in session.operations`, is a stop condition, because a
+    membership test passes just as happily against all twenty.
+
+    The side-effect check is asked of every granted name from the catalogue, not of the
+    literal list, so it is a property of what was granted rather than a restatement of
+    it. `scopes` and `capabilities` are asserted as exact sets for the same reason: they
+    are *derived* from the catalogue in the constructor, so pinning them here is what
+    catches a derivation that started transcribing instead.
+    """
     session = production_session()
 
-    assert session.operations == frozenset({WORKSPACE_INSPECT_OPERATION})
+    assert session.operations == frozenset(
+        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+    )
     assert session.operations != APPLICATION_OPERATIONS
-    assert ENTRY.scope.side_effect == "none"
-    assert session.scopes == frozenset({"workspace:read"})
-    assert all(ref.id == "workspace.read" for ref in session.capabilities)
+    for name in session.operations:
+        assert get_operation_metadata(name).scope.side_effect == "none"
+    assert session.scopes == frozenset({"workspace:read", "memory:read"})
+    assert session.capabilities == (
+        CapabilityRef(id="evidence.read", version="1.0"),
+        CapabilityRef(id="workspace.read", version="1.0"),
+    )
+
+
+def test_the_production_grant_is_the_lane_a_grant_main_actually_wires() -> None:
+    """The literal in `service.main.serve`, read from its source, is this one.
+
+    `production_session` copies the production grant by hand, and a hand-copied literal
+    that nothing compares is how a test comes to certify a session the service does not
+    build. The comparison is against `main.py`'s own syntax rather than against a
+    constant both import, because a shared constant would make them agree by definition
+    and prove nothing about what `serve` passes.
+    """
+    serve = _main_function("serve")
+    call = next(
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "local_owner_session"
+    )
+    granted = next(
+        keyword.value for keyword in call.keywords if keyword.arg == "operations"
+    )
+
+    # `frozenset({A, B})` -- the names, read out of the call `serve` actually makes.
+    assert isinstance(granted, ast.Call)
+    assert isinstance(granted.func, ast.Name)
+    assert granted.func.id == "frozenset"
+    assert isinstance(granted.args[0], ast.Set)
+    wired = {
+        element.id
+        for element in granted.args[0].elts
+        if isinstance(element, ast.Name)
+    }
+
+    assert wired == {"WORKSPACE_INSPECT_OPERATION", "EVIDENCE_SEARCH_OPERATION"}
+    assert PRODUCTION_OPERATIONS == frozenset(
+        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+    )
+
+
+def test_no_session_field_is_populated_from_the_request() -> None:
+    """§20.2's widest clause, asked of the constructor's own source.
+
+    *"No session field may be populated from the request."* Not only the operation set:
+    the principal, roles, installations, workspaces, scopes, purposes and capabilities
+    too. `local_owner_session` takes four parameters and none of them is a request, an
+    envelope or a payload, so there is nothing in scope for a field to be read from --
+    which is a stronger statement than any assertion about a particular field's value.
+    """
+    signature = inspect.signature(local_owner_session)
+
+    assert set(signature.parameters) == {
+        "principal_id",
+        "installation_id",
+        "workspace_id",
+        "operations",
+    }
+    for parameter in signature.parameters.values():
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+    # The identifiers the code actually reads, not a substring scan over the text. A
+    # text scan is wrong in both directions here: this function's prose is largely
+    # *about* requests, and `get_operation_metadata` contains "metadata" while being
+    # the frozen catalogue lookup that makes the derivation trustworthy.
+    body = ast.parse(textwrap.dedent(inspect.getsource(local_owner_session))).body[0]
+    assert isinstance(body, ast.FunctionDef)
+    read = {node.id for node in ast.walk(body) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(body) if isinstance(node, ast.Attribute)
+    }
+
+    assert read.isdisjoint({"request", "envelope", "payload", "metadata", "input"})
 
 
 def test_5b_a_mutating_operation_is_denied_under_the_production_session() -> None:
@@ -457,9 +592,18 @@ def test_5b_a_mutating_operation_is_denied_under_the_production_session() -> Non
 
 
 def test_5c_no_mutating_operation_is_registered_at_all() -> None:
+    """The widened exact set again -- §22.1's second carve-out, at the registry side.
+
+    This is the assertion that reads the *production* registry builder rather than a
+    registry the test composes, so it became false the moment Lane A registered a
+    second handler. A membership test here would pass with a mutating handler
+    registered alongside, which is the one thing it exists to catch.
+    """
     registered = build_application_registry().operations
 
-    assert registered == frozenset({WORKSPACE_INSPECT_OPERATION})
+    assert registered == frozenset(
+        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+    )
     for name in registered:
         assert get_operation_metadata(name).scope.side_effect == "none"
 
