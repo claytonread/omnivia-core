@@ -73,12 +73,16 @@ database implementation — and `omnivia-core` must never depend back on it.
 
 ## Status
 
-The tool surface, the exposure manifest, managed start and the stdio server are
-complete and tested end to end against a real MCP client.
+The tool surface, the exposure manifest, managed start, the stdio server and the
+call path are complete and tested end to end against a real MCP client and a real
+`omnivia-core-service`.
 
-**One dependency is outstanding.** `omnivia-core-client` exports the
-`ClientTransport` protocol but no *concrete* local transport, and this package is
-not permitted to import the CLI's. Until a `LocalIpcTransport` lands in the
-client package, tools list and describe themselves correctly but a call answers
-with a stated refusal rather than a result. The seam is
-`server.TransportFactory`; closing it is a change to one function.
+**The transport dependency is closed.** Owner resolution 005 R005-01 moved
+`LocalIpcTransport` into `omnivia-core-client`, and `server._default_transport_factory`
+constructs it. A tool call now travels an OVC1 frame over the installation-local
+socket and answers with the service's own result.
+`packages/omnivia-core-mcp/tests/test_mcp_stdio_end_to_end.py` proves it against a
+service the test starts; no stand-in transport remains anywhere in this package.
+
+This package still holds no dial loop of its own and still must never depend on or
+import `omnivia-core-cli`. `server.TransportFactory` survives as a test seam.

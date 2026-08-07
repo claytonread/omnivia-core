@@ -13,7 +13,7 @@ Core workspace, over the official Model Context Protocol Python SDK v2.
   `omnivia-core-service --managed-start` to make a service exist (R004-07). A
   subprocess and a JSON document; no second launcher.
 - :mod:`~omnivia_core_mcp.server` -- the SDK server, the stdio session, and the
-  seam where a concrete `ClientTransport` will be constructed.
+  seam where the client-owned `ClientTransport` is constructed.
 
 **The dependency boundary (ADR-036, R004-05).** This distribution depends on the
 public ``omnivia-core`` contracts, on ``omnivia-core-client`` for service calls,
@@ -26,10 +26,11 @@ workspace, stop a service it started, expose a lifecycle or administrative
 operation, accept a caller-supplied filesystem path, or call anything absent from
 the manifest.
 
-**What is not finished.** No concrete local ``ClientTransport`` exists in
-``omnivia-core-client`` yet, so tools list and describe themselves correctly but a
-call answers with a stated, non-fatal refusal. See
-:mod:`omnivia_core_mcp.server` for the single seam that closes when one lands.
+**The call path is complete.** Owner resolution 005 R005-01 moved
+:class:`~omnivia_core_client.LocalIpcTransport` into ``omnivia-core-client``, and
+:func:`omnivia_core_mcp.server._default_transport_factory` constructs it, so a
+tool call reaches the attached service and answers with its result. This
+distribution still holds no transport implementation of its own.
 """
 
 from __future__ import annotations
