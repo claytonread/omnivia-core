@@ -55,6 +55,19 @@ export type ContractVersion = string;
 export const CONTRACT_VERSION_PATTERN: string = "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ContractVersion`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isContractVersion(value: unknown): value is ContractVersion {
+  return (
+    typeof value === "string" &&
+    value.length <= 32 &&
+    new RegExp(CONTRACT_VERSION_PATTERN).test(value)
+  );
+}
+
+/**
  * A SemVer 2.0.0 release string identifying a concrete build, not a contract.
  */
 export type ReleaseVersion = string;
@@ -64,16 +77,57 @@ export const RELEASE_VERSION_PATTERN: string =
   "-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ReleaseVersion`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isReleaseVersion(value: unknown): value is ReleaseVersion {
+  return (
+    typeof value === "string" &&
+    value.length <= 128 &&
+    new RegExp(RELEASE_VERSION_PATTERN).test(value)
+  );
+}
+
+/**
  * Bounded, non-empty caller-assigned identifier for a single request attempt.
  */
 export type RequestId = string;
 export const REQUEST_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `RequestId`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isRequestId(value: unknown): value is RequestId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(REQUEST_ID_PATTERN).test(value)
+  );
+}
+
+/**
  * Bounded, non-empty identifier grouping related requests into one logical operation.
  */
 export type CorrelationId = string;
 export const CORRELATION_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `CorrelationId`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isCorrelationId(value: unknown): value is CorrelationId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(CORRELATION_ID_PATTERN).test(value)
+  );
+}
 
 /**
  * Bounded, non-empty distributed-trace identifier. Diagnostic only; never an authorization
@@ -83,10 +137,38 @@ export type TraceId = string;
 export const TRACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `TraceId`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isTraceId(value: unknown): value is TraceId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(TRACE_ID_PATTERN).test(value)
+  );
+}
+
+/**
  * Bounded, non-empty identifier of the workspace a request is scoped to.
  */
 export type WorkspaceId = string;
 export const WORKSPACE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `WorkspaceId`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isWorkspaceId(value: unknown): value is WorkspaceId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(WORKSPACE_ID_PATTERN).test(value)
+  );
+}
 
 /**
  * Bounded, non-empty server-issued reference to the audit record for a completed operation.
@@ -95,10 +177,38 @@ export type AuditReference = string;
 export const AUDIT_REFERENCE_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `AuditReference`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isAuditReference(value: unknown): value is AuditReference {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(AUDIT_REFERENCE_PATTERN).test(value)
+  );
+}
+
+/**
  * Generic bounded, non-empty identifier used for clients, principals, roles, and deprecations.
  */
 export type Identifier = string;
 export const IDENTIFIER_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `Identifier`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isIdentifier(value: unknown): value is Identifier {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(IDENTIFIER_PATTERN).test(value)
+  );
+}
 
 /**
  * Stable namespaced capability identifier such as `memory.read`. At least one dot is required so
@@ -110,11 +220,39 @@ export const CAPABILITY_ID_PATTERN: string =
   "][a-z0-9]*(?:[_-][a-z0-9]+)*)+$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `CapabilityId`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isCapabilityId(value: unknown): value is CapabilityId {
+  return (
+    typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 128 &&
+    new RegExp(CAPABILITY_ID_PATTERN).test(value)
+  );
+}
+
+/**
  * An open, lowercase, dot-namespaced code. Unknown values are valid by design so that compatible
  * minor releases can add vocabulary; consumers must preserve values they do not recognize.
  */
 export type OpenCode = string;
 export const OPEN_CODE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `OpenCode`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isOpenCode(value: unknown): value is OpenCode {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(OPEN_CODE_PATTERN).test(value)
+  );
+}
 
 /**
  * An open scope token such as `memory:read` requested by the caller. Scopes narrow a request;
@@ -124,10 +262,38 @@ export type Scope = string;
 export const SCOPE_PATTERN: string = "^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `Scope`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isScope(value: unknown): value is Scope {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(SCOPE_PATTERN).test(value)
+  );
+}
+
+/**
  * An open purpose-limitation token stating why the caller is making this request.
  */
 export type Purpose = string;
 export const PURPOSE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `Purpose`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isPurpose(value: unknown): value is Purpose {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(PURPOSE_PATTERN).test(value)
+  );
+}
 
 /**
  * A bounded, server-issued opaque token. Clients must round-trip it verbatim and must never
@@ -142,11 +308,39 @@ export type OpaqueToken = string;
 export const OPAQUE_TOKEN_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `OpaqueToken`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isOpaqueToken(value: unknown): value is OpaqueToken {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 512 &&
+    new RegExp(OPAQUE_TOKEN_PATTERN).test(value)
+  );
+}
+
+/**
  * Caller-assigned key making a mutation safe to retry. Equal keys with different inputs are an
  * `idempotency_conflict`.
  */
 export type IdempotencyKey = string;
 export const IDEMPOTENCY_KEY_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `IdempotencyKey`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isIdempotencyKey(value: unknown): value is IdempotencyKey {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(IDEMPOTENCY_KEY_PATTERN).test(value)
+  );
+}
 
 /**
  * An RFC 3339 timestamp in UTC with a literal `Z` offset.
@@ -155,18 +349,26 @@ export type Timestamp = string;
 export const TIMESTAMP_PATTERN: string =
   "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]" +
   "{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$(?![\\s\\S])";
+
 /**
- * Return whether a value is a canonical RFC 3339 UTC `Timestamp` that names a real instant.
- *
- * `TIMESTAMP_PATTERN` fixes the spelling and cannot fix the calendar: `2026-13-01T00:00:00Z`
- * satisfies it character for character. `Date.parse` is not the missing half -- it accepts
- * `2024-02-30T00:00:00Z` and `2026-02-29T00:00:00Z` by rolling them forward into March, so a
- * guard that trusted it would admit values this contract's other bindings refuse. The date is
- * built from the literal fields instead, and every field is compared back: any value the
- * constructor had to normalize disagrees with the literal it came from and is refused.
+ * Return whether a value is a well-formed `Timestamp`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with. `TIMESTAMP_PATTERN` fixes the spelling and
+ * cannot fix the calendar: `2026-13-01T00:00:00Z` satisfies it character for character.
+ * `Date.parse` is not the missing half -- it accepts `2024-02-30T00:00:00Z` and
+ * `2026-02-29T00:00:00Z` by rolling them forward into March, so a guard that trusted it would
+ * admit values this contract's other bindings refuse. The date is built from the literal fields
+ * instead, and every field is compared back: any value the constructor had to normalize
+ * disagrees with the literal it came from and is refused.
  */
 export function isTimestamp(value: unknown): value is Timestamp {
-  if (typeof value !== "string" || !new RegExp(TIMESTAMP_PATTERN).test(value)) {
+  if (
+    !(
+      typeof value === "string" &&
+      value.length <= 40 &&
+      new RegExp(TIMESTAMP_PATTERN).test(value)
+    )
+  ) {
     return false;
   }
   const year = Number(value.slice(0, 4));
@@ -205,6 +407,20 @@ export type ProjectionVersion = string;
 export const PROJECTION_VERSION_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ProjectionVersion`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isProjectionVersion(value: unknown): value is ProjectionVersion {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(PROJECTION_VERSION_PATTERN).test(value)
+  );
+}
+
+/**
  * An opaque JSON object. The envelope carries domain payloads without inspecting them, which is
  * a statement about the envelope rather than about the payload: an operation's `input` and
  * `result` are each bound to their own definition by `operations.schema.json`'s `x-omnivia-
@@ -228,6 +444,20 @@ export const OPERATION_COMPATIBILITY_STATE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `OperationCompatibilityState`: the declared pattern
+ * and length bounds, applied as a full match. The generated decoders do not call this --
+ * decoding stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isOperationCompatibilityState(value: unknown): value is OperationCompatibilityState {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(OPERATION_COMPATIBILITY_STATE_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming how thoroughly a release or capability combination has
  * actually been verified, such as `development` or `unverified` or `qualified` or `supported`.
  * Open by design so a compatible minor release can add states without breaking existing
@@ -240,6 +470,20 @@ export const QUALIFICATION_STATE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `QualificationState`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isQualificationState(value: unknown): value is QualificationState {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(QUALIFICATION_STATE_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which component a compatibility entry describes, such as
  * `core` or `runtime` or `cli` or `mcp` or `sdk`. Open by design so a compatible minor release
  * can add components without breaking existing decoders.
@@ -247,6 +491,20 @@ export const QUALIFICATION_STATE_PATTERN: string =
 export type ComponentKind = string;
 export const COMPONENT_KIND_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `ComponentKind`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isComponentKind(value: unknown): value is ComponentKind {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(COMPONENT_KIND_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming how a Context Pack was produced. Wire-open by shape so a
@@ -259,6 +517,20 @@ export const COMPONENT_KIND_PATTERN: string =
 export type ContextPackMode = string;
 export const CONTEXT_PACK_MODE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `ContextPackMode`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isContextPackMode(value: unknown): value is ContextPackMode {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(CONTEXT_PACK_MODE_PATTERN).test(value)
+  );
+}
 
 /**
  * A bounded, non-negative count of tokens actually observed: the tokens one section's model-
@@ -286,6 +558,20 @@ export type ContextPackDigest = string;
 export const CONTEXT_PACK_DIGEST_PATTERN: string = "^sha256:[0-9a-f]{64}$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ContextPackDigest`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isContextPackDigest(value: unknown): value is ContextPackDigest {
+  return (
+    typeof value === "string" &&
+    value.length >= 71 &&
+    value.length <= 71 &&
+    new RegExp(CONTEXT_PACK_DIGEST_PATTERN).test(value)
+  );
+}
+
+/**
  * Dot-namespaced operation identifier such as `memory.get`. The name is all this shape states;
  * what each name binds to -- its input and result schemas, and its scope, capability,
  * completion, pagination, idempotency, mutation-precondition, audit and allowed-error posture --
@@ -299,12 +585,40 @@ export const OPERATION_NAME_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `OperationName`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isOperationName(value: unknown): value is OperationName {
+  return (
+    typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 128 &&
+    new RegExp(OPERATION_NAME_PATTERN).test(value)
+  );
+}
+
+/**
  * Stable machine-readable failure code. OPEN by design: this is a patterned string, not an enum,
  * so compatible minor releases can add codes. Decoders must preserve unknown codes and must not
  * map them onto a known code.
  */
 export type ErrorCode = string;
 export const ERROR_CODE_PATTERN: string = "^[a-z][a-z0-9_]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `ErrorCode`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isErrorCode(value: unknown): value is ErrorCode {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(ERROR_CODE_PATTERN).test(value)
+  );
+}
 
 /**
  * How a caller may retry. OPEN by design, for the same reason as `ErrorCode`. An unrecognized
@@ -314,11 +628,39 @@ export type RetryClass = string;
 export const RETRY_CLASS_PATTERN: string = "^[a-z][a-z0-9_]*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `RetryClass`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isRetryClass(value: unknown): value is RetryClass {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(RETRY_CLASS_PATTERN).test(value)
+  );
+}
+
+/**
  * Stable identifier of one L0 evidence artifact, constant across its append-only provenance
  * history. Distinct from `RecordId`: an evidence artifact is never itself a governed record.
  */
 export type EvidenceId = string;
 export const EVIDENCE_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `EvidenceId`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isEvidenceId(value: unknown): value is EvidenceId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(EVIDENCE_ID_PATTERN).test(value)
+  );
+}
 
 /**
  * A caller-supplied, normalized search query for `evidence.search`. Normalization (case-folding,
@@ -335,12 +677,40 @@ export type EvidenceChecksum = string;
 export const EVIDENCE_CHECKSUM_PATTERN: string = "^[a-z][a-z0-9_]*:[A-Za-z0-9+/=_-]+$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `EvidenceChecksum`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isEvidenceChecksum(value: unknown): value is EvidenceChecksum {
+  return (
+    typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 256 &&
+    new RegExp(EVIDENCE_CHECKSUM_PATTERN).test(value)
+  );
+}
+
+/**
  * An IANA-style `type/subtype` media type string, such as `text/plain` or `application/json`.
  */
 export type MediaType = string;
 export const MEDIA_TYPE_PATTERN: string =
   "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za" +
   "-z0-9][A-Za-z0-9!#$&^_.+-]*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `MediaType`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isMediaType(value: unknown): value is MediaType {
+  return (
+    typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 255 &&
+    new RegExp(MEDIA_TYPE_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming which direction a traversal follows relations in: `outbound`,
@@ -353,6 +723,20 @@ export const GRAPH_DIRECTION_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GraphDirection`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGraphDirection(value: unknown): value is GraphDirection {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GRAPH_DIRECTION_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming a kind of relation between governed records, such as
  * `relates_to` or `derived_from`. Open by design so a compatible minor release can add relation
  * types without breaking existing decoders.
@@ -360,6 +744,20 @@ export const GRAPH_DIRECTION_PATTERN: string =
 export type GraphRelationType = string;
 export const GRAPH_RELATION_TYPE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `GraphRelationType`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGraphRelationType(value: unknown): value is GraphRelationType {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GRAPH_RELATION_TYPE_PATTERN).test(value)
+  );
+}
 
 /**
  * A bounded traversal depth a caller may request, or the server states it actually applied. Zero
@@ -378,6 +776,20 @@ export const GRAPH_ORDERING_BASIS_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GraphOrderingBasis`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGraphOrderingBasis(value: unknown): value is GraphOrderingBasis {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GRAPH_ORDERING_BASIS_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code justifying why one endpoint of an edge is absent from a traversal
  * result: `page_boundary` when the traversal stopped at the node limit and offers a continuation
  * token, or `depth_boundary` when the present endpoint sits exactly at the applied depth limit.
@@ -390,12 +802,40 @@ export const GRAPH_BOUNDARY_REASON_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GraphBoundaryReason`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGraphBoundaryReason(value: unknown): value is GraphBoundaryReason {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GRAPH_BOUNDARY_REASON_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming where a job stands in its lifecycle, such as `queued` or
  * `running` or `succeeded` or `failed` or `cancelled`. Open by design so a compatible minor
  * release can add states without breaking existing decoders.
  */
 export type JobState = string;
 export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `JobState`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isJobState(value: unknown): value is JobState {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_STATE_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming what `JobProgress.completed_units`/`total_units` count, such
@@ -405,6 +845,20 @@ export const JOB_STATE_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)
 export type JobProgressUnit = string;
 export const JOB_PROGRESS_UNIT_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `JobProgressUnit`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isJobProgressUnit(value: unknown): value is JobProgressUnit {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_PROGRESS_UNIT_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be cancelled right
@@ -422,6 +876,20 @@ export const JOB_CANCELLATION_AVAILABILITY_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `JobCancellationAvailability`: the declared pattern
+ * and length bounds, applied as a full match. The generated decoders do not call this --
+ * decoding stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isJobCancellationAvailability(value: unknown): value is JobCancellationAvailability {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_CANCELLATION_AVAILABILITY_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming, on a `JobHandle`, whether this job may be recovered right
  * now, with three known values: `retryable` (a failed job that `job.retry` would run again),
  * `resumable` (a cancelled job that `job.retry` would continue from its checkpoint), and
@@ -437,6 +905,20 @@ export const JOB_RECOVERY_AVAILABILITY_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `JobRecoveryAvailability`: the declared pattern and
+ * length bounds, applied as a full match. The generated decoders do not call this -- decoding
+ * stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isJobRecoveryAvailability(value: unknown): value is JobRecoveryAvailability {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_RECOVERY_AVAILABILITY_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming what one `job.cancel` call actually did, with three known
  * values: `cancellation_requested` (cancellation was accepted and the job will stop),
  * `cancelled` (the job is already cancelled, so the call changed nothing), and `not_cancellable`
@@ -449,6 +931,20 @@ export const JOB_RECOVERY_AVAILABILITY_PATTERN: string =
 export type JobCancellationDisposition = string;
 export const JOB_CANCELLATION_DISPOSITION_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `JobCancellationDisposition`: the declared pattern and
+ * length bounds, applied as a full match. The generated decoders do not call this -- decoding
+ * stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isJobCancellationDisposition(value: unknown): value is JobCancellationDisposition {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_CANCELLATION_DISPOSITION_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming what one `job.retry` call actually did, with three known
@@ -467,6 +963,20 @@ export const JOB_RECOVERY_DISPOSITION_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `JobRecoveryDisposition`: the declared pattern and
+ * length bounds, applied as a full match. The generated decoders do not call this -- decoding
+ * stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isJobRecoveryDisposition(value: unknown): value is JobRecoveryDisposition {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(JOB_RECOVERY_DISPOSITION_PATTERN).test(value)
+  );
+}
+
+/**
  * A SHA-256 content digest, spelled `sha256:` followed by exactly 64 lowercase hexadecimal
  * characters. Deliberately narrower than the general `EvidenceChecksum`: this is not an opaque
  * server token a client round-trips but a value the caller and the server must be able to
@@ -479,6 +989,20 @@ export type ContentChecksum = string;
 export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ContentChecksum`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isContentChecksum(value: unknown): value is ContentChecksum {
+  return (
+    typeof value === "string" &&
+    value.length >= 71 &&
+    value.length <= 71 &&
+    new RegExp(CONTENT_CHECKSUM_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming what kind of governed record this is, such as `memory.fact`
  * or `memory.entity` or `memory.relation`. Open by design so a compatible minor release can add
  * record types without breaking existing decoders.
@@ -486,6 +1010,20 @@ export const CONTENT_CHECKSUM_PATTERN: string = "^sha256:[0-9a-f]{64}$(?![\\s\\S
 export type GovernedRecordType = string;
 export const GOVERNED_RECORD_TYPE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `GovernedRecordType`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGovernedRecordType(value: unknown): value is GovernedRecordType {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GOVERNED_RECORD_TYPE_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code selecting which slice of a governed record's versions a read
@@ -500,6 +1038,20 @@ export const GOVERNED_RECORD_VIEW_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GovernedRecordView`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGovernedRecordView(value: unknown): value is GovernedRecordView {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GOVERNED_RECORD_VIEW_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, bounded, non-empty, dot-namespaced record classification stating what domain a governed
  * record belongs to, such as `personal.preferences` or `project.roadmap`. Distinct from the
  * caller-authorization `Scope` vocabulary (e.g. `memory:read`): a domain scope never grants or
@@ -509,6 +1061,20 @@ export const GOVERNED_RECORD_VIEW_PATTERN: string =
 export type RecordDomainScope = string;
 export const RECORD_DOMAIN_SCOPE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `RecordDomainScope`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isRecordDomainScope(value: unknown): value is RecordDomainScope {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(RECORD_DOMAIN_SCOPE_PATTERN).test(value)
+  );
+}
 
 /**
  * A caller-supplied, normalized search query for `memory.search`. Normalization (case-folding,
@@ -526,6 +1092,20 @@ export const MEMORY_SEARCH_ORDER_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `MemorySearchOrder`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isMemorySearchOrder(value: unknown): value is MemorySearchOrder {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(MEMORY_SEARCH_ORDER_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming whether invoking an operation mutates state, such as `none`
  * or `create` or `update` or `delete`. Open by design so a compatible minor release can add
  * classifications without breaking existing decoders.
@@ -533,6 +1113,20 @@ export const MEMORY_SEARCH_ORDER_PATTERN: string =
 export type OperationSideEffect = string;
 export const OPERATION_SIDE_EFFECT_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `OperationSideEffect`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isOperationSideEffect(value: unknown): value is OperationSideEffect {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(OPERATION_SIDE_EFFECT_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming the kind of scope an operation carries, such as
@@ -545,6 +1139,20 @@ export const OPERATION_SCOPE_KIND_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `OperationScopeKind`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isOperationScopeKind(value: unknown): value is OperationScopeKind {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(OPERATION_SCOPE_KIND_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming how an operation completes, such as `synchronous` (no durable
  * job, ever), `may_return_job` (a response may carry a `JobReference`), or `always_returns_job`
  * (every invocation starts a durable job). Independent of `OperationSideEffect`: an operation
@@ -555,6 +1163,20 @@ export const OPERATION_SCOPE_KIND_PATTERN: string =
 export type OperationCompletionMode = string;
 export const OPERATION_COMPLETION_MODE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `OperationCompletionMode`: the declared pattern and
+ * length bounds, applied as a full match. The generated decoders do not call this -- decoding
+ * stays tolerant, and this is the primitive a caller validates with.
+ */
+export function isOperationCompletionMode(value: unknown): value is OperationCompletionMode {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(OPERATION_COMPLETION_MODE_PATTERN).test(value)
+  );
+}
 
 /**
  * Whether and how an operation's results are paginated.
@@ -623,11 +1245,39 @@ export type RecordId = string;
 export const RECORD_ID_PATTERN: string = "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `RecordId`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isRecordId(value: unknown): value is RecordId {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(RECORD_ID_PATTERN).test(value)
+  );
+}
+
+/**
  * Opaque, server-issued version marker of one specific revision of a record. Clients must round-
  * trip it verbatim and must never parse it.
  */
 export type RecordVersion = string;
 export const RECORD_VERSION_PATTERN: string = "^[!-~]+$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `RecordVersion`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isRecordVersion(value: unknown): value is RecordVersion {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 512 &&
+    new RegExp(RECORD_VERSION_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming the knowledge-governance layer a record belongs to: `l0` (raw
@@ -641,6 +1291,20 @@ export const GOVERNANCE_LAYER_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GovernanceLayer`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGovernanceLayer(value: unknown): value is GovernanceLayer {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GOVERNANCE_LAYER_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming whether a record version is the active one, such as `current`
  * or `superseded` or `retracted`. Open by design; an unrecognized value must be preserved, not
  * coerced to a known one.
@@ -648,6 +1312,20 @@ export const GOVERNANCE_LAYER_PATTERN: string =
 export type RecordCurrentness = string;
 export const RECORD_CURRENTNESS_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `RecordCurrentness`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isRecordCurrentness(value: unknown): value is RecordCurrentness {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(RECORD_CURRENTNESS_PATTERN).test(value)
+  );
+}
 
 /**
  * Open, dot-namespaced code naming a record's position in its own governance workflow, such as
@@ -662,11 +1340,39 @@ export const GOVERNANCE_STATE_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `GovernanceState`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isGovernanceState(value: unknown): value is GovernanceState {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(GOVERNANCE_STATE_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming the kind of thing a source reference points at, such as
  * `document` or `conversation` or `api_response`.
  */
 export type SourceKind = string;
 export const SOURCE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `SourceKind`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isSourceKind(value: unknown): value is SourceKind {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(SOURCE_KIND_PATTERN).test(value)
+  );
+}
 
 /**
  * An addressable position within a source: a pointer plus an optional character span, so
@@ -698,6 +1404,20 @@ export const EVIDENCE_DISPOSITION_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `EvidenceDisposition`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isEvidenceDisposition(value: unknown): value is EvidenceDisposition {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(EVIDENCE_DISPOSITION_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -707,12 +1427,40 @@ export type ProbeKind = string;
 export const PROBE_KIND_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
 
 /**
+ * Return whether a value is a well-formed `ProbeKind`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isProbeKind(value: unknown): value is ProbeKind {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(PROBE_KIND_PATTERN).test(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming the outcome of a probe or one of its components, such as
  * `pass` or `warn` or `fail`. Open by design; an unrecognized status must be preserved and
  * surfaced, not coerced to a known one.
  */
 export type ProbeStatus = string;
 export const PROBE_STATUS_PATTERN: string = "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `ProbeStatus`: the declared pattern and length bounds,
+ * applied as a full match. The generated decoders do not call this -- decoding stays tolerant,
+ * and this is the primitive a caller validates with.
+ */
+export function isProbeStatus(value: unknown): value is ProbeStatus {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(PROBE_STATUS_PATTERN).test(value)
+  );
+}
 
 /**
  * Canonical dialable Core transport endpoint. Lowercase HTTP and HTTPS require a valid host and
@@ -739,11 +1487,19 @@ export const SERVICE_ENDPOINT_URI_PATTERN: string =
   "}(?:/|$))(?!.*//)(?!.*%2[EF])(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A" +
   "-F]{2})+(?:/(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A-F]{2})+)*\\.sock|" +
   "pipe://[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9])?)$(?![\\s\\S])";
+
 /**
- * Return whether a value is a canonical credential-free dialable Core endpoint URI.
+ * Return whether a value is a well-formed `ServiceEndpointUri`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
  */
 export function isServiceEndpointUri(value: unknown): value is ServiceEndpointUri {
-  return typeof value === "string" && value.length <= 2048 && new RegExp(SERVICE_ENDPOINT_URI_PATTERN).test(value);
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 2048 &&
+    new RegExp(SERVICE_ENDPOINT_URI_PATTERN).test(value)
+  );
 }
 
 /**
@@ -763,6 +1519,20 @@ export function assertServiceEndpointUri(value: unknown): asserts value is Servi
 export type WorkspaceStatus = string;
 export const WORKSPACE_STATUS_PATTERN: string =
   "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])";
+
+/**
+ * Return whether a value is a well-formed `WorkspaceStatus`: the declared pattern and length
+ * bounds, applied as a full match. The generated decoders do not call this -- decoding stays
+ * tolerant, and this is the primitive a caller validates with.
+ */
+export function isWorkspaceStatus(value: unknown): value is WorkspaceStatus {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    new RegExp(WORKSPACE_STATUS_PATTERN).test(value)
+  );
+}
 
 /**
  * Input for `workspace.create`. Installation-scoped: carries only installation-level creation
@@ -3220,9 +3990,15 @@ export interface ServiceProbeResult {
 }
 
 /**
- * Assert nested descriptor semantics before a probe result reaches a public boundary.
+ * Assert probe-result semantics before it reaches a public boundary. Checks exactly what
+ * `validate_service_probe_result` checks in Python: its own `observed_at`, then the nested
+ * descriptor. `observed_at` is refused under its own message rather than the descriptor's,
+ * because a caller cannot otherwise tell which field was unusable.
  */
 export function assertServiceProbeResultSemantics(value: ServiceProbeResult): void {
+  if (!isTimestamp(value.observed_at)) {
+    throw new TypeError("observed_at is not a canonical RFC 3339 UTC Timestamp");
+  }
   const descriptor = value.descriptor;
   if (descriptor !== undefined && descriptor !== null) {
     assertServiceEndpointDescriptorSemantics(descriptor);

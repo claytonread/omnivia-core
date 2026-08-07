@@ -2,23 +2,27 @@
 
 The generated DTO decoder is intentionally structural and tolerant. The strict JSON
 Schema and this module share the generated ``ServiceEndpointUri`` and ``Timestamp``
-patterns so production decode/encode paths enforce the same dialable-transport and
-publication-instant boundaries without importing a schema library or Runtime.
+value domains so production decode/encode paths enforce the same dialable-transport
+and publication-instant boundaries without importing a schema library or Runtime.
+
+The value domains are applied by calling the generated guards rather than by
+compiling the published patterns again here. The generator emits those guards into
+both bindings from one loop over the schema, so this module and the generated
+TypeScript cannot disagree about what a well-formed value is; a second local copy
+of the rule is exactly how they came to disagree before.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from datetime import datetime
 from typing import Any, Final
 
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import (
-    SERVICE_ENDPOINT_URI_PATTERN,
-    TIMESTAMP_PATTERN,
     ServiceEndpointDescriptor,
     ServiceProbeResult,
+    is_service_endpoint_uri,
+    is_timestamp,
 )
 
 __all__ = [
@@ -31,31 +35,17 @@ __all__ = [
     "validate_service_probe_result",
 ]
 
-_ENDPOINT_URI_MAX: Final = 2048
-_ENDPOINT_URI_RE: Final = re.compile(SERVICE_ENDPOINT_URI_PATTERN)
 _ENDPOINT_URI_REFUSAL: Final = (
     "endpoint_uri is not an approved credential-free dialable Core transport URI"
 )
 
-_TIMESTAMP_RE: Final = re.compile(TIMESTAMP_PATTERN)
 _PUBLISHED_AT_REFUSAL: Final = (
     "published_at is not a canonical RFC 3339 UTC Timestamp"
 )
 
-
-def _endpoint_uri_is_valid(value: object) -> bool:
-    """Apply the generated pattern, and nothing else.
-
-    The pattern is the whole policy. Adding a Python-only post-check here -- an
-    ``urlsplit`` reparse, say -- would make this runtime accept a different set of
-    endpoints than the generated TypeScript guard, which is the drift the shared
-    fixture exists to catch.
-    """
-    return (
-        isinstance(value, str)
-        and 1 <= len(value) <= _ENDPOINT_URI_MAX
-        and _ENDPOINT_URI_RE.fullmatch(value) is not None
-    )
+_OBSERVED_AT_REFUSAL: Final = (
+    "observed_at is not a canonical RFC 3339 UTC Timestamp"
+)
 
 
 def validate_service_endpoint_uri(value: object) -> None:
@@ -75,32 +65,8 @@ def validate_service_endpoint_uri(value: object) -> None:
     endpoint`. Narrowing the question is what stops that recurring once per field
     as more of the declared value domains are enforced.
     """
-    if not _endpoint_uri_is_valid(value):
+    if not is_service_endpoint_uri(value):
         raise ContractSemanticError(_ENDPOINT_URI_REFUSAL)
-
-
-def _published_at_is_valid(value: object) -> bool:
-    """Apply the generated ``Timestamp`` pattern, then the calendar it cannot express.
-
-    Both halves come from the schema. ``Timestamp`` declares a ``pattern`` *and*
-    ``format: date-time``, and the two say different things: the pattern fixes the
-    spelling -- UTC, a literal ``Z``, no numeric offset -- while ``2026-13-01T00:00:00Z``
-    satisfies it character for character and names no instant that has ever existed.
-    ``conformance`` applies exactly these two halves to a declared ``date-time``, and
-    every sibling semantics module parses a pattern-conforming timestamp for the same
-    reason, so nothing is invented here.
-
-    No length bound is restated. ``Timestamp`` declares ``maxLength: 40`` and its
-    longest in-language value is 30 characters, so the bound cannot bind and a
-    Python-only length check would be a rule this pattern's other bindings do not have.
-    """
-    if not isinstance(value, str) or _TIMESTAMP_RE.fullmatch(value) is None:
-        return False
-    try:
-        datetime.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
 
 
 def validate_service_endpoint_descriptor(descriptor: object) -> None:
@@ -125,7 +91,7 @@ def validate_service_endpoint_descriptor(descriptor: object) -> None:
     if not isinstance(descriptor, ServiceEndpointDescriptor):
         raise ContractSemanticError("descriptor is not a ServiceEndpointDescriptor")
     validate_service_endpoint_uri(descriptor.endpoint_uri)
-    if not _published_at_is_valid(descriptor.published_at):
+    if not is_timestamp(descriptor.published_at):
         raise ContractSemanticError(_PUBLISHED_AT_REFUSAL)
 
 
@@ -149,9 +115,24 @@ def encode_service_endpoint_descriptor(
 
 
 def validate_service_probe_result(result: object) -> None:
-    """Validate nested discovery data before it reaches a public probe boundary."""
+    """Validate discovery data before it reaches a public probe boundary.
+
+    ``observed_at`` is checked here for the reason ``published_at`` is checked on the
+    descriptor: the contract declares it a ``Timestamp``, and a caller handed a decoded
+    probe result must never hold a field that contradicts the type the public contract
+    publishes for it. It was the one field this call decoded and ignored -- the nested
+    descriptor's ``published_at`` was enforced while its sibling one field away was
+    not, which is an incoherence rather than a policy.
+
+    Its refusal names ``observed_at`` and not the descriptor. A caller that catches
+    ``ContractSemanticError`` cannot otherwise tell which field produced it, and
+    reporting a probe-result fault as a descriptor fault is the same misattribution
+    that made a malformed ``published_at`` surface as an endpoint-URI fault.
+    """
     if not isinstance(result, ServiceProbeResult):
         raise ContractSemanticError("result is not a ServiceProbeResult")
+    if not is_timestamp(result.observed_at):
+        raise ContractSemanticError(_OBSERVED_AT_REFUSAL)
     if result.descriptor is not None:
         validate_service_endpoint_descriptor(result.descriptor)
 

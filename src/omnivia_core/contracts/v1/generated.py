@@ -35,8 +35,10 @@ unknown fields is the job of the canonical JSON Schemas.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Final, TypeAlias, cast
@@ -342,6 +344,62 @@ __all__ = [
     "context_pack_authorized_candidate_to_wire",
     "context_pack_citation_from_wire",
     "context_pack_citation_to_wire",
+    "is_audit_reference",
+    "is_capability_id",
+    "is_component_kind",
+    "is_content_checksum",
+    "is_context_pack_digest",
+    "is_context_pack_mode",
+    "is_contract_version",
+    "is_correlation_id",
+    "is_error_code",
+    "is_evidence_checksum",
+    "is_evidence_disposition",
+    "is_evidence_id",
+    "is_governance_layer",
+    "is_governance_state",
+    "is_governed_record_type",
+    "is_governed_record_view",
+    "is_graph_boundary_reason",
+    "is_graph_direction",
+    "is_graph_ordering_basis",
+    "is_graph_relation_type",
+    "is_idempotency_key",
+    "is_identifier",
+    "is_job_cancellation_availability",
+    "is_job_cancellation_disposition",
+    "is_job_progress_unit",
+    "is_job_recovery_availability",
+    "is_job_recovery_disposition",
+    "is_job_state",
+    "is_media_type",
+    "is_memory_search_order",
+    "is_opaque_token",
+    "is_open_code",
+    "is_operation_compatibility_state",
+    "is_operation_completion_mode",
+    "is_operation_name",
+    "is_operation_scope_kind",
+    "is_operation_side_effect",
+    "is_probe_kind",
+    "is_probe_status",
+    "is_projection_version",
+    "is_purpose",
+    "is_qualification_state",
+    "is_record_currentness",
+    "is_record_domain_scope",
+    "is_record_id",
+    "is_record_version",
+    "is_release_version",
+    "is_request_id",
+    "is_retry_class",
+    "is_scope",
+    "is_service_endpoint_uri",
+    "is_source_kind",
+    "is_timestamp",
+    "is_trace_id",
+    "is_workspace_id",
+    "is_workspace_status",
     "job_terminal_result_from_wire",
     "job_terminal_result_to_wire",
     "response_envelope_from_wire",
@@ -703,6 +761,972 @@ SERVICE_ENDPOINT_URI_PATTERN: Final = (
     'pipe://[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9])?)$(?![\\s\\S])'
 )
 WORKSPACE_STATUS_PATTERN: Final = '^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])'
+
+
+# --- value-domain guards ---------------------------------------------------
+#
+# One guard per patterned scalar definition, emitted from the declaration rather than from a list
+# of names. These are not called by `from_wire`: decoding stays tolerant, and a caller that needs
+# the declared value domain calls the guard instead of compiling the published pattern again.
+
+_CONTRACT_VERSION_RE: Final = re.compile(CONTRACT_VERSION_PATTERN)
+
+
+def is_contract_version(value: object) -> bool:
+    """Return whether `value` is a well-formed `ContractVersion`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and len(value) <= 32
+        and _CONTRACT_VERSION_RE.fullmatch(value) is not None
+    )
+
+
+_RELEASE_VERSION_RE: Final = re.compile(RELEASE_VERSION_PATTERN)
+
+
+def is_release_version(value: object) -> bool:
+    """Return whether `value` is a well-formed `ReleaseVersion`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and len(value) <= 128
+        and _RELEASE_VERSION_RE.fullmatch(value) is not None
+    )
+
+
+_REQUEST_ID_RE: Final = re.compile(REQUEST_ID_PATTERN)
+
+
+def is_request_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `RequestId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _REQUEST_ID_RE.fullmatch(value) is not None
+    )
+
+
+_CORRELATION_ID_RE: Final = re.compile(CORRELATION_ID_PATTERN)
+
+
+def is_correlation_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `CorrelationId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _CORRELATION_ID_RE.fullmatch(value) is not None
+    )
+
+
+_TRACE_ID_RE: Final = re.compile(TRACE_ID_PATTERN)
+
+
+def is_trace_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `TraceId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _TRACE_ID_RE.fullmatch(value) is not None
+    )
+
+
+_WORKSPACE_ID_RE: Final = re.compile(WORKSPACE_ID_PATTERN)
+
+
+def is_workspace_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `WorkspaceId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _WORKSPACE_ID_RE.fullmatch(value) is not None
+    )
+
+
+_AUDIT_REFERENCE_RE: Final = re.compile(AUDIT_REFERENCE_PATTERN)
+
+
+def is_audit_reference(value: object) -> bool:
+    """Return whether `value` is a well-formed `AuditReference`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _AUDIT_REFERENCE_RE.fullmatch(value) is not None
+    )
+
+
+_IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
+
+
+def is_identifier(value: object) -> bool:
+    """Return whether `value` is a well-formed `Identifier`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _IDENTIFIER_RE.fullmatch(value) is not None
+    )
+
+
+_CAPABILITY_ID_RE: Final = re.compile(CAPABILITY_ID_PATTERN)
+
+
+def is_capability_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `CapabilityId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 3 <= len(value) <= 128
+        and _CAPABILITY_ID_RE.fullmatch(value) is not None
+    )
+
+
+_OPEN_CODE_RE: Final = re.compile(OPEN_CODE_PATTERN)
+
+
+def is_open_code(value: object) -> bool:
+    """Return whether `value` is a well-formed `OpenCode`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _OPEN_CODE_RE.fullmatch(value) is not None
+    )
+
+
+_SCOPE_RE: Final = re.compile(SCOPE_PATTERN)
+
+
+def is_scope(value: object) -> bool:
+    """Return whether `value` is a well-formed `Scope`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _SCOPE_RE.fullmatch(value) is not None
+    )
+
+
+_PURPOSE_RE: Final = re.compile(PURPOSE_PATTERN)
+
+
+def is_purpose(value: object) -> bool:
+    """Return whether `value` is a well-formed `Purpose`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _PURPOSE_RE.fullmatch(value) is not None
+    )
+
+
+_OPAQUE_TOKEN_RE: Final = re.compile(OPAQUE_TOKEN_PATTERN)
+
+
+def is_opaque_token(value: object) -> bool:
+    """Return whether `value` is a well-formed `OpaqueToken`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 512
+        and _OPAQUE_TOKEN_RE.fullmatch(value) is not None
+    )
+
+
+_IDEMPOTENCY_KEY_RE: Final = re.compile(IDEMPOTENCY_KEY_PATTERN)
+
+
+def is_idempotency_key(value: object) -> bool:
+    """Return whether `value` is a well-formed `IdempotencyKey`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _IDEMPOTENCY_KEY_RE.fullmatch(value) is not None
+    )
+
+
+_TIMESTAMP_RE: Final = re.compile(TIMESTAMP_PATTERN)
+
+
+def is_timestamp(value: object) -> bool:
+    """Return whether `value` is a well-formed `Timestamp`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path. `format: date-time` is the second half -- the pattern fixes the spelling and
+    cannot fix the calendar, so a pattern-conforming value that names no instant is refused
+    here.
+    """
+    if not (
+        isinstance(value, str)
+        and len(value) <= 40
+        and _TIMESTAMP_RE.fullmatch(value) is not None
+    ):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+_PROJECTION_VERSION_RE: Final = re.compile(PROJECTION_VERSION_PATTERN)
+
+
+def is_projection_version(value: object) -> bool:
+    """Return whether `value` is a well-formed `ProjectionVersion`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _PROJECTION_VERSION_RE.fullmatch(value) is not None
+    )
+
+
+_OPERATION_COMPATIBILITY_STATE_RE: Final = re.compile(OPERATION_COMPATIBILITY_STATE_PATTERN)
+
+
+def is_operation_compatibility_state(value: object) -> bool:
+    """Return whether `value` is a well-formed `OperationCompatibilityState`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _OPERATION_COMPATIBILITY_STATE_RE.fullmatch(value) is not None
+    )
+
+
+_QUALIFICATION_STATE_RE: Final = re.compile(QUALIFICATION_STATE_PATTERN)
+
+
+def is_qualification_state(value: object) -> bool:
+    """Return whether `value` is a well-formed `QualificationState`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _QUALIFICATION_STATE_RE.fullmatch(value) is not None
+    )
+
+
+_COMPONENT_KIND_RE: Final = re.compile(COMPONENT_KIND_PATTERN)
+
+
+def is_component_kind(value: object) -> bool:
+    """Return whether `value` is a well-formed `ComponentKind`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _COMPONENT_KIND_RE.fullmatch(value) is not None
+    )
+
+
+_CONTEXT_PACK_MODE_RE: Final = re.compile(CONTEXT_PACK_MODE_PATTERN)
+
+
+def is_context_pack_mode(value: object) -> bool:
+    """Return whether `value` is a well-formed `ContextPackMode`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _CONTEXT_PACK_MODE_RE.fullmatch(value) is not None
+    )
+
+
+_CONTEXT_PACK_DIGEST_RE: Final = re.compile(CONTEXT_PACK_DIGEST_PATTERN)
+
+
+def is_context_pack_digest(value: object) -> bool:
+    """Return whether `value` is a well-formed `ContextPackDigest`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 71 <= len(value) <= 71
+        and _CONTEXT_PACK_DIGEST_RE.fullmatch(value) is not None
+    )
+
+
+_OPERATION_NAME_RE: Final = re.compile(OPERATION_NAME_PATTERN)
+
+
+def is_operation_name(value: object) -> bool:
+    """Return whether `value` is a well-formed `OperationName`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 3 <= len(value) <= 128
+        and _OPERATION_NAME_RE.fullmatch(value) is not None
+    )
+
+
+_ERROR_CODE_RE: Final = re.compile(ERROR_CODE_PATTERN)
+
+
+def is_error_code(value: object) -> bool:
+    """Return whether `value` is a well-formed `ErrorCode`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _ERROR_CODE_RE.fullmatch(value) is not None
+    )
+
+
+_RETRY_CLASS_RE: Final = re.compile(RETRY_CLASS_PATTERN)
+
+
+def is_retry_class(value: object) -> bool:
+    """Return whether `value` is a well-formed `RetryClass`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _RETRY_CLASS_RE.fullmatch(value) is not None
+    )
+
+
+_EVIDENCE_ID_RE: Final = re.compile(EVIDENCE_ID_PATTERN)
+
+
+def is_evidence_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `EvidenceId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _EVIDENCE_ID_RE.fullmatch(value) is not None
+    )
+
+
+_EVIDENCE_CHECKSUM_RE: Final = re.compile(EVIDENCE_CHECKSUM_PATTERN)
+
+
+def is_evidence_checksum(value: object) -> bool:
+    """Return whether `value` is a well-formed `EvidenceChecksum`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 3 <= len(value) <= 256
+        and _EVIDENCE_CHECKSUM_RE.fullmatch(value) is not None
+    )
+
+
+_MEDIA_TYPE_RE: Final = re.compile(MEDIA_TYPE_PATTERN)
+
+
+def is_media_type(value: object) -> bool:
+    """Return whether `value` is a well-formed `MediaType`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 3 <= len(value) <= 255
+        and _MEDIA_TYPE_RE.fullmatch(value) is not None
+    )
+
+
+_GRAPH_DIRECTION_RE: Final = re.compile(GRAPH_DIRECTION_PATTERN)
+
+
+def is_graph_direction(value: object) -> bool:
+    """Return whether `value` is a well-formed `GraphDirection`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GRAPH_DIRECTION_RE.fullmatch(value) is not None
+    )
+
+
+_GRAPH_RELATION_TYPE_RE: Final = re.compile(GRAPH_RELATION_TYPE_PATTERN)
+
+
+def is_graph_relation_type(value: object) -> bool:
+    """Return whether `value` is a well-formed `GraphRelationType`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GRAPH_RELATION_TYPE_RE.fullmatch(value) is not None
+    )
+
+
+_GRAPH_ORDERING_BASIS_RE: Final = re.compile(GRAPH_ORDERING_BASIS_PATTERN)
+
+
+def is_graph_ordering_basis(value: object) -> bool:
+    """Return whether `value` is a well-formed `GraphOrderingBasis`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GRAPH_ORDERING_BASIS_RE.fullmatch(value) is not None
+    )
+
+
+_GRAPH_BOUNDARY_REASON_RE: Final = re.compile(GRAPH_BOUNDARY_REASON_PATTERN)
+
+
+def is_graph_boundary_reason(value: object) -> bool:
+    """Return whether `value` is a well-formed `GraphBoundaryReason`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GRAPH_BOUNDARY_REASON_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_STATE_RE: Final = re.compile(JOB_STATE_PATTERN)
+
+
+def is_job_state(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobState`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_STATE_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_PROGRESS_UNIT_RE: Final = re.compile(JOB_PROGRESS_UNIT_PATTERN)
+
+
+def is_job_progress_unit(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobProgressUnit`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_PROGRESS_UNIT_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_CANCELLATION_AVAILABILITY_RE: Final = re.compile(JOB_CANCELLATION_AVAILABILITY_PATTERN)
+
+
+def is_job_cancellation_availability(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobCancellationAvailability`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_CANCELLATION_AVAILABILITY_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_RECOVERY_AVAILABILITY_RE: Final = re.compile(JOB_RECOVERY_AVAILABILITY_PATTERN)
+
+
+def is_job_recovery_availability(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobRecoveryAvailability`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_RECOVERY_AVAILABILITY_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_CANCELLATION_DISPOSITION_RE: Final = re.compile(JOB_CANCELLATION_DISPOSITION_PATTERN)
+
+
+def is_job_cancellation_disposition(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobCancellationDisposition`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_CANCELLATION_DISPOSITION_RE.fullmatch(value) is not None
+    )
+
+
+_JOB_RECOVERY_DISPOSITION_RE: Final = re.compile(JOB_RECOVERY_DISPOSITION_PATTERN)
+
+
+def is_job_recovery_disposition(value: object) -> bool:
+    """Return whether `value` is a well-formed `JobRecoveryDisposition`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _JOB_RECOVERY_DISPOSITION_RE.fullmatch(value) is not None
+    )
+
+
+_CONTENT_CHECKSUM_RE: Final = re.compile(CONTENT_CHECKSUM_PATTERN)
+
+
+def is_content_checksum(value: object) -> bool:
+    """Return whether `value` is a well-formed `ContentChecksum`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 71 <= len(value) <= 71
+        and _CONTENT_CHECKSUM_RE.fullmatch(value) is not None
+    )
+
+
+_GOVERNED_RECORD_TYPE_RE: Final = re.compile(GOVERNED_RECORD_TYPE_PATTERN)
+
+
+def is_governed_record_type(value: object) -> bool:
+    """Return whether `value` is a well-formed `GovernedRecordType`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GOVERNED_RECORD_TYPE_RE.fullmatch(value) is not None
+    )
+
+
+_GOVERNED_RECORD_VIEW_RE: Final = re.compile(GOVERNED_RECORD_VIEW_PATTERN)
+
+
+def is_governed_record_view(value: object) -> bool:
+    """Return whether `value` is a well-formed `GovernedRecordView`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GOVERNED_RECORD_VIEW_RE.fullmatch(value) is not None
+    )
+
+
+_RECORD_DOMAIN_SCOPE_RE: Final = re.compile(RECORD_DOMAIN_SCOPE_PATTERN)
+
+
+def is_record_domain_scope(value: object) -> bool:
+    """Return whether `value` is a well-formed `RecordDomainScope`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _RECORD_DOMAIN_SCOPE_RE.fullmatch(value) is not None
+    )
+
+
+_MEMORY_SEARCH_ORDER_RE: Final = re.compile(MEMORY_SEARCH_ORDER_PATTERN)
+
+
+def is_memory_search_order(value: object) -> bool:
+    """Return whether `value` is a well-formed `MemorySearchOrder`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _MEMORY_SEARCH_ORDER_RE.fullmatch(value) is not None
+    )
+
+
+_OPERATION_SIDE_EFFECT_RE: Final = re.compile(OPERATION_SIDE_EFFECT_PATTERN)
+
+
+def is_operation_side_effect(value: object) -> bool:
+    """Return whether `value` is a well-formed `OperationSideEffect`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _OPERATION_SIDE_EFFECT_RE.fullmatch(value) is not None
+    )
+
+
+_OPERATION_SCOPE_KIND_RE: Final = re.compile(OPERATION_SCOPE_KIND_PATTERN)
+
+
+def is_operation_scope_kind(value: object) -> bool:
+    """Return whether `value` is a well-formed `OperationScopeKind`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _OPERATION_SCOPE_KIND_RE.fullmatch(value) is not None
+    )
+
+
+_OPERATION_COMPLETION_MODE_RE: Final = re.compile(OPERATION_COMPLETION_MODE_PATTERN)
+
+
+def is_operation_completion_mode(value: object) -> bool:
+    """Return whether `value` is a well-formed `OperationCompletionMode`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _OPERATION_COMPLETION_MODE_RE.fullmatch(value) is not None
+    )
+
+
+_RECORD_ID_RE: Final = re.compile(RECORD_ID_PATTERN)
+
+
+def is_record_id(value: object) -> bool:
+    """Return whether `value` is a well-formed `RecordId`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _RECORD_ID_RE.fullmatch(value) is not None
+    )
+
+
+_RECORD_VERSION_RE: Final = re.compile(RECORD_VERSION_PATTERN)
+
+
+def is_record_version(value: object) -> bool:
+    """Return whether `value` is a well-formed `RecordVersion`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 512
+        and _RECORD_VERSION_RE.fullmatch(value) is not None
+    )
+
+
+_GOVERNANCE_LAYER_RE: Final = re.compile(GOVERNANCE_LAYER_PATTERN)
+
+
+def is_governance_layer(value: object) -> bool:
+    """Return whether `value` is a well-formed `GovernanceLayer`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GOVERNANCE_LAYER_RE.fullmatch(value) is not None
+    )
+
+
+_RECORD_CURRENTNESS_RE: Final = re.compile(RECORD_CURRENTNESS_PATTERN)
+
+
+def is_record_currentness(value: object) -> bool:
+    """Return whether `value` is a well-formed `RecordCurrentness`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _RECORD_CURRENTNESS_RE.fullmatch(value) is not None
+    )
+
+
+_GOVERNANCE_STATE_RE: Final = re.compile(GOVERNANCE_STATE_PATTERN)
+
+
+def is_governance_state(value: object) -> bool:
+    """Return whether `value` is a well-formed `GovernanceState`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _GOVERNANCE_STATE_RE.fullmatch(value) is not None
+    )
+
+
+_SOURCE_KIND_RE: Final = re.compile(SOURCE_KIND_PATTERN)
+
+
+def is_source_kind(value: object) -> bool:
+    """Return whether `value` is a well-formed `SourceKind`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _SOURCE_KIND_RE.fullmatch(value) is not None
+    )
+
+
+_EVIDENCE_DISPOSITION_RE: Final = re.compile(EVIDENCE_DISPOSITION_PATTERN)
+
+
+def is_evidence_disposition(value: object) -> bool:
+    """Return whether `value` is a well-formed `EvidenceDisposition`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _EVIDENCE_DISPOSITION_RE.fullmatch(value) is not None
+    )
+
+
+_PROBE_KIND_RE: Final = re.compile(PROBE_KIND_PATTERN)
+
+
+def is_probe_kind(value: object) -> bool:
+    """Return whether `value` is a well-formed `ProbeKind`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _PROBE_KIND_RE.fullmatch(value) is not None
+    )
+
+
+_PROBE_STATUS_RE: Final = re.compile(PROBE_STATUS_PATTERN)
+
+
+def is_probe_status(value: object) -> bool:
+    """Return whether `value` is a well-formed `ProbeStatus`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _PROBE_STATUS_RE.fullmatch(value) is not None
+    )
+
+
+_SERVICE_ENDPOINT_URI_RE: Final = re.compile(SERVICE_ENDPOINT_URI_PATTERN)
+
+
+def is_service_endpoint_uri(value: object) -> bool:
+    """Return whether `value` is a well-formed `ServiceEndpointUri`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 2048
+        and _SERVICE_ENDPOINT_URI_RE.fullmatch(value) is not None
+    )
+
+
+_WORKSPACE_STATUS_RE: Final = re.compile(WORKSPACE_STATUS_PATTERN)
+
+
+def is_workspace_status(value: object) -> bool:
+    """Return whether `value` is a well-formed `WorkspaceStatus`.
+
+    The declared pattern and length bounds, applied as a full match. The generated decoders do
+    not call this: it is the primitive a caller validates with, not a step in the tolerant
+    decode path.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and _WORKSPACE_STATUS_RE.fullmatch(value) is not None
+    )
 
 
 # --- generated types -------------------------------------------------------
