@@ -429,14 +429,26 @@ def _bootstrap(
     `WORKSPACE_IDENTITY_MISMATCH` nor the storage layer's own refusals can be
     either.
 
-    Two residuals, stated rather than papered over. Two `init` runs racing on a
-    genuinely fresh tree can have the loser refuse `WORKSPACE_BUSY` over a `locks/`
-    the winner made -- and the winner is creating the whole workspace anyway. And an
-    `OSError` writing the manifest *after* the database was successfully bootstrapped
-    leaves a database with no manifest; the next run then refuses
+    Three residuals, stated rather than papered over.
+
+    Two `init` runs racing on a genuinely fresh tree can have the loser refuse
+    `WORKSPACE_BUSY` over a `locks/` the winner made -- and the winner is creating
+    the whole workspace anyway.
+
+    An `OSError` writing the manifest *after* the database was successfully
+    bootstrapped leaves a database with no manifest; the next run then refuses
     `WORKSPACE_IDENTITY_MISMATCH` naming the workspace the database holds, having
-    written nothing, which is a stuck state that reports itself accurately rather
-    than one that grows worse on every attempt.
+    written nothing. A stuck state that reports itself accurately, rather than one
+    that grows worse on every attempt.
+
+    And "as it found it" is about what was *created*, not about every byte. Opening
+    an existing database sets `journal_mode = WAL`, which rewrites its header, and
+    the storage lock leaves its own file behind -- so a refusal against a database
+    that is somebody else's returns those two changed while creating no manifest, no
+    layout directory and no installation state. `test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped`
+    pins exactly that, and says why it does not use the whole-tree digest the other
+    refusal tests use. Closing it means vetting through a separate non-WAL open,
+    which this packet did not open up.
     """
     lock_path = layout.locks_path / "storage.lock"
     try:

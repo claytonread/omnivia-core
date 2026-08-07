@@ -523,6 +523,21 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     `bootstrap_generation_one`'s pristine branch refuses a database that already has
     tables, and this proves that refusal is carried out to the caller as a result
     rather than escaping as a traceback -- and that the rows survive it.
+
+    **This is the one refusal `_digest` is deliberately not used on, and the reason
+    is a limit on the claim rather than on the helper.** Two things really do move
+    here. `open_database` sets `journal_mode = WAL`, which rewrites the header of
+    whatever it opened, so the file's bytes are not the bytes it had; and the
+    lifetime storage lock leaves `locks/storage.lock` behind. Neither is content and
+    the rows are asserted intact below, but "byte-for-byte unchanged" is not true on
+    this path and is not asserted. Closing it means vetting through a separate
+    non-WAL open, which is a change to a path this packet did not otherwise touch --
+    recorded as a follow-up, not done here.
+
+    What *is* asserted is the property this packet is about: the refusal creates
+    nothing. That is new. The same reordering that fixed the identity refusal covers
+    this one, and before it this path wrote a freshly minted `workspace.json` beside
+    somebody else's database and kept it.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -537,6 +552,10 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     result = _init(tmp_path)
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+
+    assert not (workspace / "workspace.json").exists()
+    assert not (workspace / "blobs").exists()
+    assert not (tmp_path / "installation-state").exists()
 
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:
