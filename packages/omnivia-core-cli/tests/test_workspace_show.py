@@ -258,14 +258,26 @@ def test_a_symlinked_runtime_state_answers_the_same_as_a_direct_one(
 def test_the_subcommands_that_predate_this_lane_still_behave(
     live_service: LiveService,
 ) -> None:
-    """`discover` is unchanged: same exit code, same keys, still no call made."""
+    """`discover` still makes no call, and now says so in its own output.
+
+    R004-13 keeps `discover` a pure reader of the published descriptor and adds
+    an honesty requirement to the machine-readable form: it must carry enough
+    context to tell a descriptor observation from a live probe. So the readiness
+    key is `advertised_ready`, and `observation` names where it came from.
+
+    The bare `ready` key is asserted absent, not merely renamed. A script that
+    kept reading `ready` would otherwise go on getting the stale claim from a
+    key that quietly changed meaning; missing is a better failure than wrong.
+    """
     result = _run_cli(live_service.runtime_directory, "discover")
 
     assert result.returncode == 0, (result.stdout, result.stderr)
     reported = json.loads(result.stdout)
     assert reported["endpoint"] == live_service.endpoint_uri
     assert reported["workspace_id"] == WORKSPACE_ID
-    assert reported["ready"] is True
+    assert reported["advertised_ready"] is True
+    assert reported["observation"] == "published-descriptor"
+    assert "ready" not in reported
 
 
 # ---------------------------------------------------------------------------
@@ -911,11 +923,22 @@ def test_no_string_the_cli_emits_claims_a_verified_operating_system_peer() -> No
 
 
 def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
-    """No caller-selected path, and no ambient one either.
+    """No caller-selected path, and no *ambient* one either.
 
-    `--runtime-state` is the only way in. An environment lookup would be an
-    unrestricted filesystem path arriving by another name, which is a stop
-    condition for this packet.
+    The property is that **no unrestricted ambient filesystem path is accepted**.
+    An environment lookup is exactly that -- a path of the caller's choosing
+    arriving by another name -- and it stays a stop condition for this packet.
+
+    Two path sources are admitted, and neither is ambient: an explicit argument,
+    which the caller states and a reader can see; and a deterministic built-in
+    default, which is the same on every machine and which nothing outside this
+    source can redirect. Owner resolution 004 R004-11 admits both and keeps the
+    environment prohibition, and it also required this docstring corrected --
+    it previously said `--runtime-state` was "the only way in", which stopped
+    being true when the `~/.omnivia` convention shipped.
+
+    The assertion below is unchanged. R004-11 says so in terms: do not weaken or
+    delete the test merely to make the current implementation pass.
     """
     import ast
 

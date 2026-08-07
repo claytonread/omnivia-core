@@ -47,7 +47,13 @@ dev = [
     # and `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs` fails
     # if the workflow stops installing this extra.
     "ruff>=0.16.1,<0.17",
-    "mypy>=1.10.0",
+    # Pinned to the major CI actually validates against. The floor was >=1.10.0
+    # with no ceiling, and the two disagree: mypy 1.20.2 reports two
+    # no-any-return errors on a tree that 2.3.0 -- what CI installs -- finds
+    # clean. A merge-blocking gate that answers differently depending on when
+    # the venv was built is not a gate. The ceiling is the major, so patch and
+    # minor releases still arrive.
+    "mypy>=2.3,<3",
 ]
 
 [tool.pytest.ini_options]
