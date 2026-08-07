@@ -5,13 +5,28 @@ build-backend = "hatchling.build"
 [project]
 name = "omnivia-core-mcp"
 version = "0.1.0"
-description = "Skeleton MCP surface distribution for OmniVia Core (no operational behavior yet)."
+description = "Model Context Protocol server for OmniVia Core: a curated, read-only, allow-listed tool surface over a local workspace service."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
+# R004-05 fixes this list. `omnivia-core` for the public contracts and the frozen
+# operation catalogue, `omnivia-core-client` for every service call, and the
+# official MCP SDK constrained to a compatible major range. Nothing else is
+# admitted: not `omnivia-core-cli`, not `omnivia_core_runtime`, not a Desktop or
+# Platform package, not a database implementation, and not FastMCP -- the official
+# SDK is the sole MCP framework dependency.
+#
+# `packages/omnivia-core-runtime/tests/phase2/test_service_and_adapters.py`
+# asserts this list against a named allow-list, so an added edge fails there by
+# name rather than by an equality nobody can read.
 dependencies = [
     "omnivia-core>=0.1.0,<0.2.0",
+    "omnivia-core-client>=0.1.0,<0.2.0",
+    "mcp>=2,<3",
 ]
+
+[project.scripts]
+omnivia-core-mcp = "omnivia_core_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/omnivia_core_mcp"]

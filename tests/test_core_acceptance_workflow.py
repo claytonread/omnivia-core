@@ -77,14 +77,15 @@ GATE_STEPS = (
     # rather than depending on a configuration file it does not read. Each
     # distribution's whole `tests` tree is named rather than one phase inside it:
     # pinning `tests/phase2` kept the accepted Phase 3 authorization and protocol
-    # suites off the gate even though they were committed. The four must stay one
+    # suites off the gate even though they were committed. The five must stay one
     # invocation: several of these modules import public barrels, and splitting
     # the run is what hid the barrel-namespace drift.
     (
         "Run full repository test suite",
         (
             "python -m pytest services tests packages/omnivia-core-runtime/tests "
-            "packages/omnivia-core-cli/tests packages/omnivia-core-client/tests -q"
+            "packages/omnivia-core-cli/tests packages/omnivia-core-client/tests "
+            "packages/omnivia-core-mcp/tests -q"
         ),
     ),
     ("Run benchmark tests", "python -m pytest benchmarks/tests -q"),

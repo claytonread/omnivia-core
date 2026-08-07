@@ -176,7 +176,8 @@ jobs:
           python -m pytest services tests \
             packages/omnivia-core-runtime/tests \
             packages/omnivia-core-cli/tests \
-            packages/omnivia-core-client/tests -q
+            packages/omnivia-core-client/tests \
+            packages/omnivia-core-mcp/tests -q
 
       - name: Run benchmark tests
         run: python -m pytest benchmarks/tests -q
