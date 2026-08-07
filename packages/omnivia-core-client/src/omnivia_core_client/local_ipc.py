@@ -45,6 +45,15 @@ from __future__ import annotations
 import socket
 from dataclasses import dataclass
 
+from omnivia_core.contracts.v1 import (
+    ContractDecodeError,
+    RequestEnvelope,
+    ResponseEnvelope,
+    ServiceProbeRequest,
+    ServiceProbeResult,
+    codec,
+    decode_service_probe_result,
+)
 from omnivia_core_client.deadline import CancellationToken, Deadline
 from omnivia_core_client.errors import (
     DeadlineExceededError,
@@ -59,16 +68,6 @@ from omnivia_core_client.framing import (
     encode_frame,
 )
 from omnivia_core_client.transport import enforce_send_preconditions
-
-from omnivia_core.contracts.v1 import (
-    ContractDecodeError,
-    RequestEnvelope,
-    ResponseEnvelope,
-    ServiceProbeRequest,
-    ServiceProbeResult,
-    codec,
-    decode_service_probe_result,
-)
 
 __all__ = [
     "LOCAL_IPC_SCHEME",
