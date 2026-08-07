@@ -1,4 +1,4 @@
-"""A real MCP client, over real pipes, against the real server.
+"""A real MCP client, over real pipes, against the real server and a real service.
 
 R004's MCP acceptance evidence, executed rather than asserted about: the stdio
 stream carries only protocol, `tools/list` is deterministic and matches the
@@ -7,19 +7,32 @@ surface, and a missing workspace is refused rather than created.
 
 The server under test runs in a subprocess (`_mcp_stdio_probe.py`) and is driven
 by the official SDK's own `stdio_client`, so the framing, the handshake and the
-transport are all the ones a host would use. The single stand-in is the
-`ClientTransport` double described in that module -- there is no concrete local
-transport to use instead, and that is the packet's one open dependency.
+transport are all the ones a host would use.
+
+**There is no stand-in left.** Packet C could only drive the call path with a
+`ClientTransport` double, because no concrete local transport existed outside the
+CLI. Owner resolution 005 R005-01 moved `LocalIpcTransport` into
+`omnivia-core-client`, so the probe passes no `transport_factory` and
+`server._default_transport_factory` builds the real one. Every call below
+therefore travels an OVC1 frame over a Unix domain socket to an
+`omnivia-core-service` process this module started, and comes back as that
+service's own answer. That is R005-01's acceptance item "MCP's default transport
+factory reaches a live local service end to end".
 """
 
 from __future__ import annotations
 
 import json
+import shutil
+import signal
+import socket
 import subprocess
 import sys
+import tempfile
+import time
+from collections.abc import Iterator
 from pathlib import Path
 
-import _mcp_stdio_probe as probe
 import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters
@@ -28,15 +41,130 @@ from omnivia_core_mcp.manifest import EXPOSURE_MANIFEST, tools
 
 PROBE = Path(__file__).parent / "_mcp_stdio_probe.py"
 
+WORKSPACE_ID = "ws-mcp-end-to-end-01"
+SERVICE_INSTANCE = "svc-mcp-1"
 
-def parameters(*args: str) -> StdioServerParameters:
-    return StdioServerParameters(command=sys.executable, args=[str(PROBE), *args])
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="the local IPC transport dials AF_UNIX; Windows pipes are a successor",
+)
 
 
-async def _session_probe(*args: str) -> dict[str, object]:
+class LiveService:
+    """One running `omnivia-core-service` and the facts a caller needs to reach it."""
+
+    def __init__(self, endpoint_uri: str, workspace_id: str) -> None:
+        self.endpoint_uri = endpoint_uri
+        self.workspace_id = workspace_id
+
+
+@pytest.fixture(scope="module")
+def live_service() -> Iterator[LiveService]:
+    """A real workspace owned by a real service process, for the module.
+
+    Module-scoped because starting one costs a migration and a startup sequence,
+    and the single exposed operation has `side_effect: none`, so no test here can
+    leave the workspace different for the next.
+
+    The runtime is imported in *this* process to build the workspace. The MCP
+    server under test never imports it: it runs as a separate process reached
+    only over the socket, which is the arrangement in which "MCP does not import
+    the runtime" is proven rather than asserted.
+    """
+    from omnivia_core_runtime.ownership.discovery import discover
+    from omnivia_core_runtime.service.transport import endpoint_for_path
+    from omnivia_core_runtime.storage.backup import InstallationLayout
+    from omnivia_core_runtime.storage.legacy import migrate_legacy_database
+    from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
+    from omnivia_core_runtime.workspace.layout import WorkspaceLayout
+
+    from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
+
+    root = Path(tempfile.mkdtemp(prefix="ovm-workspace-"))
+    legacy = root / "legacy" / "source.sqlite"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    materialise_phase0_baseline(legacy)
+
+    workspace = WorkspaceLayout(root=root / "workspace")
+    installation = InstallationLayout(root=root / "installation-state")
+    installation.create(WORKSPACE_ID)
+    migrate_legacy_database(
+        legacy,
+        workspace,
+        installation,
+        WorkspaceManifest(
+            workspace_id=WORKSPACE_ID,
+            created_at="2026-08-07T00:00:00+00:00",
+            name="MCP end to end",
+            compatibility=CoreCompatibility(
+                workspace_format_version="1", min_core_version="0.1.0"
+            ),
+        ),
+        service_instance_id=SERVICE_INSTANCE,
+    )
+
+    # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
+    # pytest's `tmp_path` nests deep enough to exceed it.
+    socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
+    endpoint = endpoint_for_path(socket_directory / "s.sock")
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "omnivia_core_runtime.service.main",
+            "--workspace",
+            str(workspace.root),
+            "--installation-state",
+            str(installation.root),
+            "--endpoint",
+            endpoint.url,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        found = None
+        while time.monotonic() < deadline:
+            assert process.poll() is None, "the service exited instead of serving"
+            found = discover(installation.runtime_for(WORKSPACE_ID))
+            if found is not None and found.ready:
+                break
+            time.sleep(0.05)
+        assert found is not None and found.ready, "the service never became ready"
+        yield LiveService(endpoint.url, WORKSPACE_ID)
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+                process.kill()
+                process.wait(timeout=10)
+        shutil.rmtree(socket_directory, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def parameters(service: LiveService, *args: str) -> StdioServerParameters:
+    return StdioServerParameters(
+        command=sys.executable,
+        args=[
+            str(PROBE),
+            "--endpoint",
+            service.endpoint_uri,
+            "--workspace-id",
+            service.workspace_id,
+            *args,
+        ],
+    )
+
+
+async def _session_probe(service: LiveService, *args: str) -> dict[str, object]:
     """Drive one full stdio session and bring back what the client saw."""
     async with (
-        stdio_client(parameters(*args)) as (read_stream, write_stream),
+        stdio_client(parameters(service, *args)) as (read_stream, write_stream),
         ClientSession(read_stream, write_stream) as session,
     ):
         initialized = await session.initialize()
@@ -55,14 +183,14 @@ async def _session_probe(*args: str) -> dict[str, object]:
         }
 
 
-def session(*args: str) -> dict[str, object]:
-    return anyio.run(lambda: _session_probe(*args))
+def session(service: LiveService, *args: str) -> dict[str, object]:
+    return anyio.run(lambda: _session_probe(service, *args))
 
 
 @pytest.fixture(scope="module")
-def observed() -> dict[str, object]:
+def observed(live_service: LiveService) -> dict[str, object]:
     """One session, reused: spawning a server per assertion is the slow way."""
-    return session()
+    return session(live_service)
 
 
 # --- the protocol works at all ------------------------------------------------
@@ -95,14 +223,14 @@ def test_tools_list_is_deterministic_across_calls(observed: dict[str, object]) -
     assert observed["tools"] == observed["tools_again"]
 
 
-def test_tools_list_is_deterministic_across_processes() -> None:
+def test_tools_list_is_deterministic_across_processes(live_service: LiveService) -> None:
     """Two independent server processes advertise byte-identical listings.
 
     The within-session check above cannot see a listing that varies with the
     environment, the clock, or a dict iteration order that changed at import.
     Two processes can.
     """
-    assert session()["tools"] == session()["tools"]
+    assert session(live_service)["tools"] == session(live_service)["tools"]
 
 
 def test_the_advertised_tool_is_read_only_and_takes_no_arguments(
@@ -128,13 +256,30 @@ def test_the_advertised_tool_is_read_only_and_takes_no_arguments(
 def test_an_allow_listed_tool_calls_its_catalogue_operation(
     observed: dict[str, object],
 ) -> None:
-    """The tool name maps to the operation the manifest says, and to no other."""
+    """R005-01: the default transport factory reaches a live local service.
+
+    This is the acceptance item Packet C could not execute. Nothing here is a
+    fixture: the answer below was produced by an `omnivia-core-service` process
+    this module started, encoded as an OVC1 frame, carried over a Unix domain
+    socket by the `LocalIpcTransport` that `server._default_transport_factory`
+    constructed, and decoded through the public contract.
+
+    The two asserted values are what makes it live rather than plausible. The
+    workspace id and display name were written into a temporary workspace by this
+    module's fixture moments earlier; no stand-in, cache or default in either
+    package could produce them.
+    """
     called = observed["called"]
     assert isinstance(called, dict)
     assert not called["is_error"], called
     payload = json.loads(called["content"][0]["text"])
-    assert payload["echoed_operation"] == "workspace.inspect"
-    assert payload["workspace_id"] == probe.INSPECT_RESULT["workspace_id"]
+    assert payload["workspace"]["workspace_id"] == WORKSPACE_ID
+    assert payload["workspace"]["display_name"] == "MCP end to end"
+    assert payload["workspace"]["status"] == "active"
+    # Nested past the top level on purpose: `dict(response.result)` converted
+    # only the outer mapping and left this one a `mappingproxy`, which
+    # `to_canonical_json` refuses. Reading it here is what keeps that fixed.
+    assert payload["workspace"]["compatibility"]["status"] == "compatible"
 
 
 def test_a_tool_absent_from_the_manifest_is_not_callable(
@@ -157,14 +302,16 @@ def test_a_tool_absent_from_the_manifest_is_not_callable(
 # --- stdout is protocol-only --------------------------------------------------
 
 
-def test_the_stdio_stream_carries_only_protocol_even_under_contamination() -> None:
+def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
+    live_service: LiveService,
+) -> None:
     """R004-07: stdout is protocol-only, proved against a server trying to break it.
 
     The probe writes to `sys.stdout` twice from inside a live handler. If either
     reached the wire the session below would fail to parse a frame; instead every
     call completes and the strings are nowhere in what the client received.
     """
-    contaminated = session("--contaminate")
+    contaminated = session(live_service, "--contaminate")
     assert contaminated["tools"] == [tool.model_dump(mode="json") for tool in tools()]
     called = contaminated["called"]
     assert isinstance(called, dict)
@@ -174,7 +321,9 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination() -> No
     assert "CONTAMINATION-VIA-PRINT" not in serialised
 
 
-def test_every_byte_the_server_writes_to_stdout_is_valid_protocol() -> None:
+def test_every_byte_the_server_writes_to_stdout_is_valid_protocol(
+    live_service: LiveService,
+) -> None:
     """Read the raw pipe, not the parsed session: every line must be JSON-RPC.
 
     The client above would have failed on a torn frame, but it would not notice a
@@ -220,7 +369,15 @@ def test_every_byte_the_server_writes_to_stdout_is_valid_protocol() -> None:
         + "\n"
     )
     completed = subprocess.run(
-        [sys.executable, str(PROBE), "--contaminate"],
+        [
+            sys.executable,
+            str(PROBE),
+            "--endpoint",
+            live_service.endpoint_uri,
+            "--workspace-id",
+            live_service.workspace_id,
+            "--contaminate",
+        ],
         input=request,
         capture_output=True,
         text=True,

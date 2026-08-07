@@ -228,11 +228,22 @@ def _call_tool(
             f"{params.name} was refused by the service: "
             f"{codec.to_canonical_json(codec.encode_response(response))}"
         )
+    # Through the codec's own encoder, not `dict(response.result)`. `dict()`
+    # converts the top level only, and a decoded envelope carries read-only
+    # mappings further down -- `to_canonical_json` is `json.dumps`, which refuses
+    # a nested `mappingproxy` outright. The stand-in transport this package used
+    # before R005-01 answered with plain dicts and could never show that; the
+    # first call over the real transport failed with "Object of type mappingproxy
+    # is not JSON serializable". `encode_response` is the accepted way to get a
+    # wire-shaped document, and is what the CLI has always used.
+    encoded = codec.encode_response(response)["result"]
     return types.CallToolResult(
         content=[
             types.TextContent(
                 type="text",
-                text=codec.to_canonical_json(dict(response.result)),
+                text=codec.to_canonical_json(
+                    encoded if isinstance(encoded, dict) else {}
+                ),
             )
         ]
     )
