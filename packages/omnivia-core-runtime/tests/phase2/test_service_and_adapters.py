@@ -11,6 +11,7 @@ test pins the absence of the catalogue so nobody mistakes it for done.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -435,28 +436,38 @@ MCP_ALLOWED_DEPENDENCIES = frozenset(
     {"omnivia-core", "omnivia-core-client", "mcp"}
 )
 
-#: What R004-05 names as forbidden. Checked separately from the allow-list above
-#: rather than left implied by it, because these are the edges with a history: the
-#: MCP adapter really did import `omnivia_core_cli.client`, and this assertion is
-#: the only place in the repository that would catch its return.
-MCP_FORBIDDEN_DEPENDENCIES = frozenset(
-    {
-        "omnivia-core-cli",
-        "omnivia-core-runtime",
-        "omnivia-memory",
-        "omnivia-platform",
-        "sqlalchemy",
-        "fastmcp",
-    }
-)
+#: There was a `MCP_FORBIDDEN_DEPENDENCIES` set here, and it was dead code that
+#: read as a guard. It was disjoint from the allow-list above and the closed
+#: allow-list assertion runs first, so the forbidden assertion could never fire:
+#: gutting the set to `frozenset()` while `omnivia-core-cli` was declared still
+#: went red, on the allow-list. It was spelling-fragile as well --
+#: `_requirement_name` does no PEP 503 normalisation, so `omnivia_core_cli`, a
+#: valid PEP 508 spelling of the same distribution, was not in it.
+#:
+#: The closed allow-list is the sound guard and it is sufficient: `names <=
+#: MCP_ALLOWED_DEPENDENCIES` refuses *every* distribution outside three, named or
+#: not, so it needs no list of the ones somebody thought of. Its comparison is
+#: normalised here rather than in a second set.
+#:
+#: The import half of R004-05 -- the edge with the history, since the deleted MCP
+#: adapter imported `omnivia_core_cli.client` -- is not this assertion's to hold
+#: and never was. `check_adapters_do_not_depend_on_runtime_or_each_other` in
+#: `scripts/check-package-boundaries.py` holds it, by AST, in both directions.
 
 
 def _requirement_name(requirement: str) -> str:
-    """The distribution name a PEP 508 requirement string starts with."""
+    """The PEP 503-normalised distribution name a PEP 508 requirement starts with.
+
+    Normalised because `omnivia_core_cli` and `omnivia-core-cli` are one
+    distribution and PEP 508 accepts both spellings: an unnormalised comparison
+    against a hyphenated allow-list would admit the underscore spelling of a name
+    the list does not contain.
+    """
     for index, character in enumerate(requirement):
         if character in "<>=!~[; ":
-            return requirement[:index].strip().lower()
-    return requirement.strip().lower()
+            requirement = requirement[:index]
+            break
+    return re.sub(r"[-_.]+", "-", requirement.strip()).lower()
 
 
 def _mcp_manifest() -> dict[str, Any]:
@@ -560,9 +571,10 @@ def test_the_mcp_distribution_declares_only_allow_listed_dependencies() -> None:
     kept as-is would have fired on the dependency declaration alone, before any
     prohibited edge existed.
 
-    So it becomes what the ruling actually says. The allow-list is closed -- a
-    fourth distribution fails here even if it is harmless -- and the forbidden
-    names are asserted separately so the failure message says which rule broke.
+    So it becomes what the ruling actually says: a closed allow-list, where a
+    fourth distribution fails even if it is harmless. There was a second assertion
+    against a separate forbidden set; see the note above `_requirement_name` for
+    why it was dead code and why the closed allow-list alone is the sound guard.
     """
     declared = _mcp_manifest()["project"]["dependencies"]
     names = {_requirement_name(requirement) for requirement in declared}
@@ -572,8 +584,12 @@ def test_the_mcp_distribution_declares_only_allow_listed_dependencies() -> None:
         f"which R004-05 does not admit; the whole allow-list is "
         f"{sorted(MCP_ALLOWED_DEPENDENCIES)}"
     )
-    forbidden = names & MCP_FORBIDDEN_DEPENDENCIES
-    assert not forbidden, f"R004-05 forbids omnivia-core-mcp depending on {sorted(forbidden)}"
+
+    # Every allow-listed name must itself be in normalised form, or the comparison
+    # above is against a spelling `_requirement_name` can never produce.
+    assert MCP_ALLOWED_DEPENDENCIES == {
+        re.sub(r"[-_.]+", "-", name).lower() for name in MCP_ALLOWED_DEPENDENCIES
+    }
 
     # The SDK edge is pinned to the approved major range, not merely present.
     # R004-05 fixes both the package and the range; a bare `mcp` or an `mcp>=3`
@@ -581,6 +597,28 @@ def test_the_mcp_distribution_declares_only_allow_listed_dependencies() -> None:
     assert "mcp>=2,<3" in declared, (
         f"R004-05 requires the official SDK constrained >=2,<3; found {declared}"
     )
+
+
+def test_the_dependency_allow_list_admits_no_spelling_of_a_name_outside_it() -> None:
+    """PEP 508 accepts `omnivia_core_cli` and `omnivia-core-cli` for one
+    distribution. The retired forbidden set held only the hyphenated spelling and
+    `_requirement_name` did no normalisation, so the underscore form was outside
+    it -- one of two reasons that set was not the guard it read as. The closed
+    allow-list has to be immune to the same trick, which means the normalisation
+    is load-bearing and gets its own assertion rather than being trusted."""
+    for spelling in (
+        "omnivia-core-cli>=0.1.0,<0.2.0",
+        "omnivia_core_cli>=0.1.0,<0.2.0",
+        "Omnivia.Core.CLI==0.1.0",
+        "omnivia_core_runtime",
+        "FastMCP[all]>=2",
+    ):
+        assert _requirement_name(spelling) not in MCP_ALLOWED_DEPENDENCIES, spelling
+
+    # ...and the admitted names still parse to themselves, in every spelling a
+    # manifest may legitimately use.
+    assert _requirement_name("omnivia_core_client >= 0.1.0") == "omnivia-core-client"
+    assert _requirement_name("mcp>=2,<3") == "mcp"
 
 
 def test_the_cli_reports_no_service_rather_than_crashing(tmp_path: Path) -> None:
