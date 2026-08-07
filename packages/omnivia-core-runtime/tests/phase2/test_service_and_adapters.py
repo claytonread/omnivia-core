@@ -517,13 +517,24 @@ def test_the_cli_reads_the_descriptor_the_runtime_publishes(
     assert service.ready is True
 
     # And what the user is actually shown, not just what the reader returns.
+    # Still exact equality on the whole document: the point of this half is that
+    # a key cannot appear, vanish or change meaning without a reader noticing.
+    #
+    # `advertised_ready` and `observation` are owner resolution 004 R004-13. The
+    # descriptor is published once at startup and never rewritten, so its
+    # readiness is a startup claim rather than a fact about now -- a service
+    # killed hard leaves this file behind still saying true. A bare `ready` key
+    # handed that stale claim to any script that read it, which is the same trap
+    # `status` exists to avoid. The key names what it is, and `observation` names
+    # where it came from.
     assert main(["--runtime-state", str(runtime), "discover"]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "endpoint": "unix:///tmp/omnivia-cli.sock",
         "workspace_id": WORKSPACE_ID,
         "service_instance_id": SERVICE_INSTANCE,
         "fencing_generation": 7,
-        "ready": True,
+        "advertised_ready": True,
+        "observation": "published-descriptor",
     }
 
     # The descriptor's other consumer: the workspace a request is addressed to.

@@ -665,7 +665,17 @@ def main(argv: list[str] | None = None) -> int:
                     "workspace_id": service.workspace_id,
                     "service_instance_id": service.service_instance_id,
                     "fencing_generation": service.fencing_generation,
-                    "ready": service.ready,
+                    # `advertised_ready`, not `ready`. The descriptor is published
+                    # once at startup and never rewritten, so this is what the
+                    # service claimed when it started and not what is true now: a
+                    # service killed hard leaves the file behind still saying true.
+                    # A caller reading a bare `ready` gets exactly the false
+                    # liveness signal `status` exists to avoid, and it would get it
+                    # silently. `observation` names the source in the same breath,
+                    # so a script has to opt into believing a stale claim rather
+                    # than doing it by default.
+                    "advertised_ready": service.ready,
+                    "observation": "published-descriptor",
                 },
                 indent=2,
                 sort_keys=True,
