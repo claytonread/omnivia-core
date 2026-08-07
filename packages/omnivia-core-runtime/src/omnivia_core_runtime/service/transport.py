@@ -73,9 +73,43 @@ UNARY_BOUNDARY_SECONDS = 0.05
 #:
 #: It is the size of the field, *not* the longest usable path: `sun_path` is
 #: NUL-terminated, so the last byte is the terminator. Measured by raw `bind()` on
-#: macOS 25.5: 103 bytes binds, 104 raises "AF_UNIX path too long". Callers go
-#: through `assert_socket_path_fits`, which accounts for the terminator.
+#: macOS 25.5: 103 bytes binds, 104 raises "AF_UNIX path too long". It is not the
+#: number callers are held to -- `MAX_ENDPOINT_PATH_BYTES` below is -- because a
+#: server does not bind the endpoint name directly.
 MAX_SOCKET_PATH_BYTES = 104
+
+#: The pid is written into the staging name at this fixed width. Seven digits covers
+#: every pid a kernel issues -- Linux caps `pid_max` at 2**22, macOS far below that
+#: -- and `_staging_socket_path` folds anything wider rather than letting it widen
+#: the name, because a name whose width follows the pid is precisely what R004-15
+#: removes.
+_STAGING_PID_DIGITS = 7
+
+#: How much longer `_staging_socket_path`'s result is than the endpoint it becomes:
+#: a leading `.`, a `.` before the pid, the fixed-width pid, and `.binding`. A
+#: constant, which is the property the guard below rests on.
+_STAGING_PATH_EXTRA_BYTES = 1 + 1 + _STAGING_PID_DIGITS + len(".binding")
+
+#: The published hard maximum for a local endpoint path, in encoded bytes: 86.
+#:
+#: Derived rather than chosen -- what is left of `sun_path` once the NUL terminator
+#: and the fixed-width staging suffix are subtracted -- so an endpoint that passes
+#: `assert_socket_path_fits` is one whose staging name binds too, under every pid.
+#:
+#: Before R004-15 the guard measured the staging name itself. That name was 11 to 17
+#: bytes longer than the endpoint depending on how many digits the pid had, so the
+#: usable ceiling moved between launches of the same command: 92 bytes with a
+#: one-digit pid, 86 with a seven-digit one. A 90-byte workspace worked in testing
+#: and refused in the field. Six bytes of budget buy a number that can be published.
+#:
+#: Two different tests hold this in place and they prove different things.
+#: `test_the_published_ceiling_is_eighty_six_encoded_bytes` pins *this number*: it is
+#: what fails if `_STAGING_PID_DIGITS` is narrowed to 5, which would still be
+#: perfectly deterministic at a ceiling of 88 and so would leave the kernel oracle
+#: green. `test_a_real_bind_agrees_with_the_ceiling_at_both_boundaries` pins
+#: *exactness at whatever line is published* -- that the accepted maximum binds and
+#: the next byte does not. Neither substitutes for the other.
+MAX_ENDPOINT_PATH_BYTES = MAX_SOCKET_PATH_BYTES - 1 - _STAGING_PATH_EXTRA_BYTES
 
 #: The local machine's named-pipe namespace. Written escaped rather than as a raw
 #: string because a raw string cannot end in a backslash. The `.` is the local host
@@ -255,14 +289,22 @@ def parse_endpoint(endpoint: str) -> LocalEndpoint | None:
 
 
 def assert_socket_path_fits(path: Path) -> None:
-    """Refuse a socket path the OS cannot represent.
+    """Refuse an endpoint path longer than the published ceiling.
 
-    `path` is the string that will actually reach `bind` or `connect`, which is not
-    always the endpoint a caller named: a server binds the longer staging name from
-    `_staging_socket_path` and renames it into place, so on that side it is the
-    staging name that has to fit. Checking the string that is about to be handed to
-    the kernel is what keeps this guard and the kernel in agreement; a constant
-    budget for the staging suffix could not, because its width follows the pid.
+    `path` is the *endpoint* -- the name a caller advertises, binds and connects to
+    -- on every side. A server does not hand this string to `bind`: it binds the
+    staging name `_staging_socket_path` returns and renames it into place. That name
+    is longer by `_STAGING_PATH_EXTRA_BYTES`, and it is longer by a *constant*, so
+    bounding the endpoint bounds the string the kernel actually sees as well. That
+    constant is the whole of R004-15; the guard used to measure the staging name,
+    whose width followed the pid, so the ceiling moved between launches.
+
+    Connect is held to the same number rather than to the roomier kernel field. The
+    two would otherwise disagree across 87 to 103 bytes, leaving a client able to
+    reach endpoints no conforming server can create -- a window between two limits,
+    which is the shape of the defect this replaces. This constant was already a
+    portability contract rather than a kernel reading: 104 is the macOS field size,
+    applied on Linux too, where 108 would bind.
 
     Unix domain sockets only: a pipe name is derived and bounded by construction, so
     there is no equivalent cap to hit.
@@ -270,27 +312,27 @@ def assert_socket_path_fits(path: Path) -> None:
     The refusal deliberately carries no numbers and no path. It is reached from
     endpoint strings this runtime did not choose, and
     `test_overlong_endpoint_diagnostics_are_fixed_and_non_disclosing` pins the exact
-    text; `man unix` documents the cap for anyone who needs the figure.
+    text; `man unix` documents the kernel cap for anyone who needs the figure.
     """
-    encoded = len(str(path).encode("utf-8"))
-    # `+ 1` is the NUL terminator: `sun_path` is a fixed-size C string, so a path of
-    # exactly MAX_SOCKET_PATH_BYTES has nowhere to put the terminator and the kernel
-    # refuses it. A plain `>` here accepted that path and let the bind fail instead.
-    if encoded + 1 > MAX_SOCKET_PATH_BYTES:
+    if len(str(path).encode("utf-8")) > MAX_ENDPOINT_PATH_BYTES:
         raise TransportError("local service endpoint path is too long")
 
 
 def _staging_socket_path(path: Path) -> Path:
     """The private name a socket is bound on before being renamed onto `path`.
 
-    Single-sourced because the length guard and the bind have to agree on the exact
-    string: this name is 11 to 15 bytes longer than the endpoint it becomes, and how
-    much longer depends on how many digits the pid has. Guarding the endpoint instead
-    left a window -- 89 to 104 bytes on macOS with a five-digit pid -- where the
-    guard passed and the bind then failed, and the width of that window moved between
-    launches of the same command.
+    Exactly `_STAGING_PATH_EXTRA_BYTES` longer than `path`, whatever the pid: the pid
+    is folded into `_STAGING_PID_DIGITS` digits and zero-padded to them, so the
+    string the kernel sees on a bind is a constant distance from the one it sees on a
+    connect. `assert_socket_path_fits` rests on that distance being constant, and a
+    bare `{os.getpid()}` here is what used to make it vary.
+
+    The pid stays in the name so two processes racing on one endpoint stage on
+    different names. The bind lock in `_bind_unix` is the mechanism that keeps them
+    apart; this is the second line.
     """
-    return path.with_name(f".{path.name}.{os.getpid()}.binding")
+    staged = os.getpid() % 10**_STAGING_PID_DIGITS
+    return path.with_name(f".{path.name}.{staged:0{_STAGING_PID_DIGITS}d}.binding")
 
 
 class _Channel(Protocol):
@@ -622,11 +664,11 @@ class LocalSocketServer:
         if not _HAS_AF_UNIX:
             raise TransportError("this platform cannot serve the requested endpoint")
         path = Path(endpoint.name)
-        # The staging name, not `path`: that is the string `_bind_socket` hands to
-        # `bind`, and it is the longer of the two. Checked here rather than there so
-        # a workspace that can never be served is refused before this creates
-        # directories and a bind lock for it.
-        assert_socket_path_fits(_staging_socket_path(path))
+        # The endpoint, not the staging name: the staging name `_bind_socket` binds
+        # is a constant number of bytes longer, so bounding this bounds that.
+        # Checked here rather than there so a workspace that can never be served is
+        # refused before this creates directories and a bind lock for it.
+        assert_socket_path_fits(path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         # Probe, bind and rename happen under one lock on the endpoint name.
@@ -959,6 +1001,7 @@ def _connect_pipe(endpoint: LocalEndpoint, *, timeout: float) -> _Channel:
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "LOCAL_SCHEME",
+    "MAX_ENDPOINT_PATH_BYTES",
     "MAX_FRAME_BYTES",
     "MAX_SOCKET_PATH_BYTES",
     "PIPE_ADDRESS_PREFIX",
