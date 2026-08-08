@@ -522,25 +522,25 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
 
     `bootstrap_generation_one`'s pristine branch refuses a database that already has
     tables, and this proves that refusal is carried out to the caller as a result
-    rather than escaping as a traceback -- and that the rows survive it.
+    rather than escaping as a traceback -- and that the file survives it byte for
+    byte, not merely with its rows readable.
 
-    **This is the one refusal `_digest` is deliberately not used on, and the reason
-    is a limit on the claim rather than on the helper.** Two things really do move
-    here. `open_database` sets `journal_mode = WAL`, which rewrites the header of
-    whatever it opened, so the file's bytes are not the bytes it had; and the
-    lifetime storage lock leaves `locks/storage.lock` behind. Neither is content and
-    the rows are asserted intact below, but "byte-for-byte unchanged" is not true on
-    this path and is not asserted. Closing it means vetting through a separate
-    non-WAL open, which is a change to a path this packet did not otherwise touch --
-    recorded as a follow-up, not done here.
+    **`_digest` used to be excluded here, and the exclusion was a real limit rather
+    than a stylistic one.** `init` took its exclusive connection before deciding
+    anything, and that open sets `journal_mode = WAL`, which rewrites the header of
+    whatever file it opened -- so refusing somebody else's database still changed
+    its bytes. The vet now runs on a separate `enable_wal=False` connection that is
+    closed before the WAL-enabling one is taken, so the whole-tree comparison every
+    other refusal test uses applies to this one too.
 
-    What *is* asserted is the property this packet is about: the refusal creates
-    nothing. That is new. The same reordering that fixed the identity refusal covers
-    this one, and before it this path wrote a freshly minted `workspace.json` beside
-    somebody else's database and kept it.
+    `locks/` is pre-created, exactly as in
+    `test_a_busy_workspace_is_refused_before_any_directory_is_created`: a refusal
+    decided under the lifetime storage lock necessarily has a directory to hold the
+    lock file in, and that is the smallest tree in which this refusal is reachable
+    at all.
     """
     workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True)
+    WorkspaceLayout(root=workspace).locks_path.mkdir(parents=True)
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:
         connection.execute("CREATE TABLE receipts (id INTEGER PRIMARY KEY, note TEXT)")
@@ -548,14 +548,12 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
         connection.commit()
     finally:
         connection.close()
+    before = _digest(tmp_path)
 
     result = _init(tmp_path)
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
-
-    assert not (workspace / "workspace.json").exists()
-    assert not (workspace / "blobs").exists()
-    assert not (tmp_path / "installation-state").exists()
+    assert _digest(tmp_path) == before
 
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:

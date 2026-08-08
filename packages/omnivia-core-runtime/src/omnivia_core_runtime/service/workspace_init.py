@@ -22,8 +22,11 @@ obvious order and is deliberate -- see "Non-destructive" below.
        `OpenMode.EPHEMERAL` -- `may_create` is that mode and no other -- so
        opening a fresh workspace `SERVICE_OWNED` raises `StorageError: no
        workspace database at ...` instead of bootstrapping one.
-    3. `open_database(..., OpenMode.EXCLUSIVE_MAINTENANCE)`. Exclusive, which is
-       what `bootstrap_generation_one` requires, and *not* `SERVICE_OWNED`: this
+    3. `open_database(..., OpenMode.EXCLUSIVE_MAINTENANCE)`, twice. First with
+       `enable_wal=False`, to decide both refusals without moving a byte of a
+       database that turns out not to be ours -- see "Non-destructive" below --
+       and then, once it is ours, for real. Exclusive, which is what
+       `bootstrap_generation_one` requires, and *not* `SERVICE_OWNED`: this
        process is not a service, does not advertise readiness and does not hold
        the workspace for a lifetime. It is the same mode `migrate_legacy_database`
        uses for the same reason.
@@ -97,7 +100,9 @@ from omnivia_core_runtime.storage.backup import (
 )
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
+    SchemaCreationRefused,
     StorageError,
+    fingerprint_schema,
     open_database,
 )
 from omnivia_core_runtime.storage.migrations import (
@@ -419,17 +424,27 @@ def _bootstrap(
       installation again.
 
     Two things are created ahead of the refusals, and the claim is bounded rather
-    than absolute: `locks/`, because a lock is held through a file inside it, and
-    the empty database file, because `open_database` creates one in `EPHEMERAL`
-    alone. Neither is an exception to the rule, for the same reason in both cases --
-    **a refusal is unreachable on the tree where this call is what created them.** A
-    workspace with no `locks/` has no lock holder, so `WORKSPACE_BUSY` cannot be the
-    answer; a workspace with no database cannot hold the wrong workspace, cannot be
-    somebody else's and cannot disagree with this manifest, so neither
-    `WORKSPACE_IDENTITY_MISMATCH` nor the storage layer's own refusals can be
-    either.
+    than absolute. The empty database file is no exception to the rule, because **a
+    refusal is unreachable on the tree where this call is what created it**: a
+    workspace with no database cannot hold the wrong workspace, cannot be somebody
+    else's and cannot disagree with this manifest, so neither
+    `WORKSPACE_IDENTITY_MISMATCH` nor the storage layer's own refusals can be the
+    answer. `locks/` and the lock file inside it are the genuine bound: every
+    refusal below is decided under the lock, so one taken on a tree that had no
+    `locks/` leaves that directory and its lock file behind. It is the whole of what
+    "as it found it" excludes -- no manifest, no layout directory, no
+    installation state, and not a byte of an existing database.
 
-    Three residuals, stated rather than papered over.
+    **The database's bytes are part of that claim, and making them so is why the vet
+    is a separate open.** `journal_mode = WAL` rewrites the header of whatever file
+    it opened, so deciding the refusal on the exclusive connection meant a foreign
+    database's bytes moved on the way to declining to touch it. Vetting on an
+    `enable_wal=False` connection and closing it first leaves them untouched. A
+    `READ_ONLY` probe was the obvious alternative and does not work: it cannot
+    checkpoint or delete the `-wal`/`-shm` sidecars it creates, so it strands them
+    beside a workspace that *is* ours.
+
+    Two residuals, stated rather than papered over.
 
     Two `init` runs racing on a genuinely fresh tree can have the loser refuse
     `WORKSPACE_BUSY` over a `locks/` the winner made -- and the winner is creating
@@ -440,15 +455,6 @@ def _bootstrap(
     `WORKSPACE_IDENTITY_MISMATCH` naming the workspace the database holds, having
     written nothing. A stuck state that reports itself accurately, rather than one
     that grows worse on every attempt.
-
-    And "as it found it" is about what was *created*, not about every byte. Opening
-    an existing database sets `journal_mode = WAL`, which rewrites its header, and
-    the storage lock leaves its own file behind -- so a refusal against a database
-    that is somebody else's returns those two changed while creating no manifest, no
-    layout directory and no installation state. `test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped`
-    pins exactly that, and says why it does not use the whole-tree digest the other
-    refusal tests use. Closing it means vetting through a separate non-WAL open,
-    which this packet did not open up.
     """
     lock_path = layout.locks_path / "storage.lock"
     try:
@@ -479,28 +485,51 @@ def _bootstrap(
             # for. SQLite reads a zero-byte file as an empty database, which is
             # precisely what the pristine branch of `bootstrap_generation_one`
             # requires. This is the second and last thing created ahead of a
-            # refusal, and like `locks/` it is not an exception to the rule: it
+            # refusal, and unlike `locks/` it is not an exception to the rule: it
             # runs only when there was no database, and a database that does not
             # exist cannot be the wrong one, cannot be somebody else's and cannot
             # hold a workspace this manifest disagrees with. Every refusal below
             # needs a database that was already there.
             layout.database_path.touch()
-            connection = open_database(
-                layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE
+            # Vetted first, through a connection that does not enable WAL. Setting
+            # `journal_mode = WAL` rewrites the header of whatever file it opened,
+            # so an exclusive open taken *before* the refusal is decided changes a
+            # foreign database's bytes on its way to declining to touch it. This
+            # open leaves them byte for byte -- and unlike the `READ_ONLY` probe
+            # that was tried first, it can still checkpoint and remove the
+            # `-wal`/`-shm` sidecars, which a read-only connection may create and
+            # then is not permitted to clean up.
+            vetting = open_database(
+                layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE, enable_wal=False
             )
             try:
                 # The substrate, read out of the database. This is what makes a
                 # repeat run idempotent rather than short-circuited: a workspace
                 # whose manifest exists but whose database was never bootstrapped is
                 # finished here, and that is the state `runner.py` refuses to serve.
-                existing = read_workspace_state(connection)
-                if (
-                    existing is not None
-                    and existing.workspace_id != manifest.workspace_id
-                ):
-                    return _identity_mismatch(
-                        layout, installation_root, existing.workspace_id, minted
-                    )
+                existing = read_workspace_state(vetting)
+                # The one thing the substrate row cannot tell us apart: a database
+                # with no workspace state that is nonetheless somebody's. Same
+                # condition `bootstrap_generation_one`'s pristine branch refuses on,
+                # read through the same helper, and the real bootstrap still applies
+                # it below -- so drift makes this vet redundant, never wrong.
+                populated = existing is None and fingerprint_schema(vetting).tables > 0
+            finally:
+                vetting.close()
+
+            if existing is not None and existing.workspace_id != manifest.workspace_id:
+                return _identity_mismatch(
+                    layout, installation_root, existing.workspace_id, minted
+                )
+            if populated:
+                raise SchemaCreationRefused(
+                    "pristine bootstrap requires an empty database; this one has tables"
+                )
+
+            connection = open_database(
+                layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE
+            )
+            try:
                 bootstrapped = existing is None
                 state = bootstrap_generation_one(
                     connection,
