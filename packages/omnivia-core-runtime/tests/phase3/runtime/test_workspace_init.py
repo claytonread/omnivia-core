@@ -140,6 +140,18 @@ def _digest(root: Path) -> dict[str, str]:
     **Nothing is excluded.** The lock payload was, and `_lock_state` says what that
     cost; it is normalised now instead, so every path under `root` is in the
     comparison and what a refusal legitimately writes is asserted by name.
+
+    **It is a mode-and-content metric, not a filesystem one, and "nothing was
+    written" means exactly that much.** What an equal digest proves is that no entry
+    was created, removed, retyped, re-permissioned or rewritten. Three things are
+    outside it. Timestamps: an unconditional `Path.touch()` moved a refused
+    database's mtime and atime for as long as it existed with every assertion in
+    this file green, which is why
+    `test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped` pins that
+    mtime by hand. Ownership: uid and gid are not read. Extended attributes and ACLs:
+    not read either. Adding timestamps to the digest wholesale is not the fix -- the
+    lock file's mtime moves on every refusal by design, so it would need an exclusion
+    exactly where `_lock_state` exists to avoid one.
     """
     entries: dict[str, str] = {}
     for path in sorted(root.rglob("*")):

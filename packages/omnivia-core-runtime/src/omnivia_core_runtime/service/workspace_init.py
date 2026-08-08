@@ -382,13 +382,28 @@ def _chosen_by_somebody(root: Path, names: Iterable[str]) -> list[str]:
 def _os_generated(entry: Path) -> bool:
     """Whether the operating system, rather than a person, put this here.
 
-    The two prefix rules are checked against the entry's type, and both directions
-    of that test are load-bearing. An AppleDouble sidecar is a file, so
+    **The two *prefix* rules are checked against the entry's type. The closed list is
+    not, and this docstring used to say it was.** For the prefixes both directions of
+    the test are load-bearing: an AppleDouble sidecar is a file, so
     `._my_private_repo/` -- a name that looks like litter and holds a `.git` -- is
-    somebody's, not ours to initialise into. A freedesktop trash is a directory.
+    somebody's, not ours to initialise into; a freedesktop trash is a directory.
     Anything failing its own type test falls through to being somebody's, which is
     the safe direction: the cost is a refusal a person can act on, and the cost of
     the other direction is a workspace mixed into their files.
+
+    `OS_GENERATED_ENTRIES` is matched on **name alone**, so that safe direction does
+    not apply to any of its seventeen entries. A regular *file* named `lost+found`,
+    or `Thumbs.db`, or any other name on the list, is admitted -- and admitting it is
+    what lets the directory holding it be adopted and initialised into. That is the
+    same overreach the `._` rule was repaired for, left in place for every name the
+    list covers, and it is stated here rather than rounded up to a type test the code
+    does not perform.
+
+    Closing it needs an expected type per name, which is a wider change than a
+    correction: several of these entries are not reliably one type across the
+    filesystems they appear on, and a wrong entry re-bricks precisely the
+    installation the list was added to unbrick. Recorded as follow-up rather than
+    guessed at here.
     """
     if entry.name in OS_GENERATED_ENTRIES:
         return True
