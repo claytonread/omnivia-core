@@ -19,6 +19,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import FrameType
 
 from baseline import ARTIFACT_ROOT_ENV, FIXTURE_DIR, INVENTORY_DIR, REPO_ROOT
 from baseline.dependencies import (
@@ -47,6 +48,9 @@ from baseline.surfaces import (
     verify_surface_inventories,
     write_surface_inventories,
 )
+
+#: What ``signal.signal`` accepts and returns as a handler.
+_SignalHandler = Callable[[int, FrameType | None], object] | int | signal.Handlers | None
 
 #: Internal orchestration signal. The transactional capture sets this on the one
 #: child process that generates the candidate baseline, so that child writes
@@ -271,7 +275,7 @@ def _promote_atomically(candidate_root: Path, accepted_root: Path) -> None:
     # of microsecond moves after the candidate is already proven green, so this
     # is the pragmatic ceiling; a single-directory swap would need it fully
     # atomic.
-    previous: dict[int, object] = {}
+    previous: dict[signal.Signals, _SignalHandler] = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(ValueError):  # not the main thread
             previous[sig] = signal.signal(sig, signal.SIG_IGN)
