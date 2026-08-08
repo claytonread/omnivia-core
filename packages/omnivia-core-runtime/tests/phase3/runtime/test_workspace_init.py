@@ -535,16 +535,86 @@ def test_a_workspace_missing_its_migrations_is_finished_and_reported_as_changed(
 
 
 def test_a_repeat_run_repairs_a_missing_layout_directory(tmp_path: Path) -> None:
-    """Non-destructive includes not refusing to finish its own half-done work."""
+    """Non-destructive includes not refusing to finish its own half-done work.
+
+    **This test used to assert `ALREADY_INITIALISED`, and that made it a guard
+    pinning a defect.** That status has one reason string -- "is already initialised;
+    nothing was changed" -- so the assertion required the command to repair a
+    directory and then deny having done anything. The report is the whole of what a
+    caller sees, and it was false.
+    """
     _init(tmp_path)
     layout = WorkspaceLayout(root=tmp_path / "workspace")
     manifest_before = layout.manifest_path.read_bytes()
     layout.indexes_path.rmdir()
 
-    assert _init(tmp_path).status is WorkspaceInitStatus.ALREADY_INITIALISED
+    result = _init(tmp_path)
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert "nothing was changed" not in result.reason
+    assert "recreated 1 missing directory" in result.reason
     assert layout.indexes_path.is_dir()
     # Repaired around the manifest, never over it.
     assert layout.manifest_path.read_bytes() == manifest_before
+
+
+def test_a_repeat_run_that_repairs_nothing_says_so(tmp_path: Path) -> None:
+    """The other side of the count, so "nothing was changed" stays falsifiable.
+
+    Without this, reporting every repeat run as `INITIALISED` would satisfy the test
+    above and the idempotence tests would still pass -- `_digest` compares the tree,
+    not the sentence.
+    """
+    _init(tmp_path)
+    result = _init(tmp_path)
+    assert result.status is WorkspaceInitStatus.ALREADY_INITIALISED
+    assert "nothing was changed" in result.reason
+
+
+def test_a_repeat_run_reports_every_directory_it_had_to_recreate(
+    tmp_path: Path,
+) -> None:
+    """D2, which round 2 fixed for the ledger and not for the tree.
+
+    Deleting `blobs/`, `indexes/` and the whole of `installation-state/` and
+    re-running created nine directories -- both `layout.create_directories()` and
+    `InstallationLayout.create()` repair here -- and answered "already initialised;
+    nothing was changed". `created` counted the manifest, the substrate row and,
+    after round 2, the migration ledger. It never counted the filesystem.
+
+    Five, not nine: the six leaves those two calls are responsible for, less
+    `locks/`, which survived. `installation-state/backups/` and its siblings are
+    parents made on the way and are not separate repairs.
+    """
+    _init(tmp_path)
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    shutil.rmtree(layout.blobs_path)
+    shutil.rmtree(layout.indexes_path)
+    shutil.rmtree(tmp_path / "installation-state")
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert "recreated 5 missing directories" in result.reason
+    assert layout.validate(require_database=True) == []
+    assert result.workspace_id is not None
+    for name in ("backups", "attempts", "runtime"):
+        assert (tmp_path / "installation-state" / name / result.workspace_id).is_dir()
+
+
+def test_a_missing_locks_directory_is_counted_as_a_repair(tmp_path: Path) -> None:
+    """`locks/` is repaired before the lock is taken, which is why it is sampled first.
+
+    `_bootstrap` creates it on line two, so a count taken anywhere after that would
+    report a workspace whose `locks/` had been lost as unchanged.
+    """
+    _init(tmp_path)
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    shutil.rmtree(layout.locks_path)
+
+    result = _init(tmp_path)
+    assert result.status is WorkspaceInitStatus.INITIALISED
+    assert "recreated 1 missing directory" in result.reason
+    assert layout.locks_path.is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +737,80 @@ def test_a_file_manager_visiting_the_home_does_not_make_it_somebody_elses(
     assert result.status is WorkspaceInitStatus.INITIALISED, result.reason
     assert (workspace / litter).read_bytes() == b"\x00\x01"
     assert (installation / litter).read_bytes() == b"\x00\x01"
+
+
+@pytest.mark.parametrize(
+    "litter",
+    [
+        "lost+found",
+        ".Trash-1000",
+        ".Trash-1001",
+        "$RECYCLE.BIN",
+        "Temporary Items",
+        ".TemporaryItems",
+        ".DocumentRevisions-V100",
+        "Network Trash Folder",
+        ".AppleDouble",
+        ".com.apple.timemachine.donotpresent",
+    ],
+)
+def test_a_directory_the_filesystem_made_does_not_make_the_home_somebody_elses(
+    tmp_path: Path, litter: str
+) -> None:
+    """The same permanent brick as the `.DS_Store` case, from a directory instead.
+
+    The list above stopped at what a *file manager* writes. These are what a
+    *filesystem* writes, and nobody asks for any of them: `mke2fs` puts `lost+found`
+    at the root of every ext2/3/4 volume, Windows puts `$RECYCLE.BIN` on every one
+    of its own, and macOS makes the rest the first time a volume is written to or
+    backed up. A user whose home is the root of its own disk had `omnivia init`
+    refuse permanently over a directory they never created and cannot remove.
+
+    `.Trash-1001` is in the list beside `.Trash-1000` on purpose: freedesktop.org's
+    trash is per-uid, so a closed list of names would unbrick the machine's first
+    login account and leave the second refused. It is matched by prefix.
+    """
+    workspace = tmp_path / "workspace"
+    (workspace / litter).mkdir(parents=True)
+    (workspace / litter / "keep").write_bytes(b"\x00\x01")
+    installation = tmp_path / "installation-state"
+    (installation / litter).mkdir(parents=True)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.INITIALISED, result.reason
+    # Ignored, not tidied away.
+    assert (workspace / litter / "keep").read_bytes() == b"\x00\x01"
+    assert (installation / litter).is_dir()
+
+
+def test_an_appledouble_name_on_a_directory_is_still_somebody_elses(
+    tmp_path: Path,
+) -> None:
+    """The `._` rule was a bare prefix match, and that is wider than its warrant.
+
+    An AppleDouble sidecar is a *file* -- the resource fork a copy onto a non-native
+    filesystem leaves beside each real file. A directory is nobody's sidecar, so
+    `._my_private_repo/` holding a `.git` was being admitted and a workspace mixed
+    into it. Low severity next to the refusals that brick a home, and the wrong
+    direction: this is exactly what R004-10's second refusal exists to prevent.
+
+    The file half is still admitted, and is asserted here so the repair cannot be
+    made by deleting the rule.
+    """
+    workspace = tmp_path / "workspace"
+    repository = workspace / "._my_private_repo"
+    (repository / ".git").mkdir(parents=True)
+
+    refused = _init(tmp_path)
+    assert refused.status is WorkspaceInitStatus.REFUSED
+    assert refused.refusal is WorkspaceInitRefusal.UNRELATED_DIRECTORY
+    assert "._my_private_repo" in refused.reason
+    assert not (workspace / "workspace.json").exists()
+
+    shutil.rmtree(repository)
+    (workspace / "._an_actual_sidecar").write_bytes(b"\x00\x05\x16\x07")
+    assert _init(tmp_path).status is WorkspaceInitStatus.INITIALISED
 
 
 def test_an_installation_state_this_command_made_is_not_unrecognised(

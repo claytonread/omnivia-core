@@ -75,10 +75,14 @@ ours to touch, and not `WRITE_FAILURE`, which the storage layer or the filesyste
 can raise after a manifest is already on disk. What those three leave behind is
 `workspace/locks/` and the lock file they were decided under.
 
-**What "changed" counts.** `apply_pending_migrations` is a third thing that moves,
-separately from the manifest and the substrate row, and it is reported. A run that
-applied every pending migration to an interrupted bootstrap used to answer
-"already initialised; nothing was changed".
+**What "changed" counts.** Four things move, not one, and all four are reported.
+The manifest and the substrate row were always counted. `apply_pending_migrations`
+is the third and moves on its own, so a run that applied every pending migration to
+an interrupted bootstrap used to answer "already initialised; nothing was changed".
+The fourth is the filesystem: both `create_directories()` and
+`InstallationLayout.create()` repair on the repeat path, and a run that recreated
+`blobs/`, `indexes/` and the whole installation-state tree gave that same answer
+until `_absent_directories` started counting them.
 
 **This starts no service.** `init` establishes state; `start` or MCP managed start
 establishes the process.
@@ -156,9 +160,14 @@ INSTALLATION_ENTRIES: Final = frozenset({BACKUPS_DIR, ATTEMPTS_DIR, RUNTIME_DIR}
 #: A closed list of names rather than "ignore every dotfile", because the refusal is
 #: worth keeping for everything a *person* put here: a `.git` directory in a
 #: workspace root is somebody's repository and mixing a workspace into it is exactly
-#: what R004-10's second refusal exists to prevent. `._` is the AppleDouble prefix a
-#: copy onto a non-native filesystem leaves beside each file, so it is matched by
-#: prefix rather than enumerated.
+#: what R004-10's second refusal exists to prevent.
+#:
+#: The second group below is what a *filesystem* puts here rather than a file
+#: manager, and it was missing. Every one of them is created without anyone asking:
+#: `lost+found` by `mke2fs` at the root of every ext2/3/4 volume, `$RECYCLE.BIN` by
+#: Windows, and the rest by macOS the first time a volume is written to or backed
+#: up. A user whose home is the root of its own disk had `~/.omnivia` refused
+#: permanently by a directory they never made and cannot delete.
 OS_GENERATED_ENTRIES: Final = frozenset(
     {
         ".DS_Store",  # macOS Finder
@@ -170,11 +179,29 @@ OS_GENERATED_ENTRIES: Final = frozenset(
         "Thumbs.db",  # Windows Explorer
         "desktop.ini",  # Windows Explorer
         ".directory",  # KDE Dolphin
+        "lost+found",  # ext2/3/4, made by mke2fs and refilled by fsck
+        "$RECYCLE.BIN",  # Windows, per volume
+        "Temporary Items",  # macOS, on exFAT and network volumes
+        ".TemporaryItems",  # macOS
+        ".DocumentRevisions-V100",  # macOS versions store
+        "Network Trash Folder",  # macOS, on AFP and SMB volumes
+        ".AppleDouble",  # netatalk
+        ".com.apple.timemachine.donotpresent",  # macOS Time Machine
     }
 )
 
-#: The AppleDouble sidecar prefix. See `OS_GENERATED_ENTRIES`.
-OS_GENERATED_PREFIX: Final = "._"
+#: The AppleDouble sidecar prefix, matched on *files* only. A copy onto a
+#: non-native filesystem leaves one beside each file, so the names cannot be
+#: enumerated -- but the rule was a bare prefix test with no such restriction, and
+#: it admitted `._my_private_repo/` with a `.git` inside it. Wider than its warrant:
+#: a directory is nobody's AppleDouble sidecar.
+APPLEDOUBLE_PREFIX: Final = "._"
+
+#: freedesktop.org's per-uid trash, matched on directories by prefix for the reason
+#: a closed list cannot serve: it is `.Trash-1000` for the first login account on
+#: the machine and `.Trash-1001` for the next, so naming one brick-proofs one user
+#: and leaves every other user on that machine refused.
+TRASH_PREFIX: Final = ".Trash-"
 
 #: What the lock this holds is recorded as. It is not a service instance -- no
 #: service exists yet -- and the value is diagnostic only.
@@ -301,7 +328,7 @@ def initialise_workspace(
             return existing
         manifest, minted = existing, False
     else:
-        unrelated = _chosen_by_somebody(layout.unexpected_entries())
+        unrelated = _chosen_by_somebody(layout.root, layout.unexpected_entries())
         if unrelated:
             return WorkspaceInitResult(
                 status=WorkspaceInitStatus.REFUSED,
@@ -333,22 +360,41 @@ def _unrecognised_installation_state(root: Path) -> str | None:
     if not root.is_dir():
         return None
     foreign = _chosen_by_somebody(
+        root,
         sorted(
             entry.name
             for entry in root.iterdir()
             if entry.name not in INSTALLATION_ENTRIES
-        )
+        ),
     )
     return ", ".join(foreign) if foreign else None
 
 
-def _chosen_by_somebody(names: Iterable[str]) -> list[str]:
-    """`names` without the entries no person put there. See `OS_GENERATED_ENTRIES`."""
-    return [
-        name
-        for name in names
-        if name not in OS_GENERATED_ENTRIES and not name.startswith(OS_GENERATED_PREFIX)
-    ]
+def _chosen_by_somebody(root: Path, names: Iterable[str]) -> list[str]:
+    """`names` under `root` without the entries no person put there.
+
+    `root` is needed because two of the three rules are about what the entry *is*
+    and not only what it is called. See `OS_GENERATED_ENTRIES`.
+    """
+    return [name for name in names if not _os_generated(root / name)]
+
+
+def _os_generated(entry: Path) -> bool:
+    """Whether the operating system, rather than a person, put this here.
+
+    The two prefix rules are checked against the entry's type, and both directions
+    of that test are load-bearing. An AppleDouble sidecar is a file, so
+    `._my_private_repo/` -- a name that looks like litter and holds a `.git` -- is
+    somebody's, not ours to initialise into. A freedesktop trash is a directory.
+    Anything failing its own type test falls through to being somebody's, which is
+    the safe direction: the cost is a refusal a person can act on, and the cost of
+    the other direction is a workspace mixed into their files.
+    """
+    if entry.name in OS_GENERATED_ENTRIES:
+        return True
+    if entry.name.startswith(APPLEDOUBLE_PREFIX):
+        return entry.is_file()
+    return entry.name.startswith(TRASH_PREFIX) and entry.is_dir()
 
 
 def _existing_manifest(
@@ -503,6 +549,9 @@ def _bootstrap(
     that grows worse on every attempt.
     """
     lock_path = layout.locks_path / "storage.lock"
+    # Sampled here, before the two `mkdir`s below, because `locks/` is one of the
+    # directories the no-op path repairs and the very next line would hide it.
+    absent = _absent_directories(layout, installation_root, manifest.workspace_id)
     try:
         layout.root.mkdir(parents=True, exist_ok=True)
         layout.locks_path.mkdir(exist_ok=True)
@@ -642,14 +691,27 @@ def _bootstrap(
     # separate transactions, so an interruption between them leaves the substrate
     # row committed and every migration pending. A run against that state applied
     # ten migrations and reported "already initialised; nothing was changed".
+    #
+    # The directories are the fourth, and adding the ledger was not enough. Both
+    # `layout.create_directories()` and `InstallationLayout.create()` repair on the
+    # no-op path, and neither was counted: deleting `blobs/`, `indexes/` and the
+    # whole of `installation-state/` and re-running created nine directories and
+    # still answered "already initialised; nothing was changed". `absent` is the
+    # sample taken before any of them were made.
     created = minted or bootstrapped
     pending = len(applied)
+    changes: list[str] = []
+    if pending:
+        reported = "" if pending == 1 else "s"
+        changes.append(f"applied {pending} pending migration{reported}")
+    if absent:
+        reported = "y" if len(absent) == 1 else "ies"
+        changes.append(f"recreated {len(absent)} missing director{reported}")
     if created:
         reason = f"initialised {manifest.workspace_id} at {layout.root}"
-    elif pending:
+    elif changes:
         reason = (
-            f"completed {manifest.workspace_id} at {layout.root}: applied {pending} "
-            f"pending migration{'' if pending == 1 else 's'}"
+            f"completed {manifest.workspace_id} at {layout.root}: {', '.join(changes)}"
         )
     else:
         reason = f"{layout.root} is already initialised; nothing was changed"
@@ -657,7 +719,7 @@ def _bootstrap(
     return WorkspaceInitResult(
         status=(
             WorkspaceInitStatus.INITIALISED
-            if created or pending
+            if created or changes
             else WorkspaceInitStatus.ALREADY_INITIALISED
         ),
         reason=reason,
@@ -666,6 +728,34 @@ def _bootstrap(
         installation_root=installation_root,
         workspace_format_version=manifest.compatibility.workspace_format_version,
     )
+
+
+def _absent_directories(
+    layout: WorkspaceLayout, installation_root: Path, workspace_id: str
+) -> list[Path]:
+    """The directories the two `create` calls below would have to make.
+
+    The six leaves those calls are responsible for, and not the parents they make on
+    the way: `installation-state/backups/` exists only to hold `<workspace-id>`, so
+    counting both would report two repairs for one missing directory.
+
+    The workspace root is not among them. A run that creates it is minting a
+    workspace, and "initialised" already says so; on the repeat path the manifest is
+    what proved the root was there.
+    """
+    installation = InstallationLayout(root=installation_root)
+    return [
+        path
+        for path in (
+            layout.blobs_path,
+            layout.indexes_path,
+            layout.locks_path,
+            installation_root / BACKUPS_DIR / workspace_id,
+            installation.attempts_for(workspace_id),
+            installation.runtime_for(workspace_id),
+        )
+        if not path.is_dir()
+    ]
 
 
 def _identity_mismatch(
