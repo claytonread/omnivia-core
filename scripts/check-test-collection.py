@@ -72,6 +72,28 @@ SKIPPED_DIRECTORIES = frozenset(
 # less common way is not silently exempt from this check.
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
 
+# Top-level trees deliberately outside every collection root, and therefore
+# outside this check. There is exactly one, and widening this set is a decision
+# rather than a convenience.
+#
+# `conformance/` holds the V06-4 hosted TLS suite. It dials a real provisioned
+# host, so a bare run must not execute it -- the repository's own documented
+# local command would be permanently red on any machine without that host, which
+# is precisely the pressure that produces a `skipif`. And it must not skip when
+# the host is absent either: the owner's rule (non-loopback TLS packet 10a.5) is
+# that the hosted suite records zero skipped tests, and that an unavailable host
+# retains NO-GO rather than closing V06-4. Keeping the tree out of `testpaths` is
+# what keeps "not run" and "passed" different states without a marker.
+#
+# The invariant this check exists for is not weakened, it is completed. "Every
+# test file is reachable from a bare run" becomes "every test file is reachable
+# from a bare run, or is named by a workflow that runs it", and the second half
+# is held by `tests/test_core_acceptance_workflow.py`, which requires every
+# directory under `conformance/` containing test modules to be named by
+# `.github/workflows/core-tls-conformance.yml`'s pytest invocation. A tree added
+# here and named by nothing still fails -- just in the other file.
+DISPATCH_ONLY_TREES = frozenset({"conformance"})
+
 NOTHING_COLLECTED = (
     "a bare `pytest` run collects no tests at all; check `testpaths` in pyproject.toml"
 )
@@ -82,14 +104,22 @@ class CollectionFailed(Exception):
 
 
 def discover_test_files(root: Path = REPO_ROOT) -> set[str]:
-    """Every test file in the checkout, as slash-separated paths from ``root``."""
+    """Every test file a bare run is expected to reach, as paths from ``root``.
+
+    ``DISPATCH_ONLY_TREES`` is applied at the top level only, so a `conformance`
+    directory nested inside a collected tree is still discovered -- the exemption
+    is for the one named repository tree, not for the name.
+    """
     found: set[str] = set()
     stack = [root]
     while stack:
         directory = stack.pop()
         for entry in directory.iterdir():
             if entry.is_dir():
-                if entry.name not in SKIPPED_DIRECTORIES:
+                exempt = (
+                    entry.parent == root and entry.name in DISPATCH_ONLY_TREES
+                )
+                if entry.name not in SKIPPED_DIRECTORIES and not exempt:
                     stack.append(entry)
                 continue
             if any(entry.match(pattern) for pattern in TEST_FILE_PATTERNS):

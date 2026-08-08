@@ -193,6 +193,7 @@ jobs:
             baseline \
             tests \
             scripts \
+            conformance \
             services/omnivia-memory/src/omnivia_memory/__init__.py \
             services/omnivia-memory/src/omnivia_memory/_shared/validation.py \
             services/omnivia-memory/src/omnivia_memory/app_manifest/models.py \

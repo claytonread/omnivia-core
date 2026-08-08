@@ -34,6 +34,7 @@ repository tree.
 
 from __future__ import annotations
 
+import ast
 import tomllib
 from pathlib import Path
 
@@ -44,6 +45,14 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACCEPTANCE_WORKFLOW = WORKFLOW_DIR / "core-acceptance.yml"
 PERFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-performance-report.yml"
 PHASE2_WORKFLOW = WORKFLOW_DIR / "phase2-platform.yml"
+TLS_CONFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-tls-conformance.yml"
+CONFORMANCE_TREE = REPO_ROOT / "conformance"
+COLLECTION_CHECK = REPO_ROOT / "scripts" / "check-test-collection.py"
+
+# Every way a pytest case stops being a pass without being a failure. Forbidden
+# outright in `conformance/`, because a skipped test reads exactly like a passing
+# one in a summary line and the owner's rule leaves no third outcome.
+SKIP_CONSTRUCTS = frozenset({"skip", "skipif", "importorskip", "xfail"})
 
 # (step name, exact command) for each single-command gate step, in the order the
 # workflow must run them.
@@ -117,6 +126,11 @@ REQUIRED_RUFF_TARGETS = (
     "baseline",
     "tests",
     "scripts",
+    # The hosted TLS conformance tree. No workflow *collects* it -- that is
+    # `core-tls-conformance.yml`'s job and it is dispatch-only -- but it is
+    # linted on every pull request like every other canonical tree, so a lint
+    # error there cannot sit unnoticed until someone next provisions a host.
+    "conformance",
     "services/omnivia-memory/src/omnivia_memory/__init__.py",
     "services/omnivia-memory/src/omnivia_memory/_shared/validation.py",
     "services/omnivia-memory/src/omnivia_memory/app_manifest/models.py",
@@ -1090,4 +1104,184 @@ def test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs() -> None:
         "the acceptance gate installs no distribution whose extra carries a bounded "
         "`ruff` requirement, so the Ruff it runs is whatever pip resolves. Declared "
         f"ruff requirements: {_ruff_declarations()}; install commands: {commands}"
+    )
+
+
+# --- the hosted TLS conformance tree ----------------------------------------
+#
+# Sub-lane B of the V06-4 non-loopback TLS packet adds `conformance/tls`, a suite
+# that dials a real provisioned host. Section 7.4 of that packet requires the
+# guards below, and they exist because both ways a test disappears were hit in
+# this repository in the same week: a tree no workflow collects, and a case that
+# skips itself when its environment is absent.
+#
+# The two halves have to be read together. `scripts/check-test-collection.py`
+# exempts `conformance/` from the bare-run completeness check -- deliberately,
+# because a bare `pytest` must not execute a suite that needs a provisioned host
+# -- and these tests are what stops that exemption from being a hole. A tree
+# under `conformance/` that no workflow names fails here.
+
+
+def _conformance_pytest_command() -> str:
+    steps = _steps_of(TLS_CONFORMANCE_WORKFLOW, "core-tls-conformance")
+    commands = _commands(_step(steps, "Run hosted TLS conformance"))
+    assert len(commands) == 1, f"expected a single pytest invocation, got: {commands}"
+    return commands[0]
+
+
+def test_the_tls_conformance_workflow_exists_and_runs_the_conformance_tree() -> None:
+    """Packet 7.4 item 1."""
+    assert TLS_CONFORMANCE_WORKFLOW.is_file(), (
+        "conformance/tls is collected by no other workflow, so without this file "
+        "it is a tree nothing runs"
+    )
+    command = _conformance_pytest_command()
+    assert command == "python -m pytest conformance/tls -q -rs", (
+        f"the hosted suite's invocation drifted: {command!r}. `-rs` is required so "
+        "a skip is visible in the log rather than folded into a dot."
+    )
+
+
+def test_the_tls_conformance_workflow_is_manual_only() -> None:
+    """Packet 7.4 item 4, and the reason this is a separate workflow at all.
+
+    The conformance host is disposable. A `pull_request` trigger here would make
+    every pull request in the repository depend on it being up, which is what
+    section 7.2 refuses -- "that is not a gate, it is an outage" -- and it could
+    then be made a required check by a branch rule outside this tree.
+    """
+    triggers = _keys(_block(_significant(TLS_CONFORMANCE_WORKFLOW.read_text("utf-8")), "on"))
+    assert triggers == ["workflow_dispatch"], (
+        f"the hosted TLS conformance workflow must be dispatch-only, found: {triggers}"
+    )
+
+
+def test_every_conformance_tree_with_tests_is_named_by_that_workflow() -> None:
+    """Packet 7.4 item 2 -- the half that makes the collection exemption safe.
+
+    `conformance/` is outside `testpaths` and outside every other workflow's
+    paths on purpose. This is what keeps "outside every collection root" from
+    meaning "run by nothing": a second tree added beside `conformance/tls` and
+    named by no invocation fails right here.
+    """
+    assert CONFORMANCE_TREE.is_dir(), "the conformance tree is missing"
+    command = _conformance_pytest_command()
+    holding_tests = sorted(
+        directory.relative_to(REPO_ROOT).as_posix()
+        for directory in CONFORMANCE_TREE.rglob("*")
+        if directory.is_dir() and any(directory.glob("test_*.py"))
+    )
+    assert holding_tests, "no test modules under conformance/; this guard means nothing"
+    unnamed = [tree for tree in holding_tests if tree not in command]
+    assert not unnamed, (
+        f"these conformance trees hold tests that no workflow runs: {unnamed}. "
+        "They are outside `testpaths` and outside the acceptance gate's paths, so "
+        "nothing else will collect them either."
+    )
+
+
+def test_the_collection_exemption_names_exactly_the_dispatch_only_tree() -> None:
+    """The other half: the exemption and the workflow must describe one tree.
+
+    `scripts/check-test-collection.py` stops requiring a bare run to reach
+    `conformance/`. That is only sound while the tree it exempts is the tree the
+    dispatch-only workflow runs. If someone exempts a second tree there without
+    adding it to that workflow, the test above catches it; if someone exempts a
+    tree that does not exist at all, this does.
+    """
+    source = COLLECTION_CHECK.read_text(encoding="utf-8")
+    declaration = source.partition("DISPATCH_ONLY_TREES = frozenset({")[2].partition("})")[0]
+    exempted = sorted(name.strip().strip('"').strip("'") for name in declaration.split(",") if name.strip())
+    assert exempted == ["conformance"], (
+        f"the bare-run collection check exempts {exempted}; only the hosted "
+        "conformance tree may be exempt, and it must be named by "
+        "core-tls-conformance.yml"
+    )
+    assert (REPO_ROOT / exempted[0]).is_dir()
+
+
+def test_the_hosted_suite_cannot_skip() -> None:
+    """Packet 8's second stop condition, and owner rule 10a.5, held mechanically.
+
+    "The hosted suite must record zero skipped tests. An unavailable host or
+    skipped run retains NO-GO and does not close V06-4." A skipped test reads
+    exactly like a passing one in a summary line, so the packet forbids the
+    constructs outright rather than trusting the count. This reads the source
+    because a convention nothing checks is a convention that lasts until the
+    first inconvenient CI run.
+
+    Parsed rather than grepped. A substring scan flags the suite's own docstrings
+    for *explaining* why these constructs are absent, and the obvious fix for
+    that -- rewording the prose -- leaves a guard that fires on whichever
+    sentence someone writes next. `ast` sees only the constructs.
+    """
+    offenders: list[str] = []
+    for module in sorted(CONFORMANCE_TREE.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        relative = module.relative_to(REPO_ROOT)
+        for node in ast.walk(tree):
+            found: str | None = None
+            if isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS:
+                found = node.attr
+            elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+                imported = [alias.name for alias in node.names if alias.name in SKIP_CONSTRUCTS]
+                found = ", ".join(imported) or None
+            if found is not None:
+                offenders.append(f"{relative}:{node.lineno}: {found}")
+    assert not offenders, (
+        "the hosted TLS conformance suite must not be able to skip; missing "
+        f"configuration has to fail loudly instead. Found: {offenders}"
+    )
+
+
+def test_the_skip_guard_detects_each_construct_it_forbids(tmp_path: Path) -> None:
+    """The guard above, replayed against each construct, and against clean source.
+
+    Without this the scan could stop detecting anything -- a typo in a member
+    name, an `ast` node type that stopped matching -- and go on reporting a clean
+    tree forever, which is the exact failure mode it was written to prevent.
+    """
+    planted = {
+        "marker": "import pytest\n@pytest.mark.skipif(True, reason='')\ndef test_a(): ...\n",
+        "call": "import pytest\ndef test_a(): pytest.skip('no host')\n",
+        "import_or_skip": "import pytest\ndef test_a(): pytest.importorskip('ssl')\n",
+        "from_import": "from pytest import skip\ndef test_a(): skip('no host')\n",
+    }
+    for label, source in planted.items():
+        tree = ast.parse(source)
+        detected = any(
+            (isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS)
+            or (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "pytest"
+                and any(alias.name in SKIP_CONSTRUCTS for alias in node.names)
+            )
+            for node in ast.walk(tree)
+        )
+        assert detected, f"the skip guard no longer detects the {label} form"
+
+    clean = ast.parse(
+        '"""A docstring that mentions skipif, importorskip and pytest.skip."""\n'
+        "import pytest\ndef test_a(): assert pytest is not None\n"
+    )
+    assert not any(
+        isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS
+        for node in ast.walk(clean)
+    ), "the skip guard fires on prose, which is what parsing was meant to fix"
+    assert tmp_path.exists()
+
+
+def test_the_hosted_workflow_is_not_the_acceptance_gate_and_does_not_widen_phase2() -> None:
+    """Two standing prohibitions, asserted rather than remembered.
+
+    The hosted suite must not reach the required gate, and `phase2-platform.yml`
+    must not be widened by this lane under any circumstances.
+    """
+    acceptance = _commands(_step(_steps(), "Run full repository test suite"))
+    assert not any("conformance" in command for command in acceptance), (
+        "the acceptance gate must not collect the hosted conformance suite"
+    )
+    phase2 = PHASE2_WORKFLOW.read_text(encoding="utf-8")
+    assert "conformance" not in phase2, (
+        "phase2-platform.yml must not be widened by the TLS conformance lane"
     )
