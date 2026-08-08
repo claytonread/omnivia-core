@@ -45,7 +45,9 @@ OmniVia redirect knob -- every Unix tool respects it, and hardening against it
 would break containers, CI runners and this repository's own tests -- so it is
 accepted, per owner resolution 004. The distinction the guard enforces is not
 "nothing environmental" but "nothing this package looks up itself": the home comes
-from `Path.home()` and never from a variable read here.
+from `Path.home()` and never from a variable read here. It is enforced at runtime
+rather than only by a source scan, because `os.path.expandvars` performs the lookup
+inside `posixpath` where no scan of this tree can see it -- see `home_directory`.
 """
 
 from __future__ import annotations
@@ -171,9 +173,18 @@ def home_directory(override: Path | None = None) -> Path:
     accepts it: `$HOME` is the operating system's answer to "which user is this",
     not a knob this programme invented, and hardening against it would break
     containers, CI runners and this repository's own tests. `$OMNIVIA_HOME` and any
-    other OmniVia-specific variable remain prohibited, and the guard still fails on
-    any `getenv` or `environ` in this tree -- including `$HOME` -- so the home
-    arrives through `Path.home()` and through nothing this package reads itself.
+    other OmniVia-specific variable remain prohibited, so the home arrives through
+    `Path.home()` and through nothing this package reads itself.
+
+    **Two guards hold that, because one of them cannot.**
+    `test_the_cli_reads_no_environment_variable_to_find_a_service` scans this tree
+    for `getenv`, `environ` and `expandvars` -- and a name scan is defeated by the
+    standard library reading the environment under a name of its own. Adding
+    `os.path.expandvars("$OMNIVIA_HOME")` to this function was tried: the scan
+    stayed green and `OMNIVIA_HOME=/tmp/hijacked` redirected the installation root.
+    `test_no_command_reads_an_omnivia_environment_variable` closes that by
+    recording every key actually read from `os.environ` while the four commands
+    run, wherever in the stack the read happens.
 
     R004-11 settled the record that used to be an open question here: this
     convention is accepted, explicit arguments and deterministic built-in defaults

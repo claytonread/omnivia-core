@@ -998,22 +998,155 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
     `$OMNIVIA_HOME` or anything like it would be a path of the caller's choosing
     arriving by another name, and it is that class the assertion below refuses.
 
-    The assertion is unchanged and still fails on any `getenv` or `environ` in the
-    CLI source, `$HOME` included -- so the accepted route to the home directory
-    remains `Path.home()` and never a lookup this package performs itself.
-    R004-11 says so in terms: do not weaken or delete the test merely to make the
-    current implementation pass.
+    The assertion fails on any `getenv` or `environ` in the CLI source, `$HOME`
+    included -- so the accepted route to the home directory remains `Path.home()`
+    and never a lookup this package performs itself. R004-11 says so in terms: do
+    not weaken or delete the test merely to make the current implementation pass.
 
+    **What this scan cannot see, and what covers it.** It matches names, and a
+    stdlib helper reads the environment under a name of its own:
+    `os.path.expandvars("$OMNIVIA_HOME")` does the lookup inside `posixpath` and
+    passes this test in silence. Adding those two lines to `home_directory` was
+    tried -- the guard stayed green and `OMNIVIA_HOME=/tmp/hijacked` redirected the
+    installation root. `from os import environ` is the same hole with a different
+    shape, because the read is then an `ast.Name` and never an `ast.Attribute`.
+    Both names are matched below now, but the class is unbounded and no name scan
+    closes it; `test_no_command_reads_an_omnivia_environment_variable` is the guard
+    that does, by recording what is actually read at runtime.
     """
     import ast
 
     source_root = Path(__file__).resolve().parents[1] / "src" / "omnivia_core_cli"
+    forbidden = {"getenv", "environ", "environb", "expandvars"}
     for path in sorted(source_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in {"getenv", "environ"}:
-                raise AssertionError(f"{path.name} reads the environment")
+            named = (
+                node.attr
+                if isinstance(node, ast.Attribute)
+                else node.id
+                if isinstance(node, ast.Name)
+                else None
+            )
+            if named in forbidden:
+                raise AssertionError(f"{path.name} reads the environment: {named}")
     assert os.name in {"posix", "nt"}
+
+
+#: The environment guard the name scan above cannot be, run as a program.
+#:
+#: `os.environ` is replaced by a recording mapping *before* `omnivia_core_cli` is
+#: imported, so every read the package performs goes through it -- including the
+#: ones it performs by calling somebody else. `os.path.expandvars` reads `os.environ`
+#: inside `posixpath`; `Path.home()` reads `HOME` inside `posixpath.expanduser`;
+#: `from os import environ` binds this object rather than the real one, because the
+#: replacement happens first. None of those is visible to a scan for the word
+#: `environ` in this package's own source.
+#:
+#: What is asserted is R004-11 stated positively: no variable whose name is
+#: OmniVia's is read. `$HOME` is read and is *expected* to be -- the probe asserts
+#: it, because a recorder that captured nothing would pass the real assertion for
+#: the wrong reason.
+#:
+#: What stays outside: a read that never touches `os.environ` -- `/proc/self/environ`,
+#: a C extension calling `getenv(3)`, or a child process's own environment. The
+#: first two are caught by nothing here; the third is deliberate, since
+#: `omnivia-core-service` is a separate programme with its own rules.
+ENVIRONMENT_PROBE = '''
+import collections.abc
+import json
+import os
+import sys
+
+read = []
+
+
+class Recorder(collections.abc.MutableMapping):
+    """`os.environ`, with every key anybody asks for written down."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getitem__(self, key):
+        # Decoded because `os.environb` asks in bytes and the report is JSON.
+        read.append(key if isinstance(key, str) else key.decode("utf-8", "replace"))
+        return self._inner[key]
+
+    def __setitem__(self, key, value):
+        self._inner[key] = value
+
+    def __delitem__(self, key):
+        del self._inner[key]
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
+
+    def copy(self):
+        return self._inner.copy()
+
+
+os.environ = Recorder(os.environ)
+
+from omnivia_core_cli.lifecycle import home_directory
+from omnivia_core_cli.main import main
+
+home, report = sys.argv[1], sys.argv[2]
+default_home = str(home_directory())
+codes = {}
+for command in ("init", "start", "status", "stop"):
+    codes[command] = main(["--home", home, command])
+
+with open(report, "w", encoding="utf-8") as handle:
+    json.dump({"codes": codes, "read": read, "default_home": default_home}, handle)
+'''
+
+
+def test_no_command_reads_an_omnivia_environment_variable(tmp_path: Path) -> None:
+    """R004-11's prohibition, proved by running rather than by reading.
+
+    The AST scan above matches names in this package's own source. This one records
+    what the process actually asks the environment for, so a lookup performed inside
+    the standard library on the CLI's behalf is visible: `os.path.expandvars`,
+    `os.environ.get` reached through any alias, or a `from os import environ` bound
+    before the CLI was imported.
+
+    `OMNIVIA_HOME` is set in the child's environment on purpose. If anything in the
+    package ever consults it, this fails on the read itself rather than on the value
+    happening to change an outcome -- and the default home is asserted unmoved, so
+    both halves of the claim are covered.
+    """
+    # Short, and under `/tmp` rather than macOS's long private temp root: `start`
+    # binds a socket beneath this home and R004-15 caps that path at 86 bytes.
+    workspace = Path(tempfile.mkdtemp(prefix="ove-", dir="/tmp"))
+    probe = workspace / "environment.py"
+    report = workspace / "environment.json"
+    probe.write_text(ENVIRONMENT_PROBE, encoding="utf-8")
+    hijack = str(tmp_path / "hijacked")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(probe), str(workspace / "home"), str(report)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env={**os.environ, "OMNIVIA_HOME": hijack},
+        )
+        assert completed.returncode == 0, completed.stderr
+        audited = json.loads(report.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    assert audited["codes"] == {"init": 0, "start": 0, "status": 0, "stop": 0}
+    omnivia = [name for name in audited["read"] if name.upper().startswith("OMNIVIA")]
+    assert omnivia == [], omnivia
+    assert audited["default_home"] != hijack
+    # The recorder is wired in and being read, so the assertion above is a fact
+    # about the CLI rather than about a probe that captured nothing. `$HOME` is the
+    # read R004-11 accepts, and `Path.home()` is where it comes from.
+    assert "HOME" in audited["read"], audited["read"]
 
 
 # ---------------------------------------------------------------------------
