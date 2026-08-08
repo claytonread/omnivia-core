@@ -1007,8 +1007,9 @@ def _required_ruff_version() -> str:
     return required
 
 
-def _ruff_declarations() -> list[tuple[Path, str, str]]:
-    """Every declared `ruff` requirement, as (pyproject, how-pip-reaches-it, specifier).
+def _declarations(distribution: str) -> list[tuple[Path, str, str]]:
+    """Every declared requirement on `distribution`, as
+    (pyproject, how-pip-reaches-it, specifier).
 
     The middle element is the extra name pip would have to be given to install
     the requirement, or `""` for a PEP 735 dependency group -- which pip cannot
@@ -1034,10 +1035,62 @@ def _ruff_declarations() -> list[tuple[Path, str, str]]:
                     ),
                     default=len(requirement),
                 )
-                if requirement[:index].strip().lower() != "ruff":
+                if requirement[:index].strip().lower() != distribution:
                     continue
                 declarations.append((pyproject, extra, requirement[index:].strip()))
     return declarations
+
+
+def _ruff_declarations() -> list[tuple[Path, str, str]]:
+    return _declarations("ruff")
+
+
+def test_the_mypy_requirement_is_an_exact_pin() -> None:
+    """Every declared `mypy` requirement is an exact `==` pin, and they agree.
+
+    `Run strict mypy` is merge-blocking, and a range let it upgrade ambiently:
+    the same commit got a different verdict depending on when the environment was
+    resolved, and `main` would have begun failing on its own the first time a new
+    mypy release added a check. An exact pin is what makes "repeated clean runs
+    return the same result for the same commit" a property of the repository
+    rather than of the day.
+
+    This is the check that fails if the pin is relaxed back to a range, so the
+    determinism claim is guarded rather than merely asserted in a comment.
+    """
+    declarations = _declarations("mypy")
+    assert declarations, (
+        "no `mypy` requirement is declared anywhere in the tree, so nothing bounds "
+        "the version the merge-blocking strict-mypy gate installs"
+    )
+    for pyproject, _, specifier in declarations:
+        assert specifier.startswith("=="), (
+            f"{pyproject.relative_to(REPO_ROOT)}: declares mypy{specifier}. The strict-mypy "
+            f"gate is merge-blocking, so its analyser must be pinned exactly (`==`) and "
+            f"advanced only by a reviewed dependency change."
+        )
+    pinned = {specifier for _, _, specifier in declarations}
+    assert len(pinned) == 1, f"declared mypy pins disagree: {sorted(pinned)}"
+
+
+def test_the_mypy_pin_is_reachable_by_the_installs_the_gate_runs() -> None:
+    """The pin is installed by the gate rather than merely declared somewhere.
+
+    Same failure mode `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs`
+    covers: a pin in a PEP 735 group, or in an extra the workflow has stopped
+    installing, leaves the gate running whatever pip resolves.
+    """
+    commands = _commands(_step(_steps(), "Install local packages"))
+    reachable = [
+        f"{pyproject.parent.relative_to(REPO_ROOT).as_posix()}[{extra}]"
+        for pyproject, extra, _ in _declarations("mypy")
+        if extra
+    ]
+    assert any(target in command for target in reachable for command in commands), (
+        "the acceptance gate installs no distribution whose extra carries the pinned "
+        f"`mypy` requirement, so the mypy it runs is whatever pip resolves. Declared "
+        f"mypy requirements: {_declarations('mypy')}; install commands: {commands}"
+    )
 
 
 def test_every_declared_ruff_version_matches_the_required_version() -> None:
