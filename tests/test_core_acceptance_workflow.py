@@ -635,9 +635,20 @@ def test_target_audit_accepts_the_exact_required_set() -> None:
 
 
 def test_ruff_covers_the_accepted_clean_scope() -> None:
+    """The step prints the resolved linter, then runs it over the pinned scope.
+
+    Exactly two commands, in that order -- not "the check is in there
+    somewhere". The version print is evidence only if it comes from the same step
+    and the same interpreter as the verdict it explains, and pinning the count is
+    what keeps an unrelated command from joining a merge-blocking step unnoticed.
+    """
     commands = _commands(_step(_steps(), "Run Ruff"))
-    assert len(commands) == 1, f"expected a single Ruff invocation, got: {commands}"
-    _audit_targets(commands[0], "python -m ruff check", REQUIRED_RUFF_TARGETS)
+    assert commands[:1] == ("python -m ruff --version",), (
+        "the merge-blocking Ruff step must print its resolved version before it "
+        f"runs, so the log records which linter produced the verdict: {commands}"
+    )
+    assert len(commands) == 2, f"expected a version print and one Ruff run, got: {commands}"
+    _audit_targets(commands[1], "python -m ruff check", REQUIRED_RUFF_TARGETS)
 
 
 def test_mypy_runs_strict_over_canonical_and_distribution_sources() -> None:
