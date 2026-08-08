@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -57,12 +58,54 @@ def _init(home: Path) -> WorkspaceInitResult:
     )
 
 
-#: The one file whose bytes legitimately move on every run. `_BaseFileLock` writes
-#: the holder's pid into it as advisory diagnostics each time the lock is taken --
-#: ownership is decided by the OS lock and never by reading this file -- so a
-#: comparison that included it would report a *successful* second init as having
-#: changed the workspace. It is excluded here and nowhere else.
+#: The lock file every refusal below is decided under.
 LOCK_PAYLOAD = "workspace/locks/storage.lock"
+
+#: The payload's one genuinely volatile field. `_BaseFileLock._write_payload`
+#: records the holder's pid as advisory diagnostics each time the lock is taken --
+#: ownership is decided by the OS lock and never by reading this file -- so two
+#: runs in different processes write different bytes for identical state.
+VOLATILE_LOCK_FIELD = "pid"
+
+#: What a refusal may leave behind, and the whole of it. Every refusal `_bootstrap`
+#: decides is decided under the lifetime storage lock, so one taken on a tree that
+#: had no `locks/` creates that directory and the lock file inside it. Named once
+#: here rather than restated in each test, and *asserted* rather than filtered out
+#: of the comparison.
+LOCK_RESIDUE = frozenset({"workspace/locks", LOCK_PAYLOAD})
+
+
+def _lock_state(path: Path) -> str:
+    """The lock payload with its pid removed, or its bytes if it is not one.
+
+    **`_digest` used to skip this path outright, and that made the flagship
+    assertion vacuous on the identity-mismatch tree.** That refusal acquires the
+    lock *successfully*, so `_write_payload` truncates and rewrites this file on
+    every refusing run -- proved across two processes by the pid changing from one
+    to the next. It was the only entry those runs wrote, and it was the one entry
+    filtered out of the metric, so `_digest(tmp_path) == before` held for a reason
+    unconnected to the property.
+
+    Normalising the pid rather than skipping the file keeps the exclusion's real
+    justification -- a successful second init in another process must not read as a
+    changed workspace -- while leaving the file's existence, mode, role and holder
+    inside the comparison, where a refusal that deleted the lock, adopted it under
+    another holder, or created one on a tree that had none is now visible.
+
+    Anything that is not a JSON object is digested whole: an empty lock file, which
+    is what a *failed* acquire leaves, is a value here rather than an error.
+    """
+    raw = path.read_bytes()
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        return hashlib.sha256(raw).hexdigest()
+    return json.dumps(
+        {key: value for key, value in payload.items() if key != VOLATILE_LOCK_FIELD},
+        sort_keys=True,
+    )
 
 
 def _digest(root: Path) -> dict[str, str]:
@@ -80,20 +123,29 @@ def _digest(root: Path) -> dict[str, str]:
     under it. `lstat().st_mode` carries the entry's type and permissions together,
     and it is `lstat` rather than `stat` so a dangling symlink is a value here
     rather than an error.
+
+    **Nothing is excluded.** The lock payload was, and `_lock_state` says what that
+    cost; it is normalised now instead, so every path under `root` is in the
+    comparison and what a refusal legitimately writes is asserted by name.
     """
     entries: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         name = str(path.relative_to(root))
-        if name == LOCK_PAYLOAD:
-            continue
         if path.is_symlink():
             content = f"-> {os.readlink(path)}"
         elif path.is_dir():
             content = "directory"
+        elif name == LOCK_PAYLOAD:
+            content = _lock_state(path)
         else:
             content = hashlib.sha256(path.read_bytes()).hexdigest()
         entries[name] = f"{path.lstat().st_mode:o} {content}"
     return entries
+
+
+def _changed(before: dict[str, str], after: dict[str, str]) -> set[str]:
+    """Every entry the two digests disagree about -- created, removed or rewritten."""
+    return {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
 
 
 def _applied(layout: WorkspaceLayout) -> set[int]:
@@ -273,7 +325,115 @@ def test_a_database_whose_manifest_is_gone_is_refused_before_anything_is_written
         assert first.workspace_id is not None
         assert first.workspace_id in result.reason
         assert not layout.manifest_path.exists()
-        assert _digest(tmp_path) == before, attempt
+        assert _changed(before, _digest(tmp_path)) == set(), attempt
+
+
+def test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """The bound on "leaves the tree as it found it", asserted rather than asserted away.
+
+    The test above starts from a workspace `init` itself created, so `locks/`, the
+    lock file, `blobs/`, `indexes/` and the whole installation-state tree already
+    exist and re-creating them is a no-op -- it cannot distinguish "created nothing"
+    from "created everything that was already there". This starts from the tree a
+    tar, a zip or a `git restore` produces, since all three drop empty directories:
+    a surviving `workspace.sqlite`, no manifest, and no `locks/`.
+
+    On that tree the run really does create something, and `LOCK_RESIDUE` is the
+    whole of it. Everything else is named absent, because those are the entries
+    whose creation was the original defect.
+    """
+    seed = tmp_path / "seed"
+    assert _init(seed).status is WorkspaceInitStatus.INITIALISED
+    database = (seed / "workspace" / "workspace.sqlite").read_bytes()
+    shutil.rmtree(seed)
+
+    home = tmp_path / "home"
+    layout = WorkspaceLayout(root=home / "workspace")
+    layout.root.mkdir(parents=True)
+    layout.database_path.write_bytes(database)
+    before = _digest(tmp_path)
+
+    result = initialise_workspace(
+        workspace_root=layout.root,
+        installation_root=home / "installation-state",
+    )
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH
+
+    changed = {name.removeprefix("home/") for name in _changed(before, _digest(tmp_path))}
+    assert changed == LOCK_RESIDUE
+    assert not layout.manifest_path.exists()
+    assert not layout.blobs_path.exists()
+    assert not layout.indexes_path.exists()
+    assert not (home / "installation-state").exists()
+
+
+def test_a_manifest_naming_another_workspace_is_refused_and_says_which(
+    tmp_path: Path,
+) -> None:
+    """`_identity_mismatch`'s `minted=False` sentence, which no test reached.
+
+    Both branches are production-reachable and they say different things. The
+    `minted=True` half -- no manifest at all -- is covered by
+    `test_a_database_whose_manifest_is_gone_is_refused_before_anything_is_written`.
+    This is the other half: a manifest that is present, well-formed and compatible,
+    and names a workspace the database does not hold. Copying one workspace's
+    `workspace.json` beside another's database produces it.
+
+    The database's identity is the one reported, because it is the recoverable
+    fact; the manifest's is what the user has to replace.
+    """
+    first = _init(tmp_path)
+    assert first.workspace_id is not None
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    manifest = json.loads(layout.manifest_path.read_text(encoding="utf-8"))
+    manifest["workspace_id"] = "ws-from-another-workspace"
+    layout.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = _digest(tmp_path)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH
+    # The database's identity, and the manifest named as the thing that disagrees.
+    assert result.workspace_id == first.workspace_id
+    assert first.workspace_id in result.reason
+    assert str(layout.manifest_path) in result.reason
+    assert _changed(before, _digest(tmp_path)) == set()
+
+
+def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """The residual the ordering claim does *not* cover, pinned so it cannot be forgotten.
+
+    `_bootstrap`'s docstring used to say "both refusals reachable from here are
+    decided before the manifest, the layout directories and the installation-state
+    tree are created". Three are reachable, and `WRITE_FAILURE` is the third: it is
+    the storage layer or the filesystem saying no, it can arrive at any point in the
+    sequence, and the last two things it guards -- `create_workspace` and
+    `InstallationLayout.create` -- run *after* the database work has succeeded.
+
+    An installation-state root that is a regular file reaches it by a route with no
+    mocking in it: `_unrecognised_installation_state` returns early because
+    `root.is_dir()` is false, and `InstallationLayout.create` then raises
+    `NotADirectoryError` with a whole workspace already on disk. The claim is
+    therefore about the three refusals that decide *whether this workspace is ours
+    to touch*, and this test is what keeps that qualification honest.
+    """
+    (tmp_path / "installation-state").write_text("not a directory", encoding="utf-8")
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    # A refusal that wrote a manifest, three directories and a database.
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    assert layout.manifest_path.is_file()
+    assert layout.database_path.is_file()
+    assert layout.blobs_path.is_dir()
 
 
 def test_a_busy_workspace_is_refused_before_any_directory_is_created(
@@ -291,15 +451,21 @@ def test_a_busy_workspace_is_refused_before_any_directory_is_created(
     Here the only thing on disk is the `locks/` directory the lock file must live
     in. That is the smallest tree in which a lock can be held at all, and it is the
     one shape in which "created nothing" is a claim with content.
+
+    `before` is taken *after* this test's own `acquire()`, because that call is what
+    creates the lock file and writes a payload into it. Taking it earlier and then
+    excluding the lock from the comparison is what made this assertion vacuous; the
+    digest now sees that file, so the baseline has to be the tree `_init` was
+    actually handed.
     """
     from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 
     layout = WorkspaceLayout(root=tmp_path / "workspace")
     layout.locks_path.mkdir(parents=True)
-    before = _digest(tmp_path)
 
     held = create_lock(layout.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
     assert held.acquire()
+    before = _digest(tmp_path)
     try:
         result = _init(tmp_path)
     finally:
@@ -307,7 +473,7 @@ def test_a_busy_workspace_is_refused_before_any_directory_is_created(
 
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
-    assert _digest(tmp_path) == before
+    assert _changed(before, _digest(tmp_path)) == set()
     assert not layout.manifest_path.exists()
     assert not (tmp_path / "installation-state").exists()
 
@@ -533,14 +699,14 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     closed before the WAL-enabling one is taken, so the whole-tree comparison every
     other refusal test uses applies to this one too.
 
-    `locks/` is pre-created, exactly as in
-    `test_a_busy_workspace_is_refused_before_any_directory_is_created`: a refusal
-    decided under the lifetime storage lock necessarily has a directory to hold the
-    lock file in, and that is the smallest tree in which this refusal is reachable
-    at all.
+    `locks/` is *not* pre-created, and that is the point: this is the smallest tree
+    the refusal is reachable on, so what the run leaves behind is asserted by name
+    rather than assumed away. `LOCK_RESIDUE` is the whole of it -- the directory the
+    lock file must live in, and the lock file -- because the refusal is decided
+    under the lock.
     """
     workspace = tmp_path / "workspace"
-    WorkspaceLayout(root=workspace).locks_path.mkdir(parents=True)
+    workspace.mkdir(parents=True)
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:
         connection.execute("CREATE TABLE receipts (id INTEGER PRIMARY KEY, note TEXT)")
@@ -553,7 +719,7 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     result = _init(tmp_path)
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
-    assert _digest(tmp_path) == before
+    assert _changed(before, _digest(tmp_path)) == LOCK_RESIDUE
 
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:
@@ -572,15 +738,19 @@ def test_a_workspace_another_process_owns_is_refused_without_waiting(
     Taking the same lock is what turns "the database is locked" -- which arrives as
     a busy timeout from SQLite, seconds later and with no advice in it -- into an
     answer that names the thing to do.
+
+    `before` follows this test's own `acquire()` for the reason
+    `test_a_busy_workspace_is_refused_before_any_directory_is_created` gives: that
+    call rewrites the lock payload, and the digest no longer looks away from it.
     """
     from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 
     first = _init(tmp_path)
     layout = WorkspaceLayout(root=tmp_path / "workspace")
-    before = _digest(tmp_path)
 
     held = create_lock(layout.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
     assert held.acquire()
+    before = _digest(tmp_path)
     try:
         result = _init(tmp_path)
     finally:
@@ -589,7 +759,7 @@ def test_a_workspace_another_process_owns_is_refused_without_waiting(
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WORKSPACE_BUSY
     assert result.workspace_id == first.workspace_id
-    assert _digest(tmp_path) == before
+    assert _changed(before, _digest(tmp_path)) == set()
 
 
 # ---------------------------------------------------------------------------
