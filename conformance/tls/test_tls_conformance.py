@@ -584,16 +584,22 @@ def _handshake(
     server.minimum_version = ssl.TLSVersion.TLSv1_2
     server.load_cert_chain(certfile=certificate, keyfile=key)
 
-    to_client, from_client = ssl.MemoryBIO(), ssl.MemoryBIO()
-    to_server, from_server = ssl.MemoryBIO(), ssl.MemoryBIO()
-    peer = server.wrap_bio(from_client, to_client, server_side=True)
-    us = client.wrap_bio(from_server, to_server, server_hostname=server_hostname)
+    # Two BIOs, shared rather than copied: what one side writes out *is* what the
+    # other reads in, so there is no pump step and nothing to get backwards. The
+    # four-BIO arrangement with a copy between them is the obvious way to write
+    # this and it is easy to wire a side's own output back into its own input,
+    # which handshakes into `UNEXPECTED_MESSAGE` -- a plausible-looking refusal
+    # that is not the certificate verification failure under test, and one that
+    # every negative case would have "passed" on had they asserted less
+    # specifically than the packet requires.
+    client_to_server, server_to_client = ssl.MemoryBIO(), ssl.MemoryBIO()
+    us = client.wrap_bio(
+        server_to_client, client_to_server, server_hostname=server_hostname
+    )
+    peer = server.wrap_bio(client_to_server, server_to_client, server_side=True)
 
     for _ in range(20):
-        for side, outgoing, incoming in (
-            (us, to_server, from_server),
-            (peer, to_client, from_client),
-        ):
+        for side in (us, peer):
             try:
                 side.do_handshake()
             except ssl.SSLWantReadError:
@@ -602,7 +608,6 @@ def _handshake(
                 return f"verify:{error.verify_code}:{error.verify_message}"
             except ssl.SSLError as error:
                 return f"alert:{error.reason}"
-            incoming.write(outgoing.read())
         if us.cipher() is not None and peer.cipher() is not None:
             return "established"
     return "unsettled"
