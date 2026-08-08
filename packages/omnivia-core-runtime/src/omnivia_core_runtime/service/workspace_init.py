@@ -128,6 +128,32 @@ from omnivia_core_runtime.workspace.manifest_store import (
 
 #: Version of the machine-readable result document below. Bumped when a consumer
 #: would have to change to keep reading it; additive fields do not bump it.
+#:
+#: **The symbolic codes in this document are compatibility-controlled from 1.0
+#: onward.** That means the *serialised strings* of `WorkspaceInitStatus` and
+#: `WorkspaceInitRefusal`, not their Python member names: an out-of-repo adapter
+#: branches on `"unrelated_directory"`, and it never sees the identifier
+#: `UNRELATED_DIRECTORY`. So renaming a member is a refactor; changing the string
+#: beside it, or moving a case from one string to another, is a wire break and
+#: requires a version increment and a published mapping. Owner resolution 006
+#: R006-07 rules this after a round of this packet moved the foreign-database case
+#: from `write_failure` to `unrelated_directory` while leaving `1.0` in place --
+#: "the absence of an in-repo positional consumer does not prove the absence of an
+#: external consumer".
+#:
+#: `test_every_published_code_serialises_to_its_pinned_wire_value` is the control.
+#: Before it existed, renaming `unrelated_directory` to anything at all left the
+#: whole suite green: every other assertion in the tree compares against
+#: `WorkspaceInitRefusal.X.value`, which moves with the mutation.
+#:
+#: **What 1.0 is, on the accepted record.** Nothing. This module has never been in
+#: an accepted baseline -- absent from `origin/main`, absent from baseline pointer
+#: 009's commit `27a958fd`, no tag and no release anywhere in the repository, and
+#: no consumer of `workspace_init_version` in any sibling repository. So the wire
+#: value that "moved" moved only inside this unmerged branch, there is no prior
+#: accepted value to restore, and this packet is the *first* publication of 1.0
+#: rather than a change to it. The control above is what makes that first
+#: publication binding.
 WORKSPACE_INIT_VERSION: Final = "1.0"
 
 #: The workspace format a new workspace is created in. Mirrors
@@ -245,6 +271,16 @@ class WorkspaceInitRefusal(str, Enum):
 
     `WRITE_FAILURE` now means only what it says. It is also the one refusal the
     ordering in `_bootstrap` does not bound -- see that docstring.
+
+    **Every value below is a literal, and that is a contract rather than a style.**
+    R006-07 requires that a refusal code never depend on declaration position, so
+    `auto()`, an implicit `_generate_next_value_`, and any integer counter are all
+    excluded: with those, inserting a member above another silently renumbers the
+    wire. The strings are what `WORKSPACE_INIT_VERSION` declares
+    compatibility-controlled from 1.0 onward, and
+    `test_a_refusal_code_never_depends_on_its_declaration_position` enforces the
+    literal-value rule over this source. Reorder these six freely; rewrite one of
+    the strings and the contract has broken.
     """
 
     INCOMPATIBLE_MANIFEST = "incompatible_manifest"

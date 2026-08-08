@@ -23,6 +23,7 @@ truncating a file would pass a status assertion on its own.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -1093,7 +1094,7 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "reason",
         "workspace",
     }
-    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.0"
     workspace = document["workspace"]
     assert isinstance(workspace, dict)
     assert set(workspace) == {
@@ -1103,6 +1104,122 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "workspace_format_version",
     }
     assert json.dumps(document)  # the whole result is serialisable as it stands
+
+
+#: The whole wire vocabulary of `workspace_init_version` 1.0, written out by hand.
+#:
+#: Written out, and not derived from the enums, because deriving it from the thing
+#: under test is how the suite arrived here: every refusal assertion in this file
+#: compares against `WorkspaceInitRefusal.X.value`, which moves with any rename, so
+#: renaming `unrelated_directory` left 2895 tests green. This is the one place the
+#: strings exist independently of the code that emits them, and editing it is
+#: therefore the deliberate act of changing a published contract.
+#:
+#: Member *names* are the keys only so a failure names which code moved. What is
+#: contractual is the values: an out-of-repo adapter branches on
+#: `"unrelated_directory"` and never sees the identifier beside it.
+WORKSPACE_INIT_WIRE_1_0 = {
+    "status": {
+        "INITIALISED": "initialised",
+        "ALREADY_INITIALISED": "already_initialised",
+        "REFUSED": "refused",
+    },
+    "refusal": {
+        "INCOMPATIBLE_MANIFEST": "incompatible_manifest",
+        "UNRELATED_DIRECTORY": "unrelated_directory",
+        "UNRECOGNISED_INSTALLATION_STATE": "unrecognised_installation_state",
+        "WORKSPACE_IDENTITY_MISMATCH": "workspace_identity_mismatch",
+        "WORKSPACE_BUSY": "workspace_busy",
+        "WRITE_FAILURE": "write_failure",
+    },
+}
+
+
+def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
+    """R006-07: the published vocabulary of 1.0, by exact serialised value.
+
+    Two hops are checked, because a value can be right in the enum and wrong on
+    the wire. First the enums against the fixture above, by dict equality in both
+    directions -- so an added code, a removed code and a changed string all fail,
+    and a code that exists but is never published cannot hide. Then every member
+    through `to_dict()`, which is what an adapter actually reads.
+
+    **What this replaces.** Nothing pinned these strings. `unrelated_directory` was
+    renamed to `somebody_elses_directory` and the full suite -- 2840 phase 3 plus 55
+    CLI -- stayed green, because the only two assertions that looked at a serialised
+    code compared it to `WorkspaceInitRefusal.X.value` and to `WORKSPACE_INIT_VERSION`,
+    both of which move with the mutation.
+
+    `1.0` is asserted as a literal for the same reason.
+    """
+    assert WORKSPACE_INIT_VERSION == "1.0"
+    assert {
+        member.name: member.value for member in WorkspaceInitStatus
+    } == WORKSPACE_INIT_WIRE_1_0["status"]
+    assert {
+        member.name: member.value for member in WorkspaceInitRefusal
+    } == WORKSPACE_INIT_WIRE_1_0["refusal"]
+
+    for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
+        document = WorkspaceInitResult(
+            status=WorkspaceInitStatus.REFUSED,
+            reason="pinning the wire value",
+            refusal=WorkspaceInitRefusal[name],
+        ).to_dict()
+        assert document["refusal"] == wire
+        assert document["status"] == "refused"
+        assert document["workspace_init_version"] == "1.0"
+
+
+def test_a_refusal_code_never_depends_on_its_declaration_position() -> None:
+    """R006-07: reordering the declarations must not move the wire contract.
+
+    The property is about the *mechanism*, so it is checked over the source rather
+    than over the imported enum: every member of both published enums is assigned a
+    string literal. `auto()`, an implicit `_generate_next_value_` and a bare integer
+    counter are each excluded by that, and each is a way for inserting one member
+    above another to silently renumber every member below it -- which is exactly the
+    failure R006-07 exists to prevent, and which no fixture comparison would catch
+    until an adapter in another repository broke.
+
+    Mutation-tested by actually reordering. The six refusals were reversed in the
+    source, and this test and the fixture one above both stayed green: that is the
+    contract holding, and it is the point. Replacing one literal with `auto()` turns
+    both red -- this one because the value is not a string constant, the other
+    because `auto()` numbers from 1.
+
+    The source-declared pairs are then compared to the imported enum, so this cannot
+    pass by reading a class that no longer exists or a member the runtime dropped.
+    """
+    import ast
+
+    source = Path(inspect.getfile(WorkspaceInitRefusal)).read_text(encoding="utf-8")
+    declared: dict[str, dict[str, str]] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if node.name not in {"WorkspaceInitStatus", "WorkspaceInitRefusal"}:
+            continue
+        members: dict[str, str] = {}
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            target = statement.targets[0]
+            assert isinstance(target, ast.Name), f"{node.name}: unexpected member form"
+            value = statement.value
+            assert isinstance(value, ast.Constant) and isinstance(value.value, str), (
+                f"{node.name}.{target.id} is not a string literal, so its wire value "
+                "depends on where it is declared"
+            )
+            members[target.id] = value.value
+        declared[node.name] = members
+
+    assert declared["WorkspaceInitStatus"] == {
+        member.name: member.value for member in WorkspaceInitStatus
+    }
+    assert declared["WorkspaceInitRefusal"] == {
+        member.name: member.value for member in WorkspaceInitRefusal
+    }
 
 
 def test_a_new_workspace_is_created_in_a_format_this_build_can_open(
