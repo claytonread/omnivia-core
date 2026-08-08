@@ -249,19 +249,46 @@ def test_the_zero_argument_home_is_the_fixed_convention(tmp_path: Path) -> None:
 #:
 #: So the property is checked at runtime instead, by the interpreter rather than by
 #: a reader of the source. `sqlite3.connect` is a CPython audit event raised inside
-#: the C implementation on every connection, whatever route reached it: literal
-#: import, computed import, `__import__`, a C extension calling the module, an
-#: `exec` of a string assembled at runtime. The hook is installed before
-#: `omnivia_core_cli` is imported, so nothing the CLI does afterwards is outside it.
+#: `Modules/_sqlite/`, so it fires whatever route reached *that module*: literal
+#: import, computed import, `__import__`, or an `exec` of a string assembled at
+#: runtime. The hook is installed before `omnivia_core_cli` is imported, so nothing
+#: the CLI does afterwards is outside it.
 #:
 #: **What this cannot see, stated so the guard is not read as more than it is.**
-#: Only this process: `init` and `start` launch `omnivia-core-service`, which opens
+#:
+#: Only this process. `init` and `start` launch `omnivia-core-service`, which opens
 #: the database as its whole job, and audit hooks are not inherited across `exec`.
-#: That is the division being asserted, not a gap. Only the commands run below, so
-#: a database opened by a code path none of them reach is not covered. And only
-#: SQLite -- a CLI that opened a Postgres socket would raise no audit event and is
-#: caught, if at all, by the AST scan's import check.
-AUDIT_PROBE = '''
+#: That is the division being asserted, not a gap.
+#:
+#: Only the commands run below, so a database opened by a code path none of them
+#: reach is not covered.
+#:
+#: **And only the stdlib `sqlite3` module -- not "only SQLite", which is what this
+#: paragraph used to say and is not true.** The event is raised by CPython's
+#: `_sqlite3`, not by libsqlite3, so any route that reaches the C library without
+#: going through that module raises nothing at all:
+#: `ctypes.CDLL(ctypes.util.find_library("sqlite3")).sqlite3_open(...)` created an
+#: 8192-byte database with zero `sqlite3.*` events and left this suite at its exact
+#: baseline.
+#:
+#: The reachable half of that is now watched, and not by looking for the word
+#: "sqlite" in a library name -- which would be the same defeated-by-a-value scan
+#: one layer down. Loading a shared library is itself audited, so what the hook
+#: records is *any* named `ctypes.dlopen`, whatever the library. The unnamed one is
+#: allowed through because `import ctypes` performs it on itself:
+#: `ctypes/__init__.py` runs `pythonapi = PyDLL(None)`, and
+#: `omnivia_core_client.discovery` imports ctypes for the peer-credential syscall.
+#: `arguments[0] is None` is exactly that case and nothing else.
+#: `test_the_audit_hook_sees_the_route_that_walks_past_the_source_scan` runs the
+#: bypass through this same hook and asserts it is caught, so the watch is not
+#: itself taken on trust.
+#:
+#: What stays outside: a compiled extension module linked against libsqlite3 at
+#: build time calls it with no `dlopen` and no `sqlite3.*` event, and neither a hook
+#: nor a static scan closes that. It is a bound on the claim, not a to-do. A CLI
+#: that opened a Postgres socket is outside all of this and is caught, if at all, by
+#: the AST scan's import check.
+AUDIT_HOOK = '''
 import json
 import sys
 
@@ -270,8 +297,12 @@ observed = []
 
 def watch(event, arguments):
     """Record every SQLite connection and every forbidden import, and nothing else."""
-    if event.startswith("sqlite3."):
+    if event.startswith("sqlite3.") or event == "ctypes.dlsym":
         observed.append(event)
+    elif event == "ctypes.dlopen" and arguments and arguments[0] is not None:
+        # Named libraries only. `import ctypes` dlopens the running interpreter
+        # with no name, and the CLI reaches that through `omnivia_core_client`.
+        observed.append("ctypes.dlopen " + str(arguments[0]))
     elif event == "import" and arguments and str(arguments[0]).split(".")[0] in (
         "sqlite3",
         "omnivia_core_runtime",
@@ -280,7 +311,9 @@ def watch(event, arguments):
 
 
 sys.addaudithook(watch)
+'''
 
+AUDIT_PROBE = AUDIT_HOOK + '''
 from omnivia_core_cli.main import main
 
 home, report = sys.argv[1], sys.argv[2]
@@ -290,6 +323,25 @@ for command in ("init", "start", "status", "stop"):
 
 with open(report, "w", encoding="utf-8") as handle:
     json.dump({"codes": codes, "observed": observed}, handle)
+'''
+
+#: The bypass, run through the *same* hook source so the guard above is falsified
+#: rather than assumed. See `AUDIT_PROBE`.
+AUDIT_BYPASS_PROBE = AUDIT_HOOK + '''
+import ctypes
+import ctypes.util
+import os
+
+database, report = sys.argv[1], sys.argv[2]
+library = ctypes.util.find_library("sqlite3")
+handle = ctypes.c_void_p()
+opened = ctypes.CDLL(library)
+opened.sqlite3_open(database.encode(), ctypes.byref(handle))
+opened.sqlite3_exec(handle, b"CREATE TABLE t (id INTEGER PRIMARY KEY)", None, None, None)
+opened.sqlite3_close(handle)
+
+with open(report, "w", encoding="utf-8") as handle:
+    json.dump({"observed": observed, "size": os.path.getsize(database)}, handle)
 '''
 
 
@@ -325,6 +377,49 @@ def test_no_command_opens_a_database_or_imports_the_runtime_in_this_process(
     # fact about a working CLI rather than about one that refused four times.
     assert audited["codes"] == {"init": 0, "start": 0, "status": 0, "stop": 0}
     assert audited["observed"] == [], audited["observed"]
+
+
+def test_the_audit_hook_sees_the_route_that_walks_past_the_source_scan() -> None:
+    """The guard, falsified rather than trusted. See `AUDIT_PROBE`.
+
+    `sqlite3.connect` is raised by CPython's `_sqlite3`, not by libsqlite3, so
+    `ctypes.CDLL(...).sqlite3_open()` opens a real database and raises no
+    `sqlite3.*` event at all -- it did exactly that, leaving 8192 bytes on disk
+    while this suite stayed at its exact baseline. The docstring above used to say
+    the guard's third limit was "only SQLite", which reads as all SQLite access
+    being covered.
+
+    This runs that bypass through the same `AUDIT_HOOK` source the real probe
+    installs, so what is asserted is the hook the CLI is judged by and not a copy of
+    it. Without it, watching `ctypes.dlopen` would be one more guard that cannot see
+    the thing it guards.
+
+    The database's size is asserted too: a bypass that failed to open anything would
+    raise no event either, and would be a clean bill of health for nothing happening.
+    """
+    workspace = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    probe = workspace / "bypass.py"
+    report = workspace / "audit.json"
+    probe.write_text(AUDIT_BYPASS_PROBE, encoding="utf-8")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(probe), str(workspace / "bypass.sqlite"), str(report)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        audited = json.loads(report.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    assert audited["size"] > 0, "the bypass has to really open a database"
+    # Not one `sqlite3.*` event among them -- which is the limit being stated.
+    assert [event for event in audited["observed"] if event.startswith("sqlite3.")] == []
+    assert [
+        event for event in audited["observed"] if event.startswith("ctypes.dlopen ")
+    ], audited["observed"]
 
 
 def test_the_init_result_document_is_the_whole_of_the_services_stdout(
