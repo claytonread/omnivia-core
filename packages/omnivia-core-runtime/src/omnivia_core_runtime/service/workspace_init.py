@@ -100,7 +100,6 @@ from omnivia_core_runtime.storage.backup import (
 )
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
-    SchemaCreationRefused,
     StorageError,
     fingerprint_schema,
     open_database,
@@ -200,6 +199,19 @@ class WorkspaceInitRefusal(str, Enum):
     filesystem said no" was untrue; and the state it names has its own remedy --
     restore the manifest the database's workspace had, or point `--workspace`
     somewhere else -- which is not the remedy for a full disk.
+
+    **`UNRELATED_DIRECTORY` has two arrival points, and the second was misnamed for
+    the same reason.** A workspace root holding somebody's files is found by listing
+    it, before the lock. A `workspace.sqlite` holding somebody's *tables* is not:
+    that filename is a permitted layout entry, so `unexpected_entries()` cannot see
+    it, and the fact is only readable by opening the database. That case reached
+    callers as `WRITE_FAILURE` -- the `SchemaCreationRefused` from
+    `bootstrap_generation_one`'s pristine branch, caught and reported as a write
+    that failed. Nothing failed to write. It is one refusal with one remedy, so it
+    is one name, and the sentence says which of the two it is.
+
+    `WRITE_FAILURE` now means only what it says. It is also the one refusal the
+    ordering in `_bootstrap` does not bound -- see that docstring.
     """
 
     INCOMPATIBLE_MANIFEST = "incompatible_manifest"
@@ -522,8 +534,29 @@ def _bootstrap(
                     layout, installation_root, existing.workspace_id, minted
                 )
             if populated:
-                raise SchemaCreationRefused(
-                    "pristine bootstrap requires an empty database; this one has tables"
+                # **Named for what it is, and it used to be `WRITE_FAILURE`.** This
+                # reached the caller as the `SchemaCreationRefused` that
+                # `bootstrap_generation_one`'s pristine branch raises, caught by the
+                # `except` below and reported as "the filesystem said no" -- which
+                # the enum's own docstring says is untrue for this class, and which
+                # is the same misnaming `WORKSPACE_IDENTITY_MISMATCH` was carved out
+                # of. Nothing failed to write. This is R004-10's second refusal
+                # arriving one layer down: a directory holding somebody else's data,
+                # found by reading the database rather than by listing the root,
+                # because `workspace.sqlite` is a *permitted* layout entry and so is
+                # invisible to `unexpected_entries()`.
+                return WorkspaceInitResult(
+                    status=WorkspaceInitStatus.REFUSED,
+                    refusal=WorkspaceInitRefusal.UNRELATED_DIRECTORY,
+                    reason=(
+                        f"{layout.database_path} is a database this build did not "
+                        "create and cannot adopt: it already holds tables and no "
+                        "OmniVia workspace state. Nothing was written -- "
+                        "initialising here would mix a workspace into somebody "
+                        "else's data"
+                    ),
+                    workspace_root=layout.root,
+                    installation_root=installation_root,
                 )
 
             connection = open_database(

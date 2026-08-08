@@ -686,10 +686,17 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
 ) -> None:
     """A `workspace.sqlite` carrying somebody's tables is not empty scaffolding.
 
-    `bootstrap_generation_one`'s pristine branch refuses a database that already has
-    tables, and this proves that refusal is carried out to the caller as a result
-    rather than escaping as a traceback -- and that the file survives it byte for
-    byte, not merely with its rows readable.
+    This proves the refusal is carried out to the caller as a result rather than
+    escaping as a traceback -- and that the file survives it byte for byte, not
+    merely with its rows readable.
+
+    **The refusal is `UNRELATED_DIRECTORY`, and it used to be `WRITE_FAILURE`.** It
+    arrived as the `SchemaCreationRefused` that `bootstrap_generation_one`'s
+    pristine branch raises, was caught with the `OSError`s, and was reported under a
+    name whose own docstring says it means the filesystem said no. Nothing failed to
+    write. It is R004-10's second refusal reached one layer down: `workspace.sqlite`
+    is a permitted layout entry, so `unexpected_entries()` cannot see that this
+    directory is somebody else's and only the database can say so.
 
     **`_digest` used to be excluded here, and the exclusion was a real limit rather
     than a stylistic one.** `init` took its exclusive connection before deciding
@@ -718,7 +725,9 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
 
     result = _init(tmp_path)
     assert result.status is WorkspaceInitStatus.REFUSED
-    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    assert result.refusal is WorkspaceInitRefusal.UNRELATED_DIRECTORY
+    # The database is named, so a user can see which file was declined.
+    assert str(workspace / "workspace.sqlite") in result.reason
     assert _changed(before, _digest(tmp_path)) == LOCK_RESIDUE
 
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
