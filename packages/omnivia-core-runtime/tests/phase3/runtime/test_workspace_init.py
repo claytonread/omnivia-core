@@ -27,6 +27,8 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,17 @@ def _lock_state(path: Path) -> str:
     changed workspace -- while leaving the file's existence, mode, role and holder
     inside the comparison, where a refusal that deleted the lock, adopted it under
     another holder, or created one on a tree that had none is now visible.
+
+    **That justification is a claim about two processes, and for a while nothing
+    exercised it.** Every test in this file called `initialise_workspace` in-process,
+    so the pid written by one run and the next was `os.getpid()` both times and never
+    differed. Replacing this function's body with a plain `sha256(path.read_bytes())`
+    left all 42 tests green, and so did pointing `VOLATILE_LOCK_FIELD` at a key the
+    payload does not have. `test_two_refusing_processes_differ_only_by_the_lock_pid`
+    is what closes that: it runs two real refusing `init` processes, asserts their
+    pids differ and that the lock file's raw bytes really moved, and then asserts the
+    digest reads the tree as unchanged. Without the normalisation that last assertion
+    fails.
 
     Anything that is not a JSON object is digested whole: an empty lock file, which
     is what a *failed* acquire leaves, is a value here rather than an error.
@@ -379,6 +392,106 @@ def test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else(
     assert not layout.blobs_path.exists()
     assert not layout.indexes_path.exists()
     assert not (home / "installation-state").exists()
+
+
+#: One refusing `init`, as a separate programme. The pid in the lock payload is
+#: only volatile across a process boundary, so the normalisation `_lock_state`
+#: performs cannot be exercised by any in-process call.
+#:
+#: It reports the module it actually imported. `omnivia_core_runtime` resolves
+#: through the environment's installed distribution rather than through this file's
+#: location, so a child interpreter can silently import a *different* checkout's
+#: copy and report a clean result for code nobody edited. Asserted below rather
+#: than assumed.
+REFUSING_INIT = """
+import json
+import os
+import sys
+from pathlib import Path
+
+from omnivia_core_runtime.service import workspace_init
+
+home = Path(sys.argv[1])
+result = workspace_init.initialise_workspace(
+    workspace_root=home / "workspace",
+    installation_root=home / "installation-state",
+)
+print(
+    json.dumps(
+        {
+            "refusal": None if result.refusal is None else result.refusal.value,
+            "pid": os.getpid(),
+            "module": workspace_init.__file__,
+        }
+    )
+)
+"""
+
+
+def _refuse_in_a_child(home: Path) -> dict[str, object]:
+    """Run one `init` against `home` in its own interpreter and report what it did."""
+    completed = subprocess.run(
+        [sys.executable, "-c", REFUSING_INIT, str(home)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    reported: dict[str, object] = json.loads(completed.stdout)
+    # The child imported the module this test is about, and not another checkout's.
+    assert reported["module"] == sys.modules[initialise_workspace.__module__].__file__
+    return reported
+
+
+def test_two_refusing_processes_differ_only_by_the_lock_pid(tmp_path: Path) -> None:
+    """The one claim `_lock_state` exists for, and the only test that can make it.
+
+    `_lock_state` drops the pid from the lock payload before digesting it, and its
+    justification is that a refusing run in *another* process must not read as a
+    changed workspace. Every other test here calls `initialise_workspace` in-process,
+    where `os.getpid()` is the same integer on every run -- so the normalisation was
+    inert. Gutting it to `sha256(path.read_bytes())`, or pointing
+    `VOLATILE_LOCK_FIELD` at a key that is not in the payload, left all 42 tests
+    green. A helper nothing exercises is a claim nothing checks.
+
+    The tree is the one `test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else`
+    builds: a surviving `workspace.sqlite`, no manifest, no `locks/`. That refusal
+    *acquires* the lock successfully, which is what makes it rewrite the payload --
+    a refusal that failed to acquire would leave the file alone and prove nothing.
+
+    Three assertions, and the middle one is what stops this passing vacuously. The
+    pids differ, so the premise holds. The lock file's raw bytes differ, so there is
+    genuinely something for the normalisation to absorb. And the digest reads the
+    tree as unchanged -- which is false the moment `_lock_state` stops removing the
+    pid.
+    """
+    seed = tmp_path / "seed"
+    assert _init(seed).status is WorkspaceInitStatus.INITIALISED
+    database = (seed / "workspace" / "workspace.sqlite").read_bytes()
+    shutil.rmtree(seed)
+
+    home = tmp_path / "home"
+    layout = WorkspaceLayout(root=home / "workspace")
+    layout.root.mkdir(parents=True)
+    layout.database_path.write_bytes(database)
+    lock = layout.locks_path / "storage.lock"
+
+    first = _refuse_in_a_child(home)
+    before, raw_before = _digest(home), lock.read_bytes()
+    second = _refuse_in_a_child(home)
+    after, raw_after = _digest(home), lock.read_bytes()
+
+    assert first["refusal"] == WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH.value
+    assert second["refusal"] == first["refusal"]
+    # Two real processes, so the pid is genuinely volatile here and nowhere else.
+    assert first["pid"] != second["pid"]
+    assert json.loads(raw_after)["pid"] == second["pid"]
+    # The file really was rewritten. Without this the assertion below would hold
+    # for a lock nobody touched.
+    assert raw_before != raw_after
+    # And the metric says the workspace is as it was, which is the property.
+    assert _changed(before, after) == set()
 
 
 def test_a_manifest_naming_another_workspace_is_refused_and_says_which(
