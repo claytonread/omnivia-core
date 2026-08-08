@@ -866,6 +866,20 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     rather than assumed away. `LOCK_RESIDUE` is the whole of it -- the directory the
     lock file must live in, and the lock file -- because the refusal is decided
     under the lock.
+
+    **The mtime is asserted by hand, because `_digest` is structurally unable to see
+    it.** The digest carries mode and content; a timestamp is neither. `init` ran
+    `layout.database_path.touch()` unconditionally, and `Path.touch` on a file that
+    exists is `os.utime(path, None)` -- so refusing somebody else's database moved
+    its mtime and atime on every attempt while `_changed(...) == LOCK_RESIDUE`, the
+    flagship "not a byte moved" metric, stayed green. Extending the digest with
+    timestamps was the alternative and is wrong for this suite: the lock file's
+    mtime legitimately moves on every refusal, so it would have to be excluded
+    exactly where the last repair went to the trouble of putting it back.
+
+    `atime` is deliberately not asserted. The vet opens and reads this file, and a
+    read moves atime on a filesystem that records one; only mtime is a fact about
+    whether we wrote.
     """
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -876,6 +890,10 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
         connection.commit()
     finally:
         connection.close()
+    # Pinned to a fixed instant rather than sampled, so this does not depend on the
+    # filesystem's timestamp resolution or on the run taking measurable time.
+    stamped = 1_000_000_000
+    os.utime(workspace / "workspace.sqlite", (stamped, stamped))
     before = _digest(tmp_path)
 
     result = _init(tmp_path)
@@ -884,6 +902,7 @@ def test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped(
     # The database is named, so a user can see which file was declined.
     assert str(workspace / "workspace.sqlite") in result.reason
     assert _changed(before, _digest(tmp_path)) == LOCK_RESIDUE
+    assert (workspace / "workspace.sqlite").stat().st_mtime == stamped
 
     connection = sqlite3.connect(str(workspace / "workspace.sqlite"))
     try:

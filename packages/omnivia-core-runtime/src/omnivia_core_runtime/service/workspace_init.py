@@ -515,7 +515,13 @@ def _bootstrap(
     `layout.database_path.touch()` is no exception, because **a refusal is
     unreachable on the tree where this call is what created it**: a workspace with
     no database cannot hold the wrong workspace, cannot be somebody else's and
-    cannot disagree with this manifest.
+    cannot disagree with this manifest. That was an argument about *creation*, and
+    the call it defended was unconditional -- `Path.touch` on an existing file is
+    `os.utime`, so every refusal moved the mtime and atime of the database it was
+    declining to adopt. It is guarded by `exists()` now, and
+    `test_a_database_that_is_not_ours_is_refused_rather_than_bootstrapped` pins the
+    mtime, because the digest that proves the rest of this paragraph cannot: it
+    records mode and content, and a timestamp is neither.
 
     `locks/` and the lock file inside it are the genuine bound: every refusal here
     is decided under the lock, so one taken on a tree that had no `locks/` leaves
@@ -526,6 +532,14 @@ def _bootstrap(
     that residue by name on the smallest tree the refusal is reachable on. It is the
     whole of what "as it found it" excludes: no manifest, no layout directory, no
     installation state, and not a byte of an existing database.
+
+    **"As it found it" is bounded by what the metric can see, and the metric is not
+    the filesystem.** `_digest` compares each entry's `lstat` mode and its content
+    hash, so what these tests prove is that no entry was created, removed, retyped,
+    re-permissioned or rewritten. Ownership and extended attributes are outside it
+    entirely. Timestamps are outside it too, and the mtime the `touch` above used to
+    move is the one case pinned by hand rather than by the digest -- atime is not
+    pinned even there, because the vet has to read the file and a read moves it.
 
     **The database's bytes are part of that claim, and making them so is why the vet
     is a separate open.** `journal_mode = WAL` rewrites the header of whatever file
@@ -585,7 +599,18 @@ def _bootstrap(
             # exist cannot be the wrong one, cannot be somebody else's and cannot
             # hold a workspace this manifest disagrees with. Every refusal below
             # needs a database that was already there.
-            layout.database_path.touch()
+            #
+            # **The `exists()` guard is what makes that true of the call and not
+            # only of the creation, and it was missing.** `Path.touch` on a file
+            # that is already there is `os.utime(path, None)`, so running it
+            # unconditionally moved the mtime and atime of a database this run was
+            # about to refuse to adopt. The refusal was still correct and no byte
+            # of the contents changed -- which is exactly why nothing caught it:
+            # the digest every refusal test in this suite compares records mode and
+            # content, and a timestamp is neither. Under the lifetime storage lock,
+            # so the check and the create cannot be raced apart.
+            if not layout.database_path.exists():
+                layout.database_path.touch()
             # Vetted first, through a connection that does not enable WAL. Setting
             # `journal_mode = WAL` rewrites the header of whatever file it opened,
             # so an exclusive open taken *before* the refusal is decided changes a
