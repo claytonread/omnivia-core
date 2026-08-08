@@ -63,11 +63,17 @@ and written -- `layout.exists()` asks about the manifest path -- before the
 exclusive open discovered it disagreeing. The refusal was correct and the manifest
 it had just written stayed, so every later run refused too and no shipped command
 could initialise that installation again. The order above is the fix, and it is an
-order rather than a rollback: nothing is written until the database work has
-succeeded, so there is nothing to take back and no window in which a crash could
-leave a half-taken-back tree. `WORKSPACE_BUSY` was the same defect with a different
-trigger -- it created ten directories on its way to refusing -- and the same
-reordering closes it.
+order rather than a rollback: no manifest, no layout directory and no installation
+state is written until the database work has succeeded, so there is nothing to take
+back and no window in which a crash could leave a half-taken-back tree.
+`WORKSPACE_BUSY` was the same defect with a different trigger -- it created ten
+directories on its way to refusing -- and the same reordering closes it.
+
+**The claim is bounded, and `_bootstrap`'s docstring states the bound rather than
+rounding it up.** It covers the three refusals that decide whether this workspace is
+ours to touch, and not `WRITE_FAILURE`, which the storage layer or the filesystem
+can raise after a manifest is already on disk. What those three leave behind is
+`workspace/locks/` and the lock file they were decided under.
 
 **What "changed" counts.** `apply_pending_migrations` is a third thing that moves,
 separately from the manifest and the substrate row, and it is reported. A run that
@@ -418,11 +424,13 @@ def _bootstrap(
     as an answer, and two concurrent inits would race on the substrate.
 
     **The order below is the whole of "a refusal leaves the tree as it found it",
-    and it is an order rather than a rollback.** Both refusals reachable from here
-    are decided before the manifest, the layout directories and the
+    and it is an order rather than a rollback.** The claim covers the three refusals
+    that decide *whether this workspace is ours to touch* -- `WORKSPACE_BUSY`,
+    `WORKSPACE_IDENTITY_MISMATCH`, and the `UNRELATED_DIRECTORY` a foreign database
+    earns. Each is decided before the manifest, the layout directories and the
     installation-state tree are created, so there is nothing to undo and no window
     in which a crash could leave a half-undone one behind. It used to run the other
-    way round, and both refusals wrote:
+    way round, and both refusals that then existed wrote:
 
     - `WORKSPACE_BUSY` created ten directories and, on a workspace with no manifest,
       wrote one -- so refusing a workspace a running service owned left a tree
@@ -435,16 +443,42 @@ def _bootstrap(
       run refused against it and no shipped command could initialise that
       installation again.
 
-    Two things are created ahead of the refusals, and the claim is bounded rather
-    than absolute. The empty database file is no exception to the rule, because **a
-    refusal is unreachable on the tree where this call is what created it**: a
-    workspace with no database cannot hold the wrong workspace, cannot be somebody
-    else's and cannot disagree with this manifest, so neither
-    `WORKSPACE_IDENTITY_MISMATCH` nor the storage layer's own refusals can be the
-    answer. `locks/` and the lock file inside it are the genuine bound: every
-    refusal below is decided under the lock, so one taken on a tree that had no
-    `locks/` leaves that directory and its lock file behind. It is the whole of what
-    "as it found it" excludes -- no manifest, no layout directory, no
+    **`WRITE_FAILURE` is not one of the three, and this paragraph used to imply it
+    was** by counting two refusals where there are now three. It is the storage
+    layer or the filesystem saying no; it can arrive at any point in the sequence,
+    and the last two things it guards -- `create_workspace` and
+    `InstallationLayout.create` -- run *after* the database work has succeeded. An
+    installation-state root that is a regular file reaches it with a whole workspace
+    already on disk, by a route with nothing injected in it:
+    `_unrecognised_installation_state` returns early because `root.is_dir()` is
+    false, and `InstallationLayout.create` then raises `NotADirectoryError`.
+    `test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so` holds that
+    open. Ordering is what makes the three refusals above cost nothing; it is not a
+    transaction, and no ordering turns a failing `mkdir` into one.
+
+    Three filesystem writes precede all database work on every path, and the claim
+    is bounded rather than absolute.
+
+    `layout.root.mkdir(parents=True, exist_ok=True)` creates the workspace root
+    *and every missing parent*. It is nonetheless a no-op on every path reaching one
+    of the three refusals, because each of them needs content that was already under
+    that root -- a lock holder for `WORKSPACE_BUSY`, a database for the other two --
+    so the root existed before this line ran. `WRITE_FAILURE` is again the exception,
+    and again it is stated rather than claimed away.
+
+    `layout.database_path.touch()` is no exception, because **a refusal is
+    unreachable on the tree where this call is what created it**: a workspace with
+    no database cannot hold the wrong workspace, cannot be somebody else's and
+    cannot disagree with this manifest.
+
+    `locks/` and the lock file inside it are the genuine bound: every refusal here
+    is decided under the lock, so one taken on a tree that had no `locks/` leaves
+    that directory and its lock file behind. The lock file moves even when `locks/`
+    already existed -- `acquire()` writes the holder's pid into it as advisory
+    diagnostics -- which is a fact the test digest normalises rather than hides, and
+    `test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else` asserts
+    that residue by name on the smallest tree the refusal is reachable on. It is the
+    whole of what "as it found it" excludes: no manifest, no layout directory, no
     installation state, and not a byte of an existing database.
 
     **The database's bytes are part of that claim, and making them so is why the vet
