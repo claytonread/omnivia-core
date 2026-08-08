@@ -41,7 +41,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from omnivia_core_cli import lifecycle
 from omnivia_core_cli.client import build_request, read_descriptor
+from omnivia_core_cli.lifecycle import SERVICE_EXECUTABLE, locate_service
 from omnivia_core_cli.main import (
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
@@ -972,12 +974,33 @@ def test_no_string_the_cli_emits_claims_a_verified_operating_system_peer() -> No
                 assert claim not in value, f"{path.name} emits {value!r}"
 
 
-def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
-    """No caller-selected path, and no *ambient* one either.
+def test_the_cli_selects_no_omnivia_state_path_from_the_environment() -> None:
+    """No caller-selected state path, and no *ambient* one either.
 
-    The property is that **no unrestricted ambient filesystem path is accepted**.
-    An environment lookup is exactly that -- a path of the caller's choosing
-    arriving by another name -- and it stays a stop condition for this packet.
+    **This test used to claim the CLI reads no environment variable to find a
+    service, and that name was false twice over.** The CLI reads `$HOME`, through
+    `Path.home()`, and it reads `$PATH`, through `shutil.which`. Owner resolution
+    006 R006-01 permits both -- the first for the fixed `~/.omnivia` convention, the
+    second for the fixed `SERVICE_EXECUTABLE` name -- and required the record to
+    stop claiming otherwise. The executable half now has its own test below;
+    this one keeps the half that did not move.
+
+    The property here is that **no unrestricted ambient filesystem path is accepted
+    as an OmniVia state path**. An environment lookup is exactly that -- a path of
+    the caller's choosing arriving by another name -- and it stays a stop condition:
+    R006-01 explicitly does not amend it. Workspace, installation-state,
+    runtime-state, socket and named-pipe locations, remote endpoints, credential
+    stores and authorisation scope are all still off the environment, as is an
+    alternative executable name supplied through an OmniVia-specific variable.
+
+    **The assertion is deliberately not narrowed to OmniVia-named variables.** It
+    fails on any environment read at all in this package's own source, `$HOME`
+    included, which is stricter than the ruling requires and is kept that way on
+    purpose: a scan that allowed `os.environ["HOME"]` would have to distinguish it
+    from `os.environ["OMNIVIA_HOME"]` at the point of *use* rather than of read, and
+    nothing here can. R004-11 says in terms: do not weaken or delete this test
+    merely to make the current implementation pass. `shutil.which` is outside it not
+    by exemption but because the read happens inside `shutil`.
 
     Two path sources are admitted: an explicit argument, which the caller states
     and a reader can see; and a deterministic built-in default, fixed relative to
@@ -997,11 +1020,6 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
     redirect knob. What stays prohibited is an OmniVia-specific variable:
     `$OMNIVIA_HOME` or anything like it would be a path of the caller's choosing
     arriving by another name, and it is that class the assertion below refuses.
-
-    The assertion fails on any `getenv` or `environ` in the CLI source, `$HOME`
-    included -- so the accepted route to the home directory remains `Path.home()`
-    and never a lookup this package performs itself. R004-11 says so in terms: do
-    not weaken or delete the test merely to make the current implementation pass.
 
     **What this scan cannot see, and what covers it.** It matches names, and a
     stdlib helper reads the environment under a name of its own:
@@ -1042,6 +1060,69 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
             if named in forbidden:
                 raise AssertionError(f"{path.name} reads the environment: {named}")
     assert os.name in {"posix", "nt"}
+
+
+def test_the_fixed_service_executable_may_be_resolved_through_the_os_search_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the split the record above used to deny. R006-01.
+
+    `$PATH` is a *permitted* ambient input, for one purpose only: resolving the
+    fixed `SERVICE_EXECUTABLE` name. Three properties, and each is here because the
+    ruling names it.
+
+    **It resolves.** A build placed on `PATH` under the fixed name is found. The
+    test above forbids this package reading the environment itself; that is not a
+    prohibition on the operating system's own executable search, which happens
+    inside `shutil` and reaches no OmniVia state path.
+
+    **The answer is absolute.** `shutil.which` returns whatever entry matched, so a
+    relative `PATH` entry yields a relative path, and a relative path is a different
+    file after a `chdir`. The second half of this test sets exactly that up.
+
+    **It is resolved once, and the resolved path is what gets launched.** The
+    ruling: "use the resulting absolute path for that launch attempt rather than
+    repeatedly resolving the name". A second resolution between the check and the
+    spawn could land on a different file, so `_ask_service` -- the module's only
+    call site, and the one both `request_init` and `request_managed_start` go
+    through -- is run against a real fake service and `shutil.which` is counted.
+
+    The name itself is fixed by code, not by the environment, and that is proven by
+    the scan above rather than restated here: a variable naming a different
+    executable would have to be read by this package, and no read exists to find.
+
+    Unix only, by this file's `pytestmark`. A shebang is not an executable
+    mechanism on Windows, where the successor is a packaged launcher.
+    """
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    script = directory / SERVICE_EXECUTABLE
+    script.write_text(f'#!{sys.executable}\nprint("{{}}")\n', encoding="utf-8")
+    script.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(directory))
+    assert locate_service() == str(script)
+
+    # A relative `PATH` entry: `which` answers `bin/omnivia-core-service`, which
+    # names a different file from any other working directory. `resolve()` on both
+    # sides because macOS' `/tmp` is a symlink and `getcwd()` reports the target.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "bin")
+    relative = locate_service()
+    assert relative is not None
+    assert Path(relative).is_absolute()
+    assert Path(relative).resolve() == script.resolve()
+
+    resolutions: list[str] = []
+    real_which = shutil.which
+
+    def counting_which(name: str) -> str | None:
+        resolutions.append(name)
+        return real_which(name)
+
+    monkeypatch.setattr(shutil, "which", counting_which)
+    assert lifecycle._ask_service("--init", [], timeout=30.0) == {}
+    assert resolutions == [SERVICE_EXECUTABLE]
 
 
 #: The environment guard the name scan above cannot be, run as a program.

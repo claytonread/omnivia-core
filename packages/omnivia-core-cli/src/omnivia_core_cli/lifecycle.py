@@ -33,23 +33,41 @@ endpoint path -- what is left of `sockaddr_un`'s 104-byte `sun_path` once the NU
 terminator and the runtime's fixed-width staging name are subtracted -- so a deep
 default would refuse to bind at all.
 
-**No OmniVia environment variable.** The convention is fixed, and
-`test_the_cli_reads_no_environment_variable_to_find_a_service` is why: an
-environment lookup performed by this package is an unrestricted filesystem path
-arriving by another name, which that packet makes a stop condition. `$OMNIVIA_HOME`
-and anything like it stay prohibited; only an explicit flag overrides.
+**No OmniVia environment variable selects a state path.** The convention is fixed,
+and `test_the_cli_selects_no_omnivia_state_path_from_the_environment` is why: an
+environment lookup performed by this package to find OmniVia's *state* is an
+unrestricted filesystem path arriving by another name, which owner resolution 004
+makes a stop condition. `$OMNIVIA_HOME` and anything like it stay prohibited; only
+an explicit flag overrides.
+
+**Two ambient inputs are permitted, and this record used to deny both.** It said
+the CLI reads no environment variable. That was false twice over -- `$HOME` and
+`$PATH` are both read, the first by `Path.home()` and the second by `shutil.which`
+-- so owner resolution 006 R006-01 ruled the permission explicitly and required the
+record corrected:
+
+- the operating system's normal per-user home resolution, for the fixed
+  `~/.omnivia` convention; and
+- `$PATH`, or the platform equivalent, to resolve the fixed `SERVICE_EXECUTABLE`
+  name -- see `locate_service`, which also states the privilege boundary that keeps
+  the permission narrow.
+
+Nothing else. Environment values must not select or override workspace paths,
+installation-state paths, runtime-state paths, socket or named-pipe locations,
+remote endpoints, credential stores or material, authorisation scope, or an
+alternative executable name through an OmniVia-specific variable.
 
 `~` is the user's home directory as the operating system reports it, which on Unix
 means `$HOME`. That is the OS's own notion of which user this is rather than an
 OmniVia redirect knob -- every Unix tool respects it, and hardening against it
 would break containers, CI runners and this repository's own tests -- so it is
 accepted, per owner resolution 004. The distinction the guard enforces is not
-"nothing environmental" but "nothing this package looks up itself": the home comes
-from `Path.home()` and never from a variable read here. It is enforced at runtime
-rather than only by a source scan, because `os.path.expandvars` performs the lookup
-inside `posixpath` where no scan of this tree can see it. Neither guard is total and
-`home_directory` states both bounds -- the runtime one watches the `os.environ`
-object, not the environment.
+"nothing environmental" but "nothing this package looks up itself to find OmniVia
+state": the home comes from `Path.home()` and never from a variable read here. It
+is enforced at runtime rather than only by a source scan, because
+`os.path.expandvars` performs the lookup inside `posixpath` where no scan of this
+tree can see it. Neither guard is total and `home_directory` states both bounds --
+the runtime one watches the `os.environ` object, not the environment.
 """
 
 from __future__ import annotations
@@ -146,6 +164,20 @@ class LifecycleError(Exception):
 def locate_service() -> str | None:
     """The service console script: on `PATH`, or failing that beside this one.
 
+    **`$PATH` is permitted here, and only for this.** Owner resolution 006 R006-01
+    rules that the operating system's executable search path may resolve the
+    *fixed* `SERVICE_EXECUTABLE` name. That is a narrow executable-discovery
+    permission and it does not amend R004's prohibition on environment-selected
+    OmniVia filesystem roots: no environment value selects a workspace path, an
+    installation-state path, a runtime-state path, a socket or named-pipe
+    location, a remote endpoint, a credential store, an authorisation scope, or --
+    through an OmniVia-specific variable -- a different executable name.
+    `$OMNIVIA_HOME` remains prohibited.
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` holds that
+    half;
+    `test_the_fixed_service_executable_may_be_resolved_through_the_os_search_path`
+    holds this one.
+
     `PATH` alone is not enough for the case this command exists to serve. An MCP
     client spawns the CLI directly, with whatever environment its host happens to
     hold, and a virtual environment's `bin` is on `PATH` only for a shell that
@@ -154,21 +186,44 @@ def locate_service() -> str | None:
     is -- `sys.executable`'s directory. Looking there is not a guess.
 
     `PATH` still wins, so a deliberately shadowed build is still honoured.
+
+    **The answer is absolute, and it is resolved once.** R006-01 requires the
+    launcher to use the resolved absolute path for that launch attempt rather than
+    re-resolving the name, so that a `PATH` or working-directory change between
+    the check and the spawn cannot land on a different file. `shutil.which` returns
+    whatever entry it matched, which is relative when the matching `PATH` entry is
+    relative; `os.path.abspath` fixes it against the current directory without
+    following symlinks, so a deliberately symlinked build keeps its own identity.
+    `_ask_service` is this module's only call site -- `request_managed_start` and
+    `request_init` both go through it -- and it calls this once and hands the result
+    straight to `subprocess`.
+
+    **Security boundary, and it is the reason this permission is narrow.** This is
+    a non-privileged, per-user local launch: the process resolving the name and the
+    process being launched are the same user, so `$PATH` grants that user nothing
+    they did not already have. A future launcher that crosses a privilege boundary,
+    runs as another account, is installed as an OS daemon, or becomes a signed
+    packaged helper **returns for review** and will normally need an
+    installation-owned absolute path rather than the caller's `$PATH`.
     """
     found = shutil.which(SERVICE_EXECUTABLE)
-    if found is not None:
-        return found
-    beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
-    return str(beside) if beside.is_file() and os.access(beside, os.X_OK) else None
+    if found is None:
+        beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
+        if not (beside.is_file() and os.access(beside, os.X_OK)):
+            return None
+        found = str(beside)
+    return os.path.abspath(found)
 
 
 def home_directory(override: Path | None = None) -> Path:
     """The installation root: an explicit flag, otherwise one fixed convention.
 
     Deliberately *not* an OmniVia environment variable.
-    `test_the_cli_reads_no_environment_variable_to_find_a_service` forbids one and
-    gives the reason: a lookup this package performs is "an unrestricted filesystem
-    path arriving by another name", which that packet makes a stop condition.
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` forbids one
+    and gives the reason: a lookup this package performs to find OmniVia state is
+    "an unrestricted filesystem path arriving by another name", which owner
+    resolution 004 makes a stop condition. R006-01's `$PATH` permission is for the
+    fixed executable *name* and reaches no path on this function's side.
 
     `Path.home()` follows `$HOME`, so the default is environment-derived in
     substance and this docstring no longer claims otherwise. Owner resolution 004
@@ -181,8 +236,11 @@ def home_directory(override: Path | None = None) -> Path:
     **Two guards hold that, neither is total, and both bounds are stated rather than
     rounded up.**
 
-    `test_the_cli_reads_no_environment_variable_to_find_a_service` scans this tree
-    for `getenv`, `environ`, `environb` and `expandvars`. A name scan is defeated by
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` scans this
+    tree for `getenv`, `environ`, `environb` and `expandvars`. It does not scan for
+    `shutil.which`, which reads `$PATH` inside `shutil`: R006-01 permits that read
+    for the fixed executable name, and it reaches no OmniVia state path. A name
+    scan is defeated by
     the standard library reading the environment under a name of its own: adding
     `os.path.expandvars("$OMNIVIA_HOME")` to this function was tried, the scan stayed
     green, and `OMNIVIA_HOME=/tmp/hijacked` redirected the installation root. It is

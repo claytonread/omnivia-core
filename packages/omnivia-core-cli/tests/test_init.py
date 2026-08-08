@@ -218,9 +218,11 @@ def test_the_zero_argument_home_is_the_fixed_convention(tmp_path: Path) -> None:
     workspace on the machine running it. An explicit `--home` still wins, which is
     the other half of R004-11 and the half every other test in this file relies on.
 
-    The environment is deliberately absent from both branches, and
-    `test_workspace_show.py::test_the_cli_reads_no_environment_variable_to_find_a_service`
-    is what keeps it that way.
+    The environment is deliberately absent from both branches -- apart from the home
+    `Path.home()` reads -- and `test_workspace_show.py::
+    test_the_cli_selects_no_omnivia_state_path_from_the_environment` is what keeps it
+    that way. R006-01's `$PATH` permission does not reach here: it resolves an
+    executable name, not a state path.
     """
     from omnivia_core_cli.lifecycle import (
         DEFAULT_HOME_DIRECTORY,
