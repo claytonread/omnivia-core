@@ -1,0 +1,148 @@
+# Hosted non-loopback TLS conformance for the OmniVia Core HTTP adapter.
+# V06-4 P2b sub-lane B. A GO here is what closes V06-4; a GO on sub-lane A is not.
+#
+# What a pass means, and what it does not.
+# ----------------------------------------
+# Owner resolution 005 R005-04 governs the claim: a GO confirms the positive and
+# negative conformance of the hosted TLS HTTP *adapter*. No production console
+# path, credential resolver or serving lifecycle invokes that adapter. OmniVia
+# Core does not serve HTTP as a production capability, and nothing in this
+# workflow's output may be read as saying otherwise. The suite's own
+# `test_the_standard_service_still_refuses_to_serve_http` is the regression that
+# keeps that true rather than merely asserted in a comment.
+#
+# Why this is a separate workflow, and dispatch-only.
+# --------------------------------------------------
+# `core-acceptance.yml` is the required merge gate: it runs on every pull request
+# with no path filter, has no `environment:` and consumes no secrets. Putting a
+# host-dependent job in it would make every pull request in the repository depend
+# on a disposable external host being up, which is not a gate but an outage.
+# `phase2-platform.yml` consumes no secrets or variables at all and is not
+# widened by this lane under any circumstances.
+#
+# `pull_request` is deliberately absent below, and
+# `tests/test_core_acceptance_workflow.py` asserts its absence, so this can never
+# drift into a required check that depends on a disposable host.
+#
+# The zero-skip rule (packet 10a.5).
+# ----------------------------------
+# "The hosted suite must record zero skipped tests. An unavailable host or
+# skipped run retains NO-GO and does not close V06-4." There is no third outcome.
+# `-rs` below makes any skip visible in the log rather than folded into a dot,
+# `conformance/tls/conftest.py` fails the session if the count is ever non-zero,
+# and the suite contains no `skipif`, no `importorskip` and no `pytest.skip` --
+# which `tests/test_core_acceptance_workflow.py` holds open by reading the source.
+#
+# Secrets.
+# --------
+# The listener's private key stays on the conformance host and never reaches this
+# runner (packet 10a.3). The environment below carries the hostname, the
+# temporary bearer credential and the fingerprint of the chain the host was
+# configured with -- the last of which is what proves nothing terminated TLS in
+# between. No certificate or key material is committed, and the suite writes
+# generated material only into pytest's temporary directories.
+name: Core TLS conformance
+
+on:
+  # Manual only. See the note above: this must never become a required check.
+  workflow_dispatch:
+
+jobs:
+  core-tls-conformance:
+    name: Core TLS conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # Holds the hostname, the temporary bearer credential and the configured
+    # chain fingerprint, so access is auditable and the secrets are not
+    # repository-wide. It does NOT hold the listener's private key.
+    environment: tls-conformance
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # The evidence artifact records the commit and tree under test, which
+          # the suite reads with `git rev-parse` from the checkout.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "hatchling>=1.26,<2"
+
+      - name: Install local packages
+        run: |
+          # The same editable installs, in the same order, that
+          # `core-acceptance.yml` uses, so this job's collection matches the
+          # gate's. The root package goes first because the dependent
+          # distributions declare `omnivia-core` and are unpublished; the client
+          # goes in before the CLI for the same reason one edge further down.
+          python -m pip install -e .
+          python -m pip install -e packages/omnivia-core-runtime
+          python -m pip install -e packages/omnivia-core-client
+          python -m pip install -e packages/omnivia-core-cli
+          python -m pip install -e packages/omnivia-core-mcp
+          python -m pip install "pytest>=8,<10"
+
+      - name: Record the generator this run depends on
+        # The owner ratified runtime `openssl` into temporary directories for
+        # certificate generation and forbade adding a dependency solely for it
+        # (packet 10a.2). If it is missing the suite fails rather than skips;
+        # this step just puts the version in the log beside the evidence.
+        run: openssl version
+
+      - name: Run hosted TLS conformance
+        env:
+          OMNIVIA_TLS_CONFORMANCE_HOST: ${{ vars.OMNIVIA_TLS_CONFORMANCE_HOST }}
+          OMNIVIA_TLS_CONFORMANCE_PORT: ${{ vars.OMNIVIA_TLS_CONFORMANCE_PORT }}
+          OMNIVIA_TLS_CONFORMANCE_OPERATION: ${{ vars.OMNIVIA_TLS_CONFORMANCE_OPERATION }}
+          OMNIVIA_TLS_CONFORMANCE_PURPOSE: ${{ vars.OMNIVIA_TLS_CONFORMANCE_PURPOSE }}
+          OMNIVIA_TLS_CONFORMANCE_CHAIN_SHA256: ${{ vars.OMNIVIA_TLS_CONFORMANCE_CHAIN_SHA256 }}
+          # The one secret. Never echoed, never in a step name, never in argv.
+          OMNIVIA_TLS_CONFORMANCE_BEARER: ${{ secrets.OMNIVIA_TLS_CONFORMANCE_BEARER }}
+          # Outside the work tree on purpose: packet 6.7's compensating rule and
+          # R005-05 are that nothing this run generates is written into the
+          # checkout.
+          OMNIVIA_TLS_CONFORMANCE_EVIDENCE: ${{ runner.temp }}/tls-conformance-evidence.json
+        run: python -m pytest conformance/tls -q -rs
+
+      - name: Check the evidence artifact carries no credential
+        if: always()
+        env:
+          OMNIVIA_TLS_CONFORMANCE_BEARER: ${{ secrets.OMNIVIA_TLS_CONFORMANCE_BEARER }}
+        # The suite asserts this on the record it holds in memory; this asserts it
+        # on the bytes that are about to be uploaded. `grep -q` prints nothing on
+        # a match, so a failure here does not itself republish the credential.
+        run: |
+          evidence="${RUNNER_TEMP}/tls-conformance-evidence.json"
+          if [ ! -f "${evidence}" ]; then
+            echo "no evidence artifact was written; the run did not complete" >&2
+            exit 1
+          fi
+          if printf '%s' "${OMNIVIA_TLS_CONFORMANCE_BEARER}" | grep -qF -f - "${evidence}"; then
+            echo "the bearer credential reached the evidence artifact" >&2
+            exit 1
+          fi
+
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-tls-conformance-evidence
+          path: ${{ runner.temp }}/tls-conformance-evidence.json
+          if-no-files-found: error
+
+      - name: Remove generated key material from the runner
+        if: always()
+        # The suite writes its generated keys and chains under pytest's temporary
+        # directory, which a failed run would otherwise leave behind on a
+        # self-hosted runner. The listener's own key material is retired on the
+        # conformance host and never reached here.
+        run: rm -rf "${RUNNER_TEMP}"/pytest-of-* /tmp/pytest-of-*
