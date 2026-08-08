@@ -641,9 +641,20 @@ def test_ruff_covers_the_accepted_clean_scope() -> None:
 
 
 def test_mypy_runs_strict_over_canonical_and_distribution_sources() -> None:
+    """The step prints the resolved analyser, then runs it over the pinned scope.
+
+    Exactly two commands, in that order -- not "the strict run is in there
+    somewhere". The version print is evidence only if it comes from the same step
+    and the same interpreter as the verdict it explains, and pinning the count is
+    what keeps an unrelated command from joining a merge-blocking step unnoticed.
+    """
     commands = _commands(_step(_steps(), "Run strict mypy"))
-    assert len(commands) == 1, f"expected a single mypy invocation, got: {commands}"
-    _audit_targets(commands[0], "python -m mypy --strict", REQUIRED_MYPY_TARGETS)
+    assert commands[:1] == ("python -m mypy --version",), (
+        "the merge-blocking mypy step must print its resolved version before it "
+        f"runs, so the log records which analyser produced the verdict: {commands}"
+    )
+    assert len(commands) == 2, f"expected a version print and one mypy run, got: {commands}"
+    _audit_targets(commands[1], "python -m mypy --strict", REQUIRED_MYPY_TARGETS)
 
 
 def test_pull_request_range_diff_check() -> None:
