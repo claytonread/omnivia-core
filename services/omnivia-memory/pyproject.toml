@@ -47,7 +47,21 @@ dev = [
     # and `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs` fails
     # if the workflow stops installing this extra.
     "ruff>=0.16.1,<0.17",
-    "mypy>=1.10.0",
+    # Exact pin, for the same reason as the Ruff bound above: this is the only
+    # `mypy` requirement pip can reach, so it alone decides which mypy the
+    # merge-blocking `Run strict mypy` step executes. A range let a
+    # merge-blocking analysis tool upgrade ambiently -- the gate returned a
+    # different answer for the same commit depending on when the environment was
+    # resolved, and `main` would have started failing by itself the first time a
+    # new release added a check. `2.3.0` is the version the last green canonical
+    # run resolved (`Core acceptance`, run 30722051347, 2026-08-01).
+    #
+    # Advancing this is a reviewed dependency change, never an incidental one:
+    # fix or correctly type whatever the new version reports first, and do not
+    # silence findings merely to permit the upgrade.
+    # `test_the_mypy_requirement_is_an_exact_pin` in
+    # `tests/test_core_acceptance_workflow.py` fails if this reverts to a range.
+    "mypy==2.3.0",
 ]
 
 [tool.pytest.ini_options]
