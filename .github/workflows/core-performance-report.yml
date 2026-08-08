@@ -10,6 +10,10 @@ on:
       - "services/omnivia-memory/**"
       - ".github/workflows/core-performance-report.yml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   performance-report:
     name: Tiny benchmark report

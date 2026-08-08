@@ -20,6 +20,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Superseded runs are cancelled, not queued: pushing a correction to a pull
+# request branch made the previous run's verdict obsolete the moment it landed.
+# Safe for a required check -- the group is keyed on the pull request number, so
+# a run is only ever cancelled by a newer run for the SAME pull request, which
+# then reports `Core acceptance` itself. The required check is never left
+# without an owner. This workflow has no `push` trigger, so no run on the
+# default branch can be cancelled here.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   core-acceptance:
     # Stable displayed job/check name. Do not rename: branch protection and
