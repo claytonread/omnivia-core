@@ -283,11 +283,24 @@ def test_the_zero_argument_home_is_the_fixed_convention(tmp_path: Path) -> None:
 #: bypass through this same hook and asserts it is caught, so the watch is not
 #: itself taken on trust.
 #:
-#: What stays outside: a compiled extension module linked against libsqlite3 at
-#: build time calls it with no `dlopen` and no `sqlite3.*` event, and neither a hook
-#: nor a static scan closes that. It is a bound on the claim, not a to-do. A CLI
-#: that opened a Postgres socket is outside all of this and is caught, if at all, by
-#: the AST scan's import check.
+#: **What stays outside. This is a `_sqlite3`-module-and-`ctypes` guard, not a
+#: database guard, and the name matters because the gap is wider than the one limit
+#: previously recorded here.**
+#:
+#: - **Direct file I/O, which was named nowhere.** `open(workspace.sqlite, "rb")`
+#:   reads the database with no watched event of any kind -- not `sqlite3.*`, not
+#:   `dlopen`, not `dlsym` -- and all 53 CLI tests pass with it in place. Confirmed by
+#:   running it: the SQLite header came back and `observed` was empty. Parsing pages
+#:   by hand, or writing them, is the same. Nothing here or in the AST scan sees it.
+#: - A compiled extension module linked against libsqlite3 at build time calls it
+#:   with no `dlopen` and no `sqlite3.*` event.
+#: - A CLI that opened a Postgres socket is outside all of this, and is caught if at
+#:   all by the AST scan's import check.
+#:
+#: These are bounds on the claim, not to-dos. What the hook proves is that the CLI
+#: reaches no database *through CPython's `sqlite3` module or through ctypes symbol
+#: resolution*, which is the route any realistic accident takes and is not the same
+#: sentence as "the CLI opens no database".
 AUDIT_HOOK = '''
 import json
 import sys

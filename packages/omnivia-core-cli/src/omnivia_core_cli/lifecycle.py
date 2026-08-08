@@ -47,7 +47,9 @@ accepted, per owner resolution 004. The distinction the guard enforces is not
 "nothing environmental" but "nothing this package looks up itself": the home comes
 from `Path.home()` and never from a variable read here. It is enforced at runtime
 rather than only by a source scan, because `os.path.expandvars` performs the lookup
-inside `posixpath` where no scan of this tree can see it -- see `home_directory`.
+inside `posixpath` where no scan of this tree can see it. Neither guard is total and
+`home_directory` states both bounds -- the runtime one watches the `os.environ`
+object, not the environment.
 """
 
 from __future__ import annotations
@@ -176,15 +178,32 @@ def home_directory(override: Path | None = None) -> Path:
     other OmniVia-specific variable remain prohibited, so the home arrives through
     `Path.home()` and through nothing this package reads itself.
 
-    **Two guards hold that, because one of them cannot.**
+    **Two guards hold that, neither is total, and both bounds are stated rather than
+    rounded up.**
+
     `test_the_cli_reads_no_environment_variable_to_find_a_service` scans this tree
-    for `getenv`, `environ` and `expandvars` -- and a name scan is defeated by the
-    standard library reading the environment under a name of its own. Adding
-    `os.path.expandvars("$OMNIVIA_HOME")` to this function was tried: the scan
-    stayed green and `OMNIVIA_HOME=/tmp/hijacked` redirected the installation root.
-    `test_no_command_reads_an_omnivia_environment_variable` closes that by
-    recording every key actually read from `os.environ` while the four commands
-    run, wherever in the stack the read happens.
+    for `getenv`, `environ`, `environb` and `expandvars`. A name scan is defeated by
+    the standard library reading the environment under a name of its own: adding
+    `os.path.expandvars("$OMNIVIA_HOME")` to this function was tried, the scan stayed
+    green, and `OMNIVIA_HOME=/tmp/hijacked` redirected the installation root. It is
+    defeated by an alias too -- `from os import environb as _x` binds nothing the
+    scan matches, because an `ImportFrom` alias is neither an `ast.Name` nor an
+    `ast.Attribute`.
+
+    `test_no_command_reads_an_omnivia_environment_variable` closes the first of those
+    at runtime, and it is **an `os.environ`-object guard, not an environment guard**.
+    It replaces that one object before the package is imported and sees every read
+    routed through it, wherever in the stack the read happens -- `expandvars`,
+    `Path.home()`, or a `from os import environ` bound afterwards. A read that never
+    touches that object is invisible to it, and three do not: `os.environb` is a
+    separate `_Environ` sharing only the underlying `_data` dict and is never
+    replaced, `posix.environ` is that dict reached directly, and `/proc/self/environ`
+    or a C `getenv(3)` bypass Python entirely. Checked rather than reasoned about --
+    a read through `os.environb` was confirmed not to reach the recorder.
+
+    No static-plus-runtime pair closes this class. What the two together give is that
+    no OmniVia-named variable is read by any route either can see, and the routes
+    neither can see are named above.
 
     R004-11 settled the record that used to be an open question here: this
     convention is accepted, explicit arguments and deterministic built-in defaults

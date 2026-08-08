@@ -1011,8 +1011,19 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
     installation root. `from os import environ` is the same hole with a different
     shape, because the read is then an `ast.Name` and never an `ast.Attribute`.
     Both names are matched below now, but the class is unbounded and no name scan
-    closes it; `test_no_command_reads_an_omnivia_environment_variable` is the guard
-    that does, by recording what is actually read at runtime.
+    closes it.
+
+    **An alias defeats it outright, and that is worth naming rather than filing
+    under "unbounded".** `from os import environb as _x` followed by `_x[b"HOME"]`
+    contains no `ast.Name` or `ast.Attribute` this loop can match: the only place
+    `environb` appears is an `ImportFrom` alias, which is neither node type. Adding
+    alias names to the scan would close that one shape and not the class, so it is
+    recorded here instead.
+
+    `test_no_command_reads_an_omnivia_environment_variable` is the runtime half, and
+    it is bounded too -- it watches the `os.environ` *object*. See its own docstring
+    for what escapes it. Between them these two are the whole guard, and neither is
+    total.
     """
     import ast
 
@@ -1036,22 +1047,33 @@ def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
 #: The environment guard the name scan above cannot be, run as a program.
 #:
 #: `os.environ` is replaced by a recording mapping *before* `omnivia_core_cli` is
-#: imported, so every read the package performs goes through it -- including the
-#: ones it performs by calling somebody else. `os.path.expandvars` reads `os.environ`
-#: inside `posixpath`; `Path.home()` reads `HOME` inside `posixpath.expanduser`;
-#: `from os import environ` binds this object rather than the real one, because the
-#: replacement happens first. None of those is visible to a scan for the word
-#: `environ` in this package's own source.
+#: imported, so every read routed through **that object** goes through it -- including
+#: the ones the package performs by calling somebody else. `os.path.expandvars` reads
+#: `os.environ` inside `posixpath`; `Path.home()` reads `HOME` inside
+#: `posixpath.expanduser`; `from os import environ` binds this object rather than the
+#: real one, because the replacement happens first. None of those is visible to a
+#: scan for the word `environ` in this package's own source.
 #:
 #: What is asserted is R004-11 stated positively: no variable whose name is
 #: OmniVia's is read. `$HOME` is read and is *expected* to be -- the probe asserts
 #: it, because a recorder that captured nothing would pass the real assertion for
 #: the wrong reason.
 #:
-#: What stays outside: a read that never touches `os.environ` -- `/proc/self/environ`,
-#: a C extension calling `getenv(3)`, or a child process's own environment. The
-#: first two are caught by nothing here; the third is deliberate, since
-#: `omnivia-core-service` is a separate programme with its own rules.
+#: **What stays outside, stated as the object guard this is rather than the
+#: environment guard it is not.** Only reads through `os.environ` are seen.
+#:
+#: - `os.environb` is a *separate* `_Environ` built over the same underlying `_data`
+#:   dict. Replacing `os.environ` does not replace it, so `os.environb[b"OMNIVIA_HOME"]`
+#:   returns the value and records nothing. Confirmed by running it, not inferred.
+#: - `posix.environ` is that same dict reached one layer lower, and escapes identically.
+#: - `/proc/self/environ` and a C extension calling `getenv(3)` never enter Python's
+#:   mapping at all.
+#: - A child process reads its own environment, which is deliberate:
+#:   `omnivia-core-service` is a separate programme with its own rules.
+#:
+#: The first three are caught by nothing here and by nothing in the name scan above
+#: either -- an aliased `from os import environb as _x` is invisible to both. That is
+#: the bound; there is no third guard that closes it.
 ENVIRONMENT_PROBE = '''
 import collections.abc
 import json
@@ -1068,7 +1090,13 @@ class Recorder(collections.abc.MutableMapping):
         self._inner = inner
 
     def __getitem__(self, key):
-        # Decoded because `os.environb` asks in bytes and the report is JSON.
+        # A bytes key really does arrive, and the reason given here used to be the
+        # wrong one. It is not `os.environb` -- that is a separate mapping which is
+        # never replaced and never reaches this object. It is `os.get_exec_path`,
+        # which asks `env[b"PATH"]` whenever `subprocess` builds a child, and
+        # `lifecycle._process_start_time` shells out to `ps`. Deleting this branch
+        # fails the run outright on `TypeError: Object of type bytes is not JSON
+        # serializable`, which is how the real caller was found.
         read.append(key if isinstance(key, str) else key.decode("utf-8", "replace"))
         return self._inner[key]
 
@@ -1108,7 +1136,7 @@ def test_no_command_reads_an_omnivia_environment_variable(tmp_path: Path) -> Non
     """R004-11's prohibition, proved by running rather than by reading.
 
     The AST scan above matches names in this package's own source. This one records
-    what the process actually asks the environment for, so a lookup performed inside
+    what the process actually asks **`os.environ`** for, so a lookup performed inside
     the standard library on the CLI's behalf is visible: `os.path.expandvars`,
     `os.environ.get` reached through any alias, or a `from os import environ` bound
     before the CLI was imported.
@@ -1117,6 +1145,16 @@ def test_no_command_reads_an_omnivia_environment_variable(tmp_path: Path) -> Non
     package ever consults it, this fails on the read itself rather than on the value
     happening to change an outcome -- and the default home is asserted unmoved, so
     both halves of the claim are covered.
+
+    **This is an `os.environ`-object guard, not an environment guard, and the
+    difference is reachable.** `os.environb` is a separate `_Environ` sharing only the
+    underlying `_data` dict; replacing `os.environ` leaves it pointing at the real
+    thing, so a read through it returns the value and records nothing. `posix.environ`
+    is the same escape one layer down. Neither is visible to the scan above either,
+    once bound under an alias. `ENVIRONMENT_PROBE` lists the whole set. So what this
+    proves is that no OmniVia-named variable is read *by any route either guard can
+    see*, which is less than "no OmniVia variable is read" and is the claim worth
+    making, because it is the one that is true.
     """
     # Short, and under `/tmp` rather than macOS's long private temp root: `start`
     # binds a socket beneath this home and R004-15 caps that path at 86 bytes.
