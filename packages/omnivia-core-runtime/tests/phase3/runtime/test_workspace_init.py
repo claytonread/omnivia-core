@@ -343,6 +343,15 @@ def test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else(
     On that tree the run really does create something, and `LOCK_RESIDUE` is the
     whole of it. Everything else is named absent, because those are the entries
     whose creation was the original defect.
+
+    The digest is rooted at `home` rather than at `tmp_path`, and that is not a
+    detail. `LOCK_PAYLOAD` is a path relative to a home, so digesting a directory
+    one level above it produced `home/workspace/locks/storage.lock`, which matches
+    nothing -- `_lock_state` never ran and the lock file was hashed as an ordinary
+    file. A mutation that put the old `continue` back left this test green. The
+    assertion that the entry is in the digest at all is what keeps that from
+    recurring: it is the whole point of the repair, so it is stated rather than
+    assumed.
     """
     seed = tmp_path / "seed"
     assert _init(seed).status is WorkspaceInitStatus.INITIALISED
@@ -353,7 +362,7 @@ def test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else(
     layout = WorkspaceLayout(root=home / "workspace")
     layout.root.mkdir(parents=True)
     layout.database_path.write_bytes(database)
-    before = _digest(tmp_path)
+    before = _digest(home)
 
     result = initialise_workspace(
         workspace_root=layout.root,
@@ -362,8 +371,10 @@ def test_the_identity_refusal_creates_the_lock_it_needs_and_nothing_else(
     assert result.status is WorkspaceInitStatus.REFUSED
     assert result.refusal is WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH
 
-    changed = {name.removeprefix("home/") for name in _changed(before, _digest(tmp_path))}
-    assert changed == LOCK_RESIDUE
+    after = _digest(home)
+    # The file the refusal writes is *in* the metric, which is the repair itself.
+    assert LOCK_PAYLOAD in after
+    assert _changed(before, after) == LOCK_RESIDUE
     assert not layout.manifest_path.exists()
     assert not layout.blobs_path.exists()
     assert not layout.indexes_path.exists()
