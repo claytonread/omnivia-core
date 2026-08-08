@@ -344,6 +344,53 @@ with open(report, "w", encoding="utf-8") as handle:
     json.dump({"observed": observed, "size": os.path.getsize(database)}, handle)
 '''
 
+#: The bypass the guard *allows*, and the one only `ctypes.dlsym` can see.
+#:
+#: `AUDIT_BYPASS_PROBE` loads libsqlite3 **by name**, so it raises a named
+#: `ctypes.dlopen` and a `ctypes.dlsym` both -- which is why deleting the `dlsym`
+#: clause from `AUDIT_HOOK` left every audit test green. The test above pins the
+#: redundant clause.
+#:
+#: This probe removes the dlopen. `ctypes.CDLL(None)` is the *unnamed* load the hook
+#: lets through on purpose, because `import ctypes` performs one on the running
+#: interpreter and `omnivia_core_client.discovery` reaches it -- so `arguments[0] is
+#: None` cannot be treated as suspicious. Symbols then resolve through `RTLD_DEFAULT`
+#: and reach whatever is already in the process, with no named library anywhere.
+AUDIT_UNNAMED_PROBE = AUDIT_HOOK + '''
+import ctypes
+import os
+
+database, report = sys.argv[1], sys.argv[2]
+library = ctypes.CDLL(None)
+
+# Resolvable on every platform this ships to. Resolving *anything* through the
+# allowed unnamed handle raises `ctypes.dlsym`, which is the clause under test.
+library.getpid
+
+try:
+    opener = library.sqlite3_open
+except AttributeError:
+    available = False
+else:
+    available = True
+    connection = ctypes.c_void_p()
+    opener(database.encode(), ctypes.byref(connection))
+    library.sqlite3_exec(
+        connection, b"CREATE TABLE t (id INTEGER PRIMARY KEY)", None, None, None
+    )
+    library.sqlite3_close(connection)
+
+with open(report, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "observed": observed,
+            "available": available,
+            "size": os.path.getsize(database) if available else 0,
+        },
+        handle,
+    )
+'''
+
 
 def test_no_command_opens_a_database_or_imports_the_runtime_in_this_process(
     home: Path,
@@ -420,6 +467,60 @@ def test_the_audit_hook_sees_the_route_that_walks_past_the_source_scan() -> None
     assert [
         event for event in audited["observed"] if event.startswith("ctypes.dlopen ")
     ], audited["observed"]
+
+
+def test_the_audit_hook_sees_the_bypass_that_loads_no_named_library() -> None:
+    """The clause that does the work, falsified. See `AUDIT_UNNAMED_PROBE`.
+
+    The test above asserts only that a named `ctypes.dlopen` was recorded, and the
+    bypass it drives raises **both** events -- so deleting `or event ==
+    "ctypes.dlsym"` from `AUDIT_HOOK` left every audit test in this file green. The
+    redundant clause was pinned and the load-bearing one was not.
+
+    `ctypes.dlsym` is the load-bearing one because `ctypes.CDLL(None)` is a route the
+    hook *deliberately allows*: `import ctypes` dlopens the running interpreter with
+    no name and `omnivia_core_client.discovery` reaches it, so `arguments[0] is None`
+    cannot be treated as suspicious. Symbols resolved through that handle go via
+    `RTLD_DEFAULT` and reach anything already in the process. On macOS that includes
+    libsqlite3: this route created an 8192-byte database with no named dlopen and not
+    one `sqlite3.*` event. Nothing but `ctypes.dlsym` sees it.
+
+    **The database half is platform-dependent, and the assertions are split so this
+    says so rather than pretending otherwise.** Linux resolves `RTLD_DEFAULT` against
+    objects already loaded, so `sqlite3_open` is not findable there unless something
+    pulled libsqlite3 in first -- and CI is ubuntu-latest, where this may well report
+    `available: false` and assert nothing about a database at all. The `dlsym`
+    assertion is unconditional and portable, because resolving *any* symbol through
+    the allowed handle raises it, and that is what falsifies the clause. The database
+    assertion is the consequence, and it runs where the platform permits.
+    """
+    workspace = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    probe = workspace / "unnamed.py"
+    report = workspace / "audit.json"
+    probe.write_text(AUDIT_UNNAMED_PROBE, encoding="utf-8")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(probe), str(workspace / "unnamed.sqlite"), str(report)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        audited = json.loads(report.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    # No named library was loaded, so the clause the other test asserts is blind
+    # here -- this is the route that walks past it.
+    assert [
+        event for event in audited["observed"] if event.startswith("ctypes.dlopen ")
+    ] == [], audited["observed"]
+    assert [event for event in audited["observed"] if event.startswith("sqlite3.")] == []
+    # The whole of the guard on this route, on every platform.
+    assert "ctypes.dlsym" in audited["observed"], audited["observed"]
+    if audited["available"]:
+        assert audited["size"] > 0, "a resolvable sqlite3_open has to open a database"
 
 
 def test_the_init_result_document_is_the_whole_of_the_services_stdout(
