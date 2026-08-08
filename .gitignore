@@ -26,6 +26,15 @@ htmlcov/
 *secret*
 *.pem
 *.key
+# Generated certificate and bundle material (owner resolution 005, R005-05).
+# `*.pem` and `*.key` above never covered these three, so a key or chain written
+# outside a test's `tmp_path` with one of these extensions would have been
+# committed silently. They are accident prevention, not the rule: the rule is
+# still that generated keys, certificates and bundles are written only beneath
+# test-owned temporary directories and never into the work tree.
+*.crt
+*.p12
+*.pfx
 
 # One governed Host Contract v1 fixture is named for the thing it forbids. It is
 # the approved negative case (DOC-004 section AA) proving an EnvironmentBinding
