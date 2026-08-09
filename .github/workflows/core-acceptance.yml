@@ -184,6 +184,14 @@ jobs:
 
       - name: Run Ruff
         run: |
+          # Print the resolved linter before using it. This step is
+          # merge-blocking, so the version that produced its verdict has to be in
+          # the log next to the verdict -- otherwise a toolchain change shows up
+          # only as a gate that started failing, with nothing in the run saying
+          # what moved. `services/omnivia-memory/pyproject.toml` pins this
+          # exactly; the print is what makes an unexpected resolution visible
+          # rather than merely impossible.
+          python -m ruff --version
           # Currently accepted clean scope: the canonical trees plus every
           # converted legacy facade/barrel file listed below. The rest of the
           # legacy service tree is not Ruff-clean yet and is deliberately out of
@@ -229,6 +237,14 @@ jobs:
 
       - name: Run strict mypy
         run: |
+          # Print the resolved analyser before using it. This step is
+          # merge-blocking, so the version that produced its verdict has to be in
+          # the log next to the verdict -- otherwise a toolchain change shows up
+          # only as a gate that started failing, with nothing in the run saying
+          # what moved. `services/omnivia-memory/pyproject.toml` pins this
+          # exactly; the print is what makes an unexpected resolution visible
+          # rather than merely impossible.
+          python -m mypy --version
           python -m mypy --strict \
             src/omnivia_core \
             packages/omnivia-core-runtime/src/omnivia_core_runtime \

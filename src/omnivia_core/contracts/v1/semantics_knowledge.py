@@ -84,6 +84,8 @@ from omnivia_core.contracts.v1.generated import (
     KnowledgeSearchInput,
     KnowledgeSearchResult,
     MemoryCreateInput,
+    MemorySearchInput,
+    MemorySearchResult,
     MutationPrecondition,
     Omission,
     PageMetadata,
@@ -190,6 +192,8 @@ __all__ = [
     "validate_knowledge_propose_result",
     "validate_knowledge_search_input",
     "validate_knowledge_search_result",
+    "validate_memory_search_input",
+    "validate_memory_search_result",
     "validate_projection_freshness",
     "validate_record_supersede_input",
     "validate_record_supersede_result",
@@ -666,19 +670,48 @@ def _validate_view_selector(view: str | None, label: str = "view") -> None:
         )
 
 
-def _validate_order_selector(order: str | None, label: str = "order") -> None:
+def _validate_order_selector(
+    order: str | None, label: str = "order", operation: str = "knowledge.search"
+) -> None:
     """Raise unless `order` is absent or one of the known `MemorySearchOrder` values
     :data:`KNOWLEDGE_SEARCH_ORDERS` names.
 
     Mirrors :func:`_validate_view_selector`: `MemorySearchOrder` is wire-open, but an
     unrecognized order cannot be honoured or verified by this build, so it fails closed
-    rather than being passed through.
+    rather than being passed through. `operation` names the refused read because
+    `MemorySearchOrder` is the single declared order domain that both `knowledge.search`
+    and `memory.search` draw from, so the value alone does not say which one refused.
     """
     if order is not None and order not in KNOWLEDGE_SEARCH_ORDERS:
         raise ContractSemanticError(
-            f"{label} {order!r} is not a recognized MemorySearchOrder for knowledge.search; "
+            f"{label} {order!r} is not a recognized MemorySearchOrder for {operation}; "
             f"must be one of {sorted(KNOWLEDGE_SEARCH_ORDERS)!r} or absent"
         )
+
+
+def _validate_governed_search_input(
+    input_: KnowledgeSearchInput | MemorySearchInput, operation: str
+) -> None:
+    """The input rules `knowledge.search` and `memory.search` share exactly.
+
+    `MemorySearchInput` is `KnowledgeSearchInput` minus `domain_scope`
+    (`memory.schema.json`), so every field the two do share is governed by one rule here
+    rather than by two copies that can drift. `domain_scope` stays with the caller that
+    actually has the field.
+    """
+    query = _require_str(input_.query, "query")
+    if not (_QUERY_MIN_LENGTH <= len(query) <= _QUERY_MAX_LENGTH):
+        raise ContractSemanticError(
+            f"query length is outside the bounded range [{_QUERY_MIN_LENGTH}, {_QUERY_MAX_LENGTH}]"
+        )
+    if input_.order is not None:
+        _validate_order_selector(_require_str(input_.order, "order"), operation=operation)
+    if input_.view is not None:
+        _validate_view_selector(_require_str(input_.view, "view"))
+    if input_.record_type is not None:
+        _validate_open_code(_require_str(input_.record_type, "record_type"), "record_type")
+    if input_.limit is not None:
+        validate_page_limit(_require_int(input_.limit, "limit"))
 
 
 def validate_knowledge_search_input(input_: object) -> None:
@@ -694,21 +727,28 @@ def validate_knowledge_search_input(input_: object) -> None:
     """
     _require_type(input_, KnowledgeSearchInput, "input_")
     assert isinstance(input_, KnowledgeSearchInput)
-    query = _require_str(input_.query, "query")
-    if not (_QUERY_MIN_LENGTH <= len(query) <= _QUERY_MAX_LENGTH):
-        raise ContractSemanticError(
-            f"query length is outside the bounded range [{_QUERY_MIN_LENGTH}, {_QUERY_MAX_LENGTH}]"
-        )
-    if input_.order is not None:
-        _validate_order_selector(_require_str(input_.order, "order"))
-    if input_.view is not None:
-        _validate_view_selector(_require_str(input_.view, "view"))
-    if input_.record_type is not None:
-        _validate_open_code(_require_str(input_.record_type, "record_type"), "record_type")
+    _validate_governed_search_input(input_, "knowledge.search")
     if input_.domain_scope is not None:
         validate_record_domain_scope(_require_str(input_.domain_scope, "domain_scope"))
-    if input_.limit is not None:
-        validate_page_limit(_require_int(input_.limit, "limit"))
+
+
+def validate_memory_search_input(input_: object) -> None:
+    """Raise unless `input_` is a structurally and semantically valid `memory.search` input.
+
+    The same rules :func:`validate_knowledge_search_input` applies, minus `domain_scope`,
+    which `MemorySearchInput` does not carry. In particular the `view` selector fails closed
+    on an unrecognized value, so `candidates` and `history` can only ever be reached by
+    naming one of the two exactly -- an absent `view` resolves to `current_canonical`
+    (:func:`~omnivia_core.contracts.v1.semantics.resolve_governed_record_view`) and a
+    misspelling is refused rather than silently defaulted into the canonical view.
+
+    A direct entry point, like its `knowledge.search` counterpart: every field access is
+    guarded, so a wrongly typed argument raises `ContractSemanticError` rather than a raw
+    `TypeError`/`AttributeError`.
+    """
+    _require_type(input_, MemorySearchInput, "input_")
+    assert isinstance(input_, MemorySearchInput)
+    _validate_governed_search_input(input_, "memory.search")
 
 
 def decode_knowledge_search_input(
@@ -939,6 +979,76 @@ def validate_knowledge_search_result(
     _require_type(request, KnowledgeSearchInput, "request")
     assert isinstance(request, KnowledgeSearchInput)
     validate_knowledge_search_input(request)
+    _validate_governed_search_result(
+        result.records,
+        requested_view=request.view,
+        request_record_type=request.record_type,
+        request_domain_scope=request.domain_scope,
+        request_limit=request.limit,
+        expected_workspace_id=expected_workspace_id,
+        canonical_resolution_time=canonical_resolution_time,
+        authorized_views=authorized_views,
+    )
+
+
+def validate_memory_search_result(
+    result: object,
+    request: object,
+    expected_workspace_id: object,
+    canonical_resolution_time: object,
+    authorized_views: object,
+) -> None:
+    """Raise unless `result` is a valid `memory.search` result under exactly the view rules
+    :func:`validate_knowledge_search_result` applies.
+
+    The gap this closes: `memory.search` declares the same `view` selector as
+    `knowledge.search` (`memory.schema.json`, `MemorySearchInput`), so an absent `view`
+    resolves to `current_canonical` and only an explicit `view` may ask for `candidates` or
+    `history` -- but nothing enforced that, so a `memory.search` answering a default-view
+    request with candidate or superseded records conformed. It is the same rule, applied
+    through the same function (:func:`_validate_governed_search_result`), so the two reads
+    cannot drift on what a view means.
+
+    `request` must be the complete, original `MemorySearchInput`, re-validated here through
+    :func:`validate_memory_search_input`. `MemorySearchInput` carries no `domain_scope`, so
+    no domain filter is checked; every other rule is identical, including that
+    `authorized_views` -- not the view string on the request -- is what widens trust.
+    """
+    _require_type(result, MemorySearchResult, "result")
+    assert isinstance(result, MemorySearchResult)
+    _require_type(request, MemorySearchInput, "request")
+    assert isinstance(request, MemorySearchInput)
+    validate_memory_search_input(request)
+    _validate_governed_search_result(
+        result.records,
+        requested_view=request.view,
+        request_record_type=request.record_type,
+        request_domain_scope=None,
+        request_limit=request.limit,
+        expected_workspace_id=expected_workspace_id,
+        canonical_resolution_time=canonical_resolution_time,
+        authorized_views=authorized_views,
+    )
+
+
+def _validate_governed_search_result(
+    result_records: object,
+    *,
+    requested_view: str | None,
+    request_record_type: str | None,
+    request_domain_scope: str | None,
+    request_limit: int | None,
+    expected_workspace_id: object,
+    canonical_resolution_time: object,
+    authorized_views: object,
+) -> None:
+    """The governed-record page rule `knowledge.search` and `memory.search` share exactly.
+
+    One body, two callers, so the view semantics -- which records a resolved view may
+    contain, and which views the request alone may reach -- cannot be true of one read and
+    false of the other. `request_domain_scope` is `None` for `memory.search`, whose input
+    declares no such filter.
+    """
     _validate_workspace_id(_require_str(expected_workspace_id, "expected_workspace_id"), "expected_workspace_id")
     resolution_instant = _parse_timestamp(
         _require_str(canonical_resolution_time, "canonical_resolution_time"), "canonical_resolution_time"
@@ -947,9 +1057,9 @@ def validate_knowledge_search_result(
     for view in authorized:
         _validate_view_selector(view, "authorized_views entry")
 
-    resolved_view = resolve_governed_record_view(request.view)
+    resolved_view = resolve_governed_record_view(requested_view)
     if (
-        request.view is not None
+        requested_view is not None
         and resolved_view != GOVERNED_RECORD_VIEW_CURRENT_CANONICAL
         and resolved_view not in authorized
     ):
@@ -959,8 +1069,8 @@ def validate_knowledge_search_result(
             "widens trust"
         )
 
-    records = _require_sequence(result.records, "records")
-    max_results = request.limit if request.limit is not None else KNOWLEDGE_SEARCH_DEFAULT_RESULT_LIMIT
+    records = _require_sequence(result_records, "records")
+    max_results = request_limit if request_limit is not None else KNOWLEDGE_SEARCH_DEFAULT_RESULT_LIMIT
     if len(records) > max_results:
         raise ContractSemanticError(
             f"result.records has {len(records)} entries, exceeding the applicable limit of "
@@ -977,15 +1087,15 @@ def validate_knowledge_search_result(
                 f"{label}.workspace_id {record.workspace_id!r} does not match the "
                 f"selected workspace {expected_workspace_id!r}"
             )
-        if request.record_type is not None and record.record_type != request.record_type:
+        if request_record_type is not None and record.record_type != request_record_type:
             raise ContractSemanticError(
                 f"{label}.record_type {record.record_type!r} does not match the requested "
-                f"record_type {request.record_type!r}"
+                f"record_type {request_record_type!r}"
             )
-        if request.domain_scope is not None and record.domain_scope != request.domain_scope:
+        if request_domain_scope is not None and record.domain_scope != request_domain_scope:
             raise ContractSemanticError(
                 f"{label}.domain_scope {record.domain_scope!r} does not match the requested "
-                f"domain_scope {request.domain_scope!r}"
+                f"domain_scope {request_domain_scope!r}"
             )
 
         identity = record.provenance.identity

@@ -507,4 +507,3 @@ def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception() -> N
     assert error.__cause__ is None
     assert str(missing) not in str(error)
     assert str(missing) not in repr(error)
-
