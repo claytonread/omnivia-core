@@ -1,0 +1,52 @@
+# The reviewed dependency constraints for the MCP wheelhouse closure.
+#
+# Owner resolution 005 R005-03 Phase 1 requires the wheel closure to be resolved
+# "against the repository's exact dependency lock or equivalent reviewed
+# constraints", and explicitly rejects "an unpinned, time-varying closure from
+# the index" as deterministic evidence. `uv.lock` covers the Platform tooling and
+# names none of this closure, so these exact pins are that equivalent: reviewed,
+# in-tree, and the only versions `scripts/check-package-builds.sh` will accept.
+#
+# The closure is `omnivia-core-mcp`'s declared `mcp>=2,<3` and its transitive
+# requirements. It is identical on macOS/arm64 and Linux/x86_64 at these
+# versions, which is why one file serves both; the wheels themselves differ per
+# platform, so hashes are recorded as run-time evidence by the gate rather than
+# pinned here.
+#
+# Regenerate deliberately -- a drift is a dependency change somebody must review,
+# and the gate fails until this file is updated to match:
+#
+#   python -m pip download --only-binary=:all: \
+#     --platform manylinux2014_x86_64 --python-version 3.11 --abi cp311 \
+#     --dest <tmp> "mcp>=2,<3"
+#
+# then rewrite the pins below from the downloaded wheel filenames.
+
+annotated-types==0.8.0
+anyio==4.14.2
+attrs==26.1.0
+cffi==2.1.1
+click==8.4.2
+cryptography==50.0.0
+h11==0.16.0
+httpcore2==2.9.1
+httpx2==2.9.1
+idna==3.18
+jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+mcp-types==2.0.0
+mcp==2.0.0
+opentelemetry-api==1.44.0
+pycparser==3.0
+pydantic-core==2.46.4
+pydantic==2.13.4
+pyjwt==2.13.0
+python-multipart==0.0.32
+referencing==0.37.0
+rpds-py==2026.6.3
+sse-starlette==3.4.8
+starlette==1.4.1
+truststore==0.10.4
+typing-extensions==4.16.0
+typing-inspection==0.4.2
+uvicorn==0.52.1

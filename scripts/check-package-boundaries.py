@@ -18,7 +18,7 @@ Checks performed:
 - ``omnivia-core-runtime``, ``omnivia-core-mcp``, ``omnivia-core-cli``, and
   ``omnivia-core-client`` each declare a dependency on ``omnivia-core``;
 - ``omnivia-core-mcp`` and ``omnivia-core-cli`` do not depend on or import
-  ``omnivia_core_runtime``;
+  ``omnivia_core_runtime``, or each other;
 - ``omnivia-core-client`` declares exactly one dependency -- the accepted
   ``omnivia-core`` range -- and imports no runtime, MCP, CLI, or legacy
   package;
@@ -369,18 +369,46 @@ def check_siblings_depend_on_core() -> list[str]:
     return findings
 
 
-def check_mcp_and_cli_do_not_depend_on_runtime() -> list[str]:
+#: The siblings each adapter must stay clear of, in both directions that matter:
+#: a declared dependency and an actual import. Both are runtime-free clients of
+#: the public contracts, and ADR-036 additionally forbids MCP reaching for the
+#: CLI -- the edge with the history, since the deleted `omnivia_core_mcp.adapter`
+#: imported `omnivia_core_cli.client`. The CLI's entry is the mirror image: it has
+#: no business importing the MCP server either, and enumerating one direction only
+#: would be an accident of which failure happened first.
+ADAPTER_FORBIDDEN_SIBLINGS: dict[str, tuple[PackageSpec, ...]] = {
+    MCP.distribution_name: (RUNTIME, CLI),
+    CLI.distribution_name: (RUNTIME, MCP),
+}
+
+
+def check_adapters_do_not_depend_on_runtime_or_each_other() -> list[str]:
+    """R004-05 has two halves, and each was guarded by something blind to the other.
+
+    The declared-dependency half is checked by the phase 2 allow-list, which reads
+    `pyproject.toml`. The import half was checked here -- for the runtime only. An
+    undeclared `import omnivia_core_cli` in MCP source therefore passed this
+    script, that allow-list and the whole MCP suite; the only thing that caught it
+    was `scripts/check-package-builds.sh` installing the wheel in isolation, which
+    is a late and expensive place to learn it. Both halves are closed here now.
+    """
     findings: list[str] = []
     for pkg in (MCP, CLI):
+        forbidden = ADAPTER_FORBIDDEN_SIBLINGS[pkg.distribution_name]
+        forbidden_dependencies = {
+            normalize_distribution_name(sibling.distribution_name) for sibling in forbidden
+        }
+        forbidden_imports = {sibling.import_package for sibling in forbidden}
+
         manifest = load_manifest(pkg.manifest_path)
-        dependencies = get_str_list(manifest, "project", "dependencies")
-        for dep in dependencies:
-            if dependency_name(dep) == normalize_distribution_name(RUNTIME.distribution_name):
+        for dep in get_str_list(manifest, "project", "dependencies"):
+            if dependency_name(dep) in forbidden_dependencies:
                 findings.append(f"{pkg.manifest_path}: forbidden dependency on {dep!r}")
 
         for py_file, names in collect_top_level_imports(pkg.src_root).items():
-            if RUNTIME.import_package in names:
-                findings.append(f"{py_file}: forbidden import of {RUNTIME.import_package!r}")
+            hit = names & forbidden_imports
+            if hit:
+                findings.append(f"{py_file}: forbidden import(s) {sorted(hit)}")
 
     return findings
 
@@ -428,7 +456,7 @@ def run_checks() -> list[str]:
     findings += check_core_has_no_sibling_or_legacy_import()
     findings += check_no_apps_or_pro_dependency_or_import()
     findings += check_siblings_depend_on_core()
-    findings += check_mcp_and_cli_do_not_depend_on_runtime()
+    findings += check_adapters_do_not_depend_on_runtime_or_each_other()
     findings += check_client_depends_only_on_core()
     return findings
 

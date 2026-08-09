@@ -83,7 +83,12 @@ from omnivia_core_mcp.managed_start import (
     ensure_service,
     home_directory,
 )
-from omnivia_core_mcp.manifest import ExposedOperation, exposed_by_tool_name, tools
+from omnivia_core_mcp.manifest import (
+    ExposedOperation,
+    exposed_by_tool_name,
+    input_schema,
+    tools,
+)
 
 __all__ = [
     "CALL_TIMEOUT_SECONDS",
@@ -142,9 +147,13 @@ def build_server(
 ) -> Server[object]:
     """The MCP server for one attached Core service.
 
-    `transport_factory` defaults to the one that cannot be built yet, so a
-    production server advertises its tools honestly and reports the missing dial
-    when one is called. A test passes a double satisfying `ClientTransport`.
+    `transport_factory` defaults to :func:`_default_transport_factory`, which
+    constructs the real client-owned `LocalIpcTransport` and dials the attached
+    service. A test passes a double satisfying `ClientTransport` instead.
+
+    This said "defaults to the one that cannot be built yet ... reports the
+    missing dial when one is called" until owner resolution 005 R005-01 landed the
+    transport in `omnivia-core-client`. There is no stand-in left to report.
     """
     factory = (
         _default_transport_factory if transport_factory is None else transport_factory
@@ -281,8 +290,30 @@ def _request(
     read it from the running service. A model cannot name a workspace: there is no
     argument for one anywhere in this package, which is R004-06's "unrestricted
     filesystem path selection" boundary enforced by there being no path to select.
+
+    **The advertised `additionalProperties: false` is enforced here, and was not.**
+    This copied `params.arguments` into `input` verbatim, so arbitrary JSON reached
+    the envelope while `tools/list` advertised a closed, empty object. It was inert
+    -- the `workspace.inspect` handler never reads `input`, and
+    :func:`~omnivia_core_mcp.manifest.input_schema` blocks any operation with
+    fields at import -- but "inert" is a property of today's exposure manifest, not
+    of this function, and the paragraph above claimed there was no path to select
+    while every key a model sent was still being forwarded.
+
+    The check is against the projected schema rather than against "no arguments",
+    so it stays correct when a real projector lands and an operation is exposed
+    that does take some. It is here rather than in :func:`_call_tool` because this
+    is the one place every call builds its envelope.
     """
     entry = get_operation_metadata(exposed.operation)
+    advertised = set(input_schema(entry)["properties"])
+    unknown = sorted(set(arguments or {}) - advertised)
+    if unknown:
+        raise ValueError(
+            f"{exposed.tool_name} accepts no argument named {unknown[0]!r}"
+            + (f" (or {len(unknown) - 1} other(s))" if len(unknown) > 1 else "")
+            + f"; its advertised schema declares {sorted(advertised)} and is closed"
+        )
     required = entry.required_capability
     request_id = f"mcp-{uuid.uuid4()}"
     return RequestEnvelope(

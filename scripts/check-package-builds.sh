@@ -2,11 +2,25 @@
 #
 # Build and install-check the OmniVia Core package topology (ADR-036, T-0628).
 #
-# Builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
+# **What this gate proves, stated so it cannot be over-read.** The merge-blocking
+# property is that *a prepared wheelhouse is sufficient for installation without
+# an index* -- not that the whole gate is offline. Owner resolution 005 R005-03
+# requires that distinction to be written down rather than left to a name: the
+# acquisition phase below reaches the configured index on purpose and only the
+# installation phase is index-free. Nothing here is evidence that the wheels can
+# be *obtained* offline, and no record of this gate may say so.
+#
+# Phase 1 (acquisition and staging, index access permitted):
+# builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
 # omnivia-core-mcp, omnivia-core-cli, omnivia-core-client) into a temporary
-# wheelhouse, stages the one declared third-party closure (the official MCP SDK,
-# required by R004-05) beside them, then installs each into its own isolated
-# temporary virtual environment and imports it:
+# wheelhouse and stages the one declared third-party closure (the official MCP
+# SDK, required by R004-05) beside them, wheels only, at the exact reviewed
+# versions in scripts/mcp-wheelhouse-constraints.txt, recording every staged
+# name, version and SHA-256 as evidence.
+#
+# Phase 2 (isolated installation, no index): installs each distribution into its
+# own isolated temporary virtual environment from the wheelhouse alone, and
+# imports it:
 #
 #   a. omnivia-core alone
 #   b. omnivia-core-runtime from the wheelhouse
@@ -46,6 +60,7 @@ RUNTIME_DIR="${REPO_ROOT}/packages/omnivia-core-runtime"
 MCP_DIR="${REPO_ROOT}/packages/omnivia-core-mcp"
 CLI_DIR="${REPO_ROOT}/packages/omnivia-core-cli"
 CLIENT_DIR="${REPO_ROOT}/packages/omnivia-core-client"
+CONSTRAINTS="${REPO_ROOT}/scripts/mcp-wheelhouse-constraints.txt"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/omnivia-core-build-check.XXXXXX")"
 WHEELHOUSE="${WORKDIR}/wheelhouse"
@@ -116,16 +131,96 @@ build_wheel "${CLIENT_DIR}"
 # This step needs the configured index to be reachable and has no offline
 # fallback: a failure here fails the gate rather than silently producing a
 # wheelhouse that the install step would then fail on more obscurely.
+#
+# `--only-binary=:all:` is R005-03's "Require wheels. Do not silently fall back to
+# source distributions or build-time network access", enforced rather than hoped
+# for. `--no-index --find-links` carries no wheel-only constraint of its own: with
+# an sdist in the wheelhouse and a build backend beside it, pip builds from source
+# fully offline and reports success -- proven by execution, which is why this flag
+# is here and on every install below rather than only on one of them.
+#
+# `--constraint` is R005-03's "resolve against the repository's exact dependency
+# lock or equivalent reviewed constraints". `uv.lock` names none of this closure,
+# so the reviewed pins are the equivalent; without them this step resolved fresh
+# from the index on every run, which is verbatim R005-03's rejected alternative.
 echo "--- staging the declared third-party closure into the wheelhouse ---"
 MCP_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core_mcp-*.whl)"
 "${PYTHON}" -m pip download \
+  --only-binary=:all: \
+  --constraint "${CONSTRAINTS}" \
   --dest "${WHEELHOUSE}" \
   --find-links "${WHEELHOUSE}" \
   "${MCP_WHEEL}"
 echo
 
-echo "--- wheelhouse contents ---"
-ls -1 "${WHEELHOUSE}"
+# R005-03 Phase 1 requires the staged names, versions *and hashes* as test
+# evidence; `ls -1` recorded none of the three in a machine-checkable form. This
+# also fails the gate when a third-party wheel is staged that the reviewed
+# constraints do not pin -- a new transitive requirement is a dependency change
+# somebody reviews, not one the gate absorbs silently.
+echo "--- staged wheelhouse evidence (name, version, sha256) ---"
+"${PYTHON}" - "${WHEELHOUSE}" "${CONSTRAINTS}" <<'PYEOF'
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+wheelhouse, constraints_path = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+pinned = {}
+for line in constraints_path.read_text(encoding="utf-8").splitlines():
+    line = line.split("#", 1)[0].strip()
+    if line:
+        name, _, version = line.partition("==")
+        pinned[pep503(name)] = version
+
+staged, unpinned, mispinned = {}, [], []
+for path in sorted(wheelhouse.glob("*.whl")):
+    name, version = path.name.split("-")[0], path.name.split("-")[1]
+    normalized = pep503(name)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    staged[normalized] = version
+    print(f"{normalized}=={version}  sha256:{digest}")
+    # The five distributions this script just built are versioned by their own
+    # pyproject files and rebuilt every run; the constraints file governs the
+    # third-party closure only.
+    if normalized.startswith("omnivia-core"):
+        continue
+    if normalized not in pinned:
+        unpinned.append(f"{normalized}=={version}")
+    elif pinned[normalized] != version:
+        mispinned.append(f"{normalized}=={version}, constraints pin {pinned[normalized]}")
+
+non_wheels = sorted(
+    path.name for path in wheelhouse.iterdir() if path.is_file() and path.suffix != ".whl"
+)
+
+failures = []
+if unpinned:
+    failures.append(f"staged but not pinned by {constraints_path.name}: {unpinned}")
+if mispinned:
+    failures.append(f"staged at a version the constraints do not pin: {mispinned}")
+if non_wheels:
+    failures.append(f"non-wheel artifact(s) in the wheelhouse: {non_wheels}")
+
+if failures:
+    print("", file=sys.stderr)
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    print(
+        "\nR005-03 requires a locked, wheel-only closure. Regenerate and review "
+        f"{constraints_path} rather than widening this check.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+print(f"\n{len(staged)} wheel(s) staged, no sdists, every third-party pin reviewed.")
+PYEOF
 echo
 
 CORE_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core-*.whl)"
@@ -225,7 +320,11 @@ install_and_import() {
 
   echo "--- ${venv_name}: install ${dist_name}, import ${import_name} ---"
   "${PYTHON}" -m venv "${venv_dir}"
-  "${venv_dir}/bin/python" -m pip install --no-index --find-links "${WHEELHOUSE}" "${dist_name}"
+  # `--only-binary=:all:` as well as `--no-index`: the two answer different
+  # failures. `--no-index` proves nothing was fetched; `--only-binary=:all:`
+  # proves nothing was *built*, which `--no-index --find-links` alone permits.
+  "${venv_dir}/bin/python" -m pip install \
+    --no-index --only-binary=:all: --find-links "${WHEELHOUSE}" "${dist_name}"
   "${venv_dir}/bin/python" -c "
 import ${import_name}
 print('${import_name}', ${import_name}.__version__, 'OK')

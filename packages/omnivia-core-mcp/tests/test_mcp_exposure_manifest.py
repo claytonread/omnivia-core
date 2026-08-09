@@ -139,16 +139,38 @@ def test_each_tool_schema_is_projected_from_the_operation_contract() -> None:
     the generated dataclass of that name in the public contracts package. A
     payload type renamed upstream therefore fails here rather than projecting a
     stale shape.
+
+    **The payoff line used to compare nothing to nothing.** It read
+    `sorted(projected["properties"]) == sorted(field.name for field in fields)`,
+    which looks like a projection check and is not one: `input_schema` *raises*
+    whenever the contract has fields, so on every input that reaches the
+    comparison both sides are `[]`. It passed for every possible argument,
+    including an `input_schema` advertising `additionalProperties: True` -- a real
+    defect, since the server would then be promising to accept arguments it has no
+    projector for. Only the literal-dict assertion in `test_mcp_stdio_end_to_end`
+    caught that.
+
+    So the projection is asserted against the document it must produce. This is
+    deliberately the same literal as the end-to-end test's, and the duplication is
+    the point: that one asserts one named tool over the wire, this one runs over
+    every entry in `EXPOSURE_MANIFEST`, so a second exposed tool is covered here
+    the day it is added and in the end-to-end test only if somebody remembers.
     """
     for entry in manifest.EXPOSURE_MANIFEST:
         catalogue = get_operation_metadata(entry.operation)
         contract = manifest._contract_type(catalogue.input_schema_ref)
         assert dataclasses.is_dataclass(contract)
         assert contract.__name__ == catalogue.input_schema_ref.rsplit("/", 1)[-1]
-        projected = manifest._input_schema(catalogue)
-        assert sorted(projected["properties"]) == sorted(
-            field.name for field in dataclasses.fields(contract)
-        )
+        # Reaching here at all means the contract has no fields -- `input_schema`
+        # raises otherwise -- so state that as the premise rather than leaving it
+        # to be inferred from an empty-to-empty comparison.
+        assert dataclasses.fields(contract) == ()
+        assert manifest.input_schema(catalogue) == {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
 
 
 def test_an_input_with_fields_is_refused_rather_than_guessed_at() -> None:
@@ -160,7 +182,7 @@ def test_an_input_with_fields_is_refused_rather_than_guessed_at() -> None:
     R004-06 rules out, wearing a projection's clothes.
     """
     with pytest.raises(ValueError, match="project the empty input payload only"):
-        manifest._input_schema(get_operation_metadata("memory.search"))
+        manifest.input_schema(get_operation_metadata("memory.search"))
 
 
 def test_each_tool_carries_annotations_read_off_the_catalogue() -> None:
@@ -254,3 +276,56 @@ def test_a_transport_failure_is_the_clients_own_error_type() -> None:
         socket_path_for("pipe://omnivia-core")
     assert issubclass(TransportError, ClientError)
     assert TransportError.__module__ == "omnivia_core_client.errors"
+
+
+def test_an_unadvertised_argument_is_refused_before_a_request_is_built() -> None:
+    """The advertised `additionalProperties: false` is enforced, and was not.
+
+    `_request` copied `params.arguments` into `RequestEnvelope.input` verbatim, so
+    arbitrary JSON reached the envelope while `tools/list` advertised a closed,
+    empty object. Inert at the time -- the `workspace.inspect` handler never reads
+    `input`, and `input_schema` blocks any operation with fields at import -- but
+    inert is a property of today's exposure manifest, not of the call path, and
+    nothing tested it either way.
+
+    The refusal is a tool error the model can read, not an exception, and it is
+    raised before a transport is constructed: an argument the schema does not
+    declare costs no service call.
+    """
+    import mcp_types as types
+    from omnivia_core_mcp.managed_start import Attachment
+    from omnivia_core_mcp.server import _call_tool
+
+    def never_dialled(_endpoint_uri: str) -> object:
+        raise AssertionError("a refused call must not construct a transport")
+
+    result = _call_tool(
+        types.CallToolRequestParams(
+            name="workspace_inspect",
+            arguments={"workspace_id": "../other", "path": "/etc/passwd"},
+        ),
+        attachment=Attachment(
+            status="attached", endpoint_uri="unix:///tmp/s.sock", workspace_id="ws-1"
+        ),
+        transport_factory=never_dialled,  # type: ignore[arg-type]
+    )
+    assert result.is_error is True
+    assert "accepts no argument named" in result.content[0].text
+
+
+def test_the_refusal_covers_every_argument_the_schema_does_not_declare() -> None:
+    """Checked against the projected schema rather than against "no arguments", so
+    it stays correct the day a real projector lands and an operation with fields is
+    exposed. Today every advertised schema projects `properties: {}`, so every
+    argument is unadvertised -- and an empty or absent mapping is still fine."""
+    from omnivia_core_mcp.server import _request
+
+    for entry in manifest.EXPOSURE_MANIFEST:
+        catalogue = get_operation_metadata(entry.operation)
+        assert manifest.input_schema(catalogue)["properties"] == {}
+
+        for allowed in (None, {}):
+            assert _request(entry, workspace_id="ws-1", arguments=allowed).input == {}
+
+        with pytest.raises(ValueError, match="accepts no argument named"):
+            _request(entry, workspace_id="ws-1", arguments={"anything": 1})
