@@ -46,17 +46,21 @@ from omnivia_core.contracts.v1 import (
     SourceReference,
 )
 from omnivia_core_runtime.storage.connection import authorised
+from omnivia_core_runtime.storage.projections import EVIDENCE_SEARCH_PROJECTION_ID
 from omnivia_core_runtime.storage.retrieval import EvidenceCandidate
 
-#: The projections `evidence.search` reads through. **Empty in Lane A, and that is the
-#: honest value, not a placeholder.** Packet §20.7: *"Direct authoritative structural
-#: reads are fresh at their transaction read point"*, and this lane reads 0008 directly
-#: -- there is no FTS5 index in this tree and Lane A does not add one. The freshness
-#: gate below is nevertheless built and wired, because the clause it implements resolves
-#: to *refuse* rather than report and the refusal path has to be reachable end to end
-#: before Lane B has anything to put here. Lane B adds its projection id to this tuple
-#: and inherits a gate that is already exercised.
-CONTRIBUTING_PROJECTIONS: Final[tuple[str, ...]] = ()
+#: The projections `evidence.search` reads through. Lane A had none and said so; Lane B
+#: contributes exactly one, the FTS5 search projection 0012 declares and
+#: `storage/projections/fts.py` builds. The gate below was built and wired before there
+#: was anything to put here, because the clause it implements (§20.7) resolves to
+#: *refuse* rather than report, and a refusal path first exercised on the day it becomes
+#: load-bearing is a refusal path nobody has seen work.
+#:
+#: The id comes from `storage.projections` rather than being written out, so the gate,
+#: the migration, the builder, the activation and the reader are one string. Naming it
+#: twice is how a workspace ends up refusing on one projection while serving from
+#: another.
+CONTRIBUTING_PROJECTIONS: Final[tuple[str, ...]] = (EVIDENCE_SEARCH_PROJECTION_ID,)
 
 #: The one `label_action` in 0008's vocabulary that releases a permission label. Named
 #: rather than inlined because it is the single string standing between the label
