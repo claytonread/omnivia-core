@@ -48,7 +48,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +108,7 @@ from omnivia_core_runtime.storage.retrieval import (
     authorized_frontier,
     local_owner_label_grant,
     rank_candidates,
+    rank_projected,
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
@@ -330,7 +331,11 @@ def seed(owned: Owned, *rows: dict[str, Any], extra: tuple[tuple[str, dict[str, 
             insert(owned.connection, table, values)
 
 
-def seed_more(owned: Owned, *rows: dict[str, Any]) -> None:
+def seed_more(
+    owned: Owned,
+    *rows: dict[str, Any],
+    extra: tuple[tuple[str, dict[str, Any]], ...] = (),
+) -> None:
     """Add artifacts to a workspace that has already been seeded.
 
     The same fenced write as `seed`, without the blob every artifact references: 0008
@@ -355,6 +360,8 @@ def seed_more(owned: Owned, *rows: dict[str, Any]) -> None:
                     native_id=str(row["source_native_id"]),
                 ),
             )
+        for table, values in extra:
+            insert(owned.connection, table, values)
 
 
 def label_row(evidence_id: str, label: str, *, sequence: int = 1, action: str = "attached") -> dict[str, Any]:
@@ -415,7 +422,7 @@ def project(owned: Owned, *, now_us: int = BASE_US + 1_000_000) -> fts.BuildOutc
         fencing_generation=owned.generation,
         now_us=now_us,
     )
-    fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+    fts.open_search_projection(owned.connection, workspace_id=WORKSPACE_ID)
     return outcome
 
 
@@ -1231,8 +1238,8 @@ def test_lb_v3_the_startup_builds_and_materialises_before_the_transport_starts(
         and node.func.attr == "start"
     )
 
-    assert where["build_search_projection"] < where["open_search_index"]
-    assert where["open_search_index"] < where["LocalSocketServer"] < starts
+    assert where["build_search_projection"] < where["open_search_projection"]
+    assert where["open_search_projection"] < where["LocalSocketServer"] < starts
 
     # And the build is handed the service's own three facts, not anything reconstructed.
     build_call = next(
@@ -1250,7 +1257,7 @@ def test_lb_v3_the_startup_builds_and_materialises_before_the_transport_starts(
     # The projection is exactly as reachable for the handler as the connection is: both
     # are read off the one connection the service owns, and neither is a handler's to
     # open. Before startup materialises one there is nothing to reach.
-    assert fts.session_search_index(owned.connection) is None
+    assert fts.session_search_projection(owned.connection) is None
 
 
 # --- Lane B: refusals, retained and retryable ---------------------------------
@@ -1274,7 +1281,7 @@ def test_lb_v5_a_missing_projection_refuses_the_request_and_builds_nothing(
     assert response.error.code == ERROR_CODE_PROJECTION_UNAVAILABLE
     assert response.error.retry_class == RETRY_CLASS_RETRYABLE_AFTER_DELAY
     assert _projection_state(owned) == before
-    assert fts.session_search_index(owned.connection) is None
+    assert fts.session_search_projection(owned.connection) is None
 
 
 def test_lb_v6_a_lagging_projection_refuses_the_request_and_repairs_nothing(
@@ -1313,16 +1320,17 @@ def test_lb_v6_a_lagging_projection_refuses_the_request_and_repairs_nothing(
 def test_lb_v7_the_refusal_survives_the_gate_being_removed(owned: Owned) -> None:
     """Two independent refusals, and the second is not decoration.
 
-    The handler's freshness gate and the index's own per-call re-check both refuse a
-    lagging projection. Removing the gate -- emptying the contributing set, which is one
-    edit away -- must still refuse, because the ranking step re-proves that the run it
-    was built from is the activated one and still level with the workspace. A build with
-    only the gate would answer this from an index describing a workspace that has moved.
+    The handler's freshness gate and the projection's own per-request re-check both
+    refuse a lagging projection. Removing the gate -- emptying the contributing set,
+    which is one edit away -- must still refuse, because `require_current` re-proves that
+    the run this material was built from is the activated one and still level with the
+    workspace. A build with only the gate would answer this from material describing a
+    workspace that has moved.
     """
     seed(owned, artifact_row("evd-1"))
     project(owned)
-    index = fts.session_search_index(owned.connection)
-    assert index is not None
+    projection = fts.session_search_projection(owned.connection)
+    assert projection is not None
 
     seed_more(
         owned,
@@ -1335,20 +1343,9 @@ def test_lb_v7_the_refusal_survives_the_gate_being_removed(owned: Owned) -> None
             recorded_at_us=BASE_US + 500,
         ),
     )
-    candidates = read_evidence_candidates(owned.connection, workspace_id=WORKSPACE_ID)
-    frozen = authorized_frontier(
-        candidates,
-        workspace_id=WORKSPACE_ID,
-        grant=local_owner_label_grant(
-            principal_id=LOCAL_PRINCIPAL,
-            workspace_id=WORKSPACE_ID,
-            granted_workspace=WORKSPACE_ID,
-        ),
-        resolution_time_us=BASE_US + 1000,
-    )
 
     with pytest.raises(fts.StaleProjection):
-        index.search(frozen, "doc", limit=50)
+        fts.require_current(owned.connection, projection)
 
 
 def _projection_state(owned: Owned) -> tuple[int, int, int]:
@@ -1371,17 +1368,18 @@ def test_lb_v8_an_excluded_artifact_is_never_scored_even_when_the_page_is_identi
 ) -> None:
     """F2 with the ranking that replaced Lane A's, and the mutation it has to survive.
 
-    Two searches over one workspace and one index. The second is the defective build:
-    the ACL stage deferred, so `evd-2` -- restricted, and held by nobody -- is on the
-    frontier. It scores last and the page drops it, so the two pages are byte-identical
-    and no assertion over a result could tell them apart.
+    Two searches over one workspace and one materialised projection. The second is the
+    defective build: the ACL stage deferred, so `evd-2` -- restricted, and held by nobody
+    -- is on the frontier. It scores last and the page drops it, so the two pages are
+    byte-identical and no assertion over a result could tell them apart.
 
-    What separates them is what SQLite was *asked*. The ranking statement is captured
-    off the connection with its parameters expanded, so the ids FTS5 was given are read
-    rather than inferred: the honest search never names `evd-2`, and the widened one
-    does. That is the difference between a build that ranks the frontier and a build
-    that ranks the index and filters afterwards -- and the frontier digest moves with
-    it, which is the check that holds when nobody is watching the SQL.
+    What separates them is what the ranker was *given*. The projected frontier is read
+    directly: the honest one holds `evd-1` alone and the widened one holds `evd-2` as
+    well, so "an excluded artifact is never scored" is observed at the ranker's input
+    rather than inferred from an output that by construction cannot show it. And the
+    whole post-freeze path is watched on the connection: it issues no statement at all,
+    which is the structural reason there is no index read left here to constrain
+    correctly.
     """
     seed(
         owned,
@@ -1392,7 +1390,7 @@ def test_lb_v8_an_excluded_artifact_is_never_scored_even_when_the_page_is_identi
         extra=((LABELS, label_row("evd-2", "restricted")),),
     )
     project(owned)
-    index = fts.session_search_index(owned.connection)
+    index = fts.session_search_projection(owned.connection)
     assert index is not None
 
     candidates = read_evidence_candidates(owned.connection, workspace_id=WORKSPACE_ID)
@@ -1422,39 +1420,197 @@ def test_lb_v8_an_excluded_artifact_is_never_scored_even_when_the_page_is_identi
     assert len(widened.candidates) == len(honest.candidates) + 1
     assert "evd-2" in {item.evidence_id for item in honest.excluded}
 
-    honest_sql = _ranking_statements(owned, index, honest, "doc-1")
-    widened_sql = _ranking_statements(owned, index, widened, "doc-1")
+    honest_statements, honest_projected = _post_freeze(owned, index, honest)
+    widened_statements, widened_projected = _post_freeze(owned, index, widened)
 
-    # What FTS5 was asked to rank, read back with parameters expanded.
-    assert honest_sql and widened_sql
-    assert not any("evd-2" in statement for statement in honest_sql)
-    assert any("evd-2" in statement for statement in widened_sql)
-    assert all("evd-1" in statement for statement in (honest_sql[0], widened_sql[0]))
+    # What the ranker was handed. The honest projected frontier never names `evd-2`.
+    assert {
+        item.candidate.evidence_id for item in honest_projected.candidates
+    } == {"evd-1"}
+    assert "evd-2" in {
+        item.candidate.evidence_id for item in widened_projected.candidates
+    }
+    # And membership survives the narrowing exactly, digest included.
+    assert honest_projected.checksum == honest.checksum
+    assert widened_projected.checksum == widened.checksum
+    # Narrowing and ranking touch SQLite not at all.
+    assert honest_statements == [] and widened_statements == []
 
-    honest_page = _page(index.search(honest, "doc-1", limit=50))
-    widened_page = _page(index.search(widened, "doc-1", limit=50))
+    honest_page = _page(rank_projected(honest_projected, "doc-1", limit=50))
+    widened_page = _page(rank_projected(widened_projected, "doc-1", limit=50))
 
-    # Byte-identical, so the SQL above is the only place the difference is visible --
-    # and the digest catches it without looking there.
+    # Byte-identical, so the projected frontier above is the only place the difference is
+    # visible -- and the digest catches it without looking there.
     assert honest_page == widened_page
     assert honest.checksum != widened.checksum
 
 
-def _ranking_statements(
-    owned: Owned, index: fts.SearchIndex, frozen: Any, query: str
-) -> list[str]:
-    """The statements one `search` ran against the index, parameters expanded."""
+#: Three identity surfaces chosen so that BM25 over the authorized frontier and BM25 over
+#: the whole workspace disagree about the order of the two authorized members.
+#: `evd-poison` carries the query term 340 times in a surface fifty times the length of
+#: the others: it lifts the average document length enormously, and that average is what
+#: BM25's length normalisation divides by. `test_lb_v9_...` proves the disagreement rather
+#: than assuming it, so these numbers cannot quietly stop discriminating.
+SHORT_LOCATOR = "archive://alpha.md"
+LONG_LOCATOR = "archive://alpha/alpha/" + "/".join(f"p{index}" for index in range(24))
+POISON_LOCATOR = "alpha/" * 340
+
+
+def test_lb_v9_an_excluded_artifact_cannot_move_the_order_of_authorized_members(
+    owned: Owned,
+) -> None:
+    """The rejected design's actual defect, and the case that catches it.
+
+    Two otherwise-identical workspaces, differing only by one artifact the ACL filter
+    excludes. It is authorized for nobody and cannot appear in a page, and the first Lane
+    B design still let it decide the order of the two artifacts that *were* returned --
+    because `bm25()` takes its average document length from the whole index, and this
+    artifact is fifty times longer than either member and carries the query term 340
+    times. Constraining which rows FTS5 returned did not constrain the statistics it
+    scored them with.
+
+    Packet §7.2 names *scoring* alongside ranking and selection, so this is the clause
+    itself rather than a refinement of it, and no assertion over a result page reaches it:
+    both pages carry exactly the two authorized ids either way.
+
+    The last two assertions are what make this a test rather than a hope. The corpus-wide
+    ordering is computed from the live FTS5 index -- the exact ranking the rejected design
+    performed, ids constrained and statistics not -- and required to *disagree* with the
+    ordering this build returns. If a later edit made the fixture stop discriminating,
+    this fails rather than passing vacuously.
+    """
+    seed(
+        owned,
+        artifact_row(
+            "evd-short",
+            native_id="doc-s",
+            locator=SHORT_LOCATOR,
+            recorded_at_us=BASE_US + 100,
+        ),
+        artifact_row(
+            "evd-long",
+            native_id="doc-l",
+            locator=LONG_LOCATOR,
+            checksum=DIGEST_B,
+            recorded_at_us=BASE_US,
+        ),
+    )
+    project(owned)
+    without_poison = _ranked_for_stranger(owned, "alpha")
+    assert without_poison == ("evd-short", "evd-long")
+
+    # The same workspace, plus one artifact no principal in this test may see.
+    seed_more(
+        owned,
+        artifact_row(
+            "evd-poison",
+            native_id="doc-p",
+            locator=POISON_LOCATOR,
+            checksum=DIGEST_C,
+            recorded_at_us=BASE_US + 500,
+        ),
+        extra=((LABELS, label_row("evd-poison", "restricted")),),
+    )
+    project(owned)
+    with_poison = _ranked_for_stranger(owned, "alpha", expect_excluded="evd-poison")
+
+    # Identical membership and identical ordering. Not "the excluded artifact is absent",
+    # which was true of the rejected design too.
+    assert with_poison == without_poison
+
+    # And the case is a real one: scored the way the rejected design scored it -- every
+    # returned id a frontier member, every statistic taken from the whole index -- the two
+    # authorized members come back in the other order.
+    corpus_wide = tuple(
+        str(row[0])
+        for row in owned.connection.execute(
+            f"SELECT evidence_id, bm25({fts.INDEX_TABLE}) FROM {fts.INDEX_TABLE} "
+            f"WHERE {fts.INDEX_TABLE} MATCH ? AND evidence_id IN (?, ?) "
+            f"ORDER BY bm25({fts.INDEX_TABLE})",
+            ('"alpha"', "evd-short", "evd-long"),
+        )
+    )
+    assert set(corpus_wide) == set(with_poison)
+    assert corpus_wide != with_poison
+
+
+def _ranked_for_stranger(
+    owned: Owned, query: str, *, expect_excluded: str | None = None
+) -> tuple[str, ...]:
+    """One search over the frontier a principal holding no label grant would get.
+
+    The production post-freeze composition -- re-prove, narrow, rank -- and nothing else.
+    """
+    projection = fts.session_search_projection(owned.connection)
+    assert projection is not None
+    resolution = int(
+        authoritative_checkpoint(owned.connection, workspace_id=WORKSPACE_ID)
+    )
+    frozen = authorized_frontier(
+        read_evidence_candidates(owned.connection, workspace_id=WORKSPACE_ID),
+        workspace_id=WORKSPACE_ID,
+        grant=local_owner_label_grant(
+            principal_id="not-the-owner",
+            workspace_id=WORKSPACE_ID,
+            granted_workspace=WORKSPACE_ID,
+        ),
+        resolution_time_us=resolution,
+    )
+    if expect_excluded is not None:
+        assert expect_excluded in {item.evidence_id for item in frozen.excluded}
+    fts.require_current(owned.connection, projection)
+    return tuple(
+        candidate.evidence_id
+        for candidate in rank_projected(projection.project(frozen), query, limit=50)
+    )
+
+
+def test_lb_v10_missing_material_refuses_the_request_rather_than_falling_back(
+    owned: Owned,
+) -> None:
+    """The last fallback available to this handler, refused end to end.
+
+    Every freshness check in the path reports current here: the projection is activated,
+    level with the workspace, and built from the run this session holds. What is missing
+    is the material for one authorized candidate -- and its authoritative `search_text` is
+    on the frozen frontier, one attribute away, enough to answer the request from a source
+    this projection does not describe.
+
+    So the whole handler is driven rather than the adapter alone: the wire refusal is the
+    retryable one the contract fixes, the artifact does not appear in it, and nothing was
+    built on the way.
+    """
+    seed(owned, artifact_row("evd-1"))
+    project(owned)
+    projection = fts.session_search_projection(owned.connection)
+    assert projection is not None
+    owned.connection.omnivia_search_projection = replace(projection, material={})
+    before = _projection_state(owned)
+
+    response = refusal(production_path(owned).dispatch(request_for()))
+
+    assert response.error.code == ERROR_CODE_PROJECTION_UNAVAILABLE
+    assert response.error.retry_class == RETRY_CLASS_RETRYABLE_AFTER_DELAY
+    assert "evd-1" not in json.dumps(encode_response(response), sort_keys=True)
+    assert _projection_state(owned) == before
+
+
+def _post_freeze(
+    owned: Owned, projection: fts.SearchProjection, frozen: Any
+) -> tuple[list[str], Any]:
+    """The statements the narrowing ran, and the value the ranker is handed.
+
+    Traced on the connection rather than reasoned about, because "the post-freeze path
+    issues no SQL" is the structural claim this redesign rests on and it is one edit away
+    from being false.
+    """
     seen: list[str] = []
     owned.connection.set_trace_callback(seen.append)
     try:
-        index.search(frozen, query, limit=50)
+        projected = projection.project(frozen)
     finally:
         owned.connection.set_trace_callback(None)
-    return [
-        statement
-        for statement in seen
-        if "MATCH" in statement and fts.INDEX_TABLE in statement
-    ]
+    return seen, projected
 
 
 def _page(ranked: tuple[Any, ...]) -> str:

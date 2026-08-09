@@ -1,11 +1,11 @@
-"""The `evidence.search` FTS5 projection: its builder, and the index reads run over.
+"""The `evidence.search` FTS5 projection: its builder, and the material reads narrow.
 
 **What is durable and what is not, and why the split is not a compromise.**
 
 Migration 0012 declares one ordinary table, `omnivia_evidence_search_documents`, and
 that table is the projection. The FTS5 index over it is a `temp` virtual table this
-module materialises from the activated run (`open_search_index`). The split is forced
-and it is the correct one:
+module materialises from the activated run (`open_search_projection`). The split is
+forced and it is the correct one:
 
 * SQLite refuses `CREATE TRIGGER` on a virtual table -- literally, *"cannot create
   triggers on virtual tables"* -- and a persisted `fts5` table also materialises five
@@ -27,42 +27,51 @@ leased and workspace-scoped like every other row in the database.
 matters and the one a session-scoped index could plausibly break. It does not, because
 the index is a pure function of durable rows the ledger already points at: after a
 crash at any point, `build_search_projection` re-derives its position from the
-database rather than from process state, and `open_search_index` re-derives the index
-from the activated run. Nothing a restart needs lives only in memory. The `temp`
+database rather than from process state, and `open_search_projection` re-derives the
+index from the activated run. Nothing a restart needs lives only in memory. The `temp`
 schema is invisible to `sqlite_master`, so the index cannot move a schema fingerprint,
 cannot appear in `guarded_tables()`, and cannot survive to be found stale.
 
-**Reads never build.** `SearchIndex.search` materialises nothing, repairs nothing and
-falls back to nothing. It re-checks freshness against the authoritative checkpoint on
-every call and refuses -- `ProjectionUnavailable` when no run is activated,
-`StaleProjection` when the activated run is behind by any amount at all. Packet §20.7
-removed the middle option (*"There is no configurable time tolerance in v0.6"*), so
-there is no threshold here and no operator "rebuild now" entry point either: the only
-way this projection advances is `build_search_projection`, which is maintenance work,
-not request work.
+**Reads never build.** Nothing on the request path materialises, repairs, re-creates or
+re-tokenizes anything. Freshness is re-proven per request by `require_current` and
+refuses -- `ProjectionUnavailable` when no run is activated, `StaleProjection` when the
+activated run is behind by any amount at all. Packet §20.7 removed the middle option
+(*"There is no configurable time tolerance in v0.6"*), so there is no threshold here and
+no operator "rebuild now" entry point either: the only way this projection advances is
+`build_search_projection`, which is maintenance work, not request work.
 
-**Ranking observes the frozen frontier and only the frozen frontier.** `search` takes
-an `AuthorizedFrontier` and binds *its ids into the ranking statement*, so `bm25()` is
-evaluated over frontier members and nothing else -- packet §7.2 names scoring alongside
-ranking and selection, and asking FTS5 to score the whole index and discarding the
-misses afterwards would have observed the candidates the filter chain excluded. Each
-score is then resolved back to its candidate by lookup in the frontier, so §7.2's
-"every item in any result SHALL be a member of that frozen frontier" holds by
-construction rather than by a membership check. The ordering is
-`retrieval.relevance_order_key` -- the same total order Lane A sorts by, with bm25
-supplying the relevance Lane A had no index to compute.
+**This module is not the ranker, and that is the correction this design exists to make.**
+The first version of Lane B put ranking in a `SearchIndex.search` that held the
+connection its index lived on and scored with `bm25()`. Two things were wrong with it.
+It gave up §20.12's proof, which is an *import boundary* -- a ranker in this module
+imports `sqlite3`, `storage.connection` and `storage.repository`, so "it cannot reach an
+unfiltered candidate" stopped being a structural fact and became a promise about the
+body of one function. And `bm25()` takes its inverse document frequency and its average
+document length from the *whole index*, so an artifact the filter chain had excluded
+still moved the relative order of the members that were returned -- a §7.2 violation
+that no assertion over a result page can see, because every id in the page is authorized
+either way.
 
-One bounded residual, stated rather than hidden: bm25's inverse document frequency is a
-statistic of the *index*, which holds every artifact in the workspace, so an excluded
-artifact carrying a query term can shift the relative scores of frontier members. It
-cannot enter a result, be scored, or be observed by any ordering or selection decision.
-Removing even that would mean an index built per request from the frontier, which is a
-build on the request path -- the one thing this projection may never do.
+So the split. `open_search_projection` materialises the FTS5 index at startup **and
+reads the per-document token material back out of it** through `fts5vocab`: the index is
+the tokenizer, and what the session holds afterwards is one immutable token sequence per
+document. `SearchProjection.project` then addresses that material by exactly the frozen
+frontier's ids -- it never iterates the corpus, never touches an id the frontier does not
+hold, and computes no score at all -- and returns a `ProjectedFrontier` value. Every
+statistic BM25 needs is recomputed from that value by `retrieval.rank_projected`, which
+holds no connection and imports no storage module. An excluded artifact is absent from
+the numbers, not merely absent from the page.
 
-**Reads reach the index through `session_search_index` and never materialise one.**
-The index is recorded on the connection whose `temp` schema holds it, so the handler's
-lookup carries no identity, no fencing generation and no DDL grant: there is nothing
-for a request path to build with even if a later edit wanted to.
+A candidate the frontier holds and the material does not is a refusal, never a fallback.
+The authoritative `search_text` is right there in `omnivia_evidence_artifacts` and
+reading it would answer the request; it would also be answering from a source this
+projection does not describe, which is the silent staleness §20.7 forbids wearing a
+helpful face.
+
+**Reads reach the material through `session_search_projection` and never materialise
+any.** It is recorded on the connection whose `temp` schema the index lives in, so the
+handler's lookup carries no identity, no fencing generation and no DDL grant: there is
+nothing for a request path to build with even if a later edit wanted to.
 """
 
 from __future__ import annotations
@@ -70,8 +79,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final
+from types import MappingProxyType
+from typing import Any, Final
 
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
@@ -83,9 +94,9 @@ from omnivia_core_runtime.storage.repository import (
 )
 from omnivia_core_runtime.storage.retrieval import (
     AuthorizedFrontier,
-    EvidenceCandidate,
+    ProjectedCandidate,
+    ProjectedFrontier,
     normalize_query,
-    relevance_order_key,
 )
 
 #: The ledger identity this module builds and reads. One projection, one id, and the
@@ -102,23 +113,25 @@ PROJECTION_KIND: Final = "evidence.search"
 #: is built with. Both are recorded on every run so a build made under one profile is
 #: distinguishable from a build made under another rather than silently comparable.
 SCHEMA_VERSION: Final = "0012"
-PROFILE_VERSION: Final = "fts5.unicode61.1"
+PROFILE_VERSION: Final = "fts5.unicode61.nodiacritics.1"
 
-#: The durable projection table, and the session-scoped index over it.
+#: The tokenizer, stated once. `remove_diacritics 0` is the load-bearing half: with
+#: removal on, `unicode61` folds combining marks away by its own internal table, and the
+#: query tokenizer in `retrieval.py` -- which has no index to ask -- could not reproduce
+#: that. With it off, both sides are "runs of Unicode alphanumerics over NFKC-normalized,
+#: case-folded text", which is a rule two implementations can agree on and a test can pin.
+TOKENIZER: Final = "unicode61 remove_diacritics 0"
+
+#: The durable projection table, the session-scoped index over it, and the vocabulary
+#: view this module reads the per-document token material back out of.
 DOCUMENTS_TABLE: Final = "omnivia_evidence_search_documents"
 INDEX_TABLE: Final = "omnivia_evidence_search_index"
+VOCAB_TABLE: Final = "omnivia_evidence_search_vocabulary"
 
 #: Documents written between checkpoints. Every checkpoint is a resume point, so this
 #: is the bound on how much work an interruption can cost -- not a performance knob.
 #: ponytail: fixed batch, make it a parameter if a workspace ever makes it matter.
 CHECKPOINT_BATCH: Final = 256
-
-#: Frontier ids bound into one ranking statement. SQLite bounds a statement's host
-#: parameters (`SQLITE_MAX_VARIABLE_NUMBER`, 999 on older builds) and a frontier is a
-#: whole workspace's worth of candidates, so the ids are passed in batches. bm25 reads
-#: its statistics off the index rather than off the result set, so a batched ranking and
-#: a single-statement one score identically.
-MATCH_BATCH: Final = 500
 
 
 class ProjectionError(StorageError):
@@ -239,120 +252,148 @@ def current_build(connection: sqlite3.Connection, *, workspace_id: str) -> Activ
     return build
 
 
+#: The refusal a request gets when the frontier holds a candidate the materialised
+#: projection does not. A constant because it names the rule and nothing about this
+#: request: which id was missing is a fact about the caller's authorized material.
+_MESSAGE_MISSING_MATERIAL: Final = (
+    "the materialised evidence.search projection has no document for an authorized "
+    "candidate; this read cannot be served from it"
+)
+
+
 @dataclass(frozen=True, slots=True)
-class SearchIndex:
-    """One session's FTS5 index over one activated run.
+class SearchProjection:
+    """One session's materialised `evidence.search` projection, as token material.
 
-    Holds the connection because the index lives in that connection's `temp` schema
-    and nowhere else -- a second connection cannot see it, which is the honest scope
-    of a session-scoped index and is why this is a value a caller keeps rather than a
-    global something could reach.
+    **The adapter, not the ranker.** What it holds is what the service's own startup
+    materialised: one immutable token sequence per document, produced by the FTS5 index
+    over the activated run's durable rows and read back out of it through `fts5vocab`.
+    Holding the whole workspace's material is exactly what a projection is for, and it
+    is why `project` is written the way it is -- the narrowing has to happen here, and it
+    has to happen by address rather than by scan.
 
-    **This class is the production ranker, and it holds a store.** That is the one
-    §20.12 property Lane B cannot inherit: `retrieval.rank_candidates` proved it could
-    not reach an unfiltered candidate through its module's *import boundary*, and an
-    FTS5 ranker has an index in SQLite, so it holds a connection to one. The proof is
-    therefore made over values instead: the ranking statement is constrained to the
-    frozen frontier's ids and every score is resolved back through that same frontier,
-    so what comes out is a subset of what went in. The frontier still arrives frozen,
-    and this class narrows it and never widens it -- but a reviewer should read
-    `search` for that, not take the import block's word for it.
+    There is no connection on this value. The `temp` index the material came from lives
+    on one connection and nowhere else, but nothing after materialisation needs it: the
+    material is values, the narrowing is a lookup, and the freshness re-check is
+    `require_current`, which takes the connection as a parameter at the one call site
+    that has one. So a reviewer asking "what can this reach?" can answer from the fields.
     """
 
-    connection: sqlite3.Connection
     workspace_id: str
     build: ActiveBuild
+    #: `evidence_id` to that document's tokens, in order. A `Mapping` rather than a
+    #: `dict` because addressing it is the whole of `project`'s access to it, and a test
+    #: substitutes a store that fails on iteration to prove that. What materialisation
+    #: puts here is read-only in fact and not only in annotation -- see
+    #: `_materialise_terms`.
+    material: Mapping[str, tuple[str, ...]]
     document_count: int
 
-    def search(
-        self, frontier: AuthorizedFrontier, query: str, *, limit: int
-    ) -> tuple[EvidenceCandidate, ...]:
-        """Rank the frozen frontier by bm25 over this index. Builds nothing, ever.
+    def project(self, frontier: AuthorizedFrontier) -> ProjectedFrontier:
+        """Narrow this session's material to exactly the frozen frontier's ids.
 
-        Freshness is re-proven on every call, not once at open: an index opened when
-        the projection was current is stale the moment an artifact is ingested, and a
-        session that kept serving from it would be exactly the silent staleness §20.7
-        forbids. Two things are checked -- the activated run must still be level with
-        the workspace, and it must still be *this* index's run.
+        The loop is over `frontier.candidates` and the material is reached by
+        `self.material[...]`. Both halves matter, and a test enforces them with a store
+        that raises on iteration and on any id the frontier does not hold: this method
+        never walks the corpus, never asks for an excluded id, and -- because the value
+        it returns carries the tokens themselves rather than a way to fetch them -- there
+        is no lazy lookup left to happen later, during ranking, out of sight.
 
-        The query is matched as a single FTS5 phrase. That is a deliberate narrowing
-        of Lane A's substring test to token boundaries, and it is also what makes a
-        caller-supplied string safe here: FTS5's `MATCH` argument is a query language
-        with its own operators, so a raw query would let a caller write `AND`, `NOT`,
-        column filters and prefix wildcards into a search. Quoting it as a phrase
-        leaves no operator reachable.
+        It computes nothing. No score, no frequency, no average, no ordering. Every one
+        of those is `retrieval.rank_projected`'s, over the value returned here, so that
+        the statistics are properties of the authorized set and not of the workspace.
 
-        **The frontier is handed to FTS5, not applied to its answer.** The statement
-        below carries the frozen frontier's ids, so the only documents `bm25()` is ever
-        evaluated over are candidates that already passed every filter -- packet §7.2
-        names *scoring* alongside ranking and selection, and a build that scored the
-        whole index and dropped the misses afterwards would have observed exactly what
-        the clause forbids. It would also be invisible to every result-level assertion,
-        which is F2's whole point: widen the frontier by one unauthorized artifact that
-        scores last and the returned page is byte-identical.
+        A candidate with no material is a refusal. It means the frontier and the
+        activated run disagree about what exists -- material reclaimed underneath a
+        session, a document the build never wrote -- and the honest answer is the
+        retryable one the caller already handles. Reading the artifact's authoritative
+        `search_text` instead would answer from outside the projection while every
+        freshness check in the path reported current.
         """
-        current = current_build(self.connection, workspace_id=self.workspace_id)
-        if current.run_id != self.build.run_id:
-            raise StaleProjection(
-                f"this index was built from run {self.build.run_id!r} and "
-                f"{PROJECTION_ID} has since activated {current.run_id!r}"
-            )
         if frontier.workspace_id != self.workspace_id:
             raise ProjectionError(
-                f"frontier names workspace {frontier.workspace_id!r} and this index "
-                f"serves {self.workspace_id!r}"
+                f"frontier names workspace {frontier.workspace_id!r} and this "
+                f"projection serves {self.workspace_id!r}"
             )
+        projected: list[ProjectedCandidate] = []
+        for candidate in frontier.candidates:
+            terms = self._terms(candidate.evidence_id)
+            if terms is None:
+                raise ProjectionUnavailable(_MESSAGE_MISSING_MATERIAL)
+            projected.append(
+                ProjectedCandidate(candidate=candidate, terms=terms)
+            )
+        return ProjectedFrontier(
+            workspace_id=frontier.workspace_id,
+            # Carried verbatim, never recomputed: this is the same set of candidates the
+            # freeze digested, so a second digest here could only agree by accident.
+            checksum=frontier.checksum,
+            candidates=tuple(projected),
+        )
 
-        phrase = '"' + normalize_query(query).replace('"', '""') + '"'
-        by_id = {candidate.evidence_id: candidate for candidate in frontier.candidates}
-        identifiers = sorted(by_id)
-        matched: list[tuple[EvidenceCandidate, float]] = []
-        # Read under the same explicit fence every other read in this tree runs under.
-        # Deny-by-default is already in force, so this widens nothing; it states that
-        # the ranking path is a read, in the one place a future edit would be tempted
-        # to make it repair something.
-        with authorised(self.connection, mutations=False, ddl=False) as fenced:
-            for start in range(0, len(identifiers), MATCH_BATCH):
-                batch = identifiers[start : start + MATCH_BATCH]
-                marks = ", ".join("?" * len(batch))
-                # `bm25()` sits in the result list and the frontier predicate in the
-                # WHERE, so SQLite scores only rows that survive the predicate. And the
-                # candidate each score belongs to is looked *up* in the frontier: there
-                # is no branch here that could return an object the frontier does not
-                # already hold.
-                matched.extend(
-                    (by_id[str(evidence_id)], float(relevance))
-                    for evidence_id, relevance in fenced.execute(
-                        f"SELECT evidence_id, bm25({INDEX_TABLE}) FROM {INDEX_TABLE} "
-                        f"WHERE {INDEX_TABLE} MATCH ? AND evidence_id IN ({marks})",
-                        (phrase, *batch),
-                    ).fetchall()
-                )
-        matched.sort(key=lambda pair: relevance_order_key(pair[0], pair[1]))
-        return tuple(candidate for candidate, _ in matched[:limit])
+    def _terms(self, evidence_id: str) -> tuple[str, ...] | None:
+        """One document's tokens, or `None`. The only way this class reads its material.
+
+        Separated so the refusal in `project` is raised with no active exception behind
+        it -- this tree's convention, and load-bearing wherever a message could otherwise
+        reach a caller through `__context__`.
+        """
+        try:
+            return self.material[evidence_id]
+        except KeyError:
+            return None
 
 
-def open_search_index(
+def require_current(
+    connection: sqlite3.Connection, projection: SearchProjection
+) -> None:
+    """Re-prove per request that this material is still the activated run's, or refuse.
+
+    Per request rather than once at materialisation, because a projection that was
+    current when the session opened is stale the moment an artifact is ingested, and a
+    session that kept serving from it would be exactly the silent staleness §20.7
+    forbids. Two things are proven: `current_build` refuses unless the activated run is
+    level with the workspace, and the run it names must still be *this* material's run.
+
+    A free function taking the connection rather than a method holding one, so that the
+    value the ranking path carries stays a value.
+    """
+    current = current_build(connection, workspace_id=projection.workspace_id)
+    if current.run_id != projection.build.run_id:
+        raise StaleProjection(
+            f"this material was built from run {projection.build.run_id!r} and "
+            f"{PROJECTION_ID} has since activated {current.run_id!r}"
+        )
+
+
+def open_search_projection(
     connection: sqlite3.Connection, *, workspace_id: str
-) -> SearchIndex:
-    """Materialise this session's index from the activated run, or refuse.
+) -> SearchProjection:
+    """Materialise this session's index and its token material, or refuse.
 
     Called from startup and maintenance, never from a request -- `service/main.py`
     invokes it behind `build_search_projection` before the endpoint accepts anything.
-    It re-creates the `temp` table from scratch rather than repairing one, because a
+    It re-creates the `temp` tables from scratch rather than repairing them, because a
     rebuild from durable rows is both cheaper to reason about and the only version that
     converges after an interruption partway through a previous materialisation.
 
-    **The widening is two statements wide.** `temp` DDL is denied on a governed service
+    **The FTS5 index is the tokenizer.** The material this returns is not a second
+    analysis of the same text: the documents go into the index, and `_materialise_terms`
+    reads the token instances back out of it. So what a request is ranked against is what
+    FTS5 made of the workspace, and the only thing `retrieval.py` has to reproduce
+    independently is the split of one query string -- which is a rule, not a corpus, and
+    is pinned by a test against a real index.
+
+    **The widening is three statements wide.** `temp` DDL is denied on a governed service
     connection like every other schema action -- `_schema_action_codes()` matches every
     `SQLITE_CREATE_*`, temporary and virtual-table actions included -- so the grant is
-    stated here rather than assumed. It covers the drop and the create and stops: those
-    two carry no data and no caller value, and the linear pass that does carry the
+    stated here rather than assumed. It covers the drops and the creates and stops: those
+    carry no data and no caller value, and the linear pass that does carry the
     workspace's text runs under a DML grant with DDL refused. Splitting them is not
     decoration -- an authorizer grant is only as narrow as the block it spans, and the
-    insert loop is by far the longest-lived of the three statements.
+    insert loop is by far the longest-lived of the statements.
 
-    `mutations=True` is needed for the create as well, and that is FTS5 rather than
+    `mutations=True` is needed for the creates as well, and that is FTS5 rather than
     carelessness: the virtual table's constructor writes its own `_config` shadow row,
     which reaches the authorizer as an ordinary INSERT and fails the create without it.
     """
@@ -366,14 +407,22 @@ def open_search_index(
             (workspace_id, PROJECTION_ID, build.run_id),
         ).fetchall()
 
-    # Cleared first. A failure below must not leave a previous session's index
-    # reachable through `session_search_index` behind a run that is no longer active.
-    connection.omnivia_search_index = None  # type: ignore[attr-defined]
+    # Cleared first. A failure below must not leave a previous session's material
+    # reachable through `session_search_projection` behind a run that is no longer
+    # active.
+    connection.omnivia_search_projection = None  # type: ignore[attr-defined]
     with authorised(connection, mutations=True, ddl=True):
+        # The vocabulary view goes first in both directions: it names the index, so it
+        # cannot outlive a drop of one or precede a create of one.
+        connection.execute(f"DROP TABLE IF EXISTS temp.{VOCAB_TABLE}")
         connection.execute(f"DROP TABLE IF EXISTS temp.{INDEX_TABLE}")
         connection.execute(
             f"CREATE VIRTUAL TABLE temp.{INDEX_TABLE} USING fts5("
-            "evidence_id UNINDEXED, search_text, tokenize = 'unicode61')"
+            f"evidence_id UNINDEXED, search_text, tokenize = '{TOKENIZER}')"
+        )
+        connection.execute(
+            f"CREATE VIRTUAL TABLE temp.{VOCAB_TABLE} "
+            f"USING fts5vocab({INDEX_TABLE}, instance)"
         )
     with authorised(connection, mutations=True, ddl=False):
         connection.executemany(
@@ -388,34 +437,79 @@ def open_search_index(
                 for evidence_id, search_text in documents
             ],
         )
-    index = SearchIndex(
-        connection=connection,
+    material = _materialise_terms(connection, documents)
+    projection = SearchProjection(
         workspace_id=workspace_id,
         build=build,
-        document_count=len(documents),
+        material=material,
+        document_count=len(material),
     )
-    connection.omnivia_search_index = index  # type: ignore[attr-defined]
-    return index
+    connection.omnivia_search_projection = projection  # type: ignore[attr-defined]
+    return projection
 
 
-def session_search_index(connection: sqlite3.Connection) -> SearchIndex | None:
-    """This session's index, or `None` when nothing has materialised one.
+def _materialise_terms(
+    connection: sqlite3.Connection, documents: Sequence[Any]
+) -> Mapping[str, tuple[str, ...]]:
+    """Every document's tokens, in order, read back out of the index that produced them.
 
-    The index is recorded on the connection because that is exactly where it lives: the
-    `temp` schema is connection-local, so the index and the connection have one lifetime
-    and one scope, and a handle kept anywhere else could outlive the table it names.
-    `storage/connection.py` already records the authorizer grant on the connection for
-    the same reason, so this introduces no mechanism -- only one more connection-local
-    fact.
+    `fts5vocab(..., instance)` is one row per token occurrence -- term, document, column
+    and position -- which is the per-document material and nothing more. It exposes no
+    corpus statistic: no document frequency, no average length, no score. That is why it
+    is the right thing to read here and `bm25()` is not.
 
-    This is the read path's only way to reach an index. It is a lookup and cannot
-    become anything else: it holds no identity, no fencing generation and no DDL grant,
-    so a request that reached for a missing index gets `None` and a refusal rather than
-    a build. Materialising is `open_search_index`, and that is startup and maintenance
-    work.
+    Seeded from `documents` rather than from the vocabulary alone, because a document
+    whose identity surface is empty contributes no token instances and would otherwise be
+    absent from the material entirely -- and 0012 permits an empty `search_text` by name.
+    An authorized candidate that fell out here would be refused at every request, which
+    is a correct-looking refusal for an incorrect reason.
+
+    Returned behind a `MappingProxyType`, so `SearchProjection.material` being a
+    `Mapping` is a fact about the object rather than a claim about the annotation. The
+    session holds one of these for the life of the connection and every request ranks
+    against it; a write through a surviving reference to the underlying dict would move
+    what every later request is scored over, invisibly and behind a value the rest of
+    this design proves immutable field by field.
     """
-    index = getattr(connection, "omnivia_search_index", None)
-    return index if isinstance(index, SearchIndex) else None
+    tokens: dict[str, list[str]] = {
+        str(evidence_id): [] for evidence_id, _ in documents
+    }
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        identifiers = {
+            int(rowid): str(evidence_id)
+            for rowid, evidence_id in fenced.execute(
+                f"SELECT rowid, evidence_id FROM temp.{INDEX_TABLE}"
+            )
+        }
+        for document, term in fenced.execute(
+            f"SELECT doc, term FROM temp.{VOCAB_TABLE} ORDER BY doc ASC, offset ASC"
+        ):
+            tokens[identifiers[int(document)]].append(str(term))
+    return MappingProxyType(
+        {evidence_id: tuple(sequence) for evidence_id, sequence in tokens.items()}
+    )
+
+
+def session_search_projection(
+    connection: sqlite3.Connection,
+) -> SearchProjection | None:
+    """This session's material, or `None` when nothing has materialised any.
+
+    Recorded on the connection because that is where the index it came from lives: the
+    `temp` schema is connection-local, so the material and the connection have one
+    lifetime and one scope, and a handle kept anywhere else could outlive the tables it
+    was derived from. `storage/connection.py` already records the authorizer grant on the
+    connection for the same reason, so this introduces no mechanism -- only one more
+    connection-local fact.
+
+    This is the read path's only way to reach the projection. It is a lookup and cannot
+    become anything else: it holds no identity, no fencing generation and no DDL grant,
+    so a request that reached for missing material gets `None` and a refusal rather than
+    a build. Materialising is `open_search_projection`, and that is startup and
+    maintenance work.
+    """
+    projection = getattr(connection, "omnivia_search_projection", None)
+    return projection if isinstance(projection, SearchProjection) else None
 
 
 def build_search_projection(
@@ -1027,22 +1121,24 @@ __all__ = [
     "CHECKPOINT_BATCH",
     "DOCUMENTS_TABLE",
     "INDEX_TABLE",
-    "MATCH_BATCH",
     "PROFILE_VERSION",
     "PROJECTION_ID",
     "PROJECTION_KIND",
     "SCHEMA_VERSION",
+    "TOKENIZER",
+    "VOCAB_TABLE",
     "ActiveBuild",
     "BuildOutcome",
     "Fts5Unavailable",
     "ProjectionError",
     "ProjectionUnavailable",
-    "SearchIndex",
+    "SearchProjection",
     "StaleProjection",
     "active_build",
     "build_search_projection",
     "current_build",
-    "open_search_index",
+    "open_search_projection",
+    "require_current",
     "require_fts5",
-    "session_search_index",
+    "session_search_projection",
 ]

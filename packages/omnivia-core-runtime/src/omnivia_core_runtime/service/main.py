@@ -78,7 +78,7 @@ from omnivia_core_runtime.service.workspace_init import (
 )
 from omnivia_core_runtime.storage.projections.fts import (
     build_search_projection,
-    open_search_index,
+    open_search_projection,
 )
 
 #: The one principal this service instance acts as, on both its paths. Fixed by
@@ -420,7 +420,7 @@ def main(
             fencing_generation=started.generation,
             now_us=time.time_ns() // 1000,
         )
-        open_search_index(started.connection, workspace_id=started.workspace_id)
+        open_search_projection(started.connection, workspace_id=started.workspace_id)
 
         dispatcher = Dispatcher.for_service_operations(
             Grant(

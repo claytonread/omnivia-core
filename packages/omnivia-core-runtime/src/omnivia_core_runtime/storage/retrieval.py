@@ -21,10 +21,26 @@ F4 mutation collectively provide the proof. A signature-only inspection is
 insufficient."* A signature says nothing about a module-level store; the absence of
 the import does.
 
-So `rank_candidates` cannot reach an unfiltered candidate. Not "must not" -- there is
-no expression it could contain that would get one. The dependency runs one way:
+So neither ranker here can reach an unfiltered candidate. Not "must not" -- there is
+no expression either could contain that would get one. The dependency runs one way:
 `repository.py` imports this module to build `EvidenceCandidate` values, and this
 module imports nothing back.
+
+**Both rankers are here, and the production one is `rank_projected`.** Lane B ships an
+FTS5 projection, and the first attempt at it put the production ranker inside
+`storage/projections/fts.py` holding the connection its index lived on -- which gave up
+§20.12's import-boundary proof and, worse, scored with `bm25()`'s *workspace-wide*
+statistics, so an artifact a filter had excluded still moved the relative order of the
+members that were returned. Neither is repaired by an assertion over a result page.
+
+The shape that keeps the invariant is a split. The projection adapter narrows its
+service-materialised per-document token material by exactly the frozen frontier's ids
+and hands back a `ProjectedFrontier` -- an immutable value carrying the same candidates
+and their token sequences and nothing else: no connection, no store, no callback, no
+lookup that could still reach the corpus. `rank_projected` takes that value, and every
+statistic BM25 needs -- document frequency, average document length, the length
+normalisation -- is recomputed from it. An excluded artifact is therefore not merely
+unreturnable; it is absent from every number the ordering is computed from.
 
 **The digest is the check, and the attestation is not.** `AuthorizedFrontier.checksum`
 is computed by the contract's own `compute_authorized_candidate_set_checksum` over the
@@ -52,6 +68,8 @@ mechanism is required before shared-host, multi-user or Organisation-mode deploy
 
 from __future__ import annotations
 
+import math
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Final
@@ -110,9 +128,12 @@ class EvidenceCandidate:
 
     `search_text` is the *identity* surface a Lane A query matches against -- source
     kind, native id and locator, case-folded and NFKC-normalized. It is not artifact
-    content: Lane A fetches no blobs (packet §7.3 forbids introducing a caller-supplied
-    path here), and there is no FTS5 anywhere in this tree (§2.3). Lane B replaces the
-    ordering behind this same frozen frontier; the seam is the ordering only.
+    content: no blob is fetched on this path, and packet §7.3 forbids introducing a
+    caller-supplied path here.
+
+    Lane B indexes this same surface and no other, so the projection is a different
+    *index* over the same text rather than a different text. It replaces the ordering
+    behind this same frozen frontier and nothing else; the seam is the ordering only.
     """
 
     evidence_id: str
@@ -210,6 +231,41 @@ class AuthorizedFrontier:
     #: The candidates the chain removed, kept for the accounting a reviewer needs to
     #: see that a filter did something. Never ranked, never returned, never digested.
     excluded: tuple[EvidenceCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedCandidate:
+    """One authorized candidate and the projection's token sequence for it.
+
+    `terms` is the document exactly as the projection's FTS5 tokenizer split it, in
+    order. One tuple carries everything BM25 asks of a document -- term frequency is a
+    count over it, length normalisation is its length, and phrase matching is a slice
+    comparison -- so there is no second structure to keep in step and nothing here a
+    ranker could follow back to a row.
+    """
+
+    candidate: EvidenceCandidate
+    terms: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedFrontier:
+    """The frozen frontier with its projection material beside it, and nothing else.
+
+    Produced by the projection adapter *after* the freeze, from the frontier's own ids.
+    Membership is identical to the `AuthorizedFrontier` it was narrowed from -- which is
+    why it carries that frontier's `checksum` verbatim rather than recomputing one: the
+    two are the same set, and a second digest computed over a second shape could only
+    ever agree by accident or disagree by construction.
+
+    What it deliberately does not carry is any way to obtain a candidate it does not
+    already hold. There is no connection on it, no store, no callback and no id it could
+    resolve; a ranker handed one has the whole of its input in the value.
+    """
+
+    workspace_id: str
+    checksum: str
+    candidates: tuple[ProjectedCandidate, ...]
 
 
 def candidate_set_manifest(
@@ -375,16 +431,132 @@ def rank_candidates(
     return tuple(matched[:limit])
 
 
+#: BM25's free parameters, at the values SQLite's own `bm25()` uses. Identical on
+#: purpose: this ranker computes the same function FTS5 computes and differs only in the
+#: corpus the statistics come from, so the constants are not a place to have an opinion.
+BM25_K1: Final = 1.2
+BM25_B: Final = 0.75
+
+#: The smallest inverse document frequency this ranker will use, and the reason it has a
+#: floor at all. `ln((N - df + 0.5) / (df + 0.5))` goes negative once a term appears in
+#: more than about half the documents, and a negative idf inverts the whole ordering --
+#: the *worst* match would sort first. FTS5 clamps at exactly this value; so does this.
+BM25_MINIMUM_IDF: Final = 1e-6
+
+#: One token: a run of Unicode alphanumerics. That is what `unicode61` treats as token
+#: characters with `remove_diacritics 0`, so this splits a query exactly as the
+#: projection's own FTS5 tokenizer split the documents it is matched against.
+#: `test_fts_projection_lifecycle.py` pins the two against each other over a real index
+#: rather than trusting the equivalence, because a drift here is a silent recall bug.
+_TOKEN: Final = re.compile(r"[^\W_]+")
+
+
+def query_tokens(query: str) -> tuple[str, ...]:
+    """A query as the token sequence the projection's documents were tokenized into.
+
+    Normalized first, by the same `normalize_query` the materialisation applies to every
+    document, so a match is a property of the text rather than of which side a caller
+    happened to type.
+    """
+    return tuple(_TOKEN.findall(normalize_query(query)))
+
+
+def rank_projected(
+    projected: ProjectedFrontier, query: str, *, limit: int
+) -> tuple[EvidenceCandidate, ...]:
+    """Select and totally order the projected frontier by BM25. The production ranker.
+
+    Read the import block at the top of this module and this function's three
+    parameters together, because that pair is the whole of §20.12's proof. The
+    parameters are an immutable value, a string and an integer. The module imports the
+    frozen contract and the standard library -- no `sqlite3`, no
+    `storage.connection`, no `storage.repository`, no `storage.projections`. There is no
+    module-global store, no closure-captured handle, no callback parameter and no
+    default that could smuggle one in. An unfiltered candidate is not forbidden here; it
+    is unreachable.
+
+    **Every statistic is recomputed from the narrowed value.** `total` is the projected
+    frontier's size, the document frequency behind `idf` is how many of *those* members
+    match, and `average` is the mean document length across them. None of the three is a
+    property of the workspace, so an
+    artifact a filter excluded cannot be counted, cannot lengthen the average and cannot
+    shift the length normalisation of a member that was admitted. That is the failure the
+    first Lane B design shipped: it constrained *which rows FTS5 returned* to the
+    frontier while letting `bm25()` take its idf and its average document length from the
+    whole index, so an excluded artifact carrying the query term still moved the returned
+    members relative to one another -- invisibly, because the page still contained only
+    authorized ids.
+
+    **The query is one phrase, matched on token boundaries.** `terms[start:start + span]`
+    asks for the query's tokens contiguous and in order, which is the same narrowing of
+    Lane A's substring test that the FTS5 phrase query made, and it is what makes a
+    caller-supplied string harmless: there is no query grammar here to reach. `AND`,
+    `NOT`, `NEAR`, a column filter and a prefix wildcard are all just tokens that no
+    document contains next to the rest of the query.
+
+    The score is negated on the way out because `relevance_order_key` sorts relevance
+    ascending -- the convention SQLite's `bm25()` established and the one Lane A's
+    constant `0.0` relies on to sort unscored candidates behind every match.
+    """
+    phrase = query_tokens(query)
+    total = len(projected.candidates)
+    if not phrase or total == 0:
+        return ()
+    matched = [
+        (item, hits)
+        for item in projected.candidates
+        if (hits := _phrase_hits(item.terms, phrase))
+    ]
+    if not matched:
+        return ()
+
+    average = sum(len(item.terms) for item in projected.candidates) / total
+    idf = max(
+        math.log((total - len(matched) + 0.5) / (len(matched) + 0.5)), BM25_MINIMUM_IDF
+    )
+    scored = [
+        (
+            item.candidate,
+            -idf
+            * (hits * (BM25_K1 + 1.0))
+            / (
+                hits
+                + BM25_K1 * (1.0 - BM25_B + BM25_B * len(item.terms) / average)
+            ),
+        )
+        for item, hits in matched
+    ]
+    scored.sort(key=lambda pair: relevance_order_key(pair[0], pair[1]))
+    return tuple(candidate for candidate, _ in scored[:limit])
+
+
+def _phrase_hits(terms: tuple[str, ...], phrase: tuple[str, ...]) -> int:
+    """How many times `phrase` occurs in `terms`, contiguous and in order."""
+    span = len(phrase)
+    return sum(
+        1
+        for start in range(len(terms) - span + 1)
+        if terms[start : start + span] == phrase
+    )
+
+
 __all__ = [
+    "BM25_B",
+    "BM25_K1",
+    "BM25_MINIMUM_IDF",
     "CONFIGURED_LOCAL_OWNER",
     "FRONTIER_FILTERS",
     "AuthorizedFrontier",
     "EvidenceCandidate",
     "EvidenceLabelGrant",
+    "ProjectedCandidate",
+    "ProjectedFrontier",
     "authorized_frontier",
     "candidate_set_manifest",
     "local_owner_label_grant",
     "normalize_query",
+    "query_tokens",
     "rank_candidates",
+    "rank_projected",
     "relevance_order_key",
 ]
