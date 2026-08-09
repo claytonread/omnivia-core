@@ -69,6 +69,17 @@ Read the task packet from Codex and confirm:
 - verification commands
 - relevant contracts
 
+## Pull request and CI discipline
+
+Canonical text lives in `AGENTS.md`. In short:
+
+- Never push directly to `main`. Work on a branch or a worktree.
+- Run `./scripts/preflight` and get a clean pass before opening the pull request.
+- Open the pull request when the change is ready; merge only when the latest
+  validation on it is green.
+- A ruleset requires `Core acceptance` and the three `Phase 2 platform (<os>)`
+  rows by exact name. Never rename those jobs or change that matrix.
+
 ## During coding
 
 - Keep changes narrow.
