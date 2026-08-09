@@ -152,6 +152,101 @@ def seed_chain(holder: m2.Owned) -> None:
     )
 
 
+def seal_correction_recorded_early(
+    holder: m2.Owned,
+    *,
+    edge_recorded_at_us: int,
+    target_recorded_at_us: int,
+    source_version_id: str = "version-accepted",
+    assembly_id: str = "assembly-late-target",
+    version_id: str = "version-late-target",
+    audit_ref: str = "audit-3",
+) -> None:
+    """A correction whose edge was recorded before the target assembly it names.
+
+    0009's seal trigger requires the edge to sit in its target's own assembly and requires
+    the *source* to be no later than that assembly, but it states nothing at all about the
+    edge's `recorded_at_us` against the assembly's -- so this is a shape the accepted
+    writer permits, which is why it is seeded here rather than asserted impossible.
+    `m3.seed_corrected_version` cannot express it: it stamps both from one argument.
+    """
+    m3.seed_accepted_version(holder)
+    correction_event = f"event-{assembly_id}-corrected"
+    supersession_event = f"event-{assembly_id}-superseded"
+    with fenced_transaction(
+        holder.connection,
+        holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=holder.generation,
+    ):
+        row = m3.assembly_row(
+            assembly_id,
+            version_id,
+            "record-1",
+            layer="governed",
+            origin=None,
+            disposition="accepted",
+            authority="canonical",
+            decision_kind="human_reviewer",
+            decision_id="reviewer-1",
+            audit_ref=audit_ref,
+            correlation_id=audit_ref,
+            ordinal=1,
+            digest="sha256:" + "7" * 64,
+        )
+        row["recorded_at_us"] = target_recorded_at_us
+        m3.insert(holder.connection, m3.ASSEMBLIES, row)
+        for event_id, action, sequence in (
+            (correction_event, "governance.corrected", 1),
+            (supersession_event, "record.superseded", 2),
+        ):
+            m3.insert(
+                holder.connection,
+                m3.EVENTS,
+                m3.event_row(
+                    event_id,
+                    assembly_id,
+                    version_id,
+                    action,
+                    sequence=sequence,
+                    audit_ref=audit_ref,
+                    correlation_id=audit_ref,
+                    actor_id="reviewer-1",
+                    actor_kind="human",
+                    actor_role="reviewer",
+                    predecessor_record_id="record-1",
+                    predecessor_version_id=source_version_id,
+                ),
+            )
+            m3.insert(holder.connection, m3.LINKS, m3.link_row(event_id, assembly_id))
+        m3.insert(
+            holder.connection,
+            m3.SUPERSESSIONS,
+            {
+                "workspace_id": WORKSPACE_ID,
+                "supersession_id": f"supersession-{version_id}",
+                "assembly_id": assembly_id,
+                "governed_record_id": "record-1",
+                "source_version_id": source_version_id,
+                "target_version_id": version_id,
+                "provenance_event_id": supersession_event,
+                "correlation_kind": "m1_audit",
+                "correlation_id": audit_ref,
+                "recorded_at_us": edge_recorded_at_us,
+            },
+        )
+        m3.insert(
+            holder.connection,
+            m3.SEALS,
+            m3.seal_row(
+                assembly_id,
+                version_id,
+                seal_id=f"seal-{version_id}",
+                correlation_id=audit_ref,
+            ),
+        )
+
+
 def test_lane_c_01_empty_workspace_resolves_empty_under_every_view(
     owned: m2.Owned,
 ) -> None:
@@ -274,6 +369,14 @@ def test_lane_c_09_a_foreign_workspace_sees_nothing(owned: m2.Owned) -> None:
 def test_lane_c_10_same_transaction_versions_break_their_tie_deterministically(
     owned: m2.Owned,
 ) -> None:
+    """Equal `recorded_at_us` is decided by stream identity, not by row order.
+
+    The two assemblies are named against their streams on purpose -- `assembly-zeta`
+    carries `audit-2` and `assembly-alpha` carries `audit-3` -- so a key that fell through
+    to `assembly_id` would pick `version-zeta` and a key that stops at the stream picks
+    `version-alpha`. Either way the answer is a stated one, which is the property: it does
+    not come from whichever row SQLite happened to hand back last.
+    """
     for assembly_id, version_id, audit_ref, digest in (
         ("assembly-zeta", "version-zeta", "audit-2", m3.DIGEST_B),
         ("assembly-alpha", "version-alpha", "audit-3", "sha256:" + "6" * 64),
@@ -286,7 +389,7 @@ def test_lane_c_10_same_transaction_versions_break_their_tie_deterministically(
             recorded_at_us=BASE_US + 10,
             digest=digest,
         )
-    assert resolve(owned) == ("version-zeta",)
+    assert resolve(owned) == ("version-alpha",)
     assert resolve(owned) == resolve(owned)
 
 
@@ -320,3 +423,113 @@ def test_lane_c_13_resolution_writes_nothing(owned: m2.Owned) -> None:
         == before
     )
     assert owned.connection.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    ("instant_us", "current", "history"),
+    (
+        (BASE_US + 20, ("version-accepted",), ()),
+        (BASE_US + 25, ("version-accepted",), ()),
+        (BASE_US + 30, ("version-late-target",), ("version-accepted",)),
+        (LATE_US, ("version-late-target",), ("version-accepted",)),
+    ),
+)
+def test_lane_c_14_an_edge_recorded_before_its_target_retires_nothing_early(
+    owned: m2.Owned,
+    instant_us: int,
+    current: tuple[str, ...],
+    history: tuple[str, ...],
+) -> None:
+    """A supersession takes effect only once *both* halves of it are visible.
+
+    The edge is recorded at BASE+20 and the sealed target assembly it names at BASE+30.
+    Folding the edge alone would retire `version-accepted` at BASE+20 while its replacement
+    was still unwritten, so BASE+25 would resolve to no current version at all and put a
+    version the workspace was still citing into `history` -- an answer the workspace never
+    held. The effective replacement instant is the later of the two.
+    """
+    seal_correction_recorded_early(
+        owned, edge_recorded_at_us=BASE_US + 20, target_recorded_at_us=BASE_US + 30
+    )
+    assert resolve(owned, instant_us=instant_us) == current
+    assert resolve(owned, view="history", instant_us=instant_us) == history
+
+
+@pytest.mark.parametrize(
+    ("earlier_stream_ordinal", "later_stream_ordinal"), ((9_000, 1), (1, 9_000))
+)
+def test_lane_c_15_ordinals_from_different_streams_are_never_compared(
+    owned: m2.Owned, earlier_stream_ordinal: int, later_stream_ordinal: int
+) -> None:
+    """A stream's own counter cannot outrank the other stream it was never counting.
+
+    0009 scopes `append_ordinal` to the correlation parent -- *"ordinals from different
+    parents are never compared, because they were never counting the same thing"* -- so
+    two frontier versions tied on authority and `recorded_at_us` must be separated by
+    which stream they came from, not by how far each stream's local counter had got.
+
+    `audit-2` and `audit-3` are two such streams, and the ordinals are deliberately
+    lopsided in both directions: the lexically earlier stream is run up to 9000 in one
+    parametrisation and left at 1 in the other. The winner is the same version both times,
+    because nothing about the answer may depend on those two numbers' magnitudes.
+
+    Falsifier: order `_precedence` by `append_ordinal` before `(correlation_kind,
+    correlation_id)` and the two parametrisations disagree -- `(9_000, 1)` resolves to
+    `version-earlier-stream` and `(1, 9_000)` to `version-later-stream`, so swapping two
+    unrelated counters silently swaps which version the workspace cites.
+    """
+    for assembly_id, version_id, audit_ref, ordinal, digest in (
+        (
+            "assembly-earlier-stream",
+            "version-earlier-stream",
+            "audit-2",
+            earlier_stream_ordinal,
+            m3.DIGEST_B,
+        ),
+        (
+            "assembly-later-stream",
+            "version-later-stream",
+            "audit-3",
+            later_stream_ordinal,
+            "sha256:" + "6" * 64,
+        ),
+    ):
+        seal_accepted(
+            owned,
+            assembly_id=assembly_id,
+            version_id=version_id,
+            audit_ref=audit_ref,
+            recorded_at_us=BASE_US + 10,
+            ordinal=ordinal,
+            digest=digest,
+        )
+    assert resolve(owned) == ("version-later-stream",)
+
+
+def test_lane_c_16_the_append_ordinal_still_orders_one_stream(owned: m2.Owned) -> None:
+    """Inside one correlation stream the ordinal is exactly what separates two versions.
+
+    Both versions are sealed under `audit-2`, so `_precedence` reaches the ordinal with
+    everything before it equal -- and 0009's own unique index on `(workspace,
+    correlation_kind, correlation_id, append_ordinal)` makes that comparison total.
+    `assembly-alpha-stream` carries the higher ordinal on purpose: a key that ignored the
+    ordinal and fell through to `assembly_id` would pick `version-zeta-stream` instead.
+
+    Falsifier: drop `append_ordinal` from `_precedence` and this resolves to
+    `version-zeta-stream`, retiring the later version of the stream in favour of an
+    earlier one on nothing but an alphabetical accident.
+    """
+    for assembly_id, version_id, ordinal, digest in (
+        ("assembly-alpha-stream", "version-alpha-stream", 7, m3.DIGEST_B),
+        ("assembly-zeta-stream", "version-zeta-stream", 1, "sha256:" + "6" * 64),
+    ):
+        seal_accepted(
+            owned,
+            assembly_id=assembly_id,
+            version_id=version_id,
+            audit_ref="audit-2",
+            recorded_at_us=BASE_US + 10,
+            ordinal=ordinal,
+            digest=digest,
+        )
+    assert resolve(owned) == ("version-alpha-stream",)

@@ -38,8 +38,10 @@ actually held:
   without ever both being current.
 
 Supersession is folded from the edges rather than read off a version, and only *sealed*
-edges count. The earliest edge out of a version is the one that ends it, so a chain folds
-to the one version nothing visible has replaced yet.
+edges count -- and an edge counts only from the instant its sealed target assembly is
+visible too, because a replacement that has not been recorded yet cannot have replaced
+anything. The earliest edge out of a version is the one that ends it, so a chain folds to
+the one version nothing visible has replaced yet.
 
 **Ties are broken, not left to SQLite.** 0009 permits two sealed canonical versions of one
 record -- it enforces the supersession *edge*, not the absence of a second frontier
@@ -169,16 +171,41 @@ def resolve_governed_versions(
         # is still the workspace's live answer -- the one direction of error that loses
         # canonical knowledge rather than merely showing too little.
         #
+        # The target join is the same argument one step further out. A supersession is a
+        # *replacement*, so it has happened only once the thing doing the replacing is
+        # itself visible -- and 0009's seal trigger ties the edge to its target assembly
+        # without ever tying their two `recorded_at_us` together, so an edge recorded
+        # before the target assembly it names is a shape the accepted writer permits.
+        # Reading the edge alone would then retire the source at the edge's instant while
+        # the replacement was still invisible, and the record would resolve to *nothing*
+        # for the gap between them. Joining the authoritative view on the exact target
+        # assembly -- workspace, `target_version_id` *and* `assembly_id`, which 0009's
+        # seal trigger requires to be the assembly carrying the edge -- buys both facts at
+        # once: that exact target assembly is sealed, and it was recorded at
+        # `t.recorded_at_us`. Matching on the version id alone would identify the target
+        # by a column the view does not key on, so the join would say "some sealed
+        # assembly for this version" where the effective instant needs *this* one.
+        #
+        # The effective replacement instant is therefore the later of the two -- the
+        # instant by which both halves of the supersession had been written -- because
+        # transaction time asks what the workspace *held*, and it held the source right up
+        # until its replacement was there to take over. An unjoined edge (target not
+        # sealed) drops out entirely, leaving the source current: too little supersession
+        # rather than lost knowledge, the same direction the seal join takes.
+        #
         # The *earliest* sealed edge out of a version is the one that ended it. 0009
         # refuses a branching source, so today there is at most one; MIN states the rule
         # the fold depends on rather than relying on that refusal holding forever.
         replaced_at = {
-            source: int(recorded_at_us)
-            for source, recorded_at_us in fenced.execute(
-                "SELECT r.source_version_id, MIN(r.recorded_at_us) "
+            source: int(effective_at_us)
+            for source, effective_at_us in fenced.execute(
+                "SELECT r.source_version_id, MIN(MAX(r.recorded_at_us, t.recorded_at_us)) "
                 f"FROM {_SUPERSESSIONS} r "
                 f"JOIN {_SEALS} s ON s.workspace_id = r.workspace_id "
                 "                AND s.assembly_id = r.assembly_id "
+                f"JOIN {_VIEW} t ON t.workspace_id = r.workspace_id "
+                "               AND t.assembly_id = r.assembly_id "
+                "               AND t.governed_record_version_id = r.target_version_id "
                 "WHERE r.workspace_id = ? "
                 "GROUP BY r.source_version_id ORDER BY r.source_version_id ASC",
                 (workspace_id,),
@@ -241,6 +268,10 @@ def _replaced_by(
 ) -> bool:
     """Whether `version` had already been superseded at `instant_us`.
 
+    `replaced_at` holds the *effective* replacement instant -- the later of the edge and
+    its sealed target assembly -- so a target recorded after its own edge cannot retire
+    this version before the replacement was visible.
+
     Equality counts as replaced: a version superseded at exactly the resolution instant is
     history at it, which is the same boundary the contract's `history` view applies to
     `superseded_at`.
@@ -249,17 +280,28 @@ def _replaced_by(
     return ended_at is not None and ended_at <= instant_us
 
 
-def _precedence(version: GovernedVersion) -> tuple[int, int, int, str]:
+def _precedence(version: GovernedVersion) -> tuple[int, int, str, str, int, str]:
     """The total order the fold picks a record's one frontier version by.
 
-    Authority first, then recorded time, then the append ordinal, then the assembly id.
-    The last two exist because the first two do not separate two versions written in one
-    transaction, and `assembly_id` is unique per workspace, so the key is total: the same
-    rows resolve to the same winner on every run and on every index layout.
+    Authority first, then recorded time -- and then the correlation *stream* before that
+    stream's ordinal. 0009 scopes `append_ordinal` to the correlation parent and says
+    outright what follows from it: *"append ordinals from different correlation parents
+    are not comparable at all"*, because *"they were never counting the same thing."*
+    Comparing them across streams would let one stream's local counter decide which
+    stream wins, so a version's rank would move with a number written under an unrelated
+    audit. `(correlation_kind, correlation_id)` therefore selects one stream first, and
+    the ordinal only ever separates versions inside the stream it selected -- which is
+    exactly the comparison 0009's unique index makes total.
+
+    The last three exist because the first two do not separate two versions written in
+    one transaction; `assembly_id` closes the key and is unique per workspace, so the
+    same rows resolve to the same winner on every run and on every index layout.
     """
     return (
         _AUTHORITY_RANK.get(version.authority_level, -1),
         version.recorded_at_us,
+        version.correlation_kind,
+        version.correlation_id,
         version.append_ordinal,
         version.assembly_id,
     )
