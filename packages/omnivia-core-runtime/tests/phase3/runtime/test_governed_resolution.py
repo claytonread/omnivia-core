@@ -25,14 +25,28 @@ from omnivia_core_runtime.storage.connection import (
 from omnivia_core_runtime.storage.governed import (
     GovernedSupersession,
     GovernedVersion,
+    read_governed_records,
     read_governed_supersessions,
     resolve_governed_versions,
 )
 
 from omnivia_core.contracts.v1 import (
+    ContractSemanticError,
+    GovernedRecord,
+    MemorySearchInput,
+    MemorySearchResult,
+    PageMetadata,
     RecordTemporalMetadata,
+    SupersessionReference,
+    validate_governed_record,
     validate_record_temporal_metadata,
 )
+
+#: `omnivia_core.contracts.v1` re-exports `validate_knowledge_search_result` but not its
+#: `memory.search` twin, so the candidates-view semantic validator is reached through the
+#: module that declares it in `__all__`. Closing that export gap is a contracts change and
+#: this lane does not own one.
+from omnivia_core.contracts.v1.semantics_knowledge import validate_memory_search_result
 
 #: The M3 suite's own workspace fixture: a Phase 0 baseline migrated through 0009, owned
 #: under a live lease, with the M2 evidence chain and eight audit events already seeded.
@@ -1205,3 +1219,769 @@ def test_lane_c_29_the_helper_is_pure_and_deterministic() -> None:
     assert dataclasses.asdict(version) == before
     with pytest.raises(dataclasses.FrozenInstanceError):
         first.recorded_at = "2023-11-14T22:13:20.999Z"  # type: ignore[misc]
+
+
+#: Four instants, each in a different second, so every clock this hydration could reach for
+#: renders a visibly different string: the version's own `recorded_at_us`, the artifact and
+#: provenance clocks it must never reach for, and the instant a supersession took effect.
+HYDRATED_US = 1_700_000_000_123_456
+ARTIFACT_US = HYDRATED_US - 300_000_000
+EVENT_US = HYDRATED_US - 200_000_000
+EFFECTIVE_US = HYDRATED_US + 500_000_000
+
+
+def hydratable(**overrides: object) -> GovernedVersion:
+    """One sealed, accepted, canonical governed version whose every field is hydratable.
+
+    Distinct from `temporal_version`, which is deliberately built from placeholders because
+    `_temporal_metadata` reads nothing but the instants. A whole `GovernedRecord` is
+    validated against the contract, so every field here has to be the shape 0009 actually
+    stores -- a lowercase dotted `record_type`/`domain_scope`, a governed layer carrying a
+    disposition and a `decision_source_id`, and canonical JSON content.
+    """
+    base = GovernedVersion(
+        workspace_id=WORKSPACE_ID,
+        assembly_id="assembly-h",
+        seal_id="seal-h",
+        governed_record_id="record-h",
+        governed_record_version_id="version-h",
+        record_type="knowledge.claim",
+        domain_scope="product.core",
+        layer=governed.LAYER_GOVERNED,
+        governance_disposition="accepted",
+        authority_level="canonical",
+        decision_source_kind="human_reviewer",
+        decision_source_id="reviewer-h",
+        content_schema_version="1.0",
+        content_json='{"statement":"A durable claim"}',
+        content_digest=m3.DIGEST_B,
+        evidence_disposition="available",
+        valid_from_us=HYDRATED_US - 60_000_000,
+        valid_to_us=None,
+        recorded_at_us=HYDRATED_US,
+        append_ordinal=1,
+        correlation_kind="m1_audit",
+        correlation_id="audit-h",
+        audit_ref="audit-h",
+        sealed_at_us=HYDRATED_US + 90_000_000,
+    )
+    return dataclasses.replace(base, **overrides)
+
+
+def hydratable_event(
+    event_id: str = "event-h", **overrides: object
+) -> governed._GovernedProvenanceEvent:
+    base = governed._GovernedProvenanceEvent(
+        workspace_id=WORKSPACE_ID,
+        assembly_id="assembly-h",
+        governed_record_version_id="version-h",
+        provenance_event_id=event_id,
+        provenance_sequence=1,
+        action="governance.accepted",
+        actor_id="reviewer-h",
+        actor_kind="human",
+        policy_id=None,
+        occurred_at_us=EVENT_US,
+        reason_code="governance.reviewed",
+        reason_comment=None,
+        evidence_disposition="available",
+    )
+    return dataclasses.replace(base, provenance_event_id=event_id, **overrides)
+
+
+def hydratable_link(
+    evidence_id: str = "evd-h", **overrides: object
+) -> governed._GovernedEvidenceLink:
+    base = governed._GovernedEvidenceLink(
+        workspace_id=WORKSPACE_ID,
+        assembly_id="assembly-h",
+        governed_record_version_id="version-h",
+        provenance_event_id="event-h",
+        provenance_sequence=1,
+        link_ordinal=1,
+        evidence_id=evidence_id,
+        source_kind="filesystem.archive",
+        source_native_id=f"doc-{evidence_id}",
+        source_locator="archive://doc.md",
+        source_retrieved_at_us=ARTIFACT_US,
+        ingested_at_us=ARTIFACT_US,
+        event_at_us=ARTIFACT_US,
+        observed_at_us=ARTIFACT_US,
+        normalized_record_id="nrc-h",
+        normalized_span_id="nsp-h",
+        span_pointer="/body/0",
+        span_start_offset=0,
+        span_end_offset=10,
+    )
+    return dataclasses.replace(base, evidence_id=evidence_id, **overrides)
+
+
+def hydration(
+    versions: tuple[GovernedVersion, ...],
+    *,
+    supersessions: tuple[GovernedSupersession, ...] = (),
+    events: tuple[governed._GovernedProvenanceEvent, ...] = (),
+    links: tuple[governed._GovernedEvidenceLink, ...] = (),
+) -> governed._GovernedHydrationSnapshot:
+    """A frozen hydration snapshot built by hand, with no database anywhere near it.
+
+    The pure mapping's whole contract is that this is all it needs, so the tests that state
+    exactly which stored fact each wire field comes from are built here rather than seeded:
+    a hand-built snapshot can hold four visibly different clocks and a malformed content
+    column, neither of which the accepted writer would let a fixture produce.
+    """
+    return governed._GovernedHydrationSnapshot(
+        versions=versions, supersessions=supersessions, events=events, links=links
+    )
+
+
+def hydrated(
+    holder: m2.Owned, *, view: str | None = None, instant_us: int = LATE_US
+) -> tuple[GovernedRecord, ...]:
+    return read_governed_records(
+        holder.connection,
+        workspace_id=WORKSPACE_ID,
+        resolution_instant_us=instant_us,
+        view=view,
+    )
+
+
+def test_lane_c_30_a_selected_version_hydrates_to_its_exact_wire_document(
+    owned: m2.Owned,
+) -> None:
+    """One sealed version, whole, as the document a peer on the other side actually reads.
+
+    Asserted as one `to_wire()` mapping rather than field by field, because the failure this
+    guards against is a field quietly *missing* or quietly *extra*, which per-field
+    assertions cannot see. `assertion` and `extraction` are absent for Amendment 008's fourth
+    rule -- both require an instant 0009 stores nowhere -- and absent here means the key is
+    not in the mapping at all, which is the difference between "not stated" and "stated as
+    nothing".
+
+    The two required instants are keyed to the selected assembly's own `recorded_at_us`
+    rather than written out, since which clock they come from is lane C 26's assertion, not
+    this one's; `valid_from` is written out, because 0009's default open-ended window starts
+    at the exact microsecond `-1` and a mapping that clamped it to the epoch would still
+    render something plausible.
+
+    The record's two provenance events both cite `evd-0001`, so `sources` collapsing to one
+    entry is the deduplication the contract requires -- two declarations of one `(kind,
+    source_id)` are refused outright -- while `history` keeps both citations, because an
+    append-only account of two acts is not a duplicate of anything.
+
+    Falsifier: emit `sources` per link and `validate_governed_record` refuses the record for
+    duplicate sources; emit `evidence` as `()` where the event cited nothing and the wire
+    grows a key stating an empty list where the rows state nothing at all.
+    """
+    seal_correction_recorded_early(
+        owned, edge_recorded_at_us=BASE_US + 20, target_recorded_at_us=BASE_US + 30
+    )
+    (version,) = resolve_governed_versions(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=LATE_US
+    )
+    (record,) = hydrated(owned)
+
+    recorded_at = governed._timestamp(version.recorded_at_us)
+    citation = {
+        "source": {
+            "kind": "filesystem.archive",
+            "source_id": "doc-1",
+            "locator": "archive://doc.md",
+            "retrieved_at": governed._timestamp(m2.BASE_US),
+        },
+        "span": {"pointer": "/body/0", "start_offset": 0, "end_offset": 10},
+    }
+    assert record.to_wire() == {
+        "workspace_id": WORKSPACE_ID,
+        "record_type": "knowledge.claim",
+        "domain_scope": "product.core",
+        "authority_level": "canonical",
+        "reviewer": "reviewer-1",
+        "content": {"statement": "A durable claim"},
+        "provenance": {
+            "identity": {
+                "record_id": "record-1",
+                "version": "version-late-target",
+                "layer": "l2",
+                "governance_state": "accepted",
+                "currentness": "current",
+                "supersedes": {
+                    "record_id": "record-1",
+                    "version": "version-accepted",
+                    "reason": "governance.reviewed",
+                },
+            },
+            "temporal": {
+                "ingested_at": recorded_at,
+                "recorded_at": recorded_at,
+                "valid_from": "1969-12-31T23:59:59.999Z",
+            },
+            "history": [
+                {
+                    "actor_id": "reviewer-1",
+                    "actor_kind": "human",
+                    "action": action,
+                    "occurred_at": governed._timestamp(BASE_US + sequence),
+                    "reason_code": "governance.reviewed",
+                    "evidence": [citation],
+                }
+                for action, sequence in (
+                    ("governance.corrected", 1),
+                    ("record.superseded", 2),
+                )
+            ],
+            "evidence_disposition": "available",
+            "sources": [citation["source"]],
+        },
+    }
+    validate_governed_record(record)
+    assert GovernedRecord.from_wire(record.to_wire()) == record
+
+
+def test_lane_c_31_all_three_views_hydrate_and_validate_their_own_selection(
+    owned: m2.Owned,
+) -> None:
+    """Each view's versions become contract-valid records carrying that view's semantics.
+
+    One workspace, three questions, and the answers differ in exactly the places the stored
+    facts differ: the candidate layer is `l1`, in the `candidate` governance state, and
+    carries no reviewer, because 0009 forbids the candidate half of the table a disposition
+    or a `decision_source_id` at all; the governed layer is `l2`, `accepted`, `canonical`
+    and names the exact reviewer it was accepted by. Currentness is not asked of the view --
+    it is read off the sealed edges -- so `history` is `superseded` and the other two are
+    `current` without the mapping ever being told which question it is answering.
+
+    The candidate record is put through the *search projection's* own semantic validator
+    rather than only the generic record one, because that is the check the state has to
+    survive: `validate_memory_search_result` admits exactly `l1`/`candidate`/`current` under
+    the candidates view, and `candidates` is authorized alone so the view string cannot
+    widen its own trust. The generic `validate_governed_record` accepts `proposed` here
+    quite happily, which is exactly why it cannot be the only assertion.
+
+    Falsifier: map an absent `governance_disposition` to `proposed` -- `memory.create`'s
+    state, not this view's -- and `validate_memory_search_result` refuses the record as not
+    an exact l1/candidate/current one, while every generic-record assertion still passes.
+    Map it to `accepted` and the candidate is refused for a layer/governance contradiction;
+    take `currentness` from the view name and `candidates` still passes while a superseded
+    candidate would silently read as live.
+    """
+    seed_chain(owned)
+    for view, expected in (
+        ("candidates", ("version-1", "l1", "candidate", "proposed", None, "current")),
+        (
+            None,
+            ("version-corrected-next", "l2", "accepted", "canonical", "reviewer-1", "current"),
+        ),
+    ):
+        (record,) = hydrated(owned, view=view)
+        identity = record.provenance.identity
+        assert (
+            identity.version,
+            identity.layer,
+            identity.governance_state,
+            record.authority_level,
+            record.reviewer,
+            identity.currentness,
+        ) == expected
+        validate_governed_record(record)
+
+    (candidate,) = hydrated(owned, view="candidates")
+    validate_memory_search_result(
+        MemorySearchResult(records=(candidate,), page=PageMetadata()),
+        MemorySearchInput(query="candidate frontier", view="candidates"),
+        WORKSPACE_ID,
+        governed._timestamp(LATE_US),
+        {"candidates"},
+    )
+
+    history = hydrated(owned, view="history")
+    assert tuple(r.provenance.identity.version for r in history) == (
+        "version-accepted",
+        "version-corrected",
+    )
+    for record in history:
+        assert record.provenance.identity.currentness == "superseded"
+        assert record.provenance.identity.layer == "l2"
+        validate_governed_record(record)
+
+
+def test_lane_c_32_one_assembly_maps_identically_however_it_was_selected(
+    owned: m2.Owned,
+) -> None:
+    """The same version, current at one instant and history at another, keeps its temporal.
+
+    Amendment 008 says supersession selection changes which assembly is selected and nothing
+    about the temporal mapping of that assembly. `version-accepted` is the current canonical
+    answer at BASE+25 and history at BASE+30, so every instant that is a fact about the
+    version itself must be byte-identical across the two; the only field that may differ is
+    `superseded_at`, which is a fact about an edge rather than about this version.
+
+    Falsifier: derive `ingested_at` or `recorded_at` from anything the view changes -- the
+    resolution instant, the supersession's effective instant, the replacing assembly's own
+    clock -- and the two renderings stop agreeing.
+    """
+    seal_correction_recorded_early(
+        owned, edge_recorded_at_us=BASE_US + 20, target_recorded_at_us=BASE_US + 30
+    )
+    (live,) = hydrated(owned, instant_us=BASE_US + 25)
+    (retired,) = hydrated(owned, view="history", instant_us=BASE_US + 30)
+
+    assert live.provenance.identity.version == retired.provenance.identity.version
+    assert dataclasses.replace(
+        retired.provenance.temporal, superseded_at=None
+    ) == live.provenance.temporal
+    assert live.provenance.temporal.superseded_at is None
+    assert retired.provenance.temporal.superseded_at is not None
+
+
+def test_lane_c_33_no_evidence_or_event_clock_can_move_the_records_instants() -> None:
+    """The record's instants come from its assembly, whatever the rows around it say.
+
+    Four clocks are in reach here and three of them are somebody else's: the artifact's
+    `ingested_at_us`, `event_at_us` and `observed_at_us`, and the provenance event's
+    `occurred_at_us`. Amendment 008 forbids all of them for the governed record's own
+    temporal metadata -- a citation added later must not move `ingested_at` -- and the
+    fixture puts each in a different second so a mapping that took one renders a visibly
+    different string.
+
+    `event_at` and `observed_at` stay absent for the same reason: the artifact has them, the
+    governed record does not, and copying them across would publish an account of the world
+    behind *this* claim that no row about this claim asserts. `assertion`/`extraction` are
+    absent because their required `asserted_at`/`extracted_at` have no durable column.
+
+    Falsifier: move any of the three artifact clocks or the event clock and re-run -- every
+    assertion below is unchanged only if none of them is an input.
+    """
+    version = hydratable()
+    (record,) = governed._hydrate_governed_records(
+        hydration(
+            (version,),
+            events=(hydratable_event(),),
+            links=(hydratable_link(),),
+        )
+    )
+    # The same version, described by rows whose every clock has moved a year. Only the
+    # support rows differ between the two snapshots, so any difference in the temporal
+    # metadata below is a support row's clock leaking into it.
+    (shifted,) = governed._hydrate_governed_records(
+        hydration(
+            (version,),
+            events=(hydratable_event(occurred_at_us=EVENT_US - 31_536_000_000_000),),
+            links=(
+                hydratable_link(
+                    source_retrieved_at_us=ARTIFACT_US - 31_536_000_000_000,
+                    ingested_at_us=ARTIFACT_US - 31_536_000_000_000,
+                    event_at_us=ARTIFACT_US - 31_536_000_000_000,
+                    observed_at_us=ARTIFACT_US - 31_536_000_000_000,
+                ),
+            ),
+        )
+    )
+
+    recorded_at = governed._timestamp(HYDRATED_US)
+    assert record.provenance.temporal == RecordTemporalMetadata(
+        ingested_at=recorded_at,
+        recorded_at=recorded_at,
+        valid_from=governed._timestamp(HYDRATED_US - 60_000_000),
+    )
+    assert record.provenance.temporal == shifted.provenance.temporal
+    assert record.provenance.assertion is None
+    assert record.provenance.extraction is None
+    assert "assertion" not in record.provenance.to_wire()
+    assert "extraction" not in record.provenance.to_wire()
+    # The artifact's own clocks did reach the snapshot; they simply are not this record's.
+    assert record.provenance.sources[0].retrieved_at == governed._timestamp(ARTIFACT_US)
+    assert record.provenance.history[0].occurred_at == governed._timestamp(EVENT_US)
+
+
+def test_lane_c_34_one_edge_is_read_reciprocally_from_both_of_its_ends() -> None:
+    """A single supersession makes the source `superseded_by` the target and vice versa.
+
+    One edge, two versions, and each must name the *other* -- pointing a version at itself,
+    or pointing both fields at the same end, is the failure that makes a correction chain
+    unwalkable in one direction while looking perfectly well-formed in the other. The reason
+    the edge recorded is preserved on both halves, and `superseded_at` is the edge's
+    effective instant exactly, not the replacing version's `recorded_at_us`, which the
+    fixture deliberately puts in a different second.
+
+    A current version must carry no `superseded_at` at all: the contract refuses the
+    combination outright, so a mapping that stamped one on the live version would be caught
+    by validation rather than by this assertion -- which is why the *absence* is asserted
+    here and the refusal is left to `validate_governed_record`.
+
+    Falsifier: swap the two directions and the retired version claims to supersede its own
+    replacement; take `superseded_at` from the target's `recorded_at_us` and it renders half
+    a second early.
+    """
+    retired = hydratable(
+        assembly_id="assembly-old",
+        governed_record_version_id="version-old",
+        recorded_at_us=HYDRATED_US,
+    )
+    current = hydratable(
+        assembly_id="assembly-new",
+        governed_record_version_id="version-new",
+        recorded_at_us=HYDRATED_US + 400_000_000,
+    )
+    edge = GovernedSupersession(
+        workspace_id=WORKSPACE_ID,
+        governed_record_id="record-h",
+        source_version_id="version-old",
+        target_version_id="version-new",
+        assembly_id="assembly-new",
+        effective_at_us=EFFECTIVE_US,
+        reason_code="governance.reviewed",
+    )
+    old, new = governed._hydrate_governed_records(
+        hydration(
+            (retired, current),
+            supersessions=(edge,),
+            events=tuple(
+                hydratable_event(
+                    f"event-{side}",
+                    assembly_id=f"assembly-{side}",
+                    governed_record_version_id=f"version-{side}",
+                )
+                for side in ("old", "new")
+            ),
+            links=tuple(
+                hydratable_link(
+                    f"evd-{side}",
+                    assembly_id=f"assembly-{side}",
+                    governed_record_version_id=f"version-{side}",
+                    provenance_event_id=f"event-{side}",
+                )
+                for side in ("old", "new")
+            ),
+        )
+    )
+
+    assert old.provenance.identity.currentness == "superseded"
+    assert old.provenance.identity.superseded_by == SupersessionReference(
+        record_id="record-h", version="version-new", reason="governance.reviewed"
+    )
+    assert old.provenance.identity.supersedes is None
+    assert old.provenance.temporal.superseded_at == governed._timestamp(EFFECTIVE_US)
+    assert old.provenance.temporal.superseded_at != governed._timestamp(
+        current.recorded_at_us
+    )
+
+    assert new.provenance.identity.currentness == "current"
+    assert new.provenance.identity.supersedes == SupersessionReference(
+        record_id="record-h", version="version-old", reason="governance.reviewed"
+    )
+    assert new.provenance.identity.superseded_by is None
+    assert new.provenance.temporal.superseded_at is None
+
+
+def test_lane_c_35_support_rows_are_grouped_by_the_version_they_name() -> None:
+    """Two records in one snapshot each get their own history and sources, in order.
+
+    Both versions sit in one assembly and their support rows are interleaved on purpose, so
+    a mapping that walked the tuples positionally, or that grouped on `assembly_id` alone,
+    would hand a record the other's account of itself. `version-a` carries two acts citing
+    one artifact twice and `version-shared` one act citing a different artifact, so the
+    per-version ordering and the source deduplication are both observable at once.
+
+    Falsifier: group on `assembly_id` alone and `version-a`'s history gains
+    `version-shared`'s event and `version-shared`'s source; walk the events in any order but
+    the snapshot's and the two acts below trade places.
+    """
+    first = hydratable(governed_record_version_id="version-a")
+    second = hydratable(
+        governed_record_id="record-b", governed_record_version_id="version-shared"
+    )
+    snapshot = hydration(
+        (first, second),
+        events=(
+            hydratable_event("event-a1", governed_record_version_id="version-a"),
+            hydratable_event(
+                "event-b1",
+                governed_record_version_id="version-shared",
+                action="governance.corrected",
+            ),
+            hydratable_event(
+                "event-a2",
+                governed_record_version_id="version-a",
+                provenance_sequence=2,
+                action="record.superseded",
+            ),
+        ),
+        links=(
+            hydratable_link(
+                "evd-1",
+                governed_record_version_id="version-a",
+                provenance_event_id="event-a1",
+            ),
+            hydratable_link(
+                "evd-2",
+                governed_record_version_id="version-shared",
+                provenance_event_id="event-b1",
+            ),
+            hydratable_link(
+                "evd-1",
+                governed_record_version_id="version-a",
+                provenance_event_id="event-a2",
+            ),
+        ),
+    )
+    records = governed._hydrate_governed_records(snapshot)
+
+    (one, two) = records
+    assert tuple(entry.action for entry in one.provenance.history) == (
+        "governance.accepted",
+        "record.superseded",
+    )
+    assert tuple(entry.action for entry in two.provenance.history) == (
+        "governance.corrected",
+    )
+    assert tuple(s.source_id for s in one.provenance.sources) == ("doc-evd-1",)
+    assert tuple(s.source_id for s in two.provenance.sources) == ("doc-evd-2",)
+    assert governed._hydrate_governed_records(snapshot) == records
+
+
+def test_lane_c_36_the_mapping_runs_entirely_off_the_frozen_snapshot(
+    owned: m2.Owned,
+) -> None:
+    """Hydration succeeds after the connection it was read through is closed.
+
+    The strongest available statement of "no post-freeze SQL and no lazy lookup": the
+    snapshot is taken, the connection is closed, and the mapping still produces the whole
+    record set. Any statement, cursor or deferred read left behind would raise
+    `ProgrammingError` on the closed connection instead.
+
+    Falsifier: have the mapping consult the database for one further fact -- a reviewer, a
+    source, a reason -- and this raises rather than returning records.
+    """
+    seed_chain(owned)
+    held = snapshot(owned, view="history")
+    owned.connection.close()
+
+    records = governed._hydrate_governed_records(held)
+    assert tuple(r.provenance.identity.version for r in records) == (
+        "version-accepted",
+        "version-corrected",
+    )
+    with pytest.raises(sqlite3.ProgrammingError):
+        owned.connection.execute("SELECT 1")
+
+
+@pytest.mark.parametrize(
+    "content_json", ("not json at all", '["a list is not a record"]', "null")
+)
+def test_lane_c_37_unreadable_content_is_refused_not_replaced(content_json: str) -> None:
+    """A content column that will not decode to an object stops the record being published.
+
+    0009 bounds `content_json` by bytes and forbids NULs but never calls SQLite's `json(...)`,
+    so "this is a JSON object" is an invariant the write path asserts and the read path
+    cannot assume. `repository.py` degrades an unreadable *artifact metadata* blob to `{}`
+    because that field is opaque decoration; the same degradation here would publish a
+    governed claim as though it stated nothing, which is why this refuses instead.
+
+    Falsifier: fall back to `{}` and all three rows below return a well-formed, citable,
+    empty governed record.
+    """
+    with pytest.raises(ValueError, match="content_json"):
+        governed._hydrate_governed_records(
+            hydration((hydratable(content_json=content_json),))
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "cited", "error"),
+    (
+        ({"decision_source_id": None}, True, ContractSemanticError),
+        ({"governance_disposition": "rejected"}, True, ContractSemanticError),
+        ({"layer": "context_model"}, True, ValueError),
+        ({"governance_disposition": None}, True, ValueError),
+        ({}, False, ContractSemanticError),
+    ),
+)
+def test_lane_c_38_an_incoherent_stored_state_refuses_rather_than_repairs(
+    overrides: dict[str, object], cited: bool, error: type[Exception]
+) -> None:
+    """Five stored shapes that cannot be published, each refused rather than patched up.
+
+    A canonical version with no `decision_source_id` has no reviewer, and the contract says
+    canonical authority asserts a decision somebody made; supplying the assembly's asserting
+    actor, or the accepting event's, would be this module inventing the reviewer. A
+    `rejected` disposition carrying `canonical` authority asserts two opposite decisions
+    about one version. A `context_model` layer has no authoritative wire layer -- 0009
+    refuses it a seal, so it cannot legitimately be here at all. A governed version with no
+    disposition is missing the one column its half of the table requires. And `available`
+    evidence with no cited source claims evidence the snapshot does not contain.
+
+    Every one of these is a row the accepted writer's own CHECKs forbid, which is exactly why
+    they are built here rather than seeded: the point is that this module does not depend on
+    those CHECKs still holding, and does not quietly repair a row that slipped past them.
+
+    Falsifier: default the reviewer to the assembly's asserting actor, or coerce an unknown
+    layer to `l2`, and the corresponding row publishes a record no stored fact supports.
+    """
+    with pytest.raises(error):
+        governed._hydrate_governed_records(
+            hydration(
+                (hydratable(**overrides),),
+                events=(hydratable_event(),),
+                links=(hydratable_link(),) if cited else (),
+            )
+        )
+
+
+def policy_governed(**overrides: object) -> GovernedVersion:
+    """A governed version whose decision source is a policy evaluator, not a person.
+
+    0009's assembly trigger requires exactly this pairing: a `policy_evaluator` assembly's
+    provenance events carry `policy_id = decision_source_id` and no actor columns at all.
+    """
+    return hydratable(
+        **{
+            "decision_source_kind": "policy_evaluator",
+            "decision_source_id": "policy-h",
+            **overrides,
+        }
+    )
+
+
+def policy_event(**overrides: object) -> governed._GovernedProvenanceEvent:
+    """The event shape 0009 permits on a policy-evaluated assembly: policy, no actor."""
+    return hydratable_event(
+        **{"actor_id": None, "actor_kind": None, "policy_id": "policy-h", **overrides}
+    )
+
+
+def test_lane_c_39_a_policy_event_publishes_the_versions_own_decision_source() -> None:
+    """A policy act's actor is its exact `policy_id`, under the version's exact stored kind.
+
+    Both halves are read, never synthesised. `actor_id` is the event's own `policy_id`, and
+    `actor_kind` is the *version's* `decision_source_kind` -- the only column in the
+    assembly that records what kind of decision source governed it. 0009 ties the two
+    together (`e.policy_id IS NOT a.decision_source_id` aborts the seal), so publishing the
+    stored kind is reading that tie rather than assuming it.
+
+    Falsifier: hard-code `policy_evaluator` as a module constant and this test still passes
+    while lane C 40's mismatched rows publish an actor kind no row asserts -- which is the
+    whole reason the kind is taken from the version and the tie is checked.
+    """
+    version = policy_governed()
+    (record,) = governed._hydrate_governed_records(
+        hydration(
+            (version,), events=(policy_event(),), links=(hydratable_link(),)
+        )
+    )
+
+    (entry,) = record.provenance.history
+    assert entry.actor_id == "policy-h" == version.decision_source_id
+    assert entry.actor_kind == "policy_evaluator" == version.decision_source_kind
+    assert record.reviewer == "policy-h"
+    validate_governed_record(record)
+
+
+@pytest.mark.parametrize(
+    ("version_overrides", "event_overrides"),
+    (
+        # The version says a person decided this, the event says a policy did.
+        ({"decision_source_kind": "human_reviewer"}, {}),
+        # The version records no decision source kind at all to take one from.
+        ({"decision_source_kind": None}, {}),
+        # Right kind, different policy: this event is not this version's decision.
+        ({}, {"policy_id": "policy-elsewhere"}),
+        # Actor-shaped but internally incomplete, in both directions.
+        ({}, {"actor_id": "reviewer-h", "actor_kind": None, "policy_id": None}),
+        ({}, {"actor_id": None, "actor_kind": "human", "policy_id": None}),
+        # Neither shape at all.
+        ({}, {"actor_id": None, "actor_kind": None, "policy_id": None}),
+    ),
+)
+def test_lane_c_40_an_actor_that_is_not_an_exact_stored_fact_is_refused(
+    version_overrides: dict[str, object], event_overrides: dict[str, object]
+) -> None:
+    """Six rows from which no exact actor identity follows, each refused rather than filled.
+
+    A `ProvenanceEntry` requires both an `actor_id` and an `actor_kind`, and every way of
+    producing one here that is not a stored fact is a lie about who acted: taking the kind
+    from a constant when the version says `human_reviewer`, taking it from a version that
+    records no decision source, accepting a `policy_id` that is not the one the version was
+    governed by, or completing half an actor identity from the other half. 0009's own
+    trigger forbids every one of these, which is why they are built here rather than seeded
+    -- this module must not depend on that trigger still holding.
+
+    Falsifier: publish a synthesized `policy_evaluator` for any event lacking an `actor_id`
+    and the first three rows below produce a well-formed, citable record attributing a
+    governed decision to a policy source the assembly never named.
+    """
+    with pytest.raises(ValueError, match="provenance event"):
+        governed._hydrate_governed_records(
+            hydration(
+                (policy_governed(**version_overrides),),
+                events=(policy_event(**event_overrides),),
+                links=(hydratable_link(),),
+            )
+        )
+
+
+def test_lane_c_41_an_identical_repeated_source_declaration_deduplicates() -> None:
+    """Two events citing one artifact identically state one source, and keep both citations.
+
+    The contract refuses a `sources` list declaring one `(kind, source_id)` twice, and two
+    acts resting on the same artifact are an ordinary append-only history -- so the repeat
+    collapses to a single entry while `history` keeps both citations, which are two facts
+    rather than a duplicate of one.
+
+    Falsifier: emit `sources` per link and `validate_governed_record` refuses the record for
+    duplicate sources; drop a citation from `history` and an act loses the evidence it named.
+    """
+    (record,) = governed._hydrate_governed_records(
+        hydration(
+            (hydratable(),),
+            events=(
+                hydratable_event("event-1"),
+                hydratable_event("event-2", provenance_sequence=2, action="record.superseded"),
+            ),
+            links=(
+                hydratable_link("evd-1", provenance_event_id="event-1"),
+                hydratable_link("evd-1", provenance_event_id="event-2"),
+            ),
+        )
+    )
+
+    assert tuple(
+        (source.kind, source.source_id) for source in record.provenance.sources
+    ) == (("filesystem.archive", "doc-evd-1"),)
+    assert tuple(len(entry.evidence or ()) for entry in record.provenance.history) == (1, 1)
+    validate_governed_record(record)
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    (
+        {"source_locator": "archive://elsewhere.md"},
+        # A whole millisecond, since the rendered `Timestamp` truncates below one.
+        {"source_retrieved_at_us": ARTIFACT_US + 1_000},
+    ),
+)
+def test_lane_c_42_a_conflicting_duplicate_source_is_refused_not_collapsed(
+    conflict: dict[str, object],
+) -> None:
+    """One `(kind, source_id)` declared twice with different facts stops the record.
+
+    Deduplication is only sound when the two declarations say the same thing. Two rows
+    disagreeing on where the source was read from, or on when it was retrieved, are two
+    accounts of one citation, and keeping whichever the link reader happened to order first
+    would publish one of them as the record's only answer -- indistinguishable, downstream,
+    from an uncontested one.
+
+    Falsifier: keep the first declaration and both rows below return a record whose single
+    `sources` entry silently drops a conflicting stored fact.
+    """
+    with pytest.raises(ValueError, match="different facts"):
+        governed._hydrate_governed_records(
+            hydration(
+                (hydratable(),),
+                events=(hydratable_event(),),
+                links=(
+                    hydratable_link("evd-1"),
+                    hydratable_link("evd-1", **conflict),
+                ),
+            )
+        )

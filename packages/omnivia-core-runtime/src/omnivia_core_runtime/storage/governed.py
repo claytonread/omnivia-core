@@ -68,20 +68,33 @@ through.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
-from typing import Final
+from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
+    GOVERNANCE_LAYER_CANDIDATE,
+    GOVERNANCE_LAYER_GOVERNED,
     GOVERNANCE_STATE_ACCEPTED,
+    GOVERNANCE_STATE_CANDIDATE,
     GOVERNED_RECORD_VIEW_CANDIDATES,
     GOVERNED_RECORD_VIEW_CURRENT_CANONICAL,
     GOVERNED_RECORD_VIEW_HISTORY,
     GOVERNED_RECORD_VIEWS,
     KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL,
+    EvidenceReference,
+    GovernedRecord,
+    ProvenanceEntry,
+    RecordIdentity,
+    RecordProvenance,
     RecordTemporalMetadata,
+    SourceReference,
+    SourceSpan,
+    SupersessionReference,
     resolve_governed_record_view,
+    validate_governed_record,
     validate_record_temporal_metadata,
 )
 from omnivia_core_runtime.storage.connection import authorised
@@ -727,11 +740,404 @@ def _temporal_metadata(version: GovernedVersion) -> RecordTemporalMetadata:
     return temporal
 
 
+#: 0009's two sealable `layer` values as the contract's own `GovernanceLayer` codes. The
+#: third value the column admits, `context_model`, is refused a seal outright and so is not
+#: mapped: an unmapped layer reaching the hydrator is a stored fact this module refuses to
+#: publish rather than one it guesses a wire code for.
+_GOVERNANCE_LAYER: Final[dict[str, str]] = {
+    LAYER_GOVERNED: GOVERNANCE_LAYER_GOVERNED,
+    LAYER_CANDIDATE: GOVERNANCE_LAYER_CANDIDATE,
+}
+
+_CURRENTNESS_CURRENT: Final = "current"
+_CURRENTNESS_SUPERSEDED: Final = "superseded"
+
+
+def _content(version: GovernedVersion) -> dict[str, Any]:
+    """`version`'s stored canonical content, decoded.
+
+    0009 bounds `content_json` by byte length and forbids NULs but deliberately never calls
+    SQLite's `json(...)`, so "this column holds a JSON object" is an invariant the write
+    path asserts and this read path cannot assume. A row that fails to decode, or decodes to
+    a JSON value that is not an object, is a stored fact this module refuses rather than
+    repairs: publishing `{}` in its place -- the degradation `repository.py` chooses for an
+    artifact's *opaque decoration* -- would here be publishing a governed claim as though it
+    said nothing.
+    """
+    decoded: object
+    try:
+        decoded = json.loads(version.content_json)
+    except ValueError as error:
+        raise ValueError(
+            f"governed version {version.governed_record_version_id!r} stores content_json "
+            f"that is not decodable JSON"
+        ) from error
+    if isinstance(decoded, dict):
+        return decoded
+    raise ValueError(
+        f"governed version {version.governed_record_version_id!r} stores content_json "
+        f"that is not a JSON object"
+    )
+
+
+def _source_reference(link: _GovernedEvidenceLink) -> SourceReference:
+    """The M2 artifact behind one evidence link, as the contract's `SourceReference`.
+
+    The artifact's own record of where it came from, verbatim -- the same four columns
+    `repository.py` renders an `EvidenceArtifact.source` from, so one artifact cited by a
+    governed record and returned by an evidence search describes itself identically.
+    """
+    return SourceReference(
+        kind=link.source_kind,
+        source_id=link.source_native_id,
+        locator=link.source_locator,
+        retrieved_at=(
+            None
+            if link.source_retrieved_at_us is None
+            else _timestamp(link.source_retrieved_at_us)
+        ),
+    )
+
+
+def _evidence_reference(link: _GovernedEvidenceLink) -> EvidenceReference:
+    """One evidence link as the contract's `EvidenceReference`.
+
+    The span is present exactly when the link named one and the join found it. `excerpt` is
+    absent always: no column stores one, and quoting content back out of the artifact would
+    be this module inventing the excerpt rather than reading it.
+    """
+    return EvidenceReference(
+        source=_source_reference(link),
+        span=(
+            None
+            if link.span_pointer is None
+            else SourceSpan(
+                pointer=link.span_pointer,
+                start_offset=link.span_start_offset,
+                end_offset=link.span_end_offset,
+            )
+        ),
+    )
+
+
+def _provenance_entry(
+    event: _GovernedProvenanceEvent,
+    version: GovernedVersion,
+    evidence: tuple[EvidenceReference, ...],
+) -> ProvenanceEntry:
+    """One stored provenance event as one `ProvenanceEntry`.
+
+    `actor_id`/`actor_kind` are required by the contract and nullable in 0009, because 0009
+    admits a policy evaluation as well as a person -- and then requires exactly one of the
+    two shapes: an event carries `actor_id`, `actor_kind` and `actor_role`, *or* it carries
+    `policy_id` and `policy_version` and none of those three. An actor event publishes both
+    of its own columns; half of that pair is an internally incomplete row and is refused
+    rather than completed from somewhere else.
+
+    A policy event's durable actor identity is its exact `policy_id`, and its kind is the
+    *version's* exact stored `decision_source_kind` -- the only row that records what kind
+    of decision source this assembly was governed by. 0009's own trigger ties the two
+    together, requiring a `policy_evaluator` assembly's events to carry
+    `policy_id = decision_source_id`, so both halves of that tie are checked here and a
+    policy event whose version records a different source, a different kind, or no decision
+    source at all is refused. Nothing is synthesised: an event that names neither an actor
+    nor a policy, and one whose version cannot say what kind of policy source it was, are
+    both shapes this module declines to publish rather than guess a kind for.
+
+    `evidence` is *absent* rather than empty when the event cited nothing. Those are
+    different claims -- "this act named no evidence" against "this act named an empty list"
+    -- and only the first is one the rows support.
+    """
+    if event.actor_id is not None or event.actor_kind is not None:
+        if event.actor_id is None or event.actor_kind is None:
+            raise ValueError(
+                f"provenance event {event.provenance_event_id!r} carries half an actor "
+                f"identity (actor_id={event.actor_id!r}, actor_kind={event.actor_kind!r})"
+            )
+        actor_id, actor_kind = event.actor_id, event.actor_kind
+    elif event.policy_id is not None:
+        kind = version.decision_source_kind
+        if (
+            kind is None
+            or kind != "policy_evaluator"
+            or version.decision_source_id != event.policy_id
+        ):
+            raise ValueError(
+                f"provenance event {event.provenance_event_id!r} names policy "
+                f"{event.policy_id!r}, which is not the exact policy decision source "
+                f"governed version {version.governed_record_version_id!r} records "
+                f"(decision_source_kind={kind!r}, "
+                f"decision_source_id={version.decision_source_id!r})"
+            )
+        actor_id, actor_kind = event.policy_id, kind
+    else:
+        raise ValueError(
+            f"provenance event {event.provenance_event_id!r} names neither an actor nor a "
+            f"policy"
+        )
+    return ProvenanceEntry(
+        actor_id=actor_id,
+        actor_kind=actor_kind,
+        action=event.action,
+        occurred_at=_timestamp(event.occurred_at_us),
+        reason_code=event.reason_code,
+        reason_comment=event.reason_comment,
+        evidence=evidence or None,
+    )
+
+
+def _supersession_reference(
+    fact: GovernedSupersession, version_id: str
+) -> SupersessionReference:
+    """The *other* end of `fact` from `version_id`, with the reason the edge recorded.
+
+    `SupersessionReference` is direction-neutral -- which of `supersedes`/`superseded_by`
+    carries it is the whole direction -- so this names the version at the far end and lets
+    the caller place it. Asking for the far end by the near one, rather than by field name,
+    is what makes the two directions reciprocal by construction: one edge, read from either
+    side, yields the two halves of the same replacement.
+    """
+    return SupersessionReference(
+        record_id=fact.governed_record_id,
+        version=(
+            fact.target_version_id
+            if version_id == fact.source_version_id
+            else fact.source_version_id
+        ),
+        reason=fact.reason_code,
+    )
+
+
+def _governed_record(
+    version: GovernedVersion,
+    *,
+    events: tuple[_GovernedProvenanceEvent, ...],
+    links: tuple[_GovernedEvidenceLink, ...],
+    supersedes: GovernedSupersession | None,
+    superseded_by: GovernedSupersession | None,
+) -> GovernedRecord:
+    """One selected version and its own support rows, as one validated `GovernedRecord`.
+
+    Every field is the stored fact. `layer` is 0009's layer through
+    :data:`_GOVERNANCE_LAYER`; `governance_state` is a governed version's own
+    `governance_disposition`, and a candidate's is
+    :data:`~omnivia_core.contracts.v1.GOVERNANCE_STATE_CANDIDATE` -- 0009 forbids the
+    candidate half of the table a disposition at all, and `candidate` is the state the
+    contract's `candidates` view requires of every record in it, exactly. `proposed` is the
+    neighbouring state `memory.create` stamps on a *creation*, and publishing it here would
+    make every candidate this read projects fail the contract's own candidates-view
+    validation, which admits `l1`/`candidate`/`current` and nothing else.
+
+    `currentness` is not a column and is not asked of the resolver's view either: a version
+    is `superseded` exactly when the snapshot holds a sealed edge out of it, which is the
+    same fact the frontier fold used to leave it out of `current_canonical`. So the three
+    views agree by construction rather than by three restatements of one rule, and
+    `superseded_at` is that edge's *effective* instant -- the later of the edge and its
+    sealed target -- never either row's own timestamp.
+
+    `reviewer` is `decision_source_id` and nothing else: 0009 stores the exact reviewer
+    principal or policy id there, requires it on every governed version, and forbids it on
+    every candidate. An `accepted`/`reviewed`/`canonical` record with no reviewer is refused
+    below rather than given one.
+
+    `assertion` and `extraction` stay absent under Amendment 008's fourth rule. Both require
+    an instant 0009 stores nowhere -- `CandidateAssertion.asserted_at` and
+    `CandidateExtractionMetadata.extracted_at` -- so their exact durable origin lineage
+    cannot be reconstructed from the assembly, and the nearby provenance event's
+    `occurred_at_us` is a different act's clock, not this claim's assertion time.
+
+    The result is validated whole: shape, temporal ordering, evidence/source agreement,
+    currentness/supersession coherence and the governance/authority/layer triple. A stored
+    combination the contract calls impossible fails here, with what it was, rather than
+    reaching a caller as a well-formed lie.
+    """
+    layer = _GOVERNANCE_LAYER.get(version.layer)
+    if layer is None:
+        raise ValueError(
+            f"governed version {version.governed_record_version_id!r} carries layer "
+            f"{version.layer!r}, which has no authoritative GovernanceLayer"
+        )
+    state = (
+        version.governance_disposition
+        if version.layer == LAYER_GOVERNED
+        else GOVERNANCE_STATE_CANDIDATE
+    )
+    if state is None:
+        raise ValueError(
+            f"governed version {version.governed_record_version_id!r} records no "
+            f"governance_disposition"
+        )
+
+    version_id = version.governed_record_version_id
+    identity = RecordIdentity(
+        record_id=version.governed_record_id,
+        version=version_id,
+        layer=layer,
+        governance_state=state,
+        currentness=(
+            _CURRENTNESS_CURRENT if superseded_by is None else _CURRENTNESS_SUPERSEDED
+        ),
+        supersedes=(
+            None if supersedes is None else _supersession_reference(supersedes, version_id)
+        ),
+        superseded_by=(
+            None
+            if superseded_by is None
+            else _supersession_reference(superseded_by, version_id)
+        ),
+    )
+    temporal = _temporal_metadata(version)
+    if superseded_by is not None:
+        temporal = replace(
+            temporal, superseded_at=_timestamp(superseded_by.effective_at_us)
+        )
+
+    # `sources` is the set of distinct things this version's own citations rest on -- in a
+    # fixed order, and without the duplicate `(kind, source_id)` pair the contract refuses
+    # when two events cite one artifact. `dict` preserves insertion order, which is what
+    # makes that deterministic rather than merely deduplicated.
+    #
+    # Only an *identical* repeat collapses. Two declarations of one `(kind, source_id)` that
+    # disagree on `locator` or `retrieved_at` are two different accounts of where the same
+    # source was read from, and keeping whichever arrived first would publish one of them as
+    # the record's only answer while silently dropping the other -- a citation the reader
+    # cannot tell from an uncontested one. It is refused instead, in the same direction
+    # every other stored-fact contradiction here is.
+    sources: dict[tuple[str, str], SourceReference] = {}
+    for link in links:
+        source = _source_reference(link)
+        declared = sources.setdefault((source.kind, source.source_id), source)
+        if declared != source:
+            raise ValueError(
+                f"governed version {version.governed_record_version_id!r} declares source "
+                f"({source.kind!r}, {source.source_id!r}) twice with different facts: "
+                f"{declared!r} then {source!r}"
+            )
+
+    record = GovernedRecord(
+        workspace_id=version.workspace_id,
+        record_type=version.record_type,
+        domain_scope=version.domain_scope,
+        authority_level=version.authority_level,
+        reviewer=version.decision_source_id,
+        provenance=RecordProvenance(
+            identity=identity,
+            temporal=temporal,
+            history=tuple(
+                _provenance_entry(
+                    event,
+                    version,
+                    tuple(
+                        _evidence_reference(link)
+                        for link in links
+                        if link.provenance_event_id == event.provenance_event_id
+                    ),
+                )
+                for event in events
+            ),
+            evidence_disposition=version.evidence_disposition,
+            sources=tuple(sources.values()),
+        ),
+        content=_content(version),
+    )
+    validate_governed_record(record)
+    return record
+
+
+def _hydrate_governed_records(
+    snapshot: _GovernedHydrationSnapshot,
+) -> tuple[GovernedRecord, ...]:
+    """Every version a snapshot selected, as `GovernedRecord`s, in the snapshot's own order.
+
+    Pure: one frozen value in, one tuple of frozen values out. It holds no connection and
+    the snapshot holds none either, so there is no post-freeze read to make -- a support row
+    the snapshot did not capture is a row this mapping cannot consult, by construction
+    rather than by discipline.
+
+    Support rows are grouped by `(assembly_id, governed_record_version_id)` and edges by
+    version id, so a record is described only by rows naming it. The snapshot already scopes
+    both to the view's selection; matching on the pair as well is what stops two selected
+    versions of *different* records sharing an assembly's provenance if a later reader ever
+    widens that scoping.
+
+    An edge appears at both of its ends: out of its source as `superseded_by`, into its
+    target as `supersedes`. Where a version has more than one edge on a side, the earliest
+    *effective* one is taken -- 0009 refuses a branching source, so today there is at most
+    one; the rule is stated rather than assumed, and it is the same `min` the frontier fold
+    already picks a version's ending instant by.
+    """
+    events: dict[tuple[str, str], list[_GovernedProvenanceEvent]] = {}
+    for event in snapshot.events:
+        events.setdefault(
+            (event.assembly_id, event.governed_record_version_id), []
+        ).append(event)
+    links: dict[tuple[str, str], list[_GovernedEvidenceLink]] = {}
+    for link in snapshot.links:
+        links.setdefault((link.assembly_id, link.governed_record_version_id), []).append(link)
+
+    outgoing: dict[str, GovernedSupersession] = {}
+    incoming: dict[str, GovernedSupersession] = {}
+    for fact in snapshot.supersessions:
+        for edges, version_id in (
+            (outgoing, fact.source_version_id),
+            (incoming, fact.target_version_id),
+        ):
+            held = edges.get(version_id)
+            if held is None or fact.effective_at_us < held.effective_at_us:
+                edges[version_id] = fact
+
+    return tuple(
+        _governed_record(
+            version,
+            events=tuple(
+                events.get((version.assembly_id, version.governed_record_version_id), ())
+            ),
+            links=tuple(
+                links.get((version.assembly_id, version.governed_record_version_id), ())
+            ),
+            supersedes=incoming.get(version.governed_record_version_id),
+            superseded_by=outgoing.get(version.governed_record_version_id),
+        )
+        for version in snapshot.versions
+    )
+
+
+def read_governed_records(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    view: str | None = None,
+) -> tuple[GovernedRecord, ...]:
+    """One workspace's `view` at `resolution_instant_us`, as contract `GovernedRecord`s.
+
+    The whole authoritative read is one coherent snapshot and the whole projection of it is
+    pure, which is the only reason this can be one function: it reads, the transaction ends,
+    and the mapping that follows cannot reach the database again because it is handed
+    values rather than a handle. Nothing a caller receives is a connection, a cursor or a
+    lazily-resolved reference -- a tuple of frozen contract values, and no storage
+    capability escapes with them.
+
+    Everything about *which* versions these are is `resolve_governed_versions`': the three
+    views, the resolution instant doing both of its jobs, and the supersession fold. This
+    adds the projection and nothing else.
+    """
+    return _hydrate_governed_records(
+        _read_governed_hydration_snapshot(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            view=view,
+        )
+    )
+
+
 __all__ = [
     "LAYER_CANDIDATE",
     "LAYER_GOVERNED",
     "GovernedSupersession",
     "GovernedVersion",
+    "read_governed_records",
     "read_governed_supersessions",
     "resolve_governed_versions",
 ]
