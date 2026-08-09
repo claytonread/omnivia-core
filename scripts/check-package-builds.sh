@@ -263,23 +263,29 @@ install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
   "omnivia_core_mcp.manifest" \
   "omnivia_core_mcp.managed_start" \
   "omnivia_core_mcp.server"
-# `transport.py` is named explicitly because neither module above reaches it:
-# `main` imports it inside the one subcommand that calls a service, so importing
-# `main` resolves nothing. It is the only module that imports `omnivia-core-client`,
-# so without this line the CLI's Requires-Dist is never exercised at wheel level --
-# which is verbatim the failure this script's comment above says it exists to catch.
+# `omnivia_core_client` is named here, in the *CLI's* venv, and it is not a stray
+# entry. Owner resolution 005 R005-01 moved the transport out of this
+# distribution, so the CLI no longer has any module that imports the client at
+# module scope: `main` imports it inside the one subcommand that calls a service,
+# which importing `main` does not reach. Without this line the CLI's
+# `Requires-Dist: omnivia-core-client` would never be exercised at wheel level --
+# verbatim the failure this script's comment above says it exists to catch.
+# Importing it from a venv that installed only `omnivia-core-cli` is precisely the
+# proof that the CLI's own metadata pulled it in.
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
   "omnivia_core_cli.client" \
   "omnivia_core_cli.main" \
-  "omnivia_core_cli.transport"
+  "omnivia_core_client"
 # The client's whole surface is operational: every module below is imported by a
 # caller on the first call it makes, so each one has to resolve from the wheel
 # plus its single declared `omnivia-core` dependency and nothing else.
 install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.compatibility" \
   "omnivia_core_client.deadline" \
+  "omnivia_core_client.discovery" \
   "omnivia_core_client.errors" \
   "omnivia_core_client.framing" \
+  "omnivia_core_client.local_ipc" \
   "omnivia_core_client.transport"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"

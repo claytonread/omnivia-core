@@ -190,42 +190,67 @@ def test_a_tool_name_absent_from_the_manifest_resolves_to_nothing() -> None:
         assert manifest.exposed_by_tool_name(absent) is None
 
 
-# --- the pending transport seam ----------------------------------------------
+# --- the transport seam -------------------------------------------------------
 
 
-def test_the_default_transport_factory_refuses_as_a_transport_failure() -> None:
-    """The one thing this package cannot do yet, and how it says so.
+def test_the_default_transport_factory_builds_the_client_owned_transport() -> None:
+    """R005-01 step 4: the real transport, from the client package, not a stand-in.
 
-    `omnivia-core-client` exports no concrete local transport and this package may
-    not import the CLI's, so the default factory cannot build one. It refuses with
-    `TransportError` -- the client's own declared failure for "could not carry a
-    call" -- which means the call path needs no special case for the pending
-    decision, and the day a real transport lands only this function changes.
+    Identity is asserted on the class and its defining module, so a local
+    re-implementation with the same name in this package would fail here. The
+    endpoint URI is carried through unchanged, because a factory that dialled
+    somewhere other than the attachment would be the one bug this seam can hide.
     """
-    from omnivia_core_client import ClientError, TransportError
+    from omnivia_core_client import LocalIpcTransport
     from omnivia_core_mcp.server import _default_transport_factory
 
-    with pytest.raises(TransportError, match="no concrete local transport"):
-        _default_transport_factory("unix:///tmp/omnivia/run/s.sock")
-    assert issubclass(TransportError, ClientError)
+    transport = _default_transport_factory("unix:///tmp/omnivia/run/s.sock")
+
+    assert isinstance(transport, LocalIpcTransport)
+    assert type(transport).__module__ == "omnivia_core_client.local_ipc"
+    assert transport.endpoint_uri == "unix:///tmp/omnivia/run/s.sock"
 
 
-def test_a_tool_call_reports_the_pending_transport_instead_of_crashing() -> None:
-    """A production server advertises honestly and refuses readably.
+def test_a_tool_call_against_an_absent_service_refuses_instead_of_crashing() -> None:
+    """A dial that fails is an answer for the model, not an exception.
 
-    Not an exception out of the handler: the model is told the tool is real, the
-    service is attached, and only the dial is missing.
+    Before R005-01 this asserted the stand-in's "no concrete local transport".
+    There is no stand-in now, so the endpoint below is simply one nothing is
+    listening on -- and the message proves the real transport genuinely tried:
+    "could not be reached" is `LocalIpcTransport._connect`'s own wording for a
+    refused socket, which the previous placeholder could never have produced.
+
+    The diagnostic quotes no local path, which is the client's payload-free rule
+    holding across the package boundary.
     """
     import mcp_types as types
     from omnivia_core_mcp.managed_start import Attachment
     from omnivia_core_mcp.server import _call_tool, _default_transport_factory
 
+    absent = "unix:///tmp/omnivia-absent-service/s.sock"
     result = _call_tool(
         types.CallToolRequestParams(name="workspace_inspect", arguments={}),
         attachment=Attachment(
-            status="attached", endpoint_uri="unix:///tmp/s.sock", workspace_id="ws-1"
+            status="attached", endpoint_uri=absent, workspace_id="ws-1"
         ),
         transport_factory=_default_transport_factory,
     )
     assert result.is_error is True
-    assert "no concrete local transport" in result.content[0].text
+    message = result.content[0].text
+    assert "could not be reached" in message
+    assert absent not in message
+
+
+def test_a_transport_failure_is_the_clients_own_error_type() -> None:
+    """R005-01 step 6: `TransportError` stays canonical for local transport use.
+
+    Raised by the client package, subclassing the client's `ClientError`, so the
+    one handler in the call path catches every documented transport failure --
+    and MCP declares no error type of its own for this.
+    """
+    from omnivia_core_client import ClientError, TransportError, socket_path_for
+
+    with pytest.raises(TransportError):
+        socket_path_for("pipe://omnivia-core")
+    assert issubclass(TransportError, ClientError)
+    assert TransportError.__module__ == "omnivia_core_client.errors"

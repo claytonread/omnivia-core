@@ -225,11 +225,16 @@ def _dial(
     keep answering where this distribution is installed without
     `omnivia-core-client`; a module-scope import would make
     `omnivia_core_cli.main` unimportable there and take `discover` and `--help`
-    down with it.
+    down with it. `LocalIpcTransport` is in that same import because owner
+    resolution 005 R005-01 moved it into the client package: the CLI constructs
+    the client-owned transport and no longer ships one of its own.
     """
-    from omnivia_core_client import ClientError, Deadline, discover_endpoint
-
-    from omnivia_core_cli.transport import LocalIpcTransport
+    from omnivia_core_client import (
+        ClientError,
+        Deadline,
+        LocalIpcTransport,
+        discover_endpoint,
+    )
 
     def refuse(reason: str) -> None:
         if not quiet:

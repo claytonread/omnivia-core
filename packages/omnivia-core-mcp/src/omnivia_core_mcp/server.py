@@ -27,18 +27,20 @@ appears below, and their absence is the implementation: there is no lease call,
 no stop call and no shutdown hook. A service started here is an independent Core
 service and outlives the stdio session, exactly as R004-07 requires.
 
-**The one thing this cannot do yet, stated plainly.** `omnivia-core-client`
-exports the :class:`~omnivia_core_client.ClientTransport` protocol, the OVC1
-frame, deadlines and discovery -- but no *concrete* local transport. The only one
-in the repository is `omnivia_core_cli.transport`, which ADR-036 forbids this
-package importing, and writing a sibling copy would be the third implementation
-of one dial loop -- the shape R004-08 rejected for process control, and the shape
-that let the CLI's socket-path guard drift 11 to 15 bytes from the runtime's.
-The owner is deciding whether `LocalIpcTransport` moves into
-`omnivia-core-client`. Until it does, :data:`TransportFactory` is the seam: the
-server takes one, every call goes through it, and the day a concrete transport
-lands the whole change is constructing it in :func:`_default_transport_factory`.
-Nothing else in this module moves.
+**The call path is complete, and the transport is not this package's.**
+`omnivia-core-client` exports the :class:`~omnivia_core_client.ClientTransport`
+protocol, the OVC1 frame, deadlines, discovery -- and, since owner resolution 005
+R005-01, :class:`~omnivia_core_client.LocalIpcTransport`, the one concrete local
+transport in the repository. This package constructs it in
+:func:`_default_transport_factory` and holds no dial loop of its own. It does not
+import the CLI, which ADR-036 forbids, and a sibling copy would have been the
+third implementation of one dial loop -- the shape R004-08 rejected for process
+control, and the shape that let the CLI's socket-path guard drift 11 to 15 bytes
+from the runtime's.
+
+:data:`TransportFactory` remains the seam, now for tests rather than for a pending
+decision: the server takes one, every call goes through it, and a test can pass a
+double instead of standing up a service.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ from omnivia_core_client import (
     ClientError,
     ClientTransport,
     Deadline,
-    TransportError,
+    LocalIpcTransport,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -105,39 +107,32 @@ CLIENT_NAME: Final = "omnivia-core-mcp"
 #: service is already ready by the time any of these are made.
 CALL_TIMEOUT_SECONDS: Final = 30.0
 
-#: Constructs a transport for one endpoint URI. The single seam between this
-#: server and the pending concrete local transport; see the module docstring.
+#: Constructs a transport for one endpoint URI. The seam between this server and
+#: the client-owned local transport, kept so a test can substitute a double; see
+#: the module docstring.
 TransportFactory = Callable[[str], ClientTransport]
-
-#: What a tool call answers with while no concrete transport exists. Stated as a
-#: missing capability rather than as a bug, because it is one: the tool is
-#: correctly advertised, correctly allow-listed and correctly projected, and the
-#: only absent piece is the dial.
-_NO_TRANSPORT = (
-    "This build cannot yet call the OmniVia Core service: omnivia-core-client "
-    "exports the ClientTransport protocol but no concrete local transport, and "
-    "this package is not permitted to import the CLI's. The service is attached "
-    "and ready; only the call path is pending."
-)
 
 
 def _default_transport_factory(endpoint_uri: str) -> ClientTransport:
-    """Construct the concrete local transport for an endpoint. Not yet possible.
+    """Construct the client-owned local transport for an endpoint.
 
-    **This function is the entire pending change.** When `LocalIpcTransport` lands
-    in `omnivia-core-client`, its body becomes a construction of that class from
-    `endpoint_uri` and this module needs no other edit: every caller already goes
-    through :data:`TransportFactory`, the request envelopes are already built from
-    the catalogue, and the response decoding already runs against the public
-    contract.
+    Owner resolution 005 R005-01 moved `LocalIpcTransport` into
+    `omnivia-core-client`, and this is the whole of what that changed here: the
+    seam was already in place, so constructing the real transport is the entire
+    edit. Every caller already goes through :data:`TransportFactory`, the request
+    envelopes are already built from the catalogue, and the response decoding
+    already runs against the public contract.
 
-    `TransportError` is the honest exception, not a placeholder: the client
-    package declares it for "a transport could not carry a call to a peer and
-    back", and a transport that cannot be constructed at all is the limiting case
-    of that. It also means the call path needs no branch of its own for this --
-    the same `ClientError` handler that catches a refused socket catches it.
+    This package imports the transport from the client distribution it already
+    declares. It does not import the CLI, and there is no copy of the dial loop
+    here -- which is the point of the move.
+
+    Nothing is caught here. A bad endpoint URI raises `TransportError` from
+    `socket_path_for` at call time, not at construction: the dataclass is frozen
+    and holds only the URI, so constructing it cannot fail. Either way the caller's
+    `ClientError` handler is what answers.
     """
-    raise TransportError(_NO_TRANSPORT)
+    return LocalIpcTransport(endpoint_uri=endpoint_uri)
 
 
 def build_server(
@@ -223,9 +218,9 @@ def _call_tool(
     except ClientError as failure:
         # Every way a transport is documented to fail: it could not carry the
         # call, what came back was not a frame, the deadline passed, or the
-        # caller cancelled. All four are answers to give a model, not tracebacks
-        # -- and so is "there is no concrete transport yet", which arrives here as
-        # the `TransportError` that `_default_transport_factory` raises.
+        # caller cancelled. All four are answers to give a model, not tracebacks.
+        # The client's diagnostics are payload-free by construction, so passing
+        # one through to a model quotes no workspace content and no local path.
         return _failure(f"{params.name} could not be called: {failure}")
 
     if not isinstance(response, SuccessResponseEnvelope):
@@ -233,11 +228,22 @@ def _call_tool(
             f"{params.name} was refused by the service: "
             f"{codec.to_canonical_json(codec.encode_response(response))}"
         )
+    # Through the codec's own encoder, not `dict(response.result)`. `dict()`
+    # converts the top level only, and a decoded envelope carries read-only
+    # mappings further down -- `to_canonical_json` is `json.dumps`, which refuses
+    # a nested `mappingproxy` outright. The stand-in transport this package used
+    # before R005-01 answered with plain dicts and could never show that; the
+    # first call over the real transport failed with "Object of type mappingproxy
+    # is not JSON serializable". `encode_response` is the accepted way to get a
+    # wire-shaped document, and is what the CLI has always used.
+    encoded = codec.encode_response(response)["result"]
     return types.CallToolResult(
         content=[
             types.TextContent(
                 type="text",
-                text=codec.to_canonical_json(dict(response.result)),
+                text=codec.to_canonical_json(
+                    encoded if isinstance(encoded, dict) else {}
+                ),
             )
         ]
     )

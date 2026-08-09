@@ -19,10 +19,16 @@ library.
 - :mod:`~omnivia_core_client.compatibility` -- API, protocol, and descriptor versions
 - :mod:`~omnivia_core_client.discovery` -- safe descriptor discovery and live identity
 - :mod:`~omnivia_core_client.errors` -- the typed failures those raise
+- :mod:`~omnivia_core_client.local_ipc` -- :class:`LocalIpcTransport`, the one
+  concrete transport, over the installation-local endpoint
 
-**What is not here yet**, and must not be assumed: any concrete transport (local
-socket or HTTP), retry or backoff, managed service startup, and the high-level
-client that would put them together. Each arrives in its own packet.
+**What is not here yet**, and must not be assumed: an HTTP transport, retry or
+backoff, managed service startup, and the high-level client that would put them
+together. Each arrives in its own packet.
+
+:class:`LocalIpcTransport` is the single concrete transport, placed here by owner
+resolution 005 R005-01. Every caller that dials a local Core service constructs it
+from this package; there is no second implementation anywhere in the repository.
 
 Standard library plus the public ``omnivia_core`` contracts only.
 """
@@ -75,6 +81,11 @@ from omnivia_core_client.framing import (
     decode_frame,
     encode_frame,
 )
+from omnivia_core_client.local_ipc import (
+    LOCAL_IPC_SCHEME,
+    LocalIpcTransport,
+    socket_path_for,
+)
 from omnivia_core_client.transport import (
     ClientTransport,
     enforce_send_preconditions,
@@ -89,6 +100,7 @@ __all__ = [
     "FRAME_FORMAT",
     "HEADER_BYTES",
     "LENGTH_BYTES",
+    "LOCAL_IPC_SCHEME",
     "MAGIC",
     "MAGIC_HEX",
     "MAXIMUM_DESCRIPTOR_BYTES",
@@ -106,6 +118,7 @@ __all__ = [
     "Deadline",
     "DeadlineExceededError",
     "DiscoveredEndpoint",
+    "LocalIpcTransport",
     "MonotonicClock",
     "NegotiatedEndpoint",
     "OperationCancelledError",
@@ -121,5 +134,6 @@ __all__ = [
     "negotiate_endpoint",
     "select_api_version",
     "select_protocol_version",
+    "socket_path_for",
     "validate_descriptor_version",
 ]
