@@ -204,8 +204,11 @@ def test_status_refuses_a_service_that_died_without_unwinding(home: Path) -> Non
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the byte ceiling is a Unix-socket limit")
-def test_the_cli_refuses_one_byte_past_the_endpoint_ceiling_and_not_at_it() -> None:
-    """The CLI's own copy of R004-15's ceiling, at both boundaries.
+@pytest.mark.parametrize("command", ["start", "init"])
+def test_the_cli_refuses_one_byte_past_the_endpoint_ceiling_and_not_at_it(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """The CLI's own copy of R004-15's ceiling, at both boundaries and both entries.
 
     This guard exists because ADR-036 forbids this package importing the runtime, so
     it restates the number. It used to restate 104 -- the raw `sun_path` field size
@@ -216,19 +219,40 @@ def test_the_cli_refuses_one_byte_past_the_endpoint_ceiling_and_not_at_it() -> N
     fails if the two numbers drift; this fails if the comparison around one of them
     does.
 
-    Nothing is created on disk: the length check runs before the executable and
-    manifest checks, so the boundary is reachable without a bootstrapped workspace
-    and without spawning anything. The accepted case asserts only that the refusal is
-    *not* the length one -- what is under test is where the line falls, and
-    `test_start_then_status_then_stop` already covers what happens on the good side
-    of it.
+    **`init` is parametrized in because deleting its call to
+    `refuse_over_long_endpoint` passed this suite 49 out of 49.** The check has its
+    own argument in `request_init`'s docstring -- a home that can be initialised but
+    never served is worse than a refusal, because the workspace would be real and
+    every later `omnivia start` would fail on a fact that was knowable at `init` --
+    and nothing objected to removing it. One parameter is the whole repair: the
+    ceiling is one number and this is now one test over every entry point that
+    restates it.
+
+    `_ask_service` is substituted so that neither branch launches anything. It is
+    the launch seam and nothing else: the ceiling is checked before it on both
+    paths, so a refusal that is *not* the length one proves the boundary was passed.
+    `request_init` would otherwise bootstrap a real workspace on the good side of
+    the line, which is `test_a_fresh_home_is_initialised_and_then_starts`'s job.
     """
+    from omnivia_core_cli import lifecycle
     from omnivia_core_cli.lifecycle import (
         MAX_ENDPOINT_PATH_BYTES,
         Installation,
         LifecycleError,
+        request_init,
         request_managed_start,
     )
+
+    def never_launch(*arguments: object, **keywords: object) -> dict[str, object]:
+        raise LifecycleError("the launcher was reached")
+
+    monkeypatch.setattr(lifecycle, "_ask_service", never_launch)
+
+    def ask(installation: Installation) -> None:
+        if command == "init":
+            request_init(installation)
+        else:
+            request_managed_start(installation, endpoint_uri="unix:///x")
 
     root = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
 
@@ -241,15 +265,11 @@ def test_the_cli_refuses_one_byte_past_the_endpoint_ceiling_and_not_at_it() -> N
 
     try:
         with pytest.raises(LifecycleError) as at_the_line:
-            request_managed_start(
-                installation_of(MAX_ENDPOINT_PATH_BYTES), endpoint_uri="unix:///x"
-            )
+            ask(installation_of(MAX_ENDPOINT_PATH_BYTES))
         assert "byte limit" not in str(at_the_line.value)
 
         with pytest.raises(LifecycleError, match="byte limit") as past_it:
-            request_managed_start(
-                installation_of(MAX_ENDPOINT_PATH_BYTES + 1), endpoint_uri="unix:///x"
-            )
+            ask(installation_of(MAX_ENDPOINT_PATH_BYTES + 1))
         assert str(MAX_ENDPOINT_PATH_BYTES) in str(past_it.value)
     finally:
         shutil.rmtree(root, ignore_errors=True)

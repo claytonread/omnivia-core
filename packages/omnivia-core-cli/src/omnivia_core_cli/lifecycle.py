@@ -12,7 +12,9 @@ takes a lease; the started process owns all three, as ADR-037 requires.
 **The path convention.** Core had none: every caller passed `--workspace` and
 `--installation-state` explicitly, which is workable for a launcher and useless
 for an MCP client where no human types flags. One convention, rooted at a single
-directory:
+directory, and `request_init` is what makes it exist on a machine that has never
+run Core -- R004-10, because until it landed no shipped command created a
+workspace and `omnivia start` on a fresh machine had nothing to start:
 
 ```text
 ~/.omnivia                    (an explicit flag still wins)
@@ -31,11 +33,41 @@ endpoint path -- what is left of `sockaddr_un`'s 104-byte `sun_path` once the NU
 terminator and the runtime's fixed-width staging name are subtracted -- so a deep
 default would refuse to bind at all.
 
-**No environment variable.** The convention is fixed, and
-`test_the_cli_reads_no_environment_variable_to_find_a_service` is why: an
-environment lookup is an unrestricted filesystem path arriving by another name,
-which that packet makes a stop condition. A fixed convention is bounded and
-identical on every machine; an override is not. Only an explicit flag overrides.
+**No OmniVia environment variable selects a state path.** The convention is fixed,
+and `test_the_cli_selects_no_omnivia_state_path_from_the_environment` is why: an
+environment lookup performed by this package to find OmniVia's *state* is an
+unrestricted filesystem path arriving by another name, which owner resolution 004
+makes a stop condition. `$OMNIVIA_HOME` and anything like it stay prohibited; only
+an explicit flag overrides.
+
+**Two ambient inputs are permitted, and this record used to deny both.** It said
+the CLI reads no environment variable. That was false twice over -- `$HOME` and
+`$PATH` are both read, the first by `Path.home()` and the second by `shutil.which`
+-- so owner resolution 006 R006-01 ruled the permission explicitly and required the
+record corrected:
+
+- the operating system's normal per-user home resolution, for the fixed
+  `~/.omnivia` convention; and
+- `$PATH`, or the platform equivalent, to resolve the fixed `SERVICE_EXECUTABLE`
+  name -- see `locate_service`, which also states the privilege boundary that keeps
+  the permission narrow.
+
+Nothing else. Environment values must not select or override workspace paths,
+installation-state paths, runtime-state paths, socket or named-pipe locations,
+remote endpoints, credential stores or material, authorisation scope, or an
+alternative executable name through an OmniVia-specific variable.
+
+`~` is the user's home directory as the operating system reports it, which on Unix
+means `$HOME`. That is the OS's own notion of which user this is rather than an
+OmniVia redirect knob -- every Unix tool respects it, and hardening against it
+would break containers, CI runners and this repository's own tests -- so it is
+accepted, per owner resolution 004. The distinction the guard enforces is not
+"nothing environmental" but "nothing this package looks up itself to find OmniVia
+state": the home comes from `Path.home()` and never from a variable read here. It
+is enforced at runtime rather than only by a source scan, because
+`os.path.expandvars` performs the lookup inside `posixpath` where no scan of this
+tree can see it. Neither guard is total and `home_directory` states both bounds --
+the runtime one watches the `os.environ` object, not the environment.
 """
 
 from __future__ import annotations
@@ -58,6 +90,7 @@ from omnivia_core_cli.client import read_descriptor
 
 __all__ = [
     "DEFAULT_HOME_DIRECTORY",
+    "INIT_TIMEOUT_SECONDS",
     "SERVICE_EXECUTABLE",
     "START_TIMEOUT_SECONDS",
     "STOP_TIMEOUT_SECONDS",
@@ -68,6 +101,8 @@ __all__ = [
     "locate_service",
     "process_identity",
     "process_is_gone",
+    "refuse_over_long_endpoint",
+    "request_init",
     "request_managed_start",
     "request_stop",
 ]
@@ -86,6 +121,11 @@ START_TIMEOUT_SECONDS = 90.0
 
 #: How long `stop` waits for the service to unwind and take its descriptor with it.
 STOP_TIMEOUT_SECONDS = 30.0
+
+#: How long `init` waits for the bootstrap to finish. Creating the substrate and
+#: applying every migration on a pristine database is bounded work on local
+#: storage, so this is generous rather than tuned.
+INIT_TIMEOUT_SECONDS = 120.0
 
 #: Gap between polls, for both waits.
 POLL_SECONDS = 0.1
@@ -124,6 +164,20 @@ class LifecycleError(Exception):
 def locate_service() -> str | None:
     """The service console script: on `PATH`, or failing that beside this one.
 
+    **`$PATH` is permitted here, and only for this.** Owner resolution 006 R006-01
+    rules that the operating system's executable search path may resolve the
+    *fixed* `SERVICE_EXECUTABLE` name. That is a narrow executable-discovery
+    permission and it does not amend R004's prohibition on environment-selected
+    OmniVia filesystem roots: no environment value selects a workspace path, an
+    installation-state path, a runtime-state path, a socket or named-pipe
+    location, a remote endpoint, a credential store, an authorisation scope, or --
+    through an OmniVia-specific variable -- a different executable name.
+    `$OMNIVIA_HOME` remains prohibited.
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` holds that
+    half;
+    `test_the_fixed_service_executable_may_be_resolved_through_the_os_search_path`
+    holds this one.
+
     `PATH` alone is not enough for the case this command exists to serve. An MCP
     client spawns the CLI directly, with whatever environment its host happens to
     hold, and a virtual environment's `bin` is on `PATH` only for a shell that
@@ -132,28 +186,88 @@ def locate_service() -> str | None:
     is -- `sys.executable`'s directory. Looking there is not a guess.
 
     `PATH` still wins, so a deliberately shadowed build is still honoured.
+
+    **The answer is absolute, and it is resolved once.** R006-01 requires the
+    launcher to use the resolved absolute path for that launch attempt rather than
+    re-resolving the name, so that a `PATH` or working-directory change between
+    the check and the spawn cannot land on a different file. `shutil.which` returns
+    whatever entry it matched, which is relative when the matching `PATH` entry is
+    relative; `os.path.abspath` fixes it against the current directory without
+    following symlinks, so a deliberately symlinked build keeps its own identity.
+    `_ask_service` is this module's only call site -- `request_managed_start` and
+    `request_init` both go through it -- and it calls this once and hands the result
+    straight to `subprocess`.
+
+    **Security boundary, and it is the reason this permission is narrow.** This is
+    a non-privileged, per-user local launch: the process resolving the name and the
+    process being launched are the same user, so `$PATH` grants that user nothing
+    they did not already have. A future launcher that crosses a privilege boundary,
+    runs as another account, is installed as an OS daemon, or becomes a signed
+    packaged helper **returns for review** and will normally need an
+    installation-owned absolute path rather than the caller's `$PATH`.
     """
     found = shutil.which(SERVICE_EXECUTABLE)
-    if found is not None:
-        return found
-    beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
-    return str(beside) if beside.is_file() and os.access(beside, os.X_OK) else None
+    if found is None:
+        beside = Path(sys.executable).parent / SERVICE_EXECUTABLE
+        if not (beside.is_file() and os.access(beside, os.X_OK)):
+            return None
+        found = str(beside)
+    return os.path.abspath(found)
 
 
 def home_directory(override: Path | None = None) -> Path:
     """The installation root: an explicit flag, otherwise one fixed convention.
 
-    Deliberately *not* an environment variable.
-    `test_the_cli_reads_no_environment_variable_to_find_a_service` forbids it and
-    gives the reason: an environment lookup is "an unrestricted filesystem path
-    arriving by another name", which that packet makes a stop condition. A fixed
-    convention is a different thing -- it is bounded, it is the same on every
-    machine, and there is nothing an attacker can point somewhere else.
+    Deliberately *not* an OmniVia environment variable.
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` forbids one
+    and gives the reason: a lookup this package performs to find OmniVia state is
+    "an unrestricted filesystem path arriving by another name", which owner
+    resolution 004 makes a stop condition. R006-01's `$PATH` permission is for the
+    fixed executable *name* and reaches no path on this function's side.
 
-    That test's docstring also says `--runtime-state` is "the only way in". This
-    default makes that sentence inaccurate rather than false: a flag still wins,
-    and no caller-supplied ambient path is admitted. Whether the packet should be
-    amended to record the convention is the owner's call, not this module's.
+    `Path.home()` follows `$HOME`, so the default is environment-derived in
+    substance and this docstring no longer claims otherwise. Owner resolution 004
+    accepts it: `$HOME` is the operating system's answer to "which user is this",
+    not a knob this programme invented, and hardening against it would break
+    containers, CI runners and this repository's own tests. `$OMNIVIA_HOME` and any
+    other OmniVia-specific variable remain prohibited, so the home arrives through
+    `Path.home()` and through nothing this package reads itself.
+
+    **Two guards hold that, neither is total, and both bounds are stated rather than
+    rounded up.**
+
+    `test_the_cli_selects_no_omnivia_state_path_from_the_environment` scans this
+    tree for `getenv`, `environ`, `environb` and `expandvars`. It does not scan for
+    `shutil.which`, which reads `$PATH` inside `shutil`: R006-01 permits that read
+    for the fixed executable name, and it reaches no OmniVia state path. A name
+    scan is defeated by
+    the standard library reading the environment under a name of its own: adding
+    `os.path.expandvars("$OMNIVIA_HOME")` to this function was tried, the scan stayed
+    green, and `OMNIVIA_HOME=/tmp/hijacked` redirected the installation root. It is
+    defeated by an alias too -- `from os import environb as _x` binds nothing the
+    scan matches, because an `ImportFrom` alias is neither an `ast.Name` nor an
+    `ast.Attribute`.
+
+    `test_no_command_reads_an_omnivia_environment_variable` closes the first of those
+    at runtime, and it is **an `os.environ`-object guard, not an environment guard**.
+    It replaces that one object before the package is imported and sees every read
+    routed through it, wherever in the stack the read happens -- `expandvars`,
+    `Path.home()`, or a `from os import environ` bound afterwards. A read that never
+    touches that object is invisible to it, and three do not: `os.environb` is a
+    separate `_Environ` sharing only the underlying `_data` dict and is never
+    replaced, `posix.environ` is that dict reached directly, and `/proc/self/environ`
+    or a C `getenv(3)` bypass Python entirely. Checked rather than reasoned about --
+    a read through `os.environb` was confirmed not to reach the recorder.
+
+    No static-plus-runtime pair closes this class. What the two together give is that
+    no OmniVia-named variable is read by any route either can see, and the routes
+    neither can see are named above.
+
+    R004-11 settled the record that used to be an open question here: this
+    convention is accepted, explicit arguments and deterministic built-in defaults
+    are both admitted path sources, and the environment lookup stays prohibited.
+    That test's docstring has been corrected to state the property it enforces
+    rather than the narrower sentence it carried.
     """
     if override is not None:
         return override.expanduser()
@@ -353,6 +467,74 @@ def request_managed_start(
     # saying so before hunting for an executable or a manifest names the problem the
     # user actually has. It is also what makes the boundary reachable from a test
     # without a bootstrapped workspace or a spawned service.
+    refuse_over_long_endpoint(installation)
+    manifest = installation.workspace_root / MANIFEST_NAME
+    if not manifest.is_file():
+        raise LifecycleError(
+            f"no workspace manifest at {manifest}; this command starts an existing "
+            "workspace and creates none -- run omnivia init first"
+        )
+
+    installation.run_directory.mkdir(parents=True, exist_ok=True)
+    return _ask_service(
+        "--managed-start",
+        [
+            "--workspace",
+            str(installation.workspace_root),
+            "--installation-state",
+            str(installation.installation_state),
+            "--endpoint",
+            endpoint_uri,
+            "--managed-start-log",
+            str(installation.log_path),
+        ],
+        # The launcher runs its own bounded wait and cleans up after itself, so this
+        # budget only has to outlast it. Killing the launcher mid-spawn is what would
+        # leave an orphan, which is why it is not the shorter number.
+        timeout=START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS,
+    )
+
+
+def request_init(installation: Installation) -> dict[str, Any]:
+    """Ask the service package to make this installation's workspace, and report.
+
+    **The CLI does not do the bootstrapping, and that is the point of R004-10.**
+    Creating a workspace means writing a manifest, creating a database file and
+    holding the sole exclusive connection to it while the ownership substrate and
+    every migration are applied. All three are things this package may not do:
+    ADR-036 forbids it importing the runtime, and nothing here opens a database or
+    takes a lock. So the one shared implementation is invoked the only way that
+    admits -- `omnivia-core-service --init` is located and launched, never imported,
+    and it answers with one versioned JSON document on stdout.
+
+    The endpoint-ceiling refusal is made here rather than left to `start`, because a
+    home that can be initialised but never served is a worse answer than a refusal:
+    the workspace would be real, and every subsequent `omnivia start` would fail on
+    a fact that was already knowable at `init`.
+
+    No `--endpoint` is passed. Nothing is bound and no service is started -- `init`
+    establishes state, and `start` establishes the process.
+    """
+    refuse_over_long_endpoint(installation)
+    return _ask_service(
+        "--init",
+        [
+            "--workspace",
+            str(installation.workspace_root),
+            "--installation-state",
+            str(installation.installation_state),
+        ],
+        timeout=INIT_TIMEOUT_SECONDS,
+    )
+
+
+def refuse_over_long_endpoint(installation: Installation) -> None:
+    """Refuse a home whose derived socket path could never be bound.
+
+    R004-15's ceiling, checked on this side so an over-long default is refused with
+    the reason and the flag that fixes it, rather than as an opaque transport
+    failure from a process that got as far as trying to bind.
+    """
     if os.name != "nt" and len(str(installation.socket_path).encode()) > (
         MAX_ENDPOINT_PATH_BYTES
     ):
@@ -361,65 +543,53 @@ def request_managed_start(
             f"{MAX_ENDPOINT_PATH_BYTES}-byte limit a local socket address allows; "
             "pass --home with a shorter directory"
         )
+
+
+def _ask_service(mode: str, arguments: list[str], *, timeout: float) -> dict[str, Any]:
+    """Launch one non-serving mode of the service script and read its one document.
+
+    Shared by `request_managed_start` and `request_init` because the division of
+    labour is identical: this package locates and launches, the service package
+    does the work, and the answer is a single JSON object on stdout with every
+    human word on stderr. A second copy of the launch-and-parse would be a second
+    set of failure messages to keep in step with these.
+    """
     executable = locate_service()
     if executable is None:
         raise LifecycleError(
             f"{SERVICE_EXECUTABLE} was found neither on PATH nor beside "
             f"{Path(sys.executable).parent}; install omnivia-core-runtime"
         )
-    manifest = installation.workspace_root / MANIFEST_NAME
-    if not manifest.is_file():
-        raise LifecycleError(
-            f"no workspace manifest at {manifest}; this command starts an existing "
-            "workspace and creates none -- migrate or create one first"
-        )
-
-    installation.run_directory.mkdir(parents=True, exist_ok=True)
     try:
         completed = subprocess.run(
-            [
-                executable,
-                "--managed-start",
-                "--workspace",
-                str(installation.workspace_root),
-                "--installation-state",
-                str(installation.installation_state),
-                "--endpoint",
-                endpoint_uri,
-                "--managed-start-log",
-                str(installation.log_path),
-            ],
+            [executable, mode, *arguments],
             capture_output=True,
             text=True,
-            # The launcher runs its own bounded wait and cleans up after itself, so
-            # this budget only has to outlast it. Killing the launcher mid-spawn is
-            # what would leave an orphan, which is why it is not the shorter number.
-            timeout=START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired as expired:
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start did not answer within "
-            f"{START_TIMEOUT_SECONDS + STOP_TIMEOUT_SECONDS:.0f}s"
+            f"{SERVICE_EXECUTABLE} {mode} did not answer within {timeout:.0f}s"
         ) from expired
     except OSError as failure:
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start could not be run: {failure}"
+            f"{SERVICE_EXECUTABLE} {mode} could not be run: {failure}"
         ) from failure
 
     try:
         result = json.loads(completed.stdout)
     except ValueError as malformed:
         # stdout carries protocol data and nothing else, so unparseable stdout is a
-        # broken launcher rather than a failed start. Its stderr is the human half
-        # and is the useful thing to show.
+        # broken launcher rather than a failed run. Its stderr is the human half and
+        # is the useful thing to show.
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start did not answer with a result "
-            f"document ({malformed}); it said: {completed.stderr.strip()}"
+            f"{SERVICE_EXECUTABLE} {mode} did not answer with a result document "
+            f"({malformed}); it said: {completed.stderr.strip()}"
         ) from malformed
     if not isinstance(result, dict):
         raise LifecycleError(
-            f"{SERVICE_EXECUTABLE} --managed-start answered with a "
+            f"{SERVICE_EXECUTABLE} {mode} answered with a "
             f"{type(result).__name__}, not a result document"
         )
     return result

@@ -43,7 +43,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from omnivia_core_cli import lifecycle
 from omnivia_core_cli.client import build_request, read_descriptor
+from omnivia_core_cli.lifecycle import SERVICE_EXECUTABLE, locate_service
 from omnivia_core_cli.main import (
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
@@ -423,6 +425,23 @@ def test_a_repeated_principal_claim_is_refused_the_same_way_every_time(
 # ---------------------------------------------------------------------------
 
 
+#: Names that turn a module identifier from something a reader can see into
+#: something computed at run time. The CLI uses none of them and has no reason to,
+#: so their presence anywhere in this tree is a stop condition rather than a thing
+#: to inspect -- which is the only form in which a *static* scan can say anything
+#: about dynamic loading at all. See the docstring below for what that buys.
+DYNAMIC_IMPORT_MACHINERY = (
+    "import_module",
+    "__import__",
+    "load_module",
+    "exec_module",
+    "spec_from_file_location",
+    "exec",
+    "eval",
+    "compile",
+)
+
+
 def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() -> None:
     """Refusal 8, restated over the files this lane adds.
 
@@ -431,6 +450,32 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
     distribution's suite and another lane's manifest: a reader of *this* lane
     should be able to see the boundary held without leaving it, and if the CLI
     tree ever moves out from under that walk, this fails too.
+
+    **What this test can and cannot catch.** It reads source and nothing else, so
+    it catches exactly what is written down: a literal `import sqlite3` or `import
+    omnivia_core_runtime`, a call to one of the four named lock and lease
+    primitives, and -- the addition -- any use of the machinery that would let a
+    module name be computed rather than written. It cannot catch a computed import
+    that reaches the interpreter by some route not named in
+    `DYNAMIC_IMPORT_MACHINERY`, it cannot evaluate anything, and it cannot see what
+    a C extension does. It also says nothing about *behaviour*: a module can be
+    imported and never used, or used and never reach storage.
+
+    That limit is not theoretical. `importlib.import_module("sql" + "ite3")` in
+    `lifecycle.py` passed this file at its exact baseline and left an 8 KB database
+    on disk, because the name never appears as a name. The three checks below
+    would now fail on `import_module`, but the general case does not close: the
+    machinery list is a list, and any list of names can be gone round.
+
+    **So the claim itself is proved elsewhere, by execution.**
+    `test_init.py::test_no_command_opens_a_database_or_imports_the_runtime_in_this_process`
+    runs `init`, `start`, `status` and `stop` under a CPython audit hook and
+    asserts no `sqlite3.connect` event was raised by any route. This test is the
+    cheap, readable, whole-tree half; that one is the half that is actually
+    load-bearing for "the CLI opens no database". Neither is redundant: this one
+    reads every module including ones no command exercises, and that one sees
+    through any amount of indirection in the four commands it runs.
+
     """
     import ast
 
@@ -455,8 +500,14 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
 
         assert "omnivia_core_runtime" not in imported, f"{path} imports the runtime"
         assert "sqlite3" not in imported, f"{path} imports sqlite3"
+        assert "importlib" not in imported, f"{path} imports importlib"
         for forbidden in ("acquire_lease", "flock", "open_guard", "create_lock"):
             assert forbidden not in called, f"{path} calls {forbidden}"
+        for machinery in DYNAMIC_IMPORT_MACHINERY:
+            assert machinery not in called, (
+                f"{path} calls {machinery}: a computed module name is outside what "
+                "any source scan can decide, so it is refused rather than inspected"
+            )
 
 
 def test_the_cli_ships_no_transport_of_its_own() -> None:
@@ -552,33 +603,298 @@ def test_no_string_the_cli_emits_claims_a_verified_operating_system_peer() -> No
                 assert claim not in value, f"{path.name} emits {value!r}"
 
 
-def test_the_cli_reads_no_environment_variable_to_find_a_service() -> None:
-    """No caller-selected path, and no *ambient* one either.
+def test_the_cli_selects_no_omnivia_state_path_from_the_environment() -> None:
+    """No caller-selected state path, and no *ambient* one either.
 
-    The property is that **no unrestricted ambient filesystem path is accepted**.
-    An environment lookup is exactly that -- a path of the caller's choosing
-    arriving by another name -- and it stays a stop condition for this packet.
+    **This test used to claim the CLI reads no environment variable to find a
+    service, and that name was false twice over.** The CLI reads `$HOME`, through
+    `Path.home()`, and it reads `$PATH`, through `shutil.which`. Owner resolution
+    006 R006-01 permits both -- the first for the fixed `~/.omnivia` convention, the
+    second for the fixed `SERVICE_EXECUTABLE` name -- and required the record to
+    stop claiming otherwise. The executable half now has its own test below;
+    this one keeps the half that did not move.
 
-    Two path sources are admitted, and neither is ambient: an explicit argument,
-    which the caller states and a reader can see; and a deterministic built-in
-    default, which is the same on every machine and which nothing outside this
-    source can redirect. Owner resolution 004 R004-11 admits both and keeps the
-    environment prohibition, and it also required this docstring corrected --
-    it previously said `--runtime-state` was "the only way in", which stopped
-    being true when the `~/.omnivia` convention shipped.
+    The property here is that **no unrestricted ambient filesystem path is accepted
+    as an OmniVia state path**. An environment lookup is exactly that -- a path of
+    the caller's choosing arriving by another name -- and it stays a stop condition:
+    R006-01 explicitly does not amend it. Workspace, installation-state,
+    runtime-state, socket and named-pipe locations, remote endpoints, credential
+    stores and authorisation scope are all still off the environment, as is an
+    alternative executable name supplied through an OmniVia-specific variable.
 
-    The assertion below is unchanged. R004-11 says so in terms: do not weaken or
-    delete the test merely to make the current implementation pass.
+    **The assertion is deliberately not narrowed to OmniVia-named variables.** It
+    fails on any environment read at all in this package's own source, `$HOME`
+    included, which is stricter than the ruling requires and is kept that way on
+    purpose: a scan that allowed `os.environ["HOME"]` would have to distinguish it
+    from `os.environ["OMNIVIA_HOME"]` at the point of *use* rather than of read, and
+    nothing here can. R004-11 says in terms: do not weaken or delete this test
+    merely to make the current implementation pass. `shutil.which` is outside it not
+    by exemption but because the read happens inside `shutil`.
+
+    Two path sources are admitted: an explicit argument, which the caller states
+    and a reader can see; and a deterministic built-in default, fixed relative to
+    the user's home directory *as the operating system reports it*. Owner
+    resolution 004 R004-11 admits both and keeps the environment prohibition, and
+    it also required this docstring corrected -- it previously said
+    `--runtime-state` was "the only way in", which stopped being true when the
+    `~/.omnivia` convention shipped.
+
+    **`$HOME` is accepted, and the earlier wording claiming otherwise was false.**
+    This paragraph used to say the default was one "which nothing outside this
+    source can redirect". `Path.home()` follows `$HOME`, so `~/.omnivia` is
+    environment-derived in substance and that sentence was not true. The owner's
+    ruling is that `$HOME` is the operating system's own notion of which user this
+    is -- every Unix tool respects it, and hardening against it would break
+    containers, CI runners and this suite's own fixtures -- and not an OmniVia
+    redirect knob. What stays prohibited is an OmniVia-specific variable:
+    `$OMNIVIA_HOME` or anything like it would be a path of the caller's choosing
+    arriving by another name, and it is that class the assertion below refuses.
+
+    **What this scan cannot see, and what covers it.** It matches names, and a
+    stdlib helper reads the environment under a name of its own:
+    `os.path.expandvars("$OMNIVIA_HOME")` does the lookup inside `posixpath` and
+    passes this test in silence. Adding those two lines to `home_directory` was
+    tried -- the guard stayed green and `OMNIVIA_HOME=/tmp/hijacked` redirected the
+    installation root. `from os import environ` is the same hole with a different
+    shape, because the read is then an `ast.Name` and never an `ast.Attribute`.
+    Both names are matched below now, but the class is unbounded and no name scan
+    closes it.
+
+    **An alias defeats it outright, and that is worth naming rather than filing
+    under "unbounded".** `from os import environb as _x` followed by `_x[b"HOME"]`
+    contains no `ast.Name` or `ast.Attribute` this loop can match: the only place
+    `environb` appears is an `ImportFrom` alias, which is neither node type. Adding
+    alias names to the scan would close that one shape and not the class, so it is
+    recorded here instead.
+
+    `test_no_command_reads_an_omnivia_environment_variable` is the runtime half, and
+    it is bounded too -- it watches the `os.environ` *object*. See its own docstring
+    for what escapes it. Between them these two are the whole guard, and neither is
+    total.
     """
     import ast
 
     source_root = Path(__file__).resolve().parents[1] / "src" / "omnivia_core_cli"
+    forbidden = {"getenv", "environ", "environb", "expandvars"}
     for path in sorted(source_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr in {"getenv", "environ"}:
-                raise AssertionError(f"{path.name} reads the environment")
+            named = (
+                node.attr
+                if isinstance(node, ast.Attribute)
+                else node.id
+                if isinstance(node, ast.Name)
+                else None
+            )
+            if named in forbidden:
+                raise AssertionError(f"{path.name} reads the environment: {named}")
     assert os.name in {"posix", "nt"}
+
+
+def test_the_fixed_service_executable_may_be_resolved_through_the_os_search_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the split the record above used to deny. R006-01.
+
+    `$PATH` is a *permitted* ambient input, for one purpose only: resolving the
+    fixed `SERVICE_EXECUTABLE` name. Three properties, and each is here because the
+    ruling names it.
+
+    **It resolves.** A build placed on `PATH` under the fixed name is found. The
+    test above forbids this package reading the environment itself; that is not a
+    prohibition on the operating system's own executable search, which happens
+    inside `shutil` and reaches no OmniVia state path.
+
+    **The answer is absolute.** `shutil.which` returns whatever entry matched, so a
+    relative `PATH` entry yields a relative path, and a relative path is a different
+    file after a `chdir`. The second half of this test sets exactly that up.
+
+    **It is resolved once, and the resolved path is what gets launched.** The
+    ruling: "use the resulting absolute path for that launch attempt rather than
+    repeatedly resolving the name". A second resolution between the check and the
+    spawn could land on a different file, so `_ask_service` -- the module's only
+    call site, and the one both `request_init` and `request_managed_start` go
+    through -- is run against a real fake service and `shutil.which` is counted.
+
+    The name itself is fixed by code, not by the environment, and that is proven by
+    the scan above rather than restated here: a variable naming a different
+    executable would have to be read by this package, and no read exists to find.
+
+    Unix only, by this file's `pytestmark`. A shebang is not an executable
+    mechanism on Windows, where the successor is a packaged launcher.
+    """
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    script = directory / SERVICE_EXECUTABLE
+    script.write_text(f'#!{sys.executable}\nprint("{{}}")\n', encoding="utf-8")
+    script.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(directory))
+    assert locate_service() == str(script)
+
+    # A relative `PATH` entry: `which` answers `bin/omnivia-core-service`, which
+    # names a different file from any other working directory. `resolve()` on both
+    # sides because macOS' `/tmp` is a symlink and `getcwd()` reports the target.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "bin")
+    relative = locate_service()
+    assert relative is not None
+    assert Path(relative).is_absolute()
+    assert Path(relative).resolve() == script.resolve()
+
+    resolutions: list[str] = []
+    real_which = shutil.which
+
+    def counting_which(name: str) -> str | None:
+        resolutions.append(name)
+        return real_which(name)
+
+    monkeypatch.setattr(shutil, "which", counting_which)
+    assert lifecycle._ask_service("--init", [], timeout=30.0) == {}
+    assert resolutions == [SERVICE_EXECUTABLE]
+
+
+#: The environment guard the name scan above cannot be, run as a program.
+#:
+#: `os.environ` is replaced by a recording mapping *before* `omnivia_core_cli` is
+#: imported, so every read routed through **that object** goes through it -- including
+#: the ones the package performs by calling somebody else. `os.path.expandvars` reads
+#: `os.environ` inside `posixpath`; `Path.home()` reads `HOME` inside
+#: `posixpath.expanduser`; `from os import environ` binds this object rather than the
+#: real one, because the replacement happens first. None of those is visible to a
+#: scan for the word `environ` in this package's own source.
+#:
+#: What is asserted is R004-11 stated positively: no variable whose name is
+#: OmniVia's is read. `$HOME` is read and is *expected* to be -- the probe asserts
+#: it, because a recorder that captured nothing would pass the real assertion for
+#: the wrong reason.
+#:
+#: **What stays outside, stated as the object guard this is rather than the
+#: environment guard it is not.** Only reads through `os.environ` are seen.
+#:
+#: - `os.environb` is a *separate* `_Environ` built over the same underlying `_data`
+#:   dict. Replacing `os.environ` does not replace it, so `os.environb[b"OMNIVIA_HOME"]`
+#:   returns the value and records nothing. Confirmed by running it, not inferred.
+#: - `posix.environ` is that same dict reached one layer lower, and escapes identically.
+#: - `/proc/self/environ` and a C extension calling `getenv(3)` never enter Python's
+#:   mapping at all.
+#: - A child process reads its own environment, which is deliberate:
+#:   `omnivia-core-service` is a separate programme with its own rules.
+#:
+#: The first three are caught by nothing here and by nothing in the name scan above
+#: either -- an aliased `from os import environb as _x` is invisible to both. That is
+#: the bound; there is no third guard that closes it.
+ENVIRONMENT_PROBE = '''
+import collections.abc
+import json
+import os
+import sys
+
+read = []
+
+
+class Recorder(collections.abc.MutableMapping):
+    """`os.environ`, with every key anybody asks for written down."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getitem__(self, key):
+        # A bytes key really does arrive, and the reason given here used to be the
+        # wrong one. It is not `os.environb` -- that is a separate mapping which is
+        # never replaced and never reaches this object. It is `os.get_exec_path`,
+        # which asks `env[b"PATH"]` whenever `subprocess` builds a child, and
+        # `lifecycle._process_start_time` shells out to `ps`. Deleting this branch
+        # fails the run outright on `TypeError: Object of type bytes is not JSON
+        # serializable`, which is how the real caller was found.
+        read.append(key if isinstance(key, str) else key.decode("utf-8", "replace"))
+        return self._inner[key]
+
+    def __setitem__(self, key, value):
+        self._inner[key] = value
+
+    def __delitem__(self, key):
+        del self._inner[key]
+
+    def __iter__(self):
+        return iter(self._inner)
+
+    def __len__(self):
+        return len(self._inner)
+
+    def copy(self):
+        return self._inner.copy()
+
+
+os.environ = Recorder(os.environ)
+
+from omnivia_core_cli.lifecycle import home_directory
+from omnivia_core_cli.main import main
+
+home, report = sys.argv[1], sys.argv[2]
+default_home = str(home_directory())
+codes = {}
+for command in ("init", "start", "status", "stop"):
+    codes[command] = main(["--home", home, command])
+
+with open(report, "w", encoding="utf-8") as handle:
+    json.dump({"codes": codes, "read": read, "default_home": default_home}, handle)
+'''
+
+
+def test_no_command_reads_an_omnivia_environment_variable(tmp_path: Path) -> None:
+    """R004-11's prohibition, proved by running rather than by reading.
+
+    The AST scan above matches names in this package's own source. This one records
+    what the process actually asks **`os.environ`** for, so a lookup performed inside
+    the standard library on the CLI's behalf is visible: `os.path.expandvars`,
+    `os.environ.get` reached through any alias, or a `from os import environ` bound
+    before the CLI was imported.
+
+    `OMNIVIA_HOME` is set in the child's environment on purpose. If anything in the
+    package ever consults it, this fails on the read itself rather than on the value
+    happening to change an outcome -- and the default home is asserted unmoved, so
+    both halves of the claim are covered.
+
+    **This is an `os.environ`-object guard, not an environment guard, and the
+    difference is reachable.** `os.environb` is a separate `_Environ` sharing only the
+    underlying `_data` dict; replacing `os.environ` leaves it pointing at the real
+    thing, so a read through it returns the value and records nothing. `posix.environ`
+    is the same escape one layer down. Neither is visible to the scan above either,
+    once bound under an alias. `ENVIRONMENT_PROBE` lists the whole set. So what this
+    proves is that no OmniVia-named variable is read *by any route either guard can
+    see*, which is less than "no OmniVia variable is read" and is the claim worth
+    making, because it is the one that is true.
+    """
+    # Short, and under `/tmp` rather than macOS's long private temp root: `start`
+    # binds a socket beneath this home and R004-15 caps that path at 86 bytes.
+    workspace = Path(tempfile.mkdtemp(prefix="ove-", dir="/tmp"))
+    probe = workspace / "environment.py"
+    report = workspace / "environment.json"
+    probe.write_text(ENVIRONMENT_PROBE, encoding="utf-8")
+    hijack = str(tmp_path / "hijacked")
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(probe), str(workspace / "home"), str(report)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env={**os.environ, "OMNIVIA_HOME": hijack},
+        )
+        assert completed.returncode == 0, completed.stderr
+        audited = json.loads(report.read_text(encoding="utf-8"))
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    assert audited["codes"] == {"init": 0, "start": 0, "status": 0, "stop": 0}
+    omnivia = [name for name in audited["read"] if name.upper().startswith("OMNIVIA")]
+    assert omnivia == [], omnivia
+    assert audited["default_home"] != hijack
+    # The recorder is wired in and being read, so the assertion above is a fact
+    # about the CLI rather than about a probe that captured nothing. `$HOME` is the
+    # read R004-11 accepts, and `Path.home()` is where it comes from.
+    assert "HOME" in audited["read"], audited["read"]
 
 
 # ---------------------------------------------------------------------------

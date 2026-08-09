@@ -19,9 +19,15 @@ and `readiness` printed their own request envelope and exited 0 for a service
 that was never contacted, which is a success-shaped answer that proves nothing
 and which a launcher polling readiness would believe.
 
-`start`, `stop` and `status` make the service usable without the desktop
+`init`, `start`, `stop` and `status` make the service usable without the desktop
 application, which is what shipping Core open source and driving it over MCP
-requires. They stay inside the same boundary as everything else here: the
+requires. `init` is the first of the four in every sense: before R004-10 no
+shipped command created a workspace, so `omnivia start` on a fresh machine had
+nothing to start and the service refused an unbootstrapped directory outright.
+It does no bootstrapping of its own -- the workspace is made by
+`omnivia-core-service --init`, where an exclusive database open is legal -- and
+it starts nothing, because `init` establishes state and `start` establishes the
+process. They stay inside the same boundary as everything else here: the
 console script `omnivia-core-service` is *launched* and the service is signalled
 by pid, never imported, and every question about its state is asked by dialling
 it. ADR-036 admits exactly that division -- locate or launch the executable,
@@ -80,6 +86,7 @@ from omnivia_core_cli.lifecycle import (
     home_directory,
     process_identity,
     process_is_gone,
+    request_init,
     request_managed_start,
     request_stop,
 )
@@ -154,6 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("discover", help="show the discovered service, if any")
+    subparsers.add_parser(
+        "init",
+        help=(
+            "create the workspace for this installation if there is not one "
+            "already. Starts no service"
+        ),
+    )
     subparsers.add_parser(
         "start", help="start the service for this installation and wait until it is ready"
     )
@@ -381,6 +395,52 @@ def _describe(service: ServiceEndpointDescriptor, answer: dict[str, Any]) -> str
     return "".join(line + "\n" for line in lines)
 
 
+def _init(installation: Installation) -> int:
+    """Ask the shared bootstrap path for a workspace, and report what it answered.
+
+    **This command does not do the initialising.** R004-10 puts workspace bootstrap
+    in the service package, where an exclusive database open is legal, so the whole
+    of `init` is: launch `omnivia-core-service --init`, read its one JSON document,
+    and put it into words. Nothing here opens a database, writes a manifest or takes
+    a lock.
+
+    Three outcomes, and the middle one matters as much as the first: `initialised`
+    when a workspace was made, `already initialised` when one was there and nothing
+    changed, and a refusal naming what it declined to overwrite. Repeating this
+    command is safe, which is what makes it usable as a first step in a script that
+    does not know whether it has run before.
+
+    It prints where the workspace is and what it is called, and nothing else. There
+    is no service yet to describe -- `start` is the next command, not a step this
+    one takes.
+    """
+    try:
+        result = request_init(installation)
+    except LifecycleError as refusal:
+        sys.stderr.write(f"{refusal}\n")
+        return 1
+
+    status = result.get("status")
+    workspace = result.get("workspace")
+    if status in ("initialised", "already_initialised") and isinstance(workspace, dict):
+        headline = "initialised" if status == "initialised" else "already initialised"
+        sys.stdout.write(
+            headline
+            + "\n"
+            + f"workspace: {workspace.get('workspace_id')}\n"
+            + f"workspace root: {workspace.get('workspace_root')}\n"
+            + f"installation state: {workspace.get('installation_state')}\n"
+            + f"format: {workspace.get('workspace_format_version')}\n"
+            + f"start it with: omnivia --home {installation.home} start\n"
+        )
+        return 0
+
+    sys.stderr.write(
+        f"{result.get('reason') or 'the workspace could not be initialised'}\n"
+    )
+    return 1
+
+
 def _start(installation: Installation) -> int:
     """Ask the shared managed-start path for a service, and report what it answered.
 
@@ -554,6 +614,13 @@ def _status(runtime_state: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     installation = Installation(home_directory(args.home))
+
+    if args.command == "init":
+        # Before the `--runtime-state` resolution below, and not subject to it:
+        # nothing is advertised yet on a machine where this is the first command
+        # run, and refusing here for want of a runtime directory would make the
+        # command that creates the workspace require a service to already exist.
+        return _init(installation)
 
     if args.command == "start":
         # `--runtime-state` is not passed on. The managed-start path derives the one

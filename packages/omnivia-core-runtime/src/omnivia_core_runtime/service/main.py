@@ -11,13 +11,15 @@ One product operation is now registered, and it is registered on a *second* path
 and it cannot be: the owner's binding clause forbids routing it through the probe
 `Dispatcher`, and the two operation sets are disjoint by construction.
 
-**One console script, two kinds of process.** `--managed-start` (R004-08) does not
-serve: it arbitrates through the bootstrap mutex, starts an independent service
+**One console script, three kinds of process.** `--managed-start` (R004-08) does
+not serve: it arbitrates through the bootstrap mutex, starts an independent service
 when one is needed, waits for that service to answer a live readiness call, prints
-a versioned result document and exits. Every other mode here belongs to a process
-that *is* the service. The CLI and, later, the MCP adapter both reach the shared
-managed-start path by launching this script -- never by importing the runtime -- so
-there is one implementation of process control rather than one per adapter.
+a versioned result document and exits. `--init` (R004-10) does not serve either: it
+creates the workspace a service can then own, prints its own versioned result, and
+starts nothing. Every other mode here belongs to a process that *is* the service.
+The CLI and, later, the MCP adapter reach both shared paths by launching this
+script -- never by importing the runtime -- so there is one implementation of
+workspace bootstrap and one of process control, rather than one per adapter.
 """
 
 from __future__ import annotations
@@ -66,6 +68,13 @@ from omnivia_core_runtime.service.transport import (
     LocalEndpoint,
     LocalSocketServer,
     parse_endpoint,
+)
+from omnivia_core_runtime.service.workspace_init import (
+    WorkspaceInitStatus,
+    initialise_workspace,
+)
+from omnivia_core_runtime.service.workspace_init import (
+    render_result as render_init_result,
 )
 
 #: The one principal this service instance acts as, on both its paths. Fixed by
@@ -175,6 +184,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--init",
+        action="store_true",
+        help=(
+            "do not serve; make --workspace into a workspace a service can own "
+            "and print a versioned machine-readable result on stdout. Idempotent "
+            "and non-destructive: an existing compatible workspace is kept, and "
+            "an incompatible manifest, an unrelated non-empty directory or an "
+            "unrecognised installation state is refused rather than overwritten. "
+            "This starts no service. Takes precedence over every other mode, "
+            "which all belong to a process that serves or arbitrates"
+        ),
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -214,6 +236,34 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     if endpoint is None:
         return None
     return parse_http_endpoint(endpoint)
+
+
+def _init(args: argparse.Namespace) -> int:
+    """Run the shared bootstrap path and write its result to stdout.
+
+    Same output contract as `--managed-start`, for the same reason: the versioned
+    result document is the whole of stdout so an adapter can read it without a
+    parser that skips prose, and the human sentence goes to stderr. R004-10.
+
+    No `--endpoint`. Nothing is bound, nothing is advertised and nothing is
+    started -- `init` establishes state, and `start` or MCP managed start
+    establishes the process.
+
+    Exit 0 covers both initialising and finding it already done: a caller that
+    only checks the exit code learns whether it has a startable workspace, and one
+    that reads the status line learns which of the two happened.
+    """
+    result = initialise_workspace(
+        workspace_root=args.workspace,
+        installation_root=args.installation_state,
+        core_version=args.core_version,
+    )
+    sys.stdout.write(render_init_result(result))
+    sys.stdout.flush()
+    if result.status is WorkspaceInitStatus.REFUSED:
+        sys.stderr.write(result.reason + "\n")
+        return 1
+    return 0
 
 
 def _managed_start(args: argparse.Namespace) -> int:
@@ -290,6 +340,12 @@ def main(
     the next launcher discovered it, believed it and connected to nothing.
     """
     args = build_parser().parse_args(argv)
+
+    if args.init:
+        # First, because it is the only mode that can run before a workspace
+        # exists. This process serves nothing, owns nothing beyond the bootstrap
+        # itself, and starts nothing.
+        return _init(args)
 
     if args.managed_start:
         # This process serves nothing and owns nothing. It arbitrates, may start an
