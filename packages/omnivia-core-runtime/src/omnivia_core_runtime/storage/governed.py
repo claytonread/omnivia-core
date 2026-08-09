@@ -99,6 +99,9 @@ _VIEW: Final = "omnivia_authoritative_governed_versions"
 _SUPERSESSIONS: Final = "omnivia_record_supersessions"
 _SEALS: Final = "omnivia_governed_version_seals"
 _EVENTS: Final = "omnivia_governed_provenance_events"
+_LINKS: Final = "omnivia_governed_version_evidence_links"
+_ARTIFACTS: Final = "omnivia_evidence_artifacts"
+_SPANS: Final = "omnivia_normalized_source_spans"
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +429,247 @@ def _precedence(version: GovernedVersion) -> tuple[int, int, str, str, int, str]
         version.correlation_id,
         version.append_ordinal,
         version.assembly_id,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _GovernedProvenanceEvent:
+    """One governed provenance event, as 0009 recorded it.
+
+    Only the columns a governed record's own provenance is answered from: who acted, under
+    what action and policy, when, why, and what it said about its evidence. `recorded_at_us`
+    and the correlation columns are deliberately absent -- those are the write path's
+    bookkeeping, not the record's account of itself.
+
+    The field order *is* the select list, exactly as `GovernedVersion`'s is.
+    """
+
+    workspace_id: str
+    assembly_id: str
+    governed_record_version_id: str
+    provenance_event_id: str
+    provenance_sequence: int
+    action: str
+    actor_id: str | None
+    actor_kind: str | None
+    policy_id: str | None
+    occurred_at_us: int
+    reason_code: str | None
+    reason_comment: str | None
+    evidence_disposition: str
+
+
+@dataclass(frozen=True, slots=True)
+class _GovernedEvidenceLink:
+    """One evidence link, joined to the M2 artifact it cites and, if it names one, the exact
+    normalized span inside it.
+
+    The artifact join is inner: 0009's own foreign key makes a link without its artifact
+    unrepresentable, so a row that failed to join would mean the database had already lost
+    the thing being cited, and publishing a citation with no source behind it is the one
+    direction that misleads. The span join is *left*: `normalized_span_id` is nullable, and a
+    link that cites a whole artifact rather than a span is an ordinary, complete citation.
+
+    `governed_record_version_id` and `provenance_sequence` come from the event, which is the
+    only place the link table records them -- it keys on the assembly and the event, not on
+    the version.
+    """
+
+    workspace_id: str
+    assembly_id: str
+    governed_record_version_id: str
+    provenance_event_id: str
+    provenance_sequence: int
+    link_ordinal: int
+    evidence_id: str
+    source_kind: str
+    source_native_id: str
+    source_locator: str | None
+    source_retrieved_at_us: int | None
+    ingested_at_us: int
+    event_at_us: int | None
+    observed_at_us: int | None
+    normalized_record_id: str | None
+    normalized_span_id: str | None
+    span_pointer: str | None
+    span_start_offset: int | None
+    span_end_offset: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _GovernedHydrationSnapshot:
+    """One workspace's resolved frontier and everything a projection of it needs, read from
+    one database state.
+
+    Four tuples of frozen values and nothing else: no connection, no cursor and no callback,
+    so a later mapping step cannot reach back into the database and read a fifth fact from a
+    state the other four never saw.
+    """
+
+    versions: tuple[GovernedVersion, ...]
+    supersessions: tuple[GovernedSupersession, ...]
+    events: tuple[_GovernedProvenanceEvent, ...]
+    links: tuple[_GovernedEvidenceLink, ...]
+
+
+def _read_hydration_support(
+    fenced: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+) -> tuple[
+    tuple[GovernedSupersession, ...],
+    tuple[_GovernedProvenanceEvent, ...],
+    tuple[_GovernedEvidenceLink, ...],
+]:
+    """Every support fact behind a resolved frontier, on a connection the caller has already
+    fenced and already opened a read transaction on.
+
+    One function rather than three, because these three queries are one boundary: the caller
+    resolves versions and then, without giving the database a chance to move underneath it,
+    reads everything those versions are described by. Split apart they would be three places
+    a later edit could put a statement outside the caller's transaction.
+
+    The supersession facts are `_read_supersession_facts`', unchanged -- what the seal join,
+    the exact-target join and the effective instant mean is settled there and is not restated
+    here.
+
+    The two remaining queries read the *whole* workspace rather than the selected assemblies:
+    they are keyed on `workspace_id` alone, so the row count is the workspace's, and the
+    caller filters. That is on purpose. Filtering in SQL would mean interpolating an
+    assembly-id list into these statements, and the selection is already a value the caller
+    holds; a Python filter over materialised rows cannot get the predicate subtly different
+    from the one the resolver applied, and cannot be got wrong by an empty list.
+
+    Both queries state a total `ORDER BY`, for the same reason every other query in this
+    module does: natural row order is not stable across index changes, and a projection built
+    from these tuples would then reorder a record's own provenance between runs.
+    """
+    facts = _read_supersession_facts(
+        fenced,
+        workspace_id=workspace_id,
+        resolution_instant_us=resolution_instant_us,
+    )
+    event_rows = fenced.execute(
+        "SELECT workspace_id, assembly_id, governed_record_version_id, "
+        "       provenance_event_id, provenance_sequence, action, actor_id, actor_kind, "
+        "       policy_id, occurred_at_us, reason_code, reason_comment, "
+        "       evidence_disposition "
+        f"FROM {_EVENTS} "
+        "WHERE workspace_id = ? "
+        "ORDER BY assembly_id ASC, provenance_sequence ASC, provenance_event_id ASC",
+        (workspace_id,),
+    ).fetchall()
+    # Every join carries `workspace_id`. `omnivia_evidence_artifacts` keys on `evidence_id`
+    # alone and the span table on `normalized_span_id` alone, so joining on those columns by
+    # themselves would still return exactly one row each -- and that row could belong to
+    # another workspace, which is how a citation crosses a tenancy boundary while looking
+    # perfectly well-formed. The predicate is the guard, not the key shape.
+    link_rows = fenced.execute(
+        "SELECT l.workspace_id, l.assembly_id, e.governed_record_version_id, "
+        "       l.provenance_event_id, e.provenance_sequence, l.link_ordinal, "
+        "       l.evidence_id, a.source_kind, a.source_native_id, a.source_locator, "
+        "       a.source_retrieved_at_us, a.ingested_at_us, a.event_at_us, "
+        "       a.observed_at_us, l.normalized_record_id, l.normalized_span_id, "
+        "       s.span_pointer, s.span_start_offset, s.span_end_offset "
+        f"FROM {_LINKS} l "
+        f"JOIN {_EVENTS} e ON e.workspace_id = l.workspace_id "
+        "               AND e.assembly_id = l.assembly_id "
+        "               AND e.provenance_event_id = l.provenance_event_id "
+        f"JOIN {_ARTIFACTS} a ON a.workspace_id = l.workspace_id "
+        "                   AND a.evidence_id = l.evidence_id "
+        f"LEFT JOIN {_SPANS} s ON s.workspace_id = l.workspace_id "
+        "                    AND s.evidence_id = l.evidence_id "
+        "                    AND s.normalized_record_id = l.normalized_record_id "
+        "                    AND s.normalized_span_id = l.normalized_span_id "
+        "WHERE l.workspace_id = ? "
+        "ORDER BY l.assembly_id ASC, e.provenance_sequence ASC, "
+        "         l.provenance_event_id ASC, l.link_ordinal ASC, l.evidence_id ASC",
+        (workspace_id,),
+    ).fetchall()
+    return (
+        facts,
+        tuple(_GovernedProvenanceEvent(*row) for row in event_rows),
+        tuple(_GovernedEvidenceLink(*row) for row in link_rows),
+    )
+
+
+def _read_governed_hydration_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    view: str | None = None,
+) -> _GovernedHydrationSnapshot:
+    """One workspace's `view` at `resolution_instant_us`, with the support facts describing it.
+
+    The coherence argument `resolve_governed_versions` makes about its two queries is the
+    same one this makes about five, one step out: a projection assembled from a frontier read
+    at one instant and provenance read at another can show a version alongside the events of
+    the correction that replaced it -- an account of the record that was never true. So the
+    transaction opens here and every read happens inside it, the resolver included, which is
+    why it is called on this connection rather than a fresh one: it declines to end a
+    transaction it did not open, so the snapshot it reads under is this one.
+
+    Ownership is the same rule for the same reason. A caller already in a transaction is
+    reading this as one fact among several and gets its transaction back untouched; only a
+    transaction begun here is committed or rolled back here.
+
+    Events and links are filtered to the assemblies the resolved versions actually name, and
+    the filter is the point rather than an optimisation: the three views select different
+    assemblies, so unfiltered support rows would let a `candidates` snapshot carry the
+    provenance of the governed versions it deliberately does not show, and a `history`
+    snapshot carry the current one's. The versions would be right and the account of them
+    would not be.
+
+    The supersession facts are scoped too, but by *version id* and on either end: a fact is
+    kept when the view selected its source or its target. An edge is a statement about two
+    versions and a view need not hold both of them -- the incoming edge explaining why a
+    current version is current names a source `current_canonical` does not contain, and the
+    outgoing edge explaining why the newest historical version is history names a target
+    `history` does not contain. (A view can hold both ends: `history` holds both ends of an
+    earlier edge, one whose source it retired and whose target it also retired in turn.)
+    Filtering these by selected assembly, as events and links are, would delete
+    exactly the edges that explain why the frontier looks the way it does; not filtering them
+    at all would hand a `candidates` snapshot the governed layer's whole correction chain,
+    which is the same wrong-account-of-the-right-versions failure the other filter exists to
+    prevent.
+    """
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        versions = resolve_governed_versions(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            view=view,
+        )
+        with authorised(connection, mutations=False, ddl=False) as fenced:
+            facts, events, links = _read_hydration_support(
+                fenced,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+            )
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+
+    selected = {version.assembly_id for version in versions}
+    selected_versions = {version.governed_record_version_id for version in versions}
+    return _GovernedHydrationSnapshot(
+        versions=versions,
+        supersessions=tuple(
+            fact
+            for fact in facts
+            if fact.source_version_id in selected_versions
+            or fact.target_version_id in selected_versions
+        ),
+        events=tuple(event for event in events if event.assembly_id in selected),
+        links=tuple(link for link in links if link.assembly_id in selected),
     )
 
 

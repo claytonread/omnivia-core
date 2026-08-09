@@ -782,3 +782,245 @@ def test_lane_c_20_a_caller_owned_transaction_is_left_exactly_as_it_was_found(
         assert owned.connection.in_transaction is True
     finally:
         owned.connection.execute("ROLLBACK")
+
+
+def snapshot(
+    holder: m2.Owned, *, view: str | None = None, instant_us: int = LATE_US
+) -> governed._GovernedHydrationSnapshot:
+    """The hydration snapshot, which the four tests below are about."""
+    return governed._read_governed_hydration_snapshot(
+        holder.connection,
+        workspace_id=WORKSPACE_ID,
+        resolution_instant_us=instant_us,
+        view=view,
+    )
+
+
+def test_lane_c_21_a_snapshot_carries_its_own_versions_provenance_and_sources(
+    owned: m2.Owned,
+) -> None:
+    """One selected version, its ordered events, and the exact source rows they cite.
+
+    `assembly-late-target` is the workspace's current canonical version at LATE_US and it
+    carries two provenance events, so the ordering is observable rather than incidental. The
+    workspace also holds `assembly-1` (a sealed candidate) and `assembly-accepted` (now
+    history), each with provenance and evidence links of its own -- none of which is this
+    version's account of itself.
+
+    The link fields are asserted whole, against the M2 chain `seed_chain` seeded: a join that
+    reached the artifact but not the span, or the span of some other record, would still
+    return a plausible-looking citation with the pointer and offsets quietly absent or wrong.
+
+    Falsifier: drop the assembly filter and the events tuple gains `assembly-1`'s and
+    `assembly-accepted`'s one event each, so the version's provenance reads as the
+    workspace's four acts rather than the two that happened to it.
+    """
+    seal_correction_recorded_early(
+        owned, edge_recorded_at_us=BASE_US + 20, target_recorded_at_us=BASE_US + 30
+    )
+    held = snapshot(owned)
+    assert tuple(v.governed_record_version_id for v in held.versions) == (
+        "version-late-target",
+    )
+    assert tuple((e.provenance_event_id, e.action) for e in held.events) == (
+        ("event-assembly-late-target-corrected", "governance.corrected"),
+        ("event-assembly-late-target-superseded", "record.superseded"),
+    )
+    assert {e.assembly_id for e in held.events} == {"assembly-late-target"}
+    assert all(e.evidence_disposition == "available" for e in held.events)
+    assert held.events[0] == governed._GovernedProvenanceEvent(
+        workspace_id=WORKSPACE_ID,
+        assembly_id="assembly-late-target",
+        governed_record_version_id="version-late-target",
+        provenance_event_id="event-assembly-late-target-corrected",
+        provenance_sequence=1,
+        action="governance.corrected",
+        actor_id="reviewer-1",
+        actor_kind="human",
+        policy_id=None,
+        occurred_at_us=BASE_US + 1,
+        reason_code="governance.reviewed",
+        reason_comment=None,
+        evidence_disposition="available",
+    )
+    assert held.links == tuple(
+        governed._GovernedEvidenceLink(
+            workspace_id=WORKSPACE_ID,
+            assembly_id="assembly-late-target",
+            governed_record_version_id="version-late-target",
+            provenance_event_id=event_id,
+            provenance_sequence=sequence,
+            link_ordinal=1,
+            evidence_id="evd-0001",
+            source_kind="filesystem.archive",
+            source_native_id="doc-1",
+            source_locator="archive://doc.md",
+            source_retrieved_at_us=m2.BASE_US,
+            ingested_at_us=m2.BASE_US + 4,
+            event_at_us=m2.BASE_US - 10,
+            observed_at_us=m2.BASE_US - 5,
+            normalized_record_id="nrc-0001",
+            normalized_span_id="nsp-0001",
+            span_pointer="/body/0",
+            span_start_offset=0,
+            span_end_offset=10,
+        )
+        for event_id, sequence in (
+            ("event-assembly-late-target-corrected", 1),
+            ("event-assembly-late-target-superseded", 2),
+        )
+    )
+    assert held.supersessions == read_governed_supersessions(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=LATE_US
+    )
+
+
+def test_lane_c_22_each_view_carries_only_the_support_of_what_it_selected(
+    owned: m2.Owned,
+) -> None:
+    """Support rows follow the view's selection, so no view describes another's versions.
+
+    The same workspace answers three different questions here, and the wrong support attached
+    to the right versions is the more dangerous half of getting it wrong: a `candidates`
+    snapshot carrying the governed layer's provenance would show an unreviewed proposal
+    annotated with the acceptance of something else entirely.
+
+    Events and links follow the selected *assemblies*; the supersession edges cannot, because
+    an edge names two versions and a view need not hold both of them. So they are scoped by
+    version id on either end, and the three views want three different parts of the same two
+    edges: `current_canonical` keeps only the incoming edge that made `version-corrected-next`
+    current, `history` keeps both -- the one that retired `version-accepted` and the one out
+    of `version-corrected` that retired it in turn -- and `candidates` names neither end of
+    either and carries no edges at all.
+
+    Falsifier: return the workspace's events unfiltered and every assertion below sees all
+    four assemblies, whichever view was asked for; return the facts unfiltered and all three
+    views carry both edges, so `candidates` explains a correction chain none of its versions
+    is part of.
+    """
+    seed_chain(owned)
+    accepted_to_corrected = GovernedSupersession(
+        workspace_id=WORKSPACE_ID,
+        governed_record_id="record-1",
+        source_version_id="version-accepted",
+        target_version_id="version-corrected",
+        assembly_id="assembly-corrected",
+        effective_at_us=BASE_US + 20,
+        reason_code="governance.reviewed",
+    )
+    corrected_to_next = GovernedSupersession(
+        workspace_id=WORKSPACE_ID,
+        governed_record_id="record-1",
+        source_version_id="version-corrected",
+        target_version_id="version-corrected-next",
+        assembly_id="assembly-corrected-next",
+        effective_at_us=BASE_US + 30,
+        reason_code="governance.reviewed",
+    )
+    for view, assemblies, facts in (
+        ("candidates", {"assembly-1"}, ()),
+        (
+            "history",
+            {"assembly-accepted", "assembly-corrected"},
+            (accepted_to_corrected, corrected_to_next),
+        ),
+        (None, {"assembly-corrected-next"}, (corrected_to_next,)),
+    ):
+        held = snapshot(owned, view=view)
+        assert {v.assembly_id for v in held.versions} == assemblies
+        assert {e.assembly_id for e in held.events} == assemblies
+        assert {link.assembly_id for link in held.links} == assemblies
+        assert held.supersessions == facts
+
+
+def test_lane_c_23_the_snapshot_ends_only_a_transaction_it_opened(
+    owned: m2.Owned,
+) -> None:
+    """A caller's transaction outlives the snapshot; one opened here does not.
+
+    Both halves are the same rule as lane C 13 and 20, restated one level out, because this
+    reader opens the transaction the resolver then declines to end -- so an ownership bug
+    here would be invisible to those two.
+
+    Falsifier: commit unconditionally and the caller's transaction is gone at the assertion
+    below, taking the snapshot the caller was reading around this one with it.
+    """
+    seed_chain(owned)
+    assert snapshot(owned).versions
+    assert owned.connection.in_transaction is False
+
+    owned.connection.execute("BEGIN")
+    try:
+        assert snapshot(owned).versions
+        assert owned.connection.in_transaction is True
+    finally:
+        owned.connection.execute("ROLLBACK")
+
+
+def test_lane_c_24_a_correction_sealed_before_the_support_reads_cannot_split_it(
+    concurrent: tuple[m2.Owned, m2.Owned], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The support facts are read from the state the versions were resolved from.
+
+    Lane C 19 forces the interleave between the resolver's two queries; this one forces it at
+    the next boundary out, where the versions have been chosen and nothing describing them has
+    been read yet. An accepted writer seals `version-corrected` there, and a support read
+    outside the resolution's transaction would then see the edge retiring `version-accepted`.
+    That edge names a version this frontier does contain, so it survives the version scoping
+    and comes back attached to a frontier still saying `version-accepted` is current: the
+    frontier and its own account of itself disagreeing about which correction had happened.
+    The correction's own events and links do not survive -- `assembly-corrected` was never
+    selected -- which is why the edge is the thing that has to be asserted here.
+
+    The writer runs from inside a hook on `_read_hydration_support`, so the commit lands after
+    version resolution and before the first support query on every run, with no sleep. It is
+    the second EPHEMERAL connection, carrying the same installed authorizer and writing under
+    this workspace's lease and guard through `fenced_transaction`.
+
+    Falsifier: read the support rows outside the snapshot's transaction -- in autocommit, or
+    after the commit -- and `supersessions` comes back holding the edge that retires the
+    version `versions` still contains.
+    """
+    resolver, writer = concurrent
+    m3.seed_accepted_version(resolver)
+    read_support = governed._read_hydration_support
+    sealed: list[str] = []
+
+    def seal_then_read(
+        fenced: sqlite3.Connection, *, workspace_id: str, resolution_instant_us: int
+    ) -> tuple[
+        tuple[GovernedSupersession, ...],
+        tuple[governed._GovernedProvenanceEvent, ...],
+        tuple[governed._GovernedEvidenceLink, ...],
+    ]:
+        if not sealed:
+            sealed.append("version-corrected")
+            m3.seed_corrected_version(writer, bootstrap=False)
+        return read_support(
+            fenced,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+        )
+
+    monkeypatch.setattr(governed, "_read_hydration_support", seal_then_read)
+    held = snapshot(resolver)
+    assert sealed == ["version-corrected"]
+    assert tuple(v.governed_record_version_id for v in held.versions) == (
+        "version-accepted",
+    )
+    assert held.supersessions == ()
+    assert {e.assembly_id for e in held.events} == {"assembly-accepted"}
+    assert {link.assembly_id for link in held.links} == {"assembly-accepted"}
+    assert resolver.connection.in_transaction is False
+
+    monkeypatch.undo()
+    # The correction really did commit: the next snapshot, the first whose transaction opens
+    # after it, sees the new version and the edge retiring the old one together.
+    later = snapshot(resolver)
+    assert tuple(v.governed_record_version_id for v in later.versions) == (
+        "version-corrected",
+    )
+    assert {e.assembly_id for e in later.events} == {"assembly-corrected"}
+    assert tuple(f.target_version_id for f in later.supersessions) == (
+        "version-corrected",
+    )
