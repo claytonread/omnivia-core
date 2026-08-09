@@ -29,6 +29,11 @@ from omnivia_core_runtime.storage.governed import (
     resolve_governed_versions,
 )
 
+from omnivia_core.contracts.v1 import (
+    RecordTemporalMetadata,
+    validate_record_temporal_metadata,
+)
+
 #: The M3 suite's own workspace fixture: a Phase 0 baseline migrated through 0009, owned
 #: under a live lease, with the M2 evidence chain and eight audit events already seeded.
 owned = m3.owned
@@ -1024,3 +1029,179 @@ def test_lane_c_24_a_correction_sealed_before_the_support_reads_cannot_split_it(
     assert tuple(f.target_version_id for f in later.supersessions) == (
         "version-corrected",
     )
+
+
+#: 2023-11-14T22:13:20Z, plus 123_456 microseconds -- a sub-millisecond remainder, so every
+#: rendering below fails if the last three digits are rounded rather than truncated.
+RECORDED_US = 1_700_000_000_123_456
+
+
+def temporal_version(
+    *,
+    recorded_at_us: int = RECORDED_US,
+    valid_from_us: int = RECORDED_US - 60_000_000,
+    valid_to_us: int | None = None,
+    sealed_at_us: int = RECORDED_US + 90_000_000,
+) -> GovernedVersion:
+    """A `GovernedVersion` carrying the four instants these tests distinguish between.
+
+    Every other field is a placeholder, which is itself part of the assertion: the helper
+    under test is pure and reads nothing but the instants, so nothing here needs a database
+    and no seeded row can make one of these tests pass for the wrong reason. The three
+    timestamps are deliberately distinct, so a mapping that reached for `sealed_at_us` or
+    `valid_from_us` where Amendment 008 says `recorded_at_us` renders a visibly different
+    string.
+    """
+    return GovernedVersion(
+        workspace_id=WORKSPACE_ID,
+        assembly_id="assembly-t",
+        seal_id="seal-t",
+        governed_record_id="record-t",
+        governed_record_version_id="version-t",
+        record_type="note",
+        domain_scope="scope-t",
+        layer=governed.LAYER_GOVERNED,
+        governance_disposition="accepted",
+        authority_level="canonical",
+        decision_source_kind=None,
+        decision_source_id=None,
+        content_schema_version="1.0.0",
+        content_json="{}",
+        content_digest="digest-t",
+        evidence_disposition="cited",
+        valid_from_us=valid_from_us,
+        valid_to_us=valid_to_us,
+        recorded_at_us=recorded_at_us,
+        append_ordinal=0,
+        correlation_kind="audit",
+        correlation_id="audit-t",
+        audit_ref=None,
+        sealed_at_us=sealed_at_us,
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded_at_us", "expected"),
+    [
+        (1_700_000_000_000_000, "2023-11-14T22:13:20.000Z"),
+        (1_700_000_000_000_999, "2023-11-14T22:13:20.000Z"),
+        (1_700_000_000_001_000, "2023-11-14T22:13:20.001Z"),
+        (RECORDED_US, "2023-11-14T22:13:20.123Z"),
+        (1_700_000_000_999_999, "2023-11-14T22:13:20.999Z"),
+    ],
+)
+def test_lane_c_25_the_instants_render_as_truncated_millisecond_utc(
+    recorded_at_us: int, expected: str
+) -> None:
+    """Microseconds render as the canonical millisecond `Timestamp`, truncated not rounded.
+
+    This is the one shape the contract's pattern accepts and the one every other timestamp
+    this service emits already has, so a governed record's instants have to be
+    indistinguishable from an evidence candidate's. The sub-millisecond cases are the whole
+    test: `999` microseconds is *still* `.000Z`, and `999_999` is `.999Z` rather than the
+    next second.
+
+    Falsifier: round instead of truncating and the second and fifth rows move a millisecond;
+    emit microsecond precision and every row grows three digits the pattern refuses.
+    """
+    assert governed._temporal_metadata(
+        temporal_version(recorded_at_us=recorded_at_us)
+    ).recorded_at == expected
+
+
+def test_lane_c_26_ingestion_and_record_time_are_both_the_versions_recorded_instant() -> None:
+    """`ingested_at` and `recorded_at` both render the version's `recorded_at_us`.
+
+    `recorded_at` is the authoritative persisted assembly time. `ingested_at` is required by
+    the contract, but 0009 stores no distinct governed-record ingestion instant, so
+    Amendment 008 approves reusing `recorded_at_us` for it as an explicit V06-3 read-model
+    compatibility projection -- not an assertion that ingestion never happened or that it
+    coincided with persistence. The two other clocks reachable from here, the seal's and the
+    validity window's, answer different questions, and the fixture keeps all three distinct
+    so a mapping that took the wrong one cannot render the right string by accident.
+
+    The three optional instants are asserted absent because the exact facts they require are
+    not inputs here: `event_at` and `observed_at` are facts about the world behind the record
+    and `superseded_at` is a fact about an edge. Substituting an evidence artifact's or a
+    provenance event's clock -- for those or for `ingested_at` -- is forbidden; it would
+    publish an account no row asserts.
+
+    Falsifier: map `ingested_at` to `sealed_at_us` (or to `valid_from_us`) and the equality
+    below fails against a timestamp that still looks perfectly well-formed.
+    """
+    temporal = governed._temporal_metadata(temporal_version())
+
+    assert temporal.ingested_at == temporal.recorded_at == "2023-11-14T22:13:20.123Z"
+    assert temporal.ingested_at != "2023-11-14T22:14:50.123Z"  # sealed_at_us
+    assert temporal.ingested_at != "2023-11-14T22:12:20.123Z"  # valid_from_us
+    assert temporal.event_at is None
+    assert temporal.observed_at is None
+    assert temporal.superseded_at is None
+
+
+def test_lane_c_27_the_validity_window_maps_exactly_and_an_open_end_stays_absent() -> None:
+    """`[valid_from_us, valid_to_us)` becomes `valid_from`/`valid_until`, verbatim.
+
+    An absent `valid_to_us` is 0009's open-ended assertion -- this version is valid until
+    something replaces it -- and it stays *absent* on the wire rather than becoming a
+    far-future instant. A synthesised upper bound would be a claim the database never made,
+    and one a reader could not tell from a real one.
+
+    Falsifier: substitute any sentinel for the open end and the `is None` below fails; swap
+    the two bounds and the rendered strings trade places.
+    """
+    open_ended = governed._temporal_metadata(temporal_version())
+    assert open_ended.valid_from == "2023-11-14T22:12:20.123Z"
+    assert open_ended.valid_until is None
+
+    bounded = governed._temporal_metadata(
+        temporal_version(valid_to_us=RECORDED_US + 60_000_000)
+    )
+    assert bounded.valid_from == "2023-11-14T22:12:20.123Z"
+    assert bounded.valid_until == "2023-11-14T22:14:20.123Z"
+
+
+def test_lane_c_28_the_metadata_validates_and_round_trips_through_the_wire() -> None:
+    """The value the helper returns is one the contract accepts and can decode back.
+
+    Two separate claims. It passes `validate_record_temporal_metadata` -- which parses every
+    present instant and checks that `ingested_at` is not after `recorded_at` and
+    `valid_from` not after `valid_until` -- and it survives `to_wire`/`from_wire` unchanged,
+    which is what a peer on the other side of the boundary actually reads. The absent fields
+    are asserted missing from the wire mapping rather than present-and-null, because that is
+    the difference between "not stated" and "stated as nothing".
+
+    Falsifier: emit a non-canonical timestamp and validation raises; emit the absent optionals
+    as nulls and `from_wire` refuses the payload outright.
+    """
+    temporal = governed._temporal_metadata(
+        temporal_version(valid_to_us=RECORDED_US + 60_000_000)
+    )
+
+    validate_record_temporal_metadata(temporal)
+    wire = temporal.to_wire()
+    assert set(wire) == {"ingested_at", "recorded_at", "valid_from", "valid_until"}
+    assert RecordTemporalMetadata.from_wire(wire) == temporal
+
+
+def test_lane_c_29_the_helper_is_pure_and_deterministic() -> None:
+    """Same version in, equal value out, every time, and nothing changed on the way through.
+
+    The helper reads no clock and no connection, so the only thing its answer can depend on
+    is the version handed to it -- which is what makes a governed record's published
+    temporal metadata reproducible for a version sealed years ago. The input is compared
+    field by field before and after, and the output is a frozen value, so neither end of the
+    call is somewhere a later assembly step could write.
+
+    Falsifier: fill any field from `datetime.now` and the two calls stop being equal.
+    """
+    version = temporal_version(valid_to_us=RECORDED_US + 60_000_000)
+    before = dataclasses.asdict(version)
+
+    first = governed._temporal_metadata(version)
+    second = governed._temporal_metadata(version)
+
+    assert first == second
+    assert dataclasses.asdict(version) == before
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        first.recorded_at = "2023-11-14T22:13:20.999Z"  # type: ignore[misc]

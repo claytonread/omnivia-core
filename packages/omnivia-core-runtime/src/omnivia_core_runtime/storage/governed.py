@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, fields
+from datetime import UTC, datetime
 from typing import Final
 
 from omnivia_core.contracts.v1 import (
@@ -79,7 +80,9 @@ from omnivia_core.contracts.v1 import (
     GOVERNED_RECORD_VIEW_HISTORY,
     GOVERNED_RECORD_VIEWS,
     KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL,
+    RecordTemporalMetadata,
     resolve_governed_record_view,
+    validate_record_temporal_metadata,
 )
 from omnivia_core_runtime.storage.connection import authorised
 
@@ -671,6 +674,57 @@ def _read_governed_hydration_snapshot(
         events=tuple(event for event in events if event.assembly_id in selected),
         links=tuple(link for link in links if link.assembly_id in selected),
     )
+
+
+def _timestamp(microseconds: int) -> str:
+    """One microsecond instant as the contract's `Timestamp`.
+
+    Millisecond precision with a `Z` suffix, sub-millisecond digits truncated rather than
+    rounded -- the same rendering `repository.py` already emits, restated here rather than
+    imported because that module is the evidence read path and this one is the governed
+    read path; a shared import would tie them together for nothing more than eight lines.
+    """
+    moment = datetime.fromtimestamp(microseconds / 1_000_000, tz=UTC)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def _temporal_metadata(version: GovernedVersion) -> RecordTemporalMetadata:
+    """`version`'s own instants, as the contract's `RecordTemporalMetadata`.
+
+    Amendment 008's mapping, and only it. `recorded_at` is the version's `recorded_at_us`:
+    the authoritative instant this governed version's assembly was persisted. `ingested_at`
+    is required by the contract, but 0009 stores no distinct governed-record ingestion
+    instant, so it reuses `recorded_at_us` as the explicit V06-3 read-model compatibility
+    projection Amendment 008 approves -- not a claim that no ingestion occurred, and not a
+    claim that ingestion and persistence were the same real event. Reaching instead for an
+    evidence artifact's `ingested_at_us` or a provenance event's `occurred_at_us` is
+    forbidden: those are a different record's clock answering this record's question, and
+    would make `ingested_at` move when a citation was added.
+
+    `valid_from`/`valid_until` are the version's assertion window verbatim; an absent
+    `valid_to_us` is an open-ended window and stays *absent* rather than becoming a far-future
+    instant the database never recorded.
+
+    `event_at`, `observed_at` and `superseded_at` are optional and remain absent here because
+    the exact facts they require are not inputs to this helper: the first two are facts about
+    the world behind the record, and `superseded_at` is a fact about a supersession edge. A
+    later assembly step holding those facts fills them in; guessing them from what is
+    reachable here would publish an account of the record that no row asserts.
+
+    Pure: one frozen value out, no clock, no connection and nothing read that is not a field
+    of `version`. The result is validated before it is returned, so a version whose stored
+    window is inverted fails here rather than downstream of whatever publishes it.
+    """
+    temporal = RecordTemporalMetadata(
+        ingested_at=_timestamp(version.recorded_at_us),
+        recorded_at=_timestamp(version.recorded_at_us),
+        valid_from=_timestamp(version.valid_from_us),
+        valid_until=(
+            None if version.valid_to_us is None else _timestamp(version.valid_to_us)
+        ),
+    )
+    validate_record_temporal_metadata(temporal)
+    return temporal
 
 
 __all__ = [
