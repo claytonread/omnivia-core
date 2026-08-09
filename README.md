@@ -113,7 +113,7 @@ omnivia-core-runtime  omnivia-core-mcp  omnivia-core-cli  omnivia-core-client
 |---|---|---|---|
 | `omnivia-core` | `omnivia_core` | `src/omnivia_core` | — |
 | `omnivia-core-runtime` | `omnivia_core_runtime` | `packages/omnivia-core-runtime` | `omnivia-core` |
-| `omnivia-core-mcp` | `omnivia_core_mcp` | `packages/omnivia-core-mcp` | `omnivia-core` |
+| `omnivia-core-mcp` | `omnivia_core_mcp` | `packages/omnivia-core-mcp` | `omnivia-core`, `omnivia-core-client`, `mcp>=2,<3` |
 | `omnivia-core-cli` | `omnivia_core_cli` | `packages/omnivia-core-cli` | `omnivia-core` |
 | `omnivia-core-client` | `omnivia_core_client` | `packages/omnivia-core-client` | `omnivia-core` |
 
