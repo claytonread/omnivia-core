@@ -19,6 +19,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Cancels all three matrix rows of a superseded run together. Keyed on the pull
+# request number, so only a newer run for the same pull request can cancel it,
+# and that run reports the same three required check names in its place.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   phase2-platform:
     name: Phase 2 platform (${{ matrix.os }})

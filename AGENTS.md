@@ -24,6 +24,26 @@ For coding tasks:
 
 **Claude builds. Codex manages.**
 
+## Pull request and CI discipline
+
+GitHub Free, one founder, several agents. Validation runs on pull requests, so a
+change that never reaches a pull request is never validated.
+
+- Never push directly to `main`.
+- Work on a branch or a worktree.
+- Run `./scripts/preflight` and get a clean pass before opening the pull request.
+- Open the pull request when the change is ready, not to watch CI run.
+- Merge only when the latest GitHub validation on the pull request is green.
+  Green on an earlier commit of the same branch is not green.
+
+This repository is public, and a ruleset on `main` requires four checks by exact
+name: `Core acceptance`, and `Phase 2 platform (ubuntu-latest)`,
+`(macos-latest)`, `(windows-latest)`. Renaming a job or changing that matrix
+silently removes the rule that references it. Do not.
+
+Every workflow keeps `workflow_dispatch`. Use it to re-validate without pushing
+an empty commit.
+
 ## Naming rule
 
 Use short names by default:
