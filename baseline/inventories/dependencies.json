@@ -7,10 +7,10 @@
   ],
   "declared_optional_dependencies": {
     "dev": [
-      "mypy>=1.10.0",
+      "mypy==2.3.0",
       "pytest-cov>=4.1.0",
       "pytest>=8.0.0",
-      "ruff>=0.16.1,<0.17"
+      "ruff==0.16.1"
     ]
   },
   "format_version": "1",

@@ -72,6 +72,8 @@ from omnivia_core.contracts.v1.generated import (
     KnowledgeSearchInput,
     KnowledgeSearchResult,
     MemoryCreateInput,
+    MemorySearchInput,
+    MemorySearchResult,
     MutationPrecondition,
     PageMetadata,
     ProjectionFreshness,
@@ -2094,22 +2096,30 @@ LEAKING_IDENTITIES = (
 )
 
 
-@pytest.mark.parametrize("overrides", LEAKING_IDENTITIES)
-def test_knowledge_search_default_view_rejects_leaking_record(overrides: dict[str, str]) -> None:
+def _leaking_identity_record_wire(overrides: dict[str, str]) -> dict[str, Any]:
+    """A well-formed governed record carrying one of :data:`LEAKING_IDENTITIES`.
+
+    The superseded branch supplies the `superseded_by`/`superseded_at` pair the record
+    invariants require, so the case fails on the *view* rule rather than on a malformed
+    record -- which is the only failure that says anything about the view.
+    """
     identity_kwargs = dict(overrides)
-    reviewer = "reviewer-1"
     superseded_by = None
     if identity_kwargs.get("currentness") == "superseded":
         superseded_by = {"record_id": "rec-1", "version": "v2"}
-    record = _governed_record_wire(
+    return _governed_record_wire(
         authority_level="canonical",
-        reviewer=reviewer,
+        reviewer="reviewer-1",
         provenance=_provenance_wire(
             identity=_identity_wire(**identity_kwargs, superseded_by=superseded_by),
             temporal=_temporal_wire(superseded_at=T1 if superseded_by else None),
         ),
     )
-    result = _knowledge_search_result([record])
+
+
+@pytest.mark.parametrize("overrides", LEAKING_IDENTITIES)
+def test_knowledge_search_default_view_rejects_leaking_record(overrides: dict[str, str]) -> None:
+    result = _knowledge_search_result([_leaking_identity_record_wire(overrides)])
     with pytest.raises(ContractSemanticError):
         sem_knowledge.validate_knowledge_search_result(result, _knowledge_search_request(), "ws-1", T0, set())
 
@@ -9306,3 +9316,301 @@ def test_context_pack_modules_import_only_the_standard_library_and_this_package(
             assert node.module is not None
             imported.add(node.module)
     assert imported == expected
+
+
+# --------------------------------------------------------------------------
+# 9. memory.search semantic conformance (V06-3 lane C0)
+#
+# `memory.search` declares the same `view` selector as `knowledge.search`
+# (`memory.schema.json`, `MemorySearchInput`), so the same three rules hold:
+# an absent `view` resolves to `current_canonical`, and `candidates` and
+# `history` are reachable only by naming one of them explicitly. Nothing
+# enforced any of that -- `memory.search` was absent from `_INPUT_SEMANTICS`
+# and from `_RESULT_SEMANTICS`, so a `memory.search` answering a default-view
+# request with candidate or superseded records conformed. These cases are the
+# falsifiers for each of the three, stated against `memory.search` itself
+# rather than inherited from `knowledge.search`'s suite: the two reads share
+# one implementation, and a test that only exercised the other one would stay
+# green if the shared rule were re-specialised back to `knowledge.search`.
+# --------------------------------------------------------------------------
+
+
+def _memory_search_input_wire(
+    *,
+    query: str = "hello",
+    order: str | None = None,
+    view: str | None = None,
+    record_type: str | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """`_knowledge_search_input_wire` minus `domain_scope`, which `MemorySearchInput`
+    does not declare."""
+    document = _knowledge_search_input_wire(
+        query=query, order=order, view=view, record_type=record_type, limit=limit
+    )
+    document.pop("domain_scope", None)
+    return document
+
+
+def _memory_search_request(**overrides: Any) -> MemorySearchInput:
+    return MemorySearchInput.from_wire(_memory_search_input_wire(**overrides))
+
+
+def _memory_search_result(records: list[dict[str, Any]]) -> MemorySearchResult:
+    return MemorySearchResult.from_wire({"records": records, "page": {}})
+
+
+# --- claim 1: an absent view means current_canonical, and nothing else -------
+
+
+@pytest.mark.parametrize("overrides", LEAKING_IDENTITIES)
+def test_memory_search_default_view_rejects_leaking_record(overrides: dict[str, str]) -> None:
+    """Every identity `knowledge.search`'s default view refuses, `memory.search` refuses
+    too. The `l1`/`proposed`/`current` shape is the one the packaged conformance corpus
+    actually carries on both `memory.search` cases, which is what made the gap concrete
+    rather than theoretical."""
+    result = _memory_search_result([_leaking_identity_record_wire(overrides)])
+    # Bare, like its `knowledge.search` counterpart: two of these identities are
+    # self-contradictory records that `validate_governed_record` refuses before the view
+    # rule is reached, so pinning one message here would assert the wrong thing. The two
+    # cases that isolate the view rule by message are the candidate and superseded ones
+    # immediately below, whose records are individually well-formed.
+    with pytest.raises(ContractSemanticError):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_default_view_rejects_a_candidate_record() -> None:
+    """The exact leak this lane exists to close: an unnamed view is not a permissive one."""
+    result = _memory_search_result([_candidate_knowledge_record_wire()])
+    with pytest.raises(ContractSemanticError, match="under the default current_canonical view"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_default_view_rejects_a_superseded_record() -> None:
+    result = _memory_search_result([_history_knowledge_record_wire()])
+    with pytest.raises(ContractSemanticError, match="under the default current_canonical view"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_default_view_accepts_a_canonical_record() -> None:
+    """The rule refuses non-canonical records; it does not refuse everything."""
+    result = _memory_search_result([_canonical_knowledge_record_wire()])
+    sem_knowledge.validate_memory_search_result(
+        result, _memory_search_request(), "ws-1", T0, set()
+    )
+
+
+def test_memory_search_explicit_current_canonical_needs_no_authorization() -> None:
+    """Naming the default view explicitly is never gated: it widens nothing."""
+    result = _memory_search_result([_canonical_knowledge_record_wire()])
+    sem_knowledge.validate_memory_search_result(
+        result, _memory_search_request(view="current_canonical"), "ws-1", T0, set()
+    )
+
+
+# --- claim 2: candidates only through an explicit view ----------------------
+
+
+def test_memory_search_candidates_reachable_only_through_the_explicit_view() -> None:
+    """The identical candidate record is refused under the default view and accepted under
+    an explicitly named, authorized `candidates` view. One record, two requests, so the
+    difference asserted is the view selector and nothing else."""
+    record = _candidate_knowledge_record_wire()
+    with pytest.raises(ContractSemanticError, match="under the default current_canonical view"):
+        sem_knowledge.validate_memory_search_result(
+            _memory_search_result([record]), _memory_search_request(), "ws-1", T0, {"candidates"}
+        )
+    sem_knowledge.validate_memory_search_result(
+        _memory_search_result([record]),
+        _memory_search_request(view="candidates"),
+        "ws-1",
+        T0,
+        {"candidates"},
+    )
+
+
+def test_memory_search_candidates_view_without_authorization_is_refused() -> None:
+    """Naming the view is not authorization: the trusted set is what widens trust."""
+    result = _memory_search_result([_candidate_knowledge_record_wire()])
+    with pytest.raises(ContractSemanticError, match="the view string alone never widens trust"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(view="candidates"), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_candidates_view_rejects_a_record_carrying_a_reviewer() -> None:
+    """An authorized `candidates` view is still exact: it admits `l1`/`candidate`/`current`
+    with `proposed` authority and no reviewer, not merely "anything non-canonical"."""
+    record = _governed_record_wire(
+        authority_level="proposed",
+        reviewer="reviewer-1",
+        provenance=_provenance_wire(
+            identity=_identity_wire(layer="l1", governance_state="candidate", currentness="current")
+        ),
+    )
+    result = _memory_search_result([record])
+    with pytest.raises(ContractSemanticError, match="candidates view requires none"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(view="candidates"), "ws-1", T0, {"candidates"}
+        )
+
+
+# --- claim 3: history only through an explicit view -------------------------
+
+
+def test_memory_search_history_reachable_only_through_the_explicit_view() -> None:
+    record = _history_knowledge_record_wire()
+    with pytest.raises(ContractSemanticError, match="under the default current_canonical view"):
+        sem_knowledge.validate_memory_search_result(
+            _memory_search_result([record]), _memory_search_request(), "ws-1", T0, {"history"}
+        )
+    sem_knowledge.validate_memory_search_result(
+        _memory_search_result([record]),
+        _memory_search_request(view="history"),
+        "ws-1",
+        T0,
+        {"history"},
+    )
+
+
+def test_memory_search_history_view_without_authorization_is_refused() -> None:
+    result = _memory_search_result([_history_knowledge_record_wire()])
+    with pytest.raises(ContractSemanticError, match="the view string alone never widens trust"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(view="history"), "ws-1", T0, {"candidates"}
+        )
+
+
+def test_memory_search_history_view_rejects_a_still_current_record() -> None:
+    """An authorized `history` view admits a version that *was* canonical and had already
+    been replaced by the resolution instant -- not a still-current one."""
+    result = _memory_search_result([_canonical_knowledge_record_wire()])
+    with pytest.raises(ContractSemanticError, match="history view"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(view="history"), "ws-1", T0, {"history"}
+        )
+
+
+# --- the input rules, and the fail-closed selector --------------------------
+
+
+def test_memory_search_input_rejects_an_unknown_view_value() -> None:
+    """A misspelled view must not fall through to the canonical view by default: an
+    unrecognized selector cannot be honoured, so it is refused rather than resolved."""
+    input_ = MemorySearchInput.from_wire(_memory_search_input_wire(view="some_future_view"))
+    with pytest.raises(ContractSemanticError, match="not a recognized GovernedRecordView"):
+        sem_knowledge.validate_memory_search_input(input_)
+
+
+def test_memory_search_input_rejects_an_unknown_order_value() -> None:
+    input_ = MemorySearchInput.from_wire(_memory_search_input_wire(order="by_vibes"))
+    with pytest.raises(ContractSemanticError, match="not a recognized MemorySearchOrder"):
+        sem_knowledge.validate_memory_search_input(input_)
+
+
+def test_memory_search_order_refusal_names_memory_search_not_knowledge_search() -> None:
+    """`MemorySearchOrder` is the one order domain both reads draw from, so the refusal has
+    to say which read refused or it is unactionable on the operation that produced it."""
+    input_ = MemorySearchInput.from_wire(_memory_search_input_wire(order="by_vibes"))
+    with pytest.raises(ContractSemanticError, match="for memory.search"):
+        sem_knowledge.validate_memory_search_input(input_)
+
+
+def test_knowledge_search_order_refusal_still_names_knowledge_search() -> None:
+    """The other side of the same message: sharing the rule did not make either refusal
+    lie about its caller."""
+    input_ = KnowledgeSearchInput.from_wire(_knowledge_search_input_wire(order="by_vibes"))
+    with pytest.raises(ContractSemanticError, match="for knowledge.search"):
+        sem_knowledge.validate_knowledge_search_input(input_)
+
+
+def test_memory_search_input_accepts_a_known_order() -> None:
+    input_ = MemorySearchInput.from_wire(_memory_search_input_wire(order="relevance"))
+    sem_knowledge.validate_memory_search_input(input_)
+
+
+def test_memory_search_result_rejects_a_workspace_mismatch() -> None:
+    result = _memory_search_result([_canonical_knowledge_record_wire(workspace_id="ws-2")])
+    with pytest.raises(ContractSemanticError, match="does not match the selected workspace"):
+        sem_knowledge.validate_memory_search_result(
+            result, _memory_search_request(), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_result_rejects_a_record_type_filter_mismatch() -> None:
+    result = _memory_search_result([_canonical_knowledge_record_wire(record_type="memory.fact")])
+    request = _memory_search_request(record_type="memory.preference")
+    with pytest.raises(ContractSemanticError, match="does not match the requested record_type"):
+        sem_knowledge.validate_memory_search_result(result, request, "ws-1", T0, set())
+
+
+def test_memory_search_result_rejects_a_count_over_the_request_limit() -> None:
+    records = [
+        _canonical_knowledge_record_wire(record_id="rec-1"),
+        _canonical_knowledge_record_wire(record_id="rec-2"),
+    ]
+    with pytest.raises(ContractSemanticError, match="exceeding the applicable limit"):
+        sem_knowledge.validate_memory_search_result(
+            _memory_search_result(records), _memory_search_request(limit=1), "ws-1", T0, set()
+        )
+
+
+def test_memory_search_result_re_validates_its_request() -> None:
+    """The result rule cannot be bypassed by hand-building a request that would never have
+    passed the input rule."""
+    request = MemorySearchInput.from_wire(_memory_search_input_wire(view="some_future_view"))
+    with pytest.raises(ContractSemanticError, match="not a recognized GovernedRecordView"):
+        sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), request, "ws-1", T0, set()
+        )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: sem_knowledge.validate_memory_search_input("not an input"),
+        lambda: sem_knowledge.validate_memory_search_input(None),
+        # A `KnowledgeSearchInput` is not a `MemorySearchInput`, structurally similar or
+        # not: the two operations are distinct and the rule says which one it judges.
+        lambda: sem_knowledge.validate_memory_search_input(_knowledge_search_request()),
+        lambda: sem_knowledge.validate_memory_search_result(
+            "not a result", _memory_search_request(), "ws-1", T0, set()
+        ),
+        lambda: sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), "not a request", "ws-1", T0, set()
+        ),
+        lambda: sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), _knowledge_search_request(), "ws-1", T0, set()
+        ),
+        lambda: sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), _memory_search_request(), 123, T0, set()
+        ),
+        lambda: sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), _memory_search_request(), "ws-1", 12345, set()
+        ),
+        lambda: sem_knowledge.validate_memory_search_result(
+            _memory_search_result([]), _memory_search_request(), "ws-1", T0, "candidates"
+        ),
+    ],
+)
+def test_memory_search_direct_helpers_reject_malformed_types(call: Any) -> None:
+    with pytest.raises(ContractSemanticError):
+        call()
+
+
+def test_memory_search_semantics_are_wired_into_the_conformance_dispatch() -> None:
+    """A validator nobody calls proves nothing. Both dispatch tables must name it, and
+    `test_every_operation_with_frozen_semantics_has_them_wired` in
+    `test_adapter_conformance.py` keeps the two facts in step in both directions."""
+    from omnivia_core.contracts.v1 import conformance
+
+    assert conformance._INPUT_SEMANTICS["memory.search"] is (
+        sem_knowledge.validate_memory_search_input
+    )
+    assert "memory.search" in conformance._RESULT_SEMANTICS
