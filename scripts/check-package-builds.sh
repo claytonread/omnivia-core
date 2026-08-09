@@ -4,8 +4,9 @@
 #
 # Builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
 # omnivia-core-mcp, omnivia-core-cli, omnivia-core-client) into a temporary
-# wheelhouse, then installs each into its own isolated temporary virtual
-# environment and imports it:
+# wheelhouse, stages the one declared third-party closure (the official MCP SDK,
+# required by R004-05) beside them, then installs each into its own isolated
+# temporary virtual environment and imports it:
 #
 #   a. omnivia-core alone
 #   b. omnivia-core-runtime from the wheelhouse
@@ -90,6 +91,38 @@ build_wheel "${RUNTIME_DIR}"
 build_wheel "${MCP_DIR}"
 build_wheel "${CLI_DIR}"
 build_wheel "${CLIENT_DIR}"
+
+# --- third-party closure -------------------------------------------------------
+#
+# Until now every distribution here was standard-library-only or depended solely
+# on its siblings, so a wheelhouse holding the five local wheels was a complete
+# resolution universe. `omnivia-core-mcp` ends that: R004-05 requires the official
+# MCP SDK, so `mcp>=2,<3` and its transitive closure have to be *somewhere* for
+# the offline install below to resolve at all.
+#
+# They are staged here, and the install step keeps `--no-index --find-links`
+# exactly as it was. That distinction is the whole point: what is installed is
+# still resolved from this directory alone, with no index reachable, so the
+# offline proof is unchanged. What has changed is that the wheelhouse is now
+# populated from two sources -- the wheels this script builds, and the declared
+# third-party closure -- which is what a wheelhouse ordinarily means.
+#
+# The requirement is read off the built MCP wheel's own METADATA rather than
+# written here, so this cannot drift from `packages/omnivia-core-mcp/pyproject.toml`.
+# `--find-links` is passed on the download too, so the unpublished sibling
+# distributions resolve from this directory instead of sending pip to an index
+# that has never heard of them.
+#
+# This step needs the configured index to be reachable and has no offline
+# fallback: a failure here fails the gate rather than silently producing a
+# wheelhouse that the install step would then fail on more obscurely.
+echo "--- staging the declared third-party closure into the wheelhouse ---"
+MCP_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core_mcp-*.whl)"
+"${PYTHON}" -m pip download \
+  --dest "${WHEELHOUSE}" \
+  --find-links "${WHEELHOUSE}" \
+  "${MCP_WHEEL}"
+echo
 
 echo "--- wheelhouse contents ---"
 ls -1 "${WHEELHOUSE}"
@@ -216,27 +249,43 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
   "omnivia_core_runtime.service.main" \
   "omnivia_core_runtime.service.runner" \
   "omnivia_core_runtime.service.transport"
-# No operational modules: the MCP distribution is a skeleton surface until the
-# separately approved Phase 4 packet. Its operational adapter imported
-# `omnivia_core_cli`, a sibling, which the approved topology does not permit.
-install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp"
-# `transport.py` is named explicitly because neither module above reaches it:
-# `main` imports it inside the one subcommand that calls a service, so importing
-# `main` resolves nothing. It is the only module that imports `omnivia-core-client`,
-# so without this line the CLI's Requires-Dist is never exercised at wheel level --
-# which is verbatim the failure this script's comment above says it exists to catch.
+# The MCP distribution is no longer a skeleton: owner resolution 004 Packet C
+# gave it a curated exposure manifest, a managed-start adapter and a stdio server.
+# All three are named because each exercises a different declared edge, and the
+# reason this check exists is that the *previous* MCP adapter imported
+# `omnivia_core_cli` -- a sibling the approved topology does not permit -- and
+# installed cleanly anyway because only the top-level package was imported.
+# `server` is the one that matters most: it is the only module importing both the
+# official MCP SDK and `omnivia-core-client`, so without it neither Requires-Dist
+# is ever exercised at wheel level, which is verbatim the failure the comment
+# above says this exists to catch.
+install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
+  "omnivia_core_mcp.manifest" \
+  "omnivia_core_mcp.managed_start" \
+  "omnivia_core_mcp.server"
+# `omnivia_core_client` is named here, in the *CLI's* venv, and it is not a stray
+# entry. Owner resolution 005 R005-01 moved the transport out of this
+# distribution, so the CLI no longer has any module that imports the client at
+# module scope: `main` imports it inside the one subcommand that calls a service,
+# which importing `main` does not reach. Without this line the CLI's
+# `Requires-Dist: omnivia-core-client` would never be exercised at wheel level --
+# verbatim the failure this script's comment above says it exists to catch.
+# Importing it from a venv that installed only `omnivia-core-cli` is precisely the
+# proof that the CLI's own metadata pulled it in.
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
   "omnivia_core_cli.client" \
   "omnivia_core_cli.main" \
-  "omnivia_core_cli.transport"
+  "omnivia_core_client"
 # The client's whole surface is operational: every module below is imported by a
 # caller on the first call it makes, so each one has to resolve from the wheel
 # plus its single declared `omnivia-core` dependency and nothing else.
 install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.compatibility" \
   "omnivia_core_client.deadline" \
+  "omnivia_core_client.discovery" \
   "omnivia_core_client.errors" \
   "omnivia_core_client.framing" \
+  "omnivia_core_client.local_ipc" \
   "omnivia_core_client.transport"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"

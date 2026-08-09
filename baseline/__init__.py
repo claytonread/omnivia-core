@@ -25,6 +25,7 @@ checks the working tree against them.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 #: Version of the baseline artifact format. Bump when the on-disk shape of a
@@ -36,14 +37,28 @@ BASELINE_TASK_ID = "T-0627"
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parent
-INVENTORY_DIR = PACKAGE_ROOT / "inventories"
-FIXTURE_DIR = PACKAGE_ROOT / "fixtures"
+
+#: Environment override for the directory that holds the tracked artifacts.
+#: Unset in every normal use, so ``INVENTORY_DIR`` / ``FIXTURE_DIR`` point at the
+#: accepted, committed baseline. The transactional ``capture`` sets it on the
+#: child processes that generate and verify a candidate baseline in a throwaway
+#: location, so the accepted baseline is only ever read until the candidate is
+#: proved green. It is the single seam that lets every artifact module target a
+#: candidate tree without threading a directory through their read/write paths.
+ARTIFACT_ROOT_ENV = "BASELINE_ARTIFACT_ROOT"
+_artifact_root_override = os.environ.get(ARTIFACT_ROOT_ENV)
+ARTIFACT_ROOT = Path(_artifact_root_override) if _artifact_root_override else PACKAGE_ROOT
+
+INVENTORY_DIR = ARTIFACT_ROOT / "inventories"
+FIXTURE_DIR = ARTIFACT_ROOT / "fixtures"
 
 #: Import root for the Core package under baseline.
 CORE_SRC = REPO_ROOT / "services" / "omnivia-memory" / "src"
 CORE_PACKAGE = "omnivia_memory"
 
 __all__ = [
+    "ARTIFACT_ROOT",
+    "ARTIFACT_ROOT_ENV",
     "BASELINE_FORMAT_VERSION",
     "BASELINE_TASK_ID",
     "CORE_PACKAGE",
