@@ -308,6 +308,34 @@ def normalize_query(query: str) -> str:
     return unicodedata.normalize("NFKC", query).casefold()
 
 
+def relevance_order_key(
+    candidate: EvidenceCandidate, relevance: float
+) -> tuple[float, int, str]:
+    """The one total order every ranking in this build sorts by.
+
+    `relevance` ascending first, because SQLite's `bm25()` returns a *negative*
+    score whose magnitude grows with relevance -- so ascending is best-first, and a
+    candidate with no relevance signal at all takes `0.0` and sorts behind every
+    match rather than in front of it. With a constant relevance the key degrades
+    exactly to recency-then-identity, which is why Lane A's ordering is expressible
+    as this key and not merely similar to it.
+
+    Then `recorded_at_us` descending, then `evidence_id` ascending. Both
+    tie-breakers are load-bearing rather than decorative: **bm25 ties are the common
+    case**, not the exotic one -- two artifacts whose identity surfaces contain the
+    same terms the same number of times score identically to the last bit -- and
+    equal instants are equally common because bulk ingestion writes many artifacts
+    at one microsecond. A sort keyed on relevance alone returns whatever order the
+    rows arrived in, which is packet §8.2's first ordering hazard wearing a score.
+
+    It lives here, in the module that owns the frozen frontier, so that the FTS5
+    ranking in `storage/projections/fts.py` and the ordering below are one fact
+    with one definition. `EvidenceCandidate` is the only thing it reads; it holds
+    no store and reaches nothing.
+    """
+    return (relevance, -candidate.recorded_at_us, candidate.evidence_id)
+
+
 def rank_candidates(
     frontier: AuthorizedFrontier, query: str, *, limit: int
 ) -> tuple[EvidenceCandidate, ...]:
@@ -340,7 +368,10 @@ def rank_candidates(
         for candidate in frontier.candidates
         if needle in normalize_query(candidate.search_text)
     ]
-    matched.sort(key=lambda candidate: (-candidate.recorded_at_us, candidate.evidence_id))
+    # One relevance for every candidate, because Lane A ships no index and has no
+    # score to distinguish them with. The key is shared with the FTS5 ordering
+    # rather than reimplemented, so the tie-breakers cannot drift apart.
+    matched.sort(key=lambda candidate: relevance_order_key(candidate, 0.0))
     return tuple(matched[:limit])
 
 
@@ -355,4 +386,5 @@ __all__ = [
     "local_owner_label_grant",
     "normalize_query",
     "rank_candidates",
+    "relevance_order_key",
 ]
