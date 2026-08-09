@@ -16,7 +16,10 @@ for the scope, the clean environment setup, and the verification commands.
 # Verify the working tree against the frozen baseline.
 PYTHONPATH=services/omnivia-memory/src python3 -m baseline verify
 
-# Regenerate every tracked artifact. A deliberate act; review the diff.
+# Regenerate every tracked artifact, transactionally. Verifies the accepted
+# baseline, generates a candidate in a temporary location, verifies the
+# candidate, shows its diff, and replaces the accepted baseline only when the
+# candidate is green. Any failure leaves the accepted baseline unchanged.
 PYTHONPATH=services/omnivia-memory/src python3 -m baseline capture
 
 # Print the recorded evidence gaps, their owners, and what closes them.
@@ -29,6 +32,44 @@ PYTHONPATH=services/omnivia-memory/src python3 -m baseline verify-external \
 
 `scripts/check-core-baseline.sh` runs `verify` plus the baseline test suite and
 handles `PYTHONPATH` itself.
+
+## Capturing safely
+
+The baseline is **not always a fixed point of `verify`.** While the transitional
+compatibility-facade move evidence is active, a full `capture` regenerates the
+frozen artifacts into their post-move state and so destroys the "before" side
+that the `FACADE_ROOT_BINDING_OWNER_MOVES` and `FACADE_STDLIB_IMPORT_MOVES`
+guards compare against. A naive regenerate-in-place would overwrite a valid
+baseline and then fail the merge-blocking gate.
+
+`capture` is therefore transactional and fail-safe:
+
+- it verifies the accepted baseline is green against the tree, or stops before
+  writing anything;
+- it generates the candidate into a temporary location and runs the complete
+  verification against it;
+- it prints the candidate diff and any failed slices; and
+- it replaces the accepted baseline **only** when the candidate verification is
+  green, with an atomic per-artifact move.
+
+A **failed or interrupted capture never replaces the accepted frozen baseline**;
+it is left byte-for-byte unchanged. So while the transition state is active, a
+full `capture` will (correctly) refuse rather than corrupt the baseline. This
+temporary non-idempotency goes away when the `omnivia_core` migration lands and
+the transition evidence is removed; the transactional safety rule stays.
+
+### Do not use full capture for a small pin
+
+Full `capture` is **not** the procedure for a one-line dependency pin (for
+example pinning a linter version in `dependencies.json`): it regenerates every
+artifact and, during the transition, will not accept the result. There is no
+supported slice-specific capture yet, so a manual or targeted inventory edit is
+the interim tool, and it must be a **deliberately reviewed, minimal diff**:
+
+- change only the exact field you understand;
+- keep the diff narrow;
+- confirm full `python -m baseline verify` stays green; and
+- record in the change why full capture was not used.
 
 ## Layout
 
