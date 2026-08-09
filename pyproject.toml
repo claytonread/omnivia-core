@@ -83,9 +83,13 @@ extend-exclude = ["benchmarks"]
 # every one the deliberate `sys.path` bootstrap in `scripts/`, suppressed at the
 # four sites rather than by a rule- or path-wide exclusion.
 #
-# `required-version` pins it instead, and Ruff is pre-1.0, so a minor bump is
-# where its rule selection is allowed to move -- `<0.17` is that boundary, not an
-# arbitrary one. Patch releases inside 0.16.x are accepted.
+# `required-version` pins it instead, exactly (R006-04). It was a range
+# accepting 0.16.x patch releases; that let the merge-blocking linter move
+# ambiently -- CI's last green run resolved 0.16.1 while a fresh local
+# environment resolved 0.16.2 -- so the same commit was linted by different
+# Ruffs. The exact pin is what makes "repeated runs of the same commit produce
+# the same Ruff result" a property of the repository rather than of the day.
+# Advancing it is a reviewed dependency change under R006-04's upgrade policy.
 #
 # What this does and does not do. It does NOT by itself stop a newer Ruff from
 # reaching the gate: it aborts the run -- exit 2, before a single file is linted
@@ -98,16 +102,17 @@ extend-exclude = ["benchmarks"]
 # developer's globally installed copy.
 #
 # Left as an abort with no matching bound, this line is a scheduled outage: the
-# day Ruff 0.17.0 publishes, every pull request fails at `Run Ruff`. It was
-# exactly that for one revision of this file. The two ranges are held identical
-# by `test_every_declared_ruff_version_matches_the_required_version` in
-# `tests/test_core_acceptance_workflow.py`, which reads them both from the tree,
-# and the bound is held reachable by
+# day a Ruff release lands outside it, every pull request fails at `Run Ruff`.
+# It was exactly that for one revision of this file. The declared strings are
+# held identical by `test_every_declared_ruff_version_matches_the_required_version`
+# in `tests/test_core_acceptance_workflow.py`, which reads them all from the
+# tree, held exact by `test_the_ruff_requirement_is_an_exact_pin`, and the bound
+# is held reachable by
 # `test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs`.
 #
-# The accepted maintenance cost: adopting a new Ruff minor means editing two
-# strings, and the tests above name the second one if it is missed.
-required-version = ">=0.16.1,<0.17"
+# The accepted maintenance cost: adopting a new Ruff version means editing
+# three strings, and the tests above name the others if one is missed.
+required-version = "==0.16.1"
 
 [tool.ruff.lint]
 # The 18 rules that `services/omnivia-memory`'s `E4`/`E7`/`E9`/`F` selection
@@ -195,6 +200,6 @@ dev = [
     "build>=1.2,<2",
     "hatchling>=1.26,<2",
     "jsonschema[format]>=4.25,<5",
-    "ruff>=0.16.1,<0.17",
+    "ruff==0.16.1",
     "types-jsonschema>=4.25,<5",
 ]
