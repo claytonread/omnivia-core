@@ -11,3 +11,17 @@ re-implemented here; this package supplies the *content* those runs are about.
 """
 
 from __future__ import annotations
+
+from typing import Final
+
+#: The ledger identity of the `evidence.search` FTS5 projection.
+#:
+#: It is stated here because two modules that cannot import each other both need it:
+#: `storage/repository.py` names it as a contributing projection so the freshness gate
+#: covers it, and `storage/projections/fts.py` declares, builds, activates and reads
+#: under it. `fts` imports `repository`, so the constant cannot live in either without
+#: a cycle -- and a second literal is precisely how a gate and a builder come to
+#: disagree about which projection a refusal is even about.
+EVIDENCE_SEARCH_PROJECTION_ID: Final = "evidence.search.fts5"
+
+__all__ = ["EVIDENCE_SEARCH_PROJECTION_ID"]

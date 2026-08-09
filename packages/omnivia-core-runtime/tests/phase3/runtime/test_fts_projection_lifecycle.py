@@ -687,6 +687,122 @@ def test_lb_l20_reopening_rebuilds_the_index_from_the_durable_rows(
     assert second.search(frontier(owned), "alpha", limit=10) == expected
 
 
+def test_lb_l22_the_index_is_reachable_only_after_it_is_materialised(
+    owned: m2.Owned,
+) -> None:
+    """The read path's handle appears when the index does, and never before.
+
+    `session_search_index` is how the handler reaches an index, and it is a lookup with
+    nothing to build from -- no identity, no fencing generation, no DDL grant. Before
+    startup materialises one there is nothing to find, and a build that answered from a
+    missing index would have to invent one rather than return `None`.
+    """
+    assert fts.session_search_index(owned.connection) is None
+    build(owned)
+    # Still nothing: building the projection is not materialising the index, and the
+    # two are separate calls in `service.main.serve` for exactly that reason.
+    assert fts.session_search_index(owned.connection) is None
+
+    opened = fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+    found = fts.session_search_index(owned.connection)
+
+    assert found is opened
+    assert found.build.run_id == fts.current_build(
+        owned.connection, workspace_id=WORKSPACE_ID
+    ).run_id
+
+
+def test_lb_l23_a_failed_rematerialisation_leaves_no_index_reachable(
+    owned: m2.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A superseded handle must not survive an attempt to replace it.
+
+    The projection advances, the index is re-opened, and the re-open fails. What must
+    not remain reachable is the previous index: it describes a run the ledger no longer
+    points at, and a read served from it would be answering from a superseded build
+    while every freshness check in the path reported current.
+    """
+    build(owned)
+    fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+    assert fts.session_search_index(owned.connection) is not None
+
+    add_artifact(owned, "evd-later-1", recorded_at=m2.BASE_US + 500)
+    build(owned, now_us=NOW_US + 1000)
+    # The failure lands after the index table has been dropped and re-created, which is
+    # the window that matters: the `temp` table the old handle named is already gone.
+    monkeypatch.setattr(
+        fts,
+        "normalize_query",
+        lambda _text: (_ for _ in ()).throw(Interrupted("x")),
+    )
+    with pytest.raises(Interrupted):
+        fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+
+    assert fts.session_search_index(owned.connection) is None
+
+
+def test_lb_l24_only_frontier_members_are_ever_scored(owned: m2.Owned) -> None:
+    """Packet §7.2 names scoring, and this is where a build gets that wrong.
+
+    The index holds every artifact in the workspace, so the tempting implementation asks
+    FTS5 to score the lot and drops the ids the frontier does not hold. The page is
+    identical either way -- which is why this reads the statement SQLite was actually
+    given, with its parameters expanded, rather than asserting over a result that cannot
+    show the difference.
+
+    `evd-tie-b` is excluded by the temporal filter and matches the query, so it is a
+    document the defective build would have scored.
+    """
+    build(owned)
+    index = fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+    narrowed = frontier(owned, resolution_time_us=m2.BASE_US + 35)
+    assert "evd-tie-b" in {candidate.evidence_id for candidate in narrowed.excluded}
+
+    statements: list[str] = []
+    owned.connection.set_trace_callback(statements.append)
+    try:
+        results = index.search(narrowed, "alpha", limit=10)
+    finally:
+        owned.connection.set_trace_callback(None)
+
+    ranking = [
+        statement
+        for statement in statements
+        if "MATCH" in statement and fts.INDEX_TABLE in statement
+    ]
+    assert ranking
+    assert not any("evd-tie-b" in statement for statement in ranking)
+    for candidate in narrowed.candidates:
+        assert any(candidate.evidence_id in statement for statement in ranking)
+    assert [candidate.evidence_id for candidate in results] == [
+        "evd-alpha-1",
+        "evd-tie-a",
+    ]
+
+
+def test_lb_l25_a_frontier_larger_than_one_batch_is_ranked_whole(
+    owned: m2.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Batching the frontier ids is an implementation detail, not a ceiling.
+
+    SQLite bounds a statement's host parameters, so the ids go in batches. The batch
+    size is dropped to two here rather than seeding a thousand artifacts: the property
+    is that every frontier member is offered to the ranker and the answer does not
+    depend on where the boundaries fell, and a small batch exercises that harder than a
+    large one.
+    """
+    build(owned)
+    index = fts.open_search_index(owned.connection, workspace_id=WORKSPACE_ID)
+    frozen = frontier(owned)
+    whole = index.search(frozen, "alpha", limit=10)
+    assert len(whole) > 2
+
+    monkeypatch.setattr(fts, "MATCH_BATCH", 2)
+    batched = index.search(frozen, "alpha", limit=10)
+
+    assert batched == whole
+
+
 def test_lb_l21_there_is_no_second_way_to_advance_the_projection() -> None:
     """No operator rebuild verb, and no request-path builder.
 

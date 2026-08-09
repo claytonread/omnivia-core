@@ -76,6 +76,10 @@ from omnivia_core_runtime.service.workspace_init import (
 from omnivia_core_runtime.service.workspace_init import (
     render_result as render_init_result,
 )
+from omnivia_core_runtime.storage.projections.fts import (
+    build_search_projection,
+    open_search_index,
+)
 
 #: The one principal this service instance acts as, on both its paths. Fixed by
 #: trusted installation-local service configuration -- not by anything a request
@@ -389,10 +393,35 @@ def main(
         Called by `start()` before the discovery descriptor is written, so a bind
         failure, an over-long socket path or a permissions refusal unwinds the whole
         startup instead of exiting with a ready descriptor pointing at a process that
-        is about to die.
+        is about to die. The `evidence.search` projection is brought up on that same
+        rule and for the same reason -- see the build below.
         """
         assert endpoint is not None and started.workspace_id is not None
         assert started.identity is not None
+        assert started.connection is not None and started.generation is not None
+
+        # The projection `evidence.search` is served from, brought level with the
+        # workspace and materialised **before** anything can ask for it. This is the
+        # service's own maintenance work and this is the only place it happens: here
+        # the process holds the connection, the identity and the current fencing
+        # generation at once, and no request path holds any of them.
+        #
+        # Ordering is the property. `serve` runs after every readiness precondition is
+        # satisfied and before the endpoint binds or the discovery descriptor is
+        # written, so a build or a materialisation that fails raises out of here, the
+        # startup sequence unwinds, and nothing is ever advertised as ready over a
+        # projection that is not there. The alternative -- start, then serve refusals,
+        # or worse, fall back to an unindexed ordering -- publishes a service that
+        # answers `evidence.search` with something this build does not claim to serve.
+        build_search_projection(
+            started.connection,
+            started.identity,
+            workspace_id=started.workspace_id,
+            fencing_generation=started.generation,
+            now_us=time.time_ns() // 1000,
+        )
+        open_search_index(started.connection, workspace_id=started.workspace_id)
+
         dispatcher = Dispatcher.for_service_operations(
             Grant(
                 principal=LOCAL_PRINCIPAL,

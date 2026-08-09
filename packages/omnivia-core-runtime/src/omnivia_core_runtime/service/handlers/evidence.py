@@ -15,10 +15,30 @@ top to bottom:
 7. map frontier members to the result page.
 
 Step 5 is the line packet §7.2 draws, and steps 6 and 7 are on the far side of it. The
-ranker is handed `frontier` and cannot reach anything else -- see
-`storage/retrieval.py`, whose import block is the proof. The page is built by mapping
-over ranked frontier members, so "every item in any result is a member of the frozen
-frontier" holds by construction rather than by a check that could be skipped.
+page is built by mapping over ranked frontier members, so "every item in any result is
+a member of the frozen frontier" holds by construction rather than by a check that
+could be skipped.
+
+**Step 6 is the active FTS5 projection, and it is the only ordering this build has.**
+The frozen frontier's ids are bound into the ranking statement, so scoring observes
+frontier members and nothing else -- `storage/projections/fts.py` carries that
+argument in full. What the handler owns is that there is no second path: the index is
+materialised by the service's own startup before this endpoint accepts anything, a
+request that finds none is refused, and no branch below falls back to an unindexed
+scan. Falling back would answer a caller successfully from an ordering this build does
+not claim to serve, which is worse than the retryable refusal it replaces.
+
+**And what that costs, said plainly rather than left to be discovered.** Lane A's
+ranker was `retrieval.rank_candidates`, and §20.12's proof about it was an *import
+boundary*: that module holds no `sqlite3`, no connection and no callback, so an
+unfiltered candidate was unreachable rather than merely forbidden. An FTS5 ranker
+cannot inherit that proof -- the index is in SQLite, so the ranker holds a connection
+to it. What replaces it is a value-level argument of the same strength but a different
+shape: the ranking statement is *constrained to the frozen frontier's ids*, and every
+score it returns is resolved back to a candidate by lookup in that same frontier. Ids
+in, a subset of those ids out; there is no expression on the path that could produce a
+candidate the frontier does not hold. The substitution is deliberate and it is the
+one architectural claim of this lane that a reviewer should check rather than accept.
 
 **The workspace is the authorized one.** `context.workspace_id` comes from the session
 grant and the endpoint binding after the seam refused every workspace they disagreed
@@ -58,6 +78,12 @@ from omnivia_core.contracts.v1 import (
     decode_evidence_search_input,
 )
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.storage.projections.fts import (
+    ProjectionUnavailable,
+    SearchIndex,
+    StaleProjection,
+    session_search_index,
+)
 from omnivia_core_runtime.storage.repository import (
     CONTRIBUTING_PROJECTIONS,
     authoritative_checkpoint,
@@ -65,9 +91,10 @@ from omnivia_core_runtime.storage.repository import (
     read_evidence_candidates,
 )
 from omnivia_core_runtime.storage.retrieval import (
+    AuthorizedFrontier,
+    EvidenceCandidate,
     authorized_frontier,
     local_owner_label_grant,
-    rank_candidates,
 )
 
 #: The page size a request that names none gets. Well under the catalogue's
@@ -158,11 +185,19 @@ def evidence_search(context: OperationContext) -> Mapping[str, Any]:
         resolution_time_us=int(checkpoint),
     )
 
-    ranked = rank_candidates(
-        frontier,
-        request_input.query,
-        limit=_limit(request_input),
-    )
+    # Ordering, from the projection this build actually serves and from nothing else.
+    # The index was materialised by the service's own startup path before this endpoint
+    # accepted anything, so what is reached for here either exists or the request is
+    # refused -- there is no Lane A ordering behind this call to fall back to, and a
+    # fallback would answer from an unindexed substring scan while reporting success.
+    index = session_search_index(connection)
+    if index is None:
+        raise OperationError(
+            ERROR_CODE_PROJECTION_UNAVAILABLE,
+            _MESSAGE_PROJECTION_UNAVAILABLE,
+            retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+        )
+    ranked = _ranked(index, frontier, request_input.query, limit=_limit(request_input))
     return EvidenceSearchResult(
         evidence=tuple(candidate.artifact for candidate in ranked),
         # Exhaustion is stated, never implied by an absent field. This build issues no
@@ -188,6 +223,47 @@ def _decode(context: OperationContext) -> EvidenceSearchInput:
     if decoded is None:
         raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
     return decoded
+
+
+def _ranked(
+    index: SearchIndex,
+    frontier: AuthorizedFrontier,
+    query: str,
+    *,
+    limit: int,
+) -> tuple[EvidenceCandidate, ...]:
+    """The frozen frontier, ordered by the projection, or the same two refusals.
+
+    The freshness gate above already ran, and this is not a repeat of it: the index
+    re-proves per call that the run it was built from is still the activated one and
+    still level with the workspace, so a projection that moved between the gate and
+    this line refuses here instead of answering from an index that no longer describes
+    the workspace. Refusing twice costs two queries; serving once from a stale index is
+    the silent staleness §20.7 exists to forbid.
+
+    The sentinel-then-raise shape is this tree's convention and it is load-bearing:
+    raising inside the `except` would leave the projection's own message -- which names
+    run ids and checkpoints -- reachable through `__context__` on the error a caller
+    catches. `scripts/check-raise-discipline.py` enforces it over this directory.
+    """
+    refused: str | None = None
+    try:
+        return index.search(frontier, query, limit=limit)
+    except ProjectionUnavailable:
+        refused = ERROR_CODE_PROJECTION_UNAVAILABLE
+    except StaleProjection:
+        refused = ERROR_CODE_STALE_PROJECTION
+    if refused == ERROR_CODE_STALE_PROJECTION:
+        raise OperationError(
+            ERROR_CODE_STALE_PROJECTION,
+            _MESSAGE_STALE_PROJECTION,
+            retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+        )
+    raise OperationError(
+        ERROR_CODE_PROJECTION_UNAVAILABLE,
+        _MESSAGE_PROJECTION_UNAVAILABLE,
+        retry_class=RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+    )
 
 
 def _limit(request_input: EvidenceSearchInput) -> int:

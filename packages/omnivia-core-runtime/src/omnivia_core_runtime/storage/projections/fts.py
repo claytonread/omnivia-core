@@ -42,13 +42,27 @@ way this projection advances is `build_search_projection`, which is maintenance 
 not request work.
 
 **Ranking observes the frozen frontier and only the frozen frontier.** `search` takes
-an `AuthorizedFrontier`, asks FTS5 for scores, and then *looks candidates up in the
-frontier by id*. A document in the index for an artifact the filter chain excluded has
-no candidate to resolve to and is dropped. The result is built by mapping over frontier
-members, so packet §7.2's "every item in any result SHALL be a member of that frozen
-frontier" is true by construction rather than by a membership check. The ordering is
+an `AuthorizedFrontier` and binds *its ids into the ranking statement*, so `bm25()` is
+evaluated over frontier members and nothing else -- packet §7.2 names scoring alongside
+ranking and selection, and asking FTS5 to score the whole index and discarding the
+misses afterwards would have observed the candidates the filter chain excluded. Each
+score is then resolved back to its candidate by lookup in the frontier, so §7.2's
+"every item in any result SHALL be a member of that frozen frontier" holds by
+construction rather than by a membership check. The ordering is
 `retrieval.relevance_order_key` -- the same total order Lane A sorts by, with bm25
 supplying the relevance Lane A had no index to compute.
+
+One bounded residual, stated rather than hidden: bm25's inverse document frequency is a
+statistic of the *index*, which holds every artifact in the workspace, so an excluded
+artifact carrying a query term can shift the relative scores of frontier members. It
+cannot enter a result, be scored, or be observed by any ordering or selection decision.
+Removing even that would mean an index built per request from the frontier, which is a
+build on the request path -- the one thing this projection may never do.
+
+**Reads reach the index through `session_search_index` and never materialise one.**
+The index is recorded on the connection whose `temp` schema holds it, so the handler's
+lookup carries no identity, no fencing generation and no DDL grant: there is nothing
+for a request path to build with even if a later edit wanted to.
 """
 
 from __future__ import annotations
@@ -62,6 +76,7 @@ from typing import Final
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError, authorised
+from omnivia_core_runtime.storage.projections import EVIDENCE_SEARCH_PROJECTION_ID
 from omnivia_core_runtime.storage.repository import (
     authoritative_checkpoint,
     projection_readiness,
@@ -73,8 +88,10 @@ from omnivia_core_runtime.storage.retrieval import (
     relevance_order_key,
 )
 
-#: The ledger identity this module builds and reads. One projection, one id.
-PROJECTION_ID: Final = "evidence.search.fts5"
+#: The ledger identity this module builds and reads. One projection, one id, and the
+#: same one `repository.CONTRIBUTING_PROJECTIONS` gates on -- see the package constant
+#: for why it is declared a level up rather than here.
+PROJECTION_ID: Final = EVIDENCE_SEARCH_PROJECTION_ID
 
 #: The ledger's `projection_kind`, which is the *contract* the projection serves
 #: rather than the technology serving it. A future replacement index would keep this
@@ -95,6 +112,13 @@ INDEX_TABLE: Final = "omnivia_evidence_search_index"
 #: is the bound on how much work an interruption can cost -- not a performance knob.
 #: ponytail: fixed batch, make it a parameter if a workspace ever makes it matter.
 CHECKPOINT_BATCH: Final = 256
+
+#: Frontier ids bound into one ranking statement. SQLite bounds a statement's host
+#: parameters (`SQLITE_MAX_VARIABLE_NUMBER`, 999 on older builds) and a frontier is a
+#: whole workspace's worth of candidates, so the ids are passed in batches. bm25 reads
+#: its statistics off the index rather than off the result set, so a batched ranking and
+#: a single-statement one score identically.
+MATCH_BATCH: Final = 500
 
 
 class ProjectionError(StorageError):
@@ -224,9 +248,15 @@ class SearchIndex:
     of a session-scoped index and is why this is a value a caller keeps rather than a
     global something could reach.
 
-    `retrieval.rank_candidates` remains the unreachable-by-construction ranker; this
-    is a storage-layer reader that *supplies* relevance to the same order key. The
-    frontier still arrives frozen, and this class narrows it and never widens it.
+    **This class is the production ranker, and it holds a store.** That is the one
+    §20.12 property Lane B cannot inherit: `retrieval.rank_candidates` proved it could
+    not reach an unfiltered candidate through its module's *import boundary*, and an
+    FTS5 ranker has an index in SQLite, so it holds a connection to one. The proof is
+    therefore made over values instead: the ranking statement is constrained to the
+    frozen frontier's ids and every score is resolved back through that same frontier,
+    so what comes out is a subset of what went in. The frontier still arrives frozen,
+    and this class narrows it and never widens it -- but a reviewer should read
+    `search` for that, not take the import block's word for it.
     """
 
     connection: sqlite3.Connection
@@ -251,6 +281,15 @@ class SearchIndex:
         with its own operators, so a raw query would let a caller write `AND`, `NOT`,
         column filters and prefix wildcards into a search. Quoting it as a phrase
         leaves no operator reachable.
+
+        **The frontier is handed to FTS5, not applied to its answer.** The statement
+        below carries the frozen frontier's ids, so the only documents `bm25()` is ever
+        evaluated over are candidates that already passed every filter -- packet §7.2
+        names *scoring* alongside ranking and selection, and a build that scored the
+        whole index and dropped the misses afterwards would have observed exactly what
+        the clause forbids. It would also be invisible to every result-level assertion,
+        which is F2's whole point: widen the frontier by one unauthorized artifact that
+        scores last and the returned page is byte-identical.
         """
         current = current_build(self.connection, workspace_id=self.workspace_id)
         if current.run_id != self.build.run_id:
@@ -264,21 +303,31 @@ class SearchIndex:
                 f"serves {self.workspace_id!r}"
             )
 
-        needle = normalize_query(query)
+        phrase = '"' + normalize_query(query).replace('"', '""') + '"'
         by_id = {candidate.evidence_id: candidate for candidate in frontier.candidates}
-        rows = self.connection.execute(
-            f"SELECT evidence_id, bm25({INDEX_TABLE}) FROM {INDEX_TABLE} "
-            f"WHERE {INDEX_TABLE} MATCH ?",
-            ('"' + needle.replace('"', '""') + '"',),
-        ).fetchall()
-        # Look candidates *up* in the frontier. A hit for an artifact the filter chain
-        # excluded resolves to nothing and is dropped; there is no branch here that
-        # could return an object the frontier does not already hold.
-        matched = [
-            (by_id[str(evidence_id)], float(relevance))
-            for evidence_id, relevance in rows
-            if str(evidence_id) in by_id
-        ]
+        identifiers = sorted(by_id)
+        matched: list[tuple[EvidenceCandidate, float]] = []
+        # Read under the same explicit fence every other read in this tree runs under.
+        # Deny-by-default is already in force, so this widens nothing; it states that
+        # the ranking path is a read, in the one place a future edit would be tempted
+        # to make it repair something.
+        with authorised(self.connection, mutations=False, ddl=False) as fenced:
+            for start in range(0, len(identifiers), MATCH_BATCH):
+                batch = identifiers[start : start + MATCH_BATCH]
+                marks = ", ".join("?" * len(batch))
+                # `bm25()` sits in the result list and the frontier predicate in the
+                # WHERE, so SQLite scores only rows that survive the predicate. And the
+                # candidate each score belongs to is looked *up* in the frontier: there
+                # is no branch here that could return an object the frontier does not
+                # already hold.
+                matched.extend(
+                    (by_id[str(evidence_id)], float(relevance))
+                    for evidence_id, relevance in fenced.execute(
+                        f"SELECT evidence_id, bm25({INDEX_TABLE}) FROM {INDEX_TABLE} "
+                        f"WHERE {INDEX_TABLE} MATCH ? AND evidence_id IN ({marks})",
+                        (phrase, *batch),
+                    ).fetchall()
+                )
         matched.sort(key=lambda pair: relevance_order_key(pair[0], pair[1]))
         return tuple(candidate for candidate, _ in matched[:limit])
 
@@ -288,15 +337,24 @@ def open_search_index(
 ) -> SearchIndex:
     """Materialise this session's index from the activated run, or refuse.
 
-    Called from startup and maintenance, never from a request. It re-creates the
-    `temp` table from scratch rather than repairing one, because a rebuild from durable
-    rows is both cheaper to reason about and the only version that converges after an
-    interruption partway through a previous materialisation.
+    Called from startup and maintenance, never from a request -- `service/main.py`
+    invokes it behind `build_search_projection` before the endpoint accepts anything.
+    It re-creates the `temp` table from scratch rather than repairing one, because a
+    rebuild from durable rows is both cheaper to reason about and the only version that
+    converges after an interruption partway through a previous materialisation.
 
-    The DDL grant is widened for exactly this block. `temp` DDL is denied on a governed
-    service connection like every other schema action -- `_schema_action_codes()`
-    matches every `SQLITE_CREATE_*`, temporary and virtual-table actions included --
-    so the widening is stated here rather than assumed, and it ends with the block.
+    **The widening is two statements wide.** `temp` DDL is denied on a governed service
+    connection like every other schema action -- `_schema_action_codes()` matches every
+    `SQLITE_CREATE_*`, temporary and virtual-table actions included -- so the grant is
+    stated here rather than assumed. It covers the drop and the create and stops: those
+    two carry no data and no caller value, and the linear pass that does carry the
+    workspace's text runs under a DML grant with DDL refused. Splitting them is not
+    decoration -- an authorizer grant is only as narrow as the block it spans, and the
+    insert loop is by far the longest-lived of the three statements.
+
+    `mutations=True` is needed for the create as well, and that is FTS5 rather than
+    carelessness: the virtual table's constructor writes its own `_config` shadow row,
+    which reaches the authorizer as an ordinary INSERT and fails the create without it.
     """
     require_fts5(connection)
     build = current_build(connection, workspace_id=workspace_id)
@@ -308,12 +366,16 @@ def open_search_index(
             (workspace_id, PROJECTION_ID, build.run_id),
         ).fetchall()
 
+    # Cleared first. A failure below must not leave a previous session's index
+    # reachable through `session_search_index` behind a run that is no longer active.
+    connection.omnivia_search_index = None  # type: ignore[attr-defined]
     with authorised(connection, mutations=True, ddl=True):
         connection.execute(f"DROP TABLE IF EXISTS temp.{INDEX_TABLE}")
         connection.execute(
             f"CREATE VIRTUAL TABLE temp.{INDEX_TABLE} USING fts5("
             "evidence_id UNINDEXED, search_text, tokenize = 'unicode61')"
         )
+    with authorised(connection, mutations=True, ddl=False):
         connection.executemany(
             f"INSERT INTO temp.{INDEX_TABLE} (evidence_id, search_text) "
             "VALUES (?, ?)",
@@ -326,12 +388,34 @@ def open_search_index(
                 for evidence_id, search_text in documents
             ],
         )
-    return SearchIndex(
+    index = SearchIndex(
         connection=connection,
         workspace_id=workspace_id,
         build=build,
         document_count=len(documents),
     )
+    connection.omnivia_search_index = index  # type: ignore[attr-defined]
+    return index
+
+
+def session_search_index(connection: sqlite3.Connection) -> SearchIndex | None:
+    """This session's index, or `None` when nothing has materialised one.
+
+    The index is recorded on the connection because that is exactly where it lives: the
+    `temp` schema is connection-local, so the index and the connection have one lifetime
+    and one scope, and a handle kept anywhere else could outlive the table it names.
+    `storage/connection.py` already records the authorizer grant on the connection for
+    the same reason, so this introduces no mechanism -- only one more connection-local
+    fact.
+
+    This is the read path's only way to reach an index. It is a lookup and cannot
+    become anything else: it holds no identity, no fencing generation and no DDL grant,
+    so a request that reached for a missing index gets `None` and a refusal rather than
+    a build. Materialising is `open_search_index`, and that is startup and maintenance
+    work.
+    """
+    index = getattr(connection, "omnivia_search_index", None)
+    return index if isinstance(index, SearchIndex) else None
 
 
 def build_search_projection(
@@ -943,6 +1027,7 @@ __all__ = [
     "CHECKPOINT_BATCH",
     "DOCUMENTS_TABLE",
     "INDEX_TABLE",
+    "MATCH_BATCH",
     "PROFILE_VERSION",
     "PROJECTION_ID",
     "PROJECTION_KIND",
@@ -959,4 +1044,5 @@ __all__ = [
     "current_build",
     "open_search_index",
     "require_fts5",
+    "session_search_index",
 ]

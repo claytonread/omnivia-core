@@ -526,6 +526,57 @@ def test_the_production_grant_is_the_lane_a_grant_main_actually_wires() -> None:
     )
 
 
+def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
+    """Lane B added work to `serve`; it did not add anything the session may ask for.
+
+    The projection build is a *service* action -- it runs under the instance identity
+    and the fencing generation this process already holds -- and the session is what a
+    caller may ask this endpoint to do. Nothing about building an index makes a third
+    operation grantable, so the grant `serve` wires is still the two names it was, and
+    the arguments the build is given are the service's own rather than anything the
+    session or a request could reach.
+
+    The falsifier is the plausible drift: a "projection.rebuild" or "index.refresh"
+    operation added to the grant so an operator could trigger a build over the wire.
+    That is the rebuild verb packet §20.7 refuses, and it would arrive here as a third
+    name in this set.
+    """
+    serve = _main_function("serve")
+    session_call = next(
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "local_owner_session"
+    )
+    granted = next(
+        keyword.value for keyword in session_call.keywords if keyword.arg == "operations"
+    )
+    assert isinstance(granted, ast.Call)
+    assert isinstance(granted.args[0], ast.Set)
+    assert len(granted.args[0].elts) == 2
+
+    build_call = next(
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "build_search_projection"
+    )
+    # Every fact the build is given comes off `started`, the service this process is,
+    # or off the clock. None of them is a session, a grant, a binding or a request.
+    sources = {
+        node.value.id
+        for node in ast.walk(build_call)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+    }
+    assert sources == {"started", "time"}
+    reached = {node.id for node in ast.walk(build_call) if isinstance(node, ast.Name)}
+    assert reached.isdisjoint(
+        {"session", "application", "registry", "binding", "dispatcher", "request"}
+    )
+
+
 def test_no_session_field_is_populated_from_the_request() -> None:
     """§20.2's widest clause, asked of the constructor's own source.
 
