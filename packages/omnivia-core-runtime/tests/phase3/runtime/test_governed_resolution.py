@@ -9,13 +9,23 @@ any other route.
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
+from omnivia_core_runtime.storage import governed
+from omnivia_core_runtime.storage.connection import (
+    install_authorizer,
+    mark_authorizer_installed,
+)
 from omnivia_core_runtime.storage.governed import (
+    GovernedSupersession,
     GovernedVersion,
+    read_governed_supersessions,
     resolve_governed_versions,
 )
 
@@ -28,6 +38,86 @@ BASE_US = m3.BASE_US
 
 #: Late enough that every supersession the seeds record has already happened.
 LATE_US = BASE_US + 1_000
+
+
+@pytest.fixture
+def concurrent(tmp_path: Path) -> Iterator[tuple[m2.Owned, m2.Owned]]:
+    """The `owned` workspace, reachable by a resolver *and* a second, concurrent writer.
+
+    `m3.owned` cannot be used for this and no fixture built on `take_ownership` can:
+    `OpenMode.SERVICE_OWNED` sets `locking_mode = EXCLUSIVE`, which is the point of it --
+    one Core Service holds one workspace file for its whole ownership lifetime -- and that
+    lock is never released while the connection is open, so a second connection of any mode
+    against the same file fails to open at all. Both connections here are therefore
+    `EPHEMERAL`, which is writable and non-exclusive.
+
+    What the EPHEMERAL open does not do for itself is install the authorizer, so both
+    connections are given the same deny-by-default one `open_database` installs on a
+    `SERVICE_OWNED` open, and given it before either has written a row. Every seed and
+    every write below therefore runs the normal installed authorizer path, reaching a row
+    only through the widening `fenced_transaction` performs -- the same fence every other
+    test in this file writes under.
+
+    WAL is asserted rather than assumed. It is what lets the writer commit while the
+    resolver is still holding an open read snapshot, which is the whole interleaving lane
+    C 19 forces; under a rollback journal the writer would block on the reader instead.
+
+    Everything else is `m3.owned`, statement for statement: the same Phase 0 baseline, the
+    same migration catalogue, the same lease, the same guard row and the same M2 evidence
+    chain and eight audit events. The lease and guard live in the database rather than on a
+    connection, so the writer proves its authority against the same rows the resolver's
+    connection installed, and writes through `fenced_transaction` exactly as every other
+    seed in this file does.
+    """
+    path = tmp_path / "workspace.sqlite"
+    m2.materialise_phase0_baseline(path)
+    with m2.migration_catalogue_through(m3.MIGRATION_VERSION):
+        m2.bootstrap_and_migrate(path)
+    identity = m2.make_identity()
+    resolver = m2.open_database(path, m2.OpenMode.EPHEMERAL)
+    writer = m2.open_database(path, m2.OpenMode.EPHEMERAL)
+    for connection in (resolver, writer):
+        journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        assert str(journal).lower() == "wal"
+        install_authorizer(connection, allow_mutations=False, allow_ddl=False)
+        mark_authorizer_installed(connection)
+    lease = m2.acquire_lease(
+        resolver,
+        identity,
+        clock=m2.FakeClock(),
+        workspace_id=WORKSPACE_ID,
+        holds_storage_lock=True,
+        lock_mechanism="flock",
+    )
+    m2.open_guard(
+        resolver,
+        identity,
+        clock=m2.FakeClock(),
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=lease.fencing_generation,
+    )
+    holder = m2.Owned(
+        connection=resolver,
+        identity=identity,
+        generation=lease.fencing_generation,
+        path=path,
+    )
+    m2.seed_chain(holder)
+    with fenced_transaction(
+        resolver,
+        identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=holder.generation,
+    ):
+        for number in range(1, 9):
+            m3.insert(
+                resolver,
+                "omnivia_application_audit_events",
+                m3.audit_row(f"audit-{number}"),
+            )
+    yield holder, dataclasses.replace(holder, connection=writer)
+    writer.close()
+    resolver.close()
 
 
 def resolve(
@@ -533,3 +623,162 @@ def test_lane_c_16_the_append_ordinal_still_orders_one_stream(owned: m2.Owned) -
             digest=digest,
         )
     assert resolve(owned) == ("version-alpha-stream",)
+
+
+def test_lane_c_17_a_supersession_fact_appears_only_once_it_took_effect(
+    owned: m2.Owned,
+) -> None:
+    """The fact reader dates a supersession by when it took effect, not by either row.
+
+    Same seed as lane C 14: the edge is at BASE+20 and the sealed target assembly it names
+    at BASE+30. At BASE+25 the replacement had not been written, so there is no fact to
+    read at all -- and when the fact does appear it is stamped BASE+30, the later of the
+    two, carrying the reason its own provenance event recorded.
+    """
+    seal_correction_recorded_early(
+        owned, edge_recorded_at_us=BASE_US + 20, target_recorded_at_us=BASE_US + 30
+    )
+    assert (
+        read_governed_supersessions(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            resolution_instant_us=BASE_US + 25,
+        )
+        == ()
+    )
+    assert read_governed_supersessions(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=BASE_US + 30
+    ) == (
+        GovernedSupersession(
+            workspace_id=WORKSPACE_ID,
+            governed_record_id="record-1",
+            source_version_id="version-accepted",
+            target_version_id="version-late-target",
+            assembly_id="assembly-late-target",
+            effective_at_us=BASE_US + 30,
+            reason_code="governance.reviewed",
+        ),
+    )
+
+
+def test_lane_c_18_the_supersession_facts_are_deterministic(owned: m2.Owned) -> None:
+    """Two corrections of one record read back in the reader's stated order, not row order.
+
+    The chain is seeded so those two orders disagree. `version-a-corrected` sorts *before*
+    `version-accepted` -- `-` precedes `c` -- and it is the source of the edge written
+    second, so the tuple the reader must return is the exact reverse of the order the two
+    edges were inserted in.
+
+    Falsifier: drop the `ORDER BY` from the fact reader and this asserts against whatever
+    order the query plan happened to walk the edge table in; the current primary-key scan
+    yields insertion order -- the reverse of what is asserted here.
+    """
+    m3.seed_corrected_version(
+        owned, assembly_id="assembly-a-corrected", version_id="version-a-corrected"
+    )
+    m3.seed_corrected_version(
+        owned,
+        source_version_id="version-a-corrected",
+        target_recorded_at_us=BASE_US + 30,
+        assembly_id="assembly-z-corrected",
+        version_id="version-z-corrected",
+        audit_ref="audit-4",
+        digest="sha256:" + "5" * 64,
+        bootstrap=False,
+    )
+    facts = read_governed_supersessions(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=LATE_US
+    )
+    assert facts == (
+        GovernedSupersession(
+            workspace_id=WORKSPACE_ID,
+            governed_record_id="record-1",
+            source_version_id="version-a-corrected",
+            target_version_id="version-z-corrected",
+            assembly_id="assembly-z-corrected",
+            effective_at_us=BASE_US + 30,
+            reason_code="governance.reviewed",
+        ),
+        GovernedSupersession(
+            workspace_id=WORKSPACE_ID,
+            governed_record_id="record-1",
+            source_version_id="version-accepted",
+            target_version_id="version-a-corrected",
+            assembly_id="assembly-a-corrected",
+            effective_at_us=BASE_US + 20,
+            reason_code="governance.reviewed",
+        ),
+    )
+    assert facts == read_governed_supersessions(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=LATE_US
+    )
+
+
+def test_lane_c_19_a_correction_sealed_mid_resolution_cannot_split_the_snapshot(
+    concurrent: tuple[m2.Owned, m2.Owned], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resolution reads one database state, even while an accepted writer seals into it.
+
+    The frontier is folded from two queries, and between them is exactly where a workspace
+    is at its most dangerous: another connection seals a correction, so the second query
+    sees the edge retiring `version-accepted` while the first has already handed back a row
+    set that does not contain the replacement. The record then resolves to *nothing* -- a
+    version the workspace was citing a microsecond earlier, gone, with no instant at which
+    that answer was ever true.
+
+    The interleaving is forced rather than raced: the writer runs from inside a hook on the
+    fact reader itself, so the correction is committed after the version SELECT and before
+    the edge SELECT on every run, on every machine, with no sleep anywhere. The writer is
+    the second EPHEMERAL connection onto this workspace, carrying the same installed
+    authorizer and writing under this workspace's own lease and guard through
+    `fenced_transaction`, so the correction is a real, accepted, sealed, committed row --
+    not a shape only this test can produce.
+
+    Falsifier: read the two queries in separate autocommit statements, as this module did
+    before, and the assertion below gets `()`.
+    """
+    resolver, writer = concurrent
+    m3.seed_accepted_version(resolver)
+    read_facts = governed._read_supersession_facts
+    sealed: list[str] = []
+
+    def seal_then_read(
+        fenced: sqlite3.Connection, *, workspace_id: str, resolution_instant_us: int
+    ) -> tuple[GovernedSupersession, ...]:
+        if not sealed:
+            sealed.append("version-corrected")
+            m3.seed_corrected_version(writer, bootstrap=False)
+        return read_facts(
+            fenced,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+        )
+
+    monkeypatch.setattr(governed, "_read_supersession_facts", seal_then_read)
+    assert resolve(resolver) == ("version-accepted",)
+    assert sealed == ["version-corrected"]
+    assert resolver.connection.in_transaction is False
+    monkeypatch.undo()
+    # The correction really did commit: the next resolution, which is the first one whose
+    # snapshot opens after it, sees it whole.
+    assert resolve(resolver) == ("version-corrected",)
+
+
+def test_lane_c_20_a_caller_owned_transaction_is_left_exactly_as_it_was_found(
+    owned: m2.Owned,
+) -> None:
+    """The resolver ends only a transaction it opened itself.
+
+    A caller resolving inside its own transaction is reading the frontier as one fact among
+    several it means to see together; committing or rolling that transaction back here would
+    end the caller's snapshot underneath it and silently make the reads around this one
+    incomparable. Lane C 13 asserts the other half -- that a transaction this function *did*
+    open is closed before it returns.
+    """
+    seed_chain(owned)
+    owned.connection.execute("BEGIN")
+    try:
+        assert resolve(owned) == ("version-corrected-next",)
+        assert owned.connection.in_transaction is True
+    finally:
+        owned.connection.execute("ROLLBACK")

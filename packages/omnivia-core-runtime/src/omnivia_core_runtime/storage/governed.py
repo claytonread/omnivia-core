@@ -11,6 +11,17 @@ mutations=False, ddl=False)`, so SQLite's own authorizer refuses a write here be
 reaches a row, exactly as `repository.py` establishes. There is no writer, no seal, no
 migration and no cache in this module.
 
+**One snapshot, not two.** The frontier is folded from two queries -- the sealed versions
+and the sealed supersession edges -- and they only answer the same question if they see the
+same database. Read in two separate autocommit statements they do not: an accepted writer
+may seal a correction in between, and the fold then gets the *old* versions plus the *new*
+edge retiring one of them, resolving a live record to nothing. That is the one failure
+direction this module exists to prevent, arrived at from the other side. `resolve_governed_versions`
+therefore opens one explicit read transaction and runs both queries inside it and inside one
+authorizer fence, so either both corrections are visible or neither is. It commits only a
+transaction it opened itself: a caller resolving inside its own transaction gets its own
+snapshot back, unended.
+
 **Only sealed rows exist.** Every read goes through
 `omnivia_authoritative_governed_versions`, which joins the seal. A committed but unsealed
 assembly is inert by construction rather than by a predicate this module remembers to
@@ -87,6 +98,7 @@ _AUTHORITY_RANK: Final[dict[str, int]] = {"proposed": 0, "reviewed": 100, "canon
 _VIEW: Final = "omnivia_authoritative_governed_versions"
 _SUPERSESSIONS: Final = "omnivia_record_supersessions"
 _SEALS: Final = "omnivia_governed_version_seals"
+_EVENTS: Final = "omnivia_governed_provenance_events"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +140,116 @@ class GovernedVersion:
 _COLUMNS: Final[tuple[str, ...]] = tuple(field.name for field in fields(GovernedVersion))
 
 
+@dataclass(frozen=True, slots=True)
+class GovernedSupersession:
+    """One sealed supersession, at the instant it actually took effect.
+
+    `effective_at_us` is the later of the edge's own `recorded_at_us` and that of the
+    sealed target assembly it names -- the instant by which *both* halves of the
+    replacement had been written -- not either row's timestamp on its own. `reason_code`
+    is whatever the edge's provenance event recorded, and is `None` when the event
+    recorded none.
+    """
+
+    workspace_id: str
+    governed_record_id: str
+    source_version_id: str
+    target_version_id: str
+    assembly_id: str
+    effective_at_us: int
+    reason_code: str | None
+
+
+def read_governed_supersessions(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+) -> tuple[GovernedSupersession, ...]:
+    """One workspace's sealed supersessions that had taken effect at `resolution_instant_us`.
+
+    The seal join is the whole point of reading the edge table directly rather than
+    trusting it: `omnivia_record_supersessions` carries no seal of its own, so an unsealed
+    correction sitting in the table would otherwise retire a version that is still the
+    workspace's live answer -- the one direction of error that loses canonical knowledge
+    rather than merely showing too little.
+
+    The target join is the same argument one step further out. A supersession is a
+    *replacement*, so it has happened only once the thing doing the replacing is itself
+    visible -- and 0009's seal trigger ties the edge to its target assembly without ever
+    tying their two `recorded_at_us` together, so an edge recorded before the target
+    assembly it names is a shape the accepted writer permits. Reading the edge alone would
+    then retire the source at the edge's instant while the replacement was still invisible,
+    and the record would resolve to *nothing* for the gap between them. Joining the
+    authoritative view on the exact target assembly -- workspace, `target_version_id` *and*
+    `assembly_id`, which 0009's seal trigger requires to be the assembly carrying the edge
+    -- buys both facts at once: that exact target assembly is sealed, and it was recorded at
+    `t.recorded_at_us`. Matching on the version id alone would identify the target by a
+    column the view does not key on, so the join would say "some sealed assembly for this
+    version" where the effective instant needs *this* one.
+
+    The effective instant is therefore the later of the two, because transaction time asks
+    what the workspace *held*, and it held the source right up until its replacement was
+    there to take over. An unjoined edge (target not sealed) drops out entirely, leaving the
+    source current: too little supersession rather than lost knowledge, the same direction
+    the seal join takes. The provenance join is a *left* join for the opposite reason:
+    `reason_code` is annotation, and a missing or unlabelled event must not delete a
+    supersession that did happen.
+
+    Facts effective after `resolution_instant_us` are not returned at all -- a correction
+    recorded later must not answer a question asked earlier.
+
+    One query, so one statement's implicit snapshot is all this needs; the fence is opened
+    here and the query itself lives in `_read_supersession_facts`, which
+    `resolve_governed_versions` calls directly under the fence and transaction it already
+    owns. Any transaction the caller had open is left exactly as it was found.
+    """
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        return _read_supersession_facts(
+            fenced,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+        )
+
+
+def _read_supersession_facts(
+    fenced: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+) -> tuple[GovernedSupersession, ...]:
+    """`read_governed_supersessions`' query, on a connection already fenced by the caller.
+
+    Split out so the resolver can read the edges inside the *same* authorizer fence and the
+    same read transaction as the versions, rather than through a public entry point that
+    would open a second fence around a second snapshot. It opens neither, on purpose: a
+    reader that fenced itself here could not be composed into a caller's fence without
+    nesting one, and a reader that began its own transaction could not be composed at all.
+
+    The rows are materialised into frozen dataclasses before returning, so nothing the fold
+    holds afterwards is a cursor the connection could still be read through.
+    """
+    rows = fenced.execute(
+        "SELECT r.workspace_id, r.governed_record_id, r.source_version_id, "
+        "       r.target_version_id, r.assembly_id, "
+        "       MAX(r.recorded_at_us, t.recorded_at_us), e.reason_code "
+        f"FROM {_SUPERSESSIONS} r "
+        f"JOIN {_SEALS} s ON s.workspace_id = r.workspace_id "
+        "                AND s.assembly_id = r.assembly_id "
+        f"JOIN {_VIEW} t ON t.workspace_id = r.workspace_id "
+        "               AND t.assembly_id = r.assembly_id "
+        "               AND t.governed_record_version_id = r.target_version_id "
+        f"LEFT JOIN {_EVENTS} e ON e.workspace_id = r.workspace_id "
+        "                      AND e.provenance_event_id = r.provenance_event_id "
+        "WHERE r.workspace_id = ? "
+        "  AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
+        "ORDER BY r.source_version_id ASC, r.target_version_id ASC, "
+        "         r.assembly_id ASC",
+        (workspace_id, resolution_instant_us),
+    ).fetchall()
+    return tuple(GovernedSupersession(*row) for row in rows)
+
+
 def resolve_governed_versions(
     connection: sqlite3.Connection,
     *,
@@ -147,8 +269,10 @@ def resolve_governed_versions(
     visible under any of the three, and `current_canonical` additionally requires the
     instant to fall inside the version's validity window.
 
-    An empty workspace, an unknown workspace and a workspace whose every version has been
-    superseded all resolve to `()`. None of them is an error here.
+    Both queries run inside one read transaction, so the versions and the edges retiring
+    them are read from one database state. An empty workspace, an unknown workspace and a
+    workspace whose every version has been superseded all resolve to `()`. None of them is
+    an error here.
     """
     resolved = resolve_governed_record_view(view)
     if resolved not in GOVERNED_RECORD_VIEWS:
@@ -157,60 +281,58 @@ def resolve_governed_versions(
             f"{sorted(GOVERNED_RECORD_VIEWS)!r} or absent"
         )
 
-    with authorised(connection, mutations=False, ddl=False) as fenced:
-        rows = fenced.execute(
-            f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
-            "WHERE workspace_id = ? AND recorded_at_us <= ? "
-            "ORDER BY governed_record_id ASC, recorded_at_us ASC, append_ordinal ASC, "
-            "assembly_id ASC",
-            (workspace_id, resolution_instant_us),
-        ).fetchall()
-        # The seal join is the whole point of reading the edge table directly rather than
-        # trusting it: `omnivia_record_supersessions` carries no seal of its own, so an
-        # unsealed correction sitting in the table would otherwise retire a version that
-        # is still the workspace's live answer -- the one direction of error that loses
-        # canonical knowledge rather than merely showing too little.
-        #
-        # The target join is the same argument one step further out. A supersession is a
-        # *replacement*, so it has happened only once the thing doing the replacing is
-        # itself visible -- and 0009's seal trigger ties the edge to its target assembly
-        # without ever tying their two `recorded_at_us` together, so an edge recorded
-        # before the target assembly it names is a shape the accepted writer permits.
-        # Reading the edge alone would then retire the source at the edge's instant while
-        # the replacement was still invisible, and the record would resolve to *nothing*
-        # for the gap between them. Joining the authoritative view on the exact target
-        # assembly -- workspace, `target_version_id` *and* `assembly_id`, which 0009's
-        # seal trigger requires to be the assembly carrying the edge -- buys both facts at
-        # once: that exact target assembly is sealed, and it was recorded at
-        # `t.recorded_at_us`. Matching on the version id alone would identify the target
-        # by a column the view does not key on, so the join would say "some sealed
-        # assembly for this version" where the effective instant needs *this* one.
-        #
-        # The effective replacement instant is therefore the later of the two -- the
-        # instant by which both halves of the supersession had been written -- because
-        # transaction time asks what the workspace *held*, and it held the source right up
-        # until its replacement was there to take over. An unjoined edge (target not
-        # sealed) drops out entirely, leaving the source current: too little supersession
-        # rather than lost knowledge, the same direction the seal join takes.
-        #
-        # The *earliest* sealed edge out of a version is the one that ended it. 0009
-        # refuses a branching source, so today there is at most one; MIN states the rule
-        # the fold depends on rather than relying on that refusal holding forever.
-        replaced_at = {
-            source: int(effective_at_us)
-            for source, effective_at_us in fenced.execute(
-                "SELECT r.source_version_id, MIN(MAX(r.recorded_at_us, t.recorded_at_us)) "
-                f"FROM {_SUPERSESSIONS} r "
-                f"JOIN {_SEALS} s ON s.workspace_id = r.workspace_id "
-                "                AND s.assembly_id = r.assembly_id "
-                f"JOIN {_VIEW} t ON t.workspace_id = r.workspace_id "
-                "               AND t.assembly_id = r.assembly_id "
-                "               AND t.governed_record_version_id = r.target_version_id "
-                "WHERE r.workspace_id = ? "
-                "GROUP BY r.source_version_id ORDER BY r.source_version_id ASC",
-                (workspace_id,),
+    # Deferred, because this reads: the snapshot opens at the first SELECT and is held
+    # until this function ends it, which is exactly the span the two queries have to share.
+    # BEGIN, COMMIT and ROLLBACK sit outside the fence -- transaction control is not one of
+    # the statement classes `authorised` widens, and the fence is about what may touch a
+    # row, not about who owns the transaction the rows are read in.
+    #
+    # `owns_transaction` is the whole ownership rule: a caller resolving inside its own
+    # transaction already has a snapshot and wants its transaction back afterwards, so this
+    # function neither begins, commits nor rolls back one it did not open. Only the fence is
+    # unconditional, because both reads must share it either way.
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        with authorised(connection, mutations=False, ddl=False) as fenced:
+            rows = fenced.execute(
+                f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
+                "WHERE workspace_id = ? AND recorded_at_us <= ? "
+                "ORDER BY governed_record_id ASC, recorded_at_us ASC, append_ordinal ASC, "
+                "assembly_id ASC",
+                (workspace_id, resolution_instant_us),
             ).fetchall()
-        }
+            # The supersession rule is not restated here: the seal join, the exact-target
+            # join and the effective instant are one rule about what counts as a
+            # replacement, and a second copy of that rule is a second place for it to
+            # drift. `read_governed_supersessions`' query is reached through its internal
+            # reader rather than through the public function, because the public one would
+            # open a second fence around a second statement -- and under an already-open
+            # transaction that second statement would still be a second *query*, which is
+            # only safe here by accident of this transaction, not by anything it states.
+            facts = _read_supersession_facts(
+                fenced,
+                workspace_id=workspace_id,
+                resolution_instant_us=resolution_instant_us,
+            )
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+
+    # That reader already drops anything effective after the instant, so a version is
+    # replaced exactly when some returned fact names it -- and the *earliest* such fact is
+    # the one that ended it. 0009 refuses a branching source, so today there is at most one;
+    # the `min` states the rule the fold depends on rather than relying on that refusal
+    # holding forever.
+    replaced_at: dict[str, int] = {}
+    for fact in facts:
+        ended_at = replaced_at.get(fact.source_version_id)
+        if ended_at is None or fact.effective_at_us < ended_at:
+            replaced_at[fact.source_version_id] = fact.effective_at_us
 
     versions = tuple(GovernedVersion(*row) for row in rows)
 
@@ -310,6 +432,8 @@ def _precedence(version: GovernedVersion) -> tuple[int, int, str, str, int, str]
 __all__ = [
     "LAYER_CANDIDATE",
     "LAYER_GOVERNED",
+    "GovernedSupersession",
     "GovernedVersion",
+    "read_governed_supersessions",
     "resolve_governed_versions",
 ]
