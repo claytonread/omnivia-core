@@ -11,11 +11,13 @@ test pins the absence of the catalogue so nobody mistakes it for done.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_cli.client import build_request
@@ -427,17 +429,73 @@ def test_cli_and_mcp_cannot_own_a_lease_or_open_storage() -> None:
                 assert forbidden not in called, f"{path} calls {forbidden}"
 
 
-def test_the_mcp_distribution_ships_no_operational_module() -> None:
-    """MCP is a skeleton surface in Phase 2, and must not reach a sibling to be one.
+#: Every distribution `omnivia-core-mcp` is permitted to depend on, and the whole
+#: of it. R004-05 states this list: the public Core contracts, the client for all
+#: service calls, and the official MCP SDK as the sole MCP framework dependency.
+MCP_ALLOWED_DEPENDENCIES = frozenset(
+    {"omnivia-core", "omnivia-core-client", "mcp"}
+)
 
-    Its adapter imported `omnivia_core_cli.client`, so making the wheel installable
-    meant declaring a dependency on a sibling package. The approved topology has
-    Runtime, MCP and CLI depending only on `omnivia-core`, and B9/B10 remain partial
-    pending a separately approved packet -- so the operational adapter is out of this
-    candidate rather than in it with a prohibited edge.
+#: There was a `MCP_FORBIDDEN_DEPENDENCIES` set here, and it was dead code that
+#: read as a guard. It was disjoint from the allow-list above and the closed
+#: allow-list assertion runs first, so the forbidden assertion could never fire:
+#: gutting the set to `frozenset()` while `omnivia-core-cli` was declared still
+#: went red, on the allow-list. It was spelling-fragile as well --
+#: `_requirement_name` does no PEP 503 normalisation, so `omnivia_core_cli`, a
+#: valid PEP 508 spelling of the same distribution, was not in it.
+#:
+#: The closed allow-list is the sound guard and it is sufficient: `names <=
+#: MCP_ALLOWED_DEPENDENCIES` refuses *every* distribution outside three, named or
+#: not, so it needs no list of the ones somebody thought of. Its comparison is
+#: normalised here rather than in a second set.
+#:
+#: The import half of R004-05 -- the edge with the history, since the deleted MCP
+#: adapter imported `omnivia_core_cli.client` -- is not this assertion's to hold
+#: and never was. `check_adapters_do_not_depend_on_runtime_or_each_other` in
+#: `scripts/check-package-boundaries.py` holds it, by AST, in both directions.
+
+
+def _requirement_name(requirement: str) -> str:
+    """The PEP 503-normalised distribution name a PEP 508 requirement starts with.
+
+    Normalised because `omnivia_core_cli` and `omnivia-core-cli` are one
+    distribution and PEP 508 accepts both spellings: an unnormalised comparison
+    against a hyphenated allow-list would admit the underscore spelling of a name
+    the list does not contain.
+    """
+    for index, character in enumerate(requirement):
+        if character in "<>=!~[; ":
+            requirement = requirement[:index]
+            break
+    return re.sub(r"[-_.]+", "-", requirement.strip()).lower()
+
+
+def _mcp_manifest() -> dict[str, Any]:
+    import tomllib
+
+    import omnivia_core_mcp
+
+    return tomllib.loads(
+        (
+            Path(omnivia_core_mcp.__file__).parents[2] / "pyproject.toml"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
+    """MCP is an operational server now, and these are the modules it is made of.
+
+    This assertion used to read `shipped == {"__init__.py"}`, because MCP was a
+    skeleton and its only operational module had reached across a forbidden edge.
+    Owner resolution 004 Packet C authorised the real surface, so the assertion is
+    rewritten to describe it rather than deleted: an unexpected module appearing
+    beside these is still a change somebody has to make deliberately.
+
+    `adapter` keeps its own line. That is the module that imported
+    `omnivia_core_cli.client`, and its absence is a fact worth continuing to
+    assert now that the package has a legitimate server to be confused with.
     """
     import importlib
-    import tomllib
 
     import omnivia_core_mcp
 
@@ -446,17 +504,121 @@ def test_the_mcp_distribution_ships_no_operational_module() -> None:
         for path in Path(omnivia_core_mcp.__file__).parent.iterdir()
         if path.suffix == ".py"
     }
-    assert shipped == {"__init__.py"}, f"unexpected operational modules: {sorted(shipped)}"
+    assert shipped == {
+        "__init__.py",
+        "manifest.py",
+        "managed_start.py",
+        "server.py",
+    }, f"unexpected modules: {sorted(shipped)}"
 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("omnivia_core_mcp.adapter")
 
-    manifest = tomllib.loads(
-        (
-            Path(omnivia_core_mcp.__file__).parents[2] / "pyproject.toml"
-        ).read_text(encoding="utf-8")
+    # The console script R004's Packet C requires, so the distribution is usable
+    # by an MCP host rather than merely importable.
+    assert _mcp_manifest()["project"]["scripts"] == {
+        "omnivia-core-mcp": "omnivia_core_mcp.server:main"
+    }
+
+
+def test_the_cli_and_mcp_derive_the_same_installation_layout(tmp_path: Path) -> None:
+    """One `~/.omnivia` convention, restated in two adapters, compared here.
+
+    ADR-036 forbids `omnivia-core-mcp` importing `omnivia-core-cli`, so the layout
+    exists twice by design. A restated fact is only safe while something fails
+    when the two copies drift, and this is that something -- it lives on the
+    runtime's side because that is the side allowed to import both.
+
+    The drift this prevents is not hypothetical. The CLI restated the runtime's
+    socket-path ceiling and the two ran 11 to 15 bytes apart until Packet D fixed
+    it. Here the consequence would be worse than a bad error message: a CLI-started
+    service and an MCP-started one would bind different sockets under different
+    workspace roots, and the "one authoritative writable service per workspace"
+    guarantee would be quietly false.
+    """
+    from omnivia_core_cli import lifecycle as cli_lifecycle
+    from omnivia_core_mcp import managed_start as mcp_managed_start
+
+    cli = cli_lifecycle.Installation(home=tmp_path)
+    mcp = mcp_managed_start.Installation(home=tmp_path)
+
+    for attribute in (
+        "workspace_root",
+        "installation_state",
+        "run_directory",
+        "socket_path",
+        "log_path",
+        "endpoint_uri",
+    ):
+        assert getattr(cli, attribute) == getattr(mcp, attribute), attribute
+
+    assert (
+        cli_lifecycle.DEFAULT_HOME_DIRECTORY
+        == mcp_managed_start.DEFAULT_HOME_DIRECTORY
     )
-    assert manifest["project"]["dependencies"] == ["omnivia-core>=0.1.0,<0.2.0"]
+    assert cli_lifecycle.SERVICE_EXECUTABLE == mcp_managed_start.SERVICE_EXECUTABLE
+    assert cli_lifecycle.MANIFEST_NAME == mcp_managed_start.MANIFEST_NAME
+    assert cli_lifecycle.home_directory() == mcp_managed_start.home_directory()
+
+
+def test_the_mcp_distribution_declares_only_allow_listed_dependencies() -> None:
+    """R004-05's dependency ruling: an allow-list, checked by name.
+
+    This was an exact equality against `["omnivia-core>=0.1.0,<0.2.0"]`, and it is
+    widened rather than deleted because it is the **only** guard in the repository
+    on R004-05's "must not depend on `omnivia-core-cli`". Deleting it to let the
+    SDK dependency land would have silently retired an owner ruling; an equality
+    kept as-is would have fired on the dependency declaration alone, before any
+    prohibited edge existed.
+
+    So it becomes what the ruling actually says: a closed allow-list, where a
+    fourth distribution fails even if it is harmless. There was a second assertion
+    against a separate forbidden set; see the note above `_requirement_name` for
+    why it was dead code and why the closed allow-list alone is the sound guard.
+    """
+    declared = _mcp_manifest()["project"]["dependencies"]
+    names = {_requirement_name(requirement) for requirement in declared}
+
+    assert names <= MCP_ALLOWED_DEPENDENCIES, (
+        f"omnivia-core-mcp declares {sorted(names - MCP_ALLOWED_DEPENDENCIES)}, "
+        f"which R004-05 does not admit; the whole allow-list is "
+        f"{sorted(MCP_ALLOWED_DEPENDENCIES)}"
+    )
+
+    # Every allow-listed name must itself be in normalised form, or the comparison
+    # above is against a spelling `_requirement_name` can never produce.
+    assert MCP_ALLOWED_DEPENDENCIES == {
+        re.sub(r"[-_.]+", "-", name).lower() for name in MCP_ALLOWED_DEPENDENCIES
+    }
+
+    # The SDK edge is pinned to the approved major range, not merely present.
+    # R004-05 fixes both the package and the range; a bare `mcp` or an `mcp>=3`
+    # would satisfy the allow-list above while breaking the ruling.
+    assert "mcp>=2,<3" in declared, (
+        f"R004-05 requires the official SDK constrained >=2,<3; found {declared}"
+    )
+
+
+def test_the_dependency_allow_list_admits_no_spelling_of_a_name_outside_it() -> None:
+    """PEP 508 accepts `omnivia_core_cli` and `omnivia-core-cli` for one
+    distribution. The retired forbidden set held only the hyphenated spelling and
+    `_requirement_name` did no normalisation, so the underscore form was outside
+    it -- one of two reasons that set was not the guard it read as. The closed
+    allow-list has to be immune to the same trick, which means the normalisation
+    is load-bearing and gets its own assertion rather than being trusted."""
+    for spelling in (
+        "omnivia-core-cli>=0.1.0,<0.2.0",
+        "omnivia_core_cli>=0.1.0,<0.2.0",
+        "Omnivia.Core.CLI==0.1.0",
+        "omnivia_core_runtime",
+        "FastMCP[all]>=2",
+    ):
+        assert _requirement_name(spelling) not in MCP_ALLOWED_DEPENDENCIES, spelling
+
+    # ...and the admitted names still parse to themselves, in every spelling a
+    # manifest may legitimately use.
+    assert _requirement_name("omnivia_core_client >= 0.1.0") == "omnivia-core-client"
+    assert _requirement_name("mcp>=2,<3") == "mcp"
 
 
 def test_the_cli_reports_no_service_rather_than_crashing(tmp_path: Path) -> None:

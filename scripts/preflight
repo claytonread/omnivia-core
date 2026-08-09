@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# The one command to run before opening a pull request.
+#
+# Mirrors `.github/workflows/core-acceptance.yml`, which defines the required
+# check `Core acceptance`. A green run here is local evidence the gate will
+# pass. It is not a substitute for the gate: only the run on the pull request
+# reports the required check.
+#
+# One-time provisioning (this script validates, it does not provision):
+#
+#   python3.11 -m venv .venv
+#   .venv/bin/python -m pip install --upgrade pip
+#   .venv/bin/python -m pip install "build>=1.2,<2" "hatchling>=1.26,<2" \
+#     "jsonschema[format]>=4.25,<5" "types-jsonschema>=4.25,<5" \
+#     "pymupdf>=1.24,<2" "python-docx>=1.1,<2" ruff mypy pytest
+#   .venv/bin/python -m pip install -e .
+#   .venv/bin/python -m pip install -e "services/omnivia-memory[dev]"
+#   for p in runtime cli mcp client; do
+#     .venv/bin/python -m pip install -e "packages/omnivia-core-$p"
+#   done
+#   npm ci
+#
+# Environment:
+#   PYTHON  interpreter to use. Defaults to ./.venv/bin/python when present,
+#           otherwise python3. Must be 3.11 or newer.
+#   OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT
+#           the accepted contract checkpoint. Read from repository configuration
+#           with `gh` when unset, exactly as CI reads it from `vars.` -- never
+#           from a constant in this tree, because a candidate that could supply
+#           its own anchor would certify itself.
+#
+# Needs network: the root-facade resolver smoke resolves against the configured
+# package index and has no offline fallback, and the checkpoint lookup calls the
+# GitHub API. Both fail closed rather than skipping.
+set -euo pipefail
+
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -z "${PYTHON:-}" ]; then
+  if [ -x .venv/bin/python ]; then PYTHON=.venv/bin/python; else PYTHON=python3; fi
+fi
+# Absolute, because the shim below is invoked from steps that change directory.
+case "$PYTHON" in
+  */*) PYTHON="$(cd "$(dirname "$PYTHON")" && pwd)/$(basename "$PYTHON")" ;;
+  *) PYTHON="$(command -v "$PYTHON")" ;;
+esac
+
+"$PYTHON" - <<'PY'
+import sys
+if sys.version_info < (3, 11):
+    sys.exit(f"preflight: need Python 3.11+, got {sys.version.split()[0]}")
+PY
+
+# CI provides a `python` on PATH via actions/setup-python, and every command
+# below is copied from the workflow verbatim so the two cannot drift in wording.
+# A shim gives the same name here without requiring an activated virtualenv.
+SHIM="$(mktemp -d)"
+trap 'rm -rf "$SHIM"' EXIT
+printf '#!/bin/sh\nexec %s "$@"\n' "$PYTHON" >"$SHIM/python"
+chmod +x "$SHIM/python"
+export PATH="$SHIM:$PATH"
+
+if [ -z "${OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT:-}" ]; then
+  command -v gh >/dev/null 2>&1 || {
+    echo "preflight: OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT is unset and gh is not installed." >&2
+    echo "           Set it from repository configuration, not from this tree." >&2
+    exit 1
+  }
+  OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT="$(
+    gh api "repos/${GITHUB_REPOSITORY:-claytonread/omnivia-core}/actions/variables/OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT" \
+      --jq .value
+  )"
+  export OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT
+fi
+
+step() {
+  printf '\n=== %s\n' "$1"
+  shift
+  "$@"
+}
+
+# ponytail: the Ruff and mypy target lists live in the workflow, where
+# tests/test_core_acceptance_workflow.py locks them to a REQUIRED constant.
+# Extracting the step's script keeps one source of truth; copying ~80 paths here
+# would drift silently. Empty extraction is a hard failure, never a skip.
+workflow_step() {
+  awk -v want="      - name: $1" '
+    $0 == want { found = 1; next }
+    found && /^      - name: / { exit }
+    found && /^        run: \|/ { body = 1; next }
+    found && body { sub(/^          /, ""); print }
+  ' .github/workflows/core-acceptance.yml
+}
+
+step_from_workflow() {
+  local script
+  script="$(workflow_step "$1")"
+  [ -n "$script" ] || {
+    echo "preflight: could not extract step '$1' from core-acceptance.yml" >&2
+    exit 1
+  }
+  printf '\n=== %s\n' "$1"
+  bash -c "$script"
+}
+
+step "Check package boundaries" python scripts/check-package-boundaries.py
+step "Run package boundary tests" python -m pytest tests/test_package_boundaries.py -q
+step "Build and install-check all distributions" env PYTHON=python scripts/check-package-builds.sh
+step "Check application contracts" python scripts/check-application-contracts.py
+step "Check generated Host Contract" python scripts/generate-host-contract.py --check
+step "Run application contract tests" python -m pytest tests/contracts -q
+step "Check generated TypeScript contracts" npm run check:application-contracts
+step "Check compatibility facade routes" python scripts/check-facade-routes.py
+step "Run canonical migration and compatibility tests" \
+  python -m pytest tests/canonical_migration tests/compatibility -q
+step "Run compatibility root resolver and installed-root smoke" \
+  python scripts/check-root-facade-resolver.py
+step "Verify Phase 0 baseline" env PYTHON=python scripts/check-core-baseline.sh
+step "Run full repository test suite" python -m pytest services tests \
+  packages/omnivia-core-runtime/tests \
+  packages/omnivia-core-client/tests -q
+step "Run benchmark tests" python -m pytest benchmarks/tests -q
+step_from_workflow "Run Ruff"
+step_from_workflow "Run strict mypy"
+
+printf '\nCore preflight passed. Open the pull request.\n'

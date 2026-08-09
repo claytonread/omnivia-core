@@ -43,6 +43,7 @@ ALLOWED_IMPORTS = frozenset(
         "os",
         "pathlib",
         "re",
+        "socket",
         "stat",
         "threading",
         "time",
@@ -50,13 +51,35 @@ ALLOWED_IMPORTS = frozenset(
     }
 )
 
+#: The one module allowed to import ``socket``, and the only reason ``socket`` is
+#: on the allowlist above at all.
+#:
+#: Owner resolution 005 R005-01 placed the concrete local transport in this
+#: package. That admits exactly one socket-opening module, and this pins it to
+#: that module by name rather than letting the ban lapse for all seven: a
+#: ``socket`` import appearing in ``framing.py`` or ``discovery.py`` would still
+#: be a protocol foundation quietly becoming a transport, which is the thing the
+#: original ban was protecting and the thing the resolution did not change.
+#:
+#: What the resolution *did* change is the reasoning that put the transport in the
+#: CLI. The boundary that defines this distribution is its dependency edge --
+#: still exactly ``omnivia-core``, asserted below and by
+#: ``scripts/check-package-boundaries.py`` -- not its standard-library surface.
+SOCKET_MODULE = "local_ipc.py"
+
 #: Named explicitly so a failure says *what* leaked rather than only that the
 #: allowlist was exceeded. Every one of these is forbidden for a stated reason:
 #: a sibling distribution would invert the package topology; a database driver,
 #: a workspace store, or a lease belongs to the runtime that owns the workspace;
-#: a socket, pipe, or subprocess would make this foundation a transport and a
-#: process manager; a third-party HTTP or web framework would be a dependency
-#: this distribution does not have.
+#: a pipe or subprocess would make this foundation a process manager; a
+#: third-party HTTP or web framework would be a dependency this distribution does
+#: not have.
+#:
+#: ``socket`` is *not* here: it is confined to :data:`SOCKET_MODULE` by
+#: :func:`test_only_the_local_ipc_module_opens_a_socket`, which is a stricter
+#: statement than this tuple can make. ``ssl`` and ``urllib`` stay banned
+#: outright -- the local transport dials an installation-local Unix socket, and
+#: neither a TLS stack nor a URL fetcher is part of that.
 FORBIDDEN_IMPORTS = (
     "aiohttp",
     "asyncio",
@@ -73,7 +96,6 @@ FORBIDDEN_IMPORTS = (
     "requests",
     "shlex",
     "shutil",
-    "socket",
     "sqlite3",
     "ssl",
     "subprocess",
@@ -108,12 +130,27 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "discovery.py",
         "errors.py",
         "framing.py",
+        "local_ipc.py",
         "transport.py",
     }
 
 
 def test_the_import_surface_is_exactly_the_allowlist() -> None:
     assert ALL_IMPORTS <= ALLOWED_IMPORTS, sorted(ALL_IMPORTS - ALLOWED_IMPORTS)
+
+
+def test_only_the_local_ipc_module_opens_a_socket() -> None:
+    """One socket-opening module, named. The other six stay a pure foundation.
+
+    Dropping ``socket`` from the allowlist ban to admit the transport would have
+    lifted it for every module at once. This keeps the ban everywhere except the
+    one file owner resolution 005 R005-01 put it in, so the next ``import
+    socket`` anywhere else in this package still fails.
+    """
+    importers = sorted(
+        path.name for path in MODULES if "socket" in _imported_roots(path)
+    )
+    assert importers == [SOCKET_MODULE]
 
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_IMPORTS)
@@ -249,12 +286,18 @@ def test_the_typing_marker_ships() -> None:
 
 
 def test_the_readme_marks_the_unimplemented_surfaces() -> None:
+    """What is still absent, after R005-01 landed the local transport.
+
+    ``local socket`` left this list because the local socket transport now
+    ships. The Windows named pipe took its place: it is the half of local IPC
+    that is still a successor, and `socket_path_for` refuses ``pipe://`` in so
+    many words rather than failing as a connection error.
+    """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     not_implemented = readme.split("## Not implemented yet", 1)
     assert len(not_implemented) == 2, "README must state what is not implemented yet"
     for surface in (
-        "discovery",
-        "local socket",
+        "named-pipe",
         "HTTP transport",
         "retry",
         "managed service startup",

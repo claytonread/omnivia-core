@@ -10,11 +10,13 @@ is stubbed: not the server, not the transport, not the frame, not the workspace.
 A stubbed server would prove the CLI can talk to a fixture, which is not the
 claim.
 
-**The transport, against a server that misbehaves.** A real listening socket
-that answers with bytes the test chooses. The framing and error paths cannot be
-reached from a correct server -- a correct server never sends a truncated frame
--- so they get a peer that does, rather than a mock of the socket module. The
-bytes are real and the failure is the transport's own.
+**The transport's own framing and error paths are no longer here.** Owner
+resolution 005 R005-01 moved `LocalIpcTransport` into `omnivia-core-client`, and
+its misbehaving-peer tests went with it to
+`packages/omnivia-core-client/tests/test_local_ipc.py`. What stays is this lane's
+adapter-level coverage: the CLI against a real service, and the two guards below
+that sit between the transport and the caller and so belong to the CLI rather
+than to the transport.
 
 `packages/omnivia-core-cli/tests` is collected by `core-acceptance.yml`'s
 full-suite step, and by nothing else. `phase2-platform.yml` does not name this
@@ -48,17 +50,12 @@ from omnivia_core_cli.main import (
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
 )
-from omnivia_core_cli.transport import LocalIpcTransport, socket_path_for
 from omnivia_core_client import (
     Deadline,
-    DeadlineExceededError,
-    ProtocolError,
-    TransportError,
+    LocalIpcTransport,
     decode_frame,
-    encode_frame,
+    socket_path_for,
 )
-from omnivia_core_client.deadline import CancellationToken
-from omnivia_core_client.errors import OperationCancelledError
 
 from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
@@ -424,376 +421,6 @@ def test_a_repeated_principal_claim_is_refused_the_same_way_every_time(
 
 
 # ---------------------------------------------------------------------------
-# The transport's framing and error paths
-# ---------------------------------------------------------------------------
-
-
-class ScriptedPeer:
-    """A real listening socket that answers one connection with chosen bytes.
-
-    Records what it was sent, so the unary discipline the server relies on can be
-    asserted rather than assumed.
-    """
-
-    def __init__(
-        self,
-        reply: bytes | None,
-        *,
-        hold: bool = False,
-        dribble_seconds: float | None = None,
-    ) -> None:
-        self.hold = hold
-        self.dribble_seconds = dribble_seconds
-        self.directory = _short_socket_directory()
-        self.path = self.directory / "s.sock"
-        self.received = b""
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(str(self.path))
-        self._server.listen(1)
-        self._server.settimeout(30)
-        self._reply = reply
-        self._released = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-        self._thread.start()
-
-    @property
-    def endpoint_uri(self) -> str:
-        return f"unix://{self.path}"
-
-    def _serve(self) -> None:
-        try:
-            connection, _ = self._server.accept()
-        except OSError:  # pragma: no cover - only when the test tears down early
-            return
-        with connection:
-            try:
-                # Read until the client stops sending, so a client that wrote
-                # more than one frame is visible in `received` rather than
-                # invisible. The timeout is the "stopped sending" signal; the
-                # client is local and has already written before this runs.
-                connection.settimeout(0.5)
-                while True:
-                    chunk = connection.recv(65536)
-                    if not chunk:
-                        break
-                    self.received += chunk
-            except OSError:
-                pass
-            if self._reply is None:
-                # Hold the connection open until teardown. Closing here would
-                # give the client an end-of-stream, and a test that means to
-                # observe a deadline would observe a dropped call instead --
-                # a race between this thread's read timeout and the client's
-                # budget, decided differently on a loaded machine.
-                self._released.wait(timeout=30)
-                return
-            try:
-                if self.dribble_seconds is None:
-                    connection.sendall(self._reply)
-                else:
-                    # One byte at a time, slowly. Every individual read succeeds,
-                    # so only a budget that spans the whole call can end this.
-                    for index in range(len(self._reply)):
-                        connection.sendall(self._reply[index : index + 1])
-                        time.sleep(self.dribble_seconds)
-            except OSError:  # pragma: no cover - client may have gone
-                pass
-            if self.hold:
-                # Stay open after answering. A close would hand the client an
-                # end-of-stream, which is a different thing from a peer that has
-                # simply not said any more yet -- and it is the second one that
-                # a bounded quiet window has to be able to tell apart.
-                self._released.wait(timeout=30)
-
-    def close(self) -> None:
-        self._released.set()
-        self._server.close()
-        self._thread.join(timeout=5)
-        shutil.rmtree(self.directory, ignore_errors=True)
-
-
-@pytest.fixture
-def scripted_peer() -> Iterator[object]:
-    peers: list[ScriptedPeer] = []
-
-    def make(reply: bytes | None, **options: object) -> ScriptedPeer:
-        peer = ScriptedPeer(reply, **options)  # type: ignore[arg-type]
-        peers.append(peer)
-        return peer
-
-    yield make
-    for peer in peers:
-        peer.close()
-
-
-def _probe_request(request_id: str = "cli-frame-1") -> object:
-    return _inspect_request(request_id=request_id)
-
-
-def test_a_reply_with_the_wrong_magic_is_a_protocol_error(scripted_peer: object) -> None:
-    peer = scripted_peer(b"XXXX" + (4).to_bytes(4, "big") + b"{}\n\n")  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="magic"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_wrong_protocol_listener_is_named_at_once_and_not_waited_out(
-    scripted_peer: object,
-) -> None:
-    """The magic is checked before the length is used, or a squatter wins.
-
-    The peer sends eight bytes that are not an OVC1 header and then says nothing
-    more, holding the connection open. Those four length bytes are a foreign
-    protocol's payload, not a byte count -- and a transport that reads them as
-    one blocks for the whole budget and then reports a deadline, telling an
-    operator the service was slow when a wrong-protocol listener was squatting
-    the endpoint.
-
-    The test above cannot catch this: it *sends* the body, so the read completes
-    and `decode_frame` is reached whatever the order. Withholding the body is
-    what makes the ordering observable.
-
-    The elapsed assertion is the whole point. A generous ceiling, because it has
-    to separate "refused immediately" from "waited out a 5-second budget", not
-    measure anything finer.
-    """
-    peer = scripted_peer(b"HELO" + (1024).to_bytes(4, "big"), hold=True)  # type: ignore[operator]
-
-    started = time.monotonic()
-    with pytest.raises(ProtocolError, match="magic"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(5.0)  # type: ignore[arg-type]
-        )
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 2.0, f"refusal waited {elapsed:.3f}s instead of being immediate"
-
-
-def test_no_diagnostic_renders_bytes_from_a_foreign_stream(
-    scripted_peer: object,
-) -> None:
-    """A refusal quotes no part of a header it did not recognise.
-
-    `b"HTTP/1.1"` is eight bytes of somebody else's protocol. Read as a header it
-    yields a declared length of 791752241, and reporting that number puts four
-    bytes of peer material into a diagnostic in a module whose stated rule is
-    that peer material is discarded -- and calls them "OVC1 body bytes" of a
-    frame that is not one.
-    """
-    peer = scripted_peer(b"HTTP/1.1", hold=True)  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError) as raised:
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(5.0)  # type: ignore[arg-type]
-        )
-
-    message = str(raised.value)
-    assert "791752241" not in message
-    assert "HTTP" not in message
-    assert "magic" in message
-
-
-def test_a_second_frame_after_the_answer_is_refused_rather_than_ignored(
-    scripted_peer: object,
-) -> None:
-    """A stale first frame must not win by arriving first.
-
-    `decode_frame` owns the trailing-byte rule, but it only ever sees the bytes
-    this transport hands it -- exactly one declared frame -- so that branch can
-    never fire from here. Without a check on the stream itself, a peer replying
-    with two frames has the first accepted and the second silently dropped, and
-    a caller is handed a stale answer with no indication anything was discarded.
-    """
-    stale = encode_frame({"answer": "STALE"})
-    fresh = encode_frame({"answer": "real"})
-    peer = scripted_peer(stale + fresh, hold=True)  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="trailing bytes"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_peer_that_dribbles_a_legal_frame_is_cut_off_by_the_whole_call_budget(
-    scripted_peer: object,
-) -> None:
-    """Every wait is bounded by what is *left*, not by a fresh budget each time.
-
-    The frame is legal and every individual byte arrives well inside any
-    per-read timeout, so nothing but a deadline re-read on each pass can end
-    this. Hoisting the deadline check out of the read loop -- the one refactor
-    the loop's docstring warns against -- leaves every other test in this file
-    green and lets a peer hold the process for as long as it keeps dribbling.
-    """
-    body = b'{"a":"bb"}'
-    frame = b"OVC1" + len(body).to_bytes(4, "big") + body
-    peer = scripted_peer(frame, dribble_seconds=0.6, hold=True)  # type: ignore[operator]
-
-    started = time.monotonic()
-    with pytest.raises(DeadlineExceededError):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(2.0)  # type: ignore[arg-type]
-        )
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 4.0, f"the call ran {elapsed:.2f}s past a 2.00s deadline"
-
-
-def test_a_reply_declaring_a_zero_byte_body_is_a_protocol_error(
-    scripted_peer: object,
-) -> None:
-    peer = scripted_peer(b"OVC1" + (0).to_bytes(4, "big"))  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="zero-byte"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_reply_declaring_more_than_the_frozen_maximum_is_refused_before_it_is_read(
-    scripted_peer: object,
-) -> None:
-    """The length is judged against the frozen bound before the body is read.
-
-    The peer sends the header and nothing else. If the bound were checked after
-    the read, this would block until the deadline instead of refusing at once.
-    """
-    oversized = (4 * 1024 * 1024 + 1).to_bytes(4, "big")
-    peer = scripted_peer(b"OVC1" + oversized)  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="maximum"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_truncated_reply_is_a_transport_error(scripted_peer: object) -> None:
-    """The peer declares more body than it sends, then closes."""
-    peer = scripted_peer(b"OVC1" + (64).to_bytes(4, "big") + b"{}")  # type: ignore[operator]
-
-    with pytest.raises(TransportError, match="closed after"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_reply_whose_json_is_not_canonical_is_a_protocol_error(
-    scripted_peer: object,
-) -> None:
-    """OVC1 admits canonical bytes only, and the client's decoder is what says so.
-
-    The refusal is matched on `canonical` rather than merely on the exception
-    type. These bytes are perfectly good JSON, so a transport that parsed the
-    body itself instead of routing it through the accepted decoder would still
-    fail this call -- later, on the envelope, for the wrong reason. Pinning the
-    reason is what makes this test about admission rather than about luck.
-    """
-    body = b'{"b": 1, "a": 2}'
-    peer = scripted_peer(b"OVC1" + len(body).to_bytes(4, "big") + body)  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="canonical"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_well_framed_reply_that_is_not_a_response_envelope_is_a_protocol_error(
-    scripted_peer: object,
-) -> None:
-    """A frame can be perfect and still not be an answer."""
-    peer = scripted_peer(encode_frame({"not": "an envelope"}))  # type: ignore[operator]
-
-    with pytest.raises(ProtocolError, match="response envelope"):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_a_peer_that_answers_nothing_runs_out_of_deadline(scripted_peer: object) -> None:
-    peer = scripted_peer(None)  # type: ignore[operator]
-
-    with pytest.raises(DeadlineExceededError):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(0.5)  # type: ignore[arg-type]
-        )
-
-
-def test_exactly_one_frame_is_written_and_nothing_follows_it(
-    scripted_peer: object,
-) -> None:
-    """The server refuses a connection carrying trailing bytes, so this must hold.
-
-    The peer reads until the client stops sending and keeps every byte. What it
-    holds must be exactly the one encoded request frame -- not a prefix of it,
-    and not one byte more.
-    """
-    request = _probe_request()
-    peer = scripted_peer(None)  # type: ignore[operator]
-
-    with pytest.raises(DeadlineExceededError):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            request, deadline=Deadline.after(1.0)  # type: ignore[arg-type]
-        )
-
-    assert peer.received == encode_frame(codec.encode_request(request))  # type: ignore[arg-type]
-
-
-def test_an_endpoint_with_no_listener_is_a_transport_error(tmp_path: Path) -> None:
-    missing = f"unix://{tmp_path / 'absent.sock'}"
-
-    with pytest.raises(TransportError, match="could not be reached"):
-        LocalIpcTransport(endpoint_uri=missing).call(
-            _probe_request(), deadline=Deadline.after(CALL_TIMEOUT)  # type: ignore[arg-type]
-        )
-
-
-def test_an_expired_deadline_sends_nothing_at_all(scripted_peer: object) -> None:
-    """The precondition is checked before the first byte, not after the connect."""
-    peer = scripted_peer(None)  # type: ignore[operator]
-
-    with pytest.raises(DeadlineExceededError):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(), deadline=Deadline.after(0.0)  # type: ignore[arg-type]
-        )
-
-    assert peer.received == b""
-
-
-def test_a_cancelled_call_sends_nothing_at_all(scripted_peer: object) -> None:
-    """Cancellation is reported as cancellation, and is tested before the clock."""
-    peer = scripted_peer(None)  # type: ignore[operator]
-    token = CancellationToken()
-    token.cancel()
-
-    with pytest.raises(OperationCancelledError):
-        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).call(
-            _probe_request(),  # type: ignore[arg-type]
-            deadline=Deadline.after(CALL_TIMEOUT),
-            cancellation=token,
-        )
-
-    assert peer.received == b""
-
-
-def test_a_non_local_endpoint_is_refused_rather_than_dialled() -> None:
-    """Only the installation-local scheme, and a Windows pipe says so in its own words."""
-    for endpoint in ("pipe://omnivia-core", "http://127.0.0.1:9999", "/bare/path.sock"):
-        with pytest.raises(TransportError, match="unix://"):
-            socket_path_for(endpoint)
-
-
-def test_an_endpoint_naming_no_path_is_refused() -> None:
-    with pytest.raises(TransportError, match="no local socket path"):
-        socket_path_for("unix://")
-
-
-def test_the_socket_path_is_the_endpoints_own_path() -> None:
-    assert socket_path_for("unix:///run/omnivia/s.sock") == "/run/omnivia/s.sock"
-
-
-# ---------------------------------------------------------------------------
 # The boundary this lane must not cross
 # ---------------------------------------------------------------------------
 
@@ -819,11 +446,10 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
     """Refusal 8, restated over the files this lane adds.
 
     The existing guards in `test_service_and_adapters.py` walk the whole CLI
-    source tree and so already cover `transport.py`. This is here because that
-    file belongs to another distribution's suite and another lane's manifest: a
-    reader of *this* lane should be able to see the boundary held without
-    leaving it, and if the CLI tree ever moves out from under that walk, this
-    fails too.
+    source tree already. This is here because that file belongs to another
+    distribution's suite and another lane's manifest: a reader of *this* lane
+    should be able to see the boundary held without leaving it, and if the CLI
+    tree ever moves out from under that walk, this fails too.
 
     **What this test can and cannot catch.** It reads source and nothing else, so
     it catches exactly what is written down: a literal `import sqlite3` or `import
@@ -849,6 +475,7 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
     load-bearing for "the CLI opens no database". Neither is redundant: this one
     reads every module including ones no command exercises, and that one sees
     through any amount of indirection in the four commands it runs.
+
     """
     import ast
 
@@ -883,23 +510,25 @@ def test_the_cli_source_opens_no_authoritative_storage_and_imports_no_runtime() 
             )
 
 
-def test_the_client_package_still_ships_no_socket() -> None:
-    """Why the concrete transport lives here and not in `omnivia-core-client`.
+def test_the_cli_ships_no_transport_of_its_own() -> None:
+    """The CLI dials through the client's transport and holds no copy of one.
 
-    The client's accepted isolation test names `socket` forbidden and pins its
-    module list exactly, so a concrete socket transport cannot be added to that
-    distribution without relaxing an accepted boundary. This asserts the premise
-    that argument rests on, so the day it stops being true this lane's file
-    placement is re-examined rather than silently left where it is.
+    This replaces `test_the_client_package_still_ships_no_socket`, which asserted
+    that `omnivia-core-client` opens no socket -- the premise for filing the
+    transport here. Owner resolution 005 R005-01 overturned that premise and moved
+    the transport into the client, so the assertion is inverted: the socket is now
+    the client's, and what this lane must not do is grow a second one.
+
+    The client's own `test_only_the_local_ipc_module_opens_a_socket` holds the
+    other half, confining the socket there to one named module.
     """
     import ast
 
-    import omnivia_core_client
+    source_root = Path(__file__).resolve().parents[1] / "src" / "omnivia_core_cli"
+    modules = sorted(source_root.rglob("*.py"))
+    assert modules, "the CLI source tree was not found"
 
-    client_root = Path(omnivia_core_client.__file__).resolve().parent
-    # `rglob`, not `glob`: a socket transport added to the client as a
-    # subpackage would sit under a directory this test must still see.
-    for path in sorted(client_root.rglob("*.py")):
+    for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -942,7 +571,7 @@ def test_no_string_the_cli_emits_claims_a_verified_operating_system_peer() -> No
     """The section 17a.3 prohibition, over this lane's own source.
 
     Lane A enforces this with an AST scan over the three runtime modules it owns.
-    Those three are named in that file, so `transport.py` and `main.py` are
+    Those three are named in that file, so this distribution's modules are
     outside it and the scan cannot see them -- the rule is applied here instead,
     by the same method and with the same word list, because a lane that adds a
     caller adds new places for a false claim to be emitted from.

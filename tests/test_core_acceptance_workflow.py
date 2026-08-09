@@ -77,14 +77,15 @@ GATE_STEPS = (
     # rather than depending on a configuration file it does not read. Each
     # distribution's whole `tests` tree is named rather than one phase inside it:
     # pinning `tests/phase2` kept the accepted Phase 3 authorization and protocol
-    # suites off the gate even though they were committed. The four must stay one
+    # suites off the gate even though they were committed. The five must stay one
     # invocation: several of these modules import public barrels, and splitting
     # the run is what hid the barrel-namespace drift.
     (
         "Run full repository test suite",
         (
             "python -m pytest services tests packages/omnivia-core-runtime/tests "
-            "packages/omnivia-core-cli/tests packages/omnivia-core-client/tests -q"
+            "packages/omnivia-core-cli/tests packages/omnivia-core-client/tests "
+            "packages/omnivia-core-mcp/tests -q"
         ),
     ),
     ("Run benchmark tests", "python -m pytest benchmarks/tests -q"),
@@ -788,6 +789,105 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
         _step(steps, "Assert this platform's lock case actually ran")
     )
     assert (REPO_ROOT / "scripts" / "check-platform-lock-coverage.py").is_file()
+
+
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "check-package-builds.sh"
+WHEELHOUSE_CONSTRAINTS = REPO_ROOT / "scripts" / "mcp-wheelhouse-constraints.txt"
+
+
+def _active_build_script() -> str:
+    """The build gate's executable lines, with comments dropped.
+
+    Every assertion below is a substring search, and this file's own header
+    explains why that is only honest against active lines: the script documents
+    each flag in a comment directly above the line that carries it, so a plain
+    search over the file text passes on the *explanation* after the flag itself
+    has been deleted. That is not hypothetical -- the first version of
+    `test_the_wheelhouse_closure_is_pinned_by_reviewed_constraints` stayed green
+    with `--constraint` removed from the only command that used it.
+    """
+    return "\n".join(
+        line
+        for line in BUILD_SCRIPT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+
+
+def test_the_wheelhouse_gate_requires_wheels_in_both_phases() -> None:
+    """R005-03: "Require wheels. Do not silently fall back to source distributions."
+
+    `--no-index --find-links` carries no wheel-only constraint of its own. With an
+    sdist in the wheelhouse and a build backend beside it, pip builds from source
+    fully offline and reports success -- observed, not theorised. `--only-binary`
+    has to be on the acquisition download *and* on every isolated install, because
+    the two close different halves: phase 1 staging an sdist, and phase 2 building
+    one that reached the wheelhouse another way.
+    """
+    active = _active_build_script()
+
+    # Exactly one of each, so "both invocations are wheel-only" is a countable
+    # claim rather than a hope that the flag landed on the right one.
+    assert active.count("pip download") == 1
+    assert active.count("pip install") == 1
+    assert active.count("--only-binary=:all:") == 2, (
+        "both pip invocations must be wheel-only; --no-index --find-links alone "
+        "builds an sdist from source, fully offline, and reports success"
+    )
+    assert "--no-index" in active, "the install phase must not reach an index"
+
+
+def test_the_wheelhouse_closure_is_pinned_by_reviewed_constraints() -> None:
+    """R005-03 Phase 1: resolve "against the repository's exact dependency lock or
+    equivalent reviewed constraints", and its rejected alternative: "an unpinned,
+    time-varying closure from the index is not accepted as deterministic evidence."
+
+    `uv.lock` names none of this closure -- checked here rather than assumed, so
+    that a future lock which *does* cover it is noticed rather than shadowed by a
+    second source of truth. Until then these pins are the reviewed equivalent, and
+    every one of them must be an exact `==`.
+    """
+    active = _active_build_script()
+    assert "--constraint" in active
+    assert WHEELHOUSE_CONSTRAINTS.name in active or "${CONSTRAINTS}" in active
+
+    pins = [
+        line.split("#", 1)[0].strip()
+        for line in WHEELHOUSE_CONSTRAINTS.read_text(encoding="utf-8").splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    assert pins, "the constraints file pins nothing"
+    for pin in pins:
+        assert "==" in pin, f"not an exact pin: {pin!r}"
+
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert 'name = "mcp"' not in lock, (
+        "uv.lock now covers the MCP closure; resolve against the lock itself rather "
+        "than keeping a second reviewed source of truth"
+    )
+
+
+def test_the_wheelhouse_gate_records_versions_and_hashes_not_a_listing() -> None:
+    """R005-03 Phase 1 requires the staged names, versions *and hashes* as test
+    evidence. `ls -1` recorded none of the three in a checkable form."""
+    active = _active_build_script()
+    assert "hashlib.sha256(" in active, "no hash is computed"
+    assert "sha256:{digest}" in active, "the computed hash is not recorded"
+    assert 'ls -1 "${WHEELHOUSE}"' not in active, "back to a bare listing"
+
+
+def test_the_gate_does_not_claim_the_acquisition_phase_is_offline() -> None:
+    """R005-03's required record correction: "Rename or document the gate so that it
+    does not imply the acquisition phase is offline." The property being proven is
+    that a prepared wheelhouse suffices for installation without an index -- so both
+    the script and the README have to say that, in those terms."""
+    claim = "a prepared wheelhouse is sufficient for installation without an index"
+    for path in (BUILD_SCRIPT, REPO_ROOT / "README.md"):
+        # The claim is line-wrapped in both files, and in the script each line
+        # carries a `#` and in the README a `*`, so compare on normalised text.
+        text = path.read_text(encoding="utf-8").lower().replace("#", " ").replace("*", " ")
+        assert claim in " ".join(text.split()), (
+            f"{path.name} does not state the property being proven"
+        )
 
 
 RESOLVER_SMOKE_STEP = "Run compatibility root resolver and installed-root smoke"

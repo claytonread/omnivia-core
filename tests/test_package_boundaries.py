@@ -131,8 +131,73 @@ def test_siblings_depend_on_core() -> None:
     assert boundaries.check_siblings_depend_on_core() == []
 
 
-def test_mcp_and_cli_do_not_depend_on_runtime() -> None:
-    assert boundaries.check_mcp_and_cli_do_not_depend_on_runtime() == []
+def test_adapters_do_not_depend_on_runtime_or_each_other() -> None:
+    assert boundaries.check_adapters_do_not_depend_on_runtime_or_each_other() == []
+
+
+def test_each_adapter_is_held_clear_of_the_runtime_and_the_other_adapter() -> None:
+    """The forbidden set is enumerated, so it is pinned rather than left to the
+    check's loop body. MCP must stay clear of the runtime *and* the CLI -- ADR-036
+    forbids that edge and it is the one with a history -- and the CLI's entry is
+    the mirror image, so neither direction depends on which failure happened
+    first. Neither may name itself."""
+    forbidden = boundaries.ADAPTER_FORBIDDEN_SIBLINGS
+    assert sorted(forbidden) == ["omnivia-core-cli", "omnivia-core-mcp"]
+    assert sorted(pkg.distribution_name for pkg in forbidden["omnivia-core-mcp"]) == [
+        "omnivia-core-cli",
+        "omnivia-core-runtime",
+    ]
+    assert sorted(pkg.distribution_name for pkg in forbidden["omnivia-core-cli"]) == [
+        "omnivia-core-mcp",
+        "omnivia-core-runtime",
+    ]
+    for name, siblings in forbidden.items():
+        assert name not in {pkg.distribution_name for pkg in siblings}
+
+
+def test_an_undeclared_mcp_import_of_the_cli_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The half that had no guard anywhere.
+
+    R004-05 has two: a declared dependency on `omnivia-core-cli`, and an actual
+    import edge. The first is caught by the phase 2 allow-list, which reads
+    `pyproject.toml`; the second was caught by nothing -- this script checked
+    imports of `omnivia_core_runtime` only. An `import omnivia_core_cli` in MCP
+    source with no matching entry in the manifest passed the boundary script, that
+    allow-list and the entire MCP suite, and surfaced only when
+    `scripts/check-package-builds.sh` installed the wheel in isolation.
+
+    That is exactly the shape of the historical failure: the deleted
+    `omnivia_core_mcp.adapter` imported `omnivia_core_cli.client`. So the import is
+    undeclared here on purpose -- a manifest naming the CLI would be caught by the
+    older half and prove nothing about this one.
+    """
+    src_root = tmp_path / "src" / "omnivia_core_mcp"
+    src_root.mkdir(parents=True)
+    (src_root / "server.py").write_text(
+        "from omnivia_core_cli.client import call\n", encoding="utf-8"
+    )
+    manifest_path = tmp_path / "pyproject.toml"
+    manifest_path.write_text(
+        "[project]\n"
+        'name = "omnivia-core-mcp"\n'
+        f'dependencies = ["{boundaries.REQUIRED_CORE_DEPENDENCY}"]\n',
+        encoding="utf-8",
+    )
+
+    broken = boundaries.PackageSpec(
+        distribution_name="omnivia-core-mcp",
+        import_package="omnivia_core_mcp",
+        manifest_path=manifest_path,
+        src_root=tmp_path / "src",
+    )
+    monkeypatch.setattr(boundaries, "MCP", broken)
+
+    findings = boundaries.check_adapters_do_not_depend_on_runtime_or_each_other()
+    assert len(findings) == 1
+    assert "server.py" in findings[0]
+    assert "omnivia_core_cli" in findings[0]
 
 
 def test_client_depends_only_on_core() -> None:
@@ -389,7 +454,7 @@ def test_core_wheel_packages_the_approved_host_contract_resource_count() -> None
 
 # --------------------------------------------------------------------------
 # Lane 1A authority is reachable by MCP, which means reachable without the
-# runtime distribution. `check_mcp_and_cli_do_not_depend_on_runtime` above
+# runtime distribution. `check_adapters_do_not_depend_on_runtime_or_each_other`
 # proves the MCP *distribution* declares and imports no runtime; these prove
 # the other half, which that check cannot see: that the authority modules an
 # MCP consumer needs are in Core's own wheel package and import from `src`

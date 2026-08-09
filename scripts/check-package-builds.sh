@@ -2,10 +2,25 @@
 #
 # Build and install-check the OmniVia Core package topology (ADR-036, T-0628).
 #
-# Builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
+# **What this gate proves, stated so it cannot be over-read.** The merge-blocking
+# property is that *a prepared wheelhouse is sufficient for installation without
+# an index* -- not that the whole gate is offline. Owner resolution 005 R005-03
+# requires that distinction to be written down rather than left to a name: the
+# acquisition phase below reaches the configured index on purpose and only the
+# installation phase is index-free. Nothing here is evidence that the wheels can
+# be *obtained* offline, and no record of this gate may say so.
+#
+# Phase 1 (acquisition and staging, index access permitted):
+# builds wheels for the five distributions (omnivia-core, omnivia-core-runtime,
 # omnivia-core-mcp, omnivia-core-cli, omnivia-core-client) into a temporary
-# wheelhouse, then installs each into its own isolated temporary virtual
-# environment and imports it:
+# wheelhouse and stages the one declared third-party closure (the official MCP
+# SDK, required by R004-05) beside them, wheels only, at the exact reviewed
+# versions in scripts/mcp-wheelhouse-constraints.txt, recording every staged
+# name, version and SHA-256 as evidence.
+#
+# Phase 2 (isolated installation, no index): installs each distribution into its
+# own isolated temporary virtual environment from the wheelhouse alone, and
+# imports it:
 #
 #   a. omnivia-core alone
 #   b. omnivia-core-runtime from the wheelhouse
@@ -45,6 +60,7 @@ RUNTIME_DIR="${REPO_ROOT}/packages/omnivia-core-runtime"
 MCP_DIR="${REPO_ROOT}/packages/omnivia-core-mcp"
 CLI_DIR="${REPO_ROOT}/packages/omnivia-core-cli"
 CLIENT_DIR="${REPO_ROOT}/packages/omnivia-core-client"
+CONSTRAINTS="${REPO_ROOT}/scripts/mcp-wheelhouse-constraints.txt"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/omnivia-core-build-check.XXXXXX")"
 WHEELHOUSE="${WORKDIR}/wheelhouse"
@@ -91,8 +107,120 @@ build_wheel "${MCP_DIR}"
 build_wheel "${CLI_DIR}"
 build_wheel "${CLIENT_DIR}"
 
-echo "--- wheelhouse contents ---"
-ls -1 "${WHEELHOUSE}"
+# --- third-party closure -------------------------------------------------------
+#
+# Until now every distribution here was standard-library-only or depended solely
+# on its siblings, so a wheelhouse holding the five local wheels was a complete
+# resolution universe. `omnivia-core-mcp` ends that: R004-05 requires the official
+# MCP SDK, so `mcp>=2,<3` and its transitive closure have to be *somewhere* for
+# the offline install below to resolve at all.
+#
+# They are staged here, and the install step keeps `--no-index --find-links`
+# exactly as it was. That distinction is the whole point: what is installed is
+# still resolved from this directory alone, with no index reachable, so the
+# offline proof is unchanged. What has changed is that the wheelhouse is now
+# populated from two sources -- the wheels this script builds, and the declared
+# third-party closure -- which is what a wheelhouse ordinarily means.
+#
+# The requirement is read off the built MCP wheel's own METADATA rather than
+# written here, so this cannot drift from `packages/omnivia-core-mcp/pyproject.toml`.
+# `--find-links` is passed on the download too, so the unpublished sibling
+# distributions resolve from this directory instead of sending pip to an index
+# that has never heard of them.
+#
+# This step needs the configured index to be reachable and has no offline
+# fallback: a failure here fails the gate rather than silently producing a
+# wheelhouse that the install step would then fail on more obscurely.
+#
+# `--only-binary=:all:` is R005-03's "Require wheels. Do not silently fall back to
+# source distributions or build-time network access", enforced rather than hoped
+# for. `--no-index --find-links` carries no wheel-only constraint of its own: with
+# an sdist in the wheelhouse and a build backend beside it, pip builds from source
+# fully offline and reports success -- proven by execution, which is why this flag
+# is here and on every install below rather than only on one of them.
+#
+# `--constraint` is R005-03's "resolve against the repository's exact dependency
+# lock or equivalent reviewed constraints". `uv.lock` names none of this closure,
+# so the reviewed pins are the equivalent; without them this step resolved fresh
+# from the index on every run, which is verbatim R005-03's rejected alternative.
+echo "--- staging the declared third-party closure into the wheelhouse ---"
+MCP_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core_mcp-*.whl)"
+"${PYTHON}" -m pip download \
+  --only-binary=:all: \
+  --constraint "${CONSTRAINTS}" \
+  --dest "${WHEELHOUSE}" \
+  --find-links "${WHEELHOUSE}" \
+  "${MCP_WHEEL}"
+echo
+
+# R005-03 Phase 1 requires the staged names, versions *and hashes* as test
+# evidence; `ls -1` recorded none of the three in a machine-checkable form. This
+# also fails the gate when a third-party wheel is staged that the reviewed
+# constraints do not pin -- a new transitive requirement is a dependency change
+# somebody reviews, not one the gate absorbs silently.
+echo "--- staged wheelhouse evidence (name, version, sha256) ---"
+"${PYTHON}" - "${WHEELHOUSE}" "${CONSTRAINTS}" <<'PYEOF'
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+wheelhouse, constraints_path = Path(sys.argv[1]), Path(sys.argv[2])
+
+
+def pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+pinned = {}
+for line in constraints_path.read_text(encoding="utf-8").splitlines():
+    line = line.split("#", 1)[0].strip()
+    if line:
+        name, _, version = line.partition("==")
+        pinned[pep503(name)] = version
+
+staged, unpinned, mispinned = {}, [], []
+for path in sorted(wheelhouse.glob("*.whl")):
+    name, version = path.name.split("-")[0], path.name.split("-")[1]
+    normalized = pep503(name)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    staged[normalized] = version
+    print(f"{normalized}=={version}  sha256:{digest}")
+    # The five distributions this script just built are versioned by their own
+    # pyproject files and rebuilt every run; the constraints file governs the
+    # third-party closure only.
+    if normalized.startswith("omnivia-core"):
+        continue
+    if normalized not in pinned:
+        unpinned.append(f"{normalized}=={version}")
+    elif pinned[normalized] != version:
+        mispinned.append(f"{normalized}=={version}, constraints pin {pinned[normalized]}")
+
+non_wheels = sorted(
+    path.name for path in wheelhouse.iterdir() if path.is_file() and path.suffix != ".whl"
+)
+
+failures = []
+if unpinned:
+    failures.append(f"staged but not pinned by {constraints_path.name}: {unpinned}")
+if mispinned:
+    failures.append(f"staged at a version the constraints do not pin: {mispinned}")
+if non_wheels:
+    failures.append(f"non-wheel artifact(s) in the wheelhouse: {non_wheels}")
+
+if failures:
+    print("", file=sys.stderr)
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    print(
+        "\nR005-03 requires a locked, wheel-only closure. Regenerate and review "
+        f"{constraints_path} rather than widening this check.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+print(f"\n{len(staged)} wheel(s) staged, no sdists, every third-party pin reviewed.")
+PYEOF
 echo
 
 CORE_WHEEL="$(ls "${WHEELHOUSE}"/omnivia_core-*.whl)"
@@ -192,7 +320,11 @@ install_and_import() {
 
   echo "--- ${venv_name}: install ${dist_name}, import ${import_name} ---"
   "${PYTHON}" -m venv "${venv_dir}"
-  "${venv_dir}/bin/python" -m pip install --no-index --find-links "${WHEELHOUSE}" "${dist_name}"
+  # `--only-binary=:all:` as well as `--no-index`: the two answer different
+  # failures. `--no-index` proves nothing was fetched; `--only-binary=:all:`
+  # proves nothing was *built*, which `--no-index --find-links` alone permits.
+  "${venv_dir}/bin/python" -m pip install \
+    --no-index --only-binary=:all: --find-links "${WHEELHOUSE}" "${dist_name}"
   "${venv_dir}/bin/python" -c "
 import ${import_name}
 print('${import_name}', ${import_name}.__version__, 'OK')
@@ -216,27 +348,43 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
   "omnivia_core_runtime.service.main" \
   "omnivia_core_runtime.service.runner" \
   "omnivia_core_runtime.service.transport"
-# No operational modules: the MCP distribution is a skeleton surface until the
-# separately approved Phase 4 packet. Its operational adapter imported
-# `omnivia_core_cli`, a sibling, which the approved topology does not permit.
-install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp"
-# `transport.py` is named explicitly because neither module above reaches it:
-# `main` imports it inside the one subcommand that calls a service, so importing
-# `main` resolves nothing. It is the only module that imports `omnivia-core-client`,
-# so without this line the CLI's Requires-Dist is never exercised at wheel level --
-# which is verbatim the failure this script's comment above says it exists to catch.
+# The MCP distribution is no longer a skeleton: owner resolution 004 Packet C
+# gave it a curated exposure manifest, a managed-start adapter and a stdio server.
+# All three are named because each exercises a different declared edge, and the
+# reason this check exists is that the *previous* MCP adapter imported
+# `omnivia_core_cli` -- a sibling the approved topology does not permit -- and
+# installed cleanly anyway because only the top-level package was imported.
+# `server` is the one that matters most: it is the only module importing both the
+# official MCP SDK and `omnivia-core-client`, so without it neither Requires-Dist
+# is ever exercised at wheel level, which is verbatim the failure the comment
+# above says this exists to catch.
+install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
+  "omnivia_core_mcp.manifest" \
+  "omnivia_core_mcp.managed_start" \
+  "omnivia_core_mcp.server"
+# `omnivia_core_client` is named here, in the *CLI's* venv, and it is not a stray
+# entry. Owner resolution 005 R005-01 moved the transport out of this
+# distribution, so the CLI no longer has any module that imports the client at
+# module scope: `main` imports it inside the one subcommand that calls a service,
+# which importing `main` does not reach. Without this line the CLI's
+# `Requires-Dist: omnivia-core-client` would never be exercised at wheel level --
+# verbatim the failure this script's comment above says it exists to catch.
+# Importing it from a venv that installed only `omnivia-core-cli` is precisely the
+# proof that the CLI's own metadata pulled it in.
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
   "omnivia_core_cli.client" \
   "omnivia_core_cli.main" \
-  "omnivia_core_cli.transport"
+  "omnivia_core_client"
 # The client's whole surface is operational: every module below is imported by a
 # caller on the first call it makes, so each one has to resolve from the wheel
 # plus its single declared `omnivia-core` dependency and nothing else.
 install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.compatibility" \
   "omnivia_core_client.deadline" \
+  "omnivia_core_client.discovery" \
   "omnivia_core_client.errors" \
   "omnivia_core_client.framing" \
+  "omnivia_core_client.local_ipc" \
   "omnivia_core_client.transport"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"
