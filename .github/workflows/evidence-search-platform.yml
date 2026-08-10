@@ -1,0 +1,123 @@
+# Platform qualification for the `evidence.search` FTS5 projection (V06-3 Lane Q).
+#
+# Lane B landed the projection with its acceptance suite under
+# `packages/omnivia-core-runtime/tests/phase3/runtime`, where `Core acceptance`
+# runs it -- on `ubuntu-latest` and nowhere else. Two parts of that evidence
+# depend directly on the host's SQLite build: whether FTS5 is compiled in at all,
+# and whether `unicode61 remove_diacritics 0` tokenizes the way
+# `retrieval.query_tokens` reproduces without an index to ask. The remaining
+# cases rerun migration, guard, ordering and lifecycle behaviour on the same
+# host. A macOS or Windows disagreement is invisible to a single-platform gate.
+#
+# A separate workflow rather than rows in an existing one, for the reason
+# `phase2-platform.yml` states at length: `core-acceptance.yml` defines the
+# single required check `Core acceptance`, a matrix would rename it, and
+# `phase2-platform.yml` owns the three `Phase 2 platform (<os>)` names a ruleset
+# references by exact string. Neither can absorb these rows without breaking a
+# rule that lives outside this tree. The tests themselves are not moved: they are
+# Phase 3 acceptance and belong where Lane B put them, run twice rather than
+# relocated.
+#
+# Whether these rows are required by branch protection is a repository setting
+# this file cannot assert either way -- the same limitation both existing
+# workflows record. Making them required should wait until the Windows row has
+# passed once.
+name: Evidence search platform qualification
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Same keying as the other two workflows: on the pull request number, so a run is
+# only ever cancelled by a newer run for the same pull request, which reports the
+# same three check names in its place.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence-search-platform:
+    name: Evidence search platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      # Every row runs. The question this workflow asks is "which platforms have
+      # a usable FTS5", and stopping at the first no answers it for one platform
+      # only -- Windows being the row with no prior evidence, and the one most
+      # likely to be lost to an unrelated macOS failure.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tooling and local packages
+        # `omnivia-core` first: it is unpublished, and it is the only thing that
+        # can satisfy `omnivia-core-runtime`'s `omnivia-core>=0.1.0,<0.2.0`
+        # dependency. Install the runtime first and pip goes to the index for a
+        # distribution no index has. Same rule the other two workflows state.
+        #
+        # These two are the whole install. The suite below imports
+        # `omnivia_core_runtime` and its sibling test modules and nothing else --
+        # no memory service, no client, no CLI, no MCP, and no `jsonschema`
+        # (verified by running the suite in an environment without it). The other
+        # workflows need those because they run wider suites; adding them here
+        # would be three minutes per row buying nothing.
+        #
+        # One argument per line with no shell continuations, and paths quoted, so
+        # the same script is literal in bash, zsh and PowerShell alike -- the
+        # matrix runs it on all three default hosted shells.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -e "."
+          python -m pip install -e "packages/omnivia-core-runtime"
+
+      - name: Run the evidence.search projection acceptance suite
+        # Both Lane B acceptance modules, in one invocation. `-rs` because a skip
+        # here would be the failure mode that matters: neither module contains a
+        # single `skipif`, `pytest.skip` or `xfail`, so a platform without FTS5
+        # fails these tests rather than quietly passing a shorter run, and `-rs`
+        # makes any skip that appears later impossible to miss in the log.
+        #
+        # The six properties this proves on each platform, and where:
+        #
+        #   FTS5 availability      lifecycle::test_lb_l1 -- `require_fts5` against
+        #                          this host's SQLite; every other case in both
+        #                          modules builds a real index and so depends on it.
+        #   Migration 0012         migration::test_lb_m1..m20 -- 0012 is 0011's unique
+        #                          successor, applies cleanly, is idempotent, and
+        #                          leaves integrity and foreign keys clean.
+        #   Required tokenization  lifecycle::test_lb_l25 -- `query_tokens` equals
+        #                          this host's FTS5 `unicode61 remove_diacritics 0`
+        #                          output over the workspace's material and over
+        #                          combining-mark, superscript, punctuation and
+        #                          empty-string probes -- the cases a hand-written
+        #                          tokenizer and a platform's ICU tables disagree on;
+        #                          lifecycle::test_lb_l17 for case folding both sides.
+        #   Deterministic ordering lifecycle::test_lb_l13 -- frontier-local BM25
+        #                          relevance then the
+        #                          `relevance_order_key` tie-break, over surfaces
+        #                          built so a scoring difference changes the order;
+        #                          l15 for the ordered head under a limit, l20 for
+        #                          the same order after a rebuild.
+        #   Guarded schema         migration::test_lb_m4 -- three statement guards on
+        #                          the durable table, no persisted virtual table and
+        #                          no FTS5 shadow table; m6..m15 for the guards
+        #                          refusing unfenced, cross-run and invalid writes;
+        #                          lifecycle::test_lb_l19 for the index living in
+        #                          `temp` and touching no persisted schema.
+        #   Projection lifecycle   lifecycle::test_lb_l2..l8b -- build, activate,
+        #                          supersede, reclaim, and convergence from a kill
+        #                          injected at each phase in turn; l10..l12 for reads
+        #                          refusing an absent or lagging projection.
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_migration.py packages/omnivia-core-runtime/tests/phase3/runtime/test_fts_projection_lifecycle.py -q -rs

@@ -37,9 +37,11 @@ from omnivia_core.contracts.v1 import (
     CompatibilityMetadata,
     ErrorResponseEnvelope,
     GrantedAuthority,
+    Purpose,
     RequestEnvelope,
     ResponseEnvelope,
     ResponseMetadata,
+    Scope,
     SuccessResponseEnvelope,
     UpgradeState,
     VersionCapabilityEnvelope,
@@ -75,6 +77,24 @@ class OperationContext:
     A handler receives the decoded envelope and the authorised principal, never a
     raw connection: storage authority stays with the service, so no handler can
     become a second writer.
+
+    **The three effective-authority fields are Amendment 009's pass-through, approved
+    2026-08-10, and they are pass-through in the strict sense.** They are the exact
+    values `authorize_application_request` already produced -- the effective authority
+    at the weaker of the session's grant and this server's snapshot, the narrowed scope
+    set, and the purpose the seam checked against the session's allowlist -- carried to
+    the handler unchanged. Nothing here widens, re-authorizes, re-derives or repairs any
+    of them, and no handler may reconstruct one from the session, the catalogue, the
+    request or a constant: a value reconstructed downstream is an authority statement
+    nobody granted, and `context_pack.build` writes all three into a signed artifact.
+
+    They are optional and default to `None` because every direct-handler construction
+    that predates the amendment states five fields and no more, and because `service`
+    keeps its fifth positional slot. `None` is *absence*, not a permissive default: the
+    one handler that needs them refuses outright rather than proceeding without them,
+    which is why an absent value can never become a quietly weaker authority claim. An
+    empty-but-valid value -- no roles, no capabilities -- is a real answer and is not
+    absence; only `None` is.
     """
 
     request: RequestEnvelope
@@ -82,6 +102,9 @@ class OperationContext:
     workspace_id: str
     granted_operations: frozenset[str]
     service: Any = None
+    authority: GrantedAuthority | None = None
+    scopes: tuple[Scope, ...] | None = None
+    purpose: Purpose | None = None
 
 
 class OperationError(Exception):

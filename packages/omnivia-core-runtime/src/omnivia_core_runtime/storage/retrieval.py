@@ -60,6 +60,17 @@ all-label grant to the exact configured local-owner principal in its exact grant
 workspace and the **empty** grant to everyone else. Deny by default, evaluated, never
 skipped.
 
+**The governed frontier is the same shape, one partition over.** `GovernedFrontier` and
+`rank_governed` are to L2 governed records what `AuthorizedFrontier` and the two evidence
+rankers are to L0 artifacts, and they are here rather than in `governed.py` for exactly the
+reason that module is not: `governed.py` imports `sqlite3` and holds a connection, so a
+ranker written there would have a store within reach and §20.12's import-boundary proof
+would be gone. The seam is the same one Lane B established -- resolution and authorization
+happen elsewhere, hand this module a frozen value, and the ordering is computed from
+nothing else. `rank_governed`'s parameters are that frozen value, a string, an optional
+order selector and an integer; there is no connection, repository, projection, callback or
+lazy lookup among them, and the import block above is why there could not be.
+
 `EVIDENCE-LABEL-GRANT-DEFERRED` bounds this: production Personal mode has one principal
 and that principal receives every label, so this release does not prove differentiated
 evidence access between production principals. A real principal-to-label grant
@@ -77,10 +88,14 @@ from typing import Final
 from omnivia_core.contracts.v1 import (
     CONTEXT_PACK_AUTHORIZED_CANDIDATE_SET_FORMAT,
     CONTEXT_PACK_CANDIDATE_PARTITION_EVIDENCE,
+    KNOWLEDGE_SEARCH_ORDER_RELEVANCE,
+    KNOWLEDGE_SEARCH_ORDERS,
     ContextPackAuthorizedCandidateSetManifest,
     ContextPackAuthorizedEvidenceCandidate,
     EvidenceArtifact,
+    GovernedRecord,
     compute_authorized_candidate_set_checksum,
+    to_canonical_json,
 )
 
 #: The configured Personal-mode local-owner principal, and the *only* principal that
@@ -540,23 +555,229 @@ def _phrase_hits(terms: tuple[str, ...], phrase: tuple[str, ...]) -> int:
     )
 
 
+#: The filters the caller must have applied before it may freeze a `GovernedFrontier`, in
+#: the order it applies them. It is the governed partition's `FRONTIER_FILTERS` and it is
+#: stated for the same reason: the frontier has to say what narrowed it rather than leave a
+#: reviewer to infer it, and §7.2's ordering property is a claim about *these* filters
+#: running before the freeze.
+#:
+#: `rank_governed` cannot verify the claim, and that is not a gap this module should try to
+#: close. Verifying it would mean re-reading governance, temporal or scope facts from
+#: somewhere, which is exactly the store the import boundary above exists to keep out of
+#: reach. The filters run in the handler, the frontier records that they did, and the
+#: ranker's guarantee is the narrower, checkable one: it observes nothing but this value.
+GOVERNED_FRONTIER_FILTERS: Final[tuple[str, ...]] = (
+    "workspace",
+    "view",
+    "governance",
+    "temporal",
+    "record_type",
+    "domain_scope",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GovernedCandidate:
+    """One resolved governed record as a candidate: the hydrated DTO, and the one ranking
+    fact the DTO does not carry.
+
+    `record` is the fully hydrated contract value, carried here rather than fetched again
+    after ranking, for the reason `EvidenceCandidate.artifact` is: the result is built by
+    mapping over frozen frontier members, so "every item in any result is a member of the
+    frozen frontier" holds by construction rather than by a membership check somebody has
+    to remember to write. Nothing downstream reconstructs a record, and nothing downstream
+    resolves an id -- there is no id here to resolve one from.
+
+    `recorded_at_us` is the only added fact, and it is added because it is the only one
+    missing. `GovernedRecord.provenance.temporal` carries ISO-8601 instants, which order
+    correctly as strings only if every writer agrees on offset, precision and the `Z`
+    spelling; `recorded_at_us` is the integer 0009 actually stored and the one
+    `resolve_governed_versions` already ordered by, so recency here is the same fact
+    recency was over there.
+
+    `record_id` and `version` are deliberately *not* fields. They are read off the
+    identity of the record this candidate will return, so the tie-break cannot be computed
+    from an id that disagrees with the record the caller receives -- a drift that a
+    duplicated field makes possible and this makes unrepresentable.
+    """
+
+    recorded_at_us: int
+    record: GovernedRecord
+
+    @property
+    def record_id(self) -> str:
+        """The governed record id, from the record itself."""
+        return self.record.provenance.identity.record_id
+
+    @property
+    def version(self) -> str:
+        """The governed record version, from the record itself."""
+        return self.record.provenance.identity.version
+
+
+@dataclass(frozen=True, slots=True)
+class GovernedFrontier:
+    """The frozen authorized governed frontier: the L2 counterpart of `AuthorizedFrontier`.
+
+    Frozen in both senses, and for the same reason. What it deliberately does not carry is
+    any way to obtain a candidate it does not already hold: no connection, no repository,
+    no projection, no callback and no id it could resolve. A ranker handed one has the
+    whole of its input in the value, so widening the result is not merely forbidden -- the
+    material to widen it with is absent.
+    """
+
+    workspace_id: str
+    candidates: tuple[GovernedCandidate, ...]
+    #: Which of `GOVERNED_FRONTIER_FILTERS` the builder ran. Required rather than
+    #: defaulted: a default would let a frontier narrowed by four filters claim six.
+    filters_applied: tuple[str, ...]
+
+
+def governed_search_text(record: GovernedRecord) -> str:
+    """The normalized surface a governed query matches against: the record's own content.
+
+    Two normalizations, and both are load-bearing. The content is *opaque* JSON, so there
+    is no field this module may privilege and no schema it may assume -- it matches the
+    whole document. `to_canonical_json` is the contract's own serialization, and it sorts
+    keys, so two mappings built in different insertion orders produce identical text and a
+    record's matchability is a property of what it says rather than of how a decoder
+    happened to build it. `normalize_query` then applies the same NFKC and case folding it
+    applies to the query, because normalizing one side only makes a match depend on which
+    side a caller typed.
+
+    Serializing rather than walking is the same decision the contract already made for
+    every digest in this build, and it keeps one definition of "this content as text". It
+    does mean object keys and JSON punctuation are part of the matched surface; that is
+    visible, deterministic and stated, rather than a hidden field-selection policy this
+    module would otherwise have to invent for content it is not allowed to understand.
+    """
+    return normalize_query(to_canonical_json(record.content))
+
+
+def governed_order_key(
+    candidate: GovernedCandidate, relevance: int
+) -> tuple[int, int, str, str]:
+    """The one total order both governed orderings sort by.
+
+    `relevance` descending, then `recorded_at_us` descending, then `record_id` ascending,
+    then `version` ascending -- negated where descending, because `sort` is ascending and
+    a key is the honest place to state direction.
+
+    It is a separate function from `relevance_order_key` rather than a reuse of it, and the
+    difference is not cosmetic: that key sorts relevance *ascending* because SQLite's
+    `bm25()` returns negative scores, and it breaks ties on `evidence_id`, a field no
+    governed record has. Sharing one function would mean one of the two lanes silently
+    carrying the other's sign convention.
+
+    **Both tie-breakers are load-bearing, not decorative.** A count-based signal ties
+    constantly -- two records mentioning a term once each score identically -- and equal
+    instants are equally common, because a correction sealed in one transaction writes
+    every version at one microsecond. A sort keyed on score alone returns whatever order
+    the rows arrived in, which is packet §8.2's first ordering hazard wearing a score.
+    `(record_id, version)` closes the key: 0009 makes the pair unique per workspace, so the
+    order is total and the same frontier resolves to the same page on every run.
+
+    With a constant `relevance` the key degrades exactly to recency-then-identity, which is
+    why the recency ordering is expressible as this key rather than merely similar to it.
+    """
+    return (
+        -relevance,
+        -candidate.recorded_at_us,
+        candidate.record_id,
+        candidate.version,
+    )
+
+
+def rank_governed(
+    frontier: GovernedFrontier, query: str, *, order: str | None, limit: int
+) -> tuple[GovernedRecord, ...]:
+    """Select and totally order the frozen governed frontier. The governed ranker.
+
+    Read this signature and the import block at the top of the module together, because
+    that pair is the whole of §20.12's proof for this partition. The parameters are an
+    immutable value, two strings and an integer -- no connection, no repository, no
+    storage accessor, no projection and no callback -- and none of them has a default a
+    store could be bound into. The module imports the frozen contract and the standard
+    library, so there is no module-global handle, no closure-captured one and nothing a
+    lazy lookup inside this function could reach. An unfiltered record is not forbidden
+    here; it is unreachable.
+
+    **The query selects, then the order orders.** Selection is a normalized substring test
+    over `governed_search_text`, so a record that does not match is absent from the result
+    under either ordering rather than merely ranked last -- the same relationship the
+    temporal filter has to the frontier one level up.
+
+    **An absent order is relevance**, which is the contract's own default reading, and an
+    order this build does not recognize is *refused* rather than quietly resolved into it.
+    That is the fail-closed direction `resolve_governed_versions` takes for an unrecognized
+    view and the contract's own `_validate_order_selector` takes for this same value: an
+    unrecognized selector could mean an ordering this build cannot honour or verify, and
+    serving a different one under its name is worse than serving nothing. The refusal
+    happens before the query is even looked at, so it does not depend on there being
+    anything to order. The refusal names the requirement and the recognized selectors --
+    both server-authored -- and never the value the caller supplied, so no refusal or
+    diagnostic on this path can carry caller-supplied text back out.
+
+    **Relevance is a count, and it is stated as one.** The signal is how many times the
+    normalized query occurs in the normalized content -- explainable, recomputable by hand
+    from the returned record, and honest about what it is not: there is no index behind it,
+    no term weighting and no corpus statistics, so it is a ranking signal rather than
+    relevance ranking. It is also computed from the frontier's own members and nothing
+    else, so no record outside the frontier can influence the order of one inside it --
+    the failure BM25's corpus-wide statistics made possible in Lane B, absent here because
+    there is no corpus term in the formula at all.
+
+    An empty normalized query and a non-positive limit both return `()`. The contract
+    already refuses both upstream, so neither is a shape a valid request produces; they
+    fail closed rather than matching everything and rather than letting a negative limit
+    slice from the wrong end.
+    """
+    resolved = KNOWLEDGE_SEARCH_ORDER_RELEVANCE if order is None else order
+    if resolved not in KNOWLEDGE_SEARCH_ORDERS:
+        raise ValueError(
+            "order is not a recognized MemorySearchOrder for knowledge.search; "
+            f"must be one of {sorted(KNOWLEDGE_SEARCH_ORDERS)!r} or absent"
+        )
+
+    needle = normalize_query(query)
+    if not needle or limit <= 0:
+        return ()
+
+    matched = [
+        (candidate, hits)
+        for candidate in frontier.candidates
+        if (hits := governed_search_text(candidate.record).count(needle))
+    ]
+    # One relevance for every match under `recency`, so the shared key degrades to
+    # recency-then-identity rather than being a second sort with its own tie-breakers.
+    scored = resolved == KNOWLEDGE_SEARCH_ORDER_RELEVANCE
+    matched.sort(key=lambda pair: governed_order_key(pair[0], pair[1] if scored else 0))
+    return tuple(candidate.record for candidate, _ in matched[:limit])
+
+
 __all__ = [
     "BM25_B",
     "BM25_K1",
     "BM25_MINIMUM_IDF",
     "CONFIGURED_LOCAL_OWNER",
     "FRONTIER_FILTERS",
+    "GOVERNED_FRONTIER_FILTERS",
     "AuthorizedFrontier",
     "EvidenceCandidate",
     "EvidenceLabelGrant",
+    "GovernedCandidate",
+    "GovernedFrontier",
     "ProjectedCandidate",
     "ProjectedFrontier",
     "authorized_frontier",
     "candidate_set_manifest",
+    "governed_order_key",
+    "governed_search_text",
     "local_owner_label_grant",
     "normalize_query",
     "query_tokens",
     "rank_candidates",
+    "rank_governed",
     "rank_projected",
     "relevance_order_key",
 ]
