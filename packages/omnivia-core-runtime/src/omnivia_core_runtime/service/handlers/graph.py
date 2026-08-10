@@ -25,8 +25,9 @@ searches beside it state:
 4. fix **one** resolution instant -- the request's own `as_of` when it named one, otherwise
    one clock read, and the only one on this path;
 5. read the whole snapshot at that instant, under **one SQLite read transaction** -- the
-   resolved view, its hydrated records, the sealed relation endpoints and the watermark.
-   That single transaction is what makes the five facts one database state; the authorizer
+   resolved view, its hydrated records, the sealed relation endpoints, the authoritative
+   supersessions and the watermark. That single transaction is what makes those facts one
+   database state; the authorizer
    fence is not one continuous scope over them but several read-only ones, opened and closed
    around the statements inside it (`storage/governed.py` fences its own reads, and
    `storage/graph.py` fences the endpoint and watermark queries in a second scope). The
@@ -41,14 +42,17 @@ searches beside it state:
 9. validate the completed result against the original typed request, the authorized
    workspace, that same instant, and the server's own view grant, before it goes to wire.
 
-**Lane E is a partial checkpoint.** Ordinary governed relations are assembled and served
-here. Amendment 010's derived `record.superseded` edges are not. Its base supersession
-mapping and the history/current behaviour it prescribes are **already approved**; they are
-simply *unimplemented in this checkpoint*, along with their watermark contribution, and
-nothing on this path approximates any of them. Exactly one question remains open and
-pending owner ratification: the precedence rule for an ordinary edge and a derived edge that
-would share one `relation_reference`, which the contract's result validator refuses as a
-duplicate. `storage/graph.py` states the same division.
+**Both kinds of edge are served here (Amendment 010, ratified 2026-08-10).** An ordinary
+edge is the one a sealed `knowledge.relation` record asserts; a derived `record.superseded`
+edge is one authoritative supersession, from the superseded version to its replacement, with
+that replacement as both the relation reference and the edge record. Step 5 reads the
+endpoints and the supersessions in the *same* transaction and materializes both in one pass,
+so a `record.superseded` edge is subject to every rule below without exception: the seed
+closure of step 7, the all-or-nothing budget of step 8, and the filters, direction, depth
+and ordering the walk applies. Where a replacement `knowledge.relation` version would make
+an ordinary edge and a derived edge share one `relation_reference` -- which the contract's
+result validator refuses as a duplicate -- the explicit edge wins and only that one derived
+edge is dropped. `storage/graph.py` states the rule and applies it.
 
 Step 5 is this operation's freeze. `GraphSnapshot` carries no connection, no cursor and no
 id to resolve, so there is no post-freeze read to forbid -- the material to widen an answer
@@ -169,7 +173,8 @@ def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
     edge_limit = _limit(request_input.edge_limit, DEFAULT_EDGE_LIMIT)
 
     # The freeze. Everything below this call sees frozen values and nothing else: the view,
-    # the hydrated records, the sealed relations and the watermark, all from one snapshot.
+    # the hydrated records, the ordinary and derived relations and the watermark, all from
+    # one snapshot.
     snapshot = read_graph_snapshot(
         connection,
         workspace_id=context.workspace_id,

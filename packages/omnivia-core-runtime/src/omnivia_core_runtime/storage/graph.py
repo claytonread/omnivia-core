@@ -1,56 +1,74 @@
 """The governed relation graph, read once and walked as a value (V06-3 Lane E).
 
 `governed.py` resolves *which versions* a workspace's view holds at an instant and
-hydrates each one into a `GovernedRecord`. This module adds the one fact that resolver
-does not carry -- 0009's `omnivia_governed_relation_endpoints`, the exact two versions a
-sealed `knowledge.relation` record names -- and nothing else. There is no second resolver
-here, no second view rule, no second governance predicate and no DTO lineage of its own:
-every node record and every relation record below is a `GovernedRecord` that
-`read_governed_record_values` produced, under its rules, at this instant.
+hydrates each one into a `GovernedRecord`. This module adds the two facts that resolver
+does not carry as edges -- 0009's `omnivia_governed_relation_endpoints`, the exact two
+versions a sealed `knowledge.relation` record names, and 0009's
+`omnivia_record_supersessions`, the exact replacement one version received -- and nothing
+else. There is no second resolver here, no second view rule, no second governance
+predicate and no DTO lineage of its own: every node record and every relation record below
+is a `GovernedRecord` that `read_governed_record_values` produced, under its rules, at this
+instant.
 
 **One snapshot, one transaction.** The frontier, its provenance, its evidence, the
-relation endpoints and every freshness fact are read inside one explicit read transaction
-opened here, so a correction sealed while the answer is being assembled is either wholly
-visible or wholly invisible. Read in separate autocommit statements they are not: an edge
-could name a version the frontier query had already stopped returning, and the traversal
-would answer from two different databases at once. The transaction is opened here rather
-than in `read_governed_record_values` because the endpoint query has to be inside the same
-one -- that resolver declines to end a transaction it did not open, which is exactly what
-makes it composable here, and this function declines the same way for a caller that
-already holds one.
+relation endpoints, the supersessions and every freshness fact are read inside one explicit
+read transaction opened here, so a correction sealed while the answer is being assembled is
+either wholly visible or wholly invisible. Read in separate autocommit statements they are
+not: an edge could name a version the frontier query had already stopped returning, and the
+traversal would answer from two different databases at once. The transaction is opened here
+rather than in `read_governed_record_values` because the endpoint and supersession queries
+have to be inside the same one -- that resolver declines to end a transaction it did not
+open, which is exactly what makes it composable here, and this function declines the same
+way for a caller that already holds one.
 
 **Read-only, structurally.** Every statement this module issues runs inside
 `authorised(connection, mutations=False, ddl=False)`, so SQLite's own authorizer refuses
 a write before it reaches a row. There is no writer, no seal, no rebuild and no repair.
 
 **The watermark is the snapshot's, not a clock's.** `GraphSnapshot.watermark_us` is the
-high-water `recorded_at_us` over *both* authoritative facts an ordinary-relation answer
-rests on -- the sealed versions and the sealed relation endpoint rows -- taken from this
-same fenced read. Both are needed: 0009 records an endpoint row's own `recorded_at_us`
-separately from its assembly's, so a workspace whose newest fact is an endpoint row would
-otherwise state a freshness that predates a row the answer was actually built from. It
-describes the read point rather than the wall clock, so a fact sealed after the transaction
-closed cannot appear in the watermark of an answer it also cannot appear in. A second,
-later query for it would be exactly the drift this whole shape prevents.
+high-water instant over *all three* authoritative facts an answer rests on -- the sealed
+versions, the sealed relation endpoint rows and the supersessions -- taken from this same
+fenced read. All three are needed: 0009 records an endpoint row's own `recorded_at_us`
+separately from its assembly's and a supersession's effective instant separately again, so
+a workspace whose newest fact is either one would otherwise state a freshness that predates
+a row the answer was actually built from. A supersession contributes the *effective*
+instant `governed.py` computed for it -- the later of the edge row and its sealed target
+assembly, which is the same fact that decided the view -- rather than a second reading of
+the same row under a different rule. It describes the read point rather than the wall
+clock, so a fact sealed after the transaction closed cannot appear in the watermark of an
+answer it also cannot appear in. A second, later query for it would be exactly the drift
+this whole shape prevents.
 
-**Ordinary governed relations are what this module assembles, and that is the whole of
-it.** Every edge below comes from `omnivia_governed_relation_endpoints` -- the endpoints a
-sealed `knowledge.relation` record names -- and 0009's `omnivia_record_supersessions` is
-neither read nor materialized here.
+**Two kinds of edge, one materialization (Amendment 010).** An *ordinary* edge comes from
+`omnivia_governed_relation_endpoints`: the endpoints a sealed `knowledge.relation` record
+names. A *derived* edge comes from `omnivia_record_supersessions`, and is exactly the
+authoritative replacement stated as a graph edge -- source is the superseded version,
+target is the replacement version, the relation type is `record.superseded`, and the
+relation reference *is* the replacement target, whose sealed `GovernedRecord` is the edge's
+own record. Nothing is synthesized to make that shape: no relation record is fabricated, no
+provenance is reconstructed, no relation id is invented and no writer exists here. The
+replacement version is already in this snapshot as a hydrated record, so naming it as both
+the target and the relation reference is a reference to a record the answer already carries.
 
-That is a **partial checkpoint, not a finished boundary.** Amendment 010 maps a
-`record.superseded` edge into the history/current traversal surface, and this build does
-not yet implement it. Three things remain open and are deliberately not guessed at:
-reading and materializing the supersession table into derived edges, the exact
-history/current mapping that amendment prescribes, and -- the decision still awaiting
-owner ratification -- what happens when a replacement `knowledge.relation` record would
-make an ordinary governed-relation edge and a derived `record.superseded` edge share one
-`relation_reference`, which the contract's result validator refuses as a duplicate. Until
-that precedence rule is ratified, supersession also contributes nothing to the watermark
-above. `governed.py` does already fold the supersession edges into *which versions the view
-holds*, under this same transaction, so a superseded version is absent from
-`current_canonical` and present in `history` -- but that is the view rule, not the derived
-edge Amendment 010 asks for.
+Which of them a view returns follows from the view alone. `current_canonical` holds no
+superseded version, so the old source of every supersession is absent from it and the
+derived edge is simply not there -- absent, not a boundary a larger `depth_limit` could
+reveal. `history` holds superseded versions, so a derived edge appears exactly when its old
+source, its replacement target and therefore its relation record are all versions that view
+holds. From there on a `record.superseded` edge is an edge like any other: it filters by
+relation type and by domain scope, it carries the walk in whichever direction the request
+asked for, it counts against the node and edge budgets, and it sorts by the same total key.
+
+**Precedence when a replacement is itself a relation record.** A `knowledge.relation`
+record that is corrected produces both an ordinary edge -- the replacement version asserts
+its own endpoints -- and a derived edge naming that same replacement version as its
+relation reference. The contract's result validator refuses two edges naming one relation
+record version, so exactly one may be kept, and the ratified rule (Amendment 010, ratified
+2026-08-10) keeps the explicit governed-relation edge: it is the assertion a
+`knowledge.relation` record actually makes, and the supersession it collides with is still
+fully stated by the *other* end of the same correction. Only the colliding derived edge is
+dropped; every other supersession, including one for the very same record's other versions,
+is materialized untouched.
 
 **The walk is a pure function over the snapshot.** `traverse` holds no connection, no
 cursor and no callback -- it is handed frozen values and can reach nothing else, so a node
@@ -81,12 +99,20 @@ from omnivia_core.contracts.v1.semantics_knowledge import (
     GRAPH_DIRECTION_OUTBOUND,
 )
 from omnivia_core_runtime.storage.connection import authorised
-from omnivia_core_runtime.storage.governed import read_governed_record_values
+from omnivia_core_runtime.storage.governed import (
+    read_governed_record_values,
+    read_governed_supersessions,
+)
 
 #: One exact governed record version, as every map and set below keys on it. The same pair
 #: the contract's `RecordVersionReference` names and the same pair its result validator
 #: checks node identity, seed closure and edge endpoints against.
 RecordKey = tuple[str, str]
+
+#: The relation type every derived supersession edge carries. 0009's own provenance action
+#: for the same fact, spelled the way it spells it, so a caller filtering a traversal by
+#: relation type and a caller reading a record's provenance are naming one thing.
+RELATION_TYPE_SUPERSEDED: Final = "record.superseded"
 
 _VIEW: Final = "omnivia_authoritative_governed_versions"
 _ENDPOINTS: Final = "omnivia_governed_relation_endpoints"
@@ -94,13 +120,18 @@ _ENDPOINTS: Final = "omnivia_governed_relation_endpoints"
 
 @dataclass(frozen=True, slots=True)
 class GraphRelation:
-    """One sealed relation endpoint whose relation record the resolved view actually holds.
+    """One edge candidate whose relation record the resolved view actually holds.
 
-    `relation` is the asserting `knowledge.relation` record's own identity and `record` is
-    that record, hydrated by `governed.py`. They are not two accounts of one thing: the
-    contract requires an edge's `relation_reference` to identify its `record`'s identity
-    exactly, and holding the pair together here is what makes that true by construction
-    rather than by a later assignment that could name a different record.
+    `relation` is the relation record's own identity and `record` is that record, hydrated
+    by `governed.py`. They are not two accounts of one thing: the contract requires an
+    edge's `relation_reference` to identify its `record`'s identity exactly, and holding the
+    pair together here is what makes that true by construction rather than by a later
+    assignment that could name a different record.
+
+    One dataclass for both kinds of edge, because past this point there is nothing to tell
+    apart: an ordinary edge's relation record is the `knowledge.relation` record that
+    asserted it, a derived supersession edge's is the replacement version itself, and the
+    walk applies the same filters, the same direction rule and the same ordering to each.
     """
 
     relation_type: str
@@ -141,10 +172,19 @@ def read_graph_snapshot(
     one `read_governed_record_values` returned, which is the governance, layer, temporal and
     supersession rule that module owns, applied once.
 
-    `watermark_us` is the high-water `recorded_at_us` over the sealed versions *and* the
-    sealed endpoint rows this one fenced read saw, which is every authoritative fact an
-    ordinary-relation answer rests on. Supersession contributes nothing to it, because this
-    build assembles no supersession edge (see the module docstring's pending list).
+    The supersessions are read through `read_governed_supersessions`, inside this same
+    transaction, rather than restated here: what counts as a replacement -- the seal join,
+    the exact-target join and the effective instant -- is settled in `governed.py`, and this
+    is the *same* rule that already decided which versions the view holds. A second copy
+    would be a second place for the edge and the view to disagree about one correction. It
+    opens its own read-only fence around its own statement, which is the narrower guarantee;
+    the transaction opened above is what makes it the same snapshot as everything else here.
+
+    `watermark_us` is the high-water instant over the sealed versions, the sealed endpoint
+    rows *and* the supersessions this one fenced read saw, which is every authoritative fact
+    an answer rests on. Every supersession the snapshot saw contributes, not only the ones
+    that became edges: a replacement whose old source this view does not hold is still a
+    fact this read observed and answered around.
 
     Ownership follows `governed.py`'s rule for the same reason: a caller already inside a
     transaction is reading this as one fact among several and gets its transaction back
@@ -187,6 +227,15 @@ def read_graph_snapshot(
                 f"FROM {_VIEW} WHERE workspace_id = ? AND recorded_at_us <= ?",
                 (workspace_id, resolution_instant_us),
             ).fetchone()
+        # Inside the transaction, outside that fence: it opens its own read-only one. Both
+        # queries above and this one therefore read from the single snapshot this
+        # transaction pinned, which is what makes a mid-read correction wholly visible or
+        # wholly invisible rather than half of each.
+        supersessions = read_governed_supersessions(
+            connection,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+        )
     except BaseException:
         if owns_transaction:
             connection.execute("ROLLBACK")
@@ -201,7 +250,7 @@ def read_graph_snapshot(
         ): value.record
         for value in values
     }
-    relations = tuple(
+    explicit = tuple(
         GraphRelation(
             relation_type=str(row[2]),
             source=(str(row[3]), str(row[4])),
@@ -212,14 +261,35 @@ def read_graph_snapshot(
         for row in endpoint_rows
         if (relation := (str(row[0]), str(row[1]))) in records
     )
+    # The ratified precedence rule, applied once, over the explicit candidates that actually
+    # became edges. An endpoint row the view dropped names no relation record this answer
+    # can carry, so it cannot collide with anything and must not suppress anything: the set
+    # is built from `explicit`, not from `endpoint_rows`.
+    asserted = {relation.relation for relation in explicit}
+    derived = tuple(
+        GraphRelation(
+            relation_type=RELATION_TYPE_SUPERSEDED,
+            source=(fact.governed_record_id, fact.source_version_id),
+            target=replacement,
+            # The replacement version is the edge's relation reference and its record. Not
+            # a synthesized relation: it is the sealed version this snapshot already holds,
+            # named once so the two can never identify different things.
+            relation=replacement,
+            record=records[replacement],
+        )
+        for fact in supersessions
+        if (replacement := (fact.governed_record_id, fact.target_version_id)) in records
+        and replacement not in asserted
+    )
     return GraphSnapshot(
         watermark_us=max(
             int(version_watermark[0]),
             *(int(row[7]) for row in endpoint_rows),
+            *(fact.effective_at_us for fact in supersessions),
             0,
         ),
         records=MappingProxyType(records),
-        relations=relations,
+        relations=explicit + derived,
     )
 
 
@@ -243,6 +313,11 @@ def traverse(
     may rest on, because the contract's result validator applies it to both -- a relation in
     another scope linking two in-scope records is a relation this request did not ask about.
 
+    A derived `record.superseded` edge is walked by exactly these rules and no others: it is
+    kept or dropped by `relation_types` under that name, by `domain_scope` through the
+    replacement version's own scope, and by whether both of its ends are records this view
+    holds. Nothing below tests what kind of edge it is looking at.
+
     **The complete result, never a truncated one.** There is no node or edge budget here,
     because a budget applied to a total function is a silent truncation dressed as an
     answer: this build issues no continuation token, so a caller handed a sliced page has no
@@ -260,7 +335,9 @@ def traverse(
 
     Nothing else produces a boundary. An endpoint the view, the workspace, the
     `domain_scope` filter, the `relation_types` filter, sealing or the temporal rules
-    excluded is not *past the depth limit*, it is not in the answer's universe at all -- and
+    excluded is not *past the depth limit*, it is not in the answer's universe at all --
+    which is exactly why a supersession whose old source `current_canonical` does not hold
+    yields no edge there rather than a boundary anchored at the replacement -- and
     a relation whose direction never pointed at it was never reached either. In both cases
     the relation contributes no edge, because a fabricated boundary would tell a caller
     "raise `depth_limit` and you will see it" about a record no depth could reveal. The
@@ -382,6 +459,7 @@ def _edge_order(edge: GraphEdge) -> tuple[str, ...]:
 
 
 __all__ = [
+    "RELATION_TYPE_SUPERSEDED",
     "GraphRelation",
     "GraphSnapshot",
     "RecordKey",

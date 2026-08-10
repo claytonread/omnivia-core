@@ -1,4 +1,4 @@
-"""V06-3 Lane E: `graph.traverse` over ordinary governed relations, end to end.
+"""V06-3 Lane E: `graph.traverse` over governed relations and supersessions, end to end.
 
 Nothing here is stubbed. A real workspace database migrated through 0009, every row
 written through the accepted fenced writer and 0009's own seal trigger, the real
@@ -15,14 +15,18 @@ observable: `rec-c` sits at depth 2 from `rec-a` outbound and at depth 1 with `b
 because the cycle's closing edge is a one-hop inbound path. A traversal that measured depth
 by visit order rather than by shortest path could not produce both numbers from one graph.
 
-**What this module deliberately does not test, because this build does not implement it.**
-Amendment 010's derived `record.superseded` edges: the base supersession mapping and the
-history/current behaviour it prescribes are already approved but remain unimplemented in
-this partial checkpoint, and the one open question -- precedence when an ordinary edge and a
-derived edge would share a `relation_reference` -- is still awaiting owner ratification.
-Supersession rows, collision precedence, supersession watermarking, and the two-connection
-interleaving snapshot falsifier are the remaining integration/falsifier pass. Lane E is not
-complete, and this file does not claim it is.
+**The second half of the fixture is four corrected records, and it is disconnected from the
+first on purpose.** `history` holds exactly the versions that were superseded, so the chains
+`rec-h`, `rec-o`, `rel-x` and `rel-z` are the whole of that view and the eight ordinary nodes
+are the whole of `current_canonical` -- neither half can move the other's assertions. A
+complete derived edge needs a chain of three, because `v1 -> v2` is returnable only when `v2`
+is itself in the view and it is there only because `v3` replaced it. Section 10 covers
+Amendment 010: the exact mapping in both orientations, the current view's omission without a
+fabricated boundary, relation-type and domain filtering, the all-or-nothing budget, the
+ratified collision precedence beside a non-colliding supersession on the same page, the
+watermark contribution with its `as_of` exclusion, one deterministic order over both kinds of
+edge, and a two-connection WAL interleaving falsifier that commits a supersession while a
+read is in flight.
 """
 
 from __future__ import annotations
@@ -58,6 +62,13 @@ from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     build_service_registry,
     server_capability_snapshot,
+)
+from omnivia_core_runtime.storage import graph as graph_storage
+from omnivia_core_runtime.storage.connection import (
+    OpenMode,
+    install_authorizer,
+    mark_authorizer_installed,
+    open_database,
 )
 from omnivia_core_runtime.storage.graph import read_graph_snapshot
 
@@ -102,6 +113,34 @@ LATE_ENDPOINT_US = LATE_US + 5
 CUTOFF_AS_OF = "2023-11-14T22:13:25.000Z"
 CUTOFF_US = 1_700_000_005_000_000
 
+#: The supersession half of the fixture, two seconds in: after the M2/M3 chain, before
+#: `CUTOFF_US` and far before `LATE_US`, so it moves neither the ordinary pages above nor the
+#: watermark they pin. Every instant here is a whole millisecond, which is the resolution a
+#: contract `Timestamp` carries -- an `as_of` naming a finer instant could not be spelled.
+HISTORY_US = 1_700_000_002_000_000
+
+#: `rec-o`'s last supersession *edge* row, stamped long after the version it retires. It is
+#: the newest authoritative fact in this workspace before the `LATE_US` writes, which is what
+#: makes the supersession's watermark contribution measurable rather than merely asserted.
+LATE_SUPERSESSION_US = HISTORY_US + 500_000
+
+#: The two instants that separate it. Before: every version is written and no supersession
+#: has taken effect at `LATE_SUPERSESSION_US`. After: it has.
+BEFORE_SUPERSESSION_AS_OF = "2023-11-14T22:13:22.100Z"
+BEFORE_SUPERSESSION_US = HISTORY_US + 100_000
+AFTER_SUPERSESSION_AS_OF = "2023-11-14T22:13:22.900Z"
+AFTER_SUPERSESSION_US = HISTORY_US + 900_000
+
+#: The two corrections the two-connection falsifier commits *during* a read, and the only
+#: writes in this file that do not come from the fixture.
+MIDREAD_US = HISTORY_US + 800_000
+MIDREAD_LAST_US = MIDREAD_US + 1_000
+
+#: Amendment 010's derived relation type, read off the production module below and pinned as
+#: a literal here for the same reason the projection id is: a constant read through itself
+#: agrees with whatever it was renamed to.
+SUPERSEDED = "record.superseded"
+
 #: Far enough ahead that no wall-clock resolution instant reaches it, which is what keeps
 #: `rec-future` out of every view this file resolves.
 NOT_YET_US = 4_000_000_000_000_000
@@ -145,6 +184,16 @@ def key(record_id: str) -> tuple[str, str]:
 def reference(record_id: str) -> dict[str, str]:
     """One seeded record as the wire `RecordVersionReference` a request starts from."""
     return {"record_id": record_id, "version": f"ver-{record_id}"}
+
+
+def step_key(record_id: str, step: int) -> tuple[str, str]:
+    """One exact version of a corrected record: chains are several versions of one id."""
+    return (record_id, f"ver-{record_id}-{step}")
+
+
+def step_reference(record_id: str, step: int) -> dict[str, str]:
+    """One chain version as the wire reference a request starts from."""
+    return {"record_id": record_id, "version": f"ver-{record_id}-{step}"}
 
 
 # --- the fixture --------------------------------------------------------------
@@ -350,6 +399,271 @@ def seal(
             m3.insert(holder.connection, m3.SEALS, seal_row)
 
 
+def governed_version(
+    holder: m2.Owned,
+    *,
+    record_id: str,
+    version_id: str,
+    audit_ref: str,
+    ordinal: int,
+    recorded_at_us: int,
+    digest: str,
+    record_type: str = "knowledge.claim",
+    scope: str = "product.core",
+    candidate: bool = False,
+    promoted_from: str | None = None,
+    supersedes: str | None = None,
+    supersession_recorded_at_us: int | None = None,
+    endpoint: tuple[str, str, str, str, str] | None = None,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    """One sealed version of one record, written exactly as the accepted writer writes it.
+
+    `seal` above writes a *record's whole lineage* under one fixed naming rule -- one
+    candidate and one governed version, both named after the record -- which is all an
+    ordinary relation graph needs and is precisely what a supersession chain cannot use: a
+    chain is several governed versions of *one* record id, and a relation in it names an
+    exact endpoint version rather than "the" version of an endpoint record. So this writes
+    one version at a time, and the caller composes the chain.
+
+    The three shapes 0009's seal trigger recognizes are selected by the arguments rather
+    than by a mode flag, because each one *is* its own event set: a candidate carries
+    `candidate.human_proposed`, a promoted root carries `governance.accepted` naming its
+    sealed candidate predecessor, and a correction carries `governance.corrected` plus the
+    `record.superseded` event its supersession row points at. A `knowledge.relation`
+    assembly carries `relation.asserted` and exactly one endpoint row on top of whichever of
+    those it is -- 0009 requires all of it, on both layers, which is why the counts are
+    derived here rather than passed in.
+
+    `connection` is the holder's own unless a caller names another. Only the two-connection
+    snapshot falsifier does, and it passes a second connection to the same file under the
+    same lease: authority lives in rows, not in a handle, so the fenced writer validates it
+    the same way it validates the first.
+    """
+    target = holder.connection if connection is None else connection
+    assembly_id = f"asm-{version_id}"
+    events: list[tuple[str, str, int, str | None]] = []
+    if candidate:
+        events.append((f"ev-{assembly_id}-proposed", "candidate.human_proposed", 1, None))
+    elif supersedes is None:
+        events.append((f"ev-{assembly_id}-accepted", "governance.accepted", 1, promoted_from))
+    else:
+        events.append((f"ev-{assembly_id}-corrected", "governance.corrected", 1, supersedes))
+        events.append((f"ev-{assembly_id}-superseded", "record.superseded", 2, supersedes))
+    if endpoint is not None:
+        events.append((f"ev-{assembly_id}-asserted", "relation.asserted", len(events) + 1, None))
+
+    with fenced_transaction(
+        target,
+        holder.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=holder.generation,
+    ):
+        if candidate:
+            m3.insert(
+                target, m3.RECORDS,
+                m3.record_row(record_id, record_type=record_type, scope=scope),
+            )
+        row = m3.assembly_row(
+            assembly_id,
+            version_id,
+            record_id,
+            record_type=record_type,
+            scope=scope,
+            layer="candidate" if candidate else "governed",
+            origin="human_proposed" if candidate else None,
+            disposition=None if candidate else "accepted",
+            authority="proposed" if candidate else "canonical",
+            decision_kind=None if candidate else "human_reviewer",
+            decision_id=None if candidate else "reviewer-1",
+            audit_ref=audit_ref,
+            correlation_id=audit_ref,
+            ordinal=ordinal,
+            digest=digest,
+        )
+        row["content_json"] = CONTENT
+        row["recorded_at_us"] = recorded_at_us
+        m3.insert(target, m3.ASSEMBLIES, row)
+        for event_id, action, sequence, predecessor in events:
+            m3.insert(
+                target,
+                m3.EVENTS,
+                m3.event_row(
+                    event_id,
+                    assembly_id,
+                    version_id,
+                    action,
+                    sequence=sequence,
+                    audit_ref=audit_ref,
+                    correlation_id=audit_ref,
+                    actor_id="principal-1" if candidate else "reviewer-1",
+                    actor_kind="human",
+                    actor_role="author" if candidate else "reviewer",
+                    predecessor_record_id=None if predecessor is None else record_id,
+                    predecessor_version_id=predecessor,
+                ),
+            )
+            m3.insert(target, m3.LINKS, m3.link_row(event_id, assembly_id))
+        if endpoint is not None:
+            relation_type, source_id, source_version, target_id, target_version = endpoint
+            m3.insert(
+                target,
+                m3.ENDPOINTS,
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "assembly_id": assembly_id,
+                    "provenance_event_id": f"ev-{assembly_id}-asserted",
+                    "correlation_kind": "m1_audit",
+                    "correlation_id": audit_ref,
+                    "relation_type": relation_type,
+                    "source_record_id": source_id,
+                    "source_version_id": source_version,
+                    "target_record_id": target_id,
+                    "target_version_id": target_version,
+                    "recorded_at_us": recorded_at_us,
+                },
+            )
+        if supersedes is not None:
+            m3.insert(
+                target,
+                m3.SUPERSESSIONS,
+                {
+                    "workspace_id": WORKSPACE_ID,
+                    "supersession_id": f"sup-{version_id}",
+                    "assembly_id": assembly_id,
+                    "governed_record_id": record_id,
+                    "source_version_id": supersedes,
+                    "target_version_id": version_id,
+                    "provenance_event_id": f"ev-{assembly_id}-superseded",
+                    "correlation_kind": "m1_audit",
+                    "correlation_id": audit_ref,
+                    "recorded_at_us": (
+                        recorded_at_us
+                        if supersession_recorded_at_us is None
+                        else supersession_recorded_at_us
+                    ),
+                },
+            )
+        seal_row = m3.seal_row(
+            assembly_id, version_id, seal_id=f"seal-{version_id}", correlation_id=audit_ref
+        )
+        seal_row["sealed_at_us"] = max(recorded_at_us, m3.BASE_US + 50) + 1
+        m3.insert(target, m3.SEALS, seal_row)
+
+
+def chain(
+    holder: m2.Owned,
+    *,
+    record_id: str,
+    audit_ref: str,
+    length: int,
+    first_us: int,
+    record_type: str = "knowledge.claim",
+    scope: str = "product.core",
+    endpoint: tuple[str, str, str, str, str] | None = None,
+    last_supersession_us: int | None = None,
+) -> None:
+    """One record corrected `length - 1` times: `ver-{record_id}-1` .. `-{length}`.
+
+    Each version supersedes the one before it, so the `history` view holds every version but
+    the last -- that view is *the superseded ones*, not "all of them", which is exactly why a
+    complete derived edge needs a chain of three: `v1 -> v2` is returnable only when `v2` is
+    itself in the view, and it is in the view only because `v3` replaced it.
+
+    A relation chain asserts the *same* endpoint from every version, which is what makes the
+    collision case a real one rather than a contrived one: correcting a `knowledge.relation`
+    record is the ordinary way a replacement version comes to be both an endpoint assertion
+    and a supersession target. Each version carries its own content digest, because 0009
+    refuses a second sealed assembly stating identical relation semantics *and* an identical
+    digest -- a correction that changed nothing is not a correction.
+
+    The candidate `ver-{record_id}-0` is written here rather than by the caller, so a chain
+    is always written in the one order 0009 permits: a governed root names a *sealed*
+    candidate predecessor, and a relation's endpoint versions must already be sealed governed
+    accepted versions when the relation is sealed.
+    """
+    governed_version(
+        holder,
+        record_id=record_id,
+        version_id=f"ver-{record_id}-0",
+        audit_ref=audit_ref,
+        ordinal=1,
+        recorded_at_us=HISTORY_US,
+        digest=m3.DIGEST_A,
+        record_type=record_type,
+        scope=scope,
+        candidate=True,
+        endpoint=endpoint,
+    )
+    for step in range(1, length + 1):
+        governed_version(
+            holder,
+            record_id=record_id,
+            version_id=f"ver-{record_id}-{step}",
+            audit_ref=audit_ref,
+            ordinal=step + 1,
+            recorded_at_us=first_us + step - 1,
+            digest="sha256:" + str(step + 3) * 64,
+            record_type=record_type,
+            scope=scope,
+            endpoint=endpoint,
+            promoted_from=f"ver-{record_id}-0" if step == 1 else None,
+            supersedes=None if step == 1 else f"ver-{record_id}-{step - 1}",
+            supersession_recorded_at_us=(
+                last_supersession_us if step == length else None
+            ),
+        )
+
+
+def seed_supersessions(holder: m2.Owned) -> None:
+    """The second half of the fixture: four records that were corrected, and one that was not.
+
+    Disconnected from the eight ordinary nodes above on purpose. Every version here is either
+    superseded or the survivor of a chain, so the `history` view holds exactly this subgraph
+    and nothing of the ordinary one, and the ordinary `current_canonical` pages above cannot
+    reach any of it -- neither half can move the other's assertions.
+
+    * `rec-h` -- three claim versions, `product.core`. `v1 -> v2` is the one complete derived
+      edge: both ends are in `history` and `v3` is what put `v2` there.
+    * `rec-o` -- the same shape in `product.other`, so the domain filter has a supersession to
+      exclude while an in-scope one survives the same request. Its last correction's edge row
+      is stamped at `LATE_SUPERSESSION_US`, later than every version and every endpoint row in
+      this workspace before the `LATE_US` writes -- that is what makes "the watermark includes
+      the supersession half" a measurement rather than a restatement, and it is what one
+      `as_of` separates: before it, `rec-o/v2` is not yet history and its derived edge does not
+      exist.
+    * `rel-x` -- three `knowledge.relation` versions, each asserting `rec-h/v1 -> rec-o/v1`
+      (0009 refuses a relation whose two endpoint *records* are the same one). Its `v2` is
+      therefore both an explicit edge's relation record and the target of the `v1 -> v2`
+      supersession: the ratified collision, in the shape the amendment names. It is also the
+      only path from the `product.core` chain to the `product.other` one, which is what lets
+      one seed reach both and makes the domain filter's two halves comparable.
+    * `rec-w` -- one uncorrected version, and the subject of the two-connection falsifier: its
+      correction is committed *during* a read, from a second connection, and must be wholly
+      absent from the answer that read was already assembling.
+
+    The candidate assemblies are named `ver-{record}-0` rather than `seal`'s `-cand`, so the
+    ordinary fixture's own count of candidate endpoint rows keeps counting the ordinary
+    fixture. These chains are a separate statement and must not silently change that one.
+
+    The order is 0009's, not a preference: `rel-x` names exact `rec-h`/`rec-o` versions as
+    endpoints, and the seal trigger requires those to be sealed governed accepted versions
+    already, so the two claim chains are written first.
+    """
+    chain(holder, record_id="rec-h", audit_ref="audit-27", length=3, first_us=HISTORY_US + 1_000)
+    chain(
+        holder, record_id="rec-o", audit_ref="audit-28", length=3,
+        first_us=HISTORY_US + 4_000, scope="product.other",
+        last_supersession_us=LATE_SUPERSESSION_US,
+    )
+    chain(
+        holder, record_id="rel-x", audit_ref="audit-29", length=3,
+        first_us=HISTORY_US + 7_000, record_type="knowledge.relation",
+        endpoint=(SUPPORTS, "rec-h", "ver-rec-h-1", "rec-o", "ver-rec-o-1"),
+    )
+    chain(holder, record_id="rec-w", audit_ref="audit-31", length=1, first_us=HISTORY_US + 12_000)
+
+
 @pytest.fixture
 def graph(m3_owned: m2.Owned) -> Iterator[m2.Owned]:
     """The one workspace every property below is read out of.
@@ -451,6 +765,7 @@ def graph(m3_owned: m2.Owned) -> Iterator[m2.Owned]:
         recorded_at_us=LATE_US, endpoint=(SUPPORTS, "rec-c", "rec-late"),
         endpoint_recorded_at_us=LATE_ENDPOINT_US,
     )
+    seed_supersessions(m3_owned)
     yield m3_owned
 
 
@@ -567,6 +882,49 @@ def start(
         payload["domain_scope"] = domain_scope
     payload.update(overrides)
     return payload
+
+
+def page(
+    *seeds: tuple[str, int], view: str | None = "history", **overrides: Any
+) -> dict[str, Any]:
+    """One traversal payload over the chain half of the fixture, `history` unless named.
+
+    The twin of `start` above: that one names records whose single version `seal` wrote, this
+    one names an exact version of a corrected record, which is the only way to ask about a
+    supersession at all.
+    """
+    payload: dict[str, Any] = {
+        "start": [step_reference(record_id, step) for record_id, step in seeds]
+    }
+    if view is not None:
+        payload["view"] = view
+    payload.update(overrides)
+    return payload
+
+
+def steps_of(result: GraphTraversalResult) -> tuple[tuple[str, int], ...]:
+    """A page's nodes as `(version, depth)`.
+
+    Versions rather than record ids, because a chain returns several versions of one record
+    and `nodes_of` could not tell `rec-h`'s history from `rec-h` returned twice.
+    """
+    return tuple((node.reference.version, node.depth) for node in result.nodes)
+
+
+def step_edges_of(
+    result: GraphTraversalResult,
+) -> tuple[tuple[str | None, str, str | None, str, str | None], ...]:
+    """A page's edges as `(source version, type, target version, relation version, reason)`."""
+    return tuple(
+        (
+            None if edge.source is None else edge.source.version,
+            edge.relation_type,
+            None if edge.target is None else edge.target.version,
+            edge.relation_reference.version,
+            edge.boundary_reason,
+        )
+        for edge in result.edges
+    )
 
 
 def nodes_of(result: GraphTraversalResult) -> tuple[tuple[str, int], ...]:
@@ -1346,3 +1704,484 @@ def message_from_authorization(name: str) -> str:
     constant = getattr(authorization, name)
     assert isinstance(constant, str)
     return constant
+
+
+# --- 10. Amendment 010: the derived `record.superseded` edge -------------------
+
+
+def test_one_supersession_maps_to_exactly_one_derived_edge_in_the_history_view(
+    graph: m2.Owned,
+) -> None:
+    """The exact mapping, field by field, and the same edge seen from either end.
+
+    `rec-h` was corrected twice, so `history` holds `v1` and `v2` and the replacement `v3` is
+    the current answer. The one complete derived edge is `v1 -> v2`: source is the superseded
+    version, target is the replacement, the type is `record.superseded`, and the relation
+    reference *is* the replacement -- which is also the edge's record, the same sealed
+    `GovernedRecord` the traversal returns as the node for `v2`. Nothing is synthesized: no
+    relation record was written for this edge, and the assertion below reads the edge's record
+    identity off the edge itself.
+
+    `v2 -> v3` is a real, authoritative supersession and is deliberately *not* here: `v3` is
+    current, so it is not a version the history view holds, and an edge is materialized only
+    when both of its ends are.
+
+    Falsifier: both orientations are asked, and the relation keeps the database's own
+    direction in each. An implementation that anchored source and target on the walk rather
+    than on the fact would invert one of the two.
+    """
+    outbound = traverse(
+        graph,
+        page(("rec-h", 1), direction=GRAPH_DIRECTION_OUTBOUND,
+             relation_types=[SUPERSEDED], depth_limit=1),
+    )
+    inbound = traverse(
+        graph,
+        page(("rec-h", 2), direction=GRAPH_DIRECTION_INBOUND,
+             relation_types=[SUPERSEDED], depth_limit=1),
+    )
+
+    assert steps_of(outbound) == (("ver-rec-h-1", 0), ("ver-rec-h-2", 1))
+    assert steps_of(inbound) == (("ver-rec-h-2", 0), ("ver-rec-h-1", 1))
+    for result in (outbound, inbound):
+        (edge,) = result.edges
+        assert edge.relation_type == SUPERSEDED
+        assert edge.source is not None and edge.target is not None
+        assert (edge.source.record_id, edge.source.version) == step_key("rec-h", 1)
+        assert (edge.target.record_id, edge.target.version) == step_key("rec-h", 2)
+        assert (
+            edge.relation_reference.record_id,
+            edge.relation_reference.version,
+        ) == step_key("rec-h", 2)
+        identity = edge.record.provenance.identity
+        assert (identity.record_id, identity.version) == step_key("rec-h", 2)
+        assert edge.boundary_reason is None
+        # The edge record is the replacement version this same page returned as a node, not a
+        # second hydration of it: the traversal states one record, referenced twice.
+        (replacement,) = [
+            node.record for node in result.nodes if node.reference.version == "ver-rec-h-2"
+        ]
+        assert edge.record == replacement
+
+    # And the supersession the view does not hold both ends of contributes no edge at all.
+    assert {"ver-rec-h-3"}.isdisjoint({version for version, _ in steps_of(outbound)})
+    assert graph.connection.execute(
+        "SELECT count(*) FROM omnivia_record_supersessions WHERE workspace_id = ? "
+        "AND source_version_id = 'ver-rec-h-2' AND target_version_id = 'ver-rec-h-3'",
+        (WORKSPACE_ID,),
+    ).fetchone()[0] == 1
+
+
+def test_the_current_canonical_view_omits_a_supersession_without_fabricating_a_boundary(
+    graph: m2.Owned,
+) -> None:
+    """The old source is absent from that view, so the edge is absent -- not deferred.
+
+    `rec-h/v3` is the current answer and `v2 -> v3` is an authoritative supersession whose
+    *target* the current view does hold. What it does not hold is the source, and a version a
+    view excludes is not a version past the depth limit: a `depth_boundary` anchored at `v3`
+    would tell a caller "raise `depth_limit` and you will see it" about a record no depth can
+    reveal. The page comes back with the seed and nothing else, at the widest depth this
+    build allows.
+
+    Falsifier: the same supersession *is* returnable under `history` when both ends are in
+    view (the test above), and asking for the superseded version by name under
+    `current_canonical` is refused outright rather than answered from the history table.
+    """
+    current = traverse(
+        graph, page(("rec-h", 3), view=None, direction=GRAPH_DIRECTION_BOTH, depth_limit=8)
+    )
+
+    assert steps_of(current) == (("ver-rec-h-3", 0),)
+    assert current.edges == ()
+
+    refusal = refused(
+        production_path(graph).dispatch(request_for(page(("rec-h", 1), view=None)))
+    )
+    assert refusal.error.code == ERROR_CODE_NOT_FOUND
+    assert refusal.error.message == message("_MESSAGE_UNKNOWN_START")
+
+
+def test_a_supersession_edge_is_filtered_by_relation_type_like_any_other(
+    graph: m2.Owned,
+) -> None:
+    """`record.superseded` is a relation type a request may name, include and exclude.
+
+    Three pages from one seed. Unfiltered, the walk crosses both kinds of edge and reaches
+    `rec-o` two hops out. Filtered to `record.superseded`, the explicit edges are gone and so
+    is everything only they reached -- a filtered-out relation is not a filtered-out edge, it
+    is a path that does not exist. Filtered to `reconciliation.supports`, the derived edge is
+    the one that is gone.
+    """
+    unfiltered = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2)
+    )
+    derived = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH,
+                    relation_types=[SUPERSEDED], depth_limit=2)
+    )
+    explicit = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH,
+                    relation_types=[SUPPORTS], depth_limit=2)
+    )
+
+    assert steps_of(unfiltered) == (
+        ("ver-rec-h-1", 0),
+        ("ver-rec-h-2", 1),
+        ("ver-rec-o-1", 1),
+        ("ver-rec-o-2", 2),
+    )
+    assert {edge[1] for edge in step_edges_of(unfiltered)} == {SUPERSEDED, SUPPORTS}
+
+    assert steps_of(derived) == (("ver-rec-h-1", 0), ("ver-rec-h-2", 1))
+    assert step_edges_of(derived) == (
+        ("ver-rec-h-1", SUPERSEDED, "ver-rec-h-2", "ver-rec-h-2", None),
+    )
+
+    assert steps_of(explicit) == (("ver-rec-h-1", 0), ("ver-rec-o-1", 1))
+    assert step_edges_of(explicit) == (
+        ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-1", None),
+        ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-2", None),
+    )
+
+
+def test_the_domain_filter_excludes_an_out_of_scope_supersession_and_keeps_the_in_scope_one(
+    graph: m2.Owned,
+) -> None:
+    """One request, two supersessions, one scope: the derived edge is filtered like any other.
+
+    `rec-o`'s chain is `product.other` and `rec-h`'s is `product.core`, and both are reachable
+    from the same seed. Under `domain_scope=product.core` the `rec-o` nodes and the `rec-o`
+    supersession edge are gone while the `rec-h` supersession edge is untouched -- and the
+    excluded end fabricates no boundary, for the same reason the current view fabricates none:
+    `rec-o/v1` sits at depth 1 under a depth limit of 2, and no depth would reveal it.
+
+    Falsifier: the identical request without the filter returns both.
+    """
+    scoped = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH,
+                    domain_scope="product.core", depth_limit=2)
+    )
+    unscoped = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2)
+    )
+
+    assert steps_of(scoped) == (("ver-rec-h-1", 0), ("ver-rec-h-2", 1))
+    assert step_edges_of(scoped) == (
+        ("ver-rec-h-1", SUPERSEDED, "ver-rec-h-2", "ver-rec-h-2", None),
+    )
+
+    assert ("ver-rec-o-1", SUPERSEDED, "ver-rec-o-2", "ver-rec-o-2", None) in step_edges_of(
+        unscoped
+    )
+    assert ("ver-rec-o-1", 1) in steps_of(unscoped)
+
+
+def test_a_supersession_page_that_does_not_fit_its_budget_returns_none_of_it(
+    graph: m2.Owned,
+) -> None:
+    """The all-or-nothing rule, with the supersession as the thing that overflows it.
+
+    The seed alone is one node; the derived edge is what makes the answer two. So a
+    `node_limit` of one is a budget the supersession breaks, and this build has no
+    continuation token to hand the remainder back with. The mixed page's four edges make the
+    same statement against the separate edge budget.
+
+    Falsifier: each request is repeated with a budget that fits, and comes back whole.
+    """
+    dispatcher = production_path(graph)
+    nodes_refused = refused(
+        dispatcher.dispatch(
+            request_for(
+                page(("rec-h", 1), direction=GRAPH_DIRECTION_OUTBOUND,
+                     relation_types=[SUPERSEDED], depth_limit=1, node_limit=1)
+            )
+        )
+    )
+    assert nodes_refused.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
+    assert nodes_refused.error.message == message("_MESSAGE_TOO_LARGE")
+    for absent in ('"nodes"', '"edges"', "ver-rec-h-2", SUPERSEDED):
+        assert absent not in wire_text(nodes_refused)
+
+    edges_refused = refused(
+        dispatcher.dispatch(
+            request_for(
+                page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2, edge_limit=3)
+            )
+        )
+    )
+    assert edges_refused.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
+    assert edges_refused.error.message == message("_MESSAGE_TOO_LARGE")
+
+    fits_nodes = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_OUTBOUND,
+                    relation_types=[SUPERSEDED], depth_limit=1, node_limit=2)
+    )
+    assert len(fits_nodes.nodes) == 2 and len(fits_nodes.edges) == 1
+    fits_edges = traverse(
+        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2, edge_limit=4)
+    )
+    assert len(fits_edges.edges) == 4
+
+
+def test_an_explicit_edge_wins_a_shared_relation_reference_and_only_that_one_is_dropped(
+    graph: m2.Owned,
+) -> None:
+    """The ratified collision rule, in the shape that actually produces one.
+
+    `rel-x` is a `knowledge.relation` record that was corrected, so its `v2` is two things at
+    once: the record asserting an explicit endpoint edge, and the *target* of the `v1 -> v2`
+    supersession -- whose derived edge would name `rel-x/v2` as its relation reference too.
+    The contract's result validator refuses two edges naming one relation record version, and
+    the ratified rule keeps the explicit one.
+
+    Four things are asserted, because dropping the wrong edge, dropping too many, or dropping
+    none each fail a different one:
+
+    * the explicit edge resting on `rel-x/v2` is returned, and so is the one resting on
+      `rel-x/v1`;
+    * no `record.superseded` edge names `rel-x/v2`, and `rel-x/v2` is not reached as a node --
+      the suppressed edge was the only path to it from its seed;
+    * the *other* supersessions on the same page, including `rec-h`'s, are untouched;
+    * every returned edge still names a distinct relation record, which is the validator rule
+      the collision would have broken. The handler ran `validate_graph_traversal_result`
+      before returning, so this page has already satisfied it.
+
+    Falsifier: the colliding supersession row is really there, and the explicit edge really
+    does carry that same version as its `relation_reference` -- both read back below, so a
+    build that simply never materialized `rel-x`'s supersession would still have to explain
+    the row.
+    """
+    result = traverse(
+        graph,
+        page(("rec-h", 1), ("rel-x", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2),
+    )
+
+    edges = step_edges_of(result)
+    assert ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-1", None) in edges
+    assert ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-2", None) in edges
+    assert not [
+        edge for edge in edges if edge[1] == SUPERSEDED and edge[3] == "ver-rel-x-2"
+    ]
+    assert "ver-rel-x-2" not in {version for version, _ in steps_of(result)}
+
+    # Only the colliding one. Both of the page's other supersessions are still edges.
+    assert ("ver-rec-h-1", SUPERSEDED, "ver-rec-h-2", "ver-rec-h-2", None) in edges
+    assert ("ver-rec-o-1", SUPERSEDED, "ver-rec-o-2", "ver-rec-o-2", None) in edges
+
+    relation_keys = [
+        (edge.relation_reference.record_id, edge.relation_reference.version)
+        for edge in result.edges
+    ]
+    assert len(relation_keys) == len(set(relation_keys))
+
+    assert graph.connection.execute(
+        "SELECT count(*) FROM omnivia_record_supersessions WHERE workspace_id = ? "
+        "AND source_version_id = 'ver-rel-x-1' AND target_version_id = 'ver-rel-x-2'",
+        (WORKSPACE_ID,),
+    ).fetchone()[0] == 1
+    (explicit,) = [
+        edge for edge in result.edges if edge.relation_reference.version == "ver-rel-x-2"
+    ]
+    assert explicit.relation_type == SUPPORTS
+
+
+def test_the_watermark_includes_the_supersessions_and_an_as_of_excludes_a_later_one(
+    graph: m2.Owned,
+) -> None:
+    """A supersession is an authoritative fact an answer rests on, so it moves the watermark.
+
+    `rec-o`'s last supersession edge row is stamped at `LATE_SUPERSESSION_US`, later than
+    every sealed version and every endpoint row in this workspace at that instant -- both read
+    back from the database below, so this is a measurement rather than a restatement of the
+    fixture. The watermark is that instant, which a version-and-endpoint watermark could not
+    produce.
+
+    And it is the snapshot's, not a clock's: one `as_of` before it excludes the fact
+    entirely. The watermark falls back to the newest sealed version, and the nodes move with
+    it -- `rec-o/v2` is not yet superseded at that instant, so the history view does not hold
+    it, so neither it nor the `v1 -> v2` edge is in the answer. Facts after the resolution
+    instant affect nodes, edges and watermark alike: none of the three.
+    """
+    after = traverse(
+        graph,
+        page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2,
+             as_of=AFTER_SUPERSESSION_AS_OF),
+    )
+    before = traverse(
+        graph,
+        page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2,
+             as_of=BEFORE_SUPERSESSION_AS_OF),
+    )
+
+    newest_version = graph.connection.execute(
+        "SELECT MAX(recorded_at_us) FROM omnivia_authoritative_governed_versions "
+        "WHERE workspace_id = ? AND recorded_at_us <= ?",
+        (WORKSPACE_ID, AFTER_SUPERSESSION_US),
+    ).fetchone()[0]
+    newest_endpoint = graph.connection.execute(
+        "SELECT MAX(r.recorded_at_us) FROM omnivia_governed_relation_endpoints r "
+        "JOIN omnivia_authoritative_governed_versions a "
+        "  ON a.workspace_id = r.workspace_id AND a.assembly_id = r.assembly_id "
+        "WHERE r.workspace_id = ? AND r.recorded_at_us <= ?",
+        (WORKSPACE_ID, AFTER_SUPERSESSION_US),
+    ).fetchone()[0]
+
+    assert newest_version < LATE_SUPERSESSION_US
+    assert newest_endpoint < LATE_SUPERSESSION_US
+    assert after.freshness.projection_watermarks == {
+        "graph.governed_relations": str(LATE_SUPERSESSION_US)
+    }
+    assert ("ver-rec-o-1", 1) in steps_of(after)
+
+    assert before.freshness.projection_watermarks == {
+        "graph.governed_relations": str(newest_version)
+    }
+    assert steps_of(before) == (("ver-rec-h-1", 0), ("ver-rec-h-2", 1), ("ver-rec-o-1", 1))
+    assert "ver-rec-o-2" not in {edge[3] for edge in step_edges_of(before)}
+
+
+def test_ordinary_and_derived_edges_share_one_deterministic_order(graph: m2.Owned) -> None:
+    """One page, three relation types, one sort key -- and the same page twice.
+
+    The derived edges are not appended after the ordinary ones or grouped by kind: the whole
+    sequence is ordered by the validator's own complete tuple, which interleaves them. Asserted
+    as an exact sequence rather than as a set, because "sorted" is the property a build could
+    lose while still returning the right edges.
+    """
+    payload = page(("rec-h", 1), ("rel-x", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2)
+    first = traverse(graph, payload)
+    second = traverse(graph, payload)
+
+    assert step_edges_of(first) == step_edges_of(second)
+    assert steps_of(first) == steps_of(second)
+    assert step_edges_of(first) == (
+        ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-1", None),
+        ("ver-rec-h-1", SUPPORTS, "ver-rec-o-1", "ver-rel-x-2", None),
+        ("ver-rec-h-1", SUPERSEDED, "ver-rec-h-2", "ver-rec-h-2", None),
+        ("ver-rec-o-1", SUPERSEDED, "ver-rec-o-2", "ver-rec-o-2", None),
+    )
+
+    edge_keys = [
+        (
+            *(("", "") if edge.source is None else (edge.source.record_id, edge.source.version)),
+            edge.relation_type,
+            *(("", "") if edge.target is None else (edge.target.record_id, edge.target.version)),
+            edge.relation_reference.record_id,
+            edge.relation_reference.version,
+        )
+        for edge in first.edges
+    ]
+    assert edge_keys == sorted(edge_keys)
+    assert graph_storage.RELATION_TYPE_SUPERSEDED == SUPERSEDED
+
+
+def test_a_supersession_committed_mid_read_is_wholly_absent_from_that_snapshot(
+    graph: m2.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two connections, one WAL database, and a correction committed *during* the read.
+
+    The reader is paused at the one place a leak could hide: the read transaction is open and
+    the frontier has been resolved, but the endpoint rows, the supersessions and the watermark
+    have not been read yet. A second connection -- the same file, the same lease, authority
+    being rows rather than a handle -- then commits `rec-w`'s correction and returns.
+
+    The service's own connection cannot be either of the two. `OpenMode.SERVICE_OWNED` sets
+    `PRAGMA locking_mode = EXCLUSIVE`, and under WAL that means the owner never releases its
+    locks and no second connection may touch the file at all -- which is the production
+    guarantee, not something to work around. So the owner is closed first and both connections
+    here are ordinary ones over the same WAL file, with the reader given the same
+    deny-by-default authorizer the service connection carries, so the read path under test is
+    the production one in everything but the lock mode. `journal_mode` is asserted below,
+    because a database that had fallen back to a rollback journal would serialize the two and
+    the interleaving would never happen.
+
+    The answer that read produces must be wholly *before* that commit: `rec-w/v1` is not in its
+    history view, no `record.superseded` edge names it, and the watermark is the one the
+    workspace had before the write. A snapshot that read supersessions outside the transaction
+    -- or took its watermark from a later query, or from a clock -- would answer with a
+    frontier from before the commit and an edge or a watermark from after it, which is the
+    mixed answer this shape exists to make impossible.
+
+    The second read, over the same connection with no pause, is the wholly *after* half: the
+    edge is there and the watermark has moved to the new fact. Without it, a build that simply
+    never materialized supersessions would pass the first half.
+    """
+    real_frontier = graph_storage.read_governed_record_values
+    graph.connection.close()
+    reader = open_database(graph.path, OpenMode.EPHEMERAL)
+    install_authorizer(reader, allow_mutations=False, allow_ddl=False)
+    mark_authorizer_installed(reader)
+    writer = open_database(graph.path, OpenMode.EPHEMERAL)
+    for connection in (reader, writer):
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    paused: list[bool] = []
+
+    def pause_after_the_frontier(
+        connection: sqlite3.Connection, **selectors: Any
+    ) -> Any:
+        values = real_frontier(connection, **selectors)
+        if not paused:
+            # Inside the reader's transaction, before any graph fact has been materialized.
+            paused.append(bool(reader.in_transaction))
+            # Two corrections, because one would move only the frontier and the watermark: a
+            # *complete* derived edge needs `v2` to be history too, and that is what `v3`
+            # makes it. So the write that lands mid-read is a whole node, edge and watermark
+            # change at once -- every part of the answer this snapshot is assembling.
+            for step, instant in ((2, MIDREAD_US), (3, MIDREAD_LAST_US)):
+                governed_version(
+                    graph,
+                    record_id="rec-w",
+                    version_id=f"ver-rec-w-{step}",
+                    audit_ref="audit-31",
+                    ordinal=step + 1,
+                    recorded_at_us=instant,
+                    digest="sha256:" + str(step + 6) * 64,
+                    supersedes=f"ver-rec-w-{step - 1}",
+                    connection=writer,
+                )
+        return values
+
+    monkeypatch.setattr(
+        graph_storage, "read_governed_record_values", pause_after_the_frontier
+    )
+    try:
+        during = read_graph_snapshot(
+            reader,
+            workspace_id=WORKSPACE_ID,
+            resolution_instant_us=CUTOFF_US,
+            view="history",
+        )
+    finally:
+        monkeypatch.setattr(graph_storage, "read_governed_record_values", real_frontier)
+
+    # The reader really was mid-transaction when the write landed, and the write really did
+    # commit -- neither half of the falsifier is vacuous.
+    assert paused == [True]
+    assert writer.execute(
+        "SELECT count(*) FROM omnivia_record_supersessions WHERE workspace_id = ? "
+        "AND source_version_id IN ('ver-rec-w-1', 'ver-rec-w-2')",
+        (WORKSPACE_ID,),
+    ).fetchone()[0] == 2
+
+    assert step_key("rec-w", 1) not in during.records
+    assert not [
+        relation for relation in during.relations if relation.source[0] == "rec-w"
+    ]
+    assert during.watermark_us == LATE_SUPERSESSION_US
+
+    after = read_graph_snapshot(
+        reader,
+        workspace_id=WORKSPACE_ID,
+        resolution_instant_us=CUTOFF_US,
+        view="history",
+    )
+    assert step_key("rec-w", 1) in after.records
+    assert [
+        (relation.relation_type, relation.source, relation.target)
+        for relation in after.relations
+        if relation.source[0] == "rec-w"
+    ] == [(SUPERSEDED, step_key("rec-w", 1), step_key("rec-w", 2))]
+    assert after.watermark_us == MIDREAD_LAST_US
+    reader.close()
+    writer.close()
