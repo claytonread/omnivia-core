@@ -69,6 +69,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize_application_request,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
 from omnivia_core_runtime.service.handlers.knowledge import (
@@ -92,6 +93,7 @@ EVIDENCE_SEARCH_OPERATION: Final = "evidence.search"
 KNOWLEDGE_SEARCH_OPERATION: Final = "knowledge.search"
 MEMORY_SEARCH_OPERATION: Final = "memory.search"
 GRAPH_TRAVERSE_OPERATION: Final = "graph.traverse"
+CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
 
 #: The purpose each granted operation is served under. There is no purpose registry in
 #: the contract -- purposes are pattern-validated at the boundary and then checked
@@ -118,6 +120,7 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         KNOWLEDGE_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
     }
 )
 
@@ -256,7 +259,7 @@ def local_owner_session(
 def build_application_registry() -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    Five entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
+    Six entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
     and it registers nothing into the probe registry.
 
@@ -272,6 +275,7 @@ def build_application_registry() -> ApplicationOperationRegistry:
     registry.register(KNOWLEDGE_SEARCH_OPERATION, knowledge_search)
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
+    registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
     return registry
 
 
@@ -473,6 +477,16 @@ class ApplicationDispatcher:
                     workspace_id=workspace_id,
                     granted_operations=self.session.operations,
                     service=self.service,
+                    # Amendment 009's pass-through, and nothing more than a pass-through:
+                    # these are the values the seam *returned*, carried across unchanged.
+                    # Not the session's grant, not the catalogue's requirement, not the
+                    # request's claim and not a constant -- each of those is a different
+                    # set from the effective one, and `context_pack.build` writes what it
+                    # is handed here into a signed artifact. Reconstructing any of them
+                    # would attest an authority no seam ever granted.
+                    authority=context.authority,
+                    scopes=context.scopes,
+                    purpose=context.purpose,
                 )
             )
         except OperationError as error:
@@ -567,6 +581,7 @@ class ApplicationDispatcher:
 
 __all__ = [
     "CHANNEL_TRUST",
+    "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GRAPH_TRAVERSE_OPERATION",
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
