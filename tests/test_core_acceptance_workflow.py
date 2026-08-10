@@ -52,6 +52,16 @@ GATE_STEPS = (
     ("Run package boundary tests", "python -m pytest tests/test_package_boundaries.py -q"),
     ("Build and install-check all distributions", "PYTHON=python scripts/check-package-builds.sh"),
     ("Check application contracts", "python scripts/check-application-contracts.py"),
+    # The MCP exposure manifest's advertised input and output schemas are
+    # generated from the canonical Application Contract v1 documents and checked
+    # in, because the canonical schemas are force-included into the
+    # `omnivia-core` wheel and absent from an editable install. Without this gate
+    # the committed module drifts from the schemas silently and `tools/list`
+    # advertises a shape no contract vouches for.
+    (
+        "Check generated MCP exposure schemas",
+        "python scripts/generate-mcp-exposure-schemas.py --check",
+    ),
     ("Run application contract tests", "python -m pytest tests/contracts -q"),
     ("Check generated TypeScript contracts", "npm run check:application-contracts"),
     ("Check compatibility facade routes", "python scripts/check-facade-routes.py"),
@@ -888,6 +898,40 @@ def test_the_gate_does_not_claim_the_acquisition_phase_is_offline() -> None:
         assert claim in " ".join(text.split()), (
             f"{path.name} does not state the property being proven"
         )
+
+
+MCP_SCHEMA_GATE_STEP = "Check generated MCP exposure schemas"
+MCP_SCHEMA_GENERATOR = "scripts/generate-mcp-exposure-schemas.py"
+MCP_GENERATED_MODULE = (
+    "packages/omnivia-core-mcp/src/omnivia_core_mcp/generated_schema_projection.py"
+)
+PREFLIGHT = REPO_ROOT / "scripts" / "preflight"
+
+
+def test_the_generated_mcp_schema_gate_runs_locally_and_on_the_gate() -> None:
+    """`--check` is on both the merge-blocking gate and `./scripts/preflight`.
+
+    A generated artifact with no drift check is a stale artifact waiting to
+    happen, and this one is what `tools/list` advertises: the canonical schemas
+    move, the committed module does not, and every MCP host is then handed a
+    shape no contract vouches for. `GATE_STEPS` pins the workflow step and its
+    place in the order; this pins the other two halves -- that preflight runs the
+    same command, so the failure is local rather than first seen on the pull
+    request, and that both the generator and the module it owns exist.
+    """
+    assert (REPO_ROOT / MCP_SCHEMA_GENERATOR).is_file()
+    assert (REPO_ROOT / MCP_GENERATED_MODULE).is_file()
+
+    assert (MCP_SCHEMA_GATE_STEP, f"python {MCP_SCHEMA_GENERATOR} --check") in GATE_STEPS
+
+    preflight = "\n".join(
+        line
+        for line in PREFLIGHT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    assert f"{MCP_SCHEMA_GENERATOR} --check" in preflight, (
+        "preflight must run the same drift check the gate does"
+    )
 
 
 RESOLVER_SMOKE_STEP = "Run compatibility root resolver and installed-root smoke"

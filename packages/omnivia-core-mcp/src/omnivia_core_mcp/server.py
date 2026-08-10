@@ -246,15 +246,27 @@ def _call_tool(
     # is not JSON serializable". `encode_response` is the accepted way to get a
     # wire-shaped document, and is what the CLI has always used.
     encoded = codec.encode_response(response)["result"]
+    if not isinstance(encoded, dict):
+        # Refused rather than substituted. This read `encoded if isinstance(...)
+        # else {}`, which published an empty success document for a shape the
+        # advertised output schema does not describe -- inert while no schema was
+        # advertised, and a lie the moment one is.
+        return _failure(
+            f"{params.name} returned a result this server cannot publish: the "
+            f"encoded result is {type(encoded).__name__}, not a JSON object"
+        )
     return types.CallToolResult(
+        # The contract-encoded result itself. The advertised `output_schema`
+        # describes exactly this document, and the official client validates it
+        # against that schema on every successful call.
+        structured_content=encoded,
+        # Exactly one text item, and it is the same document: a host that predates
+        # structured content still gets the whole answer, and one that has it can
+        # check the two agree. Serialised through the codec's canonical encoder, so
+        # the mirror is byte-stable rather than dict-order-dependent.
         content=[
-            types.TextContent(
-                type="text",
-                text=codec.to_canonical_json(
-                    encoded if isinstance(encoded, dict) else {}
-                ),
-            )
-        ]
+            types.TextContent(type="text", text=codec.to_canonical_json(encoded))
+        ],
     )
 
 
@@ -291,19 +303,22 @@ def _request(
     argument for one anywhere in this package, which is R004-06's "unrestricted
     filesystem path selection" boundary enforced by there being no path to select.
 
-    **The advertised `additionalProperties: false` is enforced here, and was not.**
-    This copied `params.arguments` into `input` verbatim, so arbitrary JSON reached
-    the envelope while `tools/list` advertised a closed, empty object. It was inert
-    -- the `workspace.inspect` handler never reads `input`, and
-    :func:`~omnivia_core_mcp.manifest.input_schema` blocks any operation with
-    fields at import -- but "inert" is a property of today's exposure manifest, not
-    of this function, and the paragraph above claimed there was no path to select
-    while every key a model sent was still being forwarded.
+    **The advertised closed payload is enforced here, and was not.** This copied
+    `params.arguments` into `input` verbatim, so arbitrary JSON reached the
+    envelope while `tools/list` advertised a closed object. It was inert while the
+    one exposed operation took no arguments, but "inert" was a property of that
+    exposure manifest rather than of this function, and the paragraph above
+    claimed there was no path to select while every key a model sent was still
+    being forwarded.
 
-    The check is against the projected schema rather than against "no arguments",
-    so it stays correct when a real projector lands and an operation is exposed
-    that does take some. It is here rather than in :func:`_call_tool` because this
-    is the one place every call builds its envelope.
+    The check reads the advertised schema's own `properties` rather than a literal
+    list, so it says exactly what `tools/list` said and moves with it. Every
+    advertised payload declares `unevaluatedProperties: false`, so a key outside
+    that set is one the contract refuses anyway -- refusing it here costs the model
+    a round trip to find that out. Value-level validation stays where it belongs:
+    the service validates the payload against the operation contract and answers
+    with its own typed refusal. This is here rather than in :func:`_call_tool`
+    because this is the one place every call builds its envelope.
     """
     entry = get_operation_metadata(exposed.operation)
     advertised = set(input_schema(entry)["properties"])

@@ -1,7 +1,7 @@
 """The curated MCP exposure manifest (R004-06).
 
 **An allow-list, not a projection of the catalogue.** ``OPERATION_CATALOGUE``
-holds twenty operations. This module names one of them. A newly registered Core
+holds twenty operations. This module names six of them. A newly registered Core
 operation is absent from MCP until somebody adds it here and tests it, which is
 the whole difference between an application capability catalogue and an
 agent-facing security decision: the catalogue says what Core *can* do, and this
@@ -12,38 +12,40 @@ health, readiness, status and discovery; bootstrap and workspace initialisation;
 unrestricted filesystem path selection; administrative configuration; and every
 destructive or persistent mutation. None of those is a tool a model calls.
 
-**Why only ``workspace.inspect`` in this slice.** R004-06 also names the V06-3
-retrieval and context-pack operations, and requires that their identifiers come
-from the landed catalogue. ``context_pack.build``, ``evidence.search``,
-``knowledge.search`` and the ``memory.*`` reads are all present and all classify
-themselves ``side_effect="none"``, but "explicitly classified as safe for MCP
-use" is a V06-3 classification that has not landed, and this module does not get
-to make it on V06-3's behalf. Adding one is an edit to :data:`EXPOSURE_MANIFEST`
-and a test, and nothing else.
+**The six.** ``workspace.inspect`` is the attached workspace's own descriptor.
+The other five are V06-3's retrieval and context-pack reads --
+``evidence.search``, ``knowledge.search``, ``memory.search``, ``graph.traverse``
+and ``context_pack.build`` -- which have landed, classify themselves
+``side_effect="none"`` and ``audit_category="read"``, and are the operations an
+agent needs to answer a question from a governed workspace. Every identifier
+below is the catalogue's own; none is invented here.
 
 **Read-first is enforced, not asserted.** :func:`_admit` refuses at import time
 any entry whose catalogue metadata is not ``side_effect="none"`` and
 ``audit_category="read"``. A future editor who adds ``memory.create`` here does
 not ship a mutation tool with a wrong comment; the package fails to import.
 
-**Projection, not redefinition.** The MCP tool's schema comes from the operation
-contract, reached through the catalogue entry's own ``input_schema_ref``: the
-``#/$defs/<Name>`` fragment names the generated contract dataclass, which is
-looked up in the public package rather than transcribed. See
-:func:`input_schema` for what that projection can and cannot express today, and
-:mod:`omnivia_core_mcp.server` for why no output schema is projected.
+**Projection, not redefinition.** A tool's input and output schemas come from
+the canonical Application Contract v1 documents, reached through the catalogue
+entry's own ``input_schema_ref`` and ``result_schema_ref`` and looked up in
+:mod:`omnivia_core_mcp.generated_schema_projection` -- which
+``scripts/generate-mcp-exposure-schemas.py`` emits from those documents and
+``--check`` holds to them. Nothing here transcribes a field, and nothing here
+reads the packaged canonical schemas: they are force-included into the
+``omnivia-core`` *wheel* and absent from an editable install, so reading them
+would make `tools/list` depend on how Core was installed. The generated module
+is present and identical in both.
 """
 
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from typing import Any, Final
 
 from mcp import types
 
-import omnivia_core.contracts.v1 as contracts_v1
 from omnivia_core.contracts.v1 import OperationMetadata, get_operation_metadata
+from omnivia_core_mcp.generated_schema_projection import SCHEMAS
 
 __all__ = [
     "EXPOSURE_MANIFEST",
@@ -51,6 +53,7 @@ __all__ = [
     "ExposedOperation",
     "exposed_by_tool_name",
     "input_schema",
+    "output_schema",
     "tools",
 ]
 
@@ -58,8 +61,9 @@ __all__ = [
 #: Bumped when the exposed set or a projected schema changes, so a host that
 #: cached a tool listing can tell that it is stale. R004-06 requires the listing
 #: to be deterministic *for a given package version*; this is the narrower fact
-#: that actually changed when it is not.
-MANIFEST_VERSION: Final = "1.0"
+#: that actually changed when it is not. ``1.0`` advertised ``workspace.inspect``
+#: alone with no output schema; ``1.1`` is the six-operation surface below.
+MANIFEST_VERSION: Final = "1.1"
 
 #: The side effect and audit category an operation must declare to be exposable
 #: at all. Read from the catalogue entry, never from an opinion held here.
@@ -81,6 +85,12 @@ class ExposedOperation:
     grants a fixed allowlist of purposes and refuses anything outside it, so it
     has to be stated per operation rather than assumed -- and it is only a claim
     either way: the service decides from its own grant.
+
+    Nothing else about the request is here. The required scopes, the capability
+    identifier and its minimum version, the side effect, the audit category and
+    the idempotency posture are all read off the catalogue entry at the point of
+    use, so a renamed capability fails as a rename rather than as a mystery
+    refusal two files away.
     """
 
     tool_name: str
@@ -104,6 +114,67 @@ EXPOSURE_MANIFEST: Final[tuple[ExposedOperation, ...]] = (
             "versions and timestamps. Read-only. Takes no arguments -- the "
             "workspace is the one the attached service owns and cannot be "
             "selected by the caller."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="evidence_search",
+        operation="evidence.search",
+        purpose="knowledge_retrieval",
+        title="Search workspace evidence",
+        description=(
+            "Search the workspace's L0 evidence artifacts -- captured source "
+            "material with exact provenance -- and return complete artifacts "
+            "with their capture history. Evidence is raw material, not governed "
+            "knowledge: an artifact asserts only that something was captured. "
+            "Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="knowledge_search",
+        operation="knowledge.search",
+        purpose="knowledge_retrieval",
+        title="Search governed knowledge",
+        description=(
+            "Search accepted, sealed governed records. Returns the current "
+            "canonical view unless another view is asked for explicitly, so "
+            "candidate, rejected and superseded knowledge is never returned by "
+            "omission. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="memory_search",
+        operation="memory.search",
+        purpose="knowledge_retrieval",
+        title="Search governed memory",
+        description=(
+            "Search the workspace's governed memory records with the requested "
+            "ordering and paging. Returns the current canonical view unless "
+            "another view is asked for explicitly. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="graph_traverse",
+        operation="graph.traverse",
+        purpose="knowledge_retrieval",
+        title="Traverse governed knowledge relationships",
+        description=(
+            "Follow sealed governed relations out from one or more starting "
+            "record versions, returning the reached nodes with their shortest-path "
+            "depth and the edges that reached them. Bounded by depth, node and "
+            "edge limits. Read-only."
+        ),
+    ),
+    ExposedOperation(
+        tool_name="context_pack_build",
+        operation="context_pack.build",
+        purpose="knowledge_retrieval",
+        title="Build a cited context pack",
+        description=(
+            "Build a deterministic, fully cited context pack for a query from "
+            "the workspace's authorised evidence and governed records, within a "
+            "token budget. Every selected passage carries its citation, and the "
+            "pack requires fresh authorization before reuse: holding one grants "
+            "nothing. Persists nothing. Read-only."
         ),
     ),
 )
@@ -130,63 +201,43 @@ def _admit(exposed: ExposedOperation) -> OperationMetadata:
     return entry
 
 
-def _contract_type(schema_ref: str) -> type[Any]:
-    """The generated contract dataclass one ``$defs`` reference names.
+def _projected(schema_ref: str) -> dict[str, Any]:
+    """The generated self-contained schema one canonical reference names.
 
-    The catalogue's ``input_schema_ref`` ends ``#/$defs/WorkspaceInspectInput``,
-    and the generated package exports a dataclass of exactly that name -- the
-    generator makes both from one source. So the type is *reached* from the
-    contract rather than written down beside it, and an operation whose payload
-    type is renamed fails here instead of projecting a stale shape.
+    The reference comes from the catalogue entry and the document comes from the
+    generator, so neither is written down beside the other: an operation whose
+    contract is renamed upstream fails here instead of advertising a stale shape,
+    and a canonical schema that changes fails
+    ``scripts/generate-mcp-exposure-schemas.py --check`` before it reaches here.
     """
-    name = schema_ref.rsplit("/", 1)[-1]
-    contract_type = getattr(contracts_v1, name, None)
-    # `isinstance(_, type)` as well as `is_dataclass`, because the latter is true
-    # of a dataclass *instance* too and this must be the class itself.
-    if not isinstance(contract_type, type) or not dataclasses.is_dataclass(
-        contract_type
-    ):
+    projected = SCHEMAS.get(schema_ref)
+    if projected is None:
         raise ValueError(
-            f"{schema_ref}: the public contract exports no dataclass named {name!r}"
+            f"{schema_ref}: no generated schema projection. Regenerate with "
+            "scripts/generate-mcp-exposure-schemas.py"
         )
-    return contract_type
+    return projected
 
 
 def input_schema(entry: OperationMetadata) -> dict[str, Any]:
-    """Project one operation's input contract as a JSON Schema object.
+    """The advertised input schema for one operation.
 
     Public because :mod:`omnivia_core_mcp.server` enforces the document this
     returns at call time. What `tools/list` advertises and what `_request` accepts
     have to be one projection, not two that agree by inspection.
-
-    **This projects the empty payload and refuses everything else, on purpose.**
-    The packaged JSON Schema documents (``read_schema``) are force-included into
-    the ``omnivia-core`` *wheel* and are absent from the editable install this
-    repository develops and gates against, so reading them would make
-    ``tools/list`` depend on how Core was installed -- and R004-06 requires it to
-    be deterministic. The remaining always-present projection source is the
-    generated dataclass, and a faithful recursive dataclass-to-JSON-Schema
-    projector is a second opinion about the shape of a contract, which is exactly
-    what R004-06's "projected rather than manually redefined" rules out.
-
-    So: a contract input with no fields projects to the empty object, exactly and
-    provably, and an input with fields raises rather than guessing. Exposing an
-    operation that takes arguments is therefore blocked on giving this package a
-    real projector -- which is the right place for that to be blocked.
     """
-    fields = dataclasses.fields(_contract_type(entry.input_schema_ref))
-    if fields:
-        raise ValueError(
-            f"{entry.name}: {entry.input_schema_ref} declares "
-            f"{[field.name for field in fields]}; this package can project the empty "
-            "input payload only, and does not guess at a schema it cannot derive"
-        )
-    return {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    }
+    return _projected(entry.input_schema_ref)
+
+
+def output_schema(entry: OperationMetadata) -> dict[str, Any]:
+    """The advertised output schema for one operation.
+
+    Advertised for every tool, so a host can validate what came back -- the
+    official client does exactly that, against this document, on every successful
+    call. The server's `structuredContent` is the contract-encoded result, which
+    is the value this schema describes.
+    """
+    return _projected(entry.result_schema_ref)
 
 
 def _tool(exposed: ExposedOperation) -> types.Tool:
@@ -197,6 +248,7 @@ def _tool(exposed: ExposedOperation) -> types.Tool:
         title=exposed.title,
         description=exposed.description,
         input_schema=input_schema(entry),
+        output_schema=output_schema(entry),
         annotations=types.ToolAnnotations(
             title=exposed.title,
             # Read off the catalogue, not asserted here. `_admit` has already

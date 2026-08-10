@@ -32,12 +32,54 @@ instruction to run `omnivia init` and **creates nothing**.
 the operation catalogue. A newly registered Core operation stays absent from MCP
 until somebody adds it to `manifest.py` and tests it.
 
-| Tool | Operation | Side effect |
-|---|---|---|
-| `workspace_inspect` | `workspace.inspect` | none (read) |
+Manifest version `1.1` advertises six tools, in this order:
 
-Tool schemas are projected from the public operation contracts rather than
-redefined, and `tools/list` is deterministic for a given package version.
+| Tool | Operation | Purpose | Scopes | Capability |
+|---|---|---|---|---|
+| `workspace_inspect` | `workspace.inspect` | `workspace_inspection` | `workspace:read` | `workspace.read` ≥ 1.0 |
+| `evidence_search` | `evidence.search` | `knowledge_retrieval` | `memory:read` | `evidence.read` ≥ 1.0 |
+| `knowledge_search` | `knowledge.search` | `knowledge_retrieval` | `memory:read` | `knowledge.read` ≥ 1.0 |
+| `memory_search` | `memory.search` | `knowledge_retrieval` | `memory:read` | `memory.read` ≥ 1.0 |
+| `graph_traverse` | `graph.traverse` | `knowledge_retrieval` | `graph:read` | `graph.read` ≥ 1.0 |
+| `context_pack_build` | `context_pack.build` | `knowledge_retrieval` | `memory:read` | `context_pack.build` ≥ 1.0 |
+
+Every one of them declares `side_effect: none` and `audit_category: read` in the
+operation catalogue, and the manifest refuses at import to admit anything else.
+Scopes, the capability identifier and its minimum version, and the idempotency
+hint are read off the catalogue entry rather than restated here — a model can
+neither supply nor override the principal, the workspace, the scopes, the
+purpose, the capability, or the service endpoint. `tools/list` is deterministic
+for a given package version.
+
+### Schemas
+
+Each tool advertises both an `inputSchema` and an `outputSchema`, and both are
+**self-contained**: the canonical Application Contract v1 definition verbatim,
+plus its complete transitive `$defs` closure, with every
+`https://contracts.omnivia.dev/...` reference rewritten to a local `#/$defs/...`
+one. No advertised schema needs network resolution.
+
+They are generated, never transcribed:
+
+```bash
+python scripts/generate-mcp-exposure-schemas.py           # regenerate
+python scripts/generate-mcp-exposure-schemas.py --check    # gate (preflight, Core acceptance)
+```
+
+`src/omnivia_core_mcp/generated_schema_projection.py` is the emitted artifact and
+is generator-owned; edit the canonical schemas and regenerate instead. It is a
+checked-in module rather than a read of the packaged canonical schemas because
+those are force-included into the `omnivia-core` *wheel* and absent from an
+editable install — reading them would make `tools/list` depend on how Core was
+installed. The generated module is present, and identical, in both.
+
+### Results
+
+A successful call returns `structuredContent` equal to the contract-encoded
+operation result, plus exactly one JSON text item whose parsed value equals that
+same document. A failure — an unknown tool, an unadvertised argument, an
+unreachable service, a refusal from the service — is an MCP tool error carrying a
+readable message and **no** `structuredContent`.
 
 ### Never exposed as model-callable tools
 
@@ -75,7 +117,11 @@ database implementation — and `omnivia-core` must never depend back on it.
 
 The tool surface, the exposure manifest, managed start, the stdio server and the
 call path are complete and tested end to end against a real MCP client and a real
-`omnivia-core-service`.
+`omnivia-core-service`. `tests/test_mcp_stdio_end_to_end.py` calls all six tools
+over stdio against one governed workspace whose evidence, governed records and
+sealed relations were written through the accepted fenced Runtime writers in
+`tests/_mcp_v06_3_fixture.py` — the only place in this package's tests that
+imports the runtime at all.
 
 **The transport dependency is closed.** Owner resolution 005 R005-01 moved
 `LocalIpcTransport` into `omnivia-core-client`, and `server._default_transport_factory`
