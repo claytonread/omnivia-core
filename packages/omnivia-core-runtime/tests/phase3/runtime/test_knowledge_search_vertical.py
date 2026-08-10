@@ -61,7 +61,9 @@ import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.application import (
+    CONTEXT_PACK_BUILD_OPERATION,
     EVIDENCE_SEARCH_OPERATION,
+    GRAPH_TRAVERSE_OPERATION,
     KNOWLEDGE_RETRIEVAL_PURPOSE,
     KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
@@ -1704,12 +1706,31 @@ def test_lc_b12_no_sql_runs_after_the_frontier_is_frozen(
     assert len(watcher.statements) == watcher.sql_at_freeze[0]
 
 
-def test_lc_b13_the_shipped_operations_are_exactly_the_four_read_operations() -> None:
-    """The registry, the purposes and the capability snapshot, all at four operations.
+#: The final shipped read surface of this build: the four operations Lane C's local
+#: dispatcher fixtures grant above, plus the two V06-3 lanes composed onto them. Named
+#: separately from `PRODUCTION_OPERATIONS` on purpose -- that constant is the narrow grant
+#: Part B's end-to-end requests run under, and widening it would change what those pages
+#: prove. This set is only ever the build's own shipped surface.
+SHIPPED_OPERATIONS = frozenset(
+    {
+        WORKSPACE_INSPECT_OPERATION,
+        EVIDENCE_SEARCH_OPERATION,
+        KNOWLEDGE_SEARCH_OPERATION,
+        MEMORY_SEARCH_OPERATION,
+        GRAPH_TRAVERSE_OPERATION,
+        CONTEXT_PACK_BUILD_OPERATION,
+    }
+)
+
+
+def test_lc_b13_the_shipped_operations_are_exactly_the_six_read_operations() -> None:
+    """The registry, the purposes and the capability snapshot, all at six operations.
 
     `test_workspace_inspect_refusals.py` holds the production *grant* evidence; this is the
     build's own side of it, stated here because Part B's end-to-end pages are only
-    meaningful if these two operations are the ones this build actually ships.
+    meaningful if these two operations are the ones this build actually ships -- and
+    because `graph.traverse` and `context_pack.build` join them on the same seam, under the
+    same purpose, with no side effect.
 
     Falsifier: register a handler without granting its purpose and every request for it is
     refused by check 11; grant a purpose with no handler and the seam authorizes something
@@ -1717,17 +1738,21 @@ def test_lc_b13_the_shipped_operations_are_exactly_the_four_read_operations() ->
     """
     registry = build_application_registry()
 
-    assert registry.operations == PRODUCTION_OPERATIONS
+    assert registry.operations == SHIPPED_OPERATIONS
     assert OPERATION_PURPOSES[KNOWLEDGE_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
     assert OPERATION_PURPOSES[MEMORY_SEARCH_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
-    assert set(OPERATION_PURPOSES) == PRODUCTION_OPERATIONS
-    for name in PRODUCTION_OPERATIONS:
+    assert OPERATION_PURPOSES[GRAPH_TRAVERSE_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
+    assert OPERATION_PURPOSES[CONTEXT_PACK_BUILD_OPERATION] == KNOWLEDGE_RETRIEVAL_PURPOSE
+    assert set(OPERATION_PURPOSES) == SHIPPED_OPERATIONS
+    for name in SHIPPED_OPERATIONS:
         entry = get_operation_metadata(name)
         assert entry.scope.side_effect == "none"
     assert server_capability_snapshot(registry) == tuple(
         CapabilityRef(id=capability, version="1.0")
         for capability in (
+            "context_pack.build",
             "evidence.read",
+            "graph.read",
             "knowledge.read",
             "memory.read",
             "workspace.read",
