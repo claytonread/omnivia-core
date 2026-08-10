@@ -36,6 +36,7 @@ from typing import Protocol
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
 from omnivia_core_runtime.service.application import (
     EVIDENCE_SEARCH_OPERATION,
+    GRAPH_TRAVERSE_OPERATION,
     KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
     MEMORY_SEARCH_OPERATION,
@@ -457,6 +458,7 @@ def main(
                         EVIDENCE_SEARCH_OPERATION,
                         KNOWLEDGE_SEARCH_OPERATION,
                         MEMORY_SEARCH_OPERATION,
+                        GRAPH_TRAVERSE_OPERATION,
                     }
                 ),
             ),

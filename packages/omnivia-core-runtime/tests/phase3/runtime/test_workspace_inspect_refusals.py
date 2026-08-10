@@ -33,6 +33,7 @@ import pytest
 from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
     EVIDENCE_SEARCH_OPERATION,
+    GRAPH_TRAVERSE_OPERATION,
     KNOWLEDGE_RETRIEVAL_PURPOSE,
     KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
@@ -91,6 +92,7 @@ ENTRY = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
 EVIDENCE_ENTRY = get_operation_metadata(EVIDENCE_SEARCH_OPERATION)
 KNOWLEDGE_ENTRY = get_operation_metadata(KNOWLEDGE_SEARCH_OPERATION)
 MEMORY_ENTRY = get_operation_metadata(MEMORY_SEARCH_OPERATION)
+GRAPH_ENTRY = get_operation_metadata(GRAPH_TRAVERSE_OPERATION)
 
 #: A mutating, workspace-scoped catalogue operation, chosen from the catalogue rather
 #: than named here so the test still means something if the catalogue's mutation set
@@ -102,17 +104,19 @@ MUTATING_ENTRY = next(
     and entry.scope.scope_kind == ENTRY.scope.scope_kind
 )
 
-#: The production grant as it stands after Lane C (§22.2a's serial additive edit):
-#: `workspace.inspect`, `evidence.search`, `knowledge.search` and `memory.search`, and
-#: nothing else. Stated here as the literal `service.main.serve` states, not derived
-#: from the registry -- deriving it would make the two agree by construction and this
-#: file's whole job is to notice when the grant and the build disagree.
+#: The production grant as it stands after Lane E (§22.2a's serial additive edit, applied
+#: once more): `workspace.inspect`, `evidence.search`, `knowledge.search`, `memory.search`
+#: and `graph.traverse`, and nothing else. Stated here as the literal `service.main.serve`
+#: states, not derived from the registry -- deriving it would make the two agree by
+#: construction and this file's whole job is to notice when the grant and the build
+#: disagree.
 PRODUCTION_OPERATIONS = frozenset(
     {
         WORKSPACE_INSPECT_OPERATION,
         EVIDENCE_SEARCH_OPERATION,
         KNOWLEDGE_SEARCH_OPERATION,
         MEMORY_SEARCH_OPERATION,
+        GRAPH_TRAVERSE_OPERATION,
     }
 )
 
@@ -335,11 +339,12 @@ def test_2c_a_build_that_registers_no_handler_supports_no_capability() -> None:
 
     The second assertion is the widened *exact* tuple, not a membership test. It became
     false by construction when Lane A registered a second handler -- packet §22.1's
-    carve-out -- and again when Lane C registered the two governed searches. The
-    replacement it prescribes is the wider exact set each time, because a membership test
-    would still pass with a handler this build never meant to ship.
+    carve-out -- again when Lane C registered the two governed searches, and again when
+    Lane E registered `graph.traverse`. The replacement it prescribes is the wider exact
+    set each time, because a membership test would still pass with a handler this build
+    never meant to ship.
 
-    Four capabilities and four handlers, and the two are not the same claim: this snapshot
+    Five capabilities and five handlers, and the two are not the same claim: this snapshot
     is derived from the registry, so a handler registered without its catalogue capability
     -- or a capability advertised with nothing behind it -- shows up here as a tuple that
     is not this one.
@@ -349,6 +354,10 @@ def test_2c_a_build_that_registers_no_handler_supports_no_capability() -> None:
         CapabilityRef(
             id=EVIDENCE_ENTRY.required_capability.id,
             version=EVIDENCE_ENTRY.required_capability.minimum_version,
+        ),
+        CapabilityRef(
+            id=GRAPH_ENTRY.required_capability.id,
+            version=GRAPH_ENTRY.required_capability.minimum_version,
         ),
         CapabilityRef(
             id=KNOWLEDGE_ENTRY.required_capability.id,
@@ -487,8 +496,8 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     """Not `APPLICATION_OPERATIONS`, which is all twenty and includes every mutation.
 
     This is the assertion packet §11.1 predicted would be got wrong. It asserted a
-    single name; Lane A widened it to two and Lane C's additive edit to four, so it
-    became false **by design**. The
+    single name; Lane A widened it to two, Lane C's additive edit to four and Lane E's to
+    five, so it became false **by design**. The
     replacement is the widened exact set -- deleting it, or softening it to
     `WORKSPACE_INSPECT_OPERATION in session.operations`, is a stop condition, because a
     membership test passes just as happily against all twenty.
@@ -507,18 +516,23 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
             EVIDENCE_SEARCH_OPERATION,
             KNOWLEDGE_SEARCH_OPERATION,
             MEMORY_SEARCH_OPERATION,
+            GRAPH_TRAVERSE_OPERATION,
         }
     )
     assert session.operations != APPLICATION_OPERATIONS
     for name in session.operations:
         assert get_operation_metadata(name).scope.side_effect == "none"
-    # Still two scopes at four operations: all three searches are served under
+    # Three scopes at five operations: all three searches are still served under
     # `memory:read`, which is what the catalogue says and therefore what the derivation
-    # must produce. A third scope appearing here would mean the constructor had started
-    # transcribing rather than deriving.
-    assert session.scopes == frozenset({"workspace:read", "memory:read"})
+    # must produce, and `graph.traverse` brings exactly the one further scope its own
+    # frozen entry declares. Any other scope appearing here -- or `graph:read` failing to
+    # -- would mean the constructor had started transcribing rather than deriving.
+    assert session.scopes == frozenset(
+        {"workspace:read", "memory:read", "graph:read"}
+    )
     assert session.capabilities == (
         CapabilityRef(id="evidence.read", version="1.0"),
+        CapabilityRef(id="graph.read", version="1.0"),
         CapabilityRef(id="knowledge.read", version="1.0"),
         CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
@@ -526,8 +540,8 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
 
 
 def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
-    """The literal in `service.main.serve`, read from its source, is this one -- the four
-    operations Lane C's additive edit left the grant holding.
+    """The literal in `service.main.serve`, read from its source, is this one -- the five
+    operations Lane E's additive edit left the grant holding.
 
     `production_session` copies the production grant by hand, and a hand-copied literal
     that nothing compares is how a test comes to certify a session the service does not
@@ -547,7 +561,7 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
         keyword.value for keyword in call.keywords if keyword.arg == "operations"
     )
 
-    # `frozenset({A, B, C, D})` -- the names, read out of the call `serve` actually makes.
+    # `frozenset({A, B, C, D, E})` -- the names, read out of the call `serve` makes.
     assert isinstance(granted, ast.Call)
     assert isinstance(granted.func, ast.Name)
     assert granted.func.id == "frozenset"
@@ -563,6 +577,7 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
         "EVIDENCE_SEARCH_OPERATION",
         "KNOWLEDGE_SEARCH_OPERATION",
         "MEMORY_SEARCH_OPERATION",
+        "GRAPH_TRAVERSE_OPERATION",
     }
     assert PRODUCTION_OPERATIONS == frozenset(
         {
@@ -570,6 +585,7 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
             EVIDENCE_SEARCH_OPERATION,
             KNOWLEDGE_SEARCH_OPERATION,
             MEMORY_SEARCH_OPERATION,
+            GRAPH_TRAVERSE_OPERATION,
         }
     )
 
@@ -580,13 +596,14 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
     The projection build is a *service* action -- it runs under the instance identity
     and the fencing generation this process already holds -- and the session is what a
     caller may ask this endpoint to do. Nothing about building an index makes a further
-    operation grantable, so the grant `serve` wires is still the four read names Lane C's
-    additive edit left it holding, and the arguments the build is given are the service's
-    own rather than anything the session or a request could reach.
+    operation grantable, so the grant `serve` wires is still exactly the read names the
+    accepted additive grant edits left it holding -- five after Lane E, none of them Lane
+    B's -- and the arguments the build is given are the service's own rather than anything
+    the session or a request could reach.
 
     The falsifier is the plausible drift: a "projection.rebuild" or "index.refresh"
     operation added to the grant so an operator could trigger a build over the wire.
-    That is the rebuild verb packet §20.7 refuses, and it would arrive here as a fifth
+    That is the rebuild verb packet §20.7 refuses, and it would arrive here as a sixth
     name in this set.
     """
     serve = _main_function("serve")
@@ -602,10 +619,10 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
     )
     assert isinstance(granted, ast.Call)
     assert isinstance(granted.args[0], ast.Set)
-    # Four names after Lane C's additive grant edit, and every one of them is an
+    # Five names after Lane E's additive grant edit, and every one of them is an
     # operation with a registered handler. The count is what this test watches: a
-    # rebuild verb added here would arrive as a fifth.
-    assert len(granted.args[0].elts) == 4
+    # rebuild verb added here would arrive as a sixth.
+    assert len(granted.args[0].elts) == 5
 
     build_call = next(
         node
@@ -709,6 +726,7 @@ def test_5c_no_mutating_operation_is_registered_at_all() -> None:
             EVIDENCE_SEARCH_OPERATION,
             KNOWLEDGE_SEARCH_OPERATION,
             MEMORY_SEARCH_OPERATION,
+            GRAPH_TRAVERSE_OPERATION,
         }
     )
     for name in registered:
