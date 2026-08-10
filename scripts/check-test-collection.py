@@ -30,6 +30,24 @@ A zero-collection run is reported separately. It is the same failure in the
 limit, but it usually means a broken configuration rather than a narrow one, and
 saying so is more useful than listing all 134 files.
 
+The one exemption
+-----------------
+``conformance/`` is the single top-level tree deliberately outside a bare run.
+Its suites dial a provisioned external host over TLS and are run only by
+``.github/workflows/core-tls-conformance.yml`` on manual dispatch, so collecting
+them locally would fail for want of a host rather than for want of a working
+build. The exemption is exactly that one directory at the repository root -- not
+a basename, a glob, a marker or an environment switch -- so a ``conformance``
+directory anywhere else in the tree, and every other tree, stays fully
+accounted for.
+
+Exempting a tree is only safe while something else runs it, and that half is
+held by ``tests/test_core_acceptance_workflow.py``: it reads
+``DISPATCH_ONLY_TREES`` from this module, requires it to be exactly the
+``conformance`` tree, and requires every test-bearing directory inside that tree
+to be named by the dispatch workflow's one invocation. "Outside a bare run"
+therefore cannot quietly become "run by nothing".
+
 Deliberately not checked here: whether the *workflow* names every tree. That is
 already held by ``tests/test_core_acceptance_workflow.py``, which discovers the
 distributions under ``packages/`` from the tree and asserts each one's ``tests``
@@ -68,6 +86,12 @@ SKIPPED_DIRECTORIES = frozenset(
     }
 )
 
+# Top-level trees run only by a dispatched workflow, never by a bare run. See
+# "The one exemption" above. Matched against `REPO_ROOT` itself rather than
+# against whatever `root` a caller passes, so this is a statement about this
+# repository's layout and not a name that excuses itself wherever it appears.
+DISPATCH_ONLY_TREES = frozenset({"conformance"})
+
 # pytest's default `python_files`. Both patterns are matched so a file named the
 # less common way is not silently exempt from this check.
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py")
@@ -82,14 +106,21 @@ class CollectionFailed(Exception):
 
 
 def discover_test_files(root: Path = REPO_ROOT) -> set[str]:
-    """Every test file in the checkout, as slash-separated paths from ``root``."""
+    """Every test file in the checkout, as slash-separated paths from ``root``.
+
+    A ``DISPATCH_ONLY_TREES`` entry is skipped only as a direct child of
+    ``REPO_ROOT``. A caller-provided root -- a temporary directory in a test --
+    that happens to contain a directory of the same name is still accounted for
+    in full, and so is a same-named directory nested anywhere in this repository.
+    """
     found: set[str] = set()
     stack = [root]
     while stack:
         directory = stack.pop()
         for entry in directory.iterdir():
             if entry.is_dir():
-                if entry.name not in SKIPPED_DIRECTORIES:
+                dispatch_only = entry.parent == REPO_ROOT and entry.name in DISPATCH_ONLY_TREES
+                if entry.name not in SKIPPED_DIRECTORIES and not dispatch_only:
                     stack.append(entry)
                 continue
             if any(entry.match(pattern) for pattern in TEST_FILE_PATTERNS):

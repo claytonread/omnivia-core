@@ -34,8 +34,12 @@ repository tree.
 
 from __future__ import annotations
 
+import ast
+import importlib.util
+import subprocess
 import tomllib
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -44,6 +48,16 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACCEPTANCE_WORKFLOW = WORKFLOW_DIR / "core-acceptance.yml"
 PERFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-performance-report.yml"
 PHASE2_WORKFLOW = WORKFLOW_DIR / "phase2-platform.yml"
+TLS_CONFORMANCE_WORKFLOW = WORKFLOW_DIR / "core-tls-conformance.yml"
+CONFORMANCE_TREE = REPO_ROOT / "conformance"
+TLS_SUITE = CONFORMANCE_TREE / "tls" / "test_tls_conformance.py"
+TLS_HOST_LAUNCHER = CONFORMANCE_TREE / "tls" / "host.py"
+COLLECTION_CHECKER = REPO_ROOT / "scripts" / "check-test-collection.py"
+
+# Every way a pytest case stops being a pass without being a failure. Forbidden
+# outright in `conformance/`, because a skipped test reads exactly like a passing
+# one in a summary line and the owner's rule leaves no third outcome.
+SKIP_CONSTRUCTS = frozenset({"skip", "skipif", "importorskip", "xfail"})
 
 # (step name, exact command) for each single-command gate step, in the order the
 # workflow must run them.
@@ -1338,4 +1352,843 @@ def test_the_ruff_bound_is_reachable_by_the_installs_the_gate_runs() -> None:
         "the acceptance gate installs no distribution whose extra carries a bounded "
         "`ruff` requirement, so the Ruff it runs is whatever pip resolves. Declared "
         f"ruff requirements: {_ruff_declarations()}; install commands: {commands}"
+    )
+
+
+# --------------------------------------------------------------------------
+# The hosted TLS conformance lane (V06-4).
+#
+# `conformance/tls` dials a real provisioned host over TLS at a public IPv4
+# literal. Nothing else in this repository runs it, and nothing else may: the
+# guards below are what keep the tree from becoming either a suite no workflow
+# collects or a suite that skips itself when its environment is absent. Both
+# failure modes were hit in this repository, which is why the checks parse
+# sources rather than trust conventions.
+#
+# The count is pinned here rather than in the suite. A test cannot assert how
+# many tests there are, and the workflow's JUnit proof needs a number that a
+# reviewer can see is the number the tree actually declares.
+# --------------------------------------------------------------------------
+
+#: The hosted suite's exact size. The workflow proves this many *passed* with no
+#: other outcome; this proves the tree declares exactly this many cases, so the
+#: two numbers cannot drift apart without one of them failing.
+HOSTED_CASE_COUNT = 28
+
+#: What `Run hosted TLS conformance` must run, spelled exactly. `-rs` makes any
+#: skip visible in the log rather than folded into a dot, and the JUnit report is
+#: what the proof step reads instead of the exit code. `--junitxml=` is attached
+#: rather than detached because `scripts/check-import-install-alignment.py` reads
+#: every non-flag token after `pytest` as a collection root.
+HOSTED_PYTEST_COMMAND = (
+    "python -m pytest conformance/tls -q -rs "
+    '--junitxml="${RUNNER_TEMP}/tls-conformance-evidence/junit.xml"'
+)
+
+#: Every configuration value the hosted workflow supplies, and where from. The
+#: bearer is the one secret; everything else is a repository/environment
+#: variable, because none of it is confidential and all of it should be readable
+#: in the run's configuration.
+HOSTED_ENVIRONMENT = {
+    "OMNIVIA_TLS_CONFORMANCE_HOST": "vars",
+    "OMNIVIA_TLS_CONFORMANCE_PORT": "vars",
+    "OMNIVIA_TLS_CONFORMANCE_OPERATION": "vars",
+    "OMNIVIA_TLS_CONFORMANCE_PURPOSE": "vars",
+    "OMNIVIA_TLS_CONFORMANCE_CHAIN_SHA256": "vars",
+    "OMNIVIA_TLS_CONFORMANCE_BEARER": "secrets",
+}
+
+#: The dispatch input, spelled as the workflow expression. It may appear as a
+#: `with:` or `env:` *value* and nowhere else: an expression substituted into a
+#: `run:` script is expanded before the shell parses the line, so a dispatched
+#: value carrying a quote, a `$(...)` or a newline would be script rather than
+#: data -- and the only thing that validates this input is that same script.
+CANDIDATE_INPUT = "${{ inputs.candidate_ref }}"
+
+#: The one step `env:` name the input is allowed to arrive through, and the steps
+#: that must supply it that way.
+CANDIDATE_ENV = "CANDIDATE"
+CANDIDATE_ENV_STEPS = ("Pin the candidate under test", "Prepare the evidence directory")
+
+#: The artifact action this repository standardises on; `core-performance-report.yml`
+#: already uses it.
+UPLOAD_ARTIFACT_ACTION = "actions/upload-artifact@v7"
+
+#: Modules and names that mean "the standard service", not an approved embedder.
+#: `host.py` reaching any of them would make a V06-4 GO readable as production
+#: HTTP serving, which is exactly the boundary the lane exists inside.
+PRODUCTION_SERVING_MODULES = (
+    "omnivia_core_runtime.service.main",
+    "omnivia_core_runtime.service.dispatch",
+    "omnivia_core_runtime.service.runner",
+    "omnivia_core_runtime.service.bootstrap",
+    "omnivia_core_runtime.service.managed_start",
+)
+PRODUCTION_SERVING_NAMES = (
+    "build_service_registry",
+    "OperationRegistry",
+    "Dispatcher",
+)
+
+
+def _code(module: Path) -> str:
+    """`module`'s source with every docstring and comment removed.
+
+    Every assertion below that searches text searches *this*, for the same reason
+    the workflow helpers drop commented-out lines: a substring scan over raw
+    source passes on a docstring that explains why a construct is absent, and
+    then keeps passing after the construct itself comes back. `ast.unparse`
+    renders only what executes.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
+
+
+def _declared_cases(module: Path) -> dict[str, int]:
+    """Each `test_*` in `module`, mapped to the number of cases it declares.
+
+    A parametrized test declares as many cases as its `argvalues` list holds, and
+    stacked parametrize decorators multiply. Counted from the tree rather than by
+    running pytest, so the number is a property of the committed source and can
+    be checked on a runner that has no conformance host.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+    declared: dict[str, int] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        cases = 1
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            target = decorator.func
+            if not isinstance(target, ast.Attribute) or target.attr != "parametrize":
+                continue
+            argvalues = decorator.args[1]
+            assert isinstance(argvalues, ast.List), (
+                f"{node.name}: parametrize argvalues must be a list literal so the "
+                "declared case count is readable without executing the module"
+            )
+            cases *= len(argvalues.elts)
+        declared[node.name] = cases
+    return declared
+
+
+def _hosted_steps() -> list[Line]:
+    return _steps_of(TLS_CONFORMANCE_WORKFLOW, "core-tls-conformance")
+
+
+def _hosted_text() -> str:
+    return TLS_CONFORMANCE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_the_tls_conformance_workflow_exists_and_runs_the_conformance_tree() -> None:
+    """The suite is collected by no other workflow, so without this file nothing
+    runs it, and the tree would be committed code that never executes."""
+    assert TLS_CONFORMANCE_WORKFLOW.is_file()
+    commands = _commands(_step(_hosted_steps(), "Run hosted TLS conformance"))
+    assert len(commands) == 1, f"expected a single pytest invocation, got: {commands}"
+    assert commands[0] == HOSTED_PYTEST_COMMAND, (
+        f"the hosted suite's invocation drifted: {commands[0]!r}"
+    )
+
+
+def test_the_tls_conformance_workflow_is_manual_only() -> None:
+    """The reason this is a separate workflow at all.
+
+    The conformance host is disposable. A `pull_request` trigger here would make
+    every pull request in the repository depend on it being up -- that is not a
+    gate, it is an outage -- and it could then be made a required check by a
+    branch rule outside this tree.
+    """
+    triggers = _keys(_block(_significant(_hosted_text()), "on"))
+    assert triggers == ["workflow_dispatch"], (
+        f"the hosted TLS conformance workflow must be dispatch-only, found: {triggers}"
+    )
+
+
+def test_the_hosted_run_is_pinned_to_the_exact_candidate() -> None:
+    """The dispatch names a commit, and the checkout is checked against it.
+
+    `candidate_identity_match` compares what the host attests with what the
+    runner holds. That is only a statement about a known object if the runner's
+    own checkout is a known object: a branch name would resolve to whatever it
+    points at between dispatch and checkout, and the equality would then hold
+    between two moving targets.
+    """
+    workflow = _significant(_hosted_text())
+    inputs = _keys(_block(_block(_block(workflow, "on"), "workflow_dispatch"), "inputs"))
+    assert inputs == ["candidate_ref"], f"unexpected dispatch inputs: {inputs}"
+
+    checkout = _step(_hosted_steps(), "Check out the exact candidate")
+    assert _entry(_block(checkout, "with"), "ref") == "${{ inputs.candidate_ref }}"
+
+    pinned = " ".join(_commands(_step(_hosted_steps(), "Pin the candidate under test")))
+    assert "git rev-parse HEAD" in pinned, "the checkout is never resolved"
+    assert "-ne 40" in pinned, "a branch or short SHA would be accepted as a candidate"
+    assert "*[!0-9a-f]*" in pinned, (
+        "the candidate is no longer required to be lowercase hex, so a ref that is "
+        "40 characters of anything would pass the length check"
+    )
+    assert '"${resolved}" != "${CANDIDATE}"' in pinned, (
+        "the resolved checkout is no longer compared against the named candidate"
+    )
+
+
+def test_the_dispatch_input_never_reaches_a_shell_script() -> None:
+    """The dispatch input is data, not script text.
+
+    `${{ }}` is substituted into a `run:` block before the shell parses the line,
+    so an input carrying a quote, a `$(...)` or a newline is executed rather than
+    read -- and the only thing that constrains this input to 40 hex characters is
+    a shell script that would already have been rewritten by the time it ran.
+    Passing it through a step `env:` value makes it a variable the shell reads,
+    which no expansion can turn into syntax.
+
+    Checked in both directions: the expression appears in no command and on no
+    line but the two that pass it as a value, and the two steps that need it are
+    supplied it -- and read it, quoted -- through the one environment name.
+    """
+    steps = _hosted_steps()
+    interpolated = []
+    carriers: dict[str, str] = {}
+    for name in _step_names(steps):
+        step = _step(steps, name)
+        if _locate(step, "run") is not None and any(
+            CANDIDATE_INPUT in command for command in _commands(step)
+        ):
+            interpolated.append(name)
+        if _locate(step, "env") is None:
+            continue
+        environment = _block(step, "env")
+        for key in _keys(environment):
+            if _entry(environment, key) == CANDIDATE_INPUT:
+                carriers[name] = key
+    assert not interpolated, (
+        f"these steps interpolate the dispatch input into a shell script: "
+        f"{interpolated}"
+    )
+    # Exactly these steps, through exactly this name. A third carrier would be a
+    # second place the value has to be handled correctly, and the point of one
+    # name is that there is one place to read.
+    assert carriers == {name: CANDIDATE_ENV for name in CANDIDATE_ENV_STEPS}, (
+        f"the dispatch input has unexpected environment carriers: {carriers}"
+    )
+
+    # `_significant` drops comment lines before `_commands` sees them, and a
+    # commented-out interpolation is still an interpolation -- the expansion
+    # happens first, and a value carrying a newline ends the comment. So the raw
+    # file is scanned as well, and every line holding the expression has to be one
+    # of the two structural forms that pass it as a value.
+    permitted = {f"ref: {CANDIDATE_INPUT}", f"{CANDIDATE_ENV}: {CANDIDATE_INPUT}"}
+    carrying = [
+        line.strip() for line in _hosted_text().splitlines() if CANDIDATE_INPUT in line
+    ]
+    assert carrying, "the workflow no longer consumes the dispatch input at all"
+    assert set(carrying) <= permitted, (
+        "the dispatch input reaches somewhere other than a `ref:` or an `env:` "
+        f"value: {sorted(set(carrying) - permitted)}"
+    )
+
+    reference = f"${{{CANDIDATE_ENV}}}"
+    for name in CANDIDATE_ENV_STEPS:
+        commands = _commands(_step(steps, name))
+        # Every read is inside double quotes. An unquoted `${CANDIDATE}` is word-
+        # split and glob-expanded by the shell, which is a smaller hole than
+        # interpolation but the same kind: the value deciding how the line parses.
+        read_at = [
+            (command, index)
+            for command in commands
+            for index in range(len(command))
+            if command.startswith(reference, index)
+        ]
+        assert read_at, (
+            f"step {name!r} is supplied {CANDIDATE_ENV} and never reads it, so the "
+            "value it acts on comes from somewhere else"
+        )
+        assert all(command[:index].count('"') % 2 == 1 for command, index in read_at), (
+            f"step {name!r} reads {CANDIDATE_ENV} outside double quotes: {commands}"
+        )
+
+
+def test_the_hosted_workflow_supplies_exactly_one_secret_and_no_key_material() -> None:
+    """No private key, no PKCS#12 bundle, and no CA bundle derived from the chain.
+
+    An anchor built from the certificate under test would make the client's
+    verdict circular, and a key on the runner would put the listener's identity
+    somewhere it is not needed. The bearer is the only secret this lane has, so
+    "exactly one" is a countable claim rather than a hope.
+    """
+    text = _hosted_text()
+    referenced = {
+        fragment.split("}}")[0].strip()
+        for fragment in text.split("${{ secrets.")[1:]
+    }
+    assert referenced == {"OMNIVIA_TLS_CONFORMANCE_BEARER"}, (
+        f"the hosted workflow consumes secrets beyond the bearer: {referenced}"
+    )
+    for forbidden in ("PRIVATE_KEY", "CA_BUNDLE", "cafile", ".p12", ".pfx", ".pem"):
+        assert forbidden not in text, (
+            f"the hosted workflow references {forbidden!r}; no private key and no "
+            "listener-derived CA bundle may reach CI"
+        )
+
+
+def test_the_hosted_workflow_supplies_the_whole_environment_from_the_right_source() -> None:
+    """Each value comes from `vars.` or `secrets.` exactly as it should.
+
+    A confidential value in `vars.` publishes it; a public value in `secrets.`
+    hides configuration a reviewer needs to read. Both are asserted here rather
+    than left to whoever edits the workflow next.
+    """
+    step = _step(_hosted_steps(), "Run hosted TLS conformance")
+    supplied = _block(step, "env")
+    for variable, source in HOSTED_ENVIRONMENT.items():
+        value = _entry(supplied, variable)
+        assert value == f"${{{{ {source}.{variable} }}}}", (
+            f"{variable} must come from `{source}.`, found: {value!r}"
+        )
+    assert _entry(_hosted_steps(), "environment") is None
+    assert _entry(_job_of(TLS_CONFORMANCE_WORKFLOW, "core-tls-conformance"),
+                  "environment") == "tls-conformance"
+
+
+def test_the_hosted_lane_is_domain_free_and_reaches_a_public_ipv4() -> None:
+    """No DNS name is issued for, resolved or verified anywhere in this lane.
+
+    The certificate carries an `iPAddress` SAN, so a hostname in the host
+    variable would be checked against a SAN that does not exist and the run would
+    fail for a reason that says nothing about Core. The suite narrows the
+    variable to a public IPv4 and asserts the presented SAN sets in both
+    directions -- exactly the configured address, and no DNS SAN at all.
+    """
+    suite = _code(TLS_SUITE)
+    assert "ipaddress.IPv4Address" in suite, (
+        "the suite no longer narrows the conformance host to an IPv4 literal"
+    )
+    assert "not parsed.is_global or parsed.is_multicast" in suite, (
+        "the suite must require a *usable public* IPv4 rather than merely one that "
+        "is not private and not loopback: the weaker form admits 240.0.0.0/4, "
+        "100.64.0.0/10, the unspecified address and every multicast group"
+    )
+    assert "1 <= port <= 65535" in suite, (
+        "the suite no longer bounds the conformance port to the range a TCP port "
+        "occupies, so `0` or a five-digit overflow would reach the socket"
+    )
+    assert "dns_san'] == []" in suite or 'dns_san"] == []' in suite, (
+        "the suite no longer asserts that the presented chain carries no DNS SAN"
+    )
+    assert "ip_address_san'] == [address]" in suite or (
+        'ip_address_san"] == [address]' in suite
+    ), "the suite no longer asserts the exact iPAddress SAN"
+    assert "verify_code == 64" in suite, (
+        "the wrong-peer refusal must be OpenSSL's 64 (IP address mismatch); 62 is "
+        "the hostname mismatch a DNS-named lane would see, and asserting it here "
+        "would pass only if the address checking under test never ran"
+    )
+
+
+def test_the_hosted_launcher_is_an_embedder_and_not_the_standard_service() -> None:
+    """`host.py` may construct the adapter. It may not become the service.
+
+    A V06-4 GO is adapter conformance, not production HTTP serving. The console
+    entry point supplies no credential resolver and exits 2 on every bind, and a
+    launcher that reached around that -- by importing it, by standing up
+    `Dispatcher`, or by building the accepted service registry -- would make the
+    GO readable as something it is not.
+    """
+    assert TLS_HOST_LAUNCHER.is_file()
+    tree = ast.parse(TLS_HOST_LAUNCHER.read_text(encoding="utf-8"))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    forbidden = sorted(imported & set(PRODUCTION_SERVING_MODULES))
+    assert not forbidden, f"the launcher imports the standard service: {forbidden}"
+
+    code = _code(TLS_HOST_LAUNCHER)
+    for name in PRODUCTION_SERVING_NAMES:
+        assert name not in code, f"the launcher references {name!r}"
+
+    # And it does construct the adapter directly, which is the other half: a
+    # launcher that stopped doing so would pass every prohibition above while
+    # proving nothing about `HttpListener`.
+    assert "HttpListener(" in code and "HttpTls(" in code
+
+
+def test_the_hosted_launcher_refuses_everything_it_is_required_to() -> None:
+    """The refusals that have to happen before a socket exists.
+
+    Each one is a state in which a publicly reachable listener must not come up:
+    an address that is loopback or not a literal, TLS material that cannot be
+    read, a bearer file anyone else can read, a workspace nobody marked
+    synthetic, or a checkout with no git identity to attest. The sixth -- a
+    checkout that is not clean -- is proved behaviourally by
+    `test_the_hosted_launcher_refuses_to_serve_from_a_dirty_checkout`, because a
+    substring for it would pass on the paragraph describing it.
+    """
+    code = _code(TLS_HOST_LAUNCHER)
+    for required in (
+        "is_loopback",
+        "ipaddress.ip_address",
+        "BEARER_FILE_MODE",
+        "SYNTHETIC_MARKER",
+        "MINIMUM_BEARER_LENGTH",
+        "rev-parse",
+    ):
+        assert required in code, f"the launcher no longer checks {required}"
+
+    # The identity is read before the bind, not after: a host that cannot say
+    # what it is must never serve, and the order of these two lines is the whole
+    # of that guarantee. The private key is read before it too -- it is read to
+    # prove the launch record does not carry it, and a read that failed after the
+    # bind would be a refusal with a public port already open.
+    assert code.index("_identity()") < code.index("listener.start()")
+    assert code.index("_text(key") < code.index("listener.start()"), (
+        "the launcher reads the private key after binding"
+    )
+
+    # And what cannot be done before the bind is undone on failure. The record
+    # reports the URL the socket actually bound, so the bind and the write are
+    # one unit: a `start()` that raised, a record refused for carrying a withheld
+    # value, and a write that failed must all leave nothing listening. Read off
+    # `launch` itself rather than the module, so `main`'s own `stop()` in its
+    # `finally` cannot satisfy this by accident.
+    launching = ast.unparse(
+        next(
+            node
+            for node in ast.parse(TLS_HOST_LAUNCHER.read_text(encoding="utf-8")).body
+            if isinstance(node, ast.FunctionDef) and node.name == "launch"
+        )
+    )
+    assert "except BaseException:" in launching and "listener.stop()" in launching, (
+        "a failed bind or a failed launch-record write must retire the listener; "
+        "without it a refusal can leave a publicly reachable port open"
+    )
+
+
+def _host_launcher() -> ModuleType:
+    """`conformance/tls/host.py`, loaded by path.
+
+    `conformance/` is outside every collection root and every package, so there
+    is no import path to it. Loaded rather than read as source because the test
+    below is about what `_identity` *does* against a real repository -- a
+    substring scan for `--porcelain` cannot tell the check apart from a docstring
+    that explains it, which is exactly the false confidence that let a
+    committed-tree SHA be described as a working-state proof.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "conformance_tls_host", TLS_HOST_LAUNCHER
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _git(root: Path, *arguments: str) -> None:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        f"git {' '.join(arguments)} failed in the fixture repository: "
+        f"{completed.stderr.strip()}"
+    )
+
+
+def _one_commit_repository(root: Path) -> None:
+    """A repository holding one committed file and nothing else."""
+    root.mkdir(parents=True, exist_ok=True)
+    _git(root, "init", "--quiet")
+    _git(root, "config", "user.email", "conformance@example.invalid")
+    _git(root, "config", "user.name", "conformance")
+    (root / "tracked.txt").write_text("committed\n", encoding="utf-8")
+    _git(root, "add", "tracked.txt")
+    _git(root, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "candidate")
+
+
+def test_the_hosted_launcher_refuses_to_serve_from_a_dirty_checkout(
+    tmp_path: Path,
+) -> None:
+    """The attested pair is committed objects, so cleanliness is enforced separately.
+
+    `tree_sha` is `HEAD^{tree}` -- the tree of the last commit. It is identical on
+    a pristine checkout and on one somebody edited, so the runner's equality check
+    proves the host is at the candidate *commit* and, on its own, nothing about
+    the bytes being served. What closes that is a precondition: `_identity`
+    refuses to return unless git reports the checkout clean, and it is called
+    before the socket exists, so a host with local changes never binds at all.
+
+    Exercised against real repositories rather than asserted from the source, and
+    across all three ways a checkout is dirty. A staged change is invisible to a
+    plain `git diff`, and an added file is invisible to both that and
+    `git status --porcelain` without `--untracked-files=all` -- so a check that
+    covered only the obvious one would pass a text scan and still let an edited
+    host attest the candidate.
+    """
+    host = _host_launcher()
+
+    clean = tmp_path / "clean"
+    _one_commit_repository(clean)
+    identity = host._identity(clean)
+    assert set(identity) == {"commit_sha", "tree_sha"}, (
+        f"the launcher no longer attests exactly the two objects: {sorted(identity)}"
+    )
+
+    planted = "planted-name-that-must-not-be-republished.txt"
+    dirt = {
+        "an untracked file": lambda root: (root / planted).write_text(
+            "x\n", encoding="utf-8"
+        ),
+        "a staged addition": lambda root: (
+            (root / planted).write_text("x\n", encoding="utf-8"),
+            _git(root, "add", planted),
+        ),
+        "an unstaged edit": lambda root: (root / "tracked.txt").write_text(
+            "edited\n", encoding="utf-8"
+        ),
+    }
+    for label, plant in dirt.items():
+        repository = tmp_path / label.replace(" ", "-")
+        _one_commit_repository(repository)
+        plant(repository)
+        with pytest.raises(host.LaunchRefused) as refused:
+            host._identity(repository)
+        # And the refusal says what is wrong without saying where. This process
+        # is about to be reachable from the public internet, and `git status`
+        # names paths.
+        message = str(refused.value)
+        assert planted not in message and "tracked.txt" not in message, (
+            f"the refusal for {label} republishes a path from the working tree"
+        )
+        assert str(repository) not in message
+
+    # The check is only worth anything before the bind. Read structurally off
+    # `launch`'s own statements rather than by substring position in the module:
+    # `identity = _identity()` has to be a statement that completes before the
+    # one holding `listener.start()`, which a moved call fails and a reworded
+    # comment cannot satisfy.
+    launching = next(
+        node
+        for node in ast.parse(TLS_HOST_LAUNCHER.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef) and node.name == "launch"
+    )
+
+    identified: list[int] = []
+    started: list[int] = []
+    for index, statement in enumerate(launching.body):
+        for call in ast.walk(statement):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name) and call.func.id == "_identity":
+                identified.append(index)
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "start":
+                started.append(index)
+    assert identified and started, (
+        "`launch` no longer both reads the identity and starts the listener"
+    )
+    assert max(identified) < min(started), (
+        "`launch` binds before it establishes the checkout's identity, so a dirty "
+        "or unidentifiable host would already be listening when it is refused"
+    )
+
+
+def test_both_attestation_sides_require_a_clean_checkout() -> None:
+    """The attested tree is committed state, so cleanliness is a precondition.
+
+    Parsed from the two functions that produce the compared identities. A module
+    docstring mentioning ``git status`` cannot satisfy this, and neither can a
+    call after the identity has already been returned.
+    """
+    host_tree = ast.parse(TLS_HOST_LAUNCHER.read_text(encoding="utf-8"))
+    identity = next(
+        node
+        for node in host_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_identity"
+    )
+    host_status = next(
+        node
+        for node in identity.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "status" for target in node.targets)
+    )
+    assert isinstance(host_status.value, ast.Call)
+    host_call = host_status.value
+    assert isinstance(host_call.func, ast.Name) and host_call.func.id == "_git"
+    assert len(host_call.args) == 4
+    assert isinstance(host_call.args[0], ast.Name) and host_call.args[0].id == "checkout"
+    assert [
+        argument.value for argument in host_call.args[1:] if isinstance(argument, ast.Constant)
+    ] == ["status", "--porcelain", "--untracked-files=all"]
+    host_guards = [node for node in identity.body if isinstance(node, ast.If)]
+    assert any(
+        "status.strip()" in ast.unparse(guard.test)
+        and any(isinstance(statement, ast.Raise) for statement in guard.body)
+        for guard in host_guards
+    ), "the host reads checkout status but does not refuse a dirty result"
+    host_return = next(node for node in identity.body if isinstance(node, ast.Return))
+    assert identity.body.index(host_status) < identity.body.index(host_return)
+    assert all(identity.body.index(guard) < identity.body.index(host_return) for guard in host_guards)
+
+    suite_tree = ast.parse(TLS_SUITE.read_text(encoding="utf-8"))
+    candidate = next(
+        node
+        for node in suite_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_candidate"
+    )
+    runner_status = next(
+        node
+        for node in candidate.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "status" for target in node.targets)
+    )
+    assert isinstance(runner_status.value, ast.Call)
+    runner_call = runner_status.value
+    assert isinstance(runner_call.func, ast.Name) and runner_call.func.id == "_git"
+    assert len(runner_call.args) == 3
+    assert [
+        argument.value for argument in runner_call.args if isinstance(argument, ast.Constant)
+    ] == ["status", "--porcelain", "--untracked-files=all"]
+    runner_guard = next(node for node in candidate.body if isinstance(node, ast.If))
+    assert "status.strip()" in ast.unparse(runner_guard.test)
+    assert any(isinstance(statement, ast.Raise) for statement in runner_guard.body), (
+        "the runner reads checkout status but does not refuse a dirty result"
+    )
+    runner_return = next(node for node in candidate.body if isinstance(node, ast.Return))
+    assert candidate.body.index(runner_status) < candidate.body.index(runner_guard)
+    assert candidate.body.index(runner_guard) < candidate.body.index(runner_return)
+
+
+def _collection_checker() -> ModuleType:
+    """`scripts/check-test-collection.py`, loaded by path.
+
+    Its filename is not a valid Python identifier, so it cannot be imported
+    normally -- the same shape `tests/test_test_collection.py` uses. Loaded
+    rather than grepped so the assertion below reads the constant the checker
+    actually walks with, not a line of source that may no longer be used.
+    """
+    spec = importlib.util.spec_from_file_location("check_test_collection", COLLECTION_CHECKER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_conformance_tree_with_tests_is_named_by_that_workflow(tmp_path: Path) -> None:
+    """The half that makes living outside `testpaths` safe.
+
+    `conformance/` is outside `testpaths` and outside every other workflow's
+    paths on purpose, and `scripts/check-test-collection.py` -- which otherwise
+    requires every test file on disk to be reachable from a bare `pytest` run --
+    exempts it for that reason and no other. The exemption and this workflow are
+    two halves of one claim, so they are asserted together: what a bare run
+    stops accounting for has to be exactly what this workflow runs. That is what
+    keeps "outside every collection root" from meaning "run by nothing" -- a
+    second tree added beside `conformance/tls` and named by no invocation fails
+    right here.
+
+    The exemption is also asserted to be root-bounded. Set equality alone would
+    accept a rule keyed on the directory's *name*, which would silently excuse a
+    `conformance` directory anywhere in the repository; that is a broadening with
+    the same constant, so it is checked as behaviour against a temporary root.
+    """
+    checker = _collection_checker()
+    assert checker.DISPATCH_ONLY_TREES == {CONFORMANCE_TREE.name}, (
+        "the bare-run collection checker exempts trees beyond the one this "
+        f"workflow runs: {sorted(checker.DISPATCH_ONLY_TREES)}"
+    )
+
+    nested = tmp_path / "packages" / "p" / CONFORMANCE_TREE.name
+    nested.mkdir(parents=True)
+    (nested / "test_elsewhere.py").write_text("", encoding="utf-8")
+    # And one at the temporary root's own top level. Without it the walk could be
+    # keyed on the *caller's* root rather than on `REPO_ROOT` -- `entry.parent ==
+    # root` passes a nested-only plant identically -- and the exemption would then
+    # follow any tree it was pointed at instead of naming this repository's.
+    top = tmp_path / CONFORMANCE_TREE.name
+    top.mkdir()
+    (top / "test_top.py").write_text("", encoding="utf-8")
+    assert checker.discover_test_files(tmp_path) == {
+        f"packages/p/{CONFORMANCE_TREE.name}/test_elsewhere.py",
+        f"{CONFORMANCE_TREE.name}/test_top.py",
+    }, (
+        "the exemption is keyed on the directory name, or on the root it was "
+        "handed, rather than on the repository root"
+    )
+
+    assert CONFORMANCE_TREE.is_dir(), "the conformance tree is missing"
+    command = _commands(_step(_hosted_steps(), "Run hosted TLS conformance"))[0]
+    holding_tests = sorted(
+        directory.relative_to(REPO_ROOT).as_posix()
+        for directory in CONFORMANCE_TREE.rglob("*")
+        if directory.is_dir() and any(directory.glob("test_*.py"))
+    )
+    assert holding_tests, "no test modules under conformance/; this guard means nothing"
+    unnamed = [tree for tree in holding_tests if tree not in command]
+    assert not unnamed, (
+        f"these conformance trees hold tests that no workflow runs: {unnamed}"
+    )
+
+
+def test_the_hosted_suite_declares_exactly_the_cases_the_workflow_proves() -> None:
+    """One number, held in two places that must agree.
+
+    The workflow reads the JUnit record and requires exactly this many *passed*
+    with no failure, error or skip. That proof is only as good as the claim that
+    the tree declares this many cases in the first place -- otherwise a suite
+    that lost half its tests and gained a parametrization would still report the
+    expected total.
+    """
+    declared = _declared_cases(TLS_SUITE)
+    total = sum(declared.values())
+    assert total == HOSTED_CASE_COUNT, (
+        f"the hosted suite declares {total} cases, not {HOSTED_CASE_COUNT}: "
+        f"{declared}"
+    )
+    proof = "\n".join(
+        content for _, content in _step(_hosted_steps(), "Prove 28 passed and no other outcome")
+    )
+    assert f"EXPECTED = {HOSTED_CASE_COUNT}" in proof, (
+        "the workflow's JUnit proof does not require the declared number of cases"
+    )
+    for outcome in ("failures", "errors", "skipped"):
+        assert outcome in proof, f"the proof step ignores {outcome}"
+
+
+def test_the_evidence_is_always_uploaded_and_sanitized_before_it_leaves() -> None:
+    """The artifact is published on every outcome, and scrubbed first.
+
+    A guard that failed on a leak and then let an unconditional upload publish
+    the file anyway would republish exactly what it caught, so the redaction step
+    has to come before the upload in workflow order -- which is a property of the
+    step list, not of the step's own text.
+    """
+    steps = _hosted_steps()
+    names = _step_names(steps)
+    redact = "Redact any credential that reached the evidence"
+    upload = "Upload conformance evidence"
+    assert names.index(redact) < names.index(upload), (
+        "the evidence is uploaded before it is scrubbed"
+    )
+    for name in (redact, upload, "Prove 28 passed and no other outcome"):
+        assert _entry(_step(steps, name), "if") == "always()", (
+            f"step {name!r} does not run on every outcome"
+        )
+    published = _block(_step(steps, upload), "with")
+    assert _entry(published, "name") == "core-tls-conformance-evidence"
+    assert _entry(published, "if-no-files-found") == "error"
+    # The version this repository already uses in `core-performance-report.yml`.
+    # Pinned rather than left to whatever the action's default major is, so this
+    # lane cannot sit a major behind the rest of the tree and pick up a different
+    # artifact format or retention behaviour than every other uploaded evidence
+    # artifact here.
+    assert _entry(_step(steps, upload), "uses") == UPLOAD_ARTIFACT_ACTION
+
+
+def test_the_hosted_suite_cannot_skip() -> None:
+    """Zero skipped tests, held mechanically.
+
+    An unavailable host or skipped run retains NO-GO. A skipped test reads
+    exactly like a passing one in a summary line, so the constructs are forbidden
+    outright rather than the count trusted. This reads the source because a
+    convention nothing checks is a convention that lasts until the first
+    inconvenient CI run.
+
+    Parsed rather than grepped. A substring scan flags the suite's own docstrings
+    for *explaining* why these constructs are absent, and the obvious fix for
+    that -- rewording the prose -- leaves a guard that fires on whichever
+    sentence someone writes next. `ast` sees only the constructs.
+    """
+    offenders: list[str] = []
+    for module in sorted(CONFORMANCE_TREE.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        relative = module.relative_to(REPO_ROOT)
+        for node in ast.walk(tree):
+            found: str | None = None
+            if isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS:
+                found = node.attr
+            elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+                imported = [
+                    alias.name for alias in node.names if alias.name in SKIP_CONSTRUCTS
+                ]
+                found = ", ".join(imported) or None
+            else:
+                continue
+            if found is not None:
+                offenders.append(f"{relative}:{node.lineno}: {found}")
+    assert not offenders, (
+        "the hosted TLS conformance suite must not be able to skip; missing "
+        f"configuration has to fail loudly instead. Found: {offenders}"
+    )
+
+
+def test_the_skip_guard_detects_each_construct_it_forbids() -> None:
+    """The guard above, replayed against each construct, and against clean source.
+
+    Without this the scan could stop detecting anything -- a typo in a member
+    name, an `ast` node type that stopped matching -- and go on reporting a clean
+    tree forever, which is the exact failure mode it was written to prevent.
+    """
+    planted = {
+        "marker": "import pytest\n@pytest.mark.skipif(True, reason='')\ndef test_a(): ...\n",
+        "call": "import pytest\ndef test_a(): pytest.skip('no host')\n",
+        "import_or_skip": "import pytest\ndef test_a(): pytest.importorskip('ssl')\n",
+        "from_import": "from pytest import skip\ndef test_a(): skip('no host')\n",
+    }
+    for label, source in planted.items():
+        tree = ast.parse(source)
+        detected = any(
+            (isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS)
+            or (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "pytest"
+                and any(alias.name in SKIP_CONSTRUCTS for alias in node.names)
+            )
+            for node in ast.walk(tree)
+        )
+        assert detected, f"the skip guard no longer detects the {label} form"
+
+    clean = ast.parse(
+        '"""A docstring that mentions skipif, importorskip and pytest.skip."""\n'
+        "import pytest\ndef test_a(): assert pytest is not None\n"
+    )
+    assert not any(
+        isinstance(node, ast.Attribute) and node.attr in SKIP_CONSTRUCTS
+        for node in ast.walk(clean)
+    ), "the skip guard fires on prose, which is what parsing was meant to fix"
+
+
+def test_the_hosted_workflow_is_not_the_acceptance_gate_and_does_not_widen_phase2() -> None:
+    """Two standing prohibitions, asserted rather than remembered.
+
+    The hosted suite must not reach the required gate, and `phase2-platform.yml`
+    must not be widened by this lane under any circumstances.
+    """
+    acceptance = _commands(_step(_steps(), "Run full repository test suite"))
+    assert not any("conformance" in command for command in acceptance), (
+        "the acceptance gate must not collect the hosted conformance suite"
+    )
+    assert "conformance" not in PHASE2_WORKFLOW.read_text(encoding="utf-8"), (
+        "phase2-platform.yml must not be widened by the TLS conformance lane"
     )

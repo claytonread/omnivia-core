@@ -1,0 +1,312 @@
+# Hosted non-loopback TLS conformance for the OmniVia Core HTTP adapter (V06-4).
+#
+# What a pass means, and what it does not.
+# ----------------------------------------
+# A GO confirms the positive and negative conformance of the hosted TLS HTTP
+# *adapter*, on the exact candidate this run names. No production console path,
+# credential resolver or serving lifecycle invokes that adapter. OmniVia Core
+# does not serve HTTP as a production capability, and nothing in this workflow's
+# output may be read as saying otherwise. The suite's own
+# `test_the_standard_service_still_refuses_to_serve_http` is the regression that
+# keeps that true rather than merely asserted in a comment.
+#
+# Domain-free, by decision.
+# -------------------------
+# The listener is reached at a **public IPv4 literal**. No DNS name is issued
+# for, resolved or verified: the certificate carries an `iPAddress` SAN, and the
+# suite asserts that it carries exactly that one and no DNS SAN at all. ACME
+# port 80 is opened only long enough to obtain the certificate and is closed
+# before the listener starts, so during the run the direct Core TLS port is the
+# only reachable port on the host. See `conformance/tls/README.md`.
+#
+# What proves the host is the candidate.
+# --------------------------------------
+# `conformance/tls/host.py` reads its checkout's *committed* commit and tree
+# before it binds and returns them through `conformance.attest` -- the one
+# operation it grants, reachable only with the temporary bearer. The suite
+# computes the same two values from the runner's own checkout and requires exact
+# equality. That is why `candidate_ref` below must be a full commit SHA and is
+# checked against the resolved `HEAD`: without it, "the host runs the candidate"
+# is a claim about whoever provisioned the droplet rather than a property of this
+# run.
+#
+# `tree_sha` is `HEAD^{tree}` and so describes the last commit rather than the
+# files on disk. A clean checkout is therefore a *separately enforced
+# precondition* on each side, not something the attested pair carries: the
+# launcher refuses to bind from a checkout with staged, unstaged or untracked
+# changes, and the suite refuses to report the runner's pair from one. The
+# checkout below is a fresh `actions/checkout`, which is the runner's half.
+#
+# `inputs.candidate_ref` is never interpolated into a `run:` script. It reaches
+# the shell only through a step `env:` value, so its contents are data the shell
+# reads rather than script text the expansion writes;
+# `tests/test_core_acceptance_workflow.py` asserts that mechanically.
+#
+# Why this is a separate workflow, and dispatch-only.
+# --------------------------------------------------
+# `core-acceptance.yml` is the required merge gate: it runs on every pull request
+# with no path filter, has no `environment:` and consumes no secrets. Putting a
+# host-dependent job in it would make every pull request in the repository depend
+# on a disposable external host being up, which is not a gate but an outage.
+# `phase2-platform.yml` consumes no secrets or variables at all and is not
+# widened by this lane under any circumstances.
+#
+# `pull_request` is deliberately absent below, and
+# `tests/test_core_acceptance_workflow.py` asserts its absence, so this can never
+# drift into a required check that depends on a disposable host.
+#
+# The zero-skip rule.
+# -------------------
+# The hosted suite must record zero skipped tests. An unavailable host or a
+# skipped run retains NO-GO. There is no third outcome, so the proof step below
+# reads the JUnit record and requires exactly 28 cases with no failure, error or
+# skip element on any of them -- not "the exit code was 0". The suite contains no
+# `skipif`, no `importorskip` and no `pytest.skip`, which
+# `tests/test_core_acceptance_workflow.py` holds open by parsing the source, and
+# it pins the count of 28 from the same parse.
+#
+# Secrets, and what never reaches this runner.
+# --------------------------------------------
+# The listener's private key stays on the conformance host. No key, no PKCS#12
+# bundle and **no CA bundle derived from the chain under test** is available
+# here: the certificate has to chain to an authority the public trust store
+# already holds, which is the whole of what makes this client's verdict worth
+# anything. The environment below carries the public IPv4, the port, the grant,
+# the temporary bearer credential and the fingerprint of the chain the host was
+# configured with -- the last of which is what proves nothing terminated TLS in
+# between.
+name: Core TLS conformance
+
+on:
+  # Manual only. See the note above: this must never become a required check.
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: "Full 40-character commit SHA of the candidate to certify"
+        required: true
+        type: string
+
+jobs:
+  core-tls-conformance:
+    name: Core TLS conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # Holds the public IPv4, the port, the grant, the temporary bearer credential
+    # and the configured chain fingerprint, so access is auditable and the secret
+    # is not repository-wide. It does NOT hold the listener's private key.
+    environment: tls-conformance
+
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@v7
+        with:
+          # The commit this run certifies, named by the dispatcher rather than
+          # inferred from a branch that can move between dispatch and checkout.
+          ref: ${{ inputs.candidate_ref }}
+          # The suite reads its own commit and tree with `git rev-parse` and
+          # compares them against what the host attests.
+          fetch-depth: 0
+
+      - name: Pin the candidate under test
+        # A branch or tag name would resolve to whatever it points at now, which
+        # is exactly the ambiguity the attestation exists to remove. Refusing
+        # anything but a resolved commit is what makes `candidate_identity_match`
+        # a statement about a known object.
+        env:
+          # Through the environment, never interpolated into the script below. An
+          # expression substituted into `run:` is expanded before the shell sees
+          # the line, so a dispatch input containing a quote or a newline would be
+          # script rather than data -- and this input is only validated *by* that
+          # script, one line too late to help.
+          CANDIDATE: ${{ inputs.candidate_ref }}
+        run: |
+          case "${CANDIDATE}" in
+            *[!0-9a-f]* | "" ) echo "candidate_ref must be a full commit SHA" >&2; exit 1 ;;
+          esac
+          if [ "${#CANDIDATE}" -ne 40 ]; then
+            echo "candidate_ref must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+          resolved="$(git rev-parse HEAD)"
+          if [ "${resolved}" != "${CANDIDATE}" ]; then
+            echo "the checkout resolved to ${resolved}, not the named candidate" >&2
+            exit 1
+          fi
+          echo "certifying ${resolved}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "hatchling>=1.26,<2"
+
+      - name: Install local packages
+        run: |
+          # The root package and the runtime distribution, in that order: the
+          # root goes first because the dependent distribution declares
+          # `omnivia-core` and is unpublished. Those two are the whole of what
+          # this suite imports -- the HTTP adapter, the console entry point it
+          # asserts the refusal of, and the canonical JSON encoder -- so the
+          # remaining distributions are deliberately absent rather than
+          # installed for symmetry.
+          python -m pip install -e .
+          python -m pip install -e packages/omnivia-core-runtime
+          python -m pip install "pytest>=8,<10"
+
+      - name: Record the generator this run depends on
+        # Runtime `openssl` into temporary directories is what generates the
+        # locally defective chains, and adding a dependency solely for that is
+        # prohibited. If it is missing the suite fails rather than skips; this
+        # step just puts the version in the log beside the evidence.
+        run: openssl version
+
+      - name: Prepare the evidence directory
+        # Created before the suite runs so the upload below always has something
+        # to publish, including on the run that failed before writing anything.
+        env:
+          # Same rule as the pin step: the dispatch input is data this script
+          # reads, never text expanded into it.
+          CANDIDATE: ${{ inputs.candidate_ref }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/tls-conformance-evidence"
+          echo "candidate ${CANDIDATE}" \
+            > "${RUNNER_TEMP}/tls-conformance-evidence/candidate.txt"
+
+      - name: Run hosted TLS conformance
+        env:
+          # The host's public IPv4 literal. A DNS name here is refused by the
+          # suite rather than resolved: this lane is domain-free.
+          OMNIVIA_TLS_CONFORMANCE_HOST: ${{ vars.OMNIVIA_TLS_CONFORMANCE_HOST }}
+          OMNIVIA_TLS_CONFORMANCE_PORT: ${{ vars.OMNIVIA_TLS_CONFORMANCE_PORT }}
+          # `conformance.attest`, the one operation the host grants. The suite
+          # asserts the value rather than trusting it.
+          OMNIVIA_TLS_CONFORMANCE_OPERATION: ${{ vars.OMNIVIA_TLS_CONFORMANCE_OPERATION }}
+          OMNIVIA_TLS_CONFORMANCE_PURPOSE: ${{ vars.OMNIVIA_TLS_CONFORMANCE_PURPOSE }}
+          # SHA-256 of the DER of the leaf the listener was configured with,
+          # printed by `conformance/tls/host.py` at launch. The anti-proxy proof.
+          OMNIVIA_TLS_CONFORMANCE_CHAIN_SHA256: ${{ vars.OMNIVIA_TLS_CONFORMANCE_CHAIN_SHA256 }}
+          # The one secret. Never echoed, never in a step name, never in argv.
+          OMNIVIA_TLS_CONFORMANCE_BEARER: ${{ secrets.OMNIVIA_TLS_CONFORMANCE_BEARER }}
+          # Outside the work tree on purpose: nothing this run generates is
+          # written into the checkout.
+          OMNIVIA_TLS_CONFORMANCE_EVIDENCE: ${{ runner.temp }}/tls-conformance-evidence/evidence.json
+        # `--junitxml=` in the attached form, not as two tokens.
+        # `scripts/check-import-install-alignment.py` reads every non-flag token
+        # after `pytest` as a test path, so a detached value containing a slash
+        # is reported as a collection root that does not exist.
+        run: |
+          python -m pytest conformance/tls -q -rs \
+            --junitxml="${RUNNER_TEMP}/tls-conformance-evidence/junit.xml"
+
+      - name: Redact any credential that reached the evidence
+        if: always()
+        env:
+          OMNIVIA_TLS_CONFORMANCE_BEARER: ${{ secrets.OMNIVIA_TLS_CONFORMANCE_BEARER }}
+        # Runs *before* the upload, and redacts rather than only reporting: a
+        # step that failed on a leak and then let the upload publish the file
+        # anyway would be a guard that republishes what it caught. The suite
+        # asserts the same property on the record it holds in memory; this
+        # asserts it on the bytes that are about to leave the runner, including
+        # the JUnit report, which carries assertion text the suite never sees.
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          bearer = os.environ.get("OMNIVIA_TLS_CONFORMANCE_BEARER", "")
+          if not bearer:
+              sys.exit(
+                  "OMNIVIA_TLS_CONFORMANCE_BEARER is unset, so this run reached no "
+                  "authenticated operation and the leakage guard proves nothing"
+              )
+          directory = pathlib.Path(os.environ["RUNNER_TEMP"]) / "tls-conformance-evidence"
+          leaked = []
+          for path in sorted(directory.rglob("*")):
+              if not path.is_file():
+                  continue
+              text = path.read_text(encoding="utf-8", errors="replace")
+              if bearer in text:
+                  path.write_text(text.replace(bearer, "[redacted]"), encoding="utf-8")
+                  leaked.append(path.name)
+          if leaked:
+              # The file names only. Reporting the match would republish it.
+              sys.exit(f"the bearer credential reached {leaked}; it has been redacted")
+          print("no credential reached the evidence")
+          PY
+
+      - name: Prove 28 passed and no other outcome
+        if: always()
+        # Read from the JUnit record rather than from the step's exit code: a
+        # green exit says nothing about how many cases ran, and "not run" and
+        # "passed" have to stay different states. Skips, xfails and xpasses are
+        # counted with failures because all three are ways a case stops being a
+        # pass without being a failure.
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          EXPECTED = 28
+          report = (
+              pathlib.Path(os.environ["RUNNER_TEMP"])
+              / "tls-conformance-evidence"
+              / "junit.xml"
+          )
+          if not report.is_file():
+              sys.exit("no JUnit record was written, so the hosted suite did not run")
+
+          root = ET.parse(report).getroot()
+          suites = root.findall("testsuite") or [root]
+          totals = {key: 0 for key in ("tests", "failures", "errors", "skipped")}
+          for suite in suites:
+              for key in totals:
+                  totals[key] += int(suite.get(key, 0))
+          cases = [case for suite in suites for case in suite.findall("testcase")]
+          not_passed = sorted(
+              f"{case.get('classname')}::{case.get('name')}"
+              for case in cases
+              if any(
+                  child.tag in {"failure", "error", "skipped"} for child in case
+              )
+          )
+
+          findings = []
+          if totals["tests"] != EXPECTED or len(cases) != EXPECTED:
+              findings.append(
+                  f"expected exactly {EXPECTED} cases, the record holds "
+                  f"{totals['tests']} reported and {len(cases)} present"
+              )
+          for key in ("failures", "errors", "skipped"):
+              if totals[key]:
+                  findings.append(f"{totals[key]} {key}")
+          if not_passed:
+              findings.append(f"non-passing cases: {not_passed}")
+          if findings:
+              sys.exit("; ".join(findings))
+          print(f"{EXPECTED} passed, 0 failed, 0 errored, 0 skipped")
+          PY
+
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-tls-conformance-evidence
+          path: ${{ runner.temp }}/tls-conformance-evidence
+          if-no-files-found: error
+
+      - name: Remove generated key material from the runner
+        if: always()
+        # The suite writes its generated keys and chains under pytest's temporary
+        # directory, which a failed run would otherwise leave behind on a
+        # self-hosted runner. The listener's own key material is retired on the
+        # conformance host and never reached here.
+        run: rm -rf "${RUNNER_TEMP}"/pytest-of-* /tmp/pytest-of-*
