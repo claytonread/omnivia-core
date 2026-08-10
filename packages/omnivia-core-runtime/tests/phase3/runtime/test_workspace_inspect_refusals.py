@@ -34,7 +34,9 @@ from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
     EVIDENCE_SEARCH_OPERATION,
     KNOWLEDGE_RETRIEVAL_PURPOSE,
+    KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
+    MEMORY_SEARCH_OPERATION,
     WORKSPACE_INSPECT_OPERATION,
     WORKSPACE_INSPECTION_PURPOSE,
     ApplicationDispatcher,
@@ -87,6 +89,8 @@ INSTALLATION_ID = "inst-inspect-0001"
 CLIENT = ClientIdentity(id="omnivia-core-cli", version="0.1.0")
 ENTRY = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
 EVIDENCE_ENTRY = get_operation_metadata(EVIDENCE_SEARCH_OPERATION)
+KNOWLEDGE_ENTRY = get_operation_metadata(KNOWLEDGE_SEARCH_OPERATION)
+MEMORY_ENTRY = get_operation_metadata(MEMORY_SEARCH_OPERATION)
 
 #: A mutating, workspace-scoped catalogue operation, chosen from the catalogue rather
 #: than named here so the test still means something if the catalogue's mutation set
@@ -98,12 +102,18 @@ MUTATING_ENTRY = next(
     and entry.scope.scope_kind == ENTRY.scope.scope_kind
 )
 
-#: The Lane A production grant (§20.2): `workspace.inspect` and `evidence.search`, and
+#: The production grant as it stands after Lane C (§22.2a's serial additive edit):
+#: `workspace.inspect`, `evidence.search`, `knowledge.search` and `memory.search`, and
 #: nothing else. Stated here as the literal `service.main.serve` states, not derived
 #: from the registry -- deriving it would make the two agree by construction and this
 #: file's whole job is to notice when the grant and the build disagree.
 PRODUCTION_OPERATIONS = frozenset(
-    {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+    {
+        WORKSPACE_INSPECT_OPERATION,
+        EVIDENCE_SEARCH_OPERATION,
+        KNOWLEDGE_SEARCH_OPERATION,
+        MEMORY_SEARCH_OPERATION,
+    }
 )
 
 _DEFAULT: Any = object()
@@ -130,9 +140,10 @@ def production_session(**overrides: Any) -> AuthenticatedSession:
     `operations` is passed here because `service.main.serve` passes it: under the
     accepted parameterised shape the operation set is a literal in the constructor's
     caller, so a test that wants *the production session* has to state the production
-    literal rather than take a default. `test_the_production_grant_is_the_lane_a_grant`
-    below pins this tuple against `main.py`'s own, so the two cannot drift apart
-    silently -- which is the failure mode a hand-copied literal invites.
+    literal rather than take a default.
+    `test_the_production_grant_is_the_grant_main_actually_wires` below pins this set
+    against `main.py`'s own, so the two cannot drift apart silently -- which is the
+    failure mode a hand-copied literal invites.
     """
     session = local_owner_session(
         principal_id=LOCAL_PRINCIPAL,
@@ -324,14 +335,28 @@ def test_2c_a_build_that_registers_no_handler_supports_no_capability() -> None:
 
     The second assertion is the widened *exact* tuple, not a membership test. It became
     false by construction when Lane A registered a second handler -- packet §22.1's
-    carve-out -- and the replacement it prescribes is the wider exact set, because a
-    membership test would still pass with a handler this build never meant to ship.
+    carve-out -- and again when Lane C registered the two governed searches. The
+    replacement it prescribes is the wider exact set each time, because a membership test
+    would still pass with a handler this build never meant to ship.
+
+    Four capabilities and four handlers, and the two are not the same claim: this snapshot
+    is derived from the registry, so a handler registered without its catalogue capability
+    -- or a capability advertised with nothing behind it -- shows up here as a tuple that
+    is not this one.
     """
     assert server_capability_snapshot(ApplicationOperationRegistry()) == ()
     assert server_capability_snapshot(build_application_registry()) == (
         CapabilityRef(
             id=EVIDENCE_ENTRY.required_capability.id,
             version=EVIDENCE_ENTRY.required_capability.minimum_version,
+        ),
+        CapabilityRef(
+            id=KNOWLEDGE_ENTRY.required_capability.id,
+            version=KNOWLEDGE_ENTRY.required_capability.minimum_version,
+        ),
+        CapabilityRef(
+            id=MEMORY_ENTRY.required_capability.id,
+            version=MEMORY_ENTRY.required_capability.minimum_version,
         ),
         CapabilityRef(
             id=ENTRY.required_capability.id,
@@ -462,7 +487,8 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     """Not `APPLICATION_OPERATIONS`, which is all twenty and includes every mutation.
 
     This is the assertion packet §11.1 predicted would be got wrong. It asserted a
-    single name; the Lane A grant is two, so it became false **by design**. The
+    single name; Lane A widened it to two and Lane C's additive edit to four, so it
+    became false **by design**. The
     replacement is the widened exact set -- deleting it, or softening it to
     `WORKSPACE_INSPECT_OPERATION in session.operations`, is a stop condition, because a
     membership test passes just as happily against all twenty.
@@ -476,20 +502,32 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     session = production_session()
 
     assert session.operations == frozenset(
-        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+        {
+            WORKSPACE_INSPECT_OPERATION,
+            EVIDENCE_SEARCH_OPERATION,
+            KNOWLEDGE_SEARCH_OPERATION,
+            MEMORY_SEARCH_OPERATION,
+        }
     )
     assert session.operations != APPLICATION_OPERATIONS
     for name in session.operations:
         assert get_operation_metadata(name).scope.side_effect == "none"
+    # Still two scopes at four operations: all three searches are served under
+    # `memory:read`, which is what the catalogue says and therefore what the derivation
+    # must produce. A third scope appearing here would mean the constructor had started
+    # transcribing rather than deriving.
     assert session.scopes == frozenset({"workspace:read", "memory:read"})
     assert session.capabilities == (
         CapabilityRef(id="evidence.read", version="1.0"),
+        CapabilityRef(id="knowledge.read", version="1.0"),
+        CapabilityRef(id="memory.read", version="1.0"),
         CapabilityRef(id="workspace.read", version="1.0"),
     )
 
 
-def test_the_production_grant_is_the_lane_a_grant_main_actually_wires() -> None:
-    """The literal in `service.main.serve`, read from its source, is this one.
+def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
+    """The literal in `service.main.serve`, read from its source, is this one -- the four
+    operations Lane C's additive edit left the grant holding.
 
     `production_session` copies the production grant by hand, and a hand-copied literal
     that nothing compares is how a test comes to certify a session the service does not
@@ -509,7 +547,7 @@ def test_the_production_grant_is_the_lane_a_grant_main_actually_wires() -> None:
         keyword.value for keyword in call.keywords if keyword.arg == "operations"
     )
 
-    # `frozenset({A, B})` -- the names, read out of the call `serve` actually makes.
+    # `frozenset({A, B, C, D})` -- the names, read out of the call `serve` actually makes.
     assert isinstance(granted, ast.Call)
     assert isinstance(granted.func, ast.Name)
     assert granted.func.id == "frozenset"
@@ -520,9 +558,19 @@ def test_the_production_grant_is_the_lane_a_grant_main_actually_wires() -> None:
         if isinstance(element, ast.Name)
     }
 
-    assert wired == {"WORKSPACE_INSPECT_OPERATION", "EVIDENCE_SEARCH_OPERATION"}
+    assert wired == {
+        "WORKSPACE_INSPECT_OPERATION",
+        "EVIDENCE_SEARCH_OPERATION",
+        "KNOWLEDGE_SEARCH_OPERATION",
+        "MEMORY_SEARCH_OPERATION",
+    }
     assert PRODUCTION_OPERATIONS == frozenset(
-        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+        {
+            WORKSPACE_INSPECT_OPERATION,
+            EVIDENCE_SEARCH_OPERATION,
+            KNOWLEDGE_SEARCH_OPERATION,
+            MEMORY_SEARCH_OPERATION,
+        }
     )
 
 
@@ -531,14 +579,14 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
 
     The projection build is a *service* action -- it runs under the instance identity
     and the fencing generation this process already holds -- and the session is what a
-    caller may ask this endpoint to do. Nothing about building an index makes a third
-    operation grantable, so the grant `serve` wires is still the two names it was, and
-    the arguments the build is given are the service's own rather than anything the
-    session or a request could reach.
+    caller may ask this endpoint to do. Nothing about building an index makes a further
+    operation grantable, so the grant `serve` wires is still the four read names Lane C's
+    additive edit left it holding, and the arguments the build is given are the service's
+    own rather than anything the session or a request could reach.
 
     The falsifier is the plausible drift: a "projection.rebuild" or "index.refresh"
     operation added to the grant so an operator could trigger a build over the wire.
-    That is the rebuild verb packet §20.7 refuses, and it would arrive here as a third
+    That is the rebuild verb packet §20.7 refuses, and it would arrive here as a fifth
     name in this set.
     """
     serve = _main_function("serve")
@@ -554,7 +602,10 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
     )
     assert isinstance(granted, ast.Call)
     assert isinstance(granted.args[0], ast.Set)
-    assert len(granted.args[0].elts) == 2
+    # Four names after Lane C's additive grant edit, and every one of them is an
+    # operation with a registered handler. The count is what this test watches: a
+    # rebuild verb added here would arrive as a fifth.
+    assert len(granted.args[0].elts) == 4
 
     build_call = next(
         node
@@ -653,7 +704,12 @@ def test_5c_no_mutating_operation_is_registered_at_all() -> None:
     registered = build_application_registry().operations
 
     assert registered == frozenset(
-        {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+        {
+            WORKSPACE_INSPECT_OPERATION,
+            EVIDENCE_SEARCH_OPERATION,
+            KNOWLEDGE_SEARCH_OPERATION,
+            MEMORY_SEARCH_OPERATION,
+        }
     )
     for name in registered:
         assert get_operation_metadata(name).scope.side_effect == "none"

@@ -1102,6 +1102,52 @@ def _hydrate_governed_records(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class GovernedRecordValue:
+    """One selected version, as the contract sees it *and* as 0009 recorded it.
+
+    `record` is the hydrated DTO and `recorded_at_us` is the exact stored instant that DTO
+    cannot carry back: `RecordTemporalMetadata.recorded_at` is the contract's `Timestamp`,
+    which is millisecond-precision, so parsing it back loses the microseconds a recency
+    ordering has to be total on -- and 0009 writes every version of one correction at one
+    microsecond, so the digits lost are exactly the ones that separate them. The two facts
+    are paired here, at the read, rather than re-derived later from the wire rendering.
+
+    A frozen value holding two frozen values, so this adds no capability: it is the same
+    read `read_governed_records` performs, keeping one integer per record that it drops.
+    """
+
+    recorded_at_us: int
+    record: GovernedRecord
+
+
+def read_governed_record_values(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    view: str | None = None,
+) -> tuple[GovernedRecordValue, ...]:
+    """`read_governed_records`, with each record's exact stored `recorded_at_us` beside it.
+
+    One snapshot and one hydration -- the versions and the records are the *same* selection
+    in the same order, zipped strictly, so a record can never be paired with another
+    version's instant.
+    """
+    snapshot = _read_governed_hydration_snapshot(
+        connection,
+        workspace_id=workspace_id,
+        resolution_instant_us=resolution_instant_us,
+        view=view,
+    )
+    return tuple(
+        GovernedRecordValue(recorded_at_us=version.recorded_at_us, record=record)
+        for version, record in zip(
+            snapshot.versions, _hydrate_governed_records(snapshot), strict=True
+        )
+    )
+
+
 def read_governed_records(
     connection: sqlite3.Connection,
     *,
@@ -1121,9 +1167,14 @@ def read_governed_records(
     Everything about *which* versions these are is `resolve_governed_versions`': the three
     views, the resolution instant doing both of its jobs, and the supersession fold. This
     adds the projection and nothing else.
+
+    The records are `read_governed_record_values`' own, with the companion instant dropped,
+    so a caller that wants only the DTOs and one that wants the pair cannot disagree about
+    which versions the view holds.
     """
-    return _hydrate_governed_records(
-        _read_governed_hydration_snapshot(
+    return tuple(
+        value.record
+        for value in read_governed_record_values(
             connection,
             workspace_id=workspace_id,
             resolution_instant_us=resolution_instant_us,
@@ -1135,8 +1186,10 @@ def read_governed_records(
 __all__ = [
     "LAYER_CANDIDATE",
     "LAYER_GOVERNED",
+    "GovernedRecordValue",
     "GovernedSupersession",
     "GovernedVersion",
+    "read_governed_record_values",
     "read_governed_records",
     "read_governed_supersessions",
     "resolve_governed_versions",

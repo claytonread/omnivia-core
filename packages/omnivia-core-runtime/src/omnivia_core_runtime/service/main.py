@@ -36,7 +36,9 @@ from typing import Protocol
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
 from omnivia_core_runtime.service.application import (
     EVIDENCE_SEARCH_OPERATION,
+    KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
+    MEMORY_SEARCH_OPERATION,
     WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
@@ -448,9 +450,14 @@ def main(
                 # rather than inside `local_owner_session` so that widening it is a
                 # visible edit to the service's own startup rather than a change of
                 # default one module away. Scopes, capabilities and purposes all follow
-                # from these two names -- none of them is written out anywhere.
+                # from these names -- none of them is written out anywhere.
                 operations=frozenset(
-                    {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
+                    {
+                        WORKSPACE_INSPECT_OPERATION,
+                        EVIDENCE_SEARCH_OPERATION,
+                        KNOWLEDGE_SEARCH_OPERATION,
+                        MEMORY_SEARCH_OPERATION,
+                    }
                 ),
             ),
             # `workspace_id` is set deliberately. This endpoint fronts exactly one

@@ -70,6 +70,10 @@ from omnivia_core_runtime.service.authorization import (
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
+from omnivia_core_runtime.service.handlers.knowledge import (
+    knowledge_search,
+    memory_search,
+)
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
@@ -84,6 +88,8 @@ from omnivia_core_runtime.service.operations import (
 #: string, and so widening the grant is one visible edit rather than a drift.
 WORKSPACE_INSPECT_OPERATION: Final = "workspace.inspect"
 EVIDENCE_SEARCH_OPERATION: Final = "evidence.search"
+KNOWLEDGE_SEARCH_OPERATION: Final = "knowledge.search"
+MEMORY_SEARCH_OPERATION: Final = "memory.search"
 
 #: The purpose each granted operation is served under. There is no purpose registry in
 #: the contract -- purposes are pattern-validated at the boundary and then checked
@@ -107,6 +113,8 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         WORKSPACE_INSPECT_OPERATION: WORKSPACE_INSPECTION_PURPOSE,
         EVIDENCE_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        KNOWLEDGE_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
     }
 )
 
@@ -245,7 +253,7 @@ def local_owner_session(
 def build_application_registry() -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
-    Two entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
+    Four entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
     fails closed on anything else, so this cannot register a name A2 did not freeze,
     and it registers nothing into the probe registry.
 
@@ -258,6 +266,8 @@ def build_application_registry() -> ApplicationOperationRegistry:
     registry = ApplicationOperationRegistry()
     registry.register(WORKSPACE_INSPECT_OPERATION, workspace_inspect)
     registry.register(EVIDENCE_SEARCH_OPERATION, evidence_search)
+    registry.register(KNOWLEDGE_SEARCH_OPERATION, knowledge_search)
+    registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     return registry
 
 
@@ -555,7 +565,9 @@ __all__ = [
     "CHANNEL_TRUST",
     "EVIDENCE_SEARCH_OPERATION",
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
+    "KNOWLEDGE_SEARCH_OPERATION",
     "LOCAL_TRANSPORT_ADAPTER",
+    "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
     "WORKSPACE_INSPECTION_PURPOSE",

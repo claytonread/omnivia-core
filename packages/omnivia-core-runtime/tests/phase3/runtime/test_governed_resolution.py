@@ -1985,3 +1985,64 @@ def test_lane_c_42_a_conflicting_duplicate_source_is_refused_not_collapsed(
                 ),
             )
         )
+
+
+def test_lane_c_43_the_companion_read_pairs_each_record_with_its_stored_microsecond(
+    owned: m2.Owned,
+) -> None:
+    """`read_governed_record_values` adds one integer per record, and adds nothing else.
+
+    The integer is the reason the function exists: `RecordTemporalMetadata.recorded_at` is
+    the contract's millisecond `Timestamp`, so the microseconds 0009 stored -- the ones that
+    separate two versions written in one transaction -- cannot be recovered from the wire
+    document. Both versions below were recorded inside the same millisecond and render
+    identically; only the companion value tells them apart.
+
+    Falsifier one: pair by anything other than position in the same hydration -- re-resolve,
+    re-sort, or match on id -- and a record can be handed another version's instant. Here the
+    two are asserted against `resolve_governed_versions`' own view of the same instant.
+
+    Falsifier two: change what `read_governed_records` returns while adding this. The two
+    are asserted equal, because every existing caller reads that one.
+    """
+    seal_accepted(
+        owned,
+        assembly_id="assembly-us-a",
+        version_id="version-us-a",
+        audit_ref="audit-5",
+        record_id="record-1",
+        recorded_at_us=BASE_US + 2,
+    )
+    seal_accepted(
+        owned,
+        assembly_id="assembly-us-b",
+        version_id="version-us-b",
+        audit_ref="audit-6",
+        record_id="record-2",
+        candidate_assembly="assembly-2",
+        candidate_version="version-2",
+        candidate_audit="audit-7",
+        recorded_at_us=BASE_US + 3,
+    )
+
+    values = governed.read_governed_record_values(
+        owned.connection, workspace_id=WORKSPACE_ID, resolution_instant_us=LATE_US
+    )
+    stored = {
+        version.governed_record_version_id: version.recorded_at_us
+        for version in resolve_governed_versions(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            resolution_instant_us=LATE_US,
+        )
+    }
+
+    assert {value.record.provenance.identity.version for value in values} == set(stored)
+    for value in values:
+        assert value.recorded_at_us == stored[value.record.provenance.identity.version]
+
+    rendered = {value.record.provenance.temporal.recorded_at for value in values}
+    assert len(rendered) == 1  # one millisecond, two microseconds
+    assert len({value.recorded_at_us for value in values}) == 2
+
+    assert tuple(value.record for value in values) == hydrated(owned)
