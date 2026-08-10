@@ -109,6 +109,8 @@ step "Run package boundary tests" python -m pytest tests/test_package_boundaries
 step "Build and install-check all distributions" env PYTHON=python scripts/check-package-builds.sh
 step "Check application contracts" python scripts/check-application-contracts.py
 step "Check generated Host Contract" python scripts/generate-host-contract.py --check
+step "Check generated MCP exposure schemas" \
+  python scripts/generate-mcp-exposure-schemas.py --check
 step "Run application contract tests" python -m pytest tests/contracts -q
 step "Check generated TypeScript contracts" npm run check:application-contracts
 step "Check compatibility facade routes" python scripts/check-facade-routes.py

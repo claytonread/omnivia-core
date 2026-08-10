@@ -491,6 +491,9 @@ def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
     rewritten to describe it rather than deleted: an unexpected module appearing
     beside these is still a change somebody has to make deliberately.
 
+    `generated_schema_projection` is the generated schema projection required by
+    Packet C Amendment 001.
+
     `adapter` keeps its own line. That is the module that imported
     `omnivia_core_cli.client`, and its absence is a fact worth continuing to
     assert now that the package has a legitimate server to be confused with.
@@ -506,6 +509,7 @@ def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
     }
     assert shipped == {
         "__init__.py",
+        "generated_schema_projection.py",
         "manifest.py",
         "managed_start.py",
         "server.py",

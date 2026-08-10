@@ -359,9 +359,69 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
 # is ever exercised at wheel level, which is verbatim the failure the comment
 # above says this exists to catch.
 install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
+  "omnivia_core_mcp.generated_schema_projection" \
   "omnivia_core_mcp.manifest" \
   "omnivia_core_mcp.managed_start" \
   "omnivia_core_mcp.server"
+
+# --- the advertised tool document does not depend on how Core was installed ----
+#
+# The exposure manifest advertises self-contained input and output schemas for
+# every tool. They are a checked-in *generated* module rather than a read of the
+# canonical Application Contract v1 documents precisely because those documents
+# are force-included into the `omnivia-core` wheel and absent from an editable
+# install -- so a manifest that read them would advertise one shape from a wheel
+# and fail from a working tree.
+#
+# That is a claim about two installations, so it is checked against two
+# installations: the isolated wheel venv above, which has the packaged canonical
+# schemas and no repository on its path, and this repository's own editable
+# interpreter, which has the working tree and no packaged schemas. Both dump the
+# whole `tools/list` document -- names, titles, descriptions, annotations,
+# `_meta`, and both schemas with every nested `$defs` -- and the two must be
+# byte-identical. Comparing only the tool names would pass while the schemas
+# differed, which is the one thing this exists to catch.
+echo "--- venv-mcp: the wheel's tool document is byte-identical to the source tree's ---"
+TOOL_DOCUMENT='
+import json
+import sys
+
+from omnivia_core_mcp.generated_schema_projection import SCHEMAS
+from omnivia_core_mcp.manifest import MANIFEST_VERSION, tools
+
+if not SCHEMAS:
+    sys.exit("the generated schema projection is empty")
+sys.stdout.write(
+    json.dumps(
+        {
+            "manifest_version": MANIFEST_VERSION,
+            "tools": [tool.model_dump(mode="json") for tool in tools()],
+        },
+        sort_keys=True,
+        ensure_ascii=True,
+        indent=2,
+    )
+    + "\n"
+)
+'
+# From a temporary cwd with PYTHONPATH unset: the wheel venv must answer from
+# what it installed, not from a repository that happens to be the current
+# directory.
+(
+  cd "${CORE_RESOURCE_CWD:-${WORKDIR}}" 2>/dev/null || cd "${WORKDIR}"
+  unset PYTHONPATH
+  "${WORKDIR}/venv-mcp/bin/python" -c "${TOOL_DOCUMENT}"
+) >"${WORKDIR}/tool-document-wheel.json"
+"${PYTHON}" -c "${TOOL_DOCUMENT}" >"${WORKDIR}/tool-document-source.json"
+
+if ! diff -u "${WORKDIR}/tool-document-source.json" "${WORKDIR}/tool-document-wheel.json"; then
+  echo >&2
+  echo "the isolated MCP wheel advertises a different tool document than the source tree." >&2
+  echo "Regenerate with: python scripts/generate-mcp-exposure-schemas.py" >&2
+  exit 1
+fi
+echo "editable and isolated-wheel tool documents are byte-identical ($(wc -l <"${WORKDIR}/tool-document-wheel.json" | tr -d ' ') lines)."
+echo
 # `omnivia_core_client` is named here, in the *CLI's* venv, and it is not a stray
 # entry. Owner resolution 005 R005-01 moved the transport out of this
 # distribution, so the CLI no longer has any module that imports the client at

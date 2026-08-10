@@ -135,6 +135,16 @@ jobs:
       - name: Check generated Host Contract
         run: python scripts/generate-host-contract.py --check
 
+      # The MCP exposure manifest advertises self-contained JSON Schemas
+      # generated from the canonical Application Contract v1 documents. They are
+      # checked in because the canonical schemas ship in the `omnivia-core`
+      # *wheel* and are absent from an editable install, so reading them at
+      # import would make `tools/list` depend on how Core was installed. This is
+      # the gate that keeps the committed module equal to what the canonical
+      # schemas currently say.
+      - name: Check generated MCP exposure schemas
+        run: python scripts/generate-mcp-exposure-schemas.py --check
+
       - name: Run application contract tests
         env:
           OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT: ${{ vars.OMNIVIA_ACCEPTED_CONTRACT_CHECKPOINT }}
