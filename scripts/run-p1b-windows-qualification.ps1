@@ -171,7 +171,7 @@ if ($null -eq $PythonExe) {
     throw "P1b Windows qualification refused: no CPython $PythonSeries interpreter was found."
 }
 
-$Interpreter = & $PythonExe @PythonArgs -c 'import platform; print(platform.python_implementation() + " " + platform.python_version())'
+$Interpreter = & $PythonExe @PythonArgs -c 'import platform; print(platform.python_implementation(), platform.python_version())'
 $Reported = ($Interpreter | Out-String).Trim()
 if ($Reported -notmatch "^CPython $([regex]::Escape($PythonSeries))\.\d+$") {
     throw "P1b Windows qualification refused: the interpreter reports '$Reported', not CPython $PythonSeries.x."

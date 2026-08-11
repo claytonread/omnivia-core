@@ -255,6 +255,29 @@ def _assert_the_interpreter_is_cpython_of_the_pinned_series(text: str) -> None:
     assert "throw" in active.split("$Reported -notmatch", 1)[1].split("}", 1)[0]
 
 
+def _assert_the_interpreter_probe_is_windows_safe(text: str) -> None:
+    """The version probe avoids embedded quoted strings for Windows PowerShell 5.1.
+
+    Windows PowerShell 5.1 does not correctly reconstruct native command lines
+    with embedded quoted strings in `-c` arguments, so the probe must use Python's
+    multi-argument print form with a comma separator rather than string
+    concatenation with `+`.
+    """
+    active = _active(text)
+    probe_line = next(
+        (line for line in active.splitlines()
+         if "platform.python_implementation()" in line and "-c" in line),
+        None,
+    )
+    assert probe_line is not None, "the interpreter probe was not found"
+    assert "print(platform.python_implementation(), platform.python_version())" in probe_line, (
+        "the interpreter probe must use multi-argument print with comma, not string concatenation"
+    )
+    assert '+ " " +' not in probe_line, (
+        "the interpreter probe contains an embedded quoted string, which fails on Windows PowerShell 5.1"
+    )
+
+
 def _install_commands(text: str) -> tuple[tuple[str, ...], ...]:
     block = re.search(r"\$InstallCommands = @\((.*?)\n\)", _active(text), re.DOTALL)
     assert block is not None, "the runner declares no $InstallCommands list"
@@ -514,6 +537,7 @@ ASSERTERS = (
     _assert_mandatory_parameters,
     _assert_clean_checkout_at_the_expected_commit,
     _assert_the_interpreter_is_cpython_of_the_pinned_series,
+    _assert_the_interpreter_probe_is_windows_safe,
     _assert_exactly_three_installs_and_no_other_download,
     _assert_unfiltered_pytest,
     _assert_the_raw_record_is_private_and_deleted,
@@ -575,6 +599,12 @@ RUNNER_CORRUPTIONS: tuple[tuple[Any, str, str], ...] = (
         _assert_the_interpreter_is_cpython_of_the_pinned_series,
         "$Reported -notmatch \"^CPython $([regex]::Escape($PythonSeries))\\.\\d+$\"",
         "$Reported -eq ''",
+    ),
+    # The probe form: embedded quoted string, which fails on Windows PowerShell 5.1.
+    (
+        _assert_the_interpreter_probe_is_windows_safe,
+        "print(platform.python_implementation(), platform.python_version())",
+        "print(platform.python_implementation() + \" \" + platform.python_version())",
     ),
     # The install list: an extra install, a reordering, a self-upgrade, and a
     # pip invocation outside the list.
