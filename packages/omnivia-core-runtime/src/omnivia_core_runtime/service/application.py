@@ -81,6 +81,7 @@ from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
     OperationContext,
     OperationError,
+    OperationHandler,
     failure,
     success,
 )
@@ -111,6 +112,12 @@ CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
 #: no purpose behind it would be refused by check 11 at the first request. A lane
 #: widening the grant adds the operation here in the same edit or its own operation
 #: cannot be served.
+#:
+#: This map covers the *read* operations only, and deliberately so: it is consulted by
+#: `local_owner_session`, which refuses a side-effecting operation outright. The
+#: mutating half of the catalogue is declared by `service.mutation.MUTATION_PURPOSES`,
+#: where a purpose is a fact bound into a server-issued grant rather than a session
+#: allowlist entry, and where nothing may be served without one.
 WORKSPACE_INSPECTION_PURPOSE: Final = "workspace_inspection"
 KNOWLEDGE_RETRIEVAL_PURPOSE: Final = "knowledge_retrieval"
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
@@ -256,7 +263,9 @@ def local_owner_session(
     )
 
 
-def build_application_registry() -> ApplicationOperationRegistry:
+def build_application_registry(
+    *, additional: Mapping[str, OperationHandler] | None = None
+) -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
     Six entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
@@ -268,6 +277,18 @@ def build_application_registry() -> ApplicationOperationRegistry:
     handler is a claim about what this build can *serve*, and the grant is a claim about
     what the local owner may *ask for*. Deriving either from the other would make a
     mistake in one invisible in the other.
+
+    **`additional` is a test seam and is production-inert.** A lane building the
+    mutation path needs a registry holding a handler this build does not ship, and the
+    alternative -- reaching in and rebinding a module attribute -- makes the production
+    result depend on whatever a previous test left behind. Passing the extra
+    registrations in keeps the default result exactly the six read handlers, whoever
+    called this function before; the production wiring in `service/main.py` states no
+    argument and therefore cannot acquire one by accident.
+
+    Nothing is relaxed for an injected handler: it goes through the same `register`,
+    so a name outside the frozen catalogue and a name already registered here both fail
+    closed, and a caller cannot use this to *replace* a shipped read handler.
     """
     registry = ApplicationOperationRegistry()
     registry.register(WORKSPACE_INSPECT_OPERATION, workspace_inspect)
@@ -276,6 +297,8 @@ def build_application_registry() -> ApplicationOperationRegistry:
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    for operation, handler in (additional or {}).items():
+        registry.register(operation, handler)
     return registry
 
 

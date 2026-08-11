@@ -82,7 +82,12 @@ def owned(tmp_path: Path) -> Iterator[m2.Owned]:
     """A workspace at 0012 with one evidence artifact and one running projection run."""
     path = tmp_path / "workspace.sqlite"
     materialise_phase0_baseline(path)
-    m2.bootstrap_and_migrate(path)
+    # Restricted to the accepted prefix through 0012, the same way every earlier
+    # migration acceptance file narrows itself once a successor lands. Without it the
+    # inventory and `user_version` assertions below would silently become claims about
+    # whatever migration happens to be last on disk.
+    with m2.migration_catalogue_through(MIGRATION_VERSION):
+        m2.bootstrap_and_migrate(path)
     holder = m2.take_ownership(path)
     m2.seed_chain(holder)
     m5.seed_ledger(holder)
@@ -116,7 +121,12 @@ def count(connection: sqlite3.Connection) -> int:
 
 
 def test_lb_m1_0012_is_the_unique_consecutive_successor_to_0011() -> None:
-    migrations = load_migrations()
+    """The accepted prefix through 0012, not the whole of what is on disk.
+
+    A legitimate migration after 0012 is allowed to exist; what this states is that
+    1..12 is consecutive and that 0012 is the last of them.
+    """
+    migrations = [m for m in load_migrations() if m.version <= MIGRATION_VERSION]
     assert [m.version for m in migrations] == list(range(1, 13))
     assert migrations[-1].name == MIGRATION_NAME
     assert MIGRATION.checksum == hashlib.sha256(MIGRATION.sql.encode()).hexdigest()
@@ -205,8 +215,12 @@ def test_lb_m4b_no_statement_carries_a_comment_inside_its_body(
     canonical = sqlite3.connect(":memory:")
     try:
         canonical.executescript(m2.phase0_baseline_sql())
+        # The prefix through 0012, because that is what the fixture's workspace carries:
+        # comparing it against a catalogue that also holds a later migration would
+        # report the successor's objects as drift.
         for migration in load_migrations():
-            canonical.executescript(migration.sql)
+            if migration.version <= MIGRATION_VERSION:
+                canonical.executescript(migration.sql)
         assert live == {
             (str(row[0]), str(row[1])): " ".join(str(row[2] or "").split())
             for row in canonical.execute(
