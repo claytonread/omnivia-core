@@ -44,9 +44,9 @@ platform, actually Windows.
 The provider rules are hypervisor-neutral by construction. The facts PowerShell
 collects are the generic CIM identity strings and an optional generic guest-tools
 signal; which hypervisor those strings name is decided here, in
-`RECOGNIZED_PROVIDERS`, rather than baked into the collector. Parallels Desktop
-and VMware are what this lane recognizes today, and adding a third is one entry
-in that tuple.
+`RECOGNIZED_PROVIDERS`, rather than baked into the collector. Parallels Desktop,
+VMware and QEMU -- the provider behind the local UTM guest -- are what this lane
+recognizes today, and adding a fourth is one entry in that tuple.
 
 What the challenge does, and what it does not.
 ----------------------------------------------
@@ -102,16 +102,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: Bumped whenever the shape of the evidence or the meaning of a check changes,
 #: so a stored record says which rules produced its verdict.
 #:
-#: `5` is the hypervisor-neutral shape. `4` carried VMware-named fields --
-#: `host.vmware_tools_service` and `host.vmware_tools_version` -- and treated
-#: `host.hypervisor_present` as recorded-but-uninterpreted; `5` carries the
-#: generic `host.guest_tools_service` and `host.guest_tools_version`, requires
-#: the hypervisor flag to be true, and requires a provider in
-#: `RECOGNIZED_PROVIDERS`. `3` and earlier described a hosted GitHub Actions job
-#: and required fields -- the run id, the workflow reference, the pull request --
-#: that no longer exist. None of those is a later record with fields missing, so
-#: the version is compared by value rather than by range.
-CHECKER_VERSION = "5"
+#: `6` adds QEMU to `RECOGNIZED_PROVIDERS`, so the local UTM guest -- which
+#: reports `QEMU` as its manufacturer and `QEMU Virtual Machine` as its model --
+#: qualifies, and so a `5` record is one decided under a provider policy that
+#: would have refused it. `5` was the hypervisor-neutral shape: the generic
+#: `host.guest_tools_service` and `host.guest_tools_version` in place of `4`'s
+#: VMware-named `host.vmware_tools_service` and `host.vmware_tools_version`, a
+#: `host.hypervisor_present` required to be true rather than left
+#: recorded-but-uninterpreted, and a provider drawn from `RECOGNIZED_PROVIDERS`.
+#: `3` and earlier described a hosted GitHub Actions job and required fields --
+#: the run id, the workflow reference, the pull request -- that no longer exist.
+#: None of those is a later record with fields missing, so the version is
+#: compared by value rather than by range.
+CHECKER_VERSION = "6"
 
 #: This lane's own identity, and the producer that is allowed to have made the
 #: evidence. `local-windows-vm` is the only value: a record claiming any other
@@ -421,10 +424,18 @@ _LOCAL_VM_CONTEXT: tuple[tuple[str, str, Callable[[Any], bool]], ...] = (
 #: distinctive -- `VMware, Inc.`, `VMware20,1` on current hardware versions,
 #: `VMware Virtual Platform` on older ones.
 #:
+#: QEMU is the provider behind the local UTM guest this lane also runs on: that
+#: guest reports `QEMU` as the manufacturer, `QEMU Virtual Machine` as the model
+#: and runs a `QEMU Guest Agent` service. `utm` is deliberately not a token --
+#: UTM is the macOS front end and writes no CIM identity of its own, so a rule
+#: naming it would name something the guest never says. Nor is the guest's BIOS
+#: vendor a signal: it reports `EFI Development Kit II / OVMF`, which is the
+#: firmware several hypervisors boot rather than an identity of any one of them.
+#:
 #: A hypervisor this tuple does not name is a NO-GO rather than a silent pass:
-#: Hyper-V's `Microsoft Corporation` / `Virtual Machine`, VirtualBox, QEMU and
-#: Xen are all real hypervisors this lane has not qualified anything on.
-RECOGNIZED_PROVIDERS: tuple[str, ...] = ("parallels", "vmware")
+#: Hyper-V's `Microsoft Corporation` / `Virtual Machine`, VirtualBox and Xen are
+#: all real hypervisors this lane has not qualified anything on.
+RECOGNIZED_PROVIDERS: tuple[str, ...] = ("parallels", "vmware", "qemu")
 
 #: The five places a guest may name its provider. The three CIM identity strings
 #: are what a stock guest reports with nothing installed, and the two guest-tools
@@ -1240,16 +1251,17 @@ def recognized_provider(host: Mapping[str, Any]) -> str:
 
     A substring match, folded to lowercase, over the five fields a guest can name
     its provider in. That is deliberately loose on the *shape* of the string and
-    exact on the *token*: Parallels and VMware each spell their identity several
-    ways across versions and across the manufacturer, model and BIOS properties,
-    while `parallels` and `vmware` appearing at all in a CIM identity string is
-    not something a physical machine or another hypervisor does.
+    exact on the *token*: Parallels, VMware and QEMU each spell their identity
+    several ways across versions and across the manufacturer, model and BIOS
+    properties, while `parallels`, `vmware` or `qemu` appearing at all in a CIM
+    identity string is not something a physical machine or another hypervisor
+    does.
 
     The tools fields are read on the same terms as the identity fields rather
     than as a separate rule. `guest_tools_service` carries the service's display
-    name, so a guest running Parallels Tools or VMware Tools names its provider
-    there too -- but a guest with no tools at all is fully identified by CIM
-    alone, which is why nothing here requires them.
+    name, so a guest running Parallels Tools, VMware Tools or the QEMU Guest
+    Agent names its provider there too -- but a guest with no tools at all is
+    fully identified by CIM alone, which is why nothing here requires them.
     """
     for field in (*_PROVIDER_IDENTITY_FIELDS, *_GUEST_TOOLS_FIELDS):
         value = host.get(field)

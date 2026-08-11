@@ -224,9 +224,9 @@ try {
     # Raw and generic. These are the properties as the guest reports them, with
     # no hypervisor named anywhere in this file: Parallels writes 'Parallels
     # International GmbH' / 'Parallels Virtual Platform' / 'Parallels Software
-    # International Inc.' across the three, VMware writes its own strings, and
-    # which of those is acceptable is the checker's decision rather than this
-    # collector's.
+    # International Inc.' across the three, VMware and QEMU write their own
+    # strings, and which of those is acceptable is the checker's decision rather
+    # than this collector's.
     $OperatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem
     $ComputerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
     $Bios = Get-CimInstance -ClassName Win32_BIOS
@@ -234,17 +234,19 @@ try {
     # A guest-tools signal if there is one, and two empty strings if there is
     # not. Deliberately not a lookup of one service name: 'VMTools' is VMware's,
     # Parallels ships 'prl_tools_service' on some builds and 'prl_tools' on
-    # others, and a single guessed name is exactly the uncertain dependency that
-    # makes a real guest look unidentified. So the whole service list is scanned
-    # for anything whose service name or display name names a virtualization
-    # vendor, and the *display* name is what is recorded -- 'Parallels Tools
-    # Service' and 'VMware Tools' name their vendor where 'prl_tools' and
-    # 'VMTools' do not.
+    # others, a QEMU guest runs 'QEMU-GA' beside SPICE's 'vdservice' and
+    # 'spice-webdavd', and a single guessed name is exactly the uncertain
+    # dependency that makes a real guest look unidentified. So the whole service
+    # list is scanned for anything whose service name or display name names a
+    # virtualization vendor or guest-agent stack, and the *display* name is what
+    # is recorded -- 'Parallels Tools Service', 'VMware Tools' and 'QEMU Guest
+    # Agent' name their vendor where 'prl_tools', 'VMTools' and 'vdservice' do
+    # not.
     #
     # Nothing about the verdict depends on finding one. A guest whose CIM
     # identity above already names its provider qualifies with no tools
     # installed at all.
-    $GuestToolsPattern = 'parallels|vmware|virtualbox|^prl_|^vm3dservice|^vmtools|^vboxservice'
+    $GuestToolsPattern = 'parallels|vmware|virtualbox|qemu|spice|^prl_|^vm3dservice|^vmtools|^vboxservice|^vdservice'
     $ToolsService = @(
         Get-CimInstance -ClassName Win32_Service |
             Where-Object { $_.Name -match $GuestToolsPattern -or $_.DisplayName -match $GuestToolsPattern }

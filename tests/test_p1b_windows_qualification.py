@@ -445,11 +445,12 @@ def _assert_the_guest_tools_signal_is_generic_and_optional(text: str) -> None:
     """A guest-tools signal collected without betting on one service name.
 
     Parallels ships its tools service as `prl_tools_service` on some builds and
-    `prl_tools` on others, VMware ships `VMTools`, and a lookup of any single one
-    of those makes a real guest look unidentified when it happens to be running
-    another. So the whole service list is scanned and matched on a pattern, and
-    the *display* name is recorded, because that is the string that names the
-    vendor.
+    `prl_tools` on others, VMware ships `VMTools`, a QEMU guest runs `QEMU-GA`
+    beside SPICE's `vdservice` and `spice-webdavd`, and a lookup of any single
+    one of those makes a real guest look unidentified when it happens to be
+    running another. So the whole service list is scanned and matched on a
+    pattern, and the *display* name is recorded, because that is the string that
+    names the vendor.
 
     Optional is the other half: nothing in the runner may make the run depend on
     finding tools, since a guest whose CIM identity already names its provider
@@ -474,6 +475,38 @@ def _assert_the_guest_tools_signal_is_generic_and_optional(text: str) -> None:
     assert "throw" not in active.split("$GuestToolsPattern", 1)[1].split("$Facts", 1)[0], (
         "a guest without tools cannot finish the run"
     )
+
+
+#: The services the local UTM guest actually runs, as (service name, display
+#: name). The QEMU guest agent names its vendor through both; the two SPICE
+#: services name the guest-agent stack rather than the hypervisor, which is why
+#: the pattern has to reach them by name as well.
+UTM_GUEST_SERVICES: tuple[tuple[str, str], ...] = (
+    ("QEMU-GA", "QEMU Guest Agent"),
+    ("vdservice", "SPICE VDAgent"),
+    ("spice-webdavd", "Spice webdav proxy"),
+)
+
+
+@pytest.mark.parametrize(
+    ("service", "display"), UTM_GUEST_SERVICES, ids=[name for name, _ in UTM_GUEST_SERVICES]
+)
+def test_the_tools_pattern_matches_the_services_the_utm_guest_runs(
+    service: str, display: str
+) -> None:
+    """The collector's pattern, run against the guest's real service list.
+
+    The guard above proves the pattern names every recognized provider; this
+    proves it matches the strings a real QEMU/SPICE guest reports, which is the
+    thing the collector actually does. `-match` is case-insensitive and
+    unanchored in PowerShell, so the pattern is applied the same way here.
+    """
+    pattern = re.search(r"\$GuestToolsPattern = '([^']*)'", _active(_text()))
+    assert pattern is not None
+
+    assert re.search(pattern.group(1), service, re.IGNORECASE) or re.search(
+        pattern.group(1), display, re.IGNORECASE
+    ), f"the collector would not record {display!r}"
 
 
 ASSERTERS = (
@@ -653,7 +686,7 @@ RUNNER_CORRUPTIONS: tuple[tuple[Any, str, str], ...] = (
     # vendor, and made mandatory.
     (
         _assert_the_guest_tools_signal_is_generic_and_optional,
-        "$GuestToolsPattern = 'parallels|vmware|virtualbox|^prl_|^vm3dservice|^vmtools|^vboxservice'",
+        "$GuestToolsPattern = 'parallels|vmware|virtualbox|qemu|spice|^prl_|^vm3dservice|^vmtools|^vboxservice|^vdservice'",
         "$GuestToolsPattern = '^prl_tools_service'",
     ),
     (
@@ -739,23 +772,26 @@ def test_the_runner_and_the_checker_agree_about_every_path_and_pin() -> None:
     )
 
 
-def test_the_schema_version_moved_for_the_hypervisor_neutral_shape() -> None:
+def test_the_schema_version_moved_for_the_qemu_provider_policy() -> None:
     """Each redesign changed what a record means, so a stored one has to say which.
 
     `3` and earlier described a hosted GitHub Actions job and required fields --
     the run id, the workflow reference, the pull request -- that no longer exist.
     `4` was the two-phase local-VM lane with VMware-named fields and an
-    uninterpreted hypervisor flag. `5` is the hypervisor-neutral shape: generic
+    uninterpreted hypervisor flag. `5` was the hypervisor-neutral shape: generic
     guest-tools fields, a hypervisor flag that must be true, and a provider drawn
-    from `RECOGNIZED_PROVIDERS`. None of those is a later record with fields
-    missing, which is why the version is compared by value and why this pins that
-    it moved.
+    from `RECOGNIZED_PROVIDERS`. `6` is that shape with QEMU in that tuple and in
+    the provider rule the verdict states, so a `5` record was decided under a
+    policy that would have refused the guest a `6` record may name. None of those
+    is a later record with fields missing, which is why the version is compared
+    by value and why this pins that it moved.
     """
-    assert checker.CHECKER_VERSION == "5"
-    assert int(checker.CHECKER_VERSION) > 4
+    assert checker.CHECKER_VERSION == "6"
+    assert int(checker.CHECKER_VERSION) > 5
     for retired in ("vmware_tools_service", "vmware_tools_version"):
         assert retired not in checker.FACT_KEYS, f"{retired} is a version-4 field"
         assert not any(retired in field for field in checker.REQUIRED_FIELDS)
+    assert "qemu" in checker.RECOGNIZED_PROVIDERS, "version 6 is the tuple QEMU is in"
 
 
 # ---------------------------------------------------------------------------
@@ -857,9 +893,40 @@ VM_FACTS: dict[str, str] = {
 }
 
 
-def test_the_synthetic_facts_cover_the_checkers_contract_exactly() -> None:
+#: What PowerShell hands the checker on the local UTM guest, exactly as that
+#: guest reports itself: Windows 11 Home on ARM64, `QEMU` as the manufacturer and
+#: `QEMU Virtual Machine` as the model, the OVMF firmware as the BIOS vendor, and
+#: the QEMU guest agent as the tools service it runs beside SPICE's.
+#:
+#: Nothing here is invented. `UTM` appears nowhere because the guest never says
+#: it -- UTM is the macOS front end and writes no CIM identity -- and the BIOS
+#: vendor names the firmware rather than the hypervisor, which is why the
+#: identity rests on the manufacturer, the model and the agent. The tools version
+#: is empty because a service whose binary cannot be resolved leaves it so, and
+#: the toolchain and checkout fields are the baseline's: this exercises the host
+#: rules, not a real run's interpreter.
+UTM_FACTS: dict[str, str] = {
+    **VM_FACTS,
+    "windows_caption": "Microsoft Windows 11 Home",
+    "windows_version": "10.0.26200",
+    "windows_build": "26200",
+    "computer_manufacturer": "QEMU",
+    "computer_model": "QEMU Virtual Machine",
+    "bios_vendor": "EFI Development Kit II / OVMF",
+    "guest_tools_service": "QEMU Guest Agent",
+    "guest_tools_version": "",
+}
+
+#: What `platform.machine()` reports on that guest, which is not the baseline's.
+UTM_ARCHITECTURE = "ARM64"
+
+
+@pytest.mark.parametrize("facts", [VM_FACTS, UTM_FACTS], ids=["parallels", "utm-qemu"])
+def test_the_synthetic_facts_cover_the_checkers_contract_exactly(
+    facts: dict[str, str],
+) -> None:
     """A fact added to the checker and not to these tests would go unexercised."""
-    assert set(VM_FACTS) == set(checker.FACT_KEYS)
+    assert set(facts) == set(checker.FACT_KEYS)
 
 
 @pytest.fixture
@@ -1145,7 +1212,8 @@ UNIDENTIFIED_HOST: dict[str, str] = {
 #: reports itself through all three CIM properties and through its tools service.
 #: VMware is retained because a guest reporting it is as unambiguously a local VM
 #: -- `VMware20,1` on current hardware versions, `VMware Virtual Platform` on
-#: older ones.
+#: older ones. QEMU is the provider behind the local UTM guest, and the strings
+#: below are exactly the ones that guest reports.
 PROVIDER_IDENTITIES: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("parallels-manufacturer", "parallels", {"computer_manufacturer": "Parallels International GmbH"}),
     ("parallels-model", "parallels", {"computer_model": "Parallels Virtual Platform"}),
@@ -1156,6 +1224,9 @@ PROVIDER_IDENTITIES: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("vmware-model-legacy", "vmware", {"computer_model": "VMware Virtual Platform"}),
     ("vmware-bios", "vmware", {"bios_vendor": "VMware, Inc."}),
     ("vmware-tools", "vmware", {"guest_tools_service": "VMware Tools"}),
+    ("qemu-manufacturer", "qemu", {"computer_manufacturer": "QEMU"}),
+    ("qemu-model", "qemu", {"computer_model": "QEMU Virtual Machine"}),
+    ("qemu-tools", "qemu", {"guest_tools_service": "QEMU Guest Agent"}),
 )
 
 #: Windows machines this lane has qualified nothing on. Physical hardware is the
@@ -1169,14 +1240,20 @@ UNRECOGNIZED_HOSTS: tuple[tuple[str, dict[str, str]], ...] = (
     ("hyper-v", {"computer_manufacturer": "Microsoft Corporation", "computer_model": "Virtual Machine"}),
     ("virtualbox", {"computer_manufacturer": "innotek GmbH", "computer_model": "VirtualBox",
                     "bios_vendor": "innotek GmbH", "guest_tools_service": "VirtualBox Guest Additions Service"}),
-    ("qemu-kvm", {"computer_manufacturer": "QEMU", "computer_model": "Standard PC (Q35 + ICH9, 2009)",
-                  "bios_vendor": "SeaBIOS"}),
     ("xen", {"computer_manufacturer": "Xen", "computer_model": "HVM domU", "bios_vendor": "Xen"}),
     ("aws-nitro", {"computer_manufacturer": "Amazon EC2", "computer_model": "c5.xlarge",
                    "bios_vendor": "Amazon EC2"}),
+    # The UTM guest's own BIOS vendor, on a host that names nothing else. OVMF is
+    # the firmware several hypervisors boot -- a Xen or VirtualBox guest reports
+    # it too -- so it is not an identity, and the QEMU cases above qualify on the
+    # manufacturer, the model and the agent rather than on this.
+    ("ovmf-firmware-alone", {"bios_vendor": "EFI Development Kit II / OVMF"}),
     # Tools present but naming nothing: a service string that identifies no
-    # vendor is not an identity, however filled in it looks.
+    # vendor is not an identity, however filled in it looks. `SPICE VDAgent` is
+    # the second half of the same point -- SPICE is a display protocol several
+    # stacks speak, and the UTM guest is identified by QEMU rather than by it.
     ("tools-naming-nothing", {"guest_tools_service": "Guest Agent", "guest_tools_version": "1.2.3"}),
+    ("spice-agent-alone", {"guest_tools_service": "SPICE VDAgent", "guest_tools_version": "0.10.0"}),
 )
 
 
@@ -1197,9 +1274,11 @@ def test_any_one_provider_signal_establishes_the_guest_identity(
     Parallels writes its name into the manufacturer, the model and the BIOS
     vendor, and a guest running its tools says so a fourth time; VMware does the
     same with its own strings, and spells the model differently across hardware
-    versions. Requiring all four would fail real configurations, so any one is
-    enough -- and each one is proven enough here, on its own, against a host that
-    otherwise names nothing.
+    versions. QEMU names itself in two of the three CIM properties and in its
+    guest agent, and in no third one: its BIOS vendor is the OVMF firmware, which
+    is why there is no `qemu-bios` case here. Requiring all four would fail real
+    configurations, so any one is enough -- and each one is proven enough here,
+    on its own, against a host that otherwise names nothing.
     """
     host = {**UNIDENTIFIED_HOST, **signal}
     evidence = _with_host(_evidence(qualifying_junit), **host)
@@ -1218,9 +1297,12 @@ def test_a_host_that_names_no_recognized_provider_is_a_finding(
 ) -> None:
     """What was authorised is a local VM of a recognized provider.
 
-    Not any Windows machine, and not any hypervisor: Hyper-V, VirtualBox, QEMU,
-    Xen and a cloud instance are all real virtualization this lane has qualified
-    nothing on, and each is refused by the same rule that refuses bare hardware.
+    Not any Windows machine, and not any hypervisor: Hyper-V, VirtualBox, Xen and
+    a cloud instance are all real virtualization this lane has qualified nothing
+    on, and each is refused by the same rule that refuses bare hardware. The two
+    generic signals -- OVMF firmware and a SPICE agent -- are refused by it too:
+    both appear on hypervisors this lane does not recognize, so neither names a
+    provider on its own.
     """
     merged = {**UNIDENTIFIED_HOST, **host}
     evidence = _with_host(_evidence(qualifying_junit), **merged)
@@ -1275,6 +1357,31 @@ def test_an_unknown_hypervisor_is_refused_even_with_the_flag_set(
 
     assert any(NO_PROVIDER in finding for finding in findings)
     assert not any("host.hypervisor_present" in finding for finding in findings)
+
+
+def test_the_observed_utm_qemu_guest_qualifies_on_the_identity_it_reports(
+    windows_vm: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The local UTM guest's whole fact set, through the ingestion path it uses.
+
+    The individual QEMU signals are proven above against a host that names
+    nothing else; this is the profile as collected -- Windows 11 Home, ARM64,
+    `QEMU` / `QEMU Virtual Machine`, the OVMF firmware, the hypervisor flag true
+    and the QEMU guest agent with no version -- read out of a facts file and
+    required to produce no findings at all rather than merely no provider one.
+    """
+    monkeypatch.setattr(checker.platform, "machine", lambda: UTM_ARCHITECTURE)
+    facts, error = checker.load_facts(_facts_file(tmp_path, **UTM_FACTS))
+    assert error == ""
+
+    junit = tmp_path / "junit.xml"
+    junit.write_text(_render_junit(_qualifying_cases()), encoding="utf-8")
+    evidence = _evidence(junit, facts=facts)
+
+    assert _findings(evidence, junit) == []
+    assert evidence["host"]["architecture"] == UTM_ARCHITECTURE
+    assert evidence["host"]["hypervisor_present"] == "true"
+    assert checker.recognized_provider(evidence["host"]) == "qemu"
 
 
 def test_a_guest_with_no_tools_qualifies_on_its_cim_identity_alone(
@@ -2079,10 +2186,10 @@ def test_a_requested_commit_that_is_not_the_checked_out_one_is_a_finding(
 
 def test_the_recorded_checker_version_is_pinned(qualifying_junit: Path) -> None:
     findings = _findings(
-        _mutate(_evidence(qualifying_junit), "checker_version", "4"), qualifying_junit
+        _mutate(_evidence(qualifying_junit), "checker_version", "5"), qualifying_junit
     )
 
-    assert any("checker_version is '4', not '5'" in finding for finding in findings)
+    assert any("checker_version is '5', not '6'" in finding for finding in findings)
 
 
 @pytest.mark.parametrize("package", checker.REQUIRED_PACKAGES)
@@ -2153,10 +2260,10 @@ def _produce(
     return status, sanitized, evidence
 
 
-#: A complete fact set for the other recognized provider. `PROVIDER_IDENTITIES`
-#: proves each VMware string on its own; this proves a whole VMware guest through
-#: both phases, so retaining that provider is a working path rather than a rule
-#: nothing exercises end to end.
+#: A complete fact set for the other recognized providers. `PROVIDER_IDENTITIES`
+#: proves each string on its own; the parametrization below proves a whole guest
+#: of each through both phases, so every recognized provider is a working path
+#: rather than a rule nothing exercises end to end.
 VMWARE_FACTS: dict[str, str] = {
     **VM_FACTS,
     "computer_manufacturer": "VMware, Inc.",
@@ -2166,27 +2273,56 @@ VMWARE_FACTS: dict[str, str] = {
     "guest_tools_version": "12.5.0.24276846",
 }
 
+#: (provider, what `platform.machine()` reports there, the guest's facts). The
+#: Parallels baseline is the `VM_FACTS` every other test runs on; these are the
+#: two that would otherwise only be exercised as isolated strings.
+OTHER_GUESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
+    ("vmware", WINDOWS_PLATFORM["machine"], VMWARE_FACTS),
+    ("qemu", UTM_ARCHITECTURE, UTM_FACTS),
+)
 
-def test_a_guest_of_either_recognized_provider_qualifies_through_both_phases(
+
+@pytest.mark.parametrize(
+    ("provider", "architecture", "facts"),
+    OTHER_GUESTS,
+    ids=[entry[0] for entry in OTHER_GUESTS],
+)
+def test_a_guest_of_any_recognized_provider_qualifies_through_both_phases(
+    provider: str,
+    architecture: str,
+    facts: dict[str, str],
     qualifying_junit: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The VMware path, whole: produced on the guest and verified offline.
+    """Each path, whole: produced on the guest and verified offline.
 
     The GO line is asserted too, because it is the one place the lane says out
     loud which provider it accepted -- and a message that named a vendor
-    regardless of the facts would be the same defect as a rule that did.
+    regardless of the facts would be the same defect as a rule that did. The
+    stored verdict is asserted to list the providers that were recognized when it
+    was written, which is what makes a `6` record readable later.
     """
+    monkeypatch.setattr(checker.platform, "machine", lambda: architecture)
+
     status, sanitized, evidence = _produce(
-        tmp_path, qualifying_junit, facts=_facts_file(tmp_path, **VMWARE_FACTS)
+        tmp_path, qualifying_junit, facts=_facts_file(tmp_path, **facts)
     )
 
     assert status == 0
+    recorded = json.loads(evidence.read_text(encoding="utf-8"))
+    assert recorded["checker_version"] == "6"
+    assert recorded["host"]["architecture"] == architecture
+    assert recorded["verdict"]["expected"]["local_vm_provider"]["recognized"] == [
+        "parallels",
+        "vmware",
+        "qemu",
+    ]
+
     monkeypatch.undo()
     assert _verify(sanitized, evidence) == 0
-    assert "'vmware'" in capsys.readouterr().out
+    assert f"'{provider}'" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("elsewhere", ["Darwin", "Linux"])
