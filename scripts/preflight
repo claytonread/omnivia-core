@@ -121,7 +121,9 @@ step "Run compatibility root resolver and installed-root smoke" \
 step "Verify Phase 0 baseline" env PYTHON=python scripts/check-core-baseline.sh
 step "Run full repository test suite" python -m pytest services tests \
   packages/omnivia-core-runtime/tests \
-  packages/omnivia-core-client/tests -q
+  packages/omnivia-core-cli/tests \
+  packages/omnivia-core-client/tests \
+  packages/omnivia-core-mcp/tests -q
 step "Run benchmark tests" python -m pytest benchmarks/tests -q
 step_from_workflow "Run Ruff"
 step_from_workflow "Run strict mypy"
