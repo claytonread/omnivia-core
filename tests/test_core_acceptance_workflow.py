@@ -948,6 +948,32 @@ def test_the_generated_mcp_schema_gate_runs_locally_and_on_the_gate() -> None:
     )
 
 
+def _preflight_full_suite_command() -> str:
+    """The `step "Run full repository test suite" ...` invocation, joined.
+
+    Not a YAML step: `scripts/preflight` is a shell script, so this mirrors the
+    workflow helpers' backslash-continuation joining rather than reusing
+    `_commands`, which only reads workflow-shaped `run:` blocks.
+    """
+    lines = PREFLIGHT.read_text(encoding="utf-8").splitlines()
+    prefix = 'step "Run full repository test suite" '
+    start = next(index for index, line in enumerate(lines) if line.startswith(prefix))
+    parts = [lines[start][len(prefix) :].rstrip("\\").strip()]
+    index = start
+    while lines[index].rstrip().endswith("\\"):
+        index += 1
+        parts.append(lines[index].rstrip("\\").strip())
+    return " ".join(parts)
+
+
+def test_preflight_full_suite_matches_the_workflow_path_set() -> None:
+    """`./scripts/preflight` used to omit the CLI and MCP package test trees, so a
+    green local run certified less than `Core acceptance`'s `Run full repository
+    test suite` step actually covers. This pins the local invocation to the exact
+    command the workflow runs, in the same order."""
+    assert _preflight_full_suite_command() == dict(GATE_STEPS)[FULL_SUITE_STEP]
+
+
 RESOLVER_SMOKE_STEP = "Run compatibility root resolver and installed-root smoke"
 
 
@@ -1517,6 +1543,18 @@ def test_the_tls_conformance_workflow_is_manual_only() -> None:
     assert triggers == ["workflow_dispatch"], (
         f"the hosted TLS conformance workflow must be dispatch-only, found: {triggers}"
     )
+
+
+def test_the_tls_conformance_workflow_has_safe_concurrency() -> None:
+    """Two operators dispatching the same candidate, or one operator re-dispatching
+    before the first run lands, both stack against the same disposable host. This
+    pins the workflow-level `concurrency:` to the exact safe shape rather than
+    leaving the lane to queue or collide silently."""
+    concurrency = _block(_significant(_hosted_text()), "concurrency")
+    assert _entry(concurrency, "group") == (
+        "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+    )
+    assert _entry(concurrency, "cancel-in-progress") == "true"
 
 
 def test_the_hosted_run_is_pinned_to_the_exact_candidate() -> None:
