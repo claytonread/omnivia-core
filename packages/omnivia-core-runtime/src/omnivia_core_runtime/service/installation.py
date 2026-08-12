@@ -415,6 +415,7 @@ class InstallationApplicationService:
                     execution_id=f"iex-{uuid.uuid4()}",
                     grant_id=grant.grant_id,
                     required_role=grant.required_role,
+                    settlement_guard=lambda: self._require_grant(prepared),
                 )
             except InstallationStoreError as error:
                 # A concurrent equivalent execution can settle after this
@@ -621,6 +622,7 @@ class InstallationApplicationService:
                 execution_id=f"iex-{uuid.uuid4()}",
                 grant_id=grant.grant_id,
                 required_role=grant.required_role,
+                settlement_guard=lambda: self._require_grant(prepared),
             )
         except InstallationStoreError as error:
             raise InstallationSeamFault() from error
@@ -650,6 +652,7 @@ class InstallationApplicationService:
                 execution_id=f"iex-{uuid.uuid4()}",
                 grant_id=grant.grant_id,
                 required_role=grant.required_role,
+                settlement_guard=lambda: self._require_grant(prepared),
             )
         except InstallationStoreError as error:
             raise InstallationSeamFault() from error

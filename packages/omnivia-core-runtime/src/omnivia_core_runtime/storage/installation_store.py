@@ -362,12 +362,14 @@ class InstallationStore:
         execution_id: str,
         grant_id: str,
         required_role: str,
+        settlement_guard: Callable[[], None],
     ) -> InstallationAllocation:
         """Record a recoverable filesystem failure and consume its grant."""
         with self._transaction(authority) as connection:
             allocation = self._required_allocation(connection, allocation_id)
             if allocation.state is AllocationState.ACTIVE:
                 raise InstallationStoreError("an active allocation cannot fail")
+            settlement_guard()
             now_us = self._now_us()
             connection.execute(
                 "UPDATE omnivia_installation_allocations "
@@ -389,6 +391,7 @@ class InstallationStore:
                 execution_kind="executed",
                 recorded_at_us=now_us,
             )
+            settlement_guard()
             return self._required_allocation(connection, allocation_id)
 
     def settle_allocation_success(
@@ -403,12 +406,14 @@ class InstallationStore:
         execution_id: str,
         grant_id: str,
         required_role: str,
+        settlement_guard: Callable[[], None],
     ) -> InstallationOutcome:
         """Activate the exact target and atomically store result and grant use."""
         with self._transaction(authority) as connection:
             allocation = self._required_allocation(connection, allocation_id)
             if allocation.state is AllocationState.ACTIVE:
                 raise InstallationStoreError("allocation is already active")
+            settlement_guard()
             now_us = self._now_us()
             generation = self._authority.fencing_generation
             connection.execute(
@@ -467,6 +472,7 @@ class InstallationStore:
             outcome = self._outcome_for_claim(connection, active.claim_id)
             if outcome is None:  # pragma: no cover - same-transaction invariant
                 raise InstallationStoreError("installation outcome was not persisted")
+            settlement_guard()
             return outcome
 
     def record_replay_grant(
@@ -477,6 +483,7 @@ class InstallationStore:
         execution_id: str,
         grant_id: str,
         required_role: str,
+        settlement_guard: Callable[[], None],
     ) -> InstallationOutcome:
         """Consume a fresh grant before serving an already settled answer."""
         with self._transaction(authority) as connection:
@@ -486,6 +493,7 @@ class InstallationStore:
                 raise InstallationStoreError(
                     "only an active allocation with a terminal outcome can replay"
                 )
+            settlement_guard()
             try:
                 self._insert_grant_use(
                     connection,
@@ -500,6 +508,7 @@ class InstallationStore:
                 raise InstallationStoreError(
                     "installation replay grant was already used or contradicted authority"
                 ) from error
+            settlement_guard()
             return outcome
 
     def get_allocation(self, allocation_id: str) -> InstallationAllocation | None:

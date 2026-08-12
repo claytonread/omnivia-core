@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 
 import omnivia_core_runtime.service.installation as installation_module
@@ -407,6 +408,7 @@ def test_v06_5_s0_installation_audit_and_idempotency_are_durable(
         execution_id="execution-one",
         grant_id="grant-one",
         required_role="installation_administrator",
+        settlement_guard=lambda: None,
     )
     assert outcome.outcome_json == outcome_json
     assert store.list_workspace_ids() == ("ws-one",)
@@ -428,6 +430,7 @@ def test_v06_5_s0_installation_audit_and_idempotency_are_durable(
             execution_id="execution-replay",
             grant_id="grant-replay",
             required_role="installation_administrator",
+            settlement_guard=lambda: None,
         )
         == outcome
     )
@@ -438,6 +441,7 @@ def test_v06_5_s0_installation_audit_and_idempotency_are_durable(
             execution_id="execution-replay-again",
             grant_id="grant-replay",
             required_role="installation_administrator",
+            settlement_guard=lambda: None,
         )
 
     second = store.claim_allocation(
@@ -511,6 +515,169 @@ def test_v06_5_s0_installation_audit_and_idempotency_are_durable(
                     clock(),
                 ),
             )
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("settlement", ("success", "failure", "replay"))
+def test_v06_5_s0_expiry_is_rechecked_inside_store_transaction(
+    tmp_path: Path,
+    settlement: str,
+) -> None:
+    installation_root = (tmp_path / "installation").resolve()
+    store = open_installation_store(
+        installation_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: f"inst-contention-{settlement}",
+    )
+    authority = store.authority
+    target = store.claim_allocation(
+        authority,
+        principal_id="principal-target",
+        operation="workspace.create",
+        purpose="workspace.create",
+        idempotency_key=f"target-{settlement}",
+        request_digest=digest('{"display_name":"Target"}'),
+        identity_factory=lambda: allocation(tmp_path, "target"),
+    ).allocation
+    outcome_json = '{"workspace_id":"ws-target"}'
+    if settlement == "replay":
+        store.settle_allocation_success(
+            authority,
+            allocation_id=target.allocation_id,
+            workspace_label="Target",
+            outcome_id="outcome-target",
+            outcome_json=outcome_json,
+            outcome_digest=digest(outcome_json),
+            execution_id="execution-initial",
+            grant_id="grant-initial",
+            required_role="installation_administrator",
+            settlement_guard=lambda: None,
+        )
+
+    holder_entered = Event()
+    release_holder = Event()
+    worker_started = Event()
+    holder_errors: list[Exception] = []
+    worker_errors: list[Exception] = []
+
+    def held_identity() -> NewInstallationAllocation:
+        holder_entered.set()
+        if not release_holder.wait(timeout=10):
+            raise AssertionError("store contention holder was not released")
+        return allocation(tmp_path, "holder")
+
+    def hold_store_transaction() -> None:
+        try:
+            store.claim_allocation(
+                authority,
+                principal_id="principal-holder",
+                operation="workspace.create",
+                purpose="workspace.create",
+                idempotency_key=f"holder-{settlement}",
+                request_digest=digest('{"display_name":"Holder"}'),
+                identity_factory=held_identity,
+            )
+        except Exception as error:  # noqa: BLE001 - report thread failure to parent
+            holder_errors.append(error)
+
+    clock = FakeClock()
+    expires_at = clock.monotonic() + 1.0
+
+    def require_current() -> None:
+        if clock.monotonic() >= expires_at:
+            raise InstallationMutationDenied("grant expired during store wait")
+
+    def attempt_settlement() -> None:
+        worker_started.set()
+        try:
+            if settlement == "success":
+                store.settle_allocation_success(
+                    authority,
+                    allocation_id=target.allocation_id,
+                    workspace_label="Target",
+                    outcome_id="outcome-blocked",
+                    outcome_json=outcome_json,
+                    outcome_digest=digest(outcome_json),
+                    execution_id="execution-blocked",
+                    grant_id="grant-blocked",
+                    required_role="installation_administrator",
+                    settlement_guard=require_current,
+                )
+            elif settlement == "failure":
+                store.fail_allocation(
+                    authority,
+                    allocation_id=target.allocation_id,
+                    detail="blocked-failure",
+                    execution_id="execution-blocked",
+                    grant_id="grant-blocked",
+                    required_role="installation_administrator",
+                    settlement_guard=require_current,
+                )
+            else:
+                store.record_replay_grant(
+                    authority,
+                    allocation_id=target.allocation_id,
+                    execution_id="execution-blocked",
+                    grant_id="grant-blocked",
+                    required_role="installation_administrator",
+                    settlement_guard=require_current,
+                )
+        except Exception as error:  # noqa: BLE001 - report thread failure to parent
+            worker_errors.append(error)
+
+    holder = Thread(target=hold_store_transaction)
+    worker = Thread(target=attempt_settlement)
+    try:
+        holder.start()
+        assert holder_entered.wait(timeout=10)
+        worker.start()
+        assert worker_started.wait(timeout=10)
+        clock.advance_monotonic(2.0)
+        release_holder.set()
+        holder.join(timeout=10)
+        worker.join(timeout=10)
+        assert not holder.is_alive()
+        assert not worker.is_alive()
+        assert holder_errors == []
+        assert len(worker_errors) == 1
+        assert isinstance(worker_errors[0], InstallationMutationDenied)
+
+        durable = store.get_allocation(target.allocation_id)
+        assert durable is not None
+        assert durable.state is (
+            AllocationState.ACTIVE
+            if settlement == "replay"
+            else AllocationState.PREPARING
+        )
+    finally:
+        release_holder.set()
+        holder.join(timeout=10)
+        worker.join(timeout=10)
+        store.close()
+
+    connection = sqlite3.connect(
+        installation_root / "catalogue" / "installation.sqlite"
+    )
+    try:
+        grant_uses = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM omnivia_installation_grant_uses "
+                "WHERE allocation_id = ?",
+                (target.allocation_id,),
+            ).fetchone()[0]
+        )
+        outcomes = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM omnivia_installation_idempotency_outcomes "
+                "WHERE claim_id = ?",
+                (target.claim_id,),
+            ).fetchone()[0]
+        )
+        expected = 1 if settlement == "replay" else 0
+        assert grant_uses == expected
+        assert outcomes == expected
     finally:
         connection.close()
 
