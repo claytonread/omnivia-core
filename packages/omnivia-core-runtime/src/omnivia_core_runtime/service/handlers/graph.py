@@ -20,7 +20,7 @@ The order below is the security property, and it is the same order the two gover
 searches beside it state:
 
 1. decode and fully validate the payload; take the workspace from the *authorized* context;
-2. refuse a continuation page, which this build cannot have issued;
+2. bind any continuation page to the original request and frozen resolution instant;
 3. require the authoritative connection;
 4. fix **one** resolution instant -- the request's own `as_of` when it named one, otherwise
    one clock read, and the only one on this path;
@@ -37,8 +37,9 @@ searches beside it state:
    can enter the answer;
 7. refuse if any requested seed is not a version this view holds -- a traversal owes every
    seed at depth 0 and may not quietly answer a narrower question;
-8. refuse if the complete answer does not fit the requested node and edge limits, because
-   this build has no continuation token to hand the remainder back with;
+8. slice the deterministic node order into snapshot-bound continuation pages, preserving
+   crossing relations as explicit page boundaries; refuse only an edge page that exceeds
+   its independent edge budget;
 9. validate the completed result against the original typed request, the authorized
    workspace, that same instant, and the server's own view grant, before it goes to wire.
 
@@ -48,7 +49,7 @@ edge is one authoritative supersession, from the superseded version to its repla
 that replacement as both the relation reference and the edge record. Step 5 reads the
 endpoints and the supersessions in the *same* transaction and materializes both in one pass,
 so a `record.superseded` edge is subject to every rule below without exception: the seed
-closure of step 7, the all-or-nothing budget of step 8, and the filters, direction, depth
+closure of step 7, the page budget of step 8, and the filters, direction, depth
 and ordering the walk applies. Where a replacement `knowledge.relation` version would make
 an ordinary edge and a derived edge share one `relation_reference` -- which the contract's
 result validator refuses as a duplicate -- the explicit edge wins and only that one derived
@@ -80,6 +81,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -88,10 +90,12 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
+    GRAPH_BOUNDARY_REASON_PAGE,
     GRAPH_DEFAULT_DEPTH_LIMIT,
     MAX_PAGE_LIMIT,
     ContractDecodeError,
     ContractSemanticError,
+    GraphEdge,
     GraphTraversalInput,
     GraphTraversalResult,
     PageMetadata,
@@ -105,6 +109,10 @@ from omnivia_core.contracts.v1.semantics_knowledge import (
 )
 from omnivia_core_runtime.service.handlers.knowledge import LOCAL_OWNER_VIEW_GRANT
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.service.pagination import (
+    PROCESS_CONTINUATION_TOKENS,
+    token_digest,
+)
 from omnivia_core_runtime.storage.graph import (
     RecordKey,
     read_graph_snapshot,
@@ -125,8 +133,8 @@ GRAPH_PROJECTION_VERSION: Final = "1"
 
 #: The node and edge budgets a request that names none gets. The catalogue's own
 #: `max_page_size` for this operation, and deliberately not a smaller convenience default:
-#: this build issues no continuation token, so a default below the ceiling would silently
-#: drop nodes a caller had no way to ask for again.
+#: the catalogue's maximum page size. Smaller request budgets are served through signed
+#: continuation tokens rather than by truncation.
 DEFAULT_NODE_LIMIT: Final = MAX_PAGE_LIMIT
 DEFAULT_EDGE_LIMIT: Final = MAX_PAGE_LIMIT
 
@@ -134,17 +142,14 @@ DEFAULT_EDGE_LIMIT: Final = MAX_PAGE_LIMIT
 #: handler failure becomes a wire `ApiError` a caller reads, and nothing about this server's
 #: state or this caller's own values may travel there.
 _MESSAGE_INVALID_INPUT: Final = "the request payload is not a valid graph traversal"
-_MESSAGE_NO_CONTINUATION: Final = (
-    "this build issues no graph traversal continuation token, so none can be continued from"
-)
 _MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
 _MESSAGE_UNKNOWN_START: Final = (
     "the requested traversal start is not a record version this view holds"
 )
 _MESSAGE_TOO_LARGE: Final = (
-    "the complete traversal at the requested depth exceeds the requested node or edge "
-    "limit, and this build issues no continuation token to return the remainder from"
+    "the traversal page exceeds the requested edge limit"
 )
+_TOKEN_KEYS: Final = frozenset({"b", "o", "s", "t", "v"})
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -152,18 +157,10 @@ _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
     """Answer one `graph.traverse` over one fenced governed snapshot."""
     request_input = _input(context)
-    if request_input.page is not None:
-        # A token this build never issued cannot name a position it can continue from, and
-        # the contract reads a present request page as a positive statement that this
-        # traversal's seeds were already returned by an earlier page -- which would be
-        # false. Refused rather than ignored.
-        raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_NO_CONTINUATION)
-
     connection = getattr(getattr(context, "service", None), "connection", None)
     if connection is None:
         raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
 
-    resolved_at_us, resolved_at = _instant(request_input)
     depth_limit = (
         GRAPH_DEFAULT_DEPTH_LIMIT
         if request_input.depth_limit is None
@@ -171,6 +168,45 @@ def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
     )
     node_limit = _limit(request_input.node_limit, DEFAULT_NODE_LIMIT)
     edge_limit = _limit(request_input.edge_limit, DEFAULT_EDGE_LIMIT)
+    binding = request_input.to_wire()
+    binding.pop("page", None)
+    binding_digest = token_digest(
+        {
+            "principal": context.principal,
+            "workspace": context.workspace_id,
+            "operation": "graph.traverse",
+            "input": binding,
+            "depth_limit": depth_limit,
+            "node_limit": node_limit,
+            "edge_limit": edge_limit,
+        }
+    )
+    supplied: Mapping[str, Any] | None = None
+    if request_input.page is not None:
+        token = request_input.page.continuation_token
+        assert token is not None
+        try:
+            supplied = PROCESS_CONTINUATION_TOKENS.decode(token)
+        except (ValueError, ContractDecodeError, ContractSemanticError):
+            pass
+        if (
+            supplied is None
+            or set(supplied) != _TOKEN_KEYS
+            or supplied.get("v") != 1
+            or supplied.get("b") != binding_digest
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        instant = supplied.get("t")
+        if type(instant) is not int or instant <= 0:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        resolved_at_us = instant
+        resolved_at = (
+            request_input.as_of
+            if request_input.as_of is not None
+            else _timestamp(resolved_at_us)
+        )
+    else:
+        resolved_at_us, resolved_at = _instant(request_input)
 
     # The freeze. Everything below this call sees frozen values and nothing else: the view,
     # the hydrated records, the ordinary and derived relations and the watermark, all from
@@ -208,18 +244,46 @@ def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
     if not returned.issuperset(seeds):
         raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_UNKNOWN_START)
 
-    # The complete deterministic answer, or none of it. `traverse` applies no budget, so
-    # what came back is the whole result at this depth; if it does not fit the limits this
-    # request asked for, there is no honest way to return it. This build issues no
-    # continuation token, so a sliced page would be a positive claim of exhaustion
-    # (`PageMetadata()`) over content silently withheld, and the caller would have no field
-    # to read it off and no token to ask for the rest. Refused instead.
-    if len(nodes) > node_limit or len(edges) > edge_limit:
+    snapshot_digest = token_digest(
+        {
+            "watermark": snapshot.watermark_us,
+            "nodes": [node.to_wire() for node in nodes],
+            "edges": [edge.to_wire() for edge in edges],
+        }
+    )
+    start = 0
+    if supplied is not None:
+        if supplied.get("s") != snapshot_digest:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        offset = supplied.get("o")
+        if type(offset) is not int or not 0 < offset < len(nodes):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        start = offset
+
+    page_nodes = nodes[start : start + node_limit]
+    end = start + len(page_nodes)
+    continuation = None
+    if end < len(nodes):
+        continuation = PROCESS_CONTINUATION_TOKENS.encode(
+            {
+                "b": binding_digest,
+                "o": end,
+                "s": snapshot_digest,
+                "t": resolved_at_us,
+                "v": 1,
+            }
+        )
+    page_edges = _page_edges(
+        edges,
+        nodes=page_nodes,
+        has_continuation=continuation is not None,
+    )
+    if len(page_edges) > edge_limit:
         raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_TOO_LARGE)
 
     result = GraphTraversalResult(
-        nodes=nodes,
-        edges=edges,
+        nodes=page_nodes,
+        edges=page_edges,
         applied_depth_limit=depth_limit,
         applied_node_limit=node_limit,
         applied_edge_limit=edge_limit,
@@ -234,11 +298,7 @@ def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
             stale=False,
         ),
         ordering_basis=GRAPH_ORDERING_BASIS_DEPTH_RECORD_VERSION_ASC,
-        # Exhaustion is stated, never implied by an absent field -- and it is true rather
-        # than convenient, because the refusal above is what rules out the case where it
-        # would not be. This build issues no continuation tokens, which is also why no edge
-        # here carries a `page_boundary`; the depth boundaries it does carry need none.
-        page=PageMetadata(),
+        page=PageMetadata(continuation_token=continuation),
     )
     validate_graph_traversal_result(
         result,
@@ -248,6 +308,58 @@ def graph_traverse(context: OperationContext) -> Mapping[str, Any]:
         LOCAL_OWNER_VIEW_GRANT,
     )
     return result.to_wire()
+
+
+def _page_edges(
+    edges: tuple[GraphEdge, ...],
+    *,
+    nodes: tuple[Any, ...],
+    has_continuation: bool,
+) -> tuple[GraphEdge, ...]:
+    """Edges anchored in this node page, with forward crossings stated as boundaries."""
+
+    present = frozenset(
+        (node.reference.record_id, node.reference.version) for node in nodes
+    )
+    page: list[GraphEdge] = []
+    for edge in edges:
+        source_key = (
+            None
+            if edge.source is None
+            else (edge.source.record_id, edge.source.version)
+        )
+        target_key = (
+            None
+            if edge.target is None
+            else (edge.target.record_id, edge.target.version)
+        )
+        source_here = source_key in present
+        target_here = target_key in present
+        if (source_here and target_here) or (
+            source_here and edge.target is None
+        ) or (target_here and edge.source is None):
+            page.append(edge)
+        elif has_continuation and source_here:
+            page.append(
+                replace(edge, target=None, boundary_reason=GRAPH_BOUNDARY_REASON_PAGE)
+            )
+        elif has_continuation and target_here:
+            page.append(
+                replace(edge, source=None, boundary_reason=GRAPH_BOUNDARY_REASON_PAGE)
+            )
+    return tuple(sorted(page, key=_edge_order))
+
+
+def _edge_order(edge: GraphEdge) -> tuple[str, ...]:
+    source = ("", "") if edge.source is None else (edge.source.record_id, edge.source.version)
+    target = ("", "") if edge.target is None else (edge.target.record_id, edge.target.version)
+    return (
+        *source,
+        edge.relation_type,
+        *target,
+        edge.relation_reference.record_id,
+        edge.relation_reference.version,
+    )
 
 
 def _input(context: OperationContext) -> GraphTraversalInput:

@@ -546,6 +546,53 @@ def test_the_full_authorised_path_answers_a_conformant_result(owned: Owned) -> N
     assert all(item.workspace_id == WORKSPACE_ID for item in result.evidence)
 
 
+def test_evidence_search_continues_a_bound_frozen_ranking(owned: Owned) -> None:
+    seed(
+        owned,
+        artifact_row("evd-1", recorded_at_us=BASE_US),
+        artifact_row(
+            "evd-2", native_id="doc-2", checksum=DIGEST_B, recorded_at_us=BASE_US + 10
+        ),
+    )
+    project(owned)
+    dispatcher = production_path(owned)
+    first_request = request_for(input={"query": "doc", "limit": 1})
+    first = EvidenceSearchResult.from_wire(
+        answered(dispatcher.dispatch(first_request)).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+
+    second_request = request_for(
+        input={
+            "query": "doc",
+            "limit": 1,
+            "page": {"continuation_token": token},
+        }
+    )
+    second = EvidenceSearchResult.from_wire(
+        answered(dispatcher.dispatch(second_request)).result
+    )
+    assert tuple(item.evidence_id for item in first.evidence + second.evidence) == (
+        "evd-2",
+        "evd-1",
+    )
+    assert second.page.continuation_token is None
+
+    rebound = refusal(
+        dispatcher.dispatch(
+            request_for(
+                input={
+                    "query": "different",
+                    "limit": 1,
+                    "page": {"continuation_token": token},
+                }
+            )
+        )
+    )
+    assert rebound.error.code == ERROR_CODE_INVALID_REQUEST
+
+
 def test_the_authorized_context_carries_the_expected_effective_authority(
     owned: Owned,
 ) -> None:

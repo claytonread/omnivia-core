@@ -91,7 +91,15 @@ from omnivia_core.contracts.v1.semantics_knowledge import (
     validate_memory_search_input,
     validate_memory_search_result,
 )
-from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.service.operations import (
+    AuditedOperationResult,
+    OperationContext,
+    OperationError,
+)
+from omnivia_core_runtime.service.pagination import (
+    PROCESS_CONTINUATION_TOKENS,
+    token_digest,
+)
 from omnivia_core_runtime.storage.governed import read_governed_record_values
 from omnivia_core_runtime.storage.retrieval import (
     GOVERNED_FRONTIER_FILTERS,
@@ -127,20 +135,23 @@ _MESSAGE_INVALID_KNOWLEDGE_INPUT: Final = (
 )
 _MESSAGE_INVALID_MEMORY_INPUT: Final = "the request payload is not a valid memory search"
 _MESSAGE_NO_STORAGE: Final = "this service instance is not serving authoritative storage"
+_TOKEN_KEYS: Final = frozenset({"b", "o", "s", "t", "v"})
 
 
-def knowledge_search(context: OperationContext) -> Mapping[str, Any]:
+def knowledge_search(
+    context: OperationContext,
+) -> Mapping[str, Any] | AuditedOperationResult:
     """Answer one `knowledge.search` over the frozen governed frontier."""
     request_input = _knowledge_input(context)
-    resolved_at_us, records = _search(
-        context, request_input, domain_scope=request_input.domain_scope
+    resolved_at_us, records, page = _search(
+        context,
+        request_input,
+        operation="knowledge.search",
+        domain_scope=request_input.domain_scope,
     )
     result = KnowledgeSearchResult(
         records=records,
-        # Exhaustion is stated, never implied by an absent field. This build issues no
-        # continuation tokens, and an empty page is a successful answer: a workspace whose
-        # canonical view holds nothing knows nothing yet, which is not a `not_found`.
-        page=PageMetadata(),
+        page=page,
     )
     validate_knowledge_search_result(
         result,
@@ -149,14 +160,20 @@ def knowledge_search(context: OperationContext) -> Mapping[str, Any]:
         _timestamp(resolved_at_us),
         LOCAL_OWNER_VIEW_GRANT,
     )
-    return result.to_wire()
+    return AuditedOperationResult(
+        result.to_wire(), canonical_resolution_time=_timestamp(resolved_at_us)
+    )
 
 
-def memory_search(context: OperationContext) -> Mapping[str, Any]:
+def memory_search(
+    context: OperationContext,
+) -> Mapping[str, Any] | AuditedOperationResult:
     """Answer one `memory.search`: `knowledge.search` without a domain selector."""
     request_input = _memory_input(context)
-    resolved_at_us, records = _search(context, request_input, domain_scope=None)
-    result = MemorySearchResult(records=records, page=PageMetadata())
+    resolved_at_us, records, page = _search(
+        context, request_input, operation="memory.search", domain_scope=None
+    )
+    result = MemorySearchResult(records=records, page=page)
     validate_memory_search_result(
         result,
         request_input,
@@ -164,15 +181,18 @@ def memory_search(context: OperationContext) -> Mapping[str, Any]:
         _timestamp(resolved_at_us),
         LOCAL_OWNER_VIEW_GRANT,
     )
-    return result.to_wire()
+    return AuditedOperationResult(
+        result.to_wire(), canonical_resolution_time=_timestamp(resolved_at_us)
+    )
 
 
 def _search(
     context: OperationContext,
     request_input: KnowledgeSearchInput | MemorySearchInput,
     *,
+    operation: str,
     domain_scope: str | None,
-) -> tuple[int, tuple[GovernedRecord, ...]]:
+) -> tuple[int, tuple[GovernedRecord, ...], PageMetadata]:
     """The read, the filters, the freeze and the ranking -- shared by both operations.
 
     `domain_scope` is a parameter rather than an attribute read off `request_input` because
@@ -187,9 +207,41 @@ def _search(
     if connection is None:
         raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
 
-    # The canonical resolution instant. One clock read, before anything is resolved, and
-    # the only one on this path.
-    resolved_at_us = time.time_ns() // 1000
+    limit = _limit(request_input.limit)
+    binding = request_input.to_wire()
+    binding.pop("page", None)
+    binding_digest = token_digest(
+        {
+            "principal": context.principal,
+            "workspace": context.workspace_id,
+            "operation": operation,
+            "input": binding,
+            "limit": limit,
+        }
+    )
+    supplied: Mapping[str, Any] | None = None
+    if request_input.page is not None:
+        token = request_input.page.continuation_token
+        assert token is not None
+        try:
+            supplied = PROCESS_CONTINUATION_TOKENS.decode(token)
+        except (ValueError, ContractDecodeError, ContractSemanticError):
+            pass
+        if (
+            supplied is None
+            or set(supplied) != _TOKEN_KEYS
+            or supplied.get("v") != 1
+            or supplied.get("b") != binding_digest
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _invalid_message(operation))
+        instant = supplied.get("t")
+        if type(instant) is not int or instant <= 0:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _invalid_message(operation))
+        resolved_at_us = instant
+    else:
+        # The canonical resolution instant. One clock read, before anything is resolved,
+        # and the only one on this path. Continuations carry this instant forward.
+        resolved_at_us = time.time_ns() // 1000
 
     # Workspace, view, governance and temporal validity, all four inside one read
     # transaction. They are the resolver's rather than this handler's on purpose: they are
@@ -217,12 +269,40 @@ def _search(
         ),
         filters_applied=GOVERNED_FRONTIER_FILTERS,
     )
-    return resolved_at_us, rank_governed(
+    ordered = rank_governed(
         frontier,
         request_input.query,
         order=request_input.order,
-        limit=_limit(request_input.limit),
+        limit=len(frontier.candidates),
     )
+    snapshot_digest = token_digest([record.to_wire() for record in ordered])
+    start = 0
+    if supplied is not None:
+        if supplied.get("s") != snapshot_digest:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _invalid_message(operation))
+        offset = supplied.get("o")
+        if type(offset) is not int or not 0 < offset < len(ordered):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _invalid_message(operation))
+        start = offset
+    records = ordered[start : start + limit]
+    continuation = None
+    if start + len(records) < len(ordered):
+        continuation = PROCESS_CONTINUATION_TOKENS.encode(
+            {
+                "b": binding_digest,
+                "o": start + len(records),
+                "s": snapshot_digest,
+                "t": resolved_at_us,
+                "v": 1,
+            }
+        )
+    return resolved_at_us, records, PageMetadata(continuation_token=continuation)
+
+
+def _invalid_message(operation: str) -> str:
+    if operation == "knowledge.search":
+        return _MESSAGE_INVALID_KNOWLEDGE_INPUT
+    return _MESSAGE_INVALID_MEMORY_INPUT
 
 
 def _knowledge_input(context: OperationContext) -> KnowledgeSearchInput:

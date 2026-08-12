@@ -75,7 +75,9 @@ class AuditedOperationResult:
     job_reference: JobReference | None = None
 
 
-OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
+OperationHandler = Callable[
+    ["OperationContext"], Mapping[str, Any] | AuditedOperationResult
+]
 
 
 @dataclass(frozen=True)

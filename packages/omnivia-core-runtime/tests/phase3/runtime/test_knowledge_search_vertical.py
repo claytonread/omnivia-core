@@ -1461,7 +1461,8 @@ def test_lc_b5c_an_unauthorized_workspace_reaches_no_record_at_all(
         )
     )
 
-    assert foreign["records"] == []
+    assert isinstance(foreign, knowledge_handlers.AuditedOperationResult)
+    assert foreign.result["records"] == []
     assert seen[-1].candidates == ()
     assert seen[-1].workspace_id == FOREIGN_WORKSPACE_ID
     # The complement, so the emptiness above is the workspace and not the fixture.
@@ -1564,6 +1565,49 @@ def test_lc_b8_the_limit_bounds_the_page_and_the_default_is_the_schema_ceiling(
     assert len(watcher.frontier.candidates) == len(CANONICAL_FRONTIER)
     assert returned(result) == returned(search(stocked, {"query": QUERY}))[:2]
     assert knowledge_handlers.MAX_RESULT_LIMIT == 500
+
+
+@pytest.mark.parametrize(
+    "operation", [KNOWLEDGE_SEARCH_OPERATION, MEMORY_SEARCH_OPERATION]
+)
+def test_lc_b8b_search_continuations_are_snapshot_stable_and_request_bound(
+    stocked: m2.Owned, operation: str
+) -> None:
+    dispatcher = production_path(stocked)
+    payload = {"query": QUERY, "record_type": "knowledge.claim", "limit": 2}
+    first_wire = answered(
+        dispatcher.dispatch(request_for(operation, payload))
+    ).result
+    result_type = (
+        KnowledgeSearchResult
+        if operation == KNOWLEDGE_SEARCH_OPERATION
+        else MemorySearchResult
+    )
+    first = result_type.from_wire(first_wire)
+    token = first.page.continuation_token
+    assert token is not None
+
+    second_payload = {**payload, "page": {"continuation_token": token}}
+    second = result_type.from_wire(
+        answered(dispatcher.dispatch(request_for(operation, second_payload))).result
+    )
+    assert returned(first)
+    assert set(returned(first)).isdisjoint(returned(second))
+    unpaged_payload = dict(payload)
+    unpaged_payload.pop("limit")
+    assert returned(first) + returned(second) == returned(
+        search(stocked, unpaged_payload, operation=operation)
+    )[:4]
+
+    rebound = refused(
+        dispatcher.dispatch(
+            request_for(
+                operation,
+                {**second_payload, "query": "different"},
+            )
+        )
+    )
+    assert rebound.error.code == ERROR_CODE_INVALID_REQUEST
 
 
 # --- B9: emptiness, refusals and the absence of a second read -----------------
