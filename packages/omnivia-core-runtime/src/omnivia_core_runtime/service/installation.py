@@ -22,19 +22,24 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_BOOTSTRAP_IN_PROGRESS,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    ERROR_CODE_INVALID_REQUEST,
     RETRY_CLASS_NON_RETRYABLE,
     CapabilityRef,
     ContractDecodeError,
     ContractSemanticError,
     IdempotencyEquivalence,
+    PageMetadata,
     RequestMetadata,
     WorkspaceCompatibility,
     WorkspaceCreateInput,
     WorkspaceCreateResult,
     WorkspaceDescriptor,
+    WorkspaceListInput,
+    WorkspaceListResult,
     classify_version_compatibility,
     idempotency_equivalence,
     to_canonical_json,
+    validate_page_limit,
 )
 from omnivia_core.contracts.v1.canonical_json import canonicalize, parse_json_document
 from omnivia_core_runtime.ownership.identity import Clock
@@ -96,6 +101,8 @@ from omnivia_core_runtime.workspace.manifest_store import (
 )
 
 WORKSPACE_CREATE_OPERATION: Final = "workspace.create"
+WORKSPACE_LIST_OPERATION: Final = "workspace.list"
+WORKSPACE_LIST_PURPOSE: Final = "workspace_inspection"
 
 _MESSAGE_NO_AUTHORITY: Final = (
     "the installation mutation grant does not cover this request and target"
@@ -110,6 +117,12 @@ _MESSAGE_BOOTSTRAP_FAILED: Final = (
 )
 _MESSAGE_STORED_OUTCOME: Final = (
     "the stored installation outcome is not an exact canonical workspace result"
+)
+_MESSAGE_INVALID_LIST_INPUT: Final = (
+    "the workspace list input is not valid for this operation"
+)
+_MESSAGE_LIST_AUTHORITY: Final = (
+    "the installation read grant does not cover this inventory"
 )
 
 _SUPPORTED_WORKSPACE_VERSIONS: Final = build_version_window(
@@ -453,6 +466,151 @@ class InstallationApplicationService:
         )
         return self.execute_workspace_create(prepared)
 
+    def create_workspace_from_authorized_request(
+        self,
+        context: AuthorizedApplicationContext,
+        *,
+        session: AuthenticatedSession,
+        binding: ServiceBinding,
+        input_: WorkspaceCreateInput,
+        lifetime_us: int = DEFAULT_GRANT_LIFETIME_US,
+    ) -> WorkspaceCreateExecution:
+        """Issue S0 authority for, execute, and settle one admitted request.
+
+        The equivalence is recomputed here from the exact authorized context rather
+        than accepted from a handler.  This is the production entry: a handler can
+        supply the decoded domain input, but cannot choose the bytes or scope an
+        idempotency key becomes bound to.
+        """
+        equivalence = self._expected_equivalence(context, input_)
+        return self.create_workspace(
+            context,
+            session=session,
+            binding=binding,
+            input_=input_,
+            equivalence=equivalence,
+            lifetime_us=lifetime_us,
+        )
+
+    def list_workspaces(
+        self,
+        context: AuthorizedApplicationContext,
+        *,
+        session: AuthenticatedSession,
+        binding: ServiceBinding,
+        input_: WorkspaceListInput,
+    ) -> Mapping[str, Any]:
+        """List only the active inventory of the authorized installation.
+
+        Enumeration starts at the catalogue owned by this service; neither the
+        request nor a continuation token contributes a filesystem path or an
+        installation identifier.  Tokens are bound to this installation owner,
+        principal and page size, and expire when the catalogue fencing generation
+        moves.
+        """
+        self._validate_list_authority(
+            context, session=session, binding=binding, input_=input_
+        )
+        try:
+            validate_page_limit(input_.limit)
+        except ContractSemanticError:
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_LIST_INPUT
+            )
+
+        limit = 1000 if input_.limit is None else input_.limit
+        requested_token = (
+            None if input_.page is None else input_.page.continuation_token
+        )
+        if input_.page is not None and (
+            requested_token is None or not 1 <= len(requested_token) <= 512
+        ):
+            raise OperationError(
+                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_LIST_INPUT
+            )
+
+        try:
+            inventory = self._store.list_workspace_outcomes()
+        except InstallationStoreError as error:
+            raise InstallationSeamFault() from error
+
+        start = 0
+        if requested_token is not None:
+            found: int | None = None
+            for index, (workspace_id, _outcome) in enumerate(inventory):
+                if self._list_cursor(
+                    principal_id=context.principal_id,
+                    limit=limit,
+                    workspace_id=workspace_id,
+                ) == requested_token:
+                    found = index + 1
+                    break
+            if found is None:
+                raise OperationError(
+                    ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_LIST_INPUT
+                )
+            start = found
+
+        page_entries = inventory[start : start + limit]
+        descriptors: list[WorkspaceDescriptor] = []
+        for workspace_id, outcome in page_entries:
+            result = WorkspaceCreateResult.from_wire(_decode_outcome(outcome))
+            if result.workspace.workspace_id != workspace_id:
+                raise InstallationSeamFault(_MESSAGE_STORED_OUTCOME)
+            descriptors.append(result.workspace)
+
+        end = start + len(page_entries)
+        next_token = None
+        if end < len(inventory) and page_entries:
+            next_token = self._list_cursor(
+                principal_id=context.principal_id,
+                limit=limit,
+                workspace_id=page_entries[-1][0],
+            )
+        return WorkspaceListResult(
+            workspaces=tuple(descriptors),
+            page=PageMetadata(continuation_token=next_token),
+        ).to_wire()
+
+    def _validate_list_authority(
+        self,
+        context: AuthorizedApplicationContext,
+        *,
+        session: AuthenticatedSession,
+        binding: ServiceBinding,
+        input_: WorkspaceListInput,
+    ) -> None:
+        authority = self.authority
+        if (
+            not isinstance(input_, WorkspaceListInput)
+            or context.operation != WORKSPACE_LIST_OPERATION
+            or context.workspace_id is not None
+            or context.installation_id != authority.installation_id
+            or binding.installation_id != authority.installation_id
+            or binding.workspace_id is not None
+            or context.principal_id != session.principal_id
+            or authority.installation_id not in session.installations
+            or WORKSPACE_LIST_OPERATION not in session.operations
+            or context.purpose != WORKSPACE_LIST_PURPOSE
+            or not frozenset(context.scopes) <= session.scopes
+        ):
+            raise InstallationMutationDenied(_MESSAGE_LIST_AUTHORITY)
+
+    def _list_cursor(
+        self, *, principal_id: str, limit: int, workspace_id: str
+    ) -> str:
+        bound = "\0".join(
+            (
+                "workspace-list-v1",
+                self.authority.installation_id,
+                str(self.authority.fencing_generation),
+                principal_id,
+                str(limit),
+                workspace_id,
+            )
+        ).encode("utf-8")
+        return "wsl1-" + hashlib.sha256(bound).hexdigest()
+
     def _validate_request_authority(
         self,
         context: AuthorizedApplicationContext,
@@ -772,6 +930,8 @@ def _decode_outcome(outcome: InstallationOutcome) -> Mapping[str, Any]:
 
 __all__ = [
     "WORKSPACE_CREATE_OPERATION",
+    "WORKSPACE_LIST_OPERATION",
+    "WORKSPACE_LIST_PURPOSE",
     "InstallationApplicationService",
     "InstallationBootstrapInProgress",
     "InstallationIdempotencyDenied",

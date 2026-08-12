@@ -909,15 +909,18 @@ def test_7d_the_wiring_hands_the_router_the_application_path() -> None:
     # second, independent workspace check. Dropping the keyword leaves a binding that
     # accepts any granted workspace at an endpoint that fronts exactly one, and every
     # other test in this file would stay green.
-    binding_call = next(
+    binding_calls = [
         node
         for node in ast.walk(serve)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "ServiceBinding"
-    )
-    named = {keyword.arg for keyword in binding_call.keywords}
-    assert named == {"installation_id", "workspace_id"}
+    ]
+    named = [{keyword.arg for keyword in call.keywords} for call in binding_calls]
+    assert {"installation_id", "workspace_id"} in named
+    # S1 adds a distinct installation-only binding; it must not fabricate a
+    # workspace selection merely to share the workspace dispatcher.
+    assert {"installation_id"} in named
 
 
 def _main_function(name: str) -> ast.FunctionDef:

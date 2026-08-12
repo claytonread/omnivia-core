@@ -532,6 +532,40 @@ class InstallationStore:
             )
             return tuple(str(row[0]) for row in rows)
 
+    def list_workspace_outcomes(
+        self,
+    ) -> tuple[tuple[str, InstallationOutcome], ...]:
+        """Return the canonical outcomes for this installation's active inventory.
+
+        The catalogue is the enumeration authority.  The join starts at the
+        installation workspace inventory and remains constrained by the owned
+        installation id, so a caller cannot discover a sibling catalogue by naming
+        a path or a workspace identifier.  A registered workspace without its
+        atomic allocation/outcome chain is corruption and is refused rather than
+        silently omitted from a list that claims to be complete.
+        """
+        with self._mutex:
+            connection = self._require_connection()
+            rows = connection.execute(
+                "SELECT w.workspace_id, a.claim_id "
+                "FROM omnivia_installation_workspaces w "
+                "JOIN omnivia_installation_allocations a "
+                "ON a.installation_id = w.installation_id "
+                "AND a.allocation_id = w.allocation_id "
+                "WHERE w.installation_id = ? AND a.state = 'active' "
+                "ORDER BY w.workspace_id",
+                (self._authority.installation_id,),
+            ).fetchall()
+            results: list[tuple[str, InstallationOutcome]] = []
+            for workspace_id, claim_id in rows:
+                outcome = self._outcome_for_claim(connection, str(claim_id))
+                if outcome is None or outcome.outcome_branch != "success":
+                    raise InstallationStoreError(
+                        "registered installation workspace has no successful outcome"
+                    )
+                results.append((str(workspace_id), outcome))
+            return tuple(results)
+
     @contextmanager
     def _transaction(
         self, authority: InstallationAuthority

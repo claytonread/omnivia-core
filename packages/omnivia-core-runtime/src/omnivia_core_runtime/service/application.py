@@ -50,10 +50,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, Protocol, TypeAlias
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    SCOPE_KIND_INSTALLATION,
     CapabilityRef,
     OperationMetadata,
     RequestEnvelope,
@@ -68,7 +69,6 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
     authorize_application_request,
 )
-from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
@@ -77,8 +77,18 @@ from omnivia_core_runtime.service.handlers.knowledge import (
     memory_search,
 )
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
+from omnivia_core_runtime.service.installation import (
+    WORKSPACE_CREATE_OPERATION,
+    WORKSPACE_LIST_OPERATION,
+    WORKSPACE_LIST_PURPOSE,
+)
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    MUTATION_PURPOSES,
+)
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
+    InstallationOperationContext,
     OperationContext,
     OperationError,
     OperationHandler,
@@ -128,6 +138,17 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         MEMORY_SEARCH_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+    }
+)
+
+#: Installation-scoped operations are served under a distinct session.  This is
+#: intentionally not folded into ``OPERATION_PURPOSES``: the existing local-owner
+#: session is workspace-bound and structurally refuses mutations, while this map
+#: includes one read and one S0-authorized mutation.
+INSTALLATION_OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        WORKSPACE_CREATE_OPERATION: MUTATION_PURPOSES[WORKSPACE_CREATE_OPERATION],
+        WORKSPACE_LIST_OPERATION: WORKSPACE_LIST_PURPOSE,
     }
 )
 
@@ -263,6 +284,48 @@ def local_owner_session(
     )
 
 
+def installation_owner_session(
+    *,
+    principal_id: str,
+    installation_id: str,
+) -> AuthenticatedSession:
+    """The separate S1 grant for one owned installation catalogue.
+
+    It is intentionally not a widening of :func:`local_owner_session`: the latter
+    remains read-only and workspace-bound.  The one mutation here is named
+    literally, carries the S0-required installation-administrator role, and is
+    executable only through the installation service that owns the matching
+    catalogue authority.
+    """
+    operations = frozenset(INSTALLATION_OPERATION_PURPOSES)
+    entries = tuple(get_operation_metadata(name) for name in sorted(operations))
+    if any(entry.scope.scope_kind != SCOPE_KIND_INSTALLATION for entry in entries):
+        raise ValueError("an installation-owner session may grant only installation scope")
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({INSTALLATION_ADMINISTRATOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset(),
+        operations=operations,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(INSTALLATION_OPERATION_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -299,6 +362,22 @@ def build_application_registry(
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
     for operation, handler in (additional or {}).items():
         registry.register(operation, handler)
+    return registry
+
+
+def build_installation_registry(
+    *, workspace_create: OperationHandler, workspace_list: OperationHandler
+) -> ApplicationOperationRegistry:
+    """The S1 installation family, separate from the workspace read registry.
+
+    Keeping this registry distinct is what preserves the shared-session boundary:
+    the workspace application dispatcher cannot acquire the create handler merely
+    because the build ships it, and the installation session cannot intercept any
+    of the six existing workspace reads.
+    """
+    registry = ApplicationOperationRegistry()
+    registry.register(WORKSPACE_CREATE_OPERATION, workspace_create)
+    registry.register(WORKSPACE_LIST_OPERATION, workspace_list)
     return registry
 
 
@@ -357,6 +436,15 @@ class ApplicationCallRecord:
 ApplicationCallSink: TypeAlias = Callable[[ApplicationCallRecord], None]
 
 
+class ApplicationFallback(Protocol):
+    """The next dispatch layer and its already-cross-checked principal grant."""
+
+    @property
+    def grant(self) -> Grant: ...
+
+    def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
+
+
 def _claimed_text(value: object, name: str) -> str | None:
     """One string field a request claims, or `None` where it claims nothing readable.
 
@@ -394,7 +482,7 @@ class ApplicationDispatcher:
     binding: ServiceBinding
     supported_capabilities: tuple[CapabilityRef, ...]
     transport: str
-    probe: Dispatcher
+    probe: ApplicationFallback
     record: ApplicationCallSink | None
     service: Any = None
 
@@ -469,13 +557,9 @@ class ApplicationDispatcher:
 
         handler = self.registry.get(context.operation)
         workspace_id = context.workspace_id
-        if handler is None or workspace_id is None:
-            # Unreachable through the shipped wiring: the only registered operation is
-            # workspace-scoped, so the seam always resolves a workspace for it. Stated
-            # rather than asserted because the registry accepts installation-scoped
-            # catalogue names too, and the handler contract has no workspace-less
-            # context to give one -- a successor lane registering one needs a widened
-            # handler contract, not a `None` slipped through here.
+        if handler is None:
+            # A registry entry without a handler is an impossible construction state,
+            # but it is answered structurally rather than asserted through a request.
             self._emit(
                 request,
                 entry,
@@ -491,8 +575,20 @@ class ApplicationDispatcher:
             )
 
         try:
-            result = handler(
-                OperationContext(
+            if entry.scope.scope_kind == SCOPE_KIND_INSTALLATION:
+                handler_context: Any = InstallationOperationContext(
+                    request=request,
+                    principal=context.principal_id,
+                    installation_id=context.installation_id,
+                    granted_operations=self.session.operations,
+                    authorization=context,
+                    service=self.service,
+                    authority=context.authority,
+                    scopes=context.scopes,
+                    purpose=context.purpose,
+                )
+            elif workspace_id is not None:
+                handler_context = OperationContext(
                     request=request,
                     # The authenticated principal and the authorized workspace, not the
                     # claimed ones. A handler cannot see a claim at all.
@@ -511,7 +607,21 @@ class ApplicationDispatcher:
                     scopes=context.scopes,
                     purpose=context.purpose,
                 )
-            )
+            else:
+                self._emit(
+                    request,
+                    entry,
+                    context=context,
+                    error=None,
+                    code=ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                )
+                return failure(
+                    request,
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                    _MESSAGE_NO_HANDLER,
+                    principal=context.principal_id,
+                )
+            result = handler(handler_context)
         except OperationError as error:
             self._emit(request, entry, context=context, error=error)
             return failure(
@@ -607,6 +717,7 @@ __all__ = [
     "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GRAPH_TRAVERSE_OPERATION",
+    "INSTALLATION_OPERATION_PURPOSES",
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
     "KNOWLEDGE_SEARCH_OPERATION",
     "LOCAL_TRANSPORT_ADAPTER",
@@ -619,5 +730,7 @@ __all__ = [
     "ApplicationCallSink",
     "ApplicationDispatcher",
     "build_application_registry",
+    "build_installation_registry",
+    "installation_owner_session",
     "local_owner_session",
 ]
