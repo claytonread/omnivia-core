@@ -511,9 +511,12 @@ class InstallationApplicationService:
         self._validate_list_authority(
             context, session=session, binding=binding, input_=input_
         )
+        valid_limit = True
         try:
             validate_page_limit(input_.limit)
         except ContractSemanticError:
+            valid_limit = False
+        if not valid_limit:
             raise OperationError(
                 ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_LIST_INPUT
             )
