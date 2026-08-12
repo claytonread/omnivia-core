@@ -72,6 +72,10 @@ from omnivia_core_runtime.service.authorization import (
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
+from omnivia_core_runtime.service.handlers.governance import (
+    GOVERNANCE_FAMILY_OPERATIONS,
+    GovernanceHandlers,
+)
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
 from omnivia_core_runtime.service.handlers.jobs import (
     IMPORT_START_OPERATION,
@@ -109,6 +113,7 @@ from omnivia_core_runtime.service.installation import (
 )
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
+    KNOWLEDGE_REVIEWER_ROLE,
     MUTATION_PURPOSES,
     WORKSPACE_CONTRIBUTOR_ROLE,
 )
@@ -198,6 +203,10 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
         JOB_EVENTS_OPERATION: JOB_OBSERVATION_PURPOSE,
     }
+)
+
+GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {name: MUTATION_PURPOSES[name] for name in GOVERNANCE_FAMILY_OPERATIONS}
 )
 
 #: Where the principal comes from, recorded verbatim as the owner fixed it. Not the
@@ -455,6 +464,49 @@ def build_job_registry(handlers: JobHandlers) -> ApplicationOperationRegistry:
     registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
     registry.register(JOB_RETRY_OPERATION, cast(OperationHandler, handlers.job_retry))
     registry.register(JOB_EVENTS_OPERATION, cast(OperationHandler, handlers.job_events))
+    return registry
+
+
+def governance_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The S4 contributor/reviewer grant for governed transitions."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(GOVERNANCE_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE, KNOWLEDGE_REVIEWER_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=GOVERNANCE_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(GOVERNANCE_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_governance_registry(
+    handlers: GovernanceHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register("knowledge.propose", cast(OperationHandler, handlers.knowledge_propose))
+    registry.register("candidate.approve", cast(OperationHandler, handlers.candidate_approve))
+    registry.register("candidate.reject", cast(OperationHandler, handlers.candidate_reject))
+    registry.register("record.supersede", cast(OperationHandler, handlers.record_supersede))
     return registry
 
 
@@ -1010,10 +1062,56 @@ def build_job_application_dispatcher(
     )
 
 
+def build_governance_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact four-operation S4 family around the existing router."""
+    session = governance_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    label_grant = local_owner_label_grant(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        granted_workspace=workspace_id,
+    )
+    handlers = GovernanceHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        label_grant=label_grant,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_governance_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
+    "GOVERNANCE_FAMILY_PURPOSES",
     "GRAPH_TRAVERSE_OPERATION",
     "INSTALLATION_OPERATION_PURPOSES",
     "JOB_FAMILY_PURPOSES",
@@ -1031,12 +1129,15 @@ __all__ = [
     "ApplicationCallSink",
     "ApplicationDispatcher",
     "build_application_registry",
+    "build_governance_application_dispatcher",
+    "build_governance_registry",
     "build_installation_application_dispatcher",
     "build_installation_registry",
     "build_job_application_dispatcher",
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "governance_family_session",
     "installation_owner_session",
     "job_family_session",
     "local_owner_session",

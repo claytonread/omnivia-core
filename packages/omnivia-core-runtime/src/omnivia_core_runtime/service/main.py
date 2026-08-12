@@ -44,6 +44,7 @@ from omnivia_core_runtime.service.application import (
     WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
+    build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
     local_owner_session,
@@ -498,6 +499,13 @@ def main(
             fallback=application,
         )
         application = build_job_application_dispatcher(
+            service=started,
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            fallback=application,
+        )
+        application = build_governance_application_dispatcher(
             service=started,
             principal_id=LOCAL_PRINCIPAL,
             installation_id=installation_id,

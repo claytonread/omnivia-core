@@ -91,7 +91,7 @@ def _source_key(source: SourceReference) -> tuple[str, str, str | None, int | No
     )
 
 
-def _resolve_evidence(
+def resolve_memory_claim_evidence(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
@@ -182,7 +182,7 @@ def create_memory_record(
         )
         raise OperationError(code, _MESSAGE_INVALID_PROFILE, retry_class=retry)
 
-    evidence_ids = _resolve_evidence(
+    evidence_ids = resolve_memory_claim_evidence(
         connection,
         workspace_id=workspace_id,
         claim=claim,
@@ -653,4 +653,5 @@ __all__ = [
     "create_memory_record",
     "random_identifier",
     "read_authorized_memory_snapshot",
+    "resolve_memory_claim_evidence",
 ]

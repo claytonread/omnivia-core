@@ -338,7 +338,9 @@ def _claim_and_start(
 def test_v06_5_s3_0015_is_consecutive_and_has_exact_three_relations() -> None:
     assert MIGRATION.name == MIGRATION_NAME
     assert MIGRATION.version == PREDECESSOR_VERSION + 1
-    assert [m.version for m in load_migrations()] == list(range(1, 16))
+    assert [
+        m.version for m in load_migrations() if m.version <= MIGRATION_VERSION
+    ] == list(range(1, MIGRATION_VERSION + 1))
     created = set(
         __import__("re").findall(
             r"CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(omnivia_\w+)", MIGRATION.sql
@@ -363,7 +365,8 @@ def test_v06_5_s3_0015_clean_upgrade_integrity_fingerprint_and_guards(
         assert foreign_key_check(connection) == []
         assert integrity_check(connection) == []
         assert_guards_intact(connection)
-        expected = canonical_schema_fingerprint()
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            expected = canonical_schema_fingerprint()
         assert verify_fingerprint(connection, expected).matches(expected)
     finally:
         connection.close()
@@ -403,7 +406,9 @@ def test_v06_5_s3_0015_interrupted_apply_rolls_back_and_converges(
     _upgrade_from_14(path)
     converged = open_database(path, OpenMode.READ_ONLY)
     try:
-        assert fingerprint_schema(converged).matches(canonical_schema_fingerprint())
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            expected = canonical_schema_fingerprint()
+        assert fingerprint_schema(converged).matches(expected)
     finally:
         converged.close()
 
