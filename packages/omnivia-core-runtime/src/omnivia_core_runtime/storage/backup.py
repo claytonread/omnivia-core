@@ -32,6 +32,16 @@ from omnivia_core_runtime.storage.inventory import (
 BACKUPS_DIR = "backups"
 RUNTIME_DIR = "runtime"
 ATTEMPTS_DIR = "attempts"
+CATALOGUE_DIR = "catalogue"
+
+#: The installation-owned catalogue database and the lifetime lock that guards it. Both
+#: live in `catalogue/`, and neither is per-workspace: every other directory here is
+#: keyed by a workspace id because it holds facts *about* one workspace, whereas the
+#: catalogue holds the installation's own identity and the inventory of the workspaces
+#: it authorised. Keying it by workspace would mint an installation identity per
+#: workspace, which is the failure the separation exists to prevent.
+INSTALLATION_DATABASE = "installation.sqlite"
+INSTALLATION_LOCK = "installation.lock"
 
 
 class BackupError(StorageError):
@@ -46,6 +56,7 @@ class InstallationLayout:
     installation-state/
     ├── backups/<workspace-id>/<attempt-id>/
     ├── attempts/<workspace-id>/
+    ├── catalogue/installation.sqlite + installation.lock
     └── runtime/<workspace-id>/
     ```
 
@@ -64,6 +75,18 @@ class InstallationLayout:
 
     def runtime_for(self, workspace_id: str) -> Path:
         return self.root / RUNTIME_DIR / workspace_id
+
+    @property
+    def catalogue(self) -> Path:
+        return self.root / CATALOGUE_DIR
+
+    @property
+    def installation_database(self) -> Path:
+        return self.catalogue / INSTALLATION_DATABASE
+
+    @property
+    def installation_lock(self) -> Path:
+        return self.catalogue / INSTALLATION_LOCK
 
     def create(self, workspace_id: str) -> None:
         for path in (
@@ -210,6 +233,9 @@ def restore_backup(backup: Path, destination: Path) -> Path:
 __all__ = [
     "ATTEMPTS_DIR",
     "BACKUPS_DIR",
+    "CATALOGUE_DIR",
+    "INSTALLATION_DATABASE",
+    "INSTALLATION_LOCK",
     "RUNTIME_DIR",
     "BackupError",
     "InstallationLayout",
