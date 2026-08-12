@@ -298,6 +298,7 @@ def _transport_call(
             if value == credential
             else None
         ),
+        authenticated_dispatch=dispatcher.dispatch_for_session,
     )
     server.start()
     try:

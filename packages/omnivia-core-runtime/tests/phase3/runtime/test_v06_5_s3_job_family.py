@@ -226,6 +226,7 @@ def _transport_call(
         router=router,
         principal=dispatcher.session.principal_id,
         resolver=lambda value: dispatcher.session if value == credential else None,
+        authenticated_dispatch=dispatcher.dispatch_for_session,
     )
     server.start()
     try:

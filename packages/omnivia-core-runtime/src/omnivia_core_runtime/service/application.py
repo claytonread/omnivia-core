@@ -50,7 +50,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final, Protocol, TypeAlias, cast
+from typing import Any, Final, Protocol, TypeAlias, cast, runtime_checkable
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -59,6 +59,7 @@ from omnivia_core.contracts.v1 import (
     OperationMetadata,
     RequestEnvelope,
     ResponseEnvelope,
+    compare_contract_versions,
     get_operation_metadata,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
@@ -233,6 +234,41 @@ LOCAL_TRANSPORT_ADAPTER: Final = "local-ovc1"
 #: has no handler for. Frozen, and carrying no value, for the same reason every
 #: refusal message on this path is.
 _MESSAGE_NO_HANDLER: Final = "this build cannot serve an operation it authorized"
+
+
+def _narrow_session(
+    configured: AuthenticatedSession,
+    caller: AuthenticatedSession,
+) -> AuthenticatedSession:
+    """Intersect caller authority with the endpoint's configured maximum."""
+    if configured.principal_id != caller.principal_id:
+        return AuthenticatedSession(principal_id=caller.principal_id)
+    configured_capabilities = {ref.id: ref.version for ref in configured.capabilities}
+    capabilities = tuple(
+        CapabilityRef(
+            id=ref.id,
+            version=(
+                ref.version
+                if compare_contract_versions(
+                    ref.version, configured_capabilities[ref.id]
+                )
+                <= 0
+                else configured_capabilities[ref.id]
+            ),
+        )
+        for ref in caller.capabilities
+        if ref.id in configured_capabilities
+    )
+    return AuthenticatedSession(
+        principal_id=caller.principal_id,
+        roles=caller.roles & configured.roles,
+        installations=caller.installations & configured.installations,
+        workspaces=caller.workspaces & configured.workspaces,
+        operations=caller.operations & configured.operations,
+        scopes=caller.scopes & configured.scopes,
+        purposes=caller.purposes & configured.purposes,
+        capabilities=capabilities,
+    )
 
 
 def local_owner_session(
@@ -644,6 +680,17 @@ class ApplicationFallback(Protocol):
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
 
 
+@runtime_checkable
+class SessionApplicationFallback(Protocol):
+    """A fallback that can retain transport-resolved caller authority."""
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope: ...
+
+
 @dataclass(frozen=True)
 class ProductionApplicationSurface:
     """The complete application surface, composed without collapsing authority.
@@ -709,6 +756,17 @@ class ProductionApplicationSurface:
         if route is None:
             return self.probe.dispatch(request)
         return route.dispatch(request)
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope:
+        """Dispatch one request under authority resolved by its transport."""
+        route = self._routes.get(request.operation)
+        if route is None:
+            return self.probe.dispatch(request)
+        return route.dispatch_for_session(request, session)
 
 
 def compose_production_application_surface(
@@ -815,6 +873,27 @@ class ApplicationDispatcher:
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
         """Dispatch with this endpoint's server-issued authenticated session."""
         return self._dispatch(request, session=self.session)
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope:
+        """Dispatch under a transport-resolved caller session.
+
+        The configured session remains the server's maximum handler policy; the
+        supplied session is the caller authority used by the authorization seam.
+        Mutation grants therefore require both rather than inheriting the broader
+        configured session merely because the request arrived over HTTP.
+        """
+        if request.operation not in self.registry:
+            if isinstance(self.probe, SessionApplicationFallback):
+                return self.probe.dispatch_for_session(request, session)
+            return self.probe.dispatch(request)
+        return self._dispatch(
+            request,
+            session=_narrow_session(self.session, session),
+        )
 
     def dispatch_without_session(self, request: RequestEnvelope) -> ResponseEnvelope:
         """Dispatch after a trusted session lookup returned no authenticated caller.

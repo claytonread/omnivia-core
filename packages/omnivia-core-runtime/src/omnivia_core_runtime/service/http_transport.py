@@ -77,8 +77,11 @@ this adapter acts as one fixed principal, so a session for anyone else is refuse
 rather than silently executed as that one. The operation has to be on the session's
 own allowlist. And `principal_claim`, `workspace_id`, `purpose` and `scopes` in the
 request are claims: each must name something the session already holds, so a claim may
-select a subset and can never add. This is a gate in front of dispatch, not a second
-authorization vocabulary -- it produces a status code, never an envelope.
+select a subset and can never add. This gate produces only an HTTP status. Once it
+admits an application request, the same resolved session is carried through the
+structural router to the application's full authorization seam, which produces the
+contract's typed authorization responses and cannot inherit the endpoint's broader
+configured session.
 
 **The route/document agreement.** A probe is answered unauthenticated, so the probe
 route must not become a way to reach the application path. The document's own branch
@@ -146,7 +149,11 @@ from pathlib import Path
 from typing import Any, Final, Self, TypeAlias
 from urllib.parse import urlsplit
 
-from omnivia_core.contracts.v1 import ContractDecodeError, RequestEnvelope
+from omnivia_core.contracts.v1 import (
+    ContractDecodeError,
+    RequestEnvelope,
+    ResponseEnvelope,
+)
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
 from omnivia_core_runtime.service.ovc1 import (
     LENGTH_BYTES,
@@ -191,6 +198,12 @@ DEFAULT_HOST: Final = "127.0.0.1"
 #: signed token, a broker -- is a separate, separately approved decision, and
 #: inventing one here would be inventing the security design it belongs to.
 CredentialResolver: TypeAlias = Callable[[str], AuthenticatedSession | None]
+
+#: Application dispatch that carries the transport-authenticated session through
+#: the shared structural router and into the authorization seam.
+AuthenticatedApplicationDispatch: TypeAlias = Callable[
+    [RequestEnvelope, AuthenticatedSession], ResponseEnvelope
+]
 
 
 class HttpTransportError(Exception):
@@ -756,9 +769,14 @@ class _Handler(BaseHTTPRequestHandler):
         if session is not None and not self._session_admits_request(document, session):
             return
 
-        self._route(document)
+        self._route(document, session=session)
 
-    def _route(self, document: Mapping[str, Any]) -> None:
+    def _route(
+        self,
+        document: Mapping[str, Any],
+        *,
+        session: AuthenticatedSession | None,
+    ) -> None:
         """Hand the document to the shared router and answer with what comes back.
 
         HTTP 200 for whatever the router produced -- an application success envelope,
@@ -775,7 +793,14 @@ class _Handler(BaseHTTPRequestHandler):
         would reach `handle_error` with the request attached.
         """
         try:
-            result = self.server_adapter.router.route(document)
+            authenticated = self.server_adapter.authenticated_dispatch
+            if session is None or authenticated is None:
+                result = self.server_adapter.router.route(document)
+            else:
+                def dispatch(request: RequestEnvelope) -> ResponseEnvelope:
+                    return authenticated(request, session)
+
+                result = self.server_adapter.router.route(document, dispatch=dispatch)
             payload = canonical_json_bytes(result.to_wire())
         except (ProtocolError, ProbeError, ContractDecodeError, OVC1Error):
             self._refuse(HTTPStatus.BAD_REQUEST)
@@ -960,6 +985,7 @@ class HttpListener:
     router: DocumentRouter
     principal: str
     resolver: CredentialResolver | None = None
+    authenticated_dispatch: AuthenticatedApplicationDispatch | None = None
     bind: HttpBind = field(default_factory=HttpBind)
     #: The total budget for reading one request, not a per-read one. Named on the
     #: adapter so a test can assert the bound in a second rather than in ten.
@@ -985,6 +1011,19 @@ class HttpListener:
             raise HttpTransportError(
                 "HTTP declares a principal the dispatcher behind its router does "
                 "not act as"
+            )
+        owner = getattr(self.router.dispatch, "__self__", None)
+        if self.authenticated_dispatch is None:
+            candidate = getattr(owner, "dispatch_for_session", None)
+            if callable(candidate):
+                self.authenticated_dispatch = candidate
+        if (
+            isinstance(getattr(owner, "session", None), AuthenticatedSession)
+            and self.authenticated_dispatch is None
+        ):
+            raise HttpTransportError(
+                "refusing an authority-bearing HTTP dispatcher without a "
+                "session-aware dispatch path"
             )
 
     def start(self) -> str:

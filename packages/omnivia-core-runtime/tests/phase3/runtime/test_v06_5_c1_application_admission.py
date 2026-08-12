@@ -97,6 +97,12 @@ class _NoSessionRoute:
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
         return self.route.dispatch_without_session(request)
 
+    def dispatch_for_session(
+        self, request: RequestEnvelope, session: AuthenticatedSession
+    ) -> ResponseEnvelope:
+        del session
+        return self.route.dispatch_without_session(request)
+
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
 @pytest.mark.parametrize(

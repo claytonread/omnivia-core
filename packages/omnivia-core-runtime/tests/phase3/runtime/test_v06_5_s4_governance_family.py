@@ -25,6 +25,7 @@ from test_v06_5_s2_memory_migration import _apply_through
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
     ERROR_CODE_AUTHORIZATION_DENIED,
+    ERROR_CODE_CAPABILITY_NOT_GRANTED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -403,6 +404,63 @@ def test_v06_5_s4_transition_requires_reviewer_authority(
     assert owned.connection.execute(
         "SELECT COUNT(*) FROM omnivia_application_governance_transitions"
     ).fetchone() == before
+
+
+def test_v06_5_s4_http_dispatch_preserves_resolved_session_authority(
+    owned: m3.m2.Owned,
+) -> None:
+    """A bearer cannot inherit the broader session configured on the endpoint."""
+    memory, governance = _dispatchers(owned, tag="http-session")
+    record_id, version = _eligible_source(
+        memory, governance, operation="candidate.approve", tag="http-session"
+    )
+    request = _request(
+        "candidate.approve",
+        {"record_id": record_id, "rationale": {"reason_code": "http_review"}},
+        version=version,
+        tag="http-session-approve",
+    )
+    before = owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_application_governance_transitions"
+    ).fetchone()
+    restricted = replace(governance.session, roles=frozenset(), capabilities=())
+
+    denied = s2._transport_call(
+        "http", governance, request, http_session=restricted
+    )
+
+    assert isinstance(denied, ErrorResponseEnvelope), denied
+    assert denied.error.code == ERROR_CODE_CAPABILITY_NOT_GRANTED
+    assert denied.metadata.audit_reference is None
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_application_governance_transitions"
+    ).fetchone() == before
+
+
+def test_v06_5_s4_http_fallback_preserves_resolved_session_authority(
+    owned: m3.m2.Owned,
+) -> None:
+    """A top-level family cannot drop caller authority while routing downward."""
+    memory, governance = _dispatchers(owned, tag="http-fallback")
+    restricted = replace(memory.session, roles=frozenset(), capabilities=())
+
+    denied = s2._transport_call(
+        "http",
+        governance,
+        s2._request(
+            "memory.create",
+            s2._memory_input("restricted fallback"),
+            request_id="req-s4-http-fallback",
+            idempotency_key="idem-s4-http-fallback",
+        ),
+        http_session=restricted,
+    )
+
+    assert isinstance(denied, ErrorResponseEnvelope), denied
+    assert denied.error.code == ERROR_CODE_CAPABILITY_NOT_GRANTED
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_governed_records"
+    ).fetchone() == (0,)
 
 
 def test_v06_5_s4_extraction_cannot_bypass_governance(

@@ -49,7 +49,11 @@ from omnivia_core_runtime.service.application import (
     build_memory_application_dispatcher,
     local_owner_session,
 )
-from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    Grant,
+    ServiceBinding,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
@@ -120,6 +124,10 @@ class _ApplicationDispatch(Protocol):
     """
 
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
+
+    def dispatch_for_session(
+        self, request: RequestEnvelope, session: AuthenticatedSession
+    ) -> ResponseEnvelope: ...
 
 
 def _router_for(
@@ -526,6 +534,7 @@ def main(
                 # refuse a session for anyone else rather than run it as this one.
                 principal=LOCAL_PRINCIPAL,
                 resolver=resolve_credential,
+                authenticated_dispatch=application.dispatch_for_session,
                 bind=http_bind,
             )
             http.start()
