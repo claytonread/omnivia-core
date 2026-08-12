@@ -36,6 +36,8 @@ ALLOWED_IMPORTS = frozenset(
         "collections",
         "ctypes",
         "dataclasses",
+        "http",
+        "ipaddress",
         "json",
         "math",
         "omnivia_core",
@@ -44,10 +46,12 @@ ALLOWED_IMPORTS = frozenset(
         "pathlib",
         "re",
         "socket",
+        "ssl",
         "stat",
         "threading",
         "time",
         "typing",
+        "urllib",
     }
 )
 
@@ -56,7 +60,7 @@ ALLOWED_IMPORTS = frozenset(
 #:
 #: Owner resolution 005 R005-01 placed the concrete local transport in this
 #: package. That admits exactly one socket-opening module, and this pins it to
-#: that module by name rather than letting the ban lapse for all seven: a
+#: that module by name rather than letting the ban lapse for all nine: a
 #: ``socket`` import appearing in ``framing.py`` or ``discovery.py`` would still
 #: be a protocol foundation quietly becoming a transport, which is the thing the
 #: original ban was protecting and the thing the resolution did not change.
@@ -66,6 +70,27 @@ ALLOWED_IMPORTS = frozenset(
 #: still exactly ``omnivia-core``, asserted below and by
 #: ``scripts/check-package-boundaries.py`` -- not its standard-library surface.
 SOCKET_MODULE = "local_ipc.py"
+
+#: The one module allowed to import ``http``, ``ipaddress``, ``ssl`` and
+#: ``urllib``, and the only reason those four are on the allowlist above.
+#:
+#: The authenticated HTTP transport needs all four and no other module needs any
+#: of them: ``http.client`` for a unary request, ``ssl`` for the verified default
+#: context, ``urllib.parse.urlsplit`` for the endpoint, and ``ipaddress`` for the
+#: loopback rule that decides whether cleartext is admissible. Every one of them
+#: is a standard library facility, and each was chosen over writing the same
+#: thing here -- a hand-written URL splitter, a hand-written loopback test.
+#:
+#: Pinned by name for the same reason ``socket`` is. Admitting ``ssl`` for the
+#: whole package would let a TLS stack appear in ``discovery.py``; admitting
+#: ``urllib`` would let a URL fetcher appear anywhere. A third-party HTTP client
+#: stays forbidden outright -- see :data:`FORBIDDEN_IMPORTS` -- because the point
+#: was never that this package cannot speak HTTP, it is that it has exactly one
+#: dependency.
+HTTP_MODULE = "http_transport.py"
+
+#: What :data:`HTTP_MODULE` alone may import.
+HTTP_ONLY_IMPORTS = ("http", "ipaddress", "ssl", "urllib")
 
 #: Named explicitly so a failure says *what* leaked rather than only that the
 #: allowlist was exceeded. Every one of these is forbidden for a stated reason:
@@ -77,9 +102,12 @@ SOCKET_MODULE = "local_ipc.py"
 #:
 #: ``socket`` is *not* here: it is confined to :data:`SOCKET_MODULE` by
 #: :func:`test_only_the_local_ipc_module_opens_a_socket`, which is a stricter
-#: statement than this tuple can make. ``ssl`` and ``urllib`` stay banned
-#: outright -- the local transport dials an installation-local Unix socket, and
-#: neither a TLS stack nor a URL fetcher is part of that.
+#: statement than this tuple can make. ``http``, ``ipaddress``, ``ssl`` and
+#: ``urllib`` are absent for the same reason and no other -- they are confined to
+#: :data:`HTTP_MODULE` by :func:`test_only_the_http_module_reaches_for_http`.
+#: A *third-party* HTTP client is still forbidden everywhere, and that is the
+#: distinction that matters: this package speaks HTTP with the standard library
+#: because it has exactly one dependency and adds none.
 FORBIDDEN_IMPORTS = (
     "aiohttp",
     "asyncio",
@@ -97,9 +125,7 @@ FORBIDDEN_IMPORTS = (
     "shlex",
     "shutil",
     "sqlite3",
-    "ssl",
     "subprocess",
-    "urllib",
     "urllib3",
 )
 
@@ -126,10 +152,12 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
     assert {path.name for path in MODULES} == {
         "__init__.py",
         "compatibility.py",
+        "credentials.py",
         "deadline.py",
         "discovery.py",
         "errors.py",
         "framing.py",
+        "http_transport.py",
         "local_ipc.py",
         "transport.py",
     }
@@ -140,17 +168,58 @@ def test_the_import_surface_is_exactly_the_allowlist() -> None:
 
 
 def test_only_the_local_ipc_module_opens_a_socket() -> None:
-    """One socket-opening module, named. The other six stay a pure foundation.
+    """One socket-opening module, named. The other eight stay a pure foundation.
 
     Dropping ``socket`` from the allowlist ban to admit the transport would have
     lifted it for every module at once. This keeps the ban everywhere except the
     one file owner resolution 005 R005-01 put it in, so the next ``import
     socket`` anywhere else in this package still fails.
+
+    The HTTP transport is not an exception to this. It opens its connection
+    through ``http.client``, which owns the socket underneath, and never imports
+    ``socket`` itself.
     """
     importers = sorted(
         path.name for path in MODULES if "socket" in _imported_roots(path)
     )
     assert importers == [SOCKET_MODULE]
+
+
+@pytest.mark.parametrize("module_name", HTTP_ONLY_IMPORTS)
+def test_only_the_http_module_reaches_for_http(module_name: str) -> None:
+    """One module speaks HTTP, TLS, URLs and IP addresses. The other eight do not.
+
+    The same shape as the ``socket`` pin above and for the same reason: admitting
+    these four for the whole package would let a TLS stack into ``discovery.py``
+    or a URL parser into ``framing.py``, which is a protocol foundation quietly
+    becoming a fetcher. Parameterized so a failure names *which* of the four
+    leaked and into what.
+    """
+    importers = sorted(
+        path.name for path in MODULES if module_name in _imported_roots(path)
+    )
+    assert importers == [HTTP_MODULE]
+
+
+def test_the_credential_module_needs_no_privileged_import() -> None:
+    """The credential seam is pure standard library and pure computation.
+
+    It resolves nothing itself: no filesystem, no network, no process, no
+    platform call. Asserting that here rather than only in prose is what stops a
+    later change from quietly making this module a credential *source*, which is
+    the one thing it must never become.
+    """
+    roots = _imported_roots(SOURCE_ROOT / "credentials.py")
+    assert roots <= {
+        "__future__",
+        "collections",
+        "omnivia_core_client",
+        "math",
+        "re",
+        "threading",
+        "time",
+        "typing",
+    }, sorted(roots)
 
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_IMPORTS)
@@ -286,21 +355,34 @@ def test_the_typing_marker_ships() -> None:
 
 
 def test_the_readme_marks_the_unimplemented_surfaces() -> None:
-    """What is still absent, after R005-01 landed the local transport.
+    """What is still absent, after the authenticated HTTP transport landed.
 
-    ``local socket`` left this list because the local socket transport now
-    ships. The Windows named pipe took its place: it is the half of local IPC
-    that is still a successor, and `socket_path_for` refuses ``pipe://`` in so
-    many words rather than failing as a connection error.
+    ``local socket`` left this list when R005-01 landed the local transport, and
+    ``HTTP transport`` has now left it the same way. The four that remain are
+    unchanged: the Windows named pipe is the half of local IPC that is still a
+    successor, and retry, managed startup and the high-level client are each
+    their own packet.
     """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     not_implemented = readme.split("## Not implemented yet", 1)
     assert len(not_implemented) == 2, "README must state what is not implemented yet"
     for surface in (
         "named-pipe",
-        "HTTP transport",
         "retry",
         "managed service startup",
         "high-level client",
     ):
         assert surface in not_implemented[1], surface
+
+
+def test_the_readme_no_longer_claims_http_or_credentials_are_absent() -> None:
+    """The counterweight: a README that lists a shipped surface as missing is wrong.
+
+    Asserted on the "not implemented" section specifically rather than on the
+    whole file, because both words appear -- correctly -- in the sections that
+    describe what the transport and the credential seam now do.
+    """
+    readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
+    absent = readme.split("## Not implemented yet", 1)[1].lower()
+    assert "http" not in absent
+    assert "credential" not in absent

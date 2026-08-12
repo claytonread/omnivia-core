@@ -1,10 +1,11 @@
 """The transport contract: its typing, its runtime behaviour, and its preconditions.
 
-The protocol is the whole deliverable here -- there is no concrete transport in
-P1a -- so these tests assert what the protocol *is*: which methods it declares,
-with which parameters and which public contract types, what ``isinstance`` does
-with it, and that a call already cancelled or already out of time is refused
-before anything is sent.
+The protocol is the whole deliverable of ``transport.py`` -- the concrete
+transports live in their own modules and are tested there -- so these tests
+assert what the protocol *is*: which methods it declares, with which parameters
+and which public contract types, what ``isinstance`` does with it, and that a
+call already cancelled or already out of time is refused before anything is
+sent.
 
 The request and response used below are decoded from the checked-in vectors, so
 the fake transport moves real accepted contract documents rather than
@@ -311,11 +312,22 @@ def test_cancelling_mid_flight_reaches_a_registered_abort_action() -> None:
 
 
 # --------------------------------------------------------------------------
-# What P1a deliberately does not ship
+# What this module, and this package, deliberately do not ship
 # --------------------------------------------------------------------------
 
 
-def test_no_concrete_transport_is_exported() -> None:
+def test_the_contract_module_ships_no_transport_of_its_own() -> None:
+    """The seam stays a seam. Both concrete transports live in their own modules.
+
+    ``HttpTransport`` and ``HTTPTransport`` left the forbidden list below when
+    the authenticated HTTP transport landed, exactly as ``HTTP transport`` left
+    the README's "not implemented" section: a name is forbidden here because the
+    surface is absent, and keeping it after the surface shipped would be
+    asserting the package is missing something it has. What is still absent --
+    the Windows named pipe, retry, managed startup, and the high-level client --
+    is unchanged, and so is the rule that ``transport.py`` itself exports two
+    names and no implementation.
+    """
     import omnivia_core_client
     from omnivia_core_client import transport as transport_module
 
@@ -324,8 +336,6 @@ def test_no_concrete_transport_is_exported() -> None:
         "LocalTransport",
         "UnixSocketTransport",
         "NamedPipeTransport",
-        "HttpTransport",
-        "HTTPTransport",
         "connect",
         "dial",
         "discover",
@@ -340,3 +350,8 @@ def test_no_concrete_transport_is_exported() -> None:
     for name in forbidden:
         assert name not in omnivia_core_client.__all__, name
         assert not hasattr(omnivia_core_client, name), name
+
+    # The counterweight: what did ship is exported, and from its own module.
+    for shipped in ("LocalIpcTransport", "HttpTransport"):
+        assert shipped in omnivia_core_client.__all__, shipped
+        assert not hasattr(transport_module, shipped), shipped

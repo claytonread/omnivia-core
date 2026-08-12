@@ -25,6 +25,11 @@ from __future__ import annotations
 __all__ = [
     "ClientError",
     "CompatibilityError",
+    "CredentialDeniedError",
+    "CredentialError",
+    "CredentialInvalidError",
+    "CredentialMissingError",
+    "CredentialUnavailableError",
     "DeadlineExceededError",
     "OperationCancelledError",
     "ProtocolError",
@@ -89,4 +94,64 @@ class OperationCancelledError(ClientError):
     Distinct from :class:`DeadlineExceededError` on purpose: a cancelled call
     was abandoned by the caller and a timed-out one was abandoned by the clock,
     and reporting either as the other misattributes the cause.
+    """
+
+
+class CredentialError(ClientError):
+    """A credential reference did not become a credential this call could present.
+
+    Four outcomes and no fifth, because the seam that produces them --
+    :class:`~omnivia_core_client.credentials.CredentialCache` -- collapses
+    everything an injected resolver can do into exactly these. Catching this
+    catches all four.
+
+    **Every message below is a fixed sentence written here.** None of them is
+    built from the reference, the origin, the resolver's own diagnostic, or
+    anything the resolver returned, and none of them is raised with an
+    exception being handled -- so ``args``, ``__cause__`` and ``__context__``
+    are all free of the resolver's words. A credential store's exception names
+    the store, and a store path or a key name is exactly what must not reach a
+    log through the failure to read it.
+    """
+
+
+class CredentialMissingError(CredentialError):
+    """The host holds no credential for this reference at this origin.
+
+    A negative answer, not a failure to answer: the resolver was reached, ran,
+    and said there is nothing here. Whether the reference is unknown or is
+    known and simply holds nothing for this origin is deliberately not
+    reportable -- an error that could tell them apart is a credential oracle.
+    """
+
+
+class CredentialDeniedError(CredentialError):
+    """The host refused to release the credential for this origin.
+
+    The one outcome a resolver signals by *raising*, and the reason this class
+    is public: a host that decides a reference may not be used against the
+    origin it was asked about raises this, and the seam re-raises a fresh one
+    of its own rather than the instance it caught.
+    """
+
+
+class CredentialUnavailableError(CredentialError):
+    """The credential could not be resolved at all.
+
+    Whatever the resolver raised that was not a denial: a store that was
+    unreachable, a broker that timed out, a decoder that failed. The original
+    is dropped rather than chained, so what survives is that resolution did not
+    happen -- never where it was attempted or what it said.
+    """
+
+
+class CredentialInvalidError(CredentialError):
+    """A reference or a resolved credential is not one this client can use.
+
+    Both ends of the same rule, deliberately one class. A reference outside the
+    accepted grammar is refused before any resolver sees it; a resolver that
+    answers with something that is not a
+    :class:`~omnivia_core_client.credentials.Credential`, or with secret
+    material that could not travel in an ``Authorization`` header, is refused
+    before it reaches a socket.
     """

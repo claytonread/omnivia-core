@@ -19,16 +19,30 @@ library.
 - :mod:`~omnivia_core_client.compatibility` -- API, protocol, and descriptor versions
 - :mod:`~omnivia_core_client.discovery` -- safe descriptor discovery and live identity
 - :mod:`~omnivia_core_client.errors` -- the typed failures those raise
-- :mod:`~omnivia_core_client.local_ipc` -- :class:`LocalIpcTransport`, the one
-  concrete transport, over the installation-local endpoint
+- :mod:`~omnivia_core_client.local_ipc` -- :class:`LocalIpcTransport`, over the
+  installation-local endpoint
+- :mod:`~omnivia_core_client.credentials` -- the endpoint-bound credential seam:
+  an opaque :class:`CredentialReference`, the opaque :class:`Credential` carrier,
+  and the :class:`CredentialCache` that calls the host's injected resolver
+- :mod:`~omnivia_core_client.http_transport` -- :class:`HttpTransport`, the
+  authenticated HTTP v1 transport, over a verified ``https`` endpoint or a
+  loopback cleartext one
 
-**What is not here yet**, and must not be assumed: an HTTP transport, retry or
-backoff, managed service startup, and the high-level client that would put them
-together. Each arrives in its own packet.
+**What is not here yet**, and must not be assumed: retry or backoff, managed
+service startup, the Windows named-pipe transport, and the high-level client that
+would put them together. Each arrives in its own packet.
 
-:class:`LocalIpcTransport` is the single concrete transport, placed here by owner
-resolution 005 R005-01. Every caller that dials a local Core service constructs it
-from this package; there is no second implementation anywhere in the repository.
+:class:`LocalIpcTransport` and :class:`HttpTransport` are the two concrete
+transports, and both live here -- the first by owner resolution 005 R005-01, the
+second because it satisfies the same protocol over the same envelopes and would
+otherwise be a second dial loop in whichever caller needed it first. Every caller
+that dials a Core service constructs one of them from this package; there is no
+third implementation anywhere in the repository.
+
+**No credential source ships here, and none is implied.** The credential seam
+takes a resolver the host injects and defines no token format, issuer, store,
+broker or keychain, reads no environment variable or configuration file, and
+holds no policy about when a service should serve HTTP at all.
 
 Standard library plus the public ``omnivia_core`` contracts only.
 """
@@ -47,6 +61,15 @@ from omnivia_core_client.compatibility import (
     select_protocol_version,
     validate_descriptor_version,
 )
+from omnivia_core_client.credentials import (
+    DEFAULT_CREDENTIAL_TTL_SECONDS,
+    MAXIMUM_CREDENTIAL_CHARACTERS,
+    MAXIMUM_REFERENCE_CHARACTERS,
+    Credential,
+    CredentialCache,
+    CredentialReference,
+    CredentialResolver,
+)
 from omnivia_core_client.deadline import (
     MAXIMUM_DURATION_MS,
     MAXIMUM_TIMEOUT_SECONDS,
@@ -63,6 +86,11 @@ from omnivia_core_client.discovery import (
 from omnivia_core_client.errors import (
     ClientError,
     CompatibilityError,
+    CredentialDeniedError,
+    CredentialError,
+    CredentialInvalidError,
+    CredentialMissingError,
+    CredentialUnavailableError,
     DeadlineExceededError,
     OperationCancelledError,
     ProtocolError,
@@ -81,6 +109,11 @@ from omnivia_core_client.framing import (
     decode_frame,
     encode_frame,
 )
+from omnivia_core_client.http_transport import (
+    HttpEndpoint,
+    HttpTransport,
+    parse_http_endpoint,
+)
 from omnivia_core_client.local_ipc import (
     LOCAL_IPC_SCHEME,
     LocalIpcTransport,
@@ -97,16 +130,19 @@ __all__ = [
     "CANONICAL_JSON_ALGORITHM",
     "CLIENT_API_VERSION",
     "CLIENT_SUPPORTED_API_VERSIONS",
+    "DEFAULT_CREDENTIAL_TTL_SECONDS",
     "FRAME_FORMAT",
     "HEADER_BYTES",
     "LENGTH_BYTES",
     "LOCAL_IPC_SCHEME",
     "MAGIC",
     "MAGIC_HEX",
+    "MAXIMUM_CREDENTIAL_CHARACTERS",
     "MAXIMUM_DESCRIPTOR_BYTES",
     "MAXIMUM_DURATION_MS",
     "MAXIMUM_JSON_BYTES",
     "MAXIMUM_JSON_NESTING_DEPTH",
+    "MAXIMUM_REFERENCE_CHARACTERS",
     "MAXIMUM_TIMEOUT_SECONDS",
     "SUPPORTED_DESCRIPTOR_VERSION",
     "SUPPORTED_PROTOCOL_VERSION",
@@ -115,9 +151,20 @@ __all__ = [
     "ClientError",
     "ClientTransport",
     "CompatibilityError",
+    "Credential",
+    "CredentialCache",
+    "CredentialDeniedError",
+    "CredentialError",
+    "CredentialInvalidError",
+    "CredentialMissingError",
+    "CredentialReference",
+    "CredentialResolver",
+    "CredentialUnavailableError",
     "Deadline",
     "DeadlineExceededError",
     "DiscoveredEndpoint",
+    "HttpEndpoint",
+    "HttpTransport",
     "LocalIpcTransport",
     "MonotonicClock",
     "NegotiatedEndpoint",
@@ -132,6 +179,7 @@ __all__ = [
     "encode_frame",
     "enforce_send_preconditions",
     "negotiate_endpoint",
+    "parse_http_endpoint",
     "select_api_version",
     "select_protocol_version",
     "socket_path_for",
