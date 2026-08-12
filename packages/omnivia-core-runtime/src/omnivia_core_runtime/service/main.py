@@ -44,15 +44,10 @@ from omnivia_core_runtime.service.application import (
     WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
-    build_installation_registry,
-    installation_owner_session,
     local_owner_session,
 )
 from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
 from omnivia_core_runtime.service.dispatch import Dispatcher
-from omnivia_core_runtime.service.handlers.workspace_family import (
-    InstallationWorkspaceHandlers,
-)
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
     HttpBind,
@@ -60,7 +55,6 @@ from omnivia_core_runtime.service.http_transport import (
     HttpTransportError,
     parse_http_endpoint,
 )
-from omnivia_core_runtime.service.installation import InstallationApplicationService
 from omnivia_core_runtime.service.managed_start import (
     ManagedStartStatus,
     managed_start,
@@ -86,7 +80,6 @@ from omnivia_core_runtime.service.workspace_init import (
 from omnivia_core_runtime.service.workspace_init import (
     render_result as render_init_result,
 )
-from omnivia_core_runtime.storage.installation_store import open_installation_store
 from omnivia_core_runtime.storage.projections.fts import (
     build_search_projection,
     open_search_projection,
@@ -448,7 +441,7 @@ def main(
         # of it comes from a request, and no handler builds one.
         installation_id = started.identity.installation_id
         registry = build_application_registry()
-        workspace_application = ApplicationDispatcher(
+        application = ApplicationDispatcher(
             registry=registry,
             session=local_owner_session(
                 principal_id=LOCAL_PRINCIPAL,
@@ -494,53 +487,6 @@ def main(
             # lane's evidence, and wiring a sink is a successor lane.
             record=None,
             service=started,
-        )
-
-        # The S1 family owns installation scope through a distinct catalogue,
-        # session and binding.  It is chained in front of the unchanged workspace
-        # dispatcher, so create/list reach the same adapters without widening the
-        # shared workspace session or letting an installation request acquire a
-        # workspace selection.
-        installation_store = open_installation_store(
-            settings.installation_root,
-            owner_instance_id=started.identity.service_instance_id,
-        )
-        started.lifecycle.resources.push(
-            "installation_catalogue", installation_store.close
-        )
-        catalogue_installation_id = installation_store.authority.installation_id
-        installation_service = InstallationApplicationService(
-            store=installation_store,
-            installation_root=settings.installation_root,
-            workspace_storage_root=settings.workspace_root.resolve().parent,
-            core_version=settings.core_version,
-            clock=started.clock,
-        )
-        installation_session = installation_owner_session(
-            principal_id=LOCAL_PRINCIPAL,
-            installation_id=catalogue_installation_id,
-        )
-        installation_binding = ServiceBinding(
-            installation_id=catalogue_installation_id
-        )
-        installation_handlers = InstallationWorkspaceHandlers(
-            installation=installation_service,
-            session=installation_session,
-            binding=installation_binding,
-        )
-        installation_registry = build_installation_registry(
-            workspace_create=installation_handlers.workspace_create,
-            workspace_list=installation_handlers.workspace_list,
-        )
-        application = ApplicationDispatcher(
-            registry=installation_registry,
-            session=installation_session,
-            binding=installation_binding,
-            supported_capabilities=server_capability_snapshot(installation_registry),
-            transport=LOCAL_TRANSPORT_ADAPTER,
-            probe=workspace_application,
-            record=None,
-            service=installation_service,
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

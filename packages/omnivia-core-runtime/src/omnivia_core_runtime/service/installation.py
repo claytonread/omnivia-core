@@ -27,9 +27,13 @@ from omnivia_core.contracts.v1 import (
     CapabilityRef,
     ContractDecodeError,
     ContractSemanticError,
+    GrantedAuthority,
     IdempotencyEquivalence,
     PageMetadata,
+    Purpose,
+    RequestEnvelope,
     RequestMetadata,
+    Scope,
     WorkspaceCompatibility,
     WorkspaceCreateInput,
     WorkspaceCreateResult,
@@ -234,6 +238,27 @@ class WorkspaceCreateExecution:
 
 
 WorkspaceBootstrapper = Callable[..., WorkspaceInitResult]
+
+
+@dataclass(frozen=True)
+class InstallationOperationContext:
+    """The exact server-authorized facts visible to an installation handler.
+
+    Installation operations have no selected workspace. Keeping this context beside
+    the installation service prevents either inventing a workspace id or weakening
+    the existing workspace handler contract. Session and binding stay in the
+    server-owned handler composition, so a request cannot replace them.
+    """
+
+    request: RequestEnvelope
+    principal: str
+    installation_id: str
+    granted_operations: frozenset[str]
+    authorization: AuthorizedApplicationContext
+    service: Any = None
+    authority: GrantedAuthority | None = None
+    scopes: tuple[Scope, ...] | None = None
+    purpose: Purpose | None = None
 
 
 def _same_allocation_identity(
@@ -940,6 +965,7 @@ __all__ = [
     "InstallationIdempotencyDenied",
     "InstallationMutationDenied",
     "InstallationMutationGrant",
+    "InstallationOperationContext",
     "InstallationSeamFault",
     "PreparedWorkspaceCreate",
     "WorkspaceCreateExecution",

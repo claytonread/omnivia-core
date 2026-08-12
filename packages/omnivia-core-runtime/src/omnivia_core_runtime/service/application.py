@@ -50,7 +50,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final, Protocol, TypeAlias
+from typing import Any, Final, Protocol, TypeAlias, cast
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -77,10 +77,15 @@ from omnivia_core_runtime.service.handlers.knowledge import (
     memory_search,
 )
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
+from omnivia_core_runtime.service.handlers.workspace_family import (
+    InstallationWorkspaceHandlers,
+)
 from omnivia_core_runtime.service.installation import (
     WORKSPACE_CREATE_OPERATION,
     WORKSPACE_LIST_OPERATION,
     WORKSPACE_LIST_PURPOSE,
+    InstallationApplicationService,
+    InstallationOperationContext,
 )
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
@@ -88,11 +93,11 @@ from omnivia_core_runtime.service.mutation import (
 )
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
-    InstallationOperationContext,
     OperationContext,
     OperationError,
     OperationHandler,
     failure,
+    server_capability_snapshot,
     success,
 )
 
@@ -365,8 +370,15 @@ def build_application_registry(
     return registry
 
 
+InstallationOperationHandler: TypeAlias = Callable[
+    [InstallationOperationContext], Mapping[str, Any]
+]
+
+
 def build_installation_registry(
-    *, workspace_create: OperationHandler, workspace_list: OperationHandler
+    *,
+    workspace_create: InstallationOperationHandler,
+    workspace_list: InstallationOperationHandler,
 ) -> ApplicationOperationRegistry:
     """The S1 installation family, separate from the workspace read registry.
 
@@ -376,8 +388,12 @@ def build_installation_registry(
     of the six existing workspace reads.
     """
     registry = ApplicationOperationRegistry()
-    registry.register(WORKSPACE_CREATE_OPERATION, workspace_create)
-    registry.register(WORKSPACE_LIST_OPERATION, workspace_list)
+    # The registry predates installation scope and names its transport-neutral
+    # callable with the workspace context type. The application dispatcher selects
+    # the context from frozen catalogue scope before invocation, so this cast adapts
+    # only that legacy annotation; it does not widen runtime authority.
+    registry.register(WORKSPACE_CREATE_OPERATION, cast(OperationHandler, workspace_create))
+    registry.register(WORKSPACE_LIST_OPERATION, cast(OperationHandler, workspace_list))
     return registry
 
 
@@ -712,6 +728,50 @@ class ApplicationDispatcher:
         )
 
 
+def build_installation_application_dispatcher(
+    *,
+    service: InstallationApplicationService,
+    principal_id: str,
+    fallback: ApplicationFallback,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the production S1 path around one installation-owned service.
+
+    The caller owns the installation catalogue lifecycle and supplies the next
+    dispatch layer for names outside the S1 registry. This function owns every
+    security-sensitive composition choice: the installation-only session and
+    binding, the concrete handlers, the exact two-operation registry, and the
+    capability snapshot derived from that registry. It deliberately does not attach
+    the installation lifetime lock to a per-workspace service process.
+    """
+    installation_id = service.authority.installation_id
+    session = installation_owner_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id)
+    handlers = InstallationWorkspaceHandlers(
+        installation=service,
+        session=session,
+        binding=binding,
+    )
+    registry = build_installation_registry(
+        workspace_create=handlers.workspace_create,
+        workspace_list=handlers.workspace_list,
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
@@ -730,6 +790,7 @@ __all__ = [
     "ApplicationCallSink",
     "ApplicationDispatcher",
     "build_application_registry",
+    "build_installation_application_dispatcher",
     "build_installation_registry",
     "installation_owner_session",
     "local_owner_session",

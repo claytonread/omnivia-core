@@ -4,30 +4,30 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import shutil
 import socket
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
 from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.application import (
-    LOCAL_TRANSPORT_ADAPTER,
     ApplicationDispatcher,
-    build_installation_registry,
-    installation_owner_session,
+    build_installation_application_dispatcher,
 )
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     Grant,
-    ServiceBinding,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
-from omnivia_core_runtime.service.handlers.workspace_family import (
-    InstallationWorkspaceHandlers,
-)
 from omnivia_core_runtime.service.http_transport import (
     APPLICATION_PATH,
     CONTENT_TYPE,
@@ -40,10 +40,7 @@ from omnivia_core_runtime.service.installation import (
     InstallationApplicationService,
 )
 from omnivia_core_runtime.service.mutation import WORKSPACE_ADMINISTRATION_PURPOSE
-from omnivia_core_runtime.service.operations import (
-    SERVICE_OPERATIONS,
-    server_capability_snapshot,
-)
+from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.ovc1 import decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -53,6 +50,7 @@ from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitResult,
     WorkspaceInitStatus,
     initialise_allocated_workspace,
+    initialise_workspace,
 )
 from omnivia_core_runtime.storage.installation_store import (
     AllocationState,
@@ -149,33 +147,16 @@ def _path(
         clock=FakeClock(),
         bootstrapper=bootstrapper,
     )
-    session = installation_owner_session(
+    dispatcher = build_installation_application_dispatcher(
+        service=service,
         principal_id=PRINCIPAL,
-        installation_id=store.authority.installation_id,
-    )
-    binding = ServiceBinding(installation_id=store.authority.installation_id)
-    handlers = InstallationWorkspaceHandlers(
-        installation=service, session=session, binding=binding
-    )
-    registry = build_installation_registry(
-        workspace_create=handlers.workspace_create,
-        workspace_list=handlers.workspace_list,
-    )
-    dispatcher = ApplicationDispatcher(
-        registry=registry,
-        session=session,
-        binding=binding,
-        supported_capabilities=server_capability_snapshot(registry),
-        transport=LOCAL_TRANSPORT_ADAPTER,
-        probe=Dispatcher.for_service_operations(
+        fallback=Dispatcher.for_service_operations(
             Grant(
                 principal=PRINCIPAL,
                 workspaces=frozenset({"ws-fallback"}),
                 operations=frozenset(SERVICE_OPERATIONS),
             )
         ),
-        record=None,
-        service=service,
     )
     return dispatcher, store
 
@@ -448,6 +429,106 @@ def test_v06_5_s1_workspace_creation_cleanup_after_failure(tmp_path: Path) -> No
     finally:
         if not closed:
             store.close()
+
+
+def test_v06_5_s1_legacy_workspace_is_not_implicitly_adopted(tmp_path: Path) -> None:
+    """Only a fenced S1 allocation enters the installation-owned inventory.
+
+    Legacy ``--init`` predates installation grants and therefore cannot silently
+    grant the new catalogue authority over a workspace. A later cutover may define
+    an explicit adoption protocol; S1 must neither infer one nor enumerate the
+    filesystem as a substitute for authorized inventory.
+    """
+    initialized = initialise_workspace(
+        workspace_root=tmp_path / "legacy-workspace",
+        installation_root=tmp_path / "installation",
+        core_version="0.1.0",
+    )
+    assert initialized.status is WorkspaceInitStatus.INITIALISED
+
+    dispatcher, store = _path(tmp_path)
+    try:
+        response = dispatcher.dispatch(
+            _request(
+                WORKSPACE_LIST_OPERATION,
+                {"limit": 100},
+                request_id="req-s1-no-implicit-adoption",
+            )
+        )
+        assert isinstance(response, SuccessResponseEnvelope)
+        assert WorkspaceListResult.from_wire(response.result).workspaces == ()
+        assert store.list_workspace_ids() == ()
+    finally:
+        store.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses real Unix service sockets")
+def test_v06_5_s1_two_legacy_workspace_services_still_coexist() -> None:
+    """The S1 catalogue lifecycle is not duplicated into workspace processes."""
+    root = Path(tempfile.mkdtemp(prefix="ovs1-main-", dir="/tmp"))
+    processes: list[subprocess.Popen[str]] = []
+    try:
+        installation_root = root / "installation"
+        workspaces = (root / "workspace-a", root / "workspace-b")
+        sockets = (root / "a.sock", root / "b.sock")
+        for workspace in workspaces:
+            initialized = initialise_workspace(
+                workspace_root=workspace,
+                installation_root=installation_root,
+                core_version="0.1.0",
+            )
+            assert initialized.status is WorkspaceInitStatus.INITIALISED
+
+        executable = Path(sys.executable).parent / "omnivia-core-service"
+        assert executable.is_file(), executable
+        for workspace, socket_path in zip(workspaces, sockets, strict=True):
+            processes.append(
+                subprocess.Popen(
+                    [
+                        str(executable),
+                        "--workspace",
+                        str(workspace),
+                        "--installation-state",
+                        str(installation_root),
+                        "--endpoint",
+                        f"unix://{socket_path}",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if all(path.exists() for path in sockets) or any(
+                process.poll() is not None for process in processes
+            ):
+                break
+            time.sleep(0.02)
+
+        diagnostics = []
+        for process in processes:
+            if process.poll() is not None:
+                stdout, stderr = process.communicate(timeout=5)
+                diagnostics.append((process.returncode, stdout, stderr))
+        assert diagnostics == []
+        assert all(path.exists() for path in sockets)
+        assert all(process.poll() is None for process in processes)
+        assert not (
+            installation_root / "catalogue" / "installation.sqlite"
+        ).exists()
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for process in processes:
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=10)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(

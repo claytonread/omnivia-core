@@ -67,11 +67,7 @@ APPLICATION_OPERATIONS: frozenset[str] = frozenset(
     entry.name for entry in OPERATION_CATALOGUE
 )
 
-# A registry may hold either workspace- or installation-scoped handlers.  ``Any``
-# here is the dispatch boundary, not the handler implementation contract: concrete
-# handlers name one of the two frozen context dataclasses below, and the dispatcher
-# constructs the matching one from the catalogue scope kind.
-OperationHandler = Callable[[Any], Mapping[str, Any]]
+OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -105,34 +101,6 @@ class OperationContext:
     principal: str
     workspace_id: str
     granted_operations: frozenset[str]
-    service: Any = None
-    authority: GrantedAuthority | None = None
-    scopes: tuple[Scope, ...] | None = None
-    purpose: Purpose | None = None
-
-
-@dataclass(frozen=True)
-class InstallationOperationContext:
-    """Everything an installation-scoped handler may see.
-
-    Installation operations do not have a workspace selection.  Giving them an
-    :class:`OperationContext` would therefore require inventing a workspace id (or
-    weakening the workspace handler contract to accept ``None``).  This distinct
-    context keeps that boundary structural: the only scope identifier available is
-    the installation the authorization seam resolved, and the exact authorized
-    context is carried so the S0 grant issuer can bind a mutation to the request it
-    actually admitted.
-
-    ``session`` and ``binding`` are deliberately absent.  They remain server-owned
-    wiring facts held by the installation handler object; a request handler cannot
-    replace either one before asking S0 to issue a grant.
-    """
-
-    request: RequestEnvelope
-    principal: str
-    installation_id: str
-    granted_operations: frozenset[str]
-    authorization: Any
     service: Any = None
     authority: GrantedAuthority | None = None
     scopes: tuple[Scope, ...] | None = None
@@ -516,7 +484,6 @@ __all__ = [
     "SERVICE_OPERATIONS",
     "ApplicationOperationRegistry",
     "ApplicationRegistryCompleteness",
-    "InstallationOperationContext",
     "OperationContext",
     "OperationError",
     "OperationHandler",

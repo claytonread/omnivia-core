@@ -25,11 +25,11 @@ from omnivia_core_runtime.service.authorization import (
     AuthorizedApplicationContext,
     ServiceBinding,
 )
-from omnivia_core_runtime.service.installation import InstallationApplicationService
-from omnivia_core_runtime.service.operations import (
+from omnivia_core_runtime.service.installation import (
+    InstallationApplicationService,
     InstallationOperationContext,
-    OperationError,
 )
+from omnivia_core_runtime.service.operations import OperationError
 
 _MESSAGE_INVALID_CREATE: Final = (
     "the workspace create input is not valid for this operation"
