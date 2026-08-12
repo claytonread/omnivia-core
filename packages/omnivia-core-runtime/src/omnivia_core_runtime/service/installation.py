@@ -238,6 +238,10 @@ class InstallationApplicationService:
             raise ValueError("workspace storage root must be an absolute server path")
         self._store = store
         self._installation_root = installation_root.resolve()
+        if self._installation_root != store.installation_root:
+            raise ValueError(
+                "installation service root must match the owned catalogue root"
+            )
         self._workspace_storage_root = workspace_storage_root.resolve()
         self._core_version = core_version
         self._clock = clock
@@ -329,7 +333,7 @@ class InstallationApplicationService:
                 core_version=self._core_version,
             )
         except Exception as error:
-            self._record_recoverable_failure(allocation, grant, "bootstrap_failed")
+            self._record_recoverable_failure(prepared, allocation, "bootstrap_failed")
             raise InstallationSeamFault() from error
 
         if init.status is WorkspaceInitStatus.REFUSED:
@@ -343,18 +347,28 @@ class InstallationApplicationService:
                 if init.refusal is None
                 else f"bootstrap_refused:{init.refusal.value}"
             )
-            self._record_recoverable_failure(allocation, grant, detail)
+            self._record_recoverable_failure(prepared, allocation, detail)
             raise InstallationSeamFault()
 
         # Expiry is rechecked after filesystem work and immediately before the
         # installation settlement transaction.  If it moved, the durable allocation
         # remains preparing and a fresh grant can verify and settle the same target.
         self._require_grant(prepared)
-        result = self._workspace_result(allocation)
+        try:
+            result = self._workspace_result(allocation)
+        except InstallationSeamFault:
+            self._record_recoverable_failure(
+                prepared, allocation, "result_verification_failed"
+            )
+            raise
         canonical = to_canonical_json(result)
         outcome_digest = (
             "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         )
+        # Result verification reads the filesystem and can take time.  Recheck the
+        # monotonic expiry after it, at the last service instruction before the
+        # atomic catalogue settlement.
+        self._require_grant(prepared)
         try:
             self._store.settle_allocation_success(
                 self.authority,
@@ -583,10 +597,15 @@ class InstallationApplicationService:
 
     def _record_recoverable_failure(
         self,
+        prepared: PreparedWorkspaceCreate,
         allocation: InstallationAllocation,
-        grant: InstallationMutationGrant,
         detail: str,
     ) -> None:
+        # Failure is a durable state transition and consumes the grant just as
+        # success does.  It must not be recorded under authority that expired while
+        # the bootstrapper was running.
+        self._require_grant(prepared)
+        grant = prepared.grant
         try:
             self._store.fail_allocation(
                 self.authority,
@@ -604,6 +623,8 @@ class InstallationApplicationService:
     ) -> Mapping[str, Any]:
         try:
             manifest = read_manifest(WorkspaceLayout(root=allocation.target_path))
+            if manifest.workspace_id != allocation.target_workspace_id:
+                raise ValueError("workspace manifest identity differs from allocation")
             version = workspace_contract_version(
                 manifest.compatibility.workspace_format_version
             )

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import omnivia_core_runtime.service.installation as installation_module
 import pytest
 from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.authorization import (
@@ -23,6 +24,7 @@ from omnivia_core_runtime.service.installation import (
     InstallationBootstrapInProgress,
     InstallationMutationDenied,
     InstallationMutationGrant,
+    InstallationSeamFault,
 )
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
@@ -281,6 +283,28 @@ def test_v06_5_s0_installation_identity_is_global_and_fenced(
         )
     finally:
         connection.close()
+
+
+def test_v06_5_s0_service_root_is_bound_to_owned_catalogue(tmp_path: Path) -> None:
+    owned_root = (tmp_path / "owned-installation").resolve()
+    split_root = (tmp_path / "split-installation").resolve()
+    store = open_installation_store(
+        owned_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: "inst-root-binding",
+    )
+    try:
+        with pytest.raises(ValueError, match="owned catalogue root"):
+            installation_service(
+                store,
+                installation_root=split_root,
+                workspace_storage_root=(tmp_path / "workspace-storage").resolve(),
+                clock=FakeClock(),
+            )
+        assert not split_root.exists()
+    finally:
+        store.close()
 
 
 def test_v06_5_s0_installation_audit_and_idempotency_are_durable(
@@ -640,6 +664,55 @@ def test_v06_5_s0_request_cannot_choose_workspace_or_path(tmp_path: Path) -> Non
         store.close()
 
 
+def test_v06_5_s0_manifest_identity_must_match_allocated_target(
+    tmp_path: Path,
+) -> None:
+    installation_root = (tmp_path / "installation").resolve()
+    workspace_storage_root = (tmp_path / "workspace-storage").resolve()
+    store = open_installation_store(
+        installation_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: "inst-target-verification",
+    )
+
+    def substitute_manifest_identity(**kwargs: Any) -> WorkspaceInitResult:
+        kwargs["target_workspace_id"] = "ws-substituted"
+        return initialise_allocated_workspace(**kwargs)
+
+    service = installation_service(
+        store,
+        installation_root=installation_root,
+        workspace_storage_root=workspace_storage_root,
+        clock=FakeClock(),
+        bootstrapper=substitute_manifest_identity,
+    )
+    input_ = WorkspaceCreateInput(display_name="Exact target")
+    context, session, binding, equivalence = workspace_create_authority(
+        store,
+        input_=input_,
+        idempotency_key="exact-target-verification",
+    )
+    try:
+        prepared = service.prepare_workspace_create(
+            context,
+            session=session,
+            binding=binding,
+            input_=input_,
+            equivalence=equivalence,
+        )
+        with pytest.raises(InstallationSeamFault):
+            service.execute_workspace_create(prepared)
+
+        durable = store.get_allocation(prepared.claim.allocation.allocation_id)
+        assert durable is not None
+        assert durable.state is AllocationState.FAILED_RECOVERABLE
+        assert store.list_workspace_ids() == ()
+        assert store.get_outcome(durable.claim_id) is None
+    finally:
+        store.close()
+
+
 def test_v06_5_s0_allocation_retry_reuses_target(tmp_path: Path) -> None:
     installation_root = (tmp_path / "installation").resolve()
     workspace_storage_root = (tmp_path / "workspace-storage").resolve()
@@ -787,6 +860,110 @@ def test_v06_5_s0_allocation_crash_is_recoverable(tmp_path: Path) -> None:
         assert [path.name for path in workspace_storage_root.iterdir()] == [
             final.target_workspace_id
         ]
+    finally:
+        store.close()
+
+
+def test_v06_5_s0_grant_cannot_expire_during_result_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installation_root = (tmp_path / "installation").resolve()
+    workspace_storage_root = (tmp_path / "workspace-storage").resolve()
+    store = open_installation_store(
+        installation_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: "inst-final-expiry",
+    )
+    clock = FakeClock()
+    service = installation_service(
+        store,
+        installation_root=installation_root,
+        workspace_storage_root=workspace_storage_root,
+        clock=clock,
+    )
+    input_ = WorkspaceCreateInput(display_name="Expiry fence")
+    context, session, binding, equivalence = workspace_create_authority(
+        store,
+        input_=input_,
+        idempotency_key="final-expiry-fence",
+    )
+    read_manifest = installation_module.read_manifest
+
+    def read_then_expire(layout: Any) -> Any:
+        manifest = read_manifest(layout)
+        clock.advance_monotonic(2.0)
+        return manifest
+
+    monkeypatch.setattr(installation_module, "read_manifest", read_then_expire)
+    try:
+        prepared = service.prepare_workspace_create(
+            context,
+            session=session,
+            binding=binding,
+            input_=input_,
+            equivalence=equivalence,
+            lifetime_us=1_000_000,
+        )
+        with pytest.raises(InstallationMutationDenied):
+            service.execute_workspace_create(prepared)
+        durable = store.get_allocation(prepared.claim.allocation.allocation_id)
+        assert durable is not None
+        assert durable.state is AllocationState.PREPARING
+        assert store.list_workspace_ids() == ()
+        assert store.get_outcome(durable.claim_id) is None
+    finally:
+        store.close()
+
+
+def test_v06_5_s0_expired_grant_cannot_settle_failure(tmp_path: Path) -> None:
+    installation_root = (tmp_path / "installation").resolve()
+    workspace_storage_root = (tmp_path / "workspace-storage").resolve()
+    store = open_installation_store(
+        installation_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: "inst-failure-expiry",
+    )
+    clock = FakeClock()
+
+    def expire_then_refuse(**_kwargs: Any) -> WorkspaceInitResult:
+        clock.advance_monotonic(2.0)
+        return WorkspaceInitResult(
+            status=WorkspaceInitStatus.REFUSED,
+            reason="simulated write refusal",
+            refusal=WorkspaceInitRefusal.WRITE_FAILURE,
+        )
+
+    service = installation_service(
+        store,
+        installation_root=installation_root,
+        workspace_storage_root=workspace_storage_root,
+        clock=clock,
+        bootstrapper=expire_then_refuse,
+    )
+    input_ = WorkspaceCreateInput(display_name="Failure expiry fence")
+    context, session, binding, equivalence = workspace_create_authority(
+        store,
+        input_=input_,
+        idempotency_key="failure-expiry-fence",
+    )
+    try:
+        prepared = service.prepare_workspace_create(
+            context,
+            session=session,
+            binding=binding,
+            input_=input_,
+            equivalence=equivalence,
+            lifetime_us=1_000_000,
+        )
+        with pytest.raises(InstallationMutationDenied):
+            service.execute_workspace_create(prepared)
+        durable = store.get_allocation(prepared.claim.allocation.allocation_id)
+        assert durable is not None
+        assert durable.state is AllocationState.PREPARING
+        assert store.list_workspace_ids() == ()
+        assert store.get_outcome(durable.claim_id) is None
     finally:
         store.close()
 

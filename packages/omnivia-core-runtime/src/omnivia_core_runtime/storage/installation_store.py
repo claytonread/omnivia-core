@@ -188,6 +188,11 @@ class InstallationStore:
         return self._layout.installation_database
 
     @property
+    def installation_root(self) -> Path:
+        """The catalogue root whose lifetime lock this store owns."""
+        return self._layout.root.resolve()
+
+    @property
     def closed(self) -> bool:
         return self._connection is None
 
