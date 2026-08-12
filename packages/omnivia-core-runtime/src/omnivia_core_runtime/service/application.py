@@ -640,6 +640,104 @@ class ApplicationFallback(Protocol):
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
 
 
+@dataclass(frozen=True)
+class ProductionApplicationSurface:
+    """The complete application surface, composed without collapsing authority.
+
+    The five family dispatchers deliberately retain their own server-issued
+    sessions and bindings: an installation-scoped request must never inherit a
+    workspace grant, and a read must never acquire mutation authority merely
+    because both operations ship in one build.  This object is the single
+    production routing surface above those boundaries.  Its ``registry`` is the
+    exact, duplicate-checked union used for capability and release evidence; a
+    request is then routed to the one family that owns that registered handler.
+
+    A handler is registered twice, absent, or outside the frozen catalogue is a
+    construction error.  The resulting surface therefore cannot start while it
+    is anything other than 20/20 complete.
+    """
+
+    registry: ApplicationOperationRegistry
+    _routes: Mapping[str, ApplicationDispatcher]
+    _principal: str
+    probe: ApplicationFallback
+    adapters: frozenset[str]
+
+    def __post_init__(self) -> None:
+        self.registry.assert_complete()
+        routes = dict(self._routes)
+        if frozenset(routes) != self.registry.operations:
+            raise ValueError(
+                "the production application routes do not exactly match the registry"
+            )
+        distinct_routes = tuple({id(route): route for route in routes.values()}.values())
+        if len(distinct_routes) != 5:
+            raise ValueError("the production surface requires exactly five authority families")
+        if any(route.grant.principal != self._principal for route in distinct_routes):
+            raise ValueError("every production application family must act as one principal")
+        if any(route.probe.grant.principal != self._principal for route in distinct_routes):
+            raise ValueError("every production application fallback must keep one principal")
+        if self.probe.grant.principal != self._principal:
+            raise ValueError("the production application surface and probe disagree on principal")
+        if self.adapters != frozenset({"in_process", "ipc", "http"}):
+            raise ValueError(
+                "the production application surface requires in_process, ipc and http"
+            )
+        object.__setattr__(self, "_routes", MappingProxyType(routes))
+
+    @property
+    def grant(self) -> Grant:
+        """Expose the one acting principal for transport wiring checks."""
+        return self.probe.grant
+
+    def session_for(self, operation: str) -> AuthenticatedSession | None:
+        """Return the server session for one registered operation.
+
+        HTTP credential resolvers need the authority appropriate to the request,
+        not whichever family happened to be composed last.  Returning ``None``
+        for an unregistered name keeps that lookup fail-closed.
+        """
+        route = self._routes.get(operation)
+        return None if route is None else route.session
+
+    def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
+        route = self._routes.get(request.operation)
+        if route is None:
+            return self.probe.dispatch(request)
+        return route.dispatch(request)
+
+
+def compose_production_application_surface(
+    *,
+    installation: ApplicationDispatcher,
+    reads: ApplicationDispatcher,
+    memory: ApplicationDispatcher,
+    jobs: ApplicationDispatcher,
+    governance: ApplicationDispatcher,
+    probe: ApplicationFallback,
+    adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
+) -> ProductionApplicationSurface:
+    """Compose all real family handlers into the exact frozen catalogue."""
+    families = (installation, reads, memory, jobs, governance)
+    registry = ApplicationOperationRegistry()
+    routes: dict[str, ApplicationDispatcher] = {}
+    for family in families:
+        for operation in sorted(family.registry.operations):
+            handler = family.registry.get(operation)
+            if handler is None:
+                raise ValueError(f"production operation {operation!r} has no handler")
+            registry.register(operation, handler)
+            routes[operation] = family
+    registry.assert_complete()
+    return ProductionApplicationSurface(
+        registry=registry,
+        _routes=routes,
+        _principal=probe.grant.principal,
+        probe=probe,
+        adapters=adapters,
+    )
+
+
 def _claimed_text(value: object, name: str) -> str | None:
     """One string field a request claims, or `None` where it claims nothing readable.
 
@@ -1128,6 +1226,7 @@ __all__ = [
     "ApplicationCallRecord",
     "ApplicationCallSink",
     "ApplicationDispatcher",
+    "ProductionApplicationSurface",
     "build_application_registry",
     "build_governance_application_dispatcher",
     "build_governance_registry",
@@ -1137,6 +1236,7 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "compose_production_application_surface",
     "governance_family_session",
     "installation_owner_session",
     "job_family_session",

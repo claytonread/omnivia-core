@@ -1,18 +1,14 @@
 """Transport-neutral operation dispatch (B9, ADR-038).
 
-Scope, stated plainly: **this slice registers no application handlers.** The
-accepted generated application catalogue now exists, and this module represents it
-as the catalogue-backed application registry boundary — the accepted operation
-names are derived from that catalogue rather than transcribed here, so the boundary
-cannot drift from what was frozen.
+The accepted generated application catalogue is represented as a bounded registry:
+operation names are derived from that catalogue rather than transcribed, so the
+boundary cannot drift from what was frozen. Product handlers are registered by the
+authority-specific compositions in :mod:`service.application`; this module keeps the
+shared registry and envelope machinery independent of those products.
 
-Representing the boundary is all this slice does: it changes no dispatch,
-authorization, storage or advertised support behaviour. The three service-lifecycle
-operations ADR-037 keeps distinct from application operations — health, readiness
-and discovery — remain the only implemented handlers, and the registry still
-**refuses** any operation it does not know. Later, separately approved slices add
-the real application handlers against those frozen contracts, without the runtime
-having invented the payloads itself.
+The three service-lifecycle operations ADR-037 keeps distinct from application
+operations — health, readiness and discovery — remain on their separate dispatcher,
+and both registries refuse any operation they do not know.
 
 The dispatcher itself is transport-neutral: it consumes a `RequestEnvelope` and
 returns a `ResponseEnvelope`, so an in-process caller, a local IPC transport, the
@@ -58,8 +54,8 @@ from omnivia_core_runtime.service.versions import (
     workspace_contract_version,
 )
 
-#: The only operations this runtime implements today. Deliberately not product
-#: operations: ADR-037 keeps health, readiness and discovery distinct from them.
+#: The service-lifecycle operations. Deliberately not product operations: ADR-037
+#: keeps health, readiness and discovery distinct from the application surface.
 SERVICE_OPERATIONS = ("core.health", "core.readiness", "core.discovery")
 
 #: The accepted application operation names, derived from the frozen A2 catalogue
