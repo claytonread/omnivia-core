@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.service import application as application_module
 from omnivia_core_runtime.service import main as main_module
 from omnivia_core_runtime.service.application import (
@@ -197,6 +198,18 @@ def request_for(**overrides: Any) -> RequestEnvelope:
 def answered(response: ResponseEnvelope) -> SuccessResponseEnvelope:
     assert isinstance(response, SuccessResponseEnvelope), response
     return response
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_workspace_inspect_reaches_every_real_adapter(
+    served: ServedWorkspace, adapter: str
+) -> None:
+    """The frozen workspace-inspect success branch crosses every shipped adapter."""
+    response = s2._transport_call(adapter, production_path(served), request_for())
+
+    result = WorkspaceInspectResult.from_wire(answered(response).result)
+    assert result.workspace.workspace_id == WORKSPACE_ID
+    assert result.workspace.display_name == WORKSPACE_NAME
 
 
 # --- the authorised path, end to end ------------------------------------------

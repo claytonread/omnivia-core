@@ -62,6 +62,10 @@ from omnivia_core.contracts.v1 import (
     get_operation_metadata,
 )
 from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core_runtime.service.admission import (
+    ALLOW_APPLICATION_REQUEST,
+    ApplicationAdmissionPolicy,
+)
 from omnivia_core_runtime.service.authorization import (
     ApplicationAuthorizationError,
     AuthenticatedSession,
@@ -778,6 +782,7 @@ class ApplicationDispatcher:
     probe: ApplicationFallback
     record: ApplicationCallSink | None
     service: Any = None
+    admission: ApplicationAdmissionPolicy = ALLOW_APPLICATION_REQUEST
 
     def __post_init__(self) -> None:
         """Refuse a wiring whose two halves act as different principals.
@@ -808,6 +813,25 @@ class ApplicationDispatcher:
         return self.probe.grant
 
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
+        """Dispatch with this endpoint's server-issued authenticated session."""
+        return self._dispatch(request, session=self.session)
+
+    def dispatch_without_session(self, request: RequestEnvelope) -> ResponseEnvelope:
+        """Dispatch after a trusted session lookup returned no authenticated caller.
+
+        Transport adapters normally refuse before this point. In-process embedders do
+        not necessarily have a separate HTTP-like authentication boundary, so this is
+        the explicit fail-closed entry point that preserves the contract's typed
+        ``authentication_required`` result without inventing an anonymous session.
+        """
+        return self._dispatch(request, session=None)
+
+    def _dispatch(
+        self,
+        request: RequestEnvelope,
+        *,
+        session: AuthenticatedSession | None,
+    ) -> ResponseEnvelope:
         """Answer one request, or refuse it in the contract's own vocabulary.
 
         Authorization comes first and has no bypass. In particular the handler lookup
@@ -831,7 +855,7 @@ class ApplicationDispatcher:
         try:
             context = authorize_application_request(
                 request,
-                session=self.session,
+                session=session,
                 binding=self.binding,
                 supported_capabilities=self.supported_capabilities,
             )
@@ -845,7 +869,24 @@ class ApplicationDispatcher:
                 denied.code,
                 denied.message,
                 retry_class=denied.retry_class,
-                principal=self.session.principal_id,
+                principal=self.probe.grant.principal,
+            )
+
+        # Authentication is the first authorization check, so a successful return
+        # proves the explicit per-call session exists.
+        assert session is not None
+
+        admission_error = self.admission.evaluate(context)
+        if admission_error is not None:
+            self._emit(request, entry, context=context, error=admission_error)
+            return failure(
+                request,
+                admission_error.code,
+                admission_error.message,
+                retry_class=admission_error.retry_class,
+                principal=context.principal_id,
+                audit_reference=admission_error.audit_reference,
+                job_reference=admission_error.job_reference,
             )
 
         handler = self.registry.get(context.operation)
@@ -873,7 +914,7 @@ class ApplicationDispatcher:
                     request=request,
                     principal=context.principal_id,
                     installation_id=context.installation_id,
-                    granted_operations=self.session.operations,
+                    granted_operations=session.operations,
                     authorization=context,
                     service=self.service,
                     authority=context.authority,
@@ -887,7 +928,7 @@ class ApplicationDispatcher:
                     # claimed ones. A handler cannot see a claim at all.
                     principal=context.principal_id,
                     workspace_id=workspace_id,
-                    granted_operations=self.session.operations,
+                    granted_operations=session.operations,
                     service=self.service,
                     # Amendment 009's pass-through, and nothing more than a pass-through:
                     # these are the values the seam *returned*, carried across unchanged.
@@ -972,7 +1013,7 @@ class ApplicationDispatcher:
             ApplicationCallRecord(
                 transport=self.transport,
                 operation=entry.name,
-                principal_id=self.session.principal_id,
+                principal_id=self.probe.grant.principal,
                 principal_source=PRINCIPAL_SOURCE,
                 channel_trust=CHANNEL_TRUST,
                 workspace_id=(

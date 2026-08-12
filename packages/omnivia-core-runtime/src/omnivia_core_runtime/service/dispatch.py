@@ -19,6 +19,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize,
 )
 from omnivia_core_runtime.service.operations import (
+    AuditedOperationResult,
     OperationContext,
     OperationError,
     OperationRegistry,
@@ -110,6 +111,8 @@ class Dispatcher:
                 principal=self.grant.principal,
                 granted=tuple(sorted(self.grant.operations)),
             )
+        if isinstance(result, AuditedOperationResult):
+            result = result.result
         return success(
             request,
             result,

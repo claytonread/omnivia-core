@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.discovery import discover
 from omnivia_core_runtime.ownership.fencing import (
     close_guard,
@@ -591,6 +592,60 @@ def test_evidence_search_continues_a_bound_frozen_ranking(owned: Owned) -> None:
         )
     )
     assert rebound.error.code == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_evidence_search_primary_and_page_2_reach_every_real_adapter(
+    owned: Owned, adapter: str
+) -> None:
+    """Both frozen evidence-search cases run on one real, bound ranking snapshot."""
+    seed(
+        owned,
+        artifact_row("evd-c1-1", recorded_at_us=BASE_US),
+        artifact_row(
+            "evd-c1-2",
+            native_id="doc-c1-2",
+            checksum=DIGEST_B,
+            recorded_at_us=BASE_US + 10,
+        ),
+    )
+    project(owned)
+    dispatcher = production_path(owned)
+    first = EvidenceSearchResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(
+                    request_id=f"req-evidence-c1-{adapter}-1",
+                    input={"query": "doc", "limit": 1},
+                ),
+            )
+        ).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+
+    second = EvidenceSearchResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(
+                    request_id=f"req-evidence-c1-{adapter}-2",
+                    input={
+                        "query": "doc",
+                        "limit": 1,
+                        "page": {"continuation_token": token},
+                    },
+                ),
+            )
+        ).result
+    )
+    returned = tuple(item.evidence_id for item in first.evidence + second.evidence)
+    assert set(returned) == {"evd-c1-1", "evd-c1-2"}
+    assert len(returned) == len(set(returned)) == 2
+    assert second.page.continuation_token is None
 
 
 def test_the_authorized_context_carries_the_expected_effective_authority(

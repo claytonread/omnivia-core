@@ -64,12 +64,12 @@ from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     CONTENT_CHECKSUM_ALGORITHM,
+    DEFAULT_RETRY_CLASSIFICATION,
     ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_MUTATION_PRECONDITION_FAILED,
     OPERATION_CATALOGUE,
-    RETRY_CLASS_NON_RETRYABLE,
     CapabilityRef,
     ContractSemanticError,
     IdempotencyEquivalence,
@@ -261,7 +261,7 @@ class MutationDenied(OperationError):
         super().__init__(
             ERROR_CODE_AUTHORIZATION_DENIED,
             message,
-            retry_class=RETRY_CLASS_NON_RETRYABLE,
+            retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_AUTHORIZATION_DENIED],
         )
 
 
@@ -272,7 +272,9 @@ class MutationPreconditionFailed(OperationError):
         super().__init__(
             ERROR_CODE_MUTATION_PRECONDITION_FAILED,
             message,
-            retry_class=RETRY_CLASS_NON_RETRYABLE,
+            retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                ERROR_CODE_MUTATION_PRECONDITION_FAILED
+            ],
         )
 
 
@@ -288,7 +290,7 @@ class MutationIdempotencyConflict(OperationError):
         super().__init__(
             ERROR_CODE_IDEMPOTENCY_CONFLICT,
             message,
-            retry_class=RETRY_CLASS_NON_RETRYABLE,
+            retry_class=DEFAULT_RETRY_CLASSIFICATION[ERROR_CODE_IDEMPOTENCY_CONFLICT],
             audit_reference=audit_reference,
         )
 
@@ -300,7 +302,9 @@ class MutationSeamFault(OperationError):
         super().__init__(
             ERROR_CODE_INTERNAL_NON_RECOVERABLE,
             message,
-            retry_class=RETRY_CLASS_NON_RETRYABLE,
+            retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE
+            ],
         )
 
 

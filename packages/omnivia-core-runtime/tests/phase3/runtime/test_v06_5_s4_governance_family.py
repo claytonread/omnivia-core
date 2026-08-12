@@ -23,10 +23,14 @@ from omnivia_core_runtime.storage.retrieval import CONFIGURED_LOCAL_OWNER
 from test_v06_5_s2_memory_migration import _apply_through
 
 from omnivia_core.contracts.v1 import (
+    DEFAULT_RETRY_CLASSIFICATION,
     ERROR_CODE_AUTHORIZATION_DENIED,
     ERROR_CODE_CONFLICT,
     ERROR_CODE_IDEMPOTENCY_CONFLICT,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    ERROR_CODE_INVALID_REQUEST,
+    ERROR_CODE_MUTATION_PRECONDITION_FAILED,
+    ERROR_CODE_NOT_FOUND,
     ErrorResponseEnvelope,
     MutationPrecondition,
     PrincipalClaim,
@@ -544,3 +548,154 @@ def test_v06_5_s4_primary_replay_conflict_across_real_adapters(
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
     assert conflict.metadata.audit_reference == primary.metadata.audit_reference
+
+
+def _assert_application_error(response: object, code: str) -> None:
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == code
+    assert response.error.retry_class == DEFAULT_RETRY_CLASSIFICATION[code]
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
+    owned: m3.m2.Owned,
+    adapter: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execute the six shared handler/mutation failures through each adapter."""
+
+    tag = f"c1-errors-{adapter}"
+    memory, governance = _dispatchers(owned, tag=tag)
+
+    invalid = s2._transport_call(
+        adapter,
+        governance,
+        _request(
+            "candidate.approve",
+            {},
+            version="v-invalid",
+            tag=f"{tag}-invalid",
+        ),
+    )
+    _assert_application_error(invalid, ERROR_CODE_INVALID_REQUEST)
+
+    not_found = s2._transport_call(
+        adapter,
+        governance,
+        _request(
+            "candidate.approve",
+            {
+                "record_id": f"rec-missing-{adapter}",
+                "rationale": {"reason_code": "c1_not_found"},
+            },
+            version="v-missing",
+            tag=f"{tag}-not-found",
+        ),
+    )
+    _assert_application_error(not_found, ERROR_CODE_NOT_FOUND)
+
+    created = _create_source(memory, tag=f"{tag}-wrong-state")
+    created_identity = created.result["record"]["provenance"]["identity"]
+    conflict = s2._transport_call(
+        adapter,
+        governance,
+        _request(
+            "candidate.approve",
+            {
+                "record_id": created_identity["record_id"],
+                "rationale": {"reason_code": "c1_wrong_state"},
+            },
+            version=created_identity["version"],
+            tag=f"{tag}-conflict",
+        ),
+    )
+    _assert_application_error(conflict, ERROR_CODE_CONFLICT)
+
+    record_id, _version = _eligible_source(
+        memory,
+        governance,
+        operation="candidate.approve",
+        tag=f"{tag}-precondition",
+    )
+    precondition = s2._transport_call(
+        adapter,
+        governance,
+        _request(
+            "candidate.approve",
+            {
+                "record_id": record_id,
+                "rationale": {"reason_code": "c1_stale_precondition"},
+            },
+            version="v-stale",
+            tag=f"{tag}-precondition-approve",
+        ),
+    )
+    _assert_application_error(precondition, ERROR_CODE_MUTATION_PRECONDITION_FAILED)
+
+    record_id, version = _eligible_source(
+        memory,
+        governance,
+        operation="candidate.approve",
+        tag=f"{tag}-idempotency",
+    )
+    idempotency_key = f"idem-{tag}-shared-conflict"
+    primary_request = _request(
+        "candidate.approve",
+        {
+            "record_id": record_id,
+            "rationale": {"reason_code": "c1_idempotency_primary"},
+        },
+        version=version,
+        tag=f"{tag}-idempotency-primary",
+        idempotency_key=idempotency_key,
+    )
+    primary = s2._transport_call(adapter, governance, primary_request)
+    assert isinstance(primary, SuccessResponseEnvelope), primary
+    idempotency = s2._transport_call(
+        adapter,
+        governance,
+        replace(
+            primary_request,
+            metadata=replace(
+                primary_request.metadata,
+                request_id=f"req-{tag}-idempotency-conflict",
+            ),
+            input={
+                "record_id": record_id,
+                "rationale": {"reason_code": "c1_idempotency_changed"},
+            },
+        ),
+    )
+    _assert_application_error(idempotency, ERROR_CODE_IDEMPOTENCY_CONFLICT)
+
+    record_id, version = _eligible_source(
+        memory,
+        governance,
+        operation="candidate.approve",
+        tag=f"{tag}-internal",
+    )
+    original = governance_handlers_module.apply_governance_transition
+
+    def fail_after_write(*args: object, **kwargs: object) -> dict[str, object]:
+        original(*args, **kwargs)
+        raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, "forced C1 failure")
+
+    monkeypatch.setattr(
+        governance_handlers_module,
+        "apply_governance_transition",
+        fail_after_write,
+    )
+    internal = s2._transport_call(
+        adapter,
+        governance,
+        _request(
+            "candidate.approve",
+            {
+                "record_id": record_id,
+                "rationale": {"reason_code": "c1_internal"},
+            },
+            version=version,
+            tag=f"{tag}-internal-approve",
+        ),
+    )
+    _assert_application_error(internal, ERROR_CODE_INTERNAL_NON_RECOVERABLE)

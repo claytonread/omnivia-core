@@ -59,6 +59,7 @@ from typing import Any
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service.application import (
     CONTEXT_PACK_BUILD_OPERATION,
@@ -1608,6 +1609,54 @@ def test_lc_b8b_search_continuations_are_snapshot_stable_and_request_bound(
         )
     )
     assert rebound.error.code == ERROR_CODE_INVALID_REQUEST
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+@pytest.mark.parametrize(
+    "operation", [KNOWLEDGE_SEARCH_OPERATION, MEMORY_SEARCH_OPERATION]
+)
+def test_v06_5_c1_governed_search_primary_and_page_2_reach_every_real_adapter(
+    stocked: m2.Owned, operation: str, adapter: str
+) -> None:
+    """Both governed-search pages cross the requested production transport."""
+    dispatcher = production_path(stocked)
+    result_type = (
+        KnowledgeSearchResult
+        if operation == KNOWLEDGE_SEARCH_OPERATION
+        else MemorySearchResult
+    )
+    payload = {"query": QUERY, "record_type": "knowledge.claim", "limit": 2}
+    first = result_type.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(
+                    operation,
+                    payload,
+                    request_id=f"req-governed-c1-{operation}-{adapter}-1",
+                ),
+            )
+        ).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+
+    second = result_type.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(
+                    operation,
+                    {**payload, "page": {"continuation_token": token}},
+                    request_id=f"req-governed-c1-{operation}-{adapter}-2",
+                ),
+            )
+        ).result
+    )
+    assert returned(first)
+    assert set(returned(first)).isdisjoint(returned(second))
 
 
 # --- B9: emptiness, refusals and the absence of a second read -----------------

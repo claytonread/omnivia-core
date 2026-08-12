@@ -27,7 +27,11 @@ from omnivia_core_runtime.service.application import (
     ApplicationDispatcher,
     build_memory_application_dispatcher,
 )
-from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    Grant,
+    ServiceBinding,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.memory import (
     MEMORY_FAMILY_OPERATIONS,
@@ -257,6 +261,8 @@ def _transport_call(
     adapter: str,
     dispatcher: ApplicationDispatcher,
     request: RequestEnvelope,
+    *,
+    http_session: AuthenticatedSession | None = None,
 ) -> ResponseEnvelope:
     if adapter == "in-process":
         return dispatcher.dispatch(request)
@@ -287,7 +293,11 @@ def _transport_call(
     server = HttpListener(
         router=router,
         principal=dispatcher.session.principal_id,
-        resolver=lambda value: dispatcher.session if value == credential else None,
+        resolver=lambda value: (
+            (dispatcher.session if http_session is None else http_session)
+            if value == credential
+            else None
+        ),
     )
     server.start()
     try:

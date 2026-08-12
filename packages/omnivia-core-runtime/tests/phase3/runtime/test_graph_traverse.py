@@ -40,6 +40,7 @@ from typing import Any
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
@@ -1928,6 +1929,45 @@ def test_a_supersession_node_overflow_continues_while_edge_overflow_refuses(
         graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2, edge_limit=4)
     )
     assert len(fits_edges.edges) == 4
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_graph_traverse_primary_and_page_2_reach_every_real_adapter(
+    graph: m2.Owned, adapter: str
+) -> None:
+    """The graph page boundary is preserved through every production adapter."""
+    dispatcher = production_path(graph)
+    payload = page(
+        ("rec-h", 1),
+        direction=GRAPH_DIRECTION_OUTBOUND,
+        relation_types=[SUPERSEDED],
+        depth_limit=1,
+        node_limit=1,
+    )
+    first = GraphTraversalResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(payload),
+            )
+        ).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+
+    second = GraphTraversalResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for({**payload, "page": {"continuation_token": token}}),
+            )
+        ).result
+    )
+    assert steps_of(first) == (("ver-rec-h-1", 0),)
+    assert steps_of(second) == (("ver-rec-h-2", 1),)
+    assert second.page.continuation_token is None
 
 
 def test_an_explicit_edge_wins_a_shared_relation_reference_and_only_that_one_is_dropped(

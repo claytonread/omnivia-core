@@ -24,6 +24,7 @@ from typing import Any
 from omnivia_core.contracts.v1 import (
     COMPATIBILITY_STATUS_COMPATIBLE,
     COMPATIBILITY_STATUS_INCOMPATIBLE,
+    DEFAULT_RETRY_CLASSIFICATION,
     OPERATION_CATALOGUE,
     UPGRADE_STATE_NONE,
     UPGRADE_STATE_REQUIRED,
@@ -136,6 +137,29 @@ class OperationError(Exception):
         self.retry_class = retry_class
         self.audit_reference = audit_reference
         self.job_reference = job_reference
+
+
+def application_refusal(
+    code: str,
+    message: str,
+    *,
+    audit_reference: str | None = None,
+    job_reference: JobReference | None = None,
+) -> OperationError:
+    """Build one catalogue refusal with its frozen retry classification.
+
+    Runtime boundaries name a semantic code; the contract owns whether that code is
+    retryable. Keeping that lookup here prevents handler, admission, and persistence
+    paths from silently choosing different retry postures for the same failure.
+    Unknown future codes remain fail-closed and non-retryable.
+    """
+    return OperationError(
+        code,
+        message,
+        retry_class=DEFAULT_RETRY_CLASSIFICATION.get(code, "non_retryable"),
+        audit_reference=audit_reference,
+        job_reference=job_reference,
+    )
 
 
 @dataclass
