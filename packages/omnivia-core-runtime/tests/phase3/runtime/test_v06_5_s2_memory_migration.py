@@ -106,9 +106,11 @@ def owned(migrated: Path) -> Iterator[m1.Owned]:
 def test_s2_0014_is_the_single_consecutive_storage_only_successor() -> None:
     assert MIGRATION.name == MIGRATION_NAME
     assert MIGRATION.version == PREDECESSOR_VERSION + 1
-    assert [migration.version for migration in load_migrations()] == list(
-        range(1, MIGRATION_VERSION + 1)
-    )
+    assert [
+        migration.version
+        for migration in load_migrations()
+        if migration.version <= MIGRATION_VERSION
+    ] == list(range(1, MIGRATION_VERSION + 1))
     assert set(TABLES) <= {
         match.group(1)
         for match in __import__("re").finditer(
@@ -142,9 +144,10 @@ def test_s2_0014_clean_upgrade_has_exact_catalogue_schema_and_guards(
         assert applied_migrations(connection)[MIGRATION_VERSION] == MIGRATION.checksum
         assert foreign_key_check(connection) == []
         assert integrity_check(connection) == []
-        assert_guards_intact(connection)
-        expected = canonical_schema_fingerprint()
-        assert verify_fingerprint(connection, expected).matches(expected)
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            assert_guards_intact(connection)
+            expected = canonical_schema_fingerprint()
+            assert verify_fingerprint(connection, expected).matches(expected)
     finally:
         connection.close()
 
@@ -293,9 +296,9 @@ def test_v06_5_s2_0014_exact_catalogue_extension_and_recovery(
                 "FROM omnivia_governed_schema_catalogue"
             )
         } == CATALOGUE_ROWS
-        assert verify_fingerprint(converged, canonical_schema_fingerprint()).matches(
-            canonical_schema_fingerprint()
-        )
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            expected = canonical_schema_fingerprint()
+            assert verify_fingerprint(converged, expected).matches(expected)
     finally:
         converged.close()
 
@@ -309,7 +312,10 @@ def test_v06_5_s2_old_binary_refuses_0014_workspace(
             old_expected = canonical_schema_fingerprint()
             with pytest.raises(SchemaDrift, match="fingerprint differs"):
                 verify_fingerprint(connection, old_expected)
-        assert fingerprint_schema(connection).matches(canonical_schema_fingerprint())
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            assert fingerprint_schema(connection).matches(
+                canonical_schema_fingerprint()
+            )
     finally:
         connection.close()
 

@@ -37,6 +37,7 @@ from omnivia_core.contracts.v1 import (
     CompatibilityMetadata,
     ErrorResponseEnvelope,
     GrantedAuthority,
+    JobReference,
     Purpose,
     RequestEnvelope,
     ResponseEnvelope,
@@ -75,6 +76,7 @@ class AuditedOperationResult:
     result: Mapping[str, Any]
     audit_reference: str | None = None
     canonical_resolution_time: str | None = None
+    job_reference: JobReference | None = None
 
 
 OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
@@ -128,12 +130,14 @@ class OperationError(Exception):
         *,
         retry_class: str = "non_retryable",
         audit_reference: str | None = None,
+        job_reference: JobReference | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retry_class = retry_class
         self.audit_reference = audit_reference
+        self.job_reference = job_reference
 
 
 @dataclass
@@ -293,6 +297,7 @@ def response_metadata(
     capabilities: tuple[CapabilityRef, ...] | None = None,
     audit_reference: str | None = None,
     canonical_resolution_time: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseMetadata:
     """Build the contract's response metadata.
 
@@ -416,6 +421,7 @@ def response_metadata(
             capabilities=capability_set,
         ),
         authority=GrantedAuthority(principal_id=principal, roles=(), capabilities=refs),
+        job=job_reference,
         audit_reference=audit_reference,
         canonical_resolution_time=canonical_resolution_time,
     )
@@ -430,6 +436,7 @@ def success(
     capabilities: tuple[CapabilityRef, ...] | None = None,
     audit_reference: str | None = None,
     canonical_resolution_time: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseEnvelope:
     return SuccessResponseEnvelope(
         metadata=response_metadata(
@@ -439,6 +446,7 @@ def success(
             capabilities=capabilities,
             audit_reference=audit_reference,
             canonical_resolution_time=canonical_resolution_time,
+            job_reference=job_reference,
         ),
         result=dict(result),
     )
@@ -453,6 +461,7 @@ def failure(
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
     audit_reference: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseEnvelope:
     return ErrorResponseEnvelope(
         metadata=response_metadata(
@@ -460,6 +469,7 @@ def failure(
             principal=principal,
             granted=granted,
             audit_reference=audit_reference,
+            job_reference=job_reference,
         ),
         error=ApiError(code=code, message=message, retry_class=retry_class),
     )

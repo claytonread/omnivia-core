@@ -64,6 +64,7 @@ from omnivia_core_runtime.storage.connection import (
     integrity_check,
     open_database,
 )
+from omnivia_core_runtime.storage.jobs import recover_stranded_application_jobs
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,
@@ -470,6 +471,15 @@ class ServiceRunner:
         # `fenced_transaction` also gives recovery the entry and pre-commit authority
         # checks it always should have had -- a takeover during recovery must not
         # commit under the superseded generation.
+        now_us = int(self.clock.wall_time().timestamp() * 1_000_000)
+        recover_stranded_application_jobs(
+            connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.generation,
+            now_us=now_us,
+            clock=self.clock,
+        )
         with fenced_transaction(
             connection,
             self.identity,
@@ -479,7 +489,9 @@ class ServiceRunner:
             connection.execute(
                 "UPDATE omnivia_durable_jobs SET state = 'queued', "
                 "claimed_by_service_instance = NULL "
-                "WHERE state = 'claimed' AND COALESCE(fencing_generation, 0) < ?",
+                "WHERE state = 'claimed' AND COALESCE(fencing_generation, 0) < ? "
+                "AND NOT EXISTS (SELECT 1 FROM omnivia_job_application_metadata m "
+                "WHERE m.job_id = omnivia_durable_jobs.job_id)",
                 (self.generation,),
             )
         return True

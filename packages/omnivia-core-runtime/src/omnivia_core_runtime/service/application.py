@@ -73,6 +73,15 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
+from omnivia_core_runtime.service.handlers.jobs import (
+    IMPORT_START_OPERATION,
+    JOB_CANCEL_OPERATION,
+    JOB_EVENTS_OPERATION,
+    JOB_FAMILY_OPERATIONS,
+    JOB_GET_OPERATION,
+    JOB_RETRY_OPERATION,
+    JobHandlers,
+)
 from omnivia_core_runtime.service.handlers.knowledge import (
     LOCAL_OWNER_VIEW_GRANT,
     knowledge_search,
@@ -177,6 +186,17 @@ MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         MEMORY_CREATE_OPERATION: MUTATION_PURPOSES[MEMORY_CREATE_OPERATION],
         MEMORY_GET_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         MEMORY_LIST_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+    }
+)
+
+JOB_OBSERVATION_PURPOSE: Final = "job_observation"
+JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
+        JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
+        JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
+        JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
+        JOB_EVENTS_OPERATION: JOB_OBSERVATION_PURPOSE,
     }
 )
 
@@ -395,6 +415,46 @@ def build_memory_registry(handlers: MemoryHandlers) -> ApplicationOperationRegis
     registry.register(
         MEMORY_LIST_OPERATION, cast(OperationHandler, handlers.memory_list)
     )
+    return registry
+
+
+def job_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The distinct S3 workspace-family grant for durable import and job control."""
+    entries = tuple(get_operation_metadata(name) for name in sorted(JOB_FAMILY_OPERATIONS))
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=JOB_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(JOB_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_job_registry(handlers: JobHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(IMPORT_START_OPERATION, cast(OperationHandler, handlers.import_start))
+    registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
+    registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
+    registry.register(JOB_RETRY_OPERATION, cast(OperationHandler, handlers.job_retry))
+    registry.register(JOB_EVENTS_OPERATION, cast(OperationHandler, handlers.job_events))
     return registry
 
 
@@ -717,13 +777,16 @@ class ApplicationDispatcher:
                 retry_class=error.retry_class,
                 principal=context.principal_id,
                 audit_reference=error.audit_reference,
+                job_reference=error.job_reference,
             )
 
         audit_reference: str | None = None
         canonical_resolution_time: str | None = None
+        job_reference = None
         if isinstance(result, AuditedOperationResult):
             audit_reference = result.audit_reference
             canonical_resolution_time = result.canonical_resolution_time
+            job_reference = result.job_reference
             result = result.result
         self._emit(request, entry, context=context, error=None)
         return success(
@@ -738,6 +801,7 @@ class ApplicationDispatcher:
             capabilities=context.capabilities,
             audit_reference=audit_reference,
             canonical_resolution_time=canonical_resolution_time,
+            job_reference=job_reference,
         )
 
     def _emit(
@@ -903,12 +967,57 @@ def build_memory_application_dispatcher(
     )
 
 
+def build_job_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    token_codec: ContinuationTokenCodec | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact five-operation S3 family around the existing router."""
+    session = job_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = JobHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
+    )
+    registry = build_job_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GRAPH_TRAVERSE_OPERATION",
     "INSTALLATION_OPERATION_PURPOSES",
+    "JOB_FAMILY_PURPOSES",
+    "JOB_OBSERVATION_PURPOSE",
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
     "KNOWLEDGE_SEARCH_OPERATION",
     "LOCAL_TRANSPORT_ADAPTER",
@@ -924,9 +1033,12 @@ __all__ = [
     "build_application_registry",
     "build_installation_application_dispatcher",
     "build_installation_registry",
+    "build_job_application_dispatcher",
+    "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
     "installation_owner_session",
+    "job_family_session",
     "local_owner_session",
     "memory_family_session",
 ]

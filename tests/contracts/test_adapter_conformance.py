@@ -116,8 +116,48 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "67951727f0ac5a0f7bb95c4ee37b98695ddac1b868bb5062858b3f5c9adcb881"
+        "4725374cf11bf5d444ed249de4c93903a98b800b412db995ea1485dcf1269c07"
     )
+
+
+def test_v06_5_s3_candidate_fixture_job_repairs_are_exact() -> None:
+    document = _corpus_document()
+    by_id = {case["id"]: case for case in document["cases"]}
+
+    audit_paths = (
+        ("import.start/primary-success", "response.result.job.identity"),
+        ("job.cancel/primary-success", "response.result.job.identity"),
+        ("job.cancel/primary-success", "trusted.previous_job_handle.identity"),
+        ("job.get/primary-success", "response.result.job.identity"),
+        ("job.get/failed-observation", "response.result.job.identity"),
+        ("job.get/failed-observation", "response.result.terminal_result.identity"),
+        ("job.retry/primary-success", "response.result.job.identity"),
+        ("job.retry/primary-success", "trusted.previous_job_handle.identity"),
+        ("job.get/succeeded-observation", "response.result.job.identity"),
+        ("job.get/succeeded-observation", "response.result.terminal_result.identity"),
+        ("import.start/honest-replay", "response.result.job.identity"),
+        ("job.cancel/honest-replay", "response.result.job.identity"),
+        ("job.cancel/honest-replay", "trusted.previous_job_handle.identity"),
+        ("job.retry/honest-replay", "response.result.job.identity"),
+        ("job.retry/honest-replay", "trusted.previous_job_handle.identity"),
+    )
+    for case_id, path in audit_paths:
+        value: Any = by_id[case_id]
+        for member in path.split("."):
+            value = value[member]
+        assert value["audit_reference"] == "audit-import.start"
+
+    for case_id in ("job.cancel/primary-success", "job.cancel/honest-replay"):
+        case = by_id[case_id]
+        assert case["response"]["result"]["cancellation_disposition"] == (
+            "cancellation_requested"
+        )
+        assert case["response"]["result"]["job"]["control"]["cancellation"] == (
+            "cancellation_pending"
+        )
+        assert case["trusted"]["previous_job_handle"]["control"]["cancellation"] == (
+            "cancellable"
+        )
 
 
 def test_v06_5_s2_candidate_fixture_view_repair_is_exact() -> None:
@@ -2154,6 +2194,44 @@ def test_an_import_start_replay_still_states_which_job_it_answers_for(
         run_adapter_conformance(_fake(tuple(cases)), cases)
 
 
+@pytest.mark.parametrize(
+    "case_id", ["import.start/primary-success", "import.start/honest-replay"]
+)
+def test_import_start_audit_reference_must_match_its_job_identity(
+    corpus: tuple[AdapterConformanceCase, ...], case_id: str
+) -> None:
+    selected = _case(corpus, case_id)
+    response = copy.deepcopy(dict(selected.response))
+    response["result"]["job"]["identity"]["audit_reference"] = "audit-drifted"
+    changed = dataclasses.replace(selected, response=response)
+    cases = (
+        [changed]
+        if selected.replay_of is None
+        else [_case(corpus, selected.replay_of), changed]
+    )
+    with pytest.raises(AdapterConformanceError, match="metadata audit reference"):
+        run_adapter_conformance(_fake(tuple(cases)), cases)
+
+
+@pytest.mark.parametrize(
+    "case_id", ["job.cancel/primary-success", "job.cancel/honest-replay"]
+)
+def test_accepted_cancellation_reports_pending_availability(
+    corpus: tuple[AdapterConformanceCase, ...], case_id: str
+) -> None:
+    selected = _case(corpus, case_id)
+    response = copy.deepcopy(dict(selected.response))
+    response["result"]["job"]["control"]["cancellation"] = "cancellation_requested"
+    changed = dataclasses.replace(selected, response=response)
+    cases = (
+        [changed]
+        if selected.replay_of is None
+        else [_case(corpus, selected.replay_of), changed]
+    )
+    with pytest.raises(AdapterConformanceError, match="must be 'cancellation_pending'"):
+        run_adapter_conformance(_fake(tuple(cases)), cases)
+
+
 def test_a_fresh_import_start_may_not_return_a_finished_job(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
@@ -2184,7 +2262,10 @@ def test_a_job_control_replay_may_not_name_a_different_job(
     response = copy.deepcopy(dict(replay.response))
     response["result"]["job"]["identity"]["audit_reference"] = "audit-drifted"
     cases = [origin, dataclasses.replace(replay, response=response)]
-    with pytest.raises(AdapterConformanceError, match="a replay names the same job"):
+    with pytest.raises(
+        AdapterConformanceError,
+        match="a replay names the same job|metadata audit reference",
+    ):
         run_adapter_conformance(_fake(tuple(cases)), cases)
 
 

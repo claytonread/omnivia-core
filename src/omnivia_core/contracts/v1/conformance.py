@@ -90,6 +90,10 @@ from omnivia_core.contracts.v1.semantics_jobs import (
     IDEMPOTENCY_CONFLICT,
     IDEMPOTENCY_DISTINCT,
     IDEMPOTENCY_REPLAY,
+    JOB_CANCELLATION_AVAILABILITY_CANCELLATION_PENDING,
+    JOB_CANCELLATION_DISPOSITION_CANCELLATION_REQUESTED,
+    JOB_STATE_QUEUED,
+    JOB_STATE_RUNNING,
     JobEventsPageBinding,
     classify_idempotent_replay,
     idempotency_equivalence,
@@ -2081,17 +2085,19 @@ def _check_response_job_reference_correlation(
     envelope: SuccessResponseEnvelope,
     decoded_result: Any,
 ) -> None:
-    """The response must reference the job its own result describes.
+    """The response must reference the job and audit its own result describes.
 
     `import.start` states which job it started twice -- once in the result handle
     and once in ``ResponseMetadata.job`` -- and a caller that held one id while
     tracking the other would be watching the wrong job. The frozen validator
     makes this check for a fresh call, but cannot run against an honest replay
     (it also requires a non-terminal job, which a replay may legitimately have
-    outlived), so the correlation is made here for that case alone.
+    outlived), so conformance owns the correlation for both paths here.
 
-    Relational, and owned here for the same reason the request/response
-    identifier correlation is: it binds two halves of one envelope rather than
+    The response audit reference and the immutable job identity are likewise two
+    statements about the one audited mutation that created the job. Relational,
+    and owned here for the same reason the request/response identifier
+    correlation is: both checks bind two halves of one envelope rather than
     judging a value against the contract's own rules.
     """
     reference = envelope.metadata.job
@@ -2103,6 +2109,43 @@ def _check_response_job_reference_correlation(
             case.id,
             f"response metadata references job {referenced!r} but its result describes "
             f"{described!r}",
+        )
+    response_audit = envelope.metadata.audit_reference
+    described_audit = getattr(identity, "audit_reference", None)
+    if response_audit != described_audit:
+        raise AdapterConformanceError(
+            case.id,
+            f"response metadata audit reference {response_audit!r} but its result job "
+            f"identity names {described_audit!r}",
+        )
+
+
+def _check_job_cancel_availability_correlation(
+    case: AdapterConformanceCase, decoded_result: Any
+) -> None:
+    """An accepted, unacknowledged cancellation is pending on its returned handle.
+
+    ``cancellation_requested`` describes what this control call did;
+    ``cancellation_pending`` describes what the queued or running job now permits.
+    The values are individually open codes, so only the exchange can prove that
+    the accepted disposition and the returned observation describe the same
+    unacknowledged cancellation rather than confusing the two vocabularies.
+    """
+    disposition = getattr(decoded_result, "cancellation_disposition", None)
+    job = getattr(decoded_result, "job", None)
+    state = getattr(job, "state", None)
+    control = getattr(job, "control", None)
+    availability = getattr(control, "cancellation", None)
+    if (
+        disposition == JOB_CANCELLATION_DISPOSITION_CANCELLATION_REQUESTED
+        and state in {JOB_STATE_QUEUED, JOB_STATE_RUNNING}
+        and availability != JOB_CANCELLATION_AVAILABILITY_CANCELLATION_PENDING
+    ):
+        raise AdapterConformanceError(
+            case.id,
+            f"accepted cancellation left a {state!r} job with availability "
+            f"{availability!r}; it must be "
+            f"{JOB_CANCELLATION_AVAILABILITY_CANCELLATION_PENDING!r}",
         )
 
 
@@ -2118,6 +2161,10 @@ def _check_declared_result_semantics(
     validator = _RESULT_SEMANTICS.get(case.operation)
     if validator is None:
         return
+    if case.operation == "import.start":
+        _check_response_job_reference_correlation(case, envelope, decoded_result)
+    elif case.operation == "job.cancel":
+        _check_job_cancel_availability_correlation(case, decoded_result)
     # A fresh-result validator judges a mutation against the handle it acted on.
     # An honest replay performed no mutation, so running it here would reject a
     # replay for reporting a job that has since moved on -- the same false
@@ -2133,8 +2180,6 @@ def _check_declared_result_semantics(
     # references, which is a correlation rather than a transition rule and holds
     # for a replay exactly as it does for a fresh call.
     if restates_an_earlier_outcome and case.operation in _FRESH_TRANSITION_OPERATIONS:
-        if case.operation == "import.start":
-            _check_response_job_reference_correlation(case, envelope, decoded_result)
         return
     request_metadata = decode_request(case.request).metadata
     context = _ResultContext(

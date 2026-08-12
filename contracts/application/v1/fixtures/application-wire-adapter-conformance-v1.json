@@ -990,7 +990,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1044,12 +1044,12 @@
           "cancellation_disposition": "cancellation_requested",
           "job": {
             "control": {
-              "cancellation": "cancellation_requested",
+              "cancellation": "cancellation_pending",
               "recovery": "not_retryable"
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1073,7 +1073,7 @@
           },
           "created_at": "2026-07-30T00:00:00Z",
           "identity": {
-            "audit_reference": "audit-1",
+            "audit_reference": "audit-import.start",
             "job_id": "job-1",
             "job_kind": "ingestion.import",
             "originating_operation": "import.start",
@@ -1193,7 +1193,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1259,7 +1259,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1300,7 +1300,7 @@
             },
             "finished_at": "2026-07-30T00:01:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1362,7 +1362,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1393,7 +1393,7 @@
           },
           "created_at": "2026-07-30T00:00:00Z",
           "identity": {
-            "audit_reference": "audit-1",
+            "audit_reference": "audit-import.start",
             "job_id": "job-1",
             "job_kind": "ingestion.import",
             "originating_operation": "import.start",
@@ -1454,7 +1454,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -1491,7 +1491,7 @@
             ],
             "finished_at": "2026-07-30T00:03:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -2946,7 +2946,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -3056,12 +3056,12 @@
           "cancellation_disposition": "cancellation_requested",
           "job": {
             "control": {
-              "cancellation": "cancellation_requested",
+              "cancellation": "cancellation_pending",
               "recovery": "not_retryable"
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -3085,7 +3085,7 @@
           },
           "created_at": "2026-07-30T00:00:00Z",
           "identity": {
-            "audit_reference": "audit-1",
+            "audit_reference": "audit-import.start",
             "job_id": "job-1",
             "job_kind": "ingestion.import",
             "originating_operation": "import.start",
@@ -3188,7 +3188,7 @@
             },
             "created_at": "2026-07-30T00:00:00Z",
             "identity": {
-              "audit_reference": "audit-1",
+              "audit_reference": "audit-import.start",
               "job_id": "job-1",
               "job_kind": "ingestion.import",
               "originating_operation": "import.start",
@@ -3219,7 +3219,7 @@
           },
           "created_at": "2026-07-30T00:00:00Z",
           "identity": {
-            "audit_reference": "audit-1",
+            "audit_reference": "audit-import.start",
             "job_id": "job-1",
             "job_kind": "ingestion.import",
             "originating_operation": "import.start",
