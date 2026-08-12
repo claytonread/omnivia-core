@@ -84,6 +84,10 @@ from omnivia_core.contracts.v1.generated import (
     KnowledgeSearchInput,
     KnowledgeSearchResult,
     MemoryCreateInput,
+    MemoryGetInput,
+    MemoryGetResult,
+    MemoryListInput,
+    MemoryListResult,
     MemorySearchInput,
     MemorySearchResult,
     MutationPrecondition,
@@ -192,6 +196,8 @@ __all__ = [
     "validate_knowledge_propose_result",
     "validate_knowledge_search_input",
     "validate_knowledge_search_result",
+    "validate_memory_get_result",
+    "validate_memory_list_result",
     "validate_memory_search_input",
     "validate_memory_search_result",
     "validate_projection_freshness",
@@ -206,6 +212,8 @@ _RECORD_VERSION_MAX_LENGTH: Final = 512
 _COMMENT_MAX_LENGTH: Final = 2048
 _DESCRIPTION_MAX_LENGTH: Final = 4096
 _LOCATOR_MAX_LENGTH: Final = 2048
+_MEMORY_LIST_DEFAULT_RESULT_LIMIT: Final = 50
+_MEMORY_LIST_MAX_RESULT_LIMIT: Final = 500
 
 _IDENTIFIER_RE: Final = re.compile(IDENTIFIER_PATTERN)
 _OPEN_CODE_RE: Final = re.compile(OPEN_CODE_PATTERN)
@@ -1031,6 +1039,111 @@ def validate_memory_search_result(
     )
 
 
+def _validate_memory_get_request(request: object) -> MemoryGetInput:
+    """Validate the complete request whose selected view a get result answers."""
+    _require_type(request, MemoryGetInput, "request")
+    assert isinstance(request, MemoryGetInput)
+    _validate_record_id(_require_str(request.record_id, "request.record_id"), "request.record_id")
+    if request.version is not None:
+        _validate_record_version(
+            _require_str(request.version, "request.version"), "request.version"
+        )
+    if request.view is not None:
+        _validate_view_selector(_require_str(request.view, "request.view"), "request.view")
+    return request
+
+
+def _validate_memory_list_request(request: object) -> MemoryListInput:
+    """Validate the complete request and return it for result-binding checks."""
+    _require_type(request, MemoryListInput, "request")
+    assert isinstance(request, MemoryListInput)
+    if request.view is not None:
+        _validate_view_selector(_require_str(request.view, "request.view"), "request.view")
+    if request.record_type is not None:
+        _validate_governed_record_type(request.record_type, "request.record_type")
+    if request.limit is not None:
+        validate_page_limit(_require_int(request.limit, "request.limit"))
+    if request.page is not None:
+        _validate_page_metadata(request.page, "request.page")
+    return request
+
+
+def validate_memory_get_result(
+    result: object,
+    request: object,
+    expected_workspace_id: object,
+    canonical_resolution_time: object,
+    authorized_views: object,
+) -> None:
+    """Validate a governed ``memory.get`` result against its request and trusted view.
+
+    The selected view is resolved here, and non-default views are admitted only by the
+    independently supplied ``authorized_views`` set.  Candidate records do not depend on
+    a canonical-resolution instant; current-canonical and historical records do, and fail
+    closed if response metadata omits it.
+    """
+    _require_type(result, MemoryGetResult, "result")
+    assert isinstance(result, MemoryGetResult)
+    request = _validate_memory_get_request(request)
+    _validate_governed_search_result(
+        (result.record,),
+        requested_view=request.view,
+        request_record_type=None,
+        request_domain_scope=None,
+        request_limit=1,
+        expected_workspace_id=expected_workspace_id,
+        canonical_resolution_time=canonical_resolution_time,
+        authorized_views=authorized_views,
+        require_canonical_resolution_time=False,
+    )
+    identity = result.record.provenance.identity
+    if identity.record_id != request.record_id:
+        raise ContractSemanticError(
+            f"result.record.provenance.identity.record_id {identity.record_id!r} does not "
+            f"match requested record_id {request.record_id!r}"
+        )
+    if request.version is not None and identity.version != request.version:
+        raise ContractSemanticError(
+            f"result.record.provenance.identity.version {identity.version!r} does not match "
+            f"requested version {request.version!r}"
+        )
+
+
+def validate_memory_list_result(
+    result: object,
+    request: object,
+    expected_workspace_id: object,
+    canonical_resolution_time: object,
+    authorized_views: object,
+) -> None:
+    """Validate a governed ``memory.list`` page against request filters and view trust.
+
+    An absent request limit resolves to 50.  A structurally valid larger request is
+    clamped to the public result schema's 500-record maximum before the result count is
+    checked, exactly as the service's continuation-token binding requires.
+    """
+    _require_type(result, MemoryListResult, "result")
+    assert isinstance(result, MemoryListResult)
+    request = _validate_memory_list_request(request)
+    _validate_result_page_metadata(result.page, "result.page")
+    effective_limit = (
+        _MEMORY_LIST_DEFAULT_RESULT_LIMIT
+        if request.limit is None
+        else min(request.limit, _MEMORY_LIST_MAX_RESULT_LIMIT)
+    )
+    _validate_governed_search_result(
+        result.records,
+        requested_view=request.view,
+        request_record_type=request.record_type,
+        request_domain_scope=None,
+        request_limit=effective_limit,
+        expected_workspace_id=expected_workspace_id,
+        canonical_resolution_time=canonical_resolution_time,
+        authorized_views=authorized_views,
+        require_canonical_resolution_time=False,
+    )
+
+
 def _validate_governed_search_result(
     result_records: object,
     *,
@@ -1041,6 +1154,7 @@ def _validate_governed_search_result(
     expected_workspace_id: object,
     canonical_resolution_time: object,
     authorized_views: object,
+    require_canonical_resolution_time: bool = True,
 ) -> None:
     """The governed-record page rule `knowledge.search` and `memory.search` share exactly.
 
@@ -1050,14 +1164,24 @@ def _validate_governed_search_result(
     declares no such filter.
     """
     _validate_workspace_id(_require_str(expected_workspace_id, "expected_workspace_id"), "expected_workspace_id")
-    resolution_instant = _parse_timestamp(
-        _require_str(canonical_resolution_time, "canonical_resolution_time"), "canonical_resolution_time"
-    )
     authorized = _require_set_of_str(authorized_views, "authorized_views")
     for view in authorized:
         _validate_view_selector(view, "authorized_views entry")
 
     resolved_view = resolve_governed_record_view(requested_view)
+    resolution_instant: datetime | None = None
+    if canonical_resolution_time is not None:
+        resolution_instant = _parse_timestamp(
+            _require_str(canonical_resolution_time, "canonical_resolution_time"),
+            "canonical_resolution_time",
+        )
+    elif require_canonical_resolution_time or resolved_view in {
+        GOVERNED_RECORD_VIEW_CURRENT_CANONICAL,
+        GOVERNED_RECORD_VIEW_HISTORY,
+    }:
+        raise ContractSemanticError(
+            f"canonical_resolution_time is required for the {resolved_view!r} view"
+        )
     if (
         requested_view is not None
         and resolved_view != GOVERNED_RECORD_VIEW_CURRENT_CANONICAL
@@ -1100,6 +1224,7 @@ def _validate_governed_search_result(
 
         identity = record.provenance.identity
         if resolved_view == GOVERNED_RECORD_VIEW_CURRENT_CANONICAL:
+            assert resolution_instant is not None
             _validate_record_under_current_canonical_view(record, resolution_instant, label)
         elif resolved_view == GOVERNED_RECORD_VIEW_CANDIDATES:
             if (
@@ -1122,6 +1247,7 @@ def _validate_governed_search_result(
                     f"{label} carries a reviewer but the candidates view requires none"
                 )
         elif resolved_view == GOVERNED_RECORD_VIEW_HISTORY:
+            assert resolution_instant is not None
             _validate_record_under_history_view(record, resolution_instant, label)
 
 

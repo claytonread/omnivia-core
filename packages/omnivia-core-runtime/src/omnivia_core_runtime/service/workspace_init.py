@@ -105,6 +105,9 @@ from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 from omnivia_core_runtime.storage.backup import (
     ATTEMPTS_DIR,
     BACKUPS_DIR,
+    CATALOGUE_DIR,
+    INSTALLATION_DATABASE,
+    INSTALLATION_LOCK,
     RUNTIME_DIR,
     InstallationLayout,
 )
@@ -170,8 +173,18 @@ DEFAULT_WORKSPACE_NAME: Final = "OmniVia workspace"
 
 #: The only top-level entries an installation-state root may hold. Anything else
 #: means this directory is not one of ours, and `InstallationLayout` is the single
-#: source of all three names.
-INSTALLATION_ENTRIES: Final = frozenset({BACKUPS_DIR, ATTEMPTS_DIR, RUNTIME_DIR})
+#: source of all four names.
+INSTALLATION_ENTRIES: Final = frozenset(
+    {BACKUPS_DIR, ATTEMPTS_DIR, CATALOGUE_DIR, RUNTIME_DIR}
+)
+INSTALLATION_CATALOGUE_ENTRIES: Final = frozenset(
+    {
+        INSTALLATION_DATABASE,
+        f"{INSTALLATION_DATABASE}-shm",
+        f"{INSTALLATION_DATABASE}-wal",
+        INSTALLATION_LOCK,
+    }
+)
 
 #: Entries an operating system or file manager writes on its own, which say nothing
 #: about whose directory this is.
@@ -385,13 +398,83 @@ def initialise_workspace(
     )
 
 
+def initialise_allocated_workspace(
+    *,
+    workspace_root: Path,
+    installation_root: Path,
+    target_workspace_id: str,
+    display_name: str,
+    core_version: str = "0.1.0",
+) -> WorkspaceInitResult:
+    """Bootstrap one installation-authorised, server-minted workspace target.
+
+    Unlike :func:`initialise_workspace`, this entry point never invents identity:
+    the installation catalogue already durably claimed ``target_workspace_id`` and
+    derived ``workspace_root`` before filesystem work began.  A retry either
+    finishes that exact target or refuses; it cannot select a replacement.
+    """
+    unrecognised = _unrecognised_installation_state(installation_root)
+    if unrecognised is not None:
+        return WorkspaceInitResult(
+            status=WorkspaceInitStatus.REFUSED,
+            refusal=WorkspaceInitRefusal.UNRECOGNISED_INSTALLATION_STATE,
+            reason="the installation state directory is not recognised",
+            workspace_id=target_workspace_id,
+            workspace_root=workspace_root,
+            installation_root=installation_root,
+        )
+
+    layout = WorkspaceLayout(root=workspace_root)
+    if layout.exists():
+        existing = _existing_manifest(layout, core_version)
+        if isinstance(existing, WorkspaceInitResult):
+            return existing
+        if existing.workspace_id != target_workspace_id:
+            return WorkspaceInitResult(
+                status=WorkspaceInitStatus.REFUSED,
+                refusal=WorkspaceInitRefusal.WORKSPACE_IDENTITY_MISMATCH,
+                reason="the allocated target contains a different workspace identity",
+                workspace_id=target_workspace_id,
+                workspace_root=workspace_root,
+                installation_root=installation_root,
+                workspace_format_version=(
+                    existing.compatibility.workspace_format_version
+                ),
+            )
+        manifest, minted = existing, False
+    else:
+        unrelated = _chosen_by_somebody(layout.root, layout.unexpected_entries())
+        if unrelated:
+            return WorkspaceInitResult(
+                status=WorkspaceInitStatus.REFUSED,
+                refusal=WorkspaceInitRefusal.UNRELATED_DIRECTORY,
+                reason="the allocated target contains unrelated content",
+                workspace_id=target_workspace_id,
+                workspace_root=workspace_root,
+                installation_root=installation_root,
+            )
+        manifest = _new_manifest(
+            core_version, workspace_id=target_workspace_id, name=display_name
+        )
+        minted = True
+
+    return _bootstrap(
+        layout=layout,
+        installation_root=installation_root,
+        manifest=manifest,
+        minted=minted,
+    )
+
+
 def _unrecognised_installation_state(root: Path) -> str | None:
     """The foreign entries an existing installation-state root holds, if any.
 
     An absent root is not unrecognised -- it is what a fresh machine has, and
     creating it is this command's job. What is refused is a directory that exists
-    and is plainly something else, because writing `backups/`, `attempts/` and
-    `runtime/` into it would adopt it.
+    and is plainly something else, because writing `backups/`, `attempts/`,
+    `catalogue/` and `runtime/` into it would adopt it.  The catalogue name is not
+    a blanket exception: it must be a real directory and may contain only the
+    installation database, its lifetime lock, and ordinary OS litter.
     """
     if not root.is_dir():
         return None
@@ -403,6 +486,20 @@ def _unrecognised_installation_state(root: Path) -> str | None:
             if entry.name not in INSTALLATION_ENTRIES
         ),
     )
+    catalogue = root / CATALOGUE_DIR
+    if catalogue.exists() or catalogue.is_symlink():
+        if catalogue.is_symlink() or not catalogue.is_dir():
+            foreign.append(CATALOGUE_DIR)
+        else:
+            nested = _chosen_by_somebody(
+                catalogue,
+                sorted(
+                    entry.name
+                    for entry in catalogue.iterdir()
+                    if entry.name not in INSTALLATION_CATALOGUE_ENTRIES
+                ),
+            )
+            foreign.extend(f"{CATALOGUE_DIR}/{name}" for name in nested)
     return ", ".join(foreign) if foreign else None
 
 
@@ -486,7 +583,12 @@ def _existing_manifest(
     return manifest
 
 
-def _new_manifest(core_version: str) -> WorkspaceManifest:
+def _new_manifest(
+    core_version: str,
+    *,
+    workspace_id: str | None = None,
+    name: str = DEFAULT_WORKSPACE_NAME,
+) -> WorkspaceManifest:
     """A manifest for a workspace that does not exist yet.
 
     `min_core_version` is the build doing the creating, which is the honest claim:
@@ -495,9 +597,9 @@ def _new_manifest(core_version: str) -> WorkspaceManifest:
     future builds by default would need re-writing to stay openable.
     """
     return WorkspaceManifest(
-        workspace_id=f"ws-{uuid.uuid4()}",
+        workspace_id=workspace_id or f"ws-{uuid.uuid4()}",
         created_at=datetime.now(UTC).isoformat(),
-        name=DEFAULT_WORKSPACE_NAME,
+        name=name,
         compatibility=CoreCompatibility(
             workspace_format_version=WORKSPACE_FORMAT_VERSION,
             min_core_version=core_version,
@@ -620,7 +722,9 @@ def _bootstrap(
     try:
         layout.root.mkdir(parents=True, exist_ok=True)
         layout.locks_path.mkdir(exist_ok=True)
-        lock = create_lock(lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER})
+        lock = create_lock(
+            lock_path, LockRole.LIFETIME_STORAGE, {"holder": LOCK_HOLDER}
+        )
         held = lock.acquire()
     except OSError as failure:
         return _write_failure(layout, manifest, installation_root, failure)
@@ -900,6 +1004,7 @@ __all__ = [
     "WorkspaceInitRefusal",
     "WorkspaceInitResult",
     "WorkspaceInitStatus",
+    "initialise_allocated_workspace",
     "initialise_workspace",
     "render_result",
 ]

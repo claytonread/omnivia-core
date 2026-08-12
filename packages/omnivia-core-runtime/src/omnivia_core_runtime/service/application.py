@@ -50,15 +50,22 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final, TypeAlias
+from typing import Any, Final, Protocol, TypeAlias, cast, runtime_checkable
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+    SCOPE_KIND_INSTALLATION,
     CapabilityRef,
     OperationMetadata,
     RequestEnvelope,
     ResponseEnvelope,
+    compare_contract_versions,
     get_operation_metadata,
+)
+from omnivia_core_runtime.ownership.identity import Clock, SystemClock
+from omnivia_core_runtime.service.admission import (
+    ALLOW_APPLICATION_REQUEST,
+    ApplicationAdmissionPolicy,
 )
 from omnivia_core_runtime.service.authorization import (
     ApplicationAuthorizationError,
@@ -68,22 +75,65 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
     authorize_application_request,
 )
-from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
+from omnivia_core_runtime.service.handlers.governance import (
+    GOVERNANCE_FAMILY_OPERATIONS,
+    GovernanceHandlers,
+)
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
+from omnivia_core_runtime.service.handlers.jobs import (
+    IMPORT_START_OPERATION,
+    JOB_CANCEL_OPERATION,
+    JOB_EVENTS_OPERATION,
+    JOB_FAMILY_OPERATIONS,
+    JOB_GET_OPERATION,
+    JOB_RETRY_OPERATION,
+    JobHandlers,
+)
 from omnivia_core_runtime.service.handlers.knowledge import (
+    LOCAL_OWNER_VIEW_GRANT,
     knowledge_search,
     memory_search,
 )
+from omnivia_core_runtime.service.handlers.memory import (
+    MEMORY_CREATE_OPERATION,
+    MEMORY_FAMILY_OPERATIONS,
+    MEMORY_GET_OPERATION,
+    MEMORY_LIST_OPERATION,
+    ContinuationTokenCodec,
+    HmacContinuationTokenCodec,
+    MemoryHandlers,
+)
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
+from omnivia_core_runtime.service.handlers.workspace_family import (
+    InstallationWorkspaceHandlers,
+)
+from omnivia_core_runtime.service.installation import (
+    WORKSPACE_CREATE_OPERATION,
+    WORKSPACE_LIST_OPERATION,
+    WORKSPACE_LIST_PURPOSE,
+    InstallationApplicationService,
+    InstallationOperationContext,
+)
+from omnivia_core_runtime.service.mutation import (
+    INSTALLATION_ADMINISTRATOR_ROLE,
+    KNOWLEDGE_REVIEWER_ROLE,
+    MUTATION_PURPOSES,
+    WORKSPACE_CONTRIBUTOR_ROLE,
+)
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
+    AuditedOperationResult,
     OperationContext,
     OperationError,
+    OperationHandler,
     failure,
+    server_capability_snapshot,
     success,
 )
+from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
+from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
 #: The authorised application operations of this vertical, ratified by the owner. Named
 #: once here so the session grant, the registry and the evidence all read the same
@@ -111,6 +161,12 @@ CONTEXT_PACK_BUILD_OPERATION: Final = "context_pack.build"
 #: no purpose behind it would be refused by check 11 at the first request. A lane
 #: widening the grant adds the operation here in the same edit or its own operation
 #: cannot be served.
+#:
+#: This map covers the *read* operations only, and deliberately so: it is consulted by
+#: `local_owner_session`, which refuses a side-effecting operation outright. The
+#: mutating half of the catalogue is declared by `service.mutation.MUTATION_PURPOSES`,
+#: where a purpose is a fact bound into a server-issued grant rather than a session
+#: allowlist entry, and where nothing may be served without one.
 WORKSPACE_INSPECTION_PURPOSE: Final = "workspace_inspection"
 KNOWLEDGE_RETRIEVAL_PURPOSE: Final = "knowledge_retrieval"
 OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
@@ -122,6 +178,40 @@ OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         GRAPH_TRAVERSE_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
         CONTEXT_PACK_BUILD_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
     }
+)
+
+#: Installation-scoped operations are served under a distinct session.  This is
+#: intentionally not folded into ``OPERATION_PURPOSES``: the existing local-owner
+#: session is workspace-bound and structurally refuses mutations, while this map
+#: includes one read and one S0-authorized mutation.
+INSTALLATION_OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        WORKSPACE_CREATE_OPERATION: MUTATION_PURPOSES[WORKSPACE_CREATE_OPERATION],
+        WORKSPACE_LIST_OPERATION: WORKSPACE_LIST_PURPOSE,
+    }
+)
+
+MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        MEMORY_CREATE_OPERATION: MUTATION_PURPOSES[MEMORY_CREATE_OPERATION],
+        MEMORY_GET_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        MEMORY_LIST_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+    }
+)
+
+JOB_OBSERVATION_PURPOSE: Final = "job_observation"
+JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        IMPORT_START_OPERATION: MUTATION_PURPOSES[IMPORT_START_OPERATION],
+        JOB_GET_OPERATION: JOB_OBSERVATION_PURPOSE,
+        JOB_CANCEL_OPERATION: MUTATION_PURPOSES[JOB_CANCEL_OPERATION],
+        JOB_RETRY_OPERATION: MUTATION_PURPOSES[JOB_RETRY_OPERATION],
+        JOB_EVENTS_OPERATION: JOB_OBSERVATION_PURPOSE,
+    }
+)
+
+GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {name: MUTATION_PURPOSES[name] for name in GOVERNANCE_FAMILY_OPERATIONS}
 )
 
 #: Where the principal comes from, recorded verbatim as the owner fixed it. Not the
@@ -144,6 +234,41 @@ LOCAL_TRANSPORT_ADAPTER: Final = "local-ovc1"
 #: has no handler for. Frozen, and carrying no value, for the same reason every
 #: refusal message on this path is.
 _MESSAGE_NO_HANDLER: Final = "this build cannot serve an operation it authorized"
+
+
+def _narrow_session(
+    configured: AuthenticatedSession,
+    caller: AuthenticatedSession,
+) -> AuthenticatedSession:
+    """Intersect caller authority with the endpoint's configured maximum."""
+    if configured.principal_id != caller.principal_id:
+        return AuthenticatedSession(principal_id=caller.principal_id)
+    configured_capabilities = {ref.id: ref.version for ref in configured.capabilities}
+    capabilities = tuple(
+        CapabilityRef(
+            id=ref.id,
+            version=(
+                ref.version
+                if compare_contract_versions(
+                    ref.version, configured_capabilities[ref.id]
+                )
+                <= 0
+                else configured_capabilities[ref.id]
+            ),
+        )
+        for ref in caller.capabilities
+        if ref.id in configured_capabilities
+    )
+    return AuthenticatedSession(
+        principal_id=caller.principal_id,
+        roles=caller.roles & configured.roles,
+        installations=caller.installations & configured.installations,
+        workspaces=caller.workspaces & configured.workspaces,
+        operations=caller.operations & configured.operations,
+        scopes=caller.scopes & configured.scopes,
+        purposes=caller.purposes & configured.purposes,
+        capabilities=capabilities,
+    )
 
 
 def local_owner_session(
@@ -256,7 +381,178 @@ def local_owner_session(
     )
 
 
-def build_application_registry() -> ApplicationOperationRegistry:
+def installation_owner_session(
+    *,
+    principal_id: str,
+    installation_id: str,
+) -> AuthenticatedSession:
+    """The separate S1 grant for one owned installation catalogue.
+
+    It is intentionally not a widening of :func:`local_owner_session`: the latter
+    remains read-only and workspace-bound.  The one mutation here is named
+    literally, carries the S0-required installation-administrator role, and is
+    executable only through the installation service that owns the matching
+    catalogue authority.
+    """
+    operations = frozenset(INSTALLATION_OPERATION_PURPOSES)
+    entries = tuple(get_operation_metadata(name) for name in sorted(operations))
+    if any(entry.scope.scope_kind != SCOPE_KIND_INSTALLATION for entry in entries):
+        raise ValueError("an installation-owner session may grant only installation scope")
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({INSTALLATION_ADMINISTRATOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset(),
+        operations=operations,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(INSTALLATION_OPERATION_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def memory_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The distinct S2 workspace-family grant; the read-only session stays unchanged."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(MEMORY_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=MEMORY_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(MEMORY_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_memory_registry(handlers: MemoryHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        MEMORY_CREATE_OPERATION, cast(OperationHandler, handlers.memory_create)
+    )
+    registry.register(MEMORY_GET_OPERATION, cast(OperationHandler, handlers.memory_get))
+    registry.register(
+        MEMORY_LIST_OPERATION, cast(OperationHandler, handlers.memory_list)
+    )
+    return registry
+
+
+def job_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The distinct S3 workspace-family grant for durable import and job control."""
+    entries = tuple(get_operation_metadata(name) for name in sorted(JOB_FAMILY_OPERATIONS))
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=JOB_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(JOB_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_job_registry(handlers: JobHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(IMPORT_START_OPERATION, cast(OperationHandler, handlers.import_start))
+    registry.register(JOB_GET_OPERATION, cast(OperationHandler, handlers.job_get))
+    registry.register(JOB_CANCEL_OPERATION, cast(OperationHandler, handlers.job_cancel))
+    registry.register(JOB_RETRY_OPERATION, cast(OperationHandler, handlers.job_retry))
+    registry.register(JOB_EVENTS_OPERATION, cast(OperationHandler, handlers.job_events))
+    return registry
+
+
+def governance_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The S4 contributor/reviewer grant for governed transitions."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(GOVERNANCE_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE, KNOWLEDGE_REVIEWER_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=GOVERNANCE_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(GOVERNANCE_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_governance_registry(
+    handlers: GovernanceHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register("knowledge.propose", cast(OperationHandler, handlers.knowledge_propose))
+    registry.register("candidate.approve", cast(OperationHandler, handlers.candidate_approve))
+    registry.register("candidate.reject", cast(OperationHandler, handlers.candidate_reject))
+    registry.register("record.supersede", cast(OperationHandler, handlers.record_supersede))
+    return registry
+
+
+def build_application_registry(
+    *, additional: Mapping[str, OperationHandler] | None = None
+) -> ApplicationOperationRegistry:
     """The application handlers this build ships.
 
     Six entries. `ApplicationOperationRegistry` is bounded by the frozen catalogue and
@@ -268,6 +564,18 @@ def build_application_registry() -> ApplicationOperationRegistry:
     handler is a claim about what this build can *serve*, and the grant is a claim about
     what the local owner may *ask for*. Deriving either from the other would make a
     mistake in one invisible in the other.
+
+    **`additional` is a test seam and is production-inert.** A lane building the
+    mutation path needs a registry holding a handler this build does not ship, and the
+    alternative -- reaching in and rebinding a module attribute -- makes the production
+    result depend on whatever a previous test left behind. Passing the extra
+    registrations in keeps the default result exactly the six read handlers, whoever
+    called this function before; the production wiring in `service/main.py` states no
+    argument and therefore cannot acquire one by accident.
+
+    Nothing is relaxed for an injected handler: it goes through the same `register`,
+    so a name outside the frozen catalogue and a name already registered here both fail
+    closed, and a caller cannot use this to *replace* a shipped read handler.
     """
     registry = ApplicationOperationRegistry()
     registry.register(WORKSPACE_INSPECT_OPERATION, workspace_inspect)
@@ -276,6 +584,35 @@ def build_application_registry() -> ApplicationOperationRegistry:
     registry.register(MEMORY_SEARCH_OPERATION, memory_search)
     registry.register(GRAPH_TRAVERSE_OPERATION, graph_traverse)
     registry.register(CONTEXT_PACK_BUILD_OPERATION, context_pack_build)
+    for operation, handler in (additional or {}).items():
+        registry.register(operation, handler)
+    return registry
+
+
+InstallationOperationHandler: TypeAlias = Callable[
+    [InstallationOperationContext], Mapping[str, Any]
+]
+
+
+def build_installation_registry(
+    *,
+    workspace_create: InstallationOperationHandler,
+    workspace_list: InstallationOperationHandler,
+) -> ApplicationOperationRegistry:
+    """The S1 installation family, separate from the workspace read registry.
+
+    Keeping this registry distinct is what preserves the shared-session boundary:
+    the workspace application dispatcher cannot acquire the create handler merely
+    because the build ships it, and the installation session cannot intercept any
+    of the six existing workspace reads.
+    """
+    registry = ApplicationOperationRegistry()
+    # The registry predates installation scope and names its transport-neutral
+    # callable with the workspace context type. The application dispatcher selects
+    # the context from frozen catalogue scope before invocation, so this cast adapts
+    # only that legacy annotation; it does not widen runtime authority.
+    registry.register(WORKSPACE_CREATE_OPERATION, cast(OperationHandler, workspace_create))
+    registry.register(WORKSPACE_LIST_OPERATION, cast(OperationHandler, workspace_list))
     return registry
 
 
@@ -334,6 +671,135 @@ class ApplicationCallRecord:
 ApplicationCallSink: TypeAlias = Callable[[ApplicationCallRecord], None]
 
 
+class ApplicationFallback(Protocol):
+    """The next dispatch layer and its already-cross-checked principal grant."""
+
+    @property
+    def grant(self) -> Grant: ...
+
+    def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
+
+
+@runtime_checkable
+class SessionApplicationFallback(Protocol):
+    """A fallback that can retain transport-resolved caller authority."""
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope: ...
+
+
+@dataclass(frozen=True)
+class ProductionApplicationSurface:
+    """The complete application surface, composed without collapsing authority.
+
+    The five family dispatchers deliberately retain their own server-issued
+    sessions and bindings: an installation-scoped request must never inherit a
+    workspace grant, and a read must never acquire mutation authority merely
+    because both operations ship in one build.  This object is the single
+    production routing surface above those boundaries.  Its ``registry`` is the
+    exact, duplicate-checked union used for capability and release evidence; a
+    request is then routed to the one family that owns that registered handler.
+
+    A handler is registered twice, absent, or outside the frozen catalogue is a
+    construction error.  The resulting surface therefore cannot start while it
+    is anything other than 20/20 complete.
+    """
+
+    registry: ApplicationOperationRegistry
+    _routes: Mapping[str, ApplicationDispatcher]
+    _principal: str
+    probe: ApplicationFallback
+    adapters: frozenset[str]
+
+    def __post_init__(self) -> None:
+        self.registry.assert_complete()
+        routes = dict(self._routes)
+        if frozenset(routes) != self.registry.operations:
+            raise ValueError(
+                "the production application routes do not exactly match the registry"
+            )
+        distinct_routes = tuple({id(route): route for route in routes.values()}.values())
+        if len(distinct_routes) != 5:
+            raise ValueError("the production surface requires exactly five authority families")
+        if any(route.grant.principal != self._principal for route in distinct_routes):
+            raise ValueError("every production application family must act as one principal")
+        if any(route.probe.grant.principal != self._principal for route in distinct_routes):
+            raise ValueError("every production application fallback must keep one principal")
+        if self.probe.grant.principal != self._principal:
+            raise ValueError("the production application surface and probe disagree on principal")
+        if self.adapters != frozenset({"in_process", "ipc", "http"}):
+            raise ValueError(
+                "the production application surface requires in_process, ipc and http"
+            )
+        object.__setattr__(self, "_routes", MappingProxyType(routes))
+
+    @property
+    def grant(self) -> Grant:
+        """Expose the one acting principal for transport wiring checks."""
+        return self.probe.grant
+
+    def session_for(self, operation: str) -> AuthenticatedSession | None:
+        """Return the server session for one registered operation.
+
+        HTTP credential resolvers need the authority appropriate to the request,
+        not whichever family happened to be composed last.  Returning ``None``
+        for an unregistered name keeps that lookup fail-closed.
+        """
+        route = self._routes.get(operation)
+        return None if route is None else route.session
+
+    def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
+        route = self._routes.get(request.operation)
+        if route is None:
+            return self.probe.dispatch(request)
+        return route.dispatch(request)
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope:
+        """Dispatch one request under authority resolved by its transport."""
+        route = self._routes.get(request.operation)
+        if route is None:
+            return self.probe.dispatch(request)
+        return route.dispatch_for_session(request, session)
+
+
+def compose_production_application_surface(
+    *,
+    installation: ApplicationDispatcher,
+    reads: ApplicationDispatcher,
+    memory: ApplicationDispatcher,
+    jobs: ApplicationDispatcher,
+    governance: ApplicationDispatcher,
+    probe: ApplicationFallback,
+    adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
+) -> ProductionApplicationSurface:
+    """Compose all real family handlers into the exact frozen catalogue."""
+    families = (installation, reads, memory, jobs, governance)
+    registry = ApplicationOperationRegistry()
+    routes: dict[str, ApplicationDispatcher] = {}
+    for family in families:
+        for operation in sorted(family.registry.operations):
+            handler = family.registry.get(operation)
+            if handler is None:
+                raise ValueError(f"production operation {operation!r} has no handler")
+            registry.register(operation, handler)
+            routes[operation] = family
+    registry.assert_complete()
+    return ProductionApplicationSurface(
+        registry=registry,
+        _routes=routes,
+        _principal=probe.grant.principal,
+        probe=probe,
+        adapters=adapters,
+    )
+
+
 def _claimed_text(value: object, name: str) -> str | None:
     """One string field a request claims, or `None` where it claims nothing readable.
 
@@ -371,9 +837,10 @@ class ApplicationDispatcher:
     binding: ServiceBinding
     supported_capabilities: tuple[CapabilityRef, ...]
     transport: str
-    probe: Dispatcher
+    probe: ApplicationFallback
     record: ApplicationCallSink | None
     service: Any = None
+    admission: ApplicationAdmissionPolicy = ALLOW_APPLICATION_REQUEST
 
     def __post_init__(self) -> None:
         """Refuse a wiring whose two halves act as different principals.
@@ -404,6 +871,46 @@ class ApplicationDispatcher:
         return self.probe.grant
 
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
+        """Dispatch with this endpoint's server-issued authenticated session."""
+        return self._dispatch(request, session=self.session)
+
+    def dispatch_for_session(
+        self,
+        request: RequestEnvelope,
+        session: AuthenticatedSession,
+    ) -> ResponseEnvelope:
+        """Dispatch under a transport-resolved caller session.
+
+        The configured session remains the server's maximum handler policy; the
+        supplied session is the caller authority used by the authorization seam.
+        Mutation grants therefore require both rather than inheriting the broader
+        configured session merely because the request arrived over HTTP.
+        """
+        if request.operation not in self.registry:
+            if isinstance(self.probe, SessionApplicationFallback):
+                return self.probe.dispatch_for_session(request, session)
+            return self.probe.dispatch(request)
+        return self._dispatch(
+            request,
+            session=_narrow_session(self.session, session),
+        )
+
+    def dispatch_without_session(self, request: RequestEnvelope) -> ResponseEnvelope:
+        """Dispatch after a trusted session lookup returned no authenticated caller.
+
+        Transport adapters normally refuse before this point. In-process embedders do
+        not necessarily have a separate HTTP-like authentication boundary, so this is
+        the explicit fail-closed entry point that preserves the contract's typed
+        ``authentication_required`` result without inventing an anonymous session.
+        """
+        return self._dispatch(request, session=None)
+
+    def _dispatch(
+        self,
+        request: RequestEnvelope,
+        *,
+        session: AuthenticatedSession | None,
+    ) -> ResponseEnvelope:
         """Answer one request, or refuse it in the contract's own vocabulary.
 
         Authorization comes first and has no bypass. In particular the handler lookup
@@ -427,7 +934,7 @@ class ApplicationDispatcher:
         try:
             context = authorize_application_request(
                 request,
-                session=self.session,
+                session=session,
                 binding=self.binding,
                 supported_capabilities=self.supported_capabilities,
             )
@@ -441,18 +948,31 @@ class ApplicationDispatcher:
                 denied.code,
                 denied.message,
                 retry_class=denied.retry_class,
-                principal=self.session.principal_id,
+                principal=self.probe.grant.principal,
+            )
+
+        # Authentication is the first authorization check, so a successful return
+        # proves the explicit per-call session exists.
+        assert session is not None
+
+        admission_error = self.admission.evaluate(context)
+        if admission_error is not None:
+            self._emit(request, entry, context=context, error=admission_error)
+            return failure(
+                request,
+                admission_error.code,
+                admission_error.message,
+                retry_class=admission_error.retry_class,
+                principal=context.principal_id,
+                audit_reference=admission_error.audit_reference,
+                job_reference=admission_error.job_reference,
             )
 
         handler = self.registry.get(context.operation)
         workspace_id = context.workspace_id
-        if handler is None or workspace_id is None:
-            # Unreachable through the shipped wiring: the only registered operation is
-            # workspace-scoped, so the seam always resolves a workspace for it. Stated
-            # rather than asserted because the registry accepts installation-scoped
-            # catalogue names too, and the handler contract has no workspace-less
-            # context to give one -- a successor lane registering one needs a widened
-            # handler contract, not a `None` slipped through here.
+        if handler is None:
+            # A registry entry without a handler is an impossible construction state,
+            # but it is answered structurally rather than asserted through a request.
             self._emit(
                 request,
                 entry,
@@ -468,14 +988,26 @@ class ApplicationDispatcher:
             )
 
         try:
-            result = handler(
-                OperationContext(
+            if entry.scope.scope_kind == SCOPE_KIND_INSTALLATION:
+                handler_context: Any = InstallationOperationContext(
+                    request=request,
+                    principal=context.principal_id,
+                    installation_id=context.installation_id,
+                    granted_operations=session.operations,
+                    authorization=context,
+                    service=self.service,
+                    authority=context.authority,
+                    scopes=context.scopes,
+                    purpose=context.purpose,
+                )
+            elif workspace_id is not None:
+                handler_context = OperationContext(
                     request=request,
                     # The authenticated principal and the authorized workspace, not the
                     # claimed ones. A handler cannot see a claim at all.
                     principal=context.principal_id,
                     workspace_id=workspace_id,
-                    granted_operations=self.session.operations,
+                    granted_operations=session.operations,
                     service=self.service,
                     # Amendment 009's pass-through, and nothing more than a pass-through:
                     # these are the values the seam *returned*, carried across unchanged.
@@ -487,7 +1019,24 @@ class ApplicationDispatcher:
                     authority=context.authority,
                     scopes=context.scopes,
                     purpose=context.purpose,
+                    authorization=context,
                 )
+            else:
+                self._emit(
+                    request,
+                    entry,
+                    context=context,
+                    error=None,
+                    code=ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                )
+                return failure(
+                    request,
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                    _MESSAGE_NO_HANDLER,
+                    principal=context.principal_id,
+                )
+            result: Mapping[str, Any] | AuditedOperationResult = handler(
+                handler_context
             )
         except OperationError as error:
             self._emit(request, entry, context=context, error=error)
@@ -497,8 +1046,18 @@ class ApplicationDispatcher:
                 error.message,
                 retry_class=error.retry_class,
                 principal=context.principal_id,
+                audit_reference=error.audit_reference,
+                job_reference=error.job_reference,
             )
 
+        audit_reference: str | None = None
+        canonical_resolution_time: str | None = None
+        job_reference = None
+        if isinstance(result, AuditedOperationResult):
+            audit_reference = result.audit_reference
+            canonical_resolution_time = result.canonical_resolution_time
+            job_reference = result.job_reference
+            result = result.result
         self._emit(request, entry, context=context, error=None)
         return success(
             request,
@@ -510,6 +1069,9 @@ class ApplicationDispatcher:
             # capability id, and advertising it as one would be a false statement about
             # authority on the first production application response.
             capabilities=context.capabilities,
+            audit_reference=audit_reference,
+            canonical_resolution_time=canonical_resolution_time,
+            job_reference=job_reference,
         )
 
     def _emit(
@@ -530,7 +1092,7 @@ class ApplicationDispatcher:
             ApplicationCallRecord(
                 transport=self.transport,
                 operation=entry.name,
-                principal_id=self.session.principal_id,
+                principal_id=self.probe.grant.principal,
                 principal_source=PRINCIPAL_SOURCE,
                 channel_trust=CHANNEL_TRUST,
                 workspace_id=(
@@ -579,14 +1141,203 @@ class ApplicationDispatcher:
         )
 
 
+def build_installation_application_dispatcher(
+    *,
+    service: InstallationApplicationService,
+    principal_id: str,
+    fallback: ApplicationFallback,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the production S1 path around one installation-owned service.
+
+    The caller owns the installation catalogue lifecycle and supplies the next
+    dispatch layer for names outside the S1 registry. This function owns every
+    security-sensitive composition choice: the installation-only session and
+    binding, the concrete handlers, the exact two-operation registry, and the
+    capability snapshot derived from that registry. It deliberately does not attach
+    the installation lifetime lock to a per-workspace service process.
+    """
+    installation_id = service.authority.installation_id
+    session = installation_owner_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id)
+    handlers = InstallationWorkspaceHandlers(
+        installation=service,
+        session=session,
+        binding=binding,
+    )
+    registry = build_installation_registry(
+        workspace_create=handlers.workspace_create,
+        workspace_list=handlers.workspace_list,
+    )
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_memory_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    token_codec: ContinuationTokenCodec | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact three-operation S2 family around the existing router."""
+    session = memory_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    label_grant = local_owner_label_grant(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        granted_workspace=workspace_id,
+    )
+    handlers = MemoryHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        label_grant=label_grant,
+        authorized_views=(
+            LOCAL_OWNER_VIEW_GRANT if label_grant.all_labels else frozenset()
+        ),
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
+    )
+    registry = build_memory_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_job_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    token_codec: ContinuationTokenCodec | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact five-operation S3 family around the existing router."""
+    session = job_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = JobHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
+    )
+    registry = build_job_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_governance_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact four-operation S4 family around the existing router."""
+    session = governance_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    label_grant = local_owner_label_grant(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        granted_workspace=workspace_id,
+    )
+    handlers = GovernanceHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        label_grant=label_grant,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+    )
+    registry = build_governance_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
+    "GOVERNANCE_FAMILY_PURPOSES",
     "GRAPH_TRAVERSE_OPERATION",
+    "INSTALLATION_OPERATION_PURPOSES",
+    "JOB_FAMILY_PURPOSES",
+    "JOB_OBSERVATION_PURPOSE",
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
     "KNOWLEDGE_SEARCH_OPERATION",
     "LOCAL_TRANSPORT_ADAPTER",
+    "MEMORY_FAMILY_PURPOSES",
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
@@ -595,6 +1346,20 @@ __all__ = [
     "ApplicationCallRecord",
     "ApplicationCallSink",
     "ApplicationDispatcher",
+    "ProductionApplicationSurface",
     "build_application_registry",
+    "build_governance_application_dispatcher",
+    "build_governance_registry",
+    "build_installation_application_dispatcher",
+    "build_installation_registry",
+    "build_job_application_dispatcher",
+    "build_job_registry",
+    "build_memory_application_dispatcher",
+    "build_memory_registry",
+    "compose_production_application_surface",
+    "governance_family_session",
+    "installation_owner_session",
+    "job_family_session",
     "local_owner_session",
+    "memory_family_session",
 ]

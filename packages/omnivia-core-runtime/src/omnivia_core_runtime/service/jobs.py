@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from contextlib import AbstractContextManager
+from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -322,12 +323,393 @@ class JobQueue:
         return stranded
 
 
+def _application_timestamp(clock: Clock) -> tuple[int, str]:
+    moment = clock.wall_time()
+    return int(moment.timestamp() * 1_000_000), moment.isoformat()
+
+
+def _application_snapshot(
+    connection: sqlite3.Connection, *, workspace_id: str, job_id: str
+) -> dict[str, object]:
+    from omnivia_core_runtime.storage.jobs import read_application_job_snapshot
+
+    snapshot = read_application_job_snapshot(
+        connection, workspace_id=workspace_id, job_id=job_id
+    )
+    if snapshot is None:
+        raise JobError(f"no application job {job_id!r}")
+    return snapshot
+
+
+def _next_application_number(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    *,
+    workspace_id: str,
+    job_id: str,
+    base: int,
+) -> int:
+    row = connection.execute(
+        f"SELECT COALESCE(MAX({column}), ?) + 1 FROM {table} "
+        "WHERE workspace_id = ? AND job_id = ?",
+        (base, workspace_id, job_id),
+    ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def claim_application_job(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    job_id: str | None = None,
+) -> dict[str, object] | None:
+    """Claim one queued application job and append its next running attempt/event."""
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ):
+        if job_id is None:
+            row = connection.execute(
+                "SELECT j.job_id FROM omnivia_durable_jobs j "
+                "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+                "WHERE m.workspace_id = ? AND j.state = 'queued' "
+                "ORDER BY j.created_at, j.job_id LIMIT 1",
+                (workspace_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT j.job_id FROM omnivia_durable_jobs j "
+                "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+                "WHERE m.workspace_id = ? AND j.job_id = ? AND j.state = 'queued'",
+                (workspace_id, job_id),
+            ).fetchone()
+        if row is None:
+            return None
+        identifier = str(row[0])
+        now_us, moment = _application_timestamp(clock)
+        updated = connection.execute(
+            "UPDATE omnivia_durable_jobs SET state = 'claimed', updated_at = ?, "
+            "claimed_by_service_instance = ?, fencing_generation = ? "
+            "WHERE job_id = ? AND state = 'queued'",
+            (
+                moment,
+                identity.service_instance_id,
+                fencing_generation,
+                identifier,
+            ),
+        )
+        if updated.rowcount != 1:
+            return None
+        attempt = _next_application_number(
+            connection,
+            "omnivia_job_attempts",
+            "attempt_number",
+            workspace_id=workspace_id,
+            job_id=identifier,
+            base=0,
+        )
+        connection.execute(
+            "INSERT INTO omnivia_job_attempts "
+            "(workspace_id, job_id, attempt_number, started_at_us, state) "
+            "VALUES (?, ?, ?, ?, 'running')",
+            (workspace_id, identifier, attempt, now_us),
+        )
+        sequence = _next_application_number(
+            connection,
+            "omnivia_job_events",
+            "sequence",
+            workspace_id=workspace_id,
+            job_id=identifier,
+            base=-1,
+        )
+        connection.execute(
+            "INSERT INTO omnivia_job_events "
+            "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+            "VALUES (?, ?, ?, ?, 'running', 'job execution started')",
+            (workspace_id, identifier, sequence, now_us),
+        )
+    return _application_snapshot(
+        connection, workspace_id=workspace_id, job_id=identifier
+    )
+
+
+def _terminalize_application_job(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    job_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    state: str,
+    result_kind: str | None = None,
+    result: Mapping[str, object] | None = None,
+    error: Mapping[str, object] | None = None,
+    cancellation_reason: str | None = None,
+    _transaction_open: bool = False,
+) -> dict[str, object]:
+    transaction: AbstractContextManager[sqlite3.Connection]
+    if _transaction_open:
+        transaction = nullcontext(connection)
+    else:
+        transaction = fenced_transaction(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+        )
+    with transaction:
+        current = connection.execute(
+            "SELECT j.state FROM omnivia_durable_jobs j "
+            "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+            "WHERE m.workspace_id = ? AND j.job_id = ?",
+            (workspace_id, job_id),
+        ).fetchone()
+        if current is None:
+            raise JobError(f"no application job {job_id!r}")
+        if str(current[0]) != "claimed":
+            raise JobError(f"application job {job_id!r} is not running")
+        now_us, moment = _application_timestamp(clock)
+        connection.execute(
+            "UPDATE omnivia_durable_jobs SET state = ?, updated_at = ?, "
+            "claimed_by_service_instance = NULL, fencing_generation = ? "
+            "WHERE job_id = ?",
+            (state, moment, fencing_generation, job_id),
+        )
+        error_json = None if error is None else _encode_document(error)
+        connection.execute(
+            "UPDATE omnivia_job_attempts SET state = ?, finished_at_us = ?, "
+            "error_json = ? WHERE workspace_id = ? AND job_id = ? "
+            "AND attempt_number = (SELECT MAX(a.attempt_number) "
+            "FROM omnivia_job_attempts a WHERE a.workspace_id = ? AND a.job_id = ?) "
+            "AND state = 'running'",
+            (
+                state,
+                now_us,
+                error_json,
+                workspace_id,
+                job_id,
+                workspace_id,
+                job_id,
+            ),
+        )
+        sequence = _next_application_number(
+            connection,
+            "omnivia_job_events",
+            "sequence",
+            workspace_id=workspace_id,
+            job_id=job_id,
+            base=-1,
+        )
+        connection.execute(
+            "INSERT INTO omnivia_job_events "
+            "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (workspace_id, job_id, sequence, now_us, state, f"job {state}"),
+        )
+        observation = _next_application_number(
+            connection,
+            "omnivia_job_terminal_observations",
+            "terminal_observation_number",
+            workspace_id=workspace_id,
+            job_id=job_id,
+            base=0,
+        )
+        attempt_row = connection.execute(
+            "SELECT MAX(attempt_number) FROM omnivia_job_attempts "
+            "WHERE workspace_id = ? AND job_id = ?",
+            (workspace_id, job_id),
+        ).fetchone()
+        attempt = None if attempt_row is None else attempt_row[0]
+        connection.execute(
+            "INSERT INTO omnivia_job_terminal_observations "
+            "(workspace_id, job_id, terminal_observation_number, attempt_number, "
+            "terminal_state, finished_at_us, result_kind, result_json, error_json, "
+            "cancellation_reason, provenance_kind, fencing_generation) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'service_committed', ?)",
+            (
+                workspace_id,
+                job_id,
+                observation,
+                attempt,
+                state,
+                now_us,
+                result_kind,
+                None if result is None else _encode_document(result),
+                error_json,
+                cancellation_reason,
+                fencing_generation,
+            ),
+        )
+    return _application_snapshot(
+        connection, workspace_id=workspace_id, job_id=job_id
+    )
+
+
+def _encode_document(value: Mapping[str, object]) -> str:
+    from omnivia_core.contracts.v1 import to_canonical_json
+
+    return to_canonical_json(dict(value))
+
+
+def acknowledge_application_job_cancellation(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    job_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    reason: str = "requested",
+) -> dict[str, object]:
+    """Acknowledge a pending cancellation and preserve its terminal observation."""
+    current = read_job(connection, job_id)
+    if current is not None and current.state == JobState.QUEUED.value:
+        with fenced_transaction(
+            connection,
+            identity,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+        ):
+            pending = connection.execute(
+                "SELECT 1 FROM omnivia_application_job_controls "
+                "WHERE workspace_id = ? AND job_id = ? "
+                "AND operation = 'job.cancel' "
+                "AND disposition = 'cancellation_requested' "
+                "AND resulting_state = 'queued' "
+                "ORDER BY settled_at_us DESC LIMIT 1",
+                (workspace_id, job_id),
+            ).fetchone()
+            if pending is None:
+                raise JobError(f"application job {job_id!r} has no pending cancellation")
+            now_us, moment = _application_timestamp(clock)
+            connection.execute(
+                "UPDATE omnivia_durable_jobs SET state = 'claimed', updated_at = ?, "
+                "claimed_by_service_instance = ?, fencing_generation = ? "
+                "WHERE job_id = ? AND state = 'queued'",
+                (
+                    moment,
+                    identity.service_instance_id,
+                    fencing_generation,
+                    job_id,
+                ),
+            )
+            attempt = _next_application_number(
+                connection,
+                "omnivia_job_attempts",
+                "attempt_number",
+                workspace_id=workspace_id,
+                job_id=job_id,
+                base=0,
+            )
+            connection.execute(
+                "INSERT INTO omnivia_job_attempts "
+                "(workspace_id, job_id, attempt_number, started_at_us, state) "
+                "VALUES (?, ?, ?, ?, 'running')",
+                (workspace_id, job_id, attempt, now_us),
+            )
+            sequence = _next_application_number(
+                connection,
+                "omnivia_job_events",
+                "sequence",
+                workspace_id=workspace_id,
+                job_id=job_id,
+                base=-1,
+            )
+            connection.execute(
+                "INSERT INTO omnivia_job_events "
+                "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+                "VALUES (?, ?, ?, ?, 'running', 'cancellation acknowledgement started')",
+                (workspace_id, job_id, sequence, now_us),
+            )
+            return _terminalize_application_job(
+                connection,
+                identity,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                fencing_generation=fencing_generation,
+                clock=clock,
+                state="cancelled",
+                cancellation_reason=reason,
+                _transaction_open=True,
+            )
+    return _terminalize_application_job(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        job_id=job_id,
+        fencing_generation=fencing_generation,
+        clock=clock,
+        state="cancelled",
+        cancellation_reason=reason,
+    )
+
+
+def complete_application_job(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    job_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    result_kind: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
+    """Commit a successful application-job attempt and terminal observation."""
+    return _terminalize_application_job(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        job_id=job_id,
+        fencing_generation=fencing_generation,
+        clock=clock,
+        state="succeeded",
+        result_kind=result_kind,
+        result=result,
+    )
+
+
+def fail_application_job(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    job_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    error: Mapping[str, object],
+) -> dict[str, object]:
+    """Commit a failed application-job attempt and terminal observation."""
+    return _terminalize_application_job(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        job_id=job_id,
+        fencing_generation=fencing_generation,
+        clock=clock,
+        state="failed",
+        error=error,
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "Job",
     "JobError",
     "JobQueue",
     "JobState",
+    "acknowledge_application_job_cancellation",
+    "claim_application_job",
+    "complete_application_job",
+    "fail_application_job",
     "list_jobs",
     "read_job",
 ]

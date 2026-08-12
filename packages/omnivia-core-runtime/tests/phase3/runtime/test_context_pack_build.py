@@ -73,6 +73,7 @@ import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
 import test_graph_traverse as gt
 import test_knowledge_search_vertical as kv
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import application as application_module
 from omnivia_core_runtime.service.application import (
@@ -134,7 +135,9 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_PROJECTION_UNAVAILABLE,
+    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
+    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
     CapabilityRef,
     CapabilityRequirement,
@@ -1142,7 +1145,7 @@ def test_a009_the_dispatcher_passes_the_seam_values_and_reconstructs_none_of_the
     each would pass every behavioural test in this file that does not narrow, and each is
     refused here.
     """
-    source = textwrap.dedent(inspect.getsource(ApplicationDispatcher.dispatch))
+    source = textwrap.dedent(inspect.getsource(ApplicationDispatcher._dispatch))
     call = next(
         node
         for node in ast.walk(ast.parse(source))
@@ -1164,15 +1167,15 @@ def test_a009_the_dispatcher_passes_the_seam_values_and_reconstructs_none_of_the
         assert value.value.id == "context"
 
 
-def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -> None:
+def test_a009_and_v06_5_the_four_fields_are_optional_and_service_keeps_its_fifth_slot() -> None:
     """The amendment's shape constraint, asserted as the shape.
 
-    `service` stays fifth and the three new fields follow it, so every direct-handler
+    `service` stays fifth and the four new fields follow it, so every direct-handler
     construction that predates the amendment -- five positional arguments, or four plus
-    `service=` -- still builds. All three default to `None`, which is what lets those
+    `service=` -- still builds. All four default to `None`, which is what lets those
     constructions exist at all.
 
-    Falsifier: insert any of the three before `service` and the positional construction
+    Falsifier: insert any of the four before `service` and the positional construction
     below binds a `GrantedAuthority` to `service`; give any of them a non-`None` default
     and absence stops being representable, which is the one thing the refusal above needs.
     """
@@ -1187,6 +1190,7 @@ def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -
         "authority",
         "scopes",
         "purpose",
+        "authorization",
     ]
     for field in fields[5:]:
         assert field.default is None
@@ -1199,7 +1203,12 @@ def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -
         Served,
     )
     assert legacy.service is Served
-    assert (legacy.authority, legacy.scopes, legacy.purpose) == (None, None, None)
+    assert (
+        legacy.authority,
+        legacy.scopes,
+        legacy.purpose,
+        legacy.authorization,
+    ) == (None, None, None, None)
 
 
 # --- 3. authorization before the freeze ---------------------------------------
@@ -2022,3 +2031,86 @@ def test_the_sections_and_the_selected_partitions_are_one_reading(
     assert result.budget.tokens_used == sum(
         section.token_count for section in result.sections
     )
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_context_pack_primary_reaches_every_real_adapter(
+    standard: m2.Owned, adapter: str
+) -> None:
+    """The deterministic Context Pack success branch crosses every adapter."""
+    response = s2._transport_call(
+        adapter,
+        production_path(standard),
+        request_for(
+            build_input(), request_id=f"req-context-pack-c1-{adapter}-primary"
+        ),
+    )
+
+    result = pack(response)
+    assert result.mode == "deterministic_view"
+    assert result.fresh_authorization_required is True
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_context_pack_error_family_reaches_every_real_adapter(
+    owned: m2.Owned, adapter: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All four frozen Context Pack errors run through the production handler."""
+    unavailable_response = refused(
+        s2._transport_call(
+            adapter,
+            production_path(owned),
+            request_for(
+                build_input(),
+                request_id=f"req-context-pack-c1-{adapter}-projection",
+            ),
+        )
+    )
+    assert unavailable_response.error.code == ERROR_CODE_PROJECTION_UNAVAILABLE
+
+    standard_workspace(owned)
+    dispatcher = production_path(owned)
+
+    token_response = refused(
+        s2._transport_call(
+            adapter,
+            dispatcher,
+            request_for(
+                build_input(token_budget=1),
+                request_id=f"req-context-pack-c1-{adapter}-token",
+            ),
+        )
+    )
+    assert token_response.error.code == ERROR_CODE_TOKEN_LIMIT_EXCEEDED
+
+    seed_artifact(
+        owned, "evd-c1-stale", locator="archive://alpha.md", at=BASE_US + 900
+    )
+    stale_response = refused(
+        s2._transport_call(
+            adapter,
+            dispatcher,
+            request_for(
+                build_input(), request_id=f"req-context-pack-c1-{adapter}-stale"
+            ),
+        )
+    )
+    assert stale_response.error.code == ERROR_CODE_STALE_PROJECTION
+    project(owned)
+
+    def too_large(**_kwargs: Any) -> Any:
+        raise handler_module.ContextPackFrontierTooLarge(
+            "c1 deterministic ceiling"
+        )
+
+    monkeypatch.setattr(handler_module, "freeze_context_pack_frontier", too_large)
+    size_response = refused(
+        s2._transport_call(
+            adapter,
+            dispatcher,
+            request_for(
+                build_input(), request_id=f"req-context-pack-c1-{adapter}-size"
+            ),
+        )
+    )
+    assert size_response.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED

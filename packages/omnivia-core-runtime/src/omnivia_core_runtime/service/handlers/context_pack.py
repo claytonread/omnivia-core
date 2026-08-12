@@ -89,6 +89,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_PROJECTION_UNAVAILABLE,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     ERROR_CODE_STALE_PROJECTION,
+    ERROR_CODE_TOKEN_LIMIT_EXCEEDED,
     GOVERNED_RECORD_VIEW_CURRENT_CANONICAL,
     GOVERNED_RECORD_VIEW_HISTORY,
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
@@ -115,6 +116,7 @@ from omnivia_core_runtime.storage.context_pack import (
     CONTEXT_PACK_SELECTION_VERSION,
     CONTEXT_PACK_TOKENIZER_ID,
     CONTEXT_PACK_TOKENIZER_VERSION,
+    OMISSION_TOKEN_BUDGET,
     ContextPackBuildContext,
     ContextPackBuilderInputInvalid,
     ContextPackFreeze,
@@ -208,6 +210,9 @@ _MESSAGE_FRONTIER_TOO_LARGE: Final = (
 )
 _MESSAGE_NOT_BUILDABLE: Final = (
     "this build produced material a Context Pack cannot be composed from"
+)
+_MESSAGE_TOKEN_LIMIT: Final = (
+    "the requested token budget cannot carry any matching authorized candidate"
 )
 
 
@@ -322,6 +327,13 @@ def context_pack_build(context: OperationContext) -> Mapping[str, Any]:
             model_versions={},
         ),
     )
+    if (
+        not result.sections
+        and any(
+            omission.code == OMISSION_TOKEN_BUDGET for omission in result.omissions
+        )
+    ):
+        raise OperationError(ERROR_CODE_TOKEN_LIMIT_EXCEEDED, _MESSAGE_TOKEN_LIMIT)
     _judge(
         result,
         request_input,

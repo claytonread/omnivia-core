@@ -82,7 +82,12 @@ class DocumentRouter:
     probes: ProbeRouter
     dispatch: ApplicationDispatch
 
-    def route(self, document: object) -> RoutedResult:
+    def route(
+        self,
+        document: object,
+        *,
+        dispatch: ApplicationDispatch | None = None,
+    ) -> RoutedResult:
         """Route `document`, or raise :class:`ProtocolError`.
 
         Contract decode failures from the selected branch propagate as the
@@ -110,7 +115,7 @@ class DocumentRouter:
             return self.probes.route(ServiceProbeRequest.from_wire(mapping))
 
         request = RequestEnvelope.from_wire(mapping)
-        response = self.dispatch(request)
+        response = (self.dispatch if dispatch is None else dispatch)(request)
         _require_answering_response(request, response)
         return response
 

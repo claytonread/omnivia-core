@@ -40,6 +40,7 @@ from typing import Any
 import pytest
 import test_blobs_staged_sources_and_evidence_migration as m2
 import test_governed_truth_and_relations_migration as m3
+import test_v06_5_s2_memory_family as s2
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.service import authorization
 from omnivia_core_runtime.service.application import (
@@ -78,6 +79,7 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     ERROR_CODE_SIZE_LIMIT_EXCEEDED,
     GRAPH_BOUNDARY_REASON_DEPTH,
+    GRAPH_BOUNDARY_REASON_PAGE,
     GRAPH_DEFAULT_DEPTH_LIMIT,
     CapabilityRequirement,
     ClientIdentity,
@@ -1293,31 +1295,33 @@ def test_an_excluded_endpoint_never_fabricates_a_depth_boundary(graph: m2.Owned)
     assert excluded.isdisjoint({edge[3] for edge in edges_of(result)})
 
 
-# --- 5. the limits: the complete answer, or none of it ------------------------
+# --- 5. node continuation and independent edge limits -------------------------
 
 
-def test_a_node_overflow_refuses_and_returns_no_partial_content(graph: m2.Owned) -> None:
-    """This build issues no continuation token, so a sliced page would be a silent truncation.
-
-    Falsifier: the same request with a limit that fits comes back with four nodes, so the
-    refusal is the limit's doing and not the request's.
-    """
-    response = refused(
-        production_path(graph).dispatch(
-            request_for(start("rec-a", relation_types=[SUPPORTS], depth_limit=2, node_limit=1))
+def test_a_node_overflow_is_returned_as_bound_continuation_pages(graph: m2.Owned) -> None:
+    """A node budget slices the stable traversal without repeating its seed."""
+    dispatcher = production_path(graph)
+    payload = start("rec-a", relation_types=[SUPPORTS], depth_limit=2, node_limit=1)
+    pages: list[GraphTraversalResult] = []
+    while True:
+        page_result = GraphTraversalResult.from_wire(
+            answered(dispatcher.dispatch(request_for(payload))).result
         )
+        pages.append(page_result)
+        token = page_result.page.continuation_token
+        if token is None:
+            break
+        payload = {**payload, "page": {"continuation_token": token}}
+
+    assert nodes_of(pages[0]) == (("rec-a", 0),)
+    assert all("rec-a" not in {record_id for record_id, _ in nodes_of(page)} for page in pages[1:])
+    assert tuple(node for page in pages for node in nodes_of(page)) == (
+        ("rec-a", 0),
+        ("rec-b", 1),
+        ("rec-c", 2),
+        ("rec-off", 2),
     )
-
-    assert response.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
-    assert response.error.message == message("_MESSAGE_TOO_LARGE")
-    # Not a page with a note attached: there is no result document at all, so no node, no
-    # edge and no freshness statement reached the caller.
-    assert not isinstance(response, SuccessResponseEnvelope)
-    for absent in ('"nodes"', '"edges"', "rec-b", "rec-off"):
-        assert absent not in wire_text(response)
-
-    fits = traverse(graph, start("rec-a", relation_types=[SUPPORTS], depth_limit=2))
-    assert len(fits.nodes) == 4
+    assert pages[-1].page.continuation_token is None
 
 
 def test_an_edge_overflow_refuses_on_its_own_budget(graph: m2.Owned) -> None:
@@ -1336,8 +1340,8 @@ def test_an_edge_overflow_refuses_on_its_own_budget(graph: m2.Owned) -> None:
 
     assert response.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
     assert response.error.message == message("_MESSAGE_TOO_LARGE")
-    # The same all-or-nothing statement the node limit makes: no result document, so no
-    # node, no edge and no freshness statement reached the caller.
+    # Edge pagination is deliberately not invented: no result document means no node,
+    # edge or freshness statement reached the caller.
     assert not isinstance(response, SuccessResponseEnvelope)
     for absent in ('"nodes"', '"edges"', "rec-b", "rec-off"):
         assert absent not in wire_text(response)
@@ -1877,31 +1881,39 @@ def test_the_domain_filter_excludes_an_out_of_scope_supersession_and_keeps_the_i
     assert ("ver-rec-o-1", 1) in steps_of(unscoped)
 
 
-def test_a_supersession_page_that_does_not_fit_its_budget_returns_none_of_it(
+def test_a_supersession_node_overflow_continues_while_edge_overflow_refuses(
     graph: m2.Owned,
 ) -> None:
-    """The all-or-nothing rule, with the supersession as the thing that overflows it.
-
-    The seed alone is one node; the derived edge is what makes the answer two. So a
-    `node_limit` of one is a budget the supersession breaks, and this build has no
-    continuation token to hand the remainder back with. The mixed page's four edges make the
-    same statement against the separate edge budget.
-
-    Falsifier: each request is repeated with a budget that fits, and comes back whole.
-    """
+    """Node pagination preserves a supersession boundary; edge budgets remain strict."""
     dispatcher = production_path(graph)
-    nodes_refused = refused(
-        dispatcher.dispatch(
-            request_for(
-                page(("rec-h", 1), direction=GRAPH_DIRECTION_OUTBOUND,
-                     relation_types=[SUPERSEDED], depth_limit=1, node_limit=1)
-            )
-        )
+    first_payload = page(
+        ("rec-h", 1),
+        direction=GRAPH_DIRECTION_OUTBOUND,
+        relation_types=[SUPERSEDED],
+        depth_limit=1,
+        node_limit=1,
     )
-    assert nodes_refused.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
-    assert nodes_refused.error.message == message("_MESSAGE_TOO_LARGE")
-    for absent in ('"nodes"', '"edges"', "ver-rec-h-2", SUPERSEDED):
-        assert absent not in wire_text(nodes_refused)
+    first = GraphTraversalResult.from_wire(
+        answered(dispatcher.dispatch(request_for(first_payload))).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+    assert steps_of(first) == (("ver-rec-h-1", 0),)
+    assert step_edges_of(first) == (
+        ("ver-rec-h-1", SUPERSEDED, None, "ver-rec-h-2", GRAPH_BOUNDARY_REASON_PAGE),
+    )
+    second = GraphTraversalResult.from_wire(
+        answered(
+            dispatcher.dispatch(
+                request_for(
+                    {**first_payload, "page": {"continuation_token": token}}
+                )
+            )
+        ).result
+    )
+    assert steps_of(second) == (("ver-rec-h-2", 1),)
+    assert second.edges == ()
+    assert second.page.continuation_token is None
 
     edges_refused = refused(
         dispatcher.dispatch(
@@ -1913,15 +1925,49 @@ def test_a_supersession_page_that_does_not_fit_its_budget_returns_none_of_it(
     assert edges_refused.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED
     assert edges_refused.error.message == message("_MESSAGE_TOO_LARGE")
 
-    fits_nodes = traverse(
-        graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_OUTBOUND,
-                    relation_types=[SUPERSEDED], depth_limit=1, node_limit=2)
-    )
-    assert len(fits_nodes.nodes) == 2 and len(fits_nodes.edges) == 1
     fits_edges = traverse(
         graph, page(("rec-h", 1), direction=GRAPH_DIRECTION_BOTH, depth_limit=2, edge_limit=4)
     )
     assert len(fits_edges.edges) == 4
+
+
+@pytest.mark.parametrize("adapter", ("in-process", "local-ipc", "http"))
+def test_v06_5_c1_graph_traverse_primary_and_page_2_reach_every_real_adapter(
+    graph: m2.Owned, adapter: str
+) -> None:
+    """The graph page boundary is preserved through every production adapter."""
+    dispatcher = production_path(graph)
+    payload = page(
+        ("rec-h", 1),
+        direction=GRAPH_DIRECTION_OUTBOUND,
+        relation_types=[SUPERSEDED],
+        depth_limit=1,
+        node_limit=1,
+    )
+    first = GraphTraversalResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for(payload),
+            )
+        ).result
+    )
+    token = first.page.continuation_token
+    assert token is not None
+
+    second = GraphTraversalResult.from_wire(
+        answered(
+            s2._transport_call(
+                adapter,
+                dispatcher,
+                request_for({**payload, "page": {"continuation_token": token}}),
+            )
+        ).result
+    )
+    assert steps_of(first) == (("ver-rec-h-1", 0),)
+    assert steps_of(second) == (("ver-rec-h-2", 1),)
+    assert second.page.continuation_token is None
 
 
 def test_an_explicit_edge_wins_a_shared_relation_reference_and_only_that_one_is_dropped(

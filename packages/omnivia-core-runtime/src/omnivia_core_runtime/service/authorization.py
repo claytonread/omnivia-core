@@ -529,6 +529,7 @@ class AuthorizedApplicationContext:
     scopes: tuple[str, ...]
     purpose: str
     capabilities: tuple[CapabilityRef, ...]
+    required_capabilities: tuple[CapabilityRequirement, ...]
     request_id: str
     correlation_id: str
     trace_id: str
@@ -1032,6 +1033,7 @@ def authorize_application_request(
         scopes=tuple(sorted(effective_scopes)),
         purpose=purpose,
         capabilities=tuple(effective_capabilities),
+        required_capabilities=tuple(metadata.required_capabilities),
         request_id=metadata.request_id,
         correlation_id=metadata.correlation_id,
         trace_id=metadata.trace_id,

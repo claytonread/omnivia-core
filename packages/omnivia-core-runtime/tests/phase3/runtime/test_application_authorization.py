@@ -37,12 +37,19 @@ import traceback
 
 import pytest
 from omnivia_core_runtime.service import authorization
+from omnivia_core_runtime.service.application import ApplicationDispatcher
 from omnivia_core_runtime.service.authorization import (
     ApplicationAuthorizationError,
     AuthenticatedSession,
     AuthorizedApplicationContext,
     ServiceBinding,
     authorize_application_request,
+)
+from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.operations import (
+    SERVICE_OPERATIONS,
+    ApplicationOperationRegistry,
+    server_capability_snapshot,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -388,6 +395,44 @@ def test_authentication_is_decided_before_anything_else() -> None:
         scopes=(),
     )
     assert error.code == ERROR_CODE_AUTHENTICATION_REQUIRED
+
+
+def test_application_dispatcher_returns_typed_authentication_refusal() -> None:
+    """A missing server-side session is a typed in-process adapter result."""
+    entry = by_name("candidate.approve")
+    registry = ApplicationOperationRegistry()
+    called = False
+
+    def must_not_run(_context):
+        nonlocal called
+        called = True
+        return {}
+
+    registry.register(entry.name, must_not_run)
+    probe = Dispatcher.for_service_operations(
+        authorization.Grant(
+            principal=PRINCIPAL,
+            workspaces=frozenset({WORKSPACE_ID}),
+            operations=frozenset(SERVICE_OPERATIONS),
+        )
+    )
+    dispatcher = ApplicationDispatcher(
+        registry=registry,
+        session=session_for(entry),
+        binding=ServiceBinding(
+            installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID
+        ),
+        supported_capabilities=server_capability_snapshot(registry),
+        transport="in-process",
+        probe=probe,
+        record=None,
+    )
+
+    response = dispatcher.dispatch_without_session(envelope_for(entry))
+
+    assert response.error.code == ERROR_CODE_AUTHENTICATION_REQUIRED
+    assert response.error.retry_class == RETRY_CLASS_NON_RETRYABLE
+    assert called is False
 
 
 @ALL

@@ -25,6 +25,7 @@ from referencing import Registry, Resource
 
 from omnivia_core.contracts.v1 import generated
 from omnivia_core.contracts.v1 import semantics as sem
+from omnivia_core.contracts.v1 import semantics_knowledge as sem_knowledge
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import (
     CandidateAssertion,
@@ -985,6 +986,131 @@ def test_validate_memory_create_result_composes_governed_record_validation() -> 
     )
     with pytest.raises(ContractSemanticError):
         sem.validate_memory_create_result(result, expected_workspace_id="ws-1")
+
+
+# --------------------------------------------------------------------------
+# 10a. memory.get/list governed-view result semantics
+# --------------------------------------------------------------------------
+
+
+def _candidate_record_wire(**identity_overrides: Any) -> dict[str, Any]:
+    return _governed_record_wire(
+        provenance=_provenance_wire(
+            identity=_identity_wire(governance_state="candidate", **identity_overrides)
+        )
+    )
+
+
+def _historical_record_wire(*, currentness: str = "superseded") -> dict[str, Any]:
+    identity_overrides: dict[str, Any] = {
+        "layer": "l2",
+        "governance_state": "accepted",
+        "currentness": currentness,
+    }
+    temporal = _temporal_wire()
+    if currentness == "superseded":
+        identity_overrides["superseded_by"] = {"record_id": "rec-1", "version": "v2"}
+        temporal = _temporal_wire(superseded_at=T0)
+    return _governed_record_wire(
+        authority_level="canonical",
+        reviewer="reviewer-1",
+        provenance=_provenance_wire(
+            identity=_identity_wire(**identity_overrides), temporal=temporal
+        ),
+    )
+
+
+def test_validate_memory_get_result_accepts_authorized_candidate() -> None:
+    result = MemoryGetResult.from_wire({"record": _candidate_record_wire()})
+    request = MemoryGetInput.from_wire({"record_id": "rec-1", "view": "candidates"})
+    sem_knowledge.validate_memory_get_result(
+        result, request, "ws-1", None, frozenset({"candidates"})
+    )
+
+
+def test_v06_5_s2_conformance_rejects_candidate_under_default_view() -> None:
+    result = MemoryGetResult.from_wire({"record": _candidate_record_wire()})
+    request = MemoryGetInput.from_wire({"record_id": "rec-1"})
+    with pytest.raises(ContractSemanticError, match="current_canonical"):
+        sem_knowledge.validate_memory_get_result(
+            result, request, "ws-1", T1, frozenset()
+        )
+
+
+def test_validate_memory_get_result_rejects_candidate_without_trusted_grant() -> None:
+    result = MemoryGetResult.from_wire({"record": _candidate_record_wire()})
+    request = MemoryGetInput.from_wire({"record_id": "rec-1", "view": "candidates"})
+    with pytest.raises(ContractSemanticError, match="not present in authorized_views"):
+        sem_knowledge.validate_memory_get_result(
+            result, request, "ws-1", None, frozenset()
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_wire", "record_wire", "diagnostic"),
+    [
+        ({"record_id": "rec-2", "view": "candidates"}, {}, "record_id"),
+        (
+            {"record_id": "rec-1", "version": "v2", "view": "candidates"},
+            {},
+            "version",
+        ),
+    ],
+)
+def test_validate_memory_get_result_rejects_wrong_identity(
+    request_wire: dict[str, Any], record_wire: dict[str, Any], diagnostic: str
+) -> None:
+    result = MemoryGetResult.from_wire({"record": _candidate_record_wire(**record_wire)})
+    request = MemoryGetInput.from_wire(request_wire)
+    with pytest.raises(ContractSemanticError, match=diagnostic):
+        sem_knowledge.validate_memory_get_result(
+            result, request, "ws-1", None, frozenset({"candidates"})
+        )
+
+
+def test_validate_memory_list_result_rejects_record_type_mismatch() -> None:
+    result = MemoryListResult.from_wire(
+        {"records": [_candidate_record_wire()], "page": {}}
+    )
+    request = MemoryListInput.from_wire(
+        {"view": "candidates", "record_type": "memory.preference"}
+    )
+    with pytest.raises(ContractSemanticError, match="record_type"):
+        sem_knowledge.validate_memory_list_result(
+            result, request, "ws-1", None, frozenset({"candidates"})
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_wire", "record_count", "effective_limit"),
+    [
+        ({"view": "candidates"}, 51, 50),
+        ({"view": "candidates", "limit": 1000}, 501, 500),
+    ],
+)
+def test_validate_memory_list_result_enforces_effective_limit(
+    request_wire: dict[str, Any], record_count: int, effective_limit: int
+) -> None:
+    record = _candidate_record_wire()
+    result = MemoryListResult.from_wire({"records": [record] * record_count, "page": {}})
+    request = MemoryListInput.from_wire(request_wire)
+    with pytest.raises(
+        ContractSemanticError, match=f"applicable limit of {effective_limit}"
+    ):
+        sem_knowledge.validate_memory_list_result(
+            result, request, "ws-1", None, frozenset({"candidates"})
+        )
+
+
+def test_v06_5_s2_conformance_rejects_wrong_history_currentness() -> None:
+    result = MemoryListResult.from_wire(
+        {"records": [_historical_record_wire(currentness="current")], "page": {}}
+    )
+    request = MemoryListInput.from_wire({"view": "history"})
+    with pytest.raises(ContractSemanticError, match="history view"):
+        sem_knowledge.validate_memory_list_result(
+            result, request, "ws-1", T1, frozenset({"history"})
+        )
 
 
 # --------------------------------------------------------------------------

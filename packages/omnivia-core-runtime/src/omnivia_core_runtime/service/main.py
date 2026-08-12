@@ -44,9 +44,16 @@ from omnivia_core_runtime.service.application import (
     WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
+    build_governance_application_dispatcher,
+    build_job_application_dispatcher,
+    build_memory_application_dispatcher,
     local_owner_session,
 )
-from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
+from omnivia_core_runtime.service.authorization import (
+    AuthenticatedSession,
+    Grant,
+    ServiceBinding,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
@@ -117,6 +124,10 @@ class _ApplicationDispatch(Protocol):
     """
 
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope: ...
+
+    def dispatch_for_session(
+        self, request: RequestEnvelope, session: AuthenticatedSession
+    ) -> ResponseEnvelope: ...
 
 
 def _router_for(
@@ -488,6 +499,27 @@ def main(
             record=None,
             service=started,
         )
+        application = build_memory_application_dispatcher(
+            service=started,
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            fallback=application,
+        )
+        application = build_job_application_dispatcher(
+            service=started,
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            fallback=application,
+        )
+        application = build_governance_application_dispatcher(
+            service=started,
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            fallback=application,
+        )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:
         # there is one object, and neither transport knows the other exists.
@@ -502,6 +534,7 @@ def main(
                 # refuse a session for anyone else rather than run it as this one.
                 principal=LOCAL_PRINCIPAL,
                 resolver=resolve_credential,
+                authenticated_dispatch=application.dispatch_for_session,
                 bind=http_bind,
             )
             http.start()

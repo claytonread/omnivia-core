@@ -318,12 +318,10 @@ def traverse(
     replacement version's own scope, and by whether both of its ends are records this view
     holds. Nothing below tests what kind of edge it is looking at.
 
-    **The complete result, never a truncated one.** There is no node or edge budget here,
-    because a budget applied to a total function is a silent truncation dressed as an
-    answer: this build issues no continuation token, so a caller handed a sliced page has no
-    way to ask for the rest and no field that says any was withheld. The handler compares
-    what this returns against the limits the request asked for and refuses when it does not
-    fit, which is the honest statement of the same fact.
+    **The complete result, before pagination.** There is no node or edge budget here. The
+    handler receives the deterministic total value and alone slices it into signed,
+    snapshot-bound pages; keeping pagination above this pure function means a continuation
+    can never change what the traversal itself reached.
 
     **Depth-boundary edges.** An edge whose two endpoints are both returned nodes is fully
     materialized and carries no `boundary_reason`. An in-scope relation the walk *reached*
@@ -341,8 +339,8 @@ def traverse(
     a relation whose direction never pointed at it was never reached either. In both cases
     the relation contributes no edge, because a fabricated boundary would tell a caller
     "raise `depth_limit` and you will see it" about a record no depth could reveal. The
-    other recognized reason, `page_boundary`, needs a continuation token this build does not
-    issue and is therefore never emitted.
+    other recognized reason, `page_boundary`, is introduced only by the handler when it
+    slices this complete result and issues a continuation token.
 
     Determinism does not rest on iteration order. Depth is shortest-path depth, which is a
     property of the graph rather than of the visit sequence, and both sequences are sorted

@@ -84,6 +84,10 @@ from omnivia_core.contracts.v1 import (
     decode_evidence_search_input,
 )
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
+from omnivia_core_runtime.service.pagination import (
+    PROCESS_CONTINUATION_TOKENS,
+    token_digest,
+)
 from omnivia_core_runtime.storage.projections.fts import (
     ProjectionUnavailable,
     SearchProjection,
@@ -126,6 +130,7 @@ _MESSAGE_STALE_PROJECTION: Final = (
 _MESSAGE_PROJECTION_UNAVAILABLE: Final = (
     "this build has no active compatible projection for this search"
 )
+_TOKEN_KEYS: Final = frozenset({"b", "o", "s", "t", "v"})
 
 
 def evidence_search(context: OperationContext) -> Mapping[str, Any]:
@@ -142,7 +147,39 @@ def evidence_search(context: OperationContext) -> Mapping[str, Any]:
     # resolves to *refuse* rather than report for this operation, because
     # `EvidenceSearchResult` has no freshness field to report in and succeeding
     # silently from a lagging projection is the thing the clause forbids.
-    checkpoint = authoritative_checkpoint(connection, workspace_id=workspace_id)
+    limit = _limit(request_input)
+    binding = request_input.to_wire()
+    binding.pop("page", None)
+    binding_digest = token_digest(
+        {
+            "principal": context.principal,
+            "workspace": context.workspace_id,
+            "operation": "evidence.search",
+            "input": binding,
+            "limit": limit,
+        }
+    )
+    supplied: Mapping[str, Any] | None = None
+    if request_input.page is not None:
+        token = request_input.page.continuation_token
+        assert token is not None
+        try:
+            supplied = PROCESS_CONTINUATION_TOKENS.decode(token)
+        except (ValueError, ContractDecodeError, ContractSemanticError):
+            pass
+        if (
+            supplied is None
+            or set(supplied) != _TOKEN_KEYS
+            or supplied.get("v") != 1
+            or supplied.get("b") != binding_digest
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        read_point = supplied.get("t")
+        if type(read_point) is not int or read_point <= 0:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        checkpoint = str(read_point)
+    else:
+        checkpoint = authoritative_checkpoint(connection, workspace_id=workspace_id)
     readiness = projection_readiness(
         connection,
         workspace_id=workspace_id,
@@ -212,14 +249,43 @@ def evidence_search(context: OperationContext) -> Mapping[str, Any]:
     # second is given only what the first returned.
     projected = _projected(connection, projection, frontier)
     ranked = rank_projected(
-        projected, request_input.query, limit=_limit(request_input)
+        projected, request_input.query, limit=len(projected.candidates)
     )
+    snapshot_digest = token_digest(
+        [
+            [candidate.artifact.evidence_id, candidate.artifact.content_checksum]
+            for candidate in ranked
+        ]
+    )
+    start = 0
+    if supplied is not None:
+        if (
+            supplied.get("s") != snapshot_digest
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        offset = supplied.get("o")
+        if (
+            type(offset) is not int
+            or not 0 < offset < len(ranked)
+        ):
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID_INPUT)
+        start = offset
+
+    page_items = ranked[start : start + limit]
+    continuation = None
+    if start + len(page_items) < len(ranked):
+        continuation = PROCESS_CONTINUATION_TOKENS.encode(
+            {
+                "b": binding_digest,
+                "o": start + len(page_items),
+                "s": snapshot_digest,
+                "t": int(checkpoint),
+                "v": 1,
+            }
+        )
     return EvidenceSearchResult(
-        evidence=tuple(candidate.artifact for candidate in ranked),
-        # Exhaustion is stated, never implied by an absent field. This build issues no
-        # continuation tokens -- pagination beyond the first page is not Lane A's, and
-        # a token this build cannot honour would be a worse answer than an honest `{}`.
-        page=PageMetadata(),
+        evidence=tuple(candidate.artifact for candidate in page_items),
+        page=PageMetadata(continuation_token=continuation),
     ).to_wire()
 
 

@@ -1,18 +1,14 @@
 """Transport-neutral operation dispatch (B9, ADR-038).
 
-Scope, stated plainly: **this slice registers no application handlers.** The
-accepted generated application catalogue now exists, and this module represents it
-as the catalogue-backed application registry boundary — the accepted operation
-names are derived from that catalogue rather than transcribed here, so the boundary
-cannot drift from what was frozen.
+The accepted generated application catalogue is represented as a bounded registry:
+operation names are derived from that catalogue rather than transcribed, so the
+boundary cannot drift from what was frozen. Product handlers are registered by the
+authority-specific compositions in :mod:`service.application`; this module keeps the
+shared registry and envelope machinery independent of those products.
 
-Representing the boundary is all this slice does: it changes no dispatch,
-authorization, storage or advertised support behaviour. The three service-lifecycle
-operations ADR-037 keeps distinct from application operations — health, readiness
-and discovery — remain the only implemented handlers, and the registry still
-**refuses** any operation it does not know. Later, separately approved slices add
-the real application handlers against those frozen contracts, without the runtime
-having invented the payloads itself.
+The three service-lifecycle operations ADR-037 keeps distinct from application
+operations — health, readiness and discovery — remain on their separate dispatcher,
+and both registries refuse any operation they do not know.
 
 The dispatcher itself is transport-neutral: it consumes a `RequestEnvelope` and
 returns a `ResponseEnvelope`, so an in-process caller, a local IPC transport, the
@@ -28,6 +24,7 @@ from typing import Any
 from omnivia_core.contracts.v1 import (
     COMPATIBILITY_STATUS_COMPATIBLE,
     COMPATIBILITY_STATUS_INCOMPATIBLE,
+    DEFAULT_RETRY_CLASSIFICATION,
     OPERATION_CATALOGUE,
     UPGRADE_STATE_NONE,
     UPGRADE_STATE_REQUIRED,
@@ -37,6 +34,7 @@ from omnivia_core.contracts.v1 import (
     CompatibilityMetadata,
     ErrorResponseEnvelope,
     GrantedAuthority,
+    JobReference,
     Purpose,
     RequestEnvelope,
     ResponseEnvelope,
@@ -57,8 +55,8 @@ from omnivia_core_runtime.service.versions import (
     workspace_contract_version,
 )
 
-#: The only operations this runtime implements today. Deliberately not product
-#: operations: ADR-037 keeps health, readiness and discovery distinct from them.
+#: The service-lifecycle operations. Deliberately not product operations: ADR-037
+#: keeps health, readiness and discovery distinct from the application surface.
 SERVICE_OPERATIONS = ("core.health", "core.readiness", "core.discovery")
 
 #: The accepted application operation names, derived from the frozen A2 catalogue
@@ -67,7 +65,20 @@ APPLICATION_OPERATIONS: frozenset[str] = frozenset(
     entry.name for entry in OPERATION_CATALOGUE
 )
 
-OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
+
+@dataclass(frozen=True)
+class AuditedOperationResult:
+    """A handler result accompanied by server-owned response metadata."""
+
+    result: Mapping[str, Any]
+    audit_reference: str | None = None
+    canonical_resolution_time: str | None = None
+    job_reference: JobReference | None = None
+
+
+OperationHandler = Callable[
+    ["OperationContext"], Mapping[str, Any] | AuditedOperationResult
+]
 
 
 @dataclass(frozen=True)
@@ -105,16 +116,50 @@ class OperationContext:
     authority: GrantedAuthority | None = None
     scopes: tuple[Scope, ...] | None = None
     purpose: Purpose | None = None
+    authorization: Any = None
 
 
 class OperationError(Exception):
     """A handler failed in a way that maps to a contract error code."""
 
-    def __init__(self, code: str, message: str, *, retry_class: str = "non_retryable") -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retry_class: str = "non_retryable",
+        audit_reference: str | None = None,
+        job_reference: JobReference | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retry_class = retry_class
+        self.audit_reference = audit_reference
+        self.job_reference = job_reference
+
+
+def application_refusal(
+    code: str,
+    message: str,
+    *,
+    audit_reference: str | None = None,
+    job_reference: JobReference | None = None,
+) -> OperationError:
+    """Build one catalogue refusal with its frozen retry classification.
+
+    Runtime boundaries name a semantic code; the contract owns whether that code is
+    retryable. Keeping that lookup here prevents handler, admission, and persistence
+    paths from silently choosing different retry postures for the same failure.
+    Unknown future codes remain fail-closed and non-retryable.
+    """
+    return OperationError(
+        code,
+        message,
+        retry_class=DEFAULT_RETRY_CLASSIFICATION.get(code, "non_retryable"),
+        audit_reference=audit_reference,
+        job_reference=job_reference,
+    )
 
 
 @dataclass
@@ -272,6 +317,9 @@ def response_metadata(
     principal: str,
     granted: tuple[str, ...] = (),
     capabilities: tuple[CapabilityRef, ...] | None = None,
+    audit_reference: str | None = None,
+    canonical_resolution_time: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseMetadata:
     """Build the contract's response metadata.
 
@@ -395,6 +443,9 @@ def response_metadata(
             capabilities=capability_set,
         ),
         authority=GrantedAuthority(principal_id=principal, roles=(), capabilities=refs),
+        job=job_reference,
+        audit_reference=audit_reference,
+        canonical_resolution_time=canonical_resolution_time,
     )
 
 
@@ -405,10 +456,19 @@ def success(
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
     capabilities: tuple[CapabilityRef, ...] | None = None,
+    audit_reference: str | None = None,
+    canonical_resolution_time: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseEnvelope:
     return SuccessResponseEnvelope(
         metadata=response_metadata(
-            request, principal=principal, granted=granted, capabilities=capabilities
+            request,
+            principal=principal,
+            granted=granted,
+            capabilities=capabilities,
+            audit_reference=audit_reference,
+            canonical_resolution_time=canonical_resolution_time,
+            job_reference=job_reference,
         ),
         result=dict(result),
     )
@@ -422,9 +482,17 @@ def failure(
     retry_class: str = "non_retryable",
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
+    audit_reference: str | None = None,
+    job_reference: JobReference | None = None,
 ) -> ResponseEnvelope:
     return ErrorResponseEnvelope(
-        metadata=response_metadata(request, principal=principal, granted=granted),
+        metadata=response_metadata(
+            request,
+            principal=principal,
+            granted=granted,
+            audit_reference=audit_reference,
+            job_reference=job_reference,
+        ),
         error=ApiError(code=code, message=message, retry_class=retry_class),
     )
 
@@ -484,6 +552,7 @@ __all__ = [
     "SERVICE_OPERATIONS",
     "ApplicationOperationRegistry",
     "ApplicationRegistryCompleteness",
+    "AuditedOperationResult",
     "OperationContext",
     "OperationError",
     "OperationHandler",
