@@ -1835,6 +1835,20 @@
             },
             "domain_scope": "personal.preferences",
             "provenance": {
+              "assertion": {
+                "actor_id": "actor-1",
+                "actor_kind": "user",
+                "actor_role": "owner",
+                "asserted_at": "2024-01-01T00:00:00Z",
+                "evidence": [
+                  {
+                    "source": {
+                      "kind": "document",
+                      "source_id": "doc-1"
+                    }
+                  }
+                ]
+              },
               "evidence_disposition": "available",
               "history": [],
               "identity": {
@@ -1870,7 +1884,8 @@
       "operation": "memory.get",
       "request": {
         "input": {
-          "record_id": "rec-1"
+          "record_id": "rec-1",
+          "view": "candidates"
         },
         "metadata": {
           "request_id": "req-memory.get-success",
@@ -1900,11 +1915,25 @@
             },
             "domain_scope": "personal.preferences",
             "provenance": {
+              "assertion": {
+                "actor_id": "actor-1",
+                "actor_kind": "user",
+                "actor_role": "owner",
+                "asserted_at": "2024-01-01T00:00:00Z",
+                "evidence": [
+                  {
+                    "source": {
+                      "kind": "document",
+                      "source_id": "doc-1"
+                    }
+                  }
+                ]
+              },
               "evidence_disposition": "available",
               "history": [],
               "identity": {
                 "currentness": "current",
-                "governance_state": "proposed",
+                "governance_state": "candidate",
                 "layer": "l1",
                 "record_id": "rec-1",
                 "version": "v1"
@@ -1924,6 +1953,11 @@
             "workspace_id": "ws-1"
           }
         }
+      },
+      "trusted": {
+        "authorized_views": [
+          "candidates"
+        ]
       }
     },
     {
@@ -1935,7 +1969,8 @@
       "operation": "memory.list",
       "request": {
         "input": {
-          "limit": 2
+          "limit": 1,
+          "view": "candidates"
         },
         "metadata": {
           "request_id": "req-memory.list-success",
@@ -1969,11 +2004,25 @@
               },
               "domain_scope": "personal.preferences",
               "provenance": {
+                "assertion": {
+                  "actor_id": "actor-1",
+                  "actor_kind": "user",
+                  "actor_role": "owner",
+                  "asserted_at": "2024-01-01T00:00:00Z",
+                  "evidence": [
+                    {
+                      "source": {
+                        "kind": "document",
+                        "source_id": "doc-1"
+                      }
+                    }
+                  ]
+                },
                 "evidence_disposition": "available",
                 "history": [],
                 "identity": {
                   "currentness": "current",
-                  "governance_state": "proposed",
+                  "governance_state": "candidate",
                   "layer": "l1",
                   "record_id": "rec-1",
                   "version": "v1"
@@ -1994,6 +2043,11 @@
             }
           ]
         }
+      },
+      "trusted": {
+        "authorized_views": [
+          "candidates"
+        ]
       }
     },
     {
@@ -2261,7 +2315,7 @@
                 }
               ],
               "temporal": {
-                "ingested_at": "2024-01-01T00:00:00Z",
+                "ingested_at": "2024-01-02T00:00:00Z",
                 "recorded_at": "2024-01-02T00:00:00Z"
               }
             },
@@ -3505,6 +3559,20 @@
             },
             "domain_scope": "personal.preferences",
             "provenance": {
+              "assertion": {
+                "actor_id": "actor-1",
+                "actor_kind": "user",
+                "actor_role": "owner",
+                "asserted_at": "2024-01-01T00:00:00Z",
+                "evidence": [
+                  {
+                    "source": {
+                      "kind": "document",
+                      "source_id": "doc-1"
+                    }
+                  }
+                ]
+              },
               "evidence_disposition": "available",
               "history": [],
               "identity": {
@@ -3780,7 +3848,7 @@
                 }
               ],
               "temporal": {
-                "ingested_at": "2024-01-01T00:00:00Z",
+                "ingested_at": "2024-01-02T00:00:00Z",
                 "recorded_at": "2024-01-02T00:00:00Z"
               }
             },
@@ -4292,10 +4360,11 @@
       "operation": "memory.list",
       "request": {
         "input": {
-          "limit": 2,
+          "limit": 1,
           "page": {
             "continuation_token": "cursor-memory.list-1"
-          }
+          },
+          "view": "candidates"
         },
         "metadata": {
           "request_id": "req-memory.list-page2",
@@ -4327,13 +4396,27 @@
               },
               "domain_scope": "personal.preferences",
               "provenance": {
+                "assertion": {
+                  "actor_id": "actor-1",
+                  "actor_kind": "user",
+                  "actor_role": "owner",
+                  "asserted_at": "2024-01-01T00:00:00Z",
+                  "evidence": [
+                    {
+                      "source": {
+                        "kind": "document",
+                        "source_id": "doc-1"
+                      }
+                    }
+                  ]
+                },
                 "evidence_disposition": "available",
                 "history": [],
                 "identity": {
                   "currentness": "current",
-                  "governance_state": "proposed",
+                  "governance_state": "candidate",
                   "layer": "l1",
-                  "record_id": "rec-1",
+                  "record_id": "rec-2",
                   "version": "v1"
                 },
                 "sources": [
@@ -4352,6 +4435,11 @@
             }
           ]
         }
+      },
+      "trusted": {
+        "authorized_views": [
+          "candidates"
+        ]
       }
     },
     {

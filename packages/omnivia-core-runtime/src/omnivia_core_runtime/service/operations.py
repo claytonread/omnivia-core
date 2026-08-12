@@ -67,6 +67,16 @@ APPLICATION_OPERATIONS: frozenset[str] = frozenset(
     entry.name for entry in OPERATION_CATALOGUE
 )
 
+
+@dataclass(frozen=True)
+class AuditedOperationResult:
+    """A handler result accompanied by server-owned response metadata."""
+
+    result: Mapping[str, Any]
+    audit_reference: str | None = None
+    canonical_resolution_time: str | None = None
+
+
 OperationHandler = Callable[["OperationContext"], Mapping[str, Any]]
 
 
@@ -105,16 +115,25 @@ class OperationContext:
     authority: GrantedAuthority | None = None
     scopes: tuple[Scope, ...] | None = None
     purpose: Purpose | None = None
+    authorization: Any = None
 
 
 class OperationError(Exception):
     """A handler failed in a way that maps to a contract error code."""
 
-    def __init__(self, code: str, message: str, *, retry_class: str = "non_retryable") -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retry_class: str = "non_retryable",
+        audit_reference: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retry_class = retry_class
+        self.audit_reference = audit_reference
 
 
 @dataclass
@@ -272,6 +291,8 @@ def response_metadata(
     principal: str,
     granted: tuple[str, ...] = (),
     capabilities: tuple[CapabilityRef, ...] | None = None,
+    audit_reference: str | None = None,
+    canonical_resolution_time: str | None = None,
 ) -> ResponseMetadata:
     """Build the contract's response metadata.
 
@@ -395,6 +416,8 @@ def response_metadata(
             capabilities=capability_set,
         ),
         authority=GrantedAuthority(principal_id=principal, roles=(), capabilities=refs),
+        audit_reference=audit_reference,
+        canonical_resolution_time=canonical_resolution_time,
     )
 
 
@@ -405,10 +428,17 @@ def success(
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
     capabilities: tuple[CapabilityRef, ...] | None = None,
+    audit_reference: str | None = None,
+    canonical_resolution_time: str | None = None,
 ) -> ResponseEnvelope:
     return SuccessResponseEnvelope(
         metadata=response_metadata(
-            request, principal=principal, granted=granted, capabilities=capabilities
+            request,
+            principal=principal,
+            granted=granted,
+            capabilities=capabilities,
+            audit_reference=audit_reference,
+            canonical_resolution_time=canonical_resolution_time,
         ),
         result=dict(result),
     )
@@ -422,9 +452,15 @@ def failure(
     retry_class: str = "non_retryable",
     principal: str = "unknown",
     granted: tuple[str, ...] = (),
+    audit_reference: str | None = None,
 ) -> ResponseEnvelope:
     return ErrorResponseEnvelope(
-        metadata=response_metadata(request, principal=principal, granted=granted),
+        metadata=response_metadata(
+            request,
+            principal=principal,
+            granted=granted,
+            audit_reference=audit_reference,
+        ),
         error=ApiError(code=code, message=message, retry_class=retry_class),
     )
 
@@ -484,6 +520,7 @@ __all__ = [
     "SERVICE_OPERATIONS",
     "ApplicationOperationRegistry",
     "ApplicationRegistryCompleteness",
+    "AuditedOperationResult",
     "OperationContext",
     "OperationError",
     "OperationHandler",

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping
@@ -110,6 +111,55 @@ def test_the_corpus_loads_and_is_internally_coherent(
 
 def test_the_corpus_declares_its_format() -> None:
     assert _corpus_document()["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
+
+
+def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
+    corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
+    assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
+        "67951727f0ac5a0f7bb95c4ee37b98695ddac1b868bb5062858b3f5c9adcb881"
+    )
+
+
+def test_v06_5_s2_candidate_fixture_view_repair_is_exact() -> None:
+    document = _corpus_document()
+    by_id = {case["id"]: case for case in document["cases"]}
+    read_ids = (
+        "memory.get/primary-success",
+        "memory.list/primary-success",
+        "memory.list/page-2",
+    )
+    for case_id in read_ids:
+        case = by_id[case_id]
+        assert case["request"]["input"]["view"] == "candidates"
+        assert case["trusted"]["authorized_views"] == ["candidates"]
+        records = case["response"]["result"].get("records") or [
+            case["response"]["result"]["record"]
+        ]
+        assert all(
+            record["provenance"]["identity"]["governance_state"] == "candidate"
+            for record in records
+        )
+        assert all("assertion" in record["provenance"] for record in records)
+    assert by_id["memory.list/primary-success"]["request"]["input"]["limit"] == 1
+    assert by_id["memory.list/page-2"]["request"]["input"]["limit"] == 1
+    assert (
+        by_id["memory.list/page-2"]["response"]["result"]["records"][0][
+            "provenance"
+        ]["identity"]["record_id"]
+        == "rec-2"
+    )
+    for case_id in ("memory.create/primary-success", "memory.create/honest-replay"):
+        assert "assertion" in by_id[case_id]["response"]["result"]["record"]["provenance"]
+
+
+def test_v06_5_s4_supersede_new_claim_ingestion_is_settlement_owned() -> None:
+    by_id = {case["id"]: case for case in _corpus_document()["cases"]}
+    for case_id in ("record.supersede/primary-success", "record.supersede/honest-replay"):
+        assert (
+            by_id[case_id]["response"]["result"]["updated_record"]["provenance"]
+            ["temporal"]["ingested_at"]
+            == "2024-01-02T00:00:00Z"
+        )
 
 
 def test_the_corpus_is_readable_through_the_packaged_resource_seam() -> None:
@@ -1176,6 +1226,29 @@ def test_a_malformed_nested_trusted_fact_does_not_leak(
         _case(corpus, "knowledge.search/primary-success"), trusted={"authorized_views": 7}
     )
     with pytest.raises(AdapterConformanceError, match="must be list"):
+        run_adapter_conformance(_fake((case,)), [case])
+
+
+def test_memory_get_candidate_view_requires_an_independent_trusted_grant(
+    corpus: tuple[AdapterConformanceCase, ...],
+) -> None:
+    case = dataclasses.replace(
+        _case(corpus, "memory.get/primary-success"), trusted={"authorized_views": []}
+    )
+    with pytest.raises(AdapterConformanceError, match="not present in authorized_views"):
+        run_adapter_conformance(_fake((case,)), [case])
+
+
+def test_memory_get_default_view_rejects_a_candidate_record(
+    corpus: tuple[AdapterConformanceCase, ...],
+) -> None:
+    original = _case(corpus, "memory.get/primary-success")
+    request = copy.deepcopy(dict(original.request))
+    request["input"].pop("view")
+    response = copy.deepcopy(dict(original.response))
+    response["metadata"]["canonical_resolution_time"] = "2024-01-02T00:00:00Z"
+    case = dataclasses.replace(original, request=request, response=response)
+    with pytest.raises(AdapterConformanceError, match="current_canonical"):
         run_adapter_conformance(_fake((case,)), [case])
 
 

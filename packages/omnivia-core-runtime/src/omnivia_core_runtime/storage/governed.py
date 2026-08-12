@@ -72,6 +72,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
@@ -86,6 +87,7 @@ from omnivia_core.contracts.v1 import (
     KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL,
     EvidenceReference,
     GovernedRecord,
+    MemoryCreateInput,
     ProvenanceEntry,
     RecordIdentity,
     RecordProvenance,
@@ -93,10 +95,13 @@ from omnivia_core.contracts.v1 import (
     SourceReference,
     SourceSpan,
     SupersessionReference,
+    decode_memory_create_input,
     resolve_governed_record_view,
+    to_canonical_json,
     validate_governed_record,
     validate_record_temporal_metadata,
 )
+from omnivia_core.contracts.v1.canonical_json import canonicalize, parse_json_document
 from omnivia_core_runtime.storage.connection import authorised
 
 #: 0009's two sealable layers, spelled as its `layer` column spells them. `context_model`
@@ -109,15 +114,22 @@ LAYER_CANDIDATE: Final = "candidate"
 #: numbers are the generated `authority_rank` column's own `CASE`, restated here because
 #: the fold below orders by them and reading the generated column would make this module
 #: depend on a value it cannot verify was generated.
-_AUTHORITY_RANK: Final[dict[str, int]] = {"proposed": 0, "reviewed": 100, "canonical": 200}
+_AUTHORITY_RANK: Final[dict[str, int]] = {
+    "proposed": 0,
+    "reviewed": 100,
+    "canonical": 200,
+}
 
 _VIEW: Final = "omnivia_authoritative_governed_versions"
+_ASSEMBLIES: Final = "omnivia_governed_version_assemblies"
 _SUPERSESSIONS: Final = "omnivia_record_supersessions"
 _SEALS: Final = "omnivia_governed_version_seals"
 _EVENTS: Final = "omnivia_governed_provenance_events"
 _LINKS: Final = "omnivia_governed_version_evidence_links"
 _ARTIFACTS: Final = "omnivia_evidence_artifacts"
 _SPANS: Final = "omnivia_normalized_source_spans"
+_APPLICATION_CLAIMS: Final = "omnivia_application_claim_lineage"
+_APPLICATION_TRANSITIONS: Final = "omnivia_application_governance_transitions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +168,9 @@ class GovernedVersion:
     sealed_at_us: int
 
 
-_COLUMNS: Final[tuple[str, ...]] = tuple(field.name for field in fields(GovernedVersion))
+_COLUMNS: Final[tuple[str, ...]] = tuple(
+    field.name for field in fields(GovernedVersion)
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +250,7 @@ def _read_supersession_facts(
     *,
     workspace_id: str,
     resolution_instant_us: int,
+    governed_record_ids: tuple[str, ...] | None = None,
 ) -> tuple[GovernedSupersession, ...]:
     """`read_governed_supersessions`' query, on a connection already fenced by the caller.
 
@@ -248,6 +263,18 @@ def _read_supersession_facts(
     The rows are materialised into frozen dataclasses before returning, so nothing the fold
     holds afterwards is a cursor the connection could still be read through.
     """
+    if governed_record_ids == ():
+        return ()
+    record_scope = ""
+    parameters: tuple[object, ...] = (workspace_id, resolution_instant_us)
+    if governed_record_ids is not None:
+        placeholders = ", ".join("?" for _ in governed_record_ids)
+        record_scope = f"  AND r.governed_record_id IN ({placeholders}) "
+        parameters = (
+            workspace_id,
+            *governed_record_ids,
+            resolution_instant_us,
+        )
     rows = fenced.execute(
         "SELECT r.workspace_id, r.governed_record_id, r.source_version_id, "
         "       r.target_version_id, r.assembly_id, "
@@ -261,10 +288,11 @@ def _read_supersession_facts(
         f"LEFT JOIN {_EVENTS} e ON e.workspace_id = r.workspace_id "
         "                      AND e.provenance_event_id = r.provenance_event_id "
         "WHERE r.workspace_id = ? "
+        f"{record_scope}"
         "  AND MAX(r.recorded_at_us, t.recorded_at_us) <= ? "
         "ORDER BY r.source_version_id ASC, r.target_version_id ASC, "
         "         r.assembly_id ASC",
-        (workspace_id, resolution_instant_us),
+        parameters,
     ).fetchall()
     return tuple(GovernedSupersession(*row) for row in rows)
 
@@ -356,7 +384,9 @@ def resolve_governed_versions(
     versions = tuple(GovernedVersion(*row) for row in rows)
 
     if resolved == GOVERNED_RECORD_VIEW_CANDIDATES:
-        return tuple(version for version in versions if version.layer == LAYER_CANDIDATE)
+        return tuple(
+            version for version in versions if version.layer == LAYER_CANDIDATE
+        )
 
     canonical = tuple(version for version in versions if _is_canonical(version))
 
@@ -513,11 +543,49 @@ class _GovernedEvidenceLink:
 
 
 @dataclass(frozen=True, slots=True)
+class _ApplicationClaimLineage:
+    workspace_id: str
+    assembly_id: str
+    governed_record_version_id: str
+    operation: str
+    audit_ref: str
+    claim_json: str
+    claim_digest: str
+    claim_byte_length: int
+    claim_ingested_at_us: int
+    settled_at_us: int
+    assertion_actor_id: str | None
+    assertion_actor_kind: str | None
+    assertion_actor_role: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplicationTransition:
+    workspace_id: str
+    transition_id: str
+    governed_record_id: str
+    source_assembly_id: str
+    source_record_version_id: str
+    target_assembly_id: str
+    target_record_version_id: str
+    operation: str
+    rationale_json: str
+    rationale_digest: str
+    rationale_byte_length: int
+    reason_code: str
+    reason_comment: str | None
+    actor_id: str
+    actor_kind: str
+    audit_ref: str
+    settled_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
 class _GovernedHydrationSnapshot:
     """One workspace's resolved frontier and everything a projection of it needs, read from
     one database state.
 
-    Four tuples of frozen values and nothing else: no connection, no cursor and no callback,
+    Six tuples of frozen values and nothing else: no connection, no cursor and no callback,
     so a later mapping step cannot reach back into the database and read a fifth fact from a
     state the other four never saw.
     """
@@ -526,6 +594,21 @@ class _GovernedHydrationSnapshot:
     supersessions: tuple[GovernedSupersession, ...]
     events: tuple[_GovernedProvenanceEvent, ...]
     links: tuple[_GovernedEvidenceLink, ...]
+    claims: tuple[_ApplicationClaimLineage, ...] = ()
+    transitions: tuple[_ApplicationTransition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ApplicationProjection:
+    layer: str
+    governance_state: str
+    authority_level: str
+    reviewer: str | None
+    currentness: str
+    supersedes: SupersessionReference | None
+    superseded_by: SupersessionReference | None
+    superseded_at_us: int | None
+    history: tuple[ProvenanceEntry, ...]
 
 
 def _read_hydration_support(
@@ -537,11 +620,13 @@ def _read_hydration_support(
     tuple[GovernedSupersession, ...],
     tuple[_GovernedProvenanceEvent, ...],
     tuple[_GovernedEvidenceLink, ...],
+    tuple[_ApplicationClaimLineage, ...],
+    tuple[_ApplicationTransition, ...],
 ]:
     """Every support fact behind a resolved frontier, on a connection the caller has already
     fenced and already opened a read transaction on.
 
-    One function rather than three, because these three queries are one boundary: the caller
+    One function rather than five, because these five queries are one boundary: the caller
     resolves versions and then, without giving the database a chance to move underneath it,
     reads everything those versions are described by. Split apart they would be three places
     a later edit could put a statement outside the caller's transaction.
@@ -550,14 +635,14 @@ def _read_hydration_support(
     the exact-target join and the effective instant mean is settled there and is not restated
     here.
 
-    The two remaining queries read the *whole* workspace rather than the selected assemblies:
+    The remaining queries read the *whole* workspace rather than the selected assemblies:
     they are keyed on `workspace_id` alone, so the row count is the workspace's, and the
     caller filters. That is on purpose. Filtering in SQL would mean interpolating an
     assembly-id list into these statements, and the selection is already a value the caller
     holds; a Python filter over materialised rows cannot get the predicate subtly different
     from the one the resolver applied, and cannot be got wrong by an empty list.
 
-    Both queries state a total `ORDER BY`, for the same reason every other query in this
+    Every query states a total `ORDER BY`, for the same reason every other query in this
     module does: natural row order is not stable across index changes, and a projection built
     from these tuples would then reorder a record's own provenance between runs.
     """
@@ -603,10 +688,52 @@ def _read_hydration_support(
         "         l.provenance_event_id ASC, l.link_ordinal ASC, l.evidence_id ASC",
         (workspace_id,),
     ).fetchall()
+    claim_table = fenced.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (_APPLICATION_CLAIMS,),
+    ).fetchone()
+    claim_rows = (
+        []
+        if claim_table is None
+        else fenced.execute(
+            "SELECT l.workspace_id, l.assembly_id, l.governed_record_version_id, "
+            "       l.operation, l.audit_ref, l.claim_json, l.claim_digest, "
+            "       l.claim_byte_length, l.claim_ingested_at_us, l.settled_at_us, "
+            "       a.assertion_actor_id, a.assertion_actor_kind, "
+            "       a.assertion_actor_role "
+            f"FROM {_APPLICATION_CLAIMS} l "
+            f"JOIN {_ASSEMBLIES} a ON a.workspace_id = l.workspace_id "
+            "AND a.assembly_id = l.assembly_id "
+            "WHERE l.workspace_id = ? "
+            "ORDER BY l.assembly_id ASC",
+            (workspace_id,),
+        ).fetchall()
+    )
+    transition_table = fenced.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (_APPLICATION_TRANSITIONS,),
+    ).fetchone()
+    transition_rows = (
+        []
+        if transition_table is None
+        else fenced.execute(
+            "SELECT workspace_id, transition_id, governed_record_id, "
+            "source_assembly_id, source_record_version_id, target_assembly_id, "
+            "target_record_version_id, operation, rationale_json, rationale_digest, "
+            "rationale_byte_length, reason_code, reason_comment, actor_id, actor_kind, "
+            "audit_ref, settled_at_us "
+            f"FROM {_APPLICATION_TRANSITIONS} WHERE workspace_id = ? "
+            "AND settled_at_us <= ? "
+            "ORDER BY governed_record_id, settled_at_us, transition_id",
+            (workspace_id, resolution_instant_us),
+        ).fetchall()
+    )
     return (
         facts,
         tuple(_GovernedProvenanceEvent(*row) for row in event_rows),
         tuple(_GovernedEvidenceLink(*row) for row in link_rows),
+        tuple(_ApplicationClaimLineage(*row) for row in claim_rows),
+        tuple(_ApplicationTransition(*row) for row in transition_rows),
     )
 
 
@@ -662,7 +789,7 @@ def _read_governed_hydration_snapshot(
             view=view,
         )
         with authorised(connection, mutations=False, ddl=False) as fenced:
-            facts, events, links = _read_hydration_support(
+            facts, events, links, claims, transitions = _read_hydration_support(
                 fenced,
                 workspace_id=workspace_id,
                 resolution_instant_us=resolution_instant_us,
@@ -676,6 +803,20 @@ def _read_governed_hydration_snapshot(
 
     selected = {version.assembly_id for version in versions}
     selected_versions = {version.governed_record_version_id for version in versions}
+    selected_record_ids = {version.governed_record_id for version in versions}
+    selected_transitions = tuple(
+        transition
+        for transition in transitions
+        if transition.governed_record_id in selected_record_ids
+    )
+    support = selected | {
+        assembly_id
+        for transition in selected_transitions
+        for assembly_id in (
+            transition.source_assembly_id,
+            transition.target_assembly_id,
+        )
+    }
     return _GovernedHydrationSnapshot(
         versions=versions,
         supersessions=tuple(
@@ -684,8 +825,10 @@ def _read_governed_hydration_snapshot(
             if fact.source_version_id in selected_versions
             or fact.target_version_id in selected_versions
         ),
-        events=tuple(event for event in events if event.assembly_id in selected),
-        links=tuple(link for link in links if link.assembly_id in selected),
+        events=tuple(event for event in events if event.assembly_id in support),
+        links=tuple(link for link in links if link.assembly_id in support),
+        claims=tuple(claim for claim in claims if claim.assembly_id in support),
+        transitions=selected_transitions,
     )
 
 
@@ -699,6 +842,19 @@ def _timestamp(microseconds: int) -> str:
     """
     moment = datetime.fromtimestamp(microseconds / 1_000_000, tz=UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def _application_timestamp(microseconds: int) -> str:
+    """Render a bridge-owned instant exactly as the application corpus does."""
+    moment = datetime.fromtimestamp(microseconds / 1_000_000, tz=UTC)
+    milliseconds = moment.microsecond // 1000
+    if milliseconds == 0:
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
+
+
+def _microseconds_timestamp(value: str) -> int:
+    return int(datetime.fromisoformat(value).timestamp() * 1_000_000)
 
 
 def _temporal_metadata(version: GovernedVersion) -> RecordTemporalMetadata:
@@ -908,6 +1064,251 @@ def _supersession_reference(
     )
 
 
+def _decode_application_claim(
+    lineage: _ApplicationClaimLineage,
+) -> MemoryCreateInput:
+    encoded = lineage.claim_json.encode("utf-8")
+    if len(encoded) != lineage.claim_byte_length:
+        raise ValueError("application claim lineage byte length is invalid")
+    expected_digest = f"sha256:{sha256(encoded).hexdigest()}"
+    if expected_digest != lineage.claim_digest:
+        raise ValueError("application claim lineage digest is invalid")
+    parsed = parse_json_document(lineage.claim_json)
+    if canonicalize(parsed) != lineage.claim_json:
+        raise ValueError("application claim lineage is not canonical")
+    return decode_memory_create_input(parsed)
+
+
+def _validated_transition_rationale(
+    transition: _ApplicationTransition,
+) -> None:
+    encoded = transition.rationale_json.encode("utf-8")
+    if len(encoded) != transition.rationale_byte_length:
+        raise ValueError("application transition rationale byte length is invalid")
+    if f"sha256:{sha256(encoded).hexdigest()}" != transition.rationale_digest:
+        raise ValueError("application transition rationale digest is invalid")
+    parsed = parse_json_document(transition.rationale_json)
+    if canonicalize(parsed) != transition.rationale_json or not isinstance(
+        parsed, dict
+    ):
+        raise ValueError("application transition rationale is not canonical")
+    if parsed.get("reason_code") != transition.reason_code:
+        raise ValueError("application transition rationale reason is inconsistent")
+    if parsed.get("comment") != transition.reason_comment:
+        raise ValueError("application transition rationale comment is inconsistent")
+
+
+def _application_projection(
+    version: GovernedVersion,
+    *,
+    claims: dict[str, _ApplicationClaimLineage],
+    transitions: tuple[_ApplicationTransition, ...],
+) -> _ApplicationProjection | None:
+    lineage = claims.get(version.assembly_id)
+    if lineage is None:
+        return None
+    relevant = tuple(
+        transition
+        for transition in transitions
+        if transition.governed_record_id == version.governed_record_id
+    )
+    incoming: dict[str, _ApplicationTransition] = {}
+    outgoing: dict[str, _ApplicationTransition] = {}
+    for transition in relevant:
+        _validated_transition_rationale(transition)
+        if transition.workspace_id != version.workspace_id:
+            raise ValueError("application transition crosses a workspace")
+        if (
+            transition.target_record_version_id in incoming
+            or transition.source_record_version_id in outgoing
+        ):
+            raise ValueError("application transition chain branches")
+        incoming[transition.target_record_version_id] = transition
+        outgoing[transition.source_record_version_id] = transition
+
+    if relevant:
+        roots = {
+            transition.source_record_version_id
+            for transition in relevant
+            if transition.source_record_version_id not in incoming
+        }
+        if len(roots) != 1:
+            raise ValueError("application transition chain has no unique origin")
+        chain_cursor = next(iter(roots))
+        chain_length = 0
+        chain_seen: set[str] = set()
+        while chain_cursor in outgoing:
+            if chain_cursor in chain_seen:
+                raise ValueError("application transition chain cycles")
+            chain_seen.add(chain_cursor)
+            chain_length += 1
+            chain_cursor = outgoing[chain_cursor].target_record_version_id
+        if chain_length != len(relevant):
+            raise ValueError("application transition chain is disconnected")
+
+    path: list[_ApplicationTransition] = []
+    cursor = version.governed_record_version_id
+    visited: set[str] = set()
+    while cursor in incoming:
+        if cursor in visited:
+            raise ValueError("application transition chain cycles")
+        visited.add(cursor)
+        transition = incoming[cursor]
+        path.append(transition)
+        cursor = transition.source_record_version_id
+    path.reverse()
+
+    origin = claims.get(path[0].source_assembly_id) if path else lineage
+    if origin is None or origin.operation != "memory.create":
+        raise ValueError("application transition chain has no memory.create origin")
+    previous = origin
+    for transition in path:
+        target = claims.get(transition.target_assembly_id)
+        if (
+            target is None
+            or target.governed_record_version_id != transition.target_record_version_id
+            or target.operation != transition.operation
+            or previous.governed_record_version_id
+            != transition.source_record_version_id
+        ):
+            raise ValueError("application transition chain has missing claim lineage")
+        if transition.operation == "record.supersede":
+            if target.claim_ingested_at_us != transition.settled_at_us:
+                raise ValueError("replacement claim ingestion is not settlement-owned")
+        elif (
+            target.claim_json != previous.claim_json
+            or target.claim_digest != previous.claim_digest
+            or target.claim_byte_length != previous.claim_byte_length
+            or target.claim_ingested_at_us != previous.claim_ingested_at_us
+        ):
+            raise ValueError("claim-preserving transition changed claim lineage")
+        previous = target
+    if previous.assembly_id != lineage.assembly_id:
+        raise ValueError("application transition chain does not reach selected version")
+
+    history: list[ProvenanceEntry] = []
+    for transition in path:
+        evidence = None
+        if transition.operation == "record.supersede":
+            target = claims[transition.target_assembly_id]
+            replacement = _decode_application_claim(target)
+            evidence = tuple(replacement.assertion.evidence) or None
+        history.append(
+            ProvenanceEntry(
+                actor_id=transition.actor_id,
+                actor_kind=transition.actor_kind,
+                action=transition.operation,
+                occurred_at=_application_timestamp(transition.settled_at_us),
+                reason_code=transition.reason_code,
+                reason_comment=transition.reason_comment,
+                evidence=evidence,
+            )
+        )
+
+    arrived_by = incoming.get(version.governed_record_version_id)
+    departed_by = outgoing.get(version.governed_record_version_id)
+    if arrived_by is None:
+        if (
+            version.layer != LAYER_CANDIDATE
+            or version.authority_level != "proposed"
+            or version.governance_disposition is not None
+        ):
+            raise ValueError(
+                "memory.create storage state contradicts its transition chain"
+            )
+        layer = GOVERNANCE_LAYER_CANDIDATE
+        state = "proposed" if departed_by is not None else GOVERNANCE_STATE_CANDIDATE
+        authority = "proposed"
+        reviewer = None
+    elif arrived_by.operation == "knowledge.propose":
+        if (
+            version.layer != LAYER_CANDIDATE
+            or version.authority_level != "proposed"
+            or version.governance_disposition is not None
+        ):
+            raise ValueError(
+                "knowledge.propose storage state contradicts its transition"
+            )
+        layer = GOVERNANCE_LAYER_CANDIDATE
+        state = GOVERNANCE_STATE_CANDIDATE
+        authority = "proposed"
+        reviewer = None
+    elif arrived_by.operation == "candidate.approve":
+        if (
+            version.layer != LAYER_GOVERNED
+            or version.governance_disposition != GOVERNANCE_STATE_ACCEPTED
+            or version.authority_level != "canonical"
+            or version.decision_source_id != arrived_by.actor_id
+        ):
+            raise ValueError(
+                "candidate.approve storage state contradicts its transition"
+            )
+        layer = GOVERNANCE_LAYER_GOVERNED
+        state = GOVERNANCE_STATE_ACCEPTED
+        authority = "canonical"
+        reviewer = arrived_by.actor_id
+    elif arrived_by.operation == "candidate.reject":
+        if (
+            version.layer != LAYER_GOVERNED
+            or version.governance_disposition != "rejected"
+            or version.authority_level != "reviewed"
+            or version.decision_source_id != arrived_by.actor_id
+        ):
+            raise ValueError(
+                "candidate.reject storage state contradicts its transition"
+            )
+        layer = GOVERNANCE_LAYER_CANDIDATE
+        state = "rejected"
+        authority = "rejected"
+        reviewer = arrived_by.actor_id
+    elif arrived_by.operation == "record.supersede":
+        if (
+            version.layer != LAYER_GOVERNED
+            or version.governance_disposition != GOVERNANCE_STATE_ACCEPTED
+            or version.authority_level != "canonical"
+            or version.decision_source_id != arrived_by.actor_id
+        ):
+            raise ValueError(
+                "record.supersede storage state contradicts its transition"
+            )
+        layer = GOVERNANCE_LAYER_GOVERNED
+        state = GOVERNANCE_STATE_ACCEPTED
+        authority = "canonical"
+        reviewer = arrived_by.actor_id
+    else:
+        raise ValueError("application transition operation is not supported")
+
+    return _ApplicationProjection(
+        layer=layer,
+        governance_state=state,
+        authority_level=authority,
+        reviewer=reviewer,
+        currentness=(
+            _CURRENTNESS_CURRENT if departed_by is None else _CURRENTNESS_SUPERSEDED
+        ),
+        supersedes=(
+            None
+            if arrived_by is None
+            else SupersessionReference(
+                record_id=version.governed_record_id,
+                version=arrived_by.source_record_version_id,
+                reason=arrived_by.reason_code,
+            )
+        ),
+        superseded_by=(
+            None
+            if departed_by is None
+            else SupersessionReference(
+                record_id=version.governed_record_id,
+                version=departed_by.target_record_version_id,
+                reason=departed_by.reason_code,
+            )
+        ),
+        superseded_at_us=(None if departed_by is None else departed_by.settled_at_us),
+        history=tuple(history),
+    )
+
+
 def _governed_record(
     version: GovernedVersion,
     *,
@@ -915,6 +1316,8 @@ def _governed_record(
     links: tuple[_GovernedEvidenceLink, ...],
     supersedes: GovernedSupersession | None,
     superseded_by: GovernedSupersession | None,
+    claim_lineage: _ApplicationClaimLineage | None = None,
+    application_projection: _ApplicationProjection | None = None,
 ) -> GovernedRecord:
     """One selected version and its own support rows, as one validated `GovernedRecord`.
 
@@ -951,16 +1354,24 @@ def _governed_record(
     combination the contract calls impossible fails here, with what it was, rather than
     reaching a caller as a well-formed lie.
     """
-    layer = _GOVERNANCE_LAYER.get(version.layer)
+    layer = (
+        application_projection.layer
+        if application_projection is not None
+        else _GOVERNANCE_LAYER.get(version.layer)
+    )
     if layer is None:
         raise ValueError(
             f"governed version {version.governed_record_version_id!r} carries layer "
             f"{version.layer!r}, which has no authoritative GovernanceLayer"
         )
     state = (
-        version.governance_disposition
-        if version.layer == LAYER_GOVERNED
-        else GOVERNANCE_STATE_CANDIDATE
+        application_projection.governance_state
+        if application_projection is not None
+        else (
+            version.governance_disposition
+            if version.layer == LAYER_GOVERNED
+            else GOVERNANCE_STATE_CANDIDATE
+        )
     )
     if state is None:
         raise ValueError(
@@ -975,19 +1386,42 @@ def _governed_record(
         layer=layer,
         governance_state=state,
         currentness=(
-            _CURRENTNESS_CURRENT if superseded_by is None else _CURRENTNESS_SUPERSEDED
+            application_projection.currentness
+            if application_projection is not None
+            else (
+                _CURRENTNESS_CURRENT
+                if superseded_by is None
+                else _CURRENTNESS_SUPERSEDED
+            )
         ),
         supersedes=(
-            None if supersedes is None else _supersession_reference(supersedes, version_id)
+            application_projection.supersedes
+            if application_projection is not None
+            else (
+                None
+                if supersedes is None
+                else _supersession_reference(supersedes, version_id)
+            )
         ),
         superseded_by=(
-            None
-            if superseded_by is None
-            else _supersession_reference(superseded_by, version_id)
+            application_projection.superseded_by
+            if application_projection is not None
+            else (
+                None
+                if superseded_by is None
+                else _supersession_reference(superseded_by, version_id)
+            )
         ),
     )
     temporal = _temporal_metadata(version)
-    if superseded_by is not None:
+    if application_projection is not None and application_projection.superseded_at_us:
+        temporal = replace(
+            temporal,
+            superseded_at=_application_timestamp(
+                application_projection.superseded_at_us
+            ),
+        )
+    elif superseded_by is not None:
         temporal = replace(
             temporal, superseded_at=_timestamp(superseded_by.effective_at_us)
         )
@@ -1014,29 +1448,124 @@ def _governed_record(
                 f"{declared!r} then {source!r}"
             )
 
+    assertion = None
+    extraction = None
+    public_history = tuple(
+        _provenance_entry(
+            event,
+            version,
+            tuple(
+                _evidence_reference(link)
+                for link in links
+                if link.provenance_event_id == event.provenance_event_id
+            ),
+        )
+        for event in events
+    )
+    if claim_lineage is not None:
+        if claim_lineage.workspace_id != version.workspace_id:
+            raise ValueError("application claim lineage crosses a workspace")
+        if claim_lineage.governed_record_version_id != version_id:
+            raise ValueError("application claim lineage names another version")
+        claim = _decode_application_claim(claim_lineage)
+        if (
+            claim.record_type != version.record_type
+            or claim.domain_scope != version.domain_scope
+            or to_canonical_json(dict(claim.content)) != version.content_json
+            or claim.evidence_disposition != version.evidence_disposition
+        ):
+            raise ValueError(
+                "application claim lineage contradicts its governed assembly"
+            )
+        if (
+            claim_lineage.assertion_actor_id != claim.assertion.actor_id
+            or claim_lineage.assertion_actor_kind != claim.assertion.actor_kind
+            or claim_lineage.assertion_actor_role != claim.assertion.actor_role
+        ):
+            raise ValueError(
+                "application claim actor contradicts its governed assembly"
+            )
+        expected_valid_from = _microseconds_timestamp(
+            claim.assertion.proposed_valid_from or claim.assertion.asserted_at
+        )
+        expected_valid_to = (
+            None
+            if claim.assertion.proposed_valid_until is None
+            else _microseconds_timestamp(claim.assertion.proposed_valid_until)
+        )
+        if (
+            expected_valid_from != version.valid_from_us
+            or expected_valid_to != version.valid_to_us
+        ):
+            raise ValueError(
+                "application claim validity contradicts its governed assembly"
+            )
+        stored_source_keys = tuple(
+            (
+                source.kind,
+                source.source_id,
+                source.locator,
+                None
+                if source.retrieved_at is None
+                else _microseconds_timestamp(source.retrieved_at),
+            )
+            for source in sources.values()
+        )
+        claim_source_keys = tuple(
+            (
+                source.kind,
+                source.source_id,
+                source.locator,
+                None
+                if source.retrieved_at is None
+                else _microseconds_timestamp(source.retrieved_at),
+            )
+            for source in claim.sources
+        )
+        if stored_source_keys != claim_source_keys:
+            raise ValueError(
+                "application claim sources contradict governed evidence links"
+            )
+        temporal = replace(
+            temporal,
+            event_at=claim.event_at,
+            observed_at=claim.observed_at,
+            ingested_at=_application_timestamp(claim_lineage.claim_ingested_at_us),
+            recorded_at=_application_timestamp(version.recorded_at_us),
+            valid_from=claim.assertion.proposed_valid_from,
+            valid_until=claim.assertion.proposed_valid_until,
+        )
+        assertion = claim.assertion
+        extraction = claim.extraction
+        sources = {
+            (_source.kind, _source.source_id): _source for _source in claim.sources
+        }
+        public_history = (
+            () if application_projection is None else application_projection.history
+        )
+
     record = GovernedRecord(
         workspace_id=version.workspace_id,
         record_type=version.record_type,
         domain_scope=version.domain_scope,
-        authority_level=version.authority_level,
-        reviewer=version.decision_source_id,
+        authority_level=(
+            version.authority_level
+            if application_projection is None
+            else application_projection.authority_level
+        ),
+        reviewer=(
+            version.decision_source_id
+            if application_projection is None
+            else application_projection.reviewer
+        ),
         provenance=RecordProvenance(
             identity=identity,
             temporal=temporal,
-            history=tuple(
-                _provenance_entry(
-                    event,
-                    version,
-                    tuple(
-                        _evidence_reference(link)
-                        for link in links
-                        if link.provenance_event_id == event.provenance_event_id
-                    ),
-                )
-                for event in events
-            ),
+            history=public_history,
             evidence_disposition=version.evidence_disposition,
             sources=tuple(sources.values()),
+            assertion=assertion,
+            extraction=extraction,
         ),
         content=_content(version),
     )
@@ -1073,7 +1602,9 @@ def _hydrate_governed_records(
         ).append(event)
     links: dict[tuple[str, str], list[_GovernedEvidenceLink]] = {}
     for link in snapshot.links:
-        links.setdefault((link.assembly_id, link.governed_record_version_id), []).append(link)
+        links.setdefault(
+            (link.assembly_id, link.governed_record_version_id), []
+        ).append(link)
 
     outgoing: dict[str, GovernedSupersession] = {}
     incoming: dict[str, GovernedSupersession] = {}
@@ -1086,17 +1617,33 @@ def _hydrate_governed_records(
             if held is None or fact.effective_at_us < held.effective_at_us:
                 edges[version_id] = fact
 
+    claims = {claim.assembly_id: claim for claim in snapshot.claims}
+    application_assemblies = {
+        version.assembly_id
+        for version in snapshot.versions
+        if version.record_type == "memory.fact"
+    }
+    if not application_assemblies <= set(claims):
+        raise ValueError("application-authored governed version has no claim lineage")
     return tuple(
         _governed_record(
             version,
             events=tuple(
-                events.get((version.assembly_id, version.governed_record_version_id), ())
+                events.get(
+                    (version.assembly_id, version.governed_record_version_id), ()
+                )
             ),
             links=tuple(
                 links.get((version.assembly_id, version.governed_record_version_id), ())
             ),
             supersedes=incoming.get(version.governed_record_version_id),
             superseded_by=outgoing.get(version.governed_record_version_id),
+            claim_lineage=claims.get(version.assembly_id),
+            application_projection=_application_projection(
+                version,
+                claims=claims,
+                transitions=snapshot.transitions,
+            ),
         )
         for version in snapshot.versions
     )
@@ -1148,6 +1695,126 @@ def read_governed_record_values(
     )
 
 
+def hydrate_authorized_governed_record_values(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    resolution_instant_us: int,
+    assembly_ids: tuple[str, ...],
+    support_assembly_ids: tuple[str, ...] = (),
+) -> tuple[GovernedRecordValue, ...]:
+    """Hydrate an already ACL-authorized assembly set inside the caller's snapshot.
+
+    This entry point deliberately owns no authorization policy. Its security boundary is
+    its narrow input: only exact assembly identities previously frozen by the caller are
+    selected, and no full content or source row outside that set is read.
+    """
+    if not connection.in_transaction:
+        raise ValueError(
+            "authorized hydration requires the caller's active read snapshot"
+        )
+    if not assembly_ids:
+        return ()
+    placeholders = ", ".join("?" for _ in assembly_ids)
+    with authorised(connection, mutations=False, ddl=False) as fenced:
+        rows = fenced.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM {_VIEW} "
+            f"WHERE workspace_id = ? AND assembly_id IN ({placeholders})",
+            (workspace_id, *assembly_ids),
+        ).fetchall()
+        versions_by_id = {row[1]: GovernedVersion(*row) for row in rows}
+        if set(versions_by_id) != set(assembly_ids):
+            raise ValueError(
+                "authorized governed assembly disappeared from the snapshot"
+            )
+        record_ids = tuple(
+            sorted({version.governed_record_id for version in versions_by_id.values()})
+        )
+        record_placeholders = ", ".join("?" for _ in record_ids)
+        transition_rows = fenced.execute(
+            "SELECT workspace_id, transition_id, governed_record_id, "
+            "source_assembly_id, source_record_version_id, target_assembly_id, "
+            "target_record_version_id, operation, rationale_json, rationale_digest, "
+            "rationale_byte_length, reason_code, reason_comment, actor_id, actor_kind, "
+            "audit_ref, settled_at_us "
+            f"FROM {_APPLICATION_TRANSITIONS} WHERE workspace_id = ? "
+            f"AND governed_record_id IN ({record_placeholders}) AND settled_at_us <= ? "
+            "ORDER BY governed_record_id, settled_at_us, transition_id",
+            (workspace_id, *record_ids, resolution_instant_us),
+        ).fetchall()
+        authorized_support = set(assembly_ids) | set(support_assembly_ids)
+        transition_support = {
+            str(value) for row in transition_rows for value in (row[3], row[5])
+        }
+        if not transition_support <= authorized_support:
+            raise ValueError("application transition support was not ACL-authorized")
+        support_ids = tuple(sorted(authorized_support))
+        support_placeholders = ", ".join("?" for _ in support_ids)
+        facts = _read_supersession_facts(
+            fenced,
+            workspace_id=workspace_id,
+            resolution_instant_us=resolution_instant_us,
+            governed_record_ids=record_ids,
+        )
+        event_rows = fenced.execute(
+            "SELECT workspace_id, assembly_id, governed_record_version_id, "
+            "provenance_event_id, provenance_sequence, action, actor_id, actor_kind, "
+            "policy_id, occurred_at_us, reason_code, reason_comment, evidence_disposition "
+            f"FROM {_EVENTS} WHERE workspace_id = ? "
+            f"AND assembly_id IN ({support_placeholders}) "
+            "ORDER BY assembly_id, provenance_sequence, provenance_event_id",
+            (workspace_id, *support_ids),
+        ).fetchall()
+        link_rows = fenced.execute(
+            "SELECT l.workspace_id, l.assembly_id, e.governed_record_version_id, "
+            "l.provenance_event_id, e.provenance_sequence, l.link_ordinal, l.evidence_id, "
+            "a.source_kind, a.source_native_id, a.source_locator, a.source_retrieved_at_us, "
+            "a.ingested_at_us, a.event_at_us, a.observed_at_us, l.normalized_record_id, "
+            "l.normalized_span_id, s.span_pointer, s.span_start_offset, s.span_end_offset "
+            f"FROM {_LINKS} l JOIN {_EVENTS} e ON e.workspace_id=l.workspace_id "
+            "AND e.assembly_id=l.assembly_id AND e.provenance_event_id=l.provenance_event_id "
+            f"JOIN {_ARTIFACTS} a ON a.workspace_id=l.workspace_id AND a.evidence_id=l.evidence_id "
+            f"LEFT JOIN {_SPANS} s ON s.workspace_id=l.workspace_id AND s.evidence_id=l.evidence_id "
+            "AND s.normalized_record_id=l.normalized_record_id AND s.normalized_span_id=l.normalized_span_id "
+            f"WHERE l.workspace_id = ? AND l.assembly_id IN ({support_placeholders}) "
+            "ORDER BY l.assembly_id, e.provenance_sequence, l.provenance_event_id, "
+            "l.link_ordinal, l.evidence_id",
+            (workspace_id, *support_ids),
+        ).fetchall()
+        claim_rows = fenced.execute(
+            "SELECT l.workspace_id, l.assembly_id, l.governed_record_version_id, "
+            "l.operation, l.audit_ref, l.claim_json, l.claim_digest, l.claim_byte_length, "
+            "l.claim_ingested_at_us, l.settled_at_us, a.assertion_actor_id, "
+            "a.assertion_actor_kind, a.assertion_actor_role "
+            f"FROM {_APPLICATION_CLAIMS} l JOIN {_ASSEMBLIES} a "
+            "ON a.workspace_id=l.workspace_id AND a.assembly_id=l.assembly_id "
+            f"WHERE l.workspace_id = ? AND l.assembly_id IN ({support_placeholders}) "
+            "ORDER BY l.assembly_id",
+            (workspace_id, *support_ids),
+        ).fetchall()
+    versions = tuple(versions_by_id[assembly_id] for assembly_id in assembly_ids)
+    selected_versions = {version.governed_record_version_id for version in versions}
+    snapshot = _GovernedHydrationSnapshot(
+        versions=versions,
+        supersessions=tuple(
+            fact
+            for fact in facts
+            if fact.source_version_id in selected_versions
+            or fact.target_version_id in selected_versions
+        ),
+        events=tuple(_GovernedProvenanceEvent(*row) for row in event_rows),
+        links=tuple(_GovernedEvidenceLink(*row) for row in link_rows),
+        claims=tuple(_ApplicationClaimLineage(*row) for row in claim_rows),
+        transitions=tuple(_ApplicationTransition(*row) for row in transition_rows),
+    )
+    return tuple(
+        GovernedRecordValue(recorded_at_us=version.recorded_at_us, record=record)
+        for version, record in zip(
+            versions, _hydrate_governed_records(snapshot), strict=True
+        )
+    )
+
+
 def read_governed_records(
     connection: sqlite3.Connection,
     *,
@@ -1189,6 +1856,7 @@ __all__ = [
     "GovernedRecordValue",
     "GovernedSupersession",
     "GovernedVersion",
+    "hydrate_authorized_governed_record_values",
     "read_governed_record_values",
     "read_governed_records",
     "read_governed_supersessions",

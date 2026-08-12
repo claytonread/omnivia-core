@@ -61,6 +61,7 @@ from omnivia_core.contracts.v1 import (
     ResponseEnvelope,
     get_operation_metadata,
 )
+from omnivia_core_runtime.ownership.identity import Clock, SystemClock
 from omnivia_core_runtime.service.authorization import (
     ApplicationAuthorizationError,
     AuthenticatedSession,
@@ -73,8 +74,18 @@ from omnivia_core_runtime.service.handlers.context_pack import context_pack_buil
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.graph import graph_traverse
 from omnivia_core_runtime.service.handlers.knowledge import (
+    LOCAL_OWNER_VIEW_GRANT,
     knowledge_search,
     memory_search,
+)
+from omnivia_core_runtime.service.handlers.memory import (
+    MEMORY_CREATE_OPERATION,
+    MEMORY_FAMILY_OPERATIONS,
+    MEMORY_GET_OPERATION,
+    MEMORY_LIST_OPERATION,
+    ContinuationTokenCodec,
+    HmacContinuationTokenCodec,
+    MemoryHandlers,
 )
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
 from omnivia_core_runtime.service.handlers.workspace_family import (
@@ -90,9 +101,11 @@ from omnivia_core_runtime.service.installation import (
 from omnivia_core_runtime.service.mutation import (
     INSTALLATION_ADMINISTRATOR_ROLE,
     MUTATION_PURPOSES,
+    WORKSPACE_CONTRIBUTOR_ROLE,
 )
 from omnivia_core_runtime.service.operations import (
     ApplicationOperationRegistry,
+    AuditedOperationResult,
     OperationContext,
     OperationError,
     OperationHandler,
@@ -100,6 +113,8 @@ from omnivia_core_runtime.service.operations import (
     server_capability_snapshot,
     success,
 )
+from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
+from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
 #: The authorised application operations of this vertical, ratified by the owner. Named
 #: once here so the session grant, the registry and the evidence all read the same
@@ -154,6 +169,14 @@ INSTALLATION_OPERATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         WORKSPACE_CREATE_OPERATION: MUTATION_PURPOSES[WORKSPACE_CREATE_OPERATION],
         WORKSPACE_LIST_OPERATION: WORKSPACE_LIST_PURPOSE,
+    }
+)
+
+MEMORY_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        MEMORY_CREATE_OPERATION: MUTATION_PURPOSES[MEMORY_CREATE_OPERATION],
+        MEMORY_GET_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
+        MEMORY_LIST_OPERATION: KNOWLEDGE_RETRIEVAL_PURPOSE,
     }
 )
 
@@ -329,6 +352,50 @@ def installation_owner_session(
             )
         ),
     )
+
+
+def memory_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The distinct S2 workspace-family grant; the read-only session stays unchanged."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(MEMORY_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=MEMORY_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(MEMORY_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_memory_registry(handlers: MemoryHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        MEMORY_CREATE_OPERATION, cast(OperationHandler, handlers.memory_create)
+    )
+    registry.register(MEMORY_GET_OPERATION, cast(OperationHandler, handlers.memory_get))
+    registry.register(
+        MEMORY_LIST_OPERATION, cast(OperationHandler, handlers.memory_list)
+    )
+    return registry
 
 
 def build_application_registry(
@@ -622,6 +689,7 @@ class ApplicationDispatcher:
                     authority=context.authority,
                     scopes=context.scopes,
                     purpose=context.purpose,
+                    authorization=context,
                 )
             else:
                 self._emit(
@@ -637,7 +705,9 @@ class ApplicationDispatcher:
                     _MESSAGE_NO_HANDLER,
                     principal=context.principal_id,
                 )
-            result = handler(handler_context)
+            result: Mapping[str, Any] | AuditedOperationResult = handler(
+                handler_context
+            )
         except OperationError as error:
             self._emit(request, entry, context=context, error=error)
             return failure(
@@ -646,8 +716,15 @@ class ApplicationDispatcher:
                 error.message,
                 retry_class=error.retry_class,
                 principal=context.principal_id,
+                audit_reference=error.audit_reference,
             )
 
+        audit_reference: str | None = None
+        canonical_resolution_time: str | None = None
+        if isinstance(result, AuditedOperationResult):
+            audit_reference = result.audit_reference
+            canonical_resolution_time = result.canonical_resolution_time
+            result = result.result
         self._emit(request, entry, context=context, error=None)
         return success(
             request,
@@ -659,6 +736,8 @@ class ApplicationDispatcher:
             # capability id, and advertising it as one would be a false statement about
             # authority on the first production application response.
             capabilities=context.capabilities,
+            audit_reference=audit_reference,
+            canonical_resolution_time=canonical_resolution_time,
         )
 
     def _emit(
@@ -772,6 +851,58 @@ def build_installation_application_dispatcher(
     )
 
 
+def build_memory_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    token_codec: ContinuationTokenCodec | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact three-operation S2 family around the existing router."""
+    session = memory_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    label_grant = local_owner_label_grant(
+        principal_id=principal_id,
+        workspace_id=workspace_id,
+        granted_workspace=workspace_id,
+    )
+    handlers = MemoryHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        label_grant=label_grant,
+        authorized_views=(
+            LOCAL_OWNER_VIEW_GRANT if label_grant.all_labels else frozenset()
+        ),
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        token_codec=(
+            HmacContinuationTokenCodec.secure() if token_codec is None else token_codec
+        ),
+    )
+    registry = build_memory_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
@@ -781,6 +912,7 @@ __all__ = [
     "KNOWLEDGE_RETRIEVAL_PURPOSE",
     "KNOWLEDGE_SEARCH_OPERATION",
     "LOCAL_TRANSPORT_ADAPTER",
+    "MEMORY_FAMILY_PURPOSES",
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
@@ -792,6 +924,9 @@ __all__ = [
     "build_application_registry",
     "build_installation_application_dispatcher",
     "build_installation_registry",
+    "build_memory_application_dispatcher",
+    "build_memory_registry",
     "installation_owner_session",
     "local_owner_session",
+    "memory_family_session",
 ]

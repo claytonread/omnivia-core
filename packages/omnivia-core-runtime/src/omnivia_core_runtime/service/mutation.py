@@ -1,9 +1,8 @@
 """Server-issued mutation grants, and the one seam a mutation may run through (V06-5 S0).
 
-Nothing in this build registers a mutating operation, and this module does not change
-that. What it adds is the foundation the S1-S4 handlers will consume, established
-before any of them exists so that the first mutation to reach storage cannot be the
-occasion on which the authority model is invented.
+This module owns the mutation foundation consumed by the bounded S1-S4 handlers. S2 now
+registers ``memory.create`` through that foundation; operation registration itself remains
+in the application-family wiring rather than here.
 
 Two values and one function are the whole of it.
 
@@ -48,8 +47,8 @@ typed conflict when one idempotency scope is reused for a different canonical re
 and one rollback covering all of it on any error.
 
 What this module deliberately does not do: it registers no operation, wires no
-production grant, adds no transport, and is reachable from no shipped request path. The
-issuance site for a real handler is a later, separately accepted lane.
+production grant and adds no transport. The S2 handler owns its issuance call site and
+the application builder owns its server session, while this executor remains generic.
 """
 
 from __future__ import annotations
@@ -173,9 +172,7 @@ DEFAULT_GRANT_LIFETIME_US: Final = 60_000_000
 #: `authorization.py` freezes its own: a refusal is rendered into a log line, an audit
 #: record and a wire `ApiError`, so anything interpolated into one is republished
 #: everywhere those go. Naming the category is what a caller needs and all it is owed.
-_MESSAGE_NO_GRANT: Final = (
-    "this mutation has no server-issued grant behind it"
-)
+_MESSAGE_NO_GRANT: Final = "this mutation has no server-issued grant behind it"
 _MESSAGE_GRANT_NOT_FOR_THIS_REQUEST: Final = (
     "the grant presented was not issued for this operation, workspace and purpose"
 )
@@ -282,11 +279,17 @@ class MutationPreconditionFailed(OperationError):
 class MutationIdempotencyConflict(OperationError):
     """One idempotency scope, two different canonical requests."""
 
-    def __init__(self, message: str = _MESSAGE_IDEMPOTENCY_CONFLICT) -> None:
+    def __init__(
+        self,
+        message: str = _MESSAGE_IDEMPOTENCY_CONFLICT,
+        *,
+        audit_reference: str | None = None,
+    ) -> None:
         super().__init__(
             ERROR_CODE_IDEMPOTENCY_CONFLICT,
             message,
             retry_class=RETRY_CLASS_NON_RETRYABLE,
+            audit_reference=audit_reference,
         )
 
 
@@ -565,6 +568,16 @@ class MutationOutcome:
     audit_ref: str
 
 
+@dataclass(frozen=True)
+class MutationSettlementContext:
+    """Executor-owned identities and instant supplied to one domain mutation."""
+
+    audit_ref: str
+    claim_id: str
+    outcome_id: str
+    settled_at_us: int
+
+
 #: Reads the current version token of the record a mutation names, or `None` when there
 #: is no such record. Compared against the request's `mutation_precondition`; the seam
 #: never interprets the token, so any total ordering-free opaque string works.
@@ -572,7 +585,11 @@ PreconditionReader = Callable[[sqlite3.Connection], str | None]
 
 #: The domain mutation itself, run on the fenced connection inside the transaction that
 #: also writes the durable facts. Its returned mapping is the operation's result.
-DomainMutation = Callable[[sqlite3.Connection], Mapping[str, Any]]
+DomainMutation = Callable[
+    [sqlite3.Connection, MutationSettlementContext], Mapping[str, Any]
+]
+
+IdentifierAllocator = Callable[[str], str]
 
 #: Whether a result is one the server will serve for this operation. Supplied by the
 #: server at the call site rather than defaulted here: a permissive default validator
@@ -583,16 +600,17 @@ DomainMutation = Callable[[sqlite3.Connection], Mapping[str, Any]]
 #: re-served for as long as the claim survives.
 ResultValidator = Callable[[Mapping[str, Any]], bool]
 
-#: The schema bound on `omnivia_idempotency_outcomes.outcome_json`. A result past it
-#: needs `outcome_reference` and a store to put the bytes in, and this build has
-#: neither.
-#:
-# ponytail: inline-only outcomes; add the `outcome_reference` branch when an operation
-# actually produces a result this large, not before.
+#: The schema bound on `omnivia_idempotency_outcomes.outcome_json`. A result past it is
+#: stored byte-exactly in 0014's immutable outcome-document relation and referenced by
+#: the ordinary idempotency outcome.
 _MAX_INLINE_OUTCOME = 8192
 
 #: The schema bound on `omnivia_application_audit_events.granted_authority_json`.
 _MAX_GRANTED_AUTHORITY = 4096
+
+
+def _allocate_identifier(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4()}"
 
 
 def execute_mutation(
@@ -606,6 +624,7 @@ def execute_mutation(
     mutate: DomainMutation,
     validate_result: ResultValidator,
     clock: Clock,
+    allocate_identifier: IdentifierAllocator | None = None,
 ) -> MutationOutcome:
     """Run one mutation under a grant, or refuse it, leaving nothing half-written.
 
@@ -623,13 +642,13 @@ def execute_mutation(
     4. the precondition is read and compared *before* the domain mutation, for the
        operations whose catalogue metadata requires one; for the operations it does not,
        there is no precondition to bind and no reader is called;
-    5. `mutate` runs and its result is validated, and only then -- after a second
-       monotonic reading proves the grant is still inside its window -- are the audit
-       event, the claim, the outcome and the execution record written, so nothing claims
-       a success that had not happened and nothing settles under an expired grant;
+    5. the executor allocates the settlement identities, inserts the audit event, then
+       calls `mutate` with that settlement context; the result, claim, outcome and
+       execution facts follow only after validation, with a final monotonic check before
+       commit. The audit is not externally visible unless every later write commits;
     6. any exception at any point leaves the transaction rolled back by
-       `fenced_transaction`, taking the domain mutation and all four durable rows with
-       it.
+       `fenced_transaction`, taking the domain mutation and every durable settlement
+       fact with it.
 
     The clock is read here rather than supplied as a moment: a `now_us` argument would
     make the deadline something the call site states, and the whole point of the expiry
@@ -643,6 +662,7 @@ def execute_mutation(
     the grant and the context below, so an equivalence describing some other request
     cannot be used to reach this one's stored answer.
     """
+    allocator = allocate_identifier or _allocate_identifier
     if not isinstance(grant, MutationGrant) or not grant.server_issued:
         raise MutationDenied(_MESSAGE_NO_GRANT)
     if not grant.covers(
@@ -715,9 +735,9 @@ def execute_mutation(
 
         existing = _find_claim(fenced, grant, key)
         if existing is not None:
-            claim_id, stored_digest = existing
+            claim_id, stored_digest, original_audit_ref = existing
             if stored_digest != equivalence.fingerprint:
-                raise MutationIdempotencyConflict()
+                raise MutationIdempotencyConflict(audit_reference=original_audit_ref)
             # An honest replay runs no domain code, but it does spend the fresh grant it
             # was presented with: the row below is what makes that durable, so the grant
             # cannot later authorize a mutation that would actually write something.
@@ -737,6 +757,7 @@ def execute_mutation(
                 settled_at_us=_wall_us(clock),
                 settled_monotonic_us=settled_monotonic_us,
             )
+            _require_current(grant, clock)
             return replayed
 
         if precondition is not None:
@@ -744,32 +765,23 @@ def execute_mutation(
             if observed != required_record_version:
                 raise MutationPreconditionFailed()
 
-        result = dict(mutate(fenced))
-        if not validate_result(result):
-            raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
-
-        # The second monotonic reading, taken after the domain mutation and immediately
-        # before the first durable write. A handler that ran long enough to pass the
-        # expiry loses the transaction whole -- the domain mutation included -- rather
-        # than settling under a grant that stopped being current while it worked.
+        # Settlement begins only while the grant is current. The executor, never the
+        # handler, allocates every identity that binds the domain write to M1.
         settled_monotonic_us = _require_current(grant, clock)
-        # And the wall reading that goes into every durable row, taken at settlement.
-        # The issuance time is not that moment and is never used as it.
         settled_at_us = _wall_us(clock)
-
-        outcome_json = to_canonical_json(result)
-        if len(outcome_json) > _MAX_INLINE_OUTCOME:
-            raise MutationSeamFault(_MESSAGE_UNSTORABLE_RESULT)
+        settlement = MutationSettlementContext(
+            audit_ref=allocator("aud"),
+            claim_id=allocator("clm"),
+            outcome_id=allocator("out"),
+            settled_at_us=settled_at_us,
+        )
         authority_json = to_canonical_json(context.authority.to_wire())
         if len(authority_json) > _MAX_GRANTED_AUTHORITY:
             raise MutationSeamFault(_MESSAGE_UNSTORABLE_RESULT)
 
-        audit_ref = f"aud-{uuid.uuid4()}"
-        claim_id = f"clm-{uuid.uuid4()}"
-        outcome_id = f"out-{uuid.uuid4()}"
-
-        # 0007's admissible order, and the only order its foreign keys allow: the audit
-        # event carries no links, the claim names the event, and the outcome names both.
+        # The audit precedes the domain callback so an M3 candidate can satisfy its
+        # immediate audit foreign key. It is still invisible unless this transaction
+        # commits, and every later failure rolls it back with the domain rows.
         fenced.execute(
             "INSERT INTO omnivia_application_audit_events "
             "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
@@ -777,7 +789,7 @@ def execute_mutation(
             "error_code, recorded_at_us) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', NULL, ?)",
             (
-                audit_ref,
+                settlement.audit_ref,
                 grant.workspace_id,
                 grant.principal_id,
                 grant.operation,
@@ -789,33 +801,61 @@ def execute_mutation(
                 settled_at_us,
             ),
         )
+
+        result = dict(mutate(fenced, settlement))
+        if not validate_result(result):
+            raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
+        outcome_json = to_canonical_json(result)
+        outcome_digest = _digest(outcome_json)
+
         fenced.execute(
             "INSERT INTO omnivia_idempotency_claims "
             "(claim_id, workspace_id, principal_id, operation, idempotency_key, "
             "request_digest, audit_ref, claimed_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                claim_id,
+                settlement.claim_id,
                 grant.workspace_id,
                 grant.principal_id,
                 grant.operation,
                 key,
                 equivalence.fingerprint,
-                audit_ref,
+                settlement.audit_ref,
                 settled_at_us,
             ),
         )
+
+        outcome_reference: str | None = None
+        inline_outcome: str | None = outcome_json
+        if len(outcome_json.encode("utf-8")) > _MAX_INLINE_OUTCOME:
+            outcome_reference = allocator("ocr")
+            inline_outcome = None
+            fenced.execute(
+                "INSERT INTO omnivia_application_outcome_documents "
+                "(workspace_id, outcome_reference, claim_id, audit_ref, outcome_json, "
+                "outcome_digest, outcome_byte_length) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    grant.workspace_id,
+                    outcome_reference,
+                    settlement.claim_id,
+                    settlement.audit_ref,
+                    outcome_json,
+                    outcome_digest,
+                    len(outcome_json.encode("utf-8")),
+                ),
+            )
         fenced.execute(
             "INSERT INTO omnivia_idempotency_outcomes "
             "(outcome_id, claim_id, workspace_id, outcome_branch, error_code, "
             "outcome_json, outcome_reference, outcome_digest, audit_ref, settled_at_us) "
-            "VALUES (?, ?, ?, 'success', NULL, ?, NULL, ?, ?, ?)",
+            "VALUES (?, ?, ?, 'success', NULL, ?, ?, ?, ?, ?)",
             (
-                outcome_id,
-                claim_id,
+                settlement.outcome_id,
+                settlement.claim_id,
                 grant.workspace_id,
-                outcome_json,
-                _digest(outcome_json),
-                audit_ref,
+                inline_outcome,
+                outcome_reference,
+                outcome_digest,
+                settlement.audit_ref,
                 settled_at_us,
             ),
         )
@@ -823,18 +863,22 @@ def execute_mutation(
             fenced,
             grant,
             kind="executed",
-            claim_id=claim_id,
-            audit_ref=audit_ref,
+            claim_id=settlement.claim_id,
+            audit_ref=settlement.audit_ref,
             settled_at_us=settled_at_us,
             settled_monotonic_us=settled_monotonic_us,
         )
+        _require_current(grant, clock)
 
         # Returned from inside the block on purpose. `fenced_transaction` resumes on the
         # way out, revalidates the lease and issues the COMMIT, and a failure there
         # raises through this return rather than past it -- so a value is handed back
         # only for a transaction that actually committed.
         return MutationOutcome(
-            result=result, replayed=False, claim_id=claim_id, audit_ref=audit_ref
+            result=result,
+            replayed=False,
+            claim_id=settlement.claim_id,
+            audit_ref=settlement.audit_ref,
         )
 
 
@@ -923,20 +967,20 @@ def _record_execution(
 
 def _find_claim(
     connection: sqlite3.Connection, grant: MutationGrant, key: str
-) -> tuple[str, str] | None:
-    """The claim this scope already holds, as `(claim_id, request_digest)`, or `None`.
+) -> tuple[str, str, str] | None:
+    """The claim as `(claim_id, request_digest, audit_ref)`, or `None`.
 
     The scope is the whole tuple 0007's unique index states -- workspace, validated
     principal, operation, key -- because a key is never global, and reading it any
     narrower would let one caller's recorded answer be served to another.
     """
     row = connection.execute(
-        "SELECT claim_id, request_digest FROM omnivia_idempotency_claims "
+        "SELECT claim_id, request_digest, audit_ref FROM omnivia_idempotency_claims "
         "WHERE workspace_id = ? AND principal_id = ? AND operation = ? "
         "AND idempotency_key = ?",
         (grant.workspace_id, grant.principal_id, grant.operation, key),
     ).fetchone()
-    return None if row is None else (str(row[0]), str(row[1]))
+    return None if row is None else (str(row[0]), str(row[1]), str(row[2]))
 
 
 def _replay(connection: sqlite3.Connection, claim_id: str) -> MutationOutcome:
@@ -971,18 +1015,39 @@ def _replay(connection: sqlite3.Connection, claim_id: str) -> MutationOutcome:
     and attributing it to the wrong event is not something to serve.
     """
     row = connection.execute(
-        "SELECT o.outcome_json, o.outcome_digest, o.audit_ref, c.audit_ref "
+        "SELECT o.outcome_json, o.outcome_reference, o.outcome_digest, "
+        "       o.audit_ref, c.audit_ref, o.workspace_id "
         "FROM omnivia_idempotency_outcomes o "
         "JOIN omnivia_idempotency_claims c ON c.claim_id = o.claim_id "
         "WHERE o.claim_id = ?",
         (claim_id,),
     ).fetchone()
-    if row is None or row[0] is None:
+    if row is None:
         raise MutationSeamFault(_MESSAGE_UNSETTLED_CLAIM)
-    if str(row[2]) != str(row[3]):
+    if str(row[3]) != str(row[4]):
         raise MutationSeamFault(_MESSAGE_OUTCOME_AUDIT_CROSSLINKED)
-    stored = str(row[0])
-    if _digest(stored) != str(row[1]):
+    if row[0] is not None:
+        stored = str(row[0])
+    elif row[1] is not None:
+        document = connection.execute(
+            "SELECT outcome_json, outcome_digest, outcome_byte_length, claim_id, audit_ref "
+            "FROM omnivia_application_outcome_documents "
+            "WHERE workspace_id = ? AND outcome_reference = ?",
+            (str(row[5]), str(row[1])),
+        ).fetchone()
+        if (
+            document is None
+            or str(document[1]) != str(row[2])
+            or str(document[3]) != claim_id
+            or str(document[4]) != str(row[3])
+        ):
+            raise MutationSeamFault(_MESSAGE_OUTCOME_NOT_REPLAYABLE)
+        stored = str(document[0])
+        if len(stored.encode("utf-8")) != int(document[2]):
+            raise MutationSeamFault(_MESSAGE_OUTCOME_NOT_REPLAYABLE)
+    else:
+        raise MutationSeamFault(_MESSAGE_UNSETTLED_CLAIM)
+    if _digest(stored) != str(row[2]):
         raise MutationSeamFault(_MESSAGE_OUTCOME_NOT_REPLAYABLE)
     try:
         decoded = parse_json_document(stored)
@@ -992,15 +1057,14 @@ def _replay(connection: sqlite3.Connection, claim_id: str) -> MutationOutcome:
     if canonical != stored or not isinstance(decoded, dict):
         raise MutationSeamFault(_MESSAGE_OUTCOME_NOT_REPLAYABLE)
     return MutationOutcome(
-        result=decoded, replayed=True, claim_id=claim_id, audit_ref=str(row[2])
+        result=decoded, replayed=True, claim_id=claim_id, audit_ref=str(row[3])
     )
 
 
 def _digest(canonical: str) -> str:
     """`sha256:<64 hex>` over the exact canonical bytes, as 0007's CHECK requires."""
     return (
-        f"{CONTENT_CHECKSUM_ALGORITHM}:"
-        f"{sha256(canonical.encode('utf-8')).hexdigest()}"
+        f"{CONTENT_CHECKSUM_ALGORITHM}:{sha256(canonical.encode('utf-8')).hexdigest()}"
     )
 
 
@@ -1024,6 +1088,7 @@ __all__ = [
     "MutationOutcome",
     "MutationPreconditionFailed",
     "MutationSeamFault",
+    "MutationSettlementContext",
     "PreconditionReader",
     "ResultValidator",
     "execute_mutation",

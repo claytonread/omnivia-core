@@ -55,7 +55,7 @@ from omnivia_core_runtime.ownership.fencing import (
     trigger_names,
     verify_fingerprint,
 )
-from omnivia_core_runtime.ownership.identity import FakeClock
+from omnivia_core_runtime.ownership.identity import Clock, FakeClock
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.application import (
     build_application_registry,
@@ -77,6 +77,7 @@ from omnivia_core_runtime.service.mutation import (
     MutationIdempotencyConflict,
     MutationPreconditionFailed,
     MutationSeamFault,
+    MutationSettlementContext,
     execute_mutation,
     issue_mutation_grant,
 )
@@ -120,6 +121,7 @@ from omnivia_core.contracts.v1 import (
     RequestMetadata,
     get_operation_metadata,
     idempotency_equivalence,
+    to_canonical_json,
 )
 
 # --- the S0 migration under test ----------------------------------------------
@@ -207,7 +209,9 @@ WALL_BASE_US = int(WALL_BASE.timestamp() * 1_000_000)
 OPERATION_INPUT: Mapping[str, Any] = {"candidate_id": "cand-s0-1"}
 
 
-def clock_at(monotonic: float = MONOTONIC_BASE, *, wall: datetime = WALL_BASE) -> FakeClock:
+def clock_at(
+    monotonic: float = MONOTONIC_BASE, *, wall: datetime = WALL_BASE
+) -> FakeClock:
     return FakeClock(monotonic=monotonic, wall=wall)
 
 
@@ -391,13 +395,17 @@ class DomainMutationSpy:
     rather than an inference from row counts.
     """
 
-    def __init__(self, *, memory_id: str = CREATED_MEMORY_ID, fail: bool = False) -> None:
+    def __init__(
+        self, *, memory_id: str = CREATED_MEMORY_ID, fail: bool = False
+    ) -> None:
         self.memory_id = memory_id
         self.fail = fail
         self.calls = 0
         self.result: Mapping[str, Any] = {"approved": True, "record_id": memory_id}
 
-    def __call__(self, connection: sqlite3.Connection) -> Mapping[str, Any]:
+    def __call__(
+        self, connection: sqlite3.Connection, _settlement: Any
+    ) -> Mapping[str, Any]:
         self.calls += 1
         connection.execute(
             "INSERT INTO memories (id, workspace_id, content, source_type, "
@@ -447,11 +455,14 @@ def run(
     *,
     grant: MutationGrant,
     context: AuthorizedApplicationContext,
-    mutate: DomainMutationSpy,
+    mutate: Callable[
+        [sqlite3.Connection, MutationSettlementContext], Mapping[str, Any]
+    ],
     equivalence: Any = None,
-    precondition: Callable[[sqlite3.Connection], str | None] | None = read_record_version,
+    precondition: Callable[[sqlite3.Connection], str | None]
+    | None = read_record_version,
     validate_result: Callable[[Mapping[str, Any]], bool] = accept_any,
-    clock: FakeClock | None = None,
+    clock: Clock | None = None,
 ) -> Any:
     return execute_mutation(
         holder.connection,
@@ -556,10 +567,22 @@ def test_v06_5_s0_server_issued_grant_required(owned: m1.Owned) -> None:
     assert spy.calls == 0
 
     mismatches = (
-        ("workspace", honest, dataclasses.replace(context, workspace_id="ws-somewhere-else")),
-        ("operation", honest, dataclasses.replace(context, operation="record.supersede")),
+        (
+            "workspace",
+            honest,
+            dataclasses.replace(context, workspace_id="ws-somewhere-else"),
+        ),
+        (
+            "operation",
+            honest,
+            dataclasses.replace(context, operation="record.supersede"),
+        ),
         ("purpose", honest, dataclasses.replace(context, purpose="job_control")),
-        ("principal", honest, dataclasses.replace(context, principal_id="principal-elsewhere")),
+        (
+            "principal",
+            honest,
+            dataclasses.replace(context, principal_id="principal-elsewhere"),
+        ),
         ("role", honest, dataclasses.replace(context, roles=())),
         ("scopes", honest, dataclasses.replace(context, scopes=())),
         ("capabilities", honest, dataclasses.replace(context, capabilities=())),
@@ -568,7 +591,12 @@ def test_v06_5_s0_server_issued_grant_required(owned: m1.Owned) -> None:
         # and already over, and one issued a second of monotonic time from now.
         (
             "expired",
-            issue(owned, context, clock=clock_at(MONOTONIC_BASE - 0.000_001), lifetime_us=1),
+            issue(
+                owned,
+                context,
+                clock=clock_at(MONOTONIC_BASE - 0.000_001),
+                lifetime_us=1,
+            ),
             context,
         ),
         (
@@ -863,7 +891,9 @@ def test_v06_5_s0_audit_and_idempotency_atomic(owned: m1.Owned) -> None:
     # with is spent -- one more execution row, of kind `replayed` -- and nothing else
     # moves: no second audit event, claim, outcome or domain row.
     replay_spy = DomainMutationSpy()
-    replayed = run(owned, grant=issue(owned, authorize()), context=authorize(), mutate=replay_spy)
+    replayed = run(
+        owned, grant=issue(owned, authorize()), context=authorize(), mutate=replay_spy
+    )
     assert replay_spy.calls == 0
     assert replayed.replayed is True
     assert replayed.result == outcome.result
@@ -913,6 +943,198 @@ def test_v06_5_s0_audit_and_idempotency_atomic(owned: m1.Owned) -> None:
         )
     assert second_spy.calls == 0
     assert counts(connection) == settled
+
+
+def test_v06_5_s2_settlement_context_precedes_governed_fk_without_partial_state(
+    owned: m1.Owned,
+) -> None:
+    """The callback sees its executor-owned audit, and its failure erases everything."""
+    context = authorize()
+    before = counts(owned.connection)
+
+    def fail_after_observing_audit(
+        connection: sqlite3.Connection, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        assert connection.execute(
+            "SELECT audit_ref, recorded_at_us FROM omnivia_application_audit_events"
+        ).fetchone() == (settlement.audit_ref, settlement.settled_at_us)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM omnivia_idempotency_claims"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            f"SELECT COUNT(*) FROM {EXECUTIONS_TABLE}"
+        ).fetchone() == (0,)
+        connection.execute(
+            "INSERT INTO memories (id, workspace_id, content, source_type, "
+            "source_reference, lifecycle_state, memory_type, created_by, created_at, "
+            "updated_at) VALUES ('mem-s2-callback-failure', ?, 'approved', 'note', "
+            "'ref', 'approved', 'general', 's2', 'created', 'rv-s2-callback')",
+            (WORKSPACE_ID,),
+        )
+        raise DomainFailure("the domain callback failed after observing its audit")
+
+    with pytest.raises(DomainFailure, match="after observing its audit"):
+        run(
+            owned,
+            grant=issue(owned, context),
+            context=context,
+            mutate=fail_after_observing_audit,
+        )
+
+    assert counts(owned.connection) == before
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_application_outcome_documents"
+    ).fetchone() == (0,)
+    assert owned.connection.in_transaction is False
+
+
+def test_v06_5_s2_referenced_outcome_replay_is_byte_exact(
+    owned: m1.Owned,
+) -> None:
+    """A large non-ASCII result is replayed only from its immutable exact bytes."""
+    context = authorize()
+    mutation = DomainMutationSpy(memory_id="mem-s2-referenced-outcome")
+    mutation.result = {"payload": "雪" * 3_000}
+    expected = to_canonical_json(mutation.result)
+    expected_bytes = expected.encode("utf-8")
+    assert len(expected_bytes) > 8192
+
+    first = run(
+        owned,
+        grant=issue(owned, context),
+        context=context,
+        mutate=mutation,
+    )
+    stored = owned.connection.execute(
+        "SELECT o.outcome_json, o.outcome_reference, o.outcome_digest, "
+        "d.outcome_json, d.outcome_digest, d.outcome_byte_length, "
+        "d.claim_id, d.audit_ref "
+        "FROM omnivia_idempotency_outcomes o "
+        "JOIN omnivia_application_outcome_documents d "
+        "ON d.workspace_id = o.workspace_id "
+        "AND d.outcome_reference = o.outcome_reference "
+        "WHERE o.claim_id = ?",
+        (first.claim_id,),
+    ).fetchone()
+    assert stored is not None
+    assert stored[0] is None
+    assert stored[1] is not None
+    assert str(stored[3]).encode("utf-8") == expected_bytes
+    assert stored[2] == stored[4]
+    assert stored[5:] == (
+        len(expected_bytes),
+        first.claim_id,
+        first.audit_ref,
+    )
+
+    replay_spy = DomainMutationSpy(memory_id="mem-s2-referenced-replay-must-not-run")
+    replayed = run(
+        owned,
+        grant=issue(owned, authorize()),
+        context=authorize(),
+        mutate=replay_spy,
+    )
+    assert replay_spy.calls == 0
+    assert replayed.replayed is True
+    assert replayed.result == first.result
+    assert replayed.audit_ref == first.audit_ref
+    assert owned.connection.execute(
+        "SELECT outcome_json FROM omnivia_application_outcome_documents "
+        "WHERE claim_id = ?",
+        (first.claim_id,),
+    ).fetchone() == (expected,)
+
+
+def test_v06_5_s2_replay_expiry_after_execution_write_rolls_back_grant_spend(
+    owned: m1.Owned,
+) -> None:
+    """The final expiry check removes the replay execution and leaves its grant usable."""
+    context = authorize()
+    first = run(
+        owned, grant=issue(owned, context), context=context, mutate=DomainMutationSpy()
+    )
+    replay_grant = issue(
+        owned,
+        authorize(),
+        clock=clock_at(),
+        lifetime_us=1_000_000,
+    )
+    executions_before = m1.count(owned.connection, EXECUTIONS_TABLE)
+
+    class ExpiresAfterExecutionWrite:
+        def __init__(self) -> None:
+            self._readings = iter(
+                (MONOTONIC_BASE, MONOTONIC_BASE, MONOTONIC_BASE + 2.0)
+            )
+
+        def monotonic(self) -> float:
+            return next(self._readings)
+
+        def wall_time(self) -> datetime:
+            return WALL_BASE
+
+    replay_spy = DomainMutationSpy(memory_id="mem-s2-expired-replay-must-not-run")
+    with pytest.raises(MutationDenied) as denied:
+        run(
+            owned,
+            grant=replay_grant,
+            context=authorize(),
+            mutate=replay_spy,
+            clock=ExpiresAfterExecutionWrite(),
+        )
+    assert denied.value.code == ERROR_CODE_AUTHORIZATION_DENIED
+    assert replay_spy.calls == 0
+    assert m1.count(owned.connection, EXECUTIONS_TABLE) == executions_before
+    assert owned.connection.execute(
+        f"SELECT 1 FROM {EXECUTIONS_TABLE} WHERE grant_id = ?",
+        (replay_grant.grant_id,),
+    ).fetchone() is None
+    assert owned.connection.in_transaction is False
+
+    # The failed replay did not spend the grant: the same still-current grant can be
+    # presented again and is consumed by a successful replay of the original answer.
+    retried = run(
+        owned,
+        grant=replay_grant,
+        context=authorize(),
+        mutate=replay_spy,
+        clock=clock_at(),
+    )
+    assert retried.replayed is True
+    assert retried.result == first.result
+    assert m1.count(owned.connection, EXECUTIONS_TABLE) == executions_before + 1
+
+
+def test_v06_5_s2_idempotency_conflict_carries_original_audit_reference(
+    owned: m1.Owned,
+) -> None:
+    """A conflicting request reports the settled claim's audit without domain code."""
+    context = authorize()
+    first = run(
+        owned, grant=issue(owned, context), context=context, mutate=DomainMutationSpy()
+    )
+    settled = counts(owned.connection)
+    changed_input = {"candidate_id": "cand-s2-conflict"}
+    changed_context = authorize(operation_input=changed_input)
+    changed_equivalence = equivalence_for(operation_input=changed_input)
+    conflict_spy = DomainMutationSpy(memory_id="mem-s2-conflict-must-not-run")
+
+    with pytest.raises(MutationIdempotencyConflict) as conflict:
+        run(
+            owned,
+            grant=issue(
+                owned,
+                changed_context,
+                equivalence=changed_equivalence,
+            ),
+            context=changed_context,
+            mutate=conflict_spy,
+            equivalence=changed_equivalence,
+        )
+    assert conflict.value.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
+    assert conflict.value.audit_reference == first.audit_ref
+    assert conflict_spy.calls == 0
+    assert counts(owned.connection) == settled
 
 
 # --- S0-06: precondition before the mutation, fencing around all of it --------
@@ -997,12 +1219,18 @@ def test_v06_5_s0_rollback_leaves_no_partial_canonical_state(owned: m1.Owned) ->
     assert counts(owned.connection) == before
     assert owned.connection.in_transaction is False
 
-    # The domain mutation succeeds, and the durable write is what fails: an outcome
-    # this build cannot store. The row the mutation wrote is gone with it.
-    oversized = DomainMutationSpy(memory_id="mem-s0-oversized")
-    oversized.result = {"blob": "x" * 9000}
+    # The domain mutation succeeds, then the required result validator refuses its
+    # answer. The row the mutation wrote is gone with it. Large valid answers are no
+    # longer this failure point: Amendment 002 stores them by immutable reference.
+    oversized = DomainMutationSpy(memory_id="mem-s0-rejected-result")
     with pytest.raises(MutationSeamFault):
-        run(owned, grant=issue(owned, context), context=context, mutate=oversized)
+        run(
+            owned,
+            grant=issue(owned, context),
+            context=context,
+            mutate=oversized,
+            validate_result=lambda _result: False,
+        )
     assert oversized.calls == 1
     assert counts(owned.connection) == before
 
@@ -1041,10 +1269,19 @@ def test_v06_5_s0_migration_upgrade_recovery_and_old_version_refusal(
     """
     # Lineage. A unique consecutive successor to the accepted head, pinned by content.
     ordered = load_migrations()
-    assert [m.version for m in ordered] == list(range(1, MIGRATION_VERSION + 1))
-    assert ordered[-1].name == MIGRATION_NAME
-    assert ordered[-2].name == PREDECESSOR_NAME
-    assert MIGRATION.checksum == hashlib.sha256(MIGRATION.sql.encode("utf-8")).hexdigest()
+    s0_index = next(
+        i
+        for i, migration in enumerate(ordered)
+        if migration.version == MIGRATION_VERSION
+    )
+    assert [m.version for m in ordered[: s0_index + 1]] == list(
+        range(1, MIGRATION_VERSION + 1)
+    )
+    assert ordered[s0_index].name == MIGRATION_NAME
+    assert ordered[s0_index - 1].name == PREDECESSOR_NAME
+    assert (
+        MIGRATION.checksum == hashlib.sha256(MIGRATION.sql.encode("utf-8")).hexdigest()
+    )
 
     # It is additive DDL over reserved-prefixed objects, so it can rewrite nothing.
     for statement in MIGRATION_STATEMENTS:
@@ -1077,7 +1314,7 @@ def test_v06_5_s0_migration_upgrade_recovery_and_old_version_refusal(
 
         connection = open_database(path, OpenMode.READ_ONLY)
         try:
-            assert max(applied_migrations(connection)) == MIGRATION_VERSION
+            assert MIGRATION_VERSION in applied_migrations(connection)
             present = m1.object_names(connection, "table")
             assert set(S0_TABLES) <= present
             assert set(S0_INDEXES) <= m1.object_names(connection, "index")
@@ -1105,7 +1342,9 @@ def test_v06_5_s0_migration_upgrade_recovery_and_old_version_refusal(
             crashing = m1.FailAfterStatement(
                 connection, MIGRATION_STATEMENTS, stop_after
             )
-            with pytest.raises(m1.MigrationInterrupted, match=f"statement {stop_after}$"):
+            with pytest.raises(
+                m1.MigrationInterrupted, match=f"statement {stop_after}$"
+            ):
                 apply_pending_migrations(
                     cast("sqlite3.Connection", crashing),
                     mode=OpenMode.EXCLUSIVE_MAINTENANCE,
@@ -1148,7 +1387,7 @@ def test_v06_5_s0_migration_upgrade_recovery_and_old_version_refusal(
                 fencing_generation=GENERATION_ONE,
                 workspace_id=WORKSPACE_ID,
             )
-            assert [m.version for m in applied] == [MIGRATION_VERSION]
+            assert next(m.version for m in applied) == MIGRATION_VERSION
             rows = retried.execute(
                 "SELECT COUNT(*) FROM omnivia_schema_migrations WHERE version = ?",
                 (MIGRATION_VERSION,),
@@ -1573,8 +1812,10 @@ def test_v06_5_s0_expiry_is_rechecked_before_commit(owned: m1.Owned) -> None:
     grant = issue(owned, context, clock=clock, lifetime_us=1_000_000)
 
     class SlowMutation(DomainMutationSpy):
-        def __call__(self, connection: sqlite3.Connection) -> Mapping[str, Any]:
-            result = super().__call__(connection)
+        def __call__(
+            self, connection: sqlite3.Connection, settlement: Any
+        ) -> Mapping[str, Any]:
+            result = super().__call__(connection, settlement)
             clock.advance_monotonic(5.0)
             return result
 
@@ -1634,9 +1875,10 @@ def test_v06_5_s0_replay_verifies_digest_and_ijson(owned: m1.Owned) -> None:
         "SELECT outcome_json, outcome_digest FROM omnivia_idempotency_outcomes"
     ).fetchone()
     assert json.loads(str(stored_text)) == honest.result
-    assert str(stored_digest) == "sha256:" + hashlib.sha256(
-        str(stored_text).encode("utf-8")
-    ).hexdigest()
+    assert (
+        str(stored_digest)
+        == "sha256:" + hashlib.sha256(str(stored_text).encode("utf-8")).hexdigest()
+    )
 
     # `digest` is `None` where the row is self-consistent -- the digest is recomputed
     # over the stored bytes -- so every case but the first is one a digest check alone
@@ -1849,7 +2091,9 @@ def test_v06_5_s0_replay_refuses_a_cross_linked_outcome(
             legacy.connection
         )
         seed_record(legacy)
-        seed_settled_claim(legacy, key="s0-legacy-other", outcome_json=CANONICAL_OUTCOME)
+        seed_settled_claim(
+            legacy, key="s0-legacy-other", outcome_json=CANONICAL_OUTCOME
+        )
         seed_settled_claim(
             legacy,
             key="s0-legacy-crossed",
@@ -1870,7 +2114,7 @@ def test_v06_5_s0_replay_refuses_a_cross_linked_outcome(
             fencing_generation=state.fencing_generation,
             workspace_id=WORKSPACE_ID,
         )
-        assert [m.version for m in applied] == [MIGRATION_VERSION]
+        assert next(m.version for m in applied) == MIGRATION_VERSION
     finally:
         upgraded.close()
 
@@ -1886,9 +2130,10 @@ def test_v06_5_s0_replay_refuses_a_cross_linked_outcome(
             "WHERE o.claim_id = 'clm-s0-legacy-crossed'"
         ).fetchone()
         assert str(crossed[0]) == CANONICAL_OUTCOME
-        assert str(crossed[1]) == "sha256:" + hashlib.sha256(
-            CANONICAL_OUTCOME.encode("utf-8")
-        ).hexdigest()
+        assert (
+            str(crossed[1])
+            == "sha256:" + hashlib.sha256(CANONICAL_OUTCOME.encode("utf-8")).hexdigest()
+        )
         assert (str(crossed[2]), str(crossed[3])) == (
             "aud-s0-legacy-other",
             "aud-s0-legacy-crossed",
@@ -1987,7 +2232,8 @@ def test_v06_5_s0_execution_links_cannot_contradict_authority(owned: m1.Owned) -
         placeholders = ", ".join(f":{name}" for name in row)
         with guarded(owned):
             owned.connection.execute(
-                f"INSERT INTO {EXECUTIONS_TABLE} ({columns}) VALUES ({placeholders})", row
+                f"INSERT INTO {EXECUTIONS_TABLE} ({columns}) VALUES ({placeholders})",
+                row,
             )
 
     # Each of these names the real claim and the real audit event, and contradicts one
@@ -2006,7 +2252,9 @@ def test_v06_5_s0_execution_links_cannot_contradict_authority(owned: m1.Owned) -
     # A row naming an audit event that does not exist at all is refused too -- by the
     # foreign key this time, which is the half the trigger does not have to repeat.
     with pytest.raises(sqlite3.DatabaseError):
-        insert(execution_id="exe-s0-absent", grant_id="mgr-s0-absent", audit_ref="aud-nope")
+        insert(
+            execution_id="exe-s0-absent", grant_id="mgr-s0-absent", audit_ref="aud-nope"
+        )
     assert m1.count(owned.connection, EXECUTIONS_TABLE) == 1
 
     # The control: the same row, agreeing with its claim and audit event, is admitted.

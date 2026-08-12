@@ -1164,15 +1164,15 @@ def test_a009_the_dispatcher_passes_the_seam_values_and_reconstructs_none_of_the
         assert value.value.id == "context"
 
 
-def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -> None:
+def test_a009_and_v06_5_the_four_fields_are_optional_and_service_keeps_its_fifth_slot() -> None:
     """The amendment's shape constraint, asserted as the shape.
 
-    `service` stays fifth and the three new fields follow it, so every direct-handler
+    `service` stays fifth and the four new fields follow it, so every direct-handler
     construction that predates the amendment -- five positional arguments, or four plus
-    `service=` -- still builds. All three default to `None`, which is what lets those
+    `service=` -- still builds. All four default to `None`, which is what lets those
     constructions exist at all.
 
-    Falsifier: insert any of the three before `service` and the positional construction
+    Falsifier: insert any of the four before `service` and the positional construction
     below binds a `GrantedAuthority` to `service`; give any of them a non-`None` default
     and absence stops being representable, which is the one thing the refusal above needs.
     """
@@ -1187,6 +1187,7 @@ def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -
         "authority",
         "scopes",
         "purpose",
+        "authorization",
     ]
     for field in fields[5:]:
         assert field.default is None
@@ -1199,7 +1200,12 @@ def test_a009_the_three_fields_are_optional_and_service_keeps_its_fifth_slot() -
         Served,
     )
     assert legacy.service is Served
-    assert (legacy.authority, legacy.scopes, legacy.purpose) == (None, None, None)
+    assert (
+        legacy.authority,
+        legacy.scopes,
+        legacy.purpose,
+        legacy.authorization,
+    ) == (None, None, None, None)
 
 
 # --- 3. authorization before the freeze ---------------------------------------

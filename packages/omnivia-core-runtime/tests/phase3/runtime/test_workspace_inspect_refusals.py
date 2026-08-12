@@ -986,11 +986,11 @@ def test_8a_the_handler_opens_no_authoritative_storage() -> None:
 def test_8b_a_handler_is_given_no_connection_and_no_path() -> None:
     """The handler contract itself carries nothing a handler could open.
 
-    `OperationContext` has eight fields and none of them is a connection, a lease or a
+    `OperationContext` has nine fields and none of them is a connection, a lease or a
     filesystem path; `service` is the workspace-owning service, which is what makes it
     the owner rather than the handler.
 
-    Three of the eight are Amendment 009's effective-authority pass-through, added for
+    Three are Amendment 009's effective-authority pass-through, added for
     `context_pack.build` on 2026-08-10. They widen what a handler may *know about its own
     authorization* and nothing else: an authority record, a scope tuple and a purpose
     string are values the seam already computed, and none of them is a handle, a path or
@@ -1008,6 +1008,7 @@ def test_8b_a_handler_is_given_no_connection_and_no_path() -> None:
         "authority",
         "scopes",
         "purpose",
+        "authorization",
     }
 
 

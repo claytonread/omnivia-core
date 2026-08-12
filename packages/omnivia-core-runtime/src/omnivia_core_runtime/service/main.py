@@ -44,6 +44,7 @@ from omnivia_core_runtime.service.application import (
     WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
     build_application_registry,
+    build_memory_application_dispatcher,
     local_owner_session,
 )
 from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
@@ -487,6 +488,13 @@ def main(
             # lane's evidence, and wiring a sink is a successor lane.
             record=None,
             service=started,
+        )
+        application = build_memory_application_dispatcher(
+            service=started,
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            fallback=application,
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

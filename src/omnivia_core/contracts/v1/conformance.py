@@ -124,6 +124,8 @@ from omnivia_core.contracts.v1.semantics_knowledge import (
     validate_knowledge_propose_result,
     validate_knowledge_search_input,
     validate_knowledge_search_result,
+    validate_memory_get_result,
+    validate_memory_list_result,
     validate_memory_search_input,
     validate_memory_search_result,
     validate_projection_freshness,
@@ -1928,6 +1930,20 @@ def _result_semantics_table() -> dict[str, Callable[[_ResultContext], None]]:
         # judged against the views a capability layer authorized, never against
         # the view string the request itself named.
         "memory.search": lambda c: validate_memory_search_result(
+            c.decoded_result,
+            c.decoded_input,
+            c.case.workspace_id,
+            c.canonical_resolution_time,
+            c.string_set("authorized_views"),
+        ),
+        "memory.get": lambda c: validate_memory_get_result(
+            c.decoded_result,
+            c.decoded_input,
+            c.case.workspace_id,
+            c.canonical_resolution_time,
+            c.string_set("authorized_views"),
+        ),
+        "memory.list": lambda c: validate_memory_list_result(
             c.decoded_result,
             c.decoded_input,
             c.case.workspace_id,
