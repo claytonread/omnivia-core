@@ -51,6 +51,8 @@ from omnivia_core_runtime.storage.installation_store import (
     NewInstallationAllocation,
     open_installation_store,
 )
+from omnivia_core_runtime.workspace.layout import WorkspaceLayout
+from omnivia_core_runtime.workspace.manifest_store import read_manifest
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
@@ -177,6 +179,32 @@ def installation_service(
         clock=clock,
         bootstrapper=bootstrapper,
     )
+
+
+def mutate_guarded_table_without_schema_drift(
+    database_path: Path,
+    *,
+    table: str,
+    statement: str,
+    parameters: tuple[object, ...] = (),
+) -> None:
+    """Test-only offline tampering that restores the exact trigger definitions."""
+    connection = sqlite3.connect(database_path)
+    try:
+        triggers = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name = ? ORDER BY name",
+            (table,),
+        ).fetchall()
+        for name, _sql in triggers:
+            connection.execute(f'DROP TRIGGER "{name!s}"')
+        connection.execute(statement, parameters)
+        for _name, sql in triggers:
+            assert isinstance(sql, str)
+            connection.execute(sql)
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def test_v06_5_s0_installation_identity_is_global_and_fenced(
@@ -692,6 +720,97 @@ def test_v06_5_s0_manifest_identity_must_match_allocated_target(
         store,
         input_=input_,
         idempotency_key="exact-target-verification",
+    )
+    try:
+        prepared = service.prepare_workspace_create(
+            context,
+            session=session,
+            binding=binding,
+            input_=input_,
+            equivalence=equivalence,
+        )
+        with pytest.raises(InstallationSeamFault):
+            service.execute_workspace_create(prepared)
+
+        durable = store.get_allocation(prepared.claim.allocation.allocation_id)
+        assert durable is not None
+        assert durable.state is AllocationState.FAILED_RECOVERABLE
+        assert store.list_workspace_ids() == ()
+        assert store.get_outcome(durable.claim_id) is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("absent_database", "foreign_identity", "schema_drift", "migration_ledger"),
+)
+def test_v06_5_s0_database_must_be_exact_before_inventory_settlement(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    installation_root = (tmp_path / "installation").resolve()
+    workspace_storage_root = (tmp_path / "workspace-storage").resolve()
+    store = open_installation_store(
+        installation_root,
+        owner_instance_id="installation-service",
+        clock_us=TickClock(),
+        installation_id_factory=lambda: f"inst-database-{corruption}",
+    )
+
+    def bootstrap_then_corrupt(**kwargs: Any) -> WorkspaceInitResult:
+        result = initialise_allocated_workspace(**kwargs)
+        layout = WorkspaceLayout(root=kwargs["workspace_root"])
+        assert read_manifest(layout).workspace_id == kwargs["target_workspace_id"]
+        if corruption == "absent_database":
+            layout.database_path.unlink()
+        elif corruption == "foreign_identity":
+            mutate_guarded_table_without_schema_drift(
+                layout.database_path,
+                table="omnivia_workspace_state",
+                statement=(
+                    "UPDATE omnivia_workspace_state SET workspace_id = ? "
+                    "WHERE singleton = 1"
+                ),
+                parameters=("ws-foreign",),
+            )
+        elif corruption == "schema_drift":
+            connection = sqlite3.connect(layout.database_path)
+            try:
+                connection.execute("CREATE TABLE foreign_schema (id TEXT)")
+                connection.commit()
+            finally:
+                connection.close()
+        else:
+            connection = sqlite3.connect(layout.database_path)
+            try:
+                latest = connection.execute(
+                    "SELECT MAX(version) FROM omnivia_schema_migrations"
+                ).fetchone()
+                assert latest is not None
+                latest_version = int(latest[0])
+            finally:
+                connection.close()
+            mutate_guarded_table_without_schema_drift(
+                layout.database_path,
+                table="omnivia_schema_migrations",
+                statement=("DELETE FROM omnivia_schema_migrations WHERE version = ?"),
+                parameters=(latest_version,),
+            )
+        return result
+
+    service = installation_service(
+        store,
+        installation_root=installation_root,
+        workspace_storage_root=workspace_storage_root,
+        clock=FakeClock(),
+        bootstrapper=bootstrap_then_corrupt,
+    )
+    input_ = WorkspaceCreateInput(display_name="Verified database")
+    context, session, binding, equivalence = workspace_create_authority(
+        store,
+        input_=input_,
+        idempotency_key=f"database-{corruption}",
     )
     try:
         prepared = service.prepare_workspace_create(

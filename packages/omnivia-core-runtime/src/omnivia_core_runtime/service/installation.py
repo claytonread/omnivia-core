@@ -9,6 +9,7 @@ target; it never selects or mints another.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from omnivia_core.contracts.v1 import (
 )
 from omnivia_core.contracts.v1.canonical_json import canonicalize, parse_json_document
 from omnivia_core_runtime.ownership.identity import Clock
+from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     AuthorizedApplicationContext,
@@ -55,10 +57,19 @@ from omnivia_core_runtime.service.versions import (
     workspace_contract_version,
 )
 from omnivia_core_runtime.service.workspace_init import (
+    WORKSPACE_FORMAT_VERSION,
     WorkspaceInitRefusal,
     WorkspaceInitResult,
     WorkspaceInitStatus,
     initialise_allocated_workspace,
+)
+from omnivia_core_runtime.storage.connection import (
+    OpenMode,
+    StorageError,
+    fingerprint_schema,
+    foreign_key_check,
+    integrity_check,
+    open_database,
 )
 from omnivia_core_runtime.storage.installation_store import (
     AllocationClaim,
@@ -70,6 +81,13 @@ from omnivia_core_runtime.storage.installation_store import (
     InstallationStore,
     InstallationStoreError,
     NewInstallationAllocation,
+)
+from omnivia_core_runtime.storage.migrations import (
+    BASELINE_PRISTINE,
+    applied_migrations,
+    canonical_schema_fingerprint,
+    load_migrations,
+    read_workspace_state,
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 from omnivia_core_runtime.workspace.manifest_store import (
@@ -350,51 +368,69 @@ class InstallationApplicationService:
             self._record_recoverable_failure(prepared, allocation, detail)
             raise InstallationSeamFault()
 
-        # Expiry is rechecked after filesystem work and immediately before the
-        # installation settlement transaction.  If it moved, the durable allocation
-        # remains preparing and a fresh grant can verify and settle the same target.
+        # Reacquire the same lifetime lock used by init and the service, then keep it
+        # through target verification and catalogue settlement.  A successful
+        # bootstrap result is only a claim; the exact durable target is the proof.
         self._require_grant(prepared)
+        target_lock = create_lock(
+            WorkspaceLayout(root=allocation.target_path).locks_path / "storage.lock",
+            LockRole.LIFETIME_STORAGE,
+            {"holder": "installation-settlement"},
+        )
         try:
-            result = self._workspace_result(allocation)
-        except InstallationSeamFault:
+            held = target_lock.acquire()
+        except OSError as error:
+            target_lock.release()
             self._record_recoverable_failure(
                 prepared, allocation, "result_verification_failed"
             )
-            raise
-        canonical = to_canonical_json(result)
-        outcome_digest = (
-            "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        )
-        # Result verification reads the filesystem and can take time.  Recheck the
-        # monotonic expiry after it, at the last service instruction before the
-        # atomic catalogue settlement.
-        self._require_grant(prepared)
-        try:
-            self._store.settle_allocation_success(
-                self.authority,
-                allocation_id=allocation.allocation_id,
-                workspace_label=prepared.input.display_name,
-                outcome_id=f"iout-{uuid.uuid4()}",
-                outcome_json=canonical,
-                outcome_digest=outcome_digest,
-                execution_id=f"iex-{uuid.uuid4()}",
-                grant_id=grant.grant_id,
-                required_role=grant.required_role,
-            )
-        except InstallationStoreError as error:
-            # A concurrent equivalent execution can settle after this execution's
-            # durable refresh but before its settlement transaction.  Serve only the
-            # exact stored terminal outcome and consume this execution's fresh grant.
-            settled = self._store.get_outcome(allocation.claim_id)
-            if settled is not None:
-                return self._replay(prepared, allocation, settled)
             raise InstallationSeamFault() from error
-        return WorkspaceCreateExecution(
-            result=result,
-            replayed=False,
-            allocation_id=allocation.allocation_id,
-            target_workspace_id=allocation.target_workspace_id,
-        )
+        if not held:
+            raise InstallationBootstrapInProgress()
+        try:
+            try:
+                result = self._workspace_result(
+                    allocation, expected_display_name=prepared.input.display_name
+                )
+            except InstallationSeamFault:
+                self._record_recoverable_failure(
+                    prepared, allocation, "result_verification_failed"
+                )
+                raise
+            canonical = to_canonical_json(result)
+            outcome_digest = (
+                "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            )
+            # Verification can take time.  Recheck monotonic expiry at the last
+            # service instruction before the atomic catalogue settlement.
+            self._require_grant(prepared)
+            try:
+                self._store.settle_allocation_success(
+                    self.authority,
+                    allocation_id=allocation.allocation_id,
+                    workspace_label=prepared.input.display_name,
+                    outcome_id=f"iout-{uuid.uuid4()}",
+                    outcome_json=canonical,
+                    outcome_digest=outcome_digest,
+                    execution_id=f"iex-{uuid.uuid4()}",
+                    grant_id=grant.grant_id,
+                    required_role=grant.required_role,
+                )
+            except InstallationStoreError as error:
+                # A concurrent equivalent execution can settle after this
+                # execution's durable refresh but before it acquired the target.
+                settled = self._store.get_outcome(allocation.claim_id)
+                if settled is not None:
+                    return self._replay(prepared, allocation, settled)
+                raise InstallationSeamFault() from error
+            return WorkspaceCreateExecution(
+                result=result,
+                replayed=False,
+                allocation_id=allocation.allocation_id,
+                target_workspace_id=allocation.target_workspace_id,
+            )
+        finally:
+            target_lock.release()
 
     def create_workspace(
         self,
@@ -619,12 +655,68 @@ class InstallationApplicationService:
             raise InstallationSeamFault() from error
 
     def _workspace_result(
-        self, allocation: InstallationAllocation
+        self,
+        allocation: InstallationAllocation,
+        *,
+        expected_display_name: str,
     ) -> Mapping[str, Any]:
         try:
-            manifest = read_manifest(WorkspaceLayout(root=allocation.target_path))
+            layout = WorkspaceLayout(root=allocation.target_path)
+            problems = layout.validate(require_database=True)
+            if problems:
+                raise ValueError("allocated workspace layout is not complete")
+            manifest = read_manifest(layout)
             if manifest.workspace_id != allocation.target_workspace_id:
                 raise ValueError("workspace manifest identity differs from allocation")
+            if manifest.name != expected_display_name:
+                raise ValueError("workspace manifest label differs from request")
+            if (
+                manifest.integrity is None
+                or not manifest.integrity_matches()
+                or manifest.compatibility.workspace_format_version
+                != WORKSPACE_FORMAT_VERSION
+            ):
+                raise ValueError("workspace manifest is not an exact current target")
+
+            connection = open_database(
+                layout.database_path,
+                OpenMode.EXCLUSIVE_MAINTENANCE,
+                enable_wal=False,
+            )
+            try:
+                state = read_workspace_state(connection)
+                migrations = load_migrations()
+                expected_ledger = {
+                    migration.version: migration.checksum for migration in migrations
+                }
+                user_version = connection.execute("PRAGMA user_version").fetchone()
+                started = connection.execute(
+                    "SELECT COUNT(*) FROM omnivia_migration_attempts "
+                    "WHERE outcome = 'started'"
+                ).fetchone()
+                if (
+                    state is None
+                    or state.workspace_id != allocation.target_workspace_id
+                    or state.workspace_format_version != WORKSPACE_FORMAT_VERSION
+                    or state.baseline_state != BASELINE_PRISTINE
+                    or applied_migrations(connection) != expected_ledger
+                    or user_version is None
+                    or not migrations
+                    or int(user_version[0]) != migrations[-1].version
+                    or started is None
+                    or int(started[0]) != 0
+                    or not fingerprint_schema(connection).matches(
+                        canonical_schema_fingerprint()
+                    )
+                    or integrity_check(connection)
+                    or foreign_key_check(connection)
+                ):
+                    raise ValueError(
+                        "workspace database is not the exact settled target"
+                    )
+            finally:
+                connection.close()
+
             version = workspace_contract_version(
                 manifest.compatibility.workspace_format_version
             )
@@ -649,6 +741,8 @@ class InstallationApplicationService:
             ValueError,
             ContractDecodeError,
             ManifestStoreError,
+            sqlite3.Error,
+            StorageError,
         ) as error:
             raise InstallationSeamFault() from error
 
