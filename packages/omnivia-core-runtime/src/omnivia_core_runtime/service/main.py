@@ -1,15 +1,10 @@
 """`omnivia-core-service` entry point (T-0629G).
 
-Minimal by design. This owns and advertises one writable workspace and nothing
-else. Health, readiness and discovery are deliberately distinct from product
-operations, per ADR-037, and stay on the probe dispatcher unchanged.
-
-One product operation is now registered, and it is registered on a *second* path:
-`workspace.inspect`, the first authorised application operation, is decided by
-`authorize_application_request` through `service.application`. It is not in
-`SERVICE_OPERATIONS`, not in `build_service_registry()` and not in the probe grant,
-and it cannot be: the owner's binding clause forbids routing it through the probe
-`Dispatcher`, and the two operation sets are disjoint by construction.
+This process owns and advertises one writable workspace and participates in the
+single fenced catalogue authority for its installation. The production
+application surface is the exact frozen 20-operation catalogue, composed from
+five separate authority families. Health, readiness and discovery remain
+distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, three kinds of process.** `--managed-start` (R004-08) does
 not serve: it arbitrates through the bootstrap mutex, starts an independent service
@@ -35,18 +30,14 @@ from typing import Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
 from omnivia_core_runtime.service.application import (
-    CONTEXT_PACK_BUILD_OPERATION,
-    EVIDENCE_SEARCH_OPERATION,
-    GRAPH_TRAVERSE_OPERATION,
-    KNOWLEDGE_SEARCH_OPERATION,
     LOCAL_TRANSPORT_ADAPTER,
-    MEMORY_SEARCH_OPERATION,
-    WORKSPACE_INSPECT_OPERATION,
     ApplicationDispatcher,
+    ProductionApplicationSurface,
     build_application_registry,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    compose_production_application_surface,
     local_owner_session,
 )
 from omnivia_core_runtime.service.authorization import (
@@ -61,6 +52,9 @@ from omnivia_core_runtime.service.http_transport import (
     HttpListener,
     HttpTransportError,
     parse_http_endpoint,
+)
+from omnivia_core_runtime.service.installation_host import (
+    InstallationAuthorityCoordinator,
 )
 from omnivia_core_runtime.service.managed_start import (
     ManagedStartStatus,
@@ -109,6 +103,12 @@ from omnivia_core_runtime.storage.projections.fts import (
 #: does not introduce a second.
 LOCAL_PRINCIPAL = "local-user"
 
+#: Installation-owned workspace allocation root. The managed-local convention
+#: supplies ``<home>/installation-state``, so new server-minted workspaces land
+#: under ``<home>/workspaces`` and never inside the portable workspace or the
+#: machine-local catalogue.
+WORKSPACE_STORAGE_DIRECTORY = "workspaces"
+
 
 class _ProbeFactsSource(Protocol):
     def probe_facts(self) -> ServiceFacts: ...
@@ -141,6 +141,75 @@ def _router_for(
             clock=time.monotonic_ns,
         ),
         dispatch=dispatcher.dispatch,
+    )
+
+
+def _build_production_application_surface(
+    *,
+    started: ServiceRunner,
+    probe: Dispatcher,
+    installation: ApplicationDispatcher,
+) -> ProductionApplicationSurface:
+    """Compose the exact 20-operation production route for one live service.
+
+    The global installation catalogue supplies the installation id used by all
+    five authority families. The workspace service instance keeps its own
+    service identity and fencing generation; those facts do not become
+    installation authority merely because both authorities live in one process.
+
+    This helper is the production wiring seam and is exercised directly by the
+    V06-5 integrated-registry suite. A handler that is absent, duplicated or
+    outside the frozen catalogue prevents construction before a transport binds.
+    """
+    if started.workspace_id is None:
+        raise ValueError("a production application surface needs a workspace")
+    installation_id = next(iter(installation.session.installations))
+    registry = build_application_registry()
+    reads = ApplicationDispatcher(
+        registry=registry,
+        session=local_owner_session(
+            principal_id=LOCAL_PRINCIPAL,
+            installation_id=installation_id,
+            workspace_id=started.workspace_id,
+            operations=registry.operations,
+        ),
+        binding=ServiceBinding(
+            installation_id=installation_id, workspace_id=started.workspace_id
+        ),
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=LOCAL_TRANSPORT_ADAPTER,
+        probe=probe,
+        record=None,
+        service=started,
+    )
+    memory = build_memory_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=reads,
+    )
+    jobs = build_job_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=memory,
+    )
+    governance = build_governance_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=jobs,
+    )
+    return compose_production_application_surface(
+        installation=installation,
+        reads=reads,
+        memory=memory,
+        jobs=jobs,
+        governance=governance,
+        probe=probe,
     )
 
 
@@ -445,80 +514,30 @@ def main(
             ),
             started,
         )
-        # The application session, constructed here and only here: once per served
-        # endpoint, at startup, from facts this process already holds -- the configured
-        # principal, the installation identity persisted under the installation-local
-        # state root, and the one workspace this endpoint was launched to own. No field
-        # of it comes from a request, and no handler builds one.
-        installation_id = started.identity.installation_id
-        registry = build_application_registry()
-        application = ApplicationDispatcher(
-            registry=registry,
-            session=local_owner_session(
-                principal_id=LOCAL_PRINCIPAL,
-                installation_id=installation_id,
-                workspace_id=started.workspace_id,
-                # The production grant, as a literal at the wiring site. This is the
-                # one place the local owner's authority is decided, and it is here
-                # rather than inside `local_owner_session` so that widening it is a
-                # visible edit to the service's own startup rather than a change of
-                # default one module away. Scopes, capabilities and purposes all follow
-                # from these names -- none of them is written out anywhere.
-                operations=frozenset(
-                    {
-                        WORKSPACE_INSPECT_OPERATION,
-                        EVIDENCE_SEARCH_OPERATION,
-                        KNOWLEDGE_SEARCH_OPERATION,
-                        MEMORY_SEARCH_OPERATION,
-                        GRAPH_TRAVERSE_OPERATION,
-                        CONTEXT_PACK_BUILD_OPERATION,
-                    }
-                ),
-            ),
-            # `workspace_id` is set deliberately. This endpoint fronts exactly one
-            # workspace, and setting it arms the seam's second, independent workspace
-            # check: reaching this endpoint and naming a different workspace is refused
-            # even if the session's grant ever widened.
-            binding=ServiceBinding(
-                installation_id=installation_id, workspace_id=started.workspace_id
-            ),
-            # The server's own snapshot of what this build supports, derived from the
-            # handlers actually registered above. Never the per-response
-            # `CapabilitySet`, which is built from the caller's own claimed version.
-            supported_capabilities=server_capability_snapshot(registry),
-            # Stated rather than inferred: a dispatch callable is handed a request and
-            # nothing else, so it cannot see which adapter carried it. This names the
-            # adapter this vertical is authorised behind.
-            transport=LOCAL_TRANSPORT_ADAPTER,
+        # One installation authority across every concurrently served workspace.
+        # The first process owns its catalogue and private endpoint; the others
+        # proxy these two operations and may take over only after the lifetime lock
+        # is released. Workspace service identities remain workspace facts.
+        installation_authority = InstallationAuthorityCoordinator(
+            installation_root=started.settings.installation_root,
+            workspace_storage_root=(
+                started.settings.installation_root.parent / WORKSPACE_STORAGE_DIRECTORY
+            ).resolve(),
+            core_version=started.settings.core_version,
+            clock=started.clock,
+            owner_instance_id=started.identity.service_instance_id,
+            principal_id=LOCAL_PRINCIPAL,
             probe=dispatcher,
-            # No caller-recording sink. This repository configures no logging at all,
-            # and standing one up under this packet would be an observability substrate
-            # with no design behind it; `None` states that as a choice rather than
-            # leaving an argument out. The record itself is built and proved by the
-            # lane's evidence, and wiring a sink is a successor lane.
-            record=None,
-            service=started,
+            facts=started,
         )
-        application = build_memory_application_dispatcher(
-            service=started,
-            principal_id=LOCAL_PRINCIPAL,
-            installation_id=installation_id,
-            workspace_id=started.workspace_id,
-            fallback=application,
+        installation = installation_authority.start()
+        started.lifecycle.resources.push(
+            "installation_authority", installation_authority.close
         )
-        application = build_job_application_dispatcher(
-            service=started,
-            principal_id=LOCAL_PRINCIPAL,
-            installation_id=installation_id,
-            workspace_id=started.workspace_id,
-            fallback=application,
-        )
-        application = build_governance_application_dispatcher(
-            service=started,
-            principal_id=LOCAL_PRINCIPAL,
-            installation_id=installation_id,
-            workspace_id=started.workspace_id,
-            fallback=application,
+        application = _build_production_application_surface(
+            started=started,
+            probe=dispatcher,
+            installation=installation,
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

@@ -1950,6 +1950,7 @@ def test_v06_5_c1_graph_traverse_primary_and_page_2_reach_every_real_adapter(
                 adapter,
                 dispatcher,
                 request_for(payload),
+                case_id="graph.traverse/primary-success",
             )
         ).result
     )
@@ -1962,6 +1963,7 @@ def test_v06_5_c1_graph_traverse_primary_and_page_2_reach_every_real_adapter(
                 adapter,
                 dispatcher,
                 request_for({**payload, "page": {"continuation_token": token}}),
+                case_id="graph.traverse/page-2",
             )
         ).result
     )

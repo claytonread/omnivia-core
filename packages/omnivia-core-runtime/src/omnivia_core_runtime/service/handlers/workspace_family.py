@@ -9,7 +9,7 @@ mutation grant directly.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -17,6 +17,10 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     ERROR_CODE_INVALID_REQUEST,
     ContractDecodeError,
+    ErrorResponseEnvelope,
+    RequestEnvelope,
+    ResponseEnvelope,
+    SuccessResponseEnvelope,
     WorkspaceCreateInput,
     WorkspaceListInput,
 )
@@ -29,12 +33,17 @@ from omnivia_core_runtime.service.installation import (
     InstallationApplicationService,
     InstallationOperationContext,
 )
-from omnivia_core_runtime.service.operations import OperationError
+from omnivia_core_runtime.service.operations import (
+    AuditedOperationResult,
+    OperationError,
+)
 
 _MESSAGE_INVALID_CREATE: Final = (
     "the workspace create input is not valid for this operation"
 )
-_MESSAGE_INVALID_LIST: Final = "the workspace list input is not valid for this operation"
+_MESSAGE_INVALID_LIST: Final = (
+    "the workspace list input is not valid for this operation"
+)
 _MESSAGE_NO_INSTALLATION_CONTEXT: Final = (
     "this build cannot serve an installation operation without authorized context"
 )
@@ -103,4 +112,59 @@ class InstallationWorkspaceHandlers:
         return authorization
 
 
-__all__ = ["InstallationWorkspaceHandlers"]
+InstallationForwarder = Callable[[RequestEnvelope], ResponseEnvelope]
+
+
+@dataclass(frozen=True)
+class RemoteInstallationWorkspaceHandlers:
+    """Production proxy handlers for the single installation authority owner.
+
+    The outer :class:`ApplicationDispatcher` has already authorized the request
+    under the transport-resolved session before either method runs. The exact
+    request is then sent over the installation-local authority channel, where the
+    owning service applies its own installation session and durable fencing. No
+    caller-supplied authority is introduced by the hop.
+    """
+
+    forward: InstallationForwarder
+
+    def workspace_create(
+        self, context: InstallationOperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        return self._forward(context.request)
+
+    def workspace_list(
+        self, context: InstallationOperationContext
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        return self._forward(context.request)
+
+    def _forward(
+        self, request: RequestEnvelope
+    ) -> Mapping[str, Any] | AuditedOperationResult:
+        response = self.forward(request)
+        if isinstance(response, ErrorResponseEnvelope):
+            raise OperationError(
+                response.error.code,
+                response.error.message,
+                retry_class=response.error.retry_class,
+                audit_reference=response.metadata.audit_reference,
+                job_reference=response.metadata.job,
+            )
+        if not isinstance(response, SuccessResponseEnvelope):  # pragma: no cover
+            raise OperationError(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                _MESSAGE_NO_INSTALLATION_CONTEXT,
+            )
+        return AuditedOperationResult(
+            result=response.result,
+            audit_reference=response.metadata.audit_reference,
+            canonical_resolution_time=response.metadata.canonical_resolution_time,
+            job_reference=response.metadata.job,
+        )
+
+
+__all__ = [
+    "InstallationForwarder",
+    "InstallationWorkspaceHandlers",
+    "RemoteInstallationWorkspaceHandlers",
+]

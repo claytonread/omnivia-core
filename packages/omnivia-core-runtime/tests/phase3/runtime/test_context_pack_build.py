@@ -2044,6 +2044,7 @@ def test_v06_5_c1_context_pack_primary_reaches_every_real_adapter(
         request_for(
             build_input(), request_id=f"req-context-pack-c1-{adapter}-primary"
         ),
+        case_id="context_pack.build/primary-success",
     )
 
     result = pack(response)
@@ -2064,6 +2065,7 @@ def test_v06_5_c1_context_pack_error_family_reaches_every_real_adapter(
                 build_input(),
                 request_id=f"req-context-pack-c1-{adapter}-projection",
             ),
+            case_id="error/projection_unavailable",
         )
     )
     assert unavailable_response.error.code == ERROR_CODE_PROJECTION_UNAVAILABLE
@@ -2079,6 +2081,7 @@ def test_v06_5_c1_context_pack_error_family_reaches_every_real_adapter(
                 build_input(token_budget=1),
                 request_id=f"req-context-pack-c1-{adapter}-token",
             ),
+            case_id="error/token_limit_exceeded",
         )
     )
     assert token_response.error.code == ERROR_CODE_TOKEN_LIMIT_EXCEEDED
@@ -2093,6 +2096,7 @@ def test_v06_5_c1_context_pack_error_family_reaches_every_real_adapter(
             request_for(
                 build_input(), request_id=f"req-context-pack-c1-{adapter}-stale"
             ),
+            case_id="error/stale_projection",
         )
     )
     assert stale_response.error.code == ERROR_CODE_STALE_PROJECTION
@@ -2111,6 +2115,7 @@ def test_v06_5_c1_context_pack_error_family_reaches_every_real_adapter(
             request_for(
                 build_input(), request_id=f"req-context-pack-c1-{adapter}-size"
             ),
+            case_id="error/size_limit_exceeded",
         )
     )
     assert size_response.error.code == ERROR_CODE_SIZE_LIMIT_EXCEEDED

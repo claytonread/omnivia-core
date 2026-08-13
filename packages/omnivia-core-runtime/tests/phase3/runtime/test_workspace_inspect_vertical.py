@@ -205,7 +205,12 @@ def test_v06_5_c1_workspace_inspect_reaches_every_real_adapter(
     served: ServedWorkspace, adapter: str
 ) -> None:
     """The frozen workspace-inspect success branch crosses every shipped adapter."""
-    response = s2._transport_call(adapter, production_path(served), request_for())
+    response = s2._transport_call(
+        adapter,
+        production_path(served),
+        request_for(),
+        case_id="workspace.inspect/primary-success",
+    )
 
     result = WorkspaceInspectResult.from_wire(answered(response).result)
     assert result.workspace.workspace_id == WORKSPACE_ID

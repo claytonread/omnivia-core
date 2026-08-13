@@ -620,6 +620,7 @@ def test_v06_5_c1_evidence_search_primary_and_page_2_reach_every_real_adapter(
                     request_id=f"req-evidence-c1-{adapter}-1",
                     input={"query": "doc", "limit": 1},
                 ),
+                case_id="evidence.search/primary-success",
             )
         ).result
     )
@@ -639,6 +640,7 @@ def test_v06_5_c1_evidence_search_primary_and_page_2_reach_every_real_adapter(
                         "page": {"continuation_token": token},
                     },
                 ),
+                case_id="evidence.search/page-2",
             )
         ).result
     )

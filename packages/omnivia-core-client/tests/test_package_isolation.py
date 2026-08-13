@@ -52,6 +52,7 @@ ALLOWED_IMPORTS = frozenset(
         "stat",
         "subprocess",
         "sys",
+        "tempfile",
         "threading",
         "time",
         "typing",
@@ -255,8 +256,15 @@ def test_the_high_level_client_only_composes_what_this_package_already_has() -> 
 
 
 def test_only_managed_local_may_locate_or_start_a_process() -> None:
-    """Process ownership is one named client module, never an adapter leak."""
-    for imported in ("hashlib", "shutil", "subprocess", "sys"):
+    """Process ownership is one named client module, never an adapter leak.
+
+    ``tempfile`` is pinned here with the rest rather than admitted package-wide:
+    it is on the allowlist only because the launcher's stdout is captured to a
+    file this process reads a bounded prefix of, and a temporary file appearing
+    in ``discovery.py`` or ``framing.py`` would be a protocol foundation that had
+    started writing to disk.
+    """
+    for imported in ("hashlib", "shutil", "subprocess", "sys", "tempfile"):
         importers = sorted(
             path.name for path in MODULES if imported in _imported_roots(path)
         )

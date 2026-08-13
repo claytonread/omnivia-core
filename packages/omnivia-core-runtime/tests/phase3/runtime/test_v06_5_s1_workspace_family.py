@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,12 +40,19 @@ from omnivia_core_runtime.service.installation import (
     WORKSPACE_LIST_PURPOSE,
     InstallationApplicationService,
 )
+from omnivia_core_runtime.service.installation_host import (
+    InstallationAuthorityCoordinator,
+)
 from omnivia_core_runtime.service.mutation import WORKSPACE_ADMINISTRATION_PURPOSE
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.ovc1 import decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
-from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_for_path
+from omnivia_core_runtime.service.transport import (
+    LocalSocketServer,
+    LocalSocketTransport,
+    endpoint_for_path,
+)
 from omnivia_core_runtime.service.workspace_init import (
     WorkspaceInitRefusal,
     WorkspaceInitResult,
@@ -57,6 +65,7 @@ from omnivia_core_runtime.storage.installation_store import (
     InstallationStore,
     open_installation_store,
 )
+from v06_5_c1_evidence import semantic_execution
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
@@ -192,7 +201,7 @@ def _router(dispatcher: ApplicationDispatcher) -> DocumentRouter:
     )
 
 
-def _transport_call(
+def _unrecorded_transport_call(
     adapter: str,
     dispatcher: ApplicationDispatcher,
     request: RequestEnvelope,
@@ -254,6 +263,25 @@ def _transport_call(
         return decode_response(json.loads(response_body))
     finally:
         server.stop()
+
+
+def _transport_call(
+    adapter: str,
+    dispatcher: ApplicationDispatcher,
+    request: RequestEnvelope,
+    root: Path,
+    *,
+    case_id: str | None = None,
+) -> SuccessResponseEnvelope | ErrorResponseEnvelope:
+    response = semantic_execution(
+        case_id=case_id,
+        adapter=adapter,
+        route=dispatcher,
+        request=request,
+        invoke=lambda: _unrecorded_transport_call(adapter, dispatcher, request, root),
+    )
+    assert isinstance(response, (SuccessResponseEnvelope, ErrorResponseEnvelope))
+    return response
 
 
 def test_v06_5_s1_workspace_create_primary_success(tmp_path: Path) -> None:
@@ -326,7 +354,9 @@ def test_v06_5_s1_workspace_create_bootstrap_in_progress(tmp_path: Path) -> None
 def test_v06_5_s1_workspace_list_primary_and_page_2(tmp_path: Path) -> None:
     dispatcher, store = _path(tmp_path)
     try:
-        created = [_created(dispatcher, f"Workspace {i}", f"s1-list-{i}") for i in range(3)]
+        created = [
+            _created(dispatcher, f"Workspace {i}", f"s1-list-{i}") for i in range(3)
+        ]
         first_response = dispatcher.dispatch(
             _request(
                 WORKSPACE_LIST_OPERATION,
@@ -353,9 +383,9 @@ def test_v06_5_s1_workspace_list_primary_and_page_2(tmp_path: Path) -> None:
         second = WorkspaceListResult.from_wire(second_response.result)
         assert len(second.workspaces) == 1
         assert second.page.continuation_token is None
-        assert {item.workspace_id for item in (*first.workspaces, *second.workspaces)} == {
-            item.workspace.workspace_id for item in created
-        }
+        assert {
+            item.workspace_id for item in (*first.workspaces, *second.workspaces)
+        } == {item.workspace.workspace_id for item in created}
     finally:
         store.close()
 
@@ -465,7 +495,7 @@ def test_v06_5_s1_legacy_workspace_is_not_implicitly_adopted(tmp_path: Path) -> 
 
 @pytest.mark.skipif(os.name == "nt", reason="uses real Unix service sockets")
 def test_v06_5_s1_two_legacy_workspace_services_still_coexist() -> None:
-    """The S1 catalogue lifecycle is not duplicated into workspace processes."""
+    """Two workspace services share one fenced S1 catalogue authority."""
     root = Path(tempfile.mkdtemp(prefix="ovs1-main-", dir="/tmp"))
     processes: list[subprocess.Popen[str]] = []
     try:
@@ -516,9 +546,43 @@ def test_v06_5_s1_two_legacy_workspace_services_still_coexist() -> None:
         assert diagnostics == []
         assert all(path.exists() for path in sockets)
         assert all(process.poll() is None for process in processes)
-        assert not (
-            installation_root / "catalogue" / "installation.sqlite"
-        ).exists()
+
+        created_response = LocalSocketTransport(path=sockets[0]).call(
+            _request(
+                WORKSPACE_CREATE_OPERATION,
+                {"display_name": "Shared authority"},
+                request_id="req-s1-shared-create",
+                idempotency_key="s1-shared-create",
+            )
+        )
+        assert isinstance(created_response, SuccessResponseEnvelope), created_response
+        created = WorkspaceCreateResult.from_wire(created_response.result)
+
+        listed_response = LocalSocketTransport(path=sockets[1]).call(
+            _request(
+                WORKSPACE_LIST_OPERATION,
+                {"limit": 100},
+                request_id="req-s1-shared-list",
+            )
+        )
+        assert isinstance(listed_response, SuccessResponseEnvelope), listed_response
+        listed = WorkspaceListResult.from_wire(listed_response.result)
+        assert tuple(item.workspace_id for item in listed.workspaces) == (
+            created.workspace.workspace_id,
+        )
+        assert (
+            listed_response.metadata.authority.principal_id
+            == created_response.metadata.authority.principal_id
+            == "local-user"
+        )
+        assert (
+            listed_response.metadata.authority.roles
+            == created_response.metadata.authority.roles
+        )
+        assert (installation_root / "catalogue" / "installation.sqlite").is_file()
+        assert (
+            installation_root / "runtime" / "installation-authority" / "authority.json"
+        ).is_file()
     finally:
         for process in processes:
             if process.poll() is None:
@@ -529,6 +593,92 @@ def test_v06_5_s1_two_legacy_workspace_services_still_coexist() -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate(timeout=10)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_v06_5_s1_proxy_takes_over_after_installation_owner_exits() -> None:
+    """The surviving proxy advances fencing before serving another S1 call."""
+    root = Path(tempfile.mkdtemp(prefix="ovs1-failover-", dir="/tmp"))
+    installation_root = (root / "installation").resolve()
+    probe = Dispatcher.for_service_operations(
+        Grant(
+            principal=PRINCIPAL,
+            workspaces=frozenset(),
+            operations=frozenset(SERVICE_OPERATIONS),
+        )
+    )
+    facts = SimpleNamespace(
+        probe_facts=lambda: ServiceFacts(
+            observed_at="2026-08-12T00:00:00Z",
+            health_status="pass",
+            readiness_status="pass",
+            discovery_status="pass",
+        )
+    )
+    shared = {
+        "installation_root": installation_root,
+        "workspace_storage_root": (root / "workspaces").resolve(),
+        "core_version": "0.1.0",
+        "clock": FakeClock(),
+        "principal_id": PRINCIPAL,
+        "probe": probe,
+        "facts": facts,
+    }
+    first = InstallationAuthorityCoordinator(
+        owner_instance_id="installation-host-a", **shared
+    )
+    second = InstallationAuthorityCoordinator(
+        owner_instance_id="installation-host-b", **shared
+    )
+    first_closed = False
+    second_closed = False
+    try:
+        first_route = first.start()
+        second_route = second.start()
+        created_response = first_route.dispatch(
+            _request(
+                WORKSPACE_CREATE_OPERATION,
+                {"display_name": "Failover"},
+                request_id="req-s1-failover-create",
+                idempotency_key="s1-failover-create",
+            )
+        )
+        assert isinstance(created_response, SuccessResponseEnvelope), created_response
+        created = WorkspaceCreateResult.from_wire(created_response.result)
+
+        first.close()
+        first_closed = True
+        listed_response = second_route.dispatch(
+            _request(
+                WORKSPACE_LIST_OPERATION,
+                {"limit": 100},
+                request_id="req-s1-failover-list",
+            )
+        )
+        assert isinstance(listed_response, SuccessResponseEnvelope), listed_response
+        listed = WorkspaceListResult.from_wire(listed_response.result)
+        assert tuple(item.workspace_id for item in listed.workspaces) == (
+            created.workspace.workspace_id,
+        )
+
+        second.close()
+        second_closed = True
+        connection = sqlite3.connect(
+            installation_root / "catalogue" / "installation.sqlite"
+        )
+        try:
+            authority = connection.execute(
+                "SELECT owner_instance_id, fencing_generation "
+                "FROM omnivia_installation_state WHERE singleton = 1"
+            ).fetchone()
+            assert authority == ("installation-host-b", 2)
+        finally:
+            connection.close()
+    finally:
+        if not first_closed:
+            first.close()
+        if not second_closed:
+            second.close()
         shutil.rmtree(root, ignore_errors=True)
 
 
@@ -556,7 +706,11 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                 idempotency_key=f"idem-{adapter}-workspace-create",
             )
             primary_response = _transport_call(
-                adapter, dispatcher, primary_request, root
+                adapter,
+                dispatcher,
+                primary_request,
+                root,
+                case_id="workspace.create/primary-success",
             )
             assert isinstance(primary_response, SuccessResponseEnvelope)
             primary = WorkspaceCreateResult.from_wire(primary_response.result)
@@ -574,6 +728,7 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                     ),
                 ),
                 root,
+                case_id="workspace.create/honest-replay",
             )
             assert isinstance(replay_response, SuccessResponseEnvelope)
             assert WorkspaceCreateResult.from_wire(replay_response.result) == primary
@@ -591,6 +746,7 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                     input={"display_name": "Alpha (second request)"},
                 ),
                 root,
+                case_id="workspace.create/idempotency-conflict",
             )
             assert isinstance(conflict_response, ErrorResponseEnvelope)
             assert conflict_response.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
@@ -619,6 +775,7 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                     request_id=f"req-{adapter}-list-first",
                 ),
                 root,
+                case_id="workspace.list/primary-success",
             )
             assert isinstance(first_page_response, SuccessResponseEnvelope)
             first_page = WorkspaceListResult.from_wire(first_page_response.result)
@@ -640,6 +797,7 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                     request_id=f"req-{adapter}-list-second",
                 ),
                 root,
+                case_id="workspace.list/page-2",
             )
             assert isinstance(second_page_response, SuccessResponseEnvelope)
             second_page = WorkspaceListResult.from_wire(second_page_response.result)
@@ -669,6 +827,7 @@ def test_v06_5_s1_workspace_family_harness_executes_exact_18_adapter_cases(
                     idempotency_key=f"idem-{adapter}-busy",
                 ),
                 busy_root,
+                case_id="error/bootstrap_in_progress",
             )
             assert isinstance(busy_response, ErrorResponseEnvelope)
             assert busy_response.error.code == ERROR_CODE_BOOTSTRAP_IN_PROGRESS

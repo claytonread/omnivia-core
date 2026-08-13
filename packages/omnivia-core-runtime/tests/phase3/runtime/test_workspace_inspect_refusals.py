@@ -189,9 +189,7 @@ def dispatcher(
         registry=held,
         session=production_session() if session is _DEFAULT else session,
         binding=(
-            ServiceBinding(
-                installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID
-            )
+            ServiceBinding(installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID)
             if binding is _DEFAULT
             else binding
         ),
@@ -286,7 +284,9 @@ def test_1_an_ungranted_workspace_is_denied_without_disclosing_workspace_metadat
     Falsifier: widen the session's workspace grant and the same request succeeds, so
     the denial is the grant's doing rather than an accident of the request.
     """
-    response = refusal(dispatcher().dispatch(request_for(workspace_id=OTHER_WORKSPACE_ID)))
+    response = refusal(
+        dispatcher().dispatch(request_for(workspace_id=OTHER_WORKSPACE_ID))
+    )
 
     assert response.error.code == ERROR_CODE_WORKSPACE_NOT_GRANTED
     # The frozen constant itself, not a formatted string that happens to look like it.
@@ -539,9 +539,7 @@ def test_5a_the_granted_operation_set_holds_exactly_the_named_read_set() -> None
     # entry declares, and `context_pack.build` brings none at all because its own entry
     # requires `memory:read` too. Any other scope appearing here -- or `graph:read` failing
     # to -- would mean the constructor had started transcribing rather than deriving.
-    assert session.scopes == frozenset(
-        {"workspace:read", "memory:read", "graph:read"}
-    )
+    assert session.scopes == frozenset({"workspace:read", "memory:read", "graph:read"})
     assert session.capabilities == (
         CapabilityRef(id="context_pack.build", version="1.0"),
         CapabilityRef(id="evidence.read", version="1.0"),
@@ -562,10 +560,10 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
     constant both import, because a shared constant would make them agree by definition
     and prove nothing about what `serve` passes.
     """
-    serve = _main_function("serve")
+    wiring = _main_function("_build_production_application_surface")
     call = next(
         node
-        for node in ast.walk(serve)
+        for node in ast.walk(wiring)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "local_owner_session"
@@ -574,25 +572,11 @@ def test_the_production_grant_is_the_grant_main_actually_wires() -> None:
         keyword.value for keyword in call.keywords if keyword.arg == "operations"
     )
 
-    # `frozenset({A, B, C, D, E, F})` -- the names, read out of the call `serve` makes.
-    assert isinstance(granted, ast.Call)
-    assert isinstance(granted.func, ast.Name)
-    assert granted.func.id == "frozenset"
-    assert isinstance(granted.args[0], ast.Set)
-    wired = {
-        element.id
-        for element in granted.args[0].elts
-        if isinstance(element, ast.Name)
-    }
-
-    assert wired == {
-        "WORKSPACE_INSPECT_OPERATION",
-        "EVIDENCE_SEARCH_OPERATION",
-        "KNOWLEDGE_SEARCH_OPERATION",
-        "MEMORY_SEARCH_OPERATION",
-        "GRAPH_TRAVERSE_OPERATION",
-        "CONTEXT_PACK_BUILD_OPERATION",
-    }
+    # The production read family is the exact registry the service constructs,
+    # not a copied literal that can drift away from the registered handlers.
+    assert isinstance(granted, ast.Attribute)
+    assert isinstance(granted.value, ast.Name)
+    assert (granted.value.id, granted.attr) == ("registry", "operations")
     assert PRODUCTION_OPERATIONS == frozenset(
         {
             WORKSPACE_INSPECT_OPERATION,
@@ -621,24 +605,25 @@ def test_the_projection_wiring_added_no_authority_to_the_session() -> None:
     That is the rebuild verb packet §20.7 refuses, and it would arrive here as a seventh
     name in this set.
     """
-    serve = _main_function("serve")
+    wiring = _main_function("_build_production_application_surface")
     session_call = next(
         node
-        for node in ast.walk(serve)
+        for node in ast.walk(wiring)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "local_owner_session"
     )
     granted = next(
-        keyword.value for keyword in session_call.keywords if keyword.arg == "operations"
+        keyword.value
+        for keyword in session_call.keywords
+        if keyword.arg == "operations"
     )
-    assert isinstance(granted, ast.Call)
-    assert isinstance(granted.args[0], ast.Set)
-    # Six names after Lane D's additive grant edit, and every one of them is an
-    # operation with a registered handler. The count is what this test watches: a
-    # rebuild verb added here would arrive as a seventh.
-    assert len(granted.args[0].elts) == 6
+    assert isinstance(granted, ast.Attribute)
+    assert isinstance(granted.value, ast.Name)
+    assert (granted.value.id, granted.attr) == ("registry", "operations")
+    assert len(build_application_registry().operations) == 6
 
+    serve = _main_function("serve")
     build_call = next(
         node
         for node in ast.walk(serve)
@@ -879,20 +864,27 @@ def test_7d_the_wiring_hands_the_router_the_application_path() -> None:
     a lock and a storage backend to establish a wiring fact.
     """
     serve = _main_function("serve")
-    called = {
+    wiring = _main_function("_build_production_application_surface")
+    serve_calls = {
         node.func.id
         for node in ast.walk(serve)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-
+    wiring_calls = {
+        node.func.id
+        for node in ast.walk(wiring)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_build_production_application_surface" in serve_calls
     assert {
         "ApplicationDispatcher",
         "build_application_registry",
         "local_owner_session",
         "server_capability_snapshot",
         "ServiceBinding",
-        "_router_for",
-    } <= called
+        "compose_production_application_surface",
+    } <= wiring_calls
+    assert "_router_for" in serve_calls
 
     router_call = next(
         node
@@ -911,7 +903,7 @@ def test_7d_the_wiring_hands_the_router_the_application_path() -> None:
     # other test in this file would stay green.
     binding_call = next(
         node
-        for node in ast.walk(serve)
+        for node in ast.walk(wiring)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "ServiceBinding"
@@ -953,9 +945,7 @@ def test_8a_the_handler_opens_no_authoritative_storage() -> None:
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
 
     imported = {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
+        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     } | {
         alias.name
         for node in ast.walk(tree)

@@ -576,7 +576,12 @@ def test_v06_5_s4_primary_replay_conflict_across_real_adapters(
         tag=tag,
         idempotency_key=f"idem-s4-{tag}",
     )
-    primary = s2._transport_call(adapter, governance, request)
+    primary = s2._transport_call(
+        adapter,
+        governance,
+        request,
+        case_id=f"{operation}/primary-success",
+    )
     assert isinstance(primary, SuccessResponseEnvelope), primary
     replay = s2._transport_call(
         adapter,
@@ -587,6 +592,7 @@ def test_v06_5_s4_primary_replay_conflict_across_real_adapters(
                 request.metadata, request_id=f"req-s4-{tag}-replay"
             ),
         ),
+        case_id=f"{operation}/honest-replay",
     )
     assert isinstance(replay, SuccessResponseEnvelope), replay
     assert replay.result == primary.result
@@ -602,6 +608,7 @@ def test_v06_5_s4_primary_replay_conflict_across_real_adapters(
             metadata=replace(request.metadata, request_id=f"req-s4-{tag}-conflict"),
             input=changed,
         ),
+        case_id=f"{operation}/idempotency-conflict",
     )
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
@@ -634,6 +641,7 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
             version="v-invalid",
             tag=f"{tag}-invalid",
         ),
+        case_id="error/invalid_request",
     )
     _assert_application_error(invalid, ERROR_CODE_INVALID_REQUEST)
 
@@ -649,6 +657,7 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
             version="v-missing",
             tag=f"{tag}-not-found",
         ),
+        case_id="error/not_found",
     )
     _assert_application_error(not_found, ERROR_CODE_NOT_FOUND)
 
@@ -666,6 +675,7 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
             version=created_identity["version"],
             tag=f"{tag}-conflict",
         ),
+        case_id="error/conflict",
     )
     _assert_application_error(conflict, ERROR_CODE_CONFLICT)
 
@@ -687,6 +697,7 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
             version="v-stale",
             tag=f"{tag}-precondition-approve",
         ),
+        case_id="error/mutation_precondition_failed",
     )
     _assert_application_error(precondition, ERROR_CODE_MUTATION_PRECONDITION_FAILED)
 
@@ -723,6 +734,7 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
                 "rationale": {"reason_code": "c1_idempotency_changed"},
             },
         ),
+        case_id="error/idempotency_conflict",
     )
     _assert_application_error(idempotency, ERROR_CODE_IDEMPOTENCY_CONFLICT)
 
@@ -755,5 +767,6 @@ def test_v06_5_c1_generic_error_family_crosses_every_real_adapter(
             version=version,
             tag=f"{tag}-internal-approve",
         ),
+        case_id="error/internal_non_recoverable",
     )
     _assert_application_error(internal, ERROR_CODE_INTERNAL_NON_RECOVERABLE)

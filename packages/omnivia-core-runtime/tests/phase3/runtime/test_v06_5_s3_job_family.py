@@ -49,6 +49,7 @@ from omnivia_core_runtime.service.transport import LocalSocketServer, endpoint_f
 from omnivia_core_runtime.storage.jobs import recover_stranded_application_jobs
 from omnivia_core_runtime.storage.retrieval import CONFIGURED_LOCAL_OWNER
 from test_v06_5_s2_memory_migration import _apply_through
+from v06_5_c1_evidence import semantic_execution
 
 from omnivia_core.contracts.v1 import (
     ErrorResponseEnvelope,
@@ -191,7 +192,7 @@ def _router(dispatcher: ApplicationDispatcher) -> DocumentRouter:
     )
 
 
-def _transport_call(
+def _unrecorded_transport_call(
     adapter: str,
     dispatcher: ApplicationDispatcher,
     request: RequestEnvelope,
@@ -253,6 +254,22 @@ def _transport_call(
         return decode_response(json.loads(response_body))
     finally:
         server.stop()
+
+
+def _transport_call(
+    adapter: str,
+    dispatcher: ApplicationDispatcher,
+    request: RequestEnvelope,
+    *,
+    case_id: str | None = None,
+) -> ResponseEnvelope:
+    return semantic_execution(
+        case_id=case_id,
+        adapter=adapter,
+        route=dispatcher,
+        request=request,
+        invoke=lambda: _unrecorded_transport_call(adapter, dispatcher, request),
+    )
 
 
 def _fallback(principal: str = PRINCIPAL) -> Dispatcher:
@@ -549,7 +566,12 @@ def test_v06_5_s3_import_start_primary_replay_conflict(
         request_id=f"req-parent-import-primary-{adapter}",
         idempotency_key=f"idem-parent-import-{adapter}",
     )
-    primary = _transport_call(adapter, dispatcher, primary_request)
+    primary = _transport_call(
+        adapter,
+        dispatcher,
+        primary_request,
+        case_id="import.start/primary-success",
+    )
     assert isinstance(primary, SuccessResponseEnvelope), primary
     assert primary.result["job"]["state"] == "running"
     assert primary.result["job"]["latest_attempt"] == {
@@ -570,6 +592,7 @@ def test_v06_5_s3_import_start_primary_replay_conflict(
                 request_id=f"req-parent-import-replay-{adapter}",
             ),
         ),
+        case_id="import.start/honest-replay",
     )
     assert isinstance(replay, SuccessResponseEnvelope), replay
     assert replay.result == primary.result
@@ -589,6 +612,7 @@ def test_v06_5_s3_import_start_primary_replay_conflict(
             ),
             input={"source": conflicting_source},
         ),
+        case_id="import.start/idempotency-conflict",
     )
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == "idempotency_conflict"
@@ -914,6 +938,7 @@ def test_v06_5_s3_job_get_running_failed_succeeded(
             {"job_id": job_id},
             request_id=f"req-parent-get-running-{adapter}",
         ),
+        case_id="job.get/primary-success",
     )
     assert isinstance(running, SuccessResponseEnvelope), running
     assert running.metadata.job is None
@@ -932,6 +957,7 @@ def test_v06_5_s3_job_get_running_failed_succeeded(
             {"job_id": job_id},
             request_id=f"req-parent-get-failed-{adapter}",
         ),
+        case_id="job.get/failed-observation",
     )
     assert isinstance(failed, SuccessResponseEnvelope), failed
     assert failed.result["job"]["state"] == "failed"
@@ -965,6 +991,7 @@ def test_v06_5_s3_job_get_running_failed_succeeded(
             {"job_id": job_id},
             request_id=f"req-parent-get-succeeded-{adapter}",
         ),
+        case_id="job.get/succeeded-observation",
     )
     assert isinstance(succeeded, SuccessResponseEnvelope), succeeded
     assert succeeded.result["job"]["state"] == "succeeded"
@@ -1019,6 +1046,7 @@ def test_v06_5_s3_job_events_primary_and_page_2_ordered(
             {"job_id": job_id, "limit": 2},
             request_id=f"req-parent-events-primary-{adapter}",
         ),
+        case_id="job.events/primary-success",
     )
     assert isinstance(first, SuccessResponseEnvelope), first
     assert first.metadata.job is None
@@ -1037,6 +1065,7 @@ def test_v06_5_s3_job_events_primary_and_page_2_ordered(
             },
             request_id=f"req-parent-events-page2-{adapter}",
         ),
+        case_id="job.events/page-2",
     )
     assert isinstance(second, SuccessResponseEnvelope), second
     assert second.result["snapshot_event_count"] == 4
@@ -1068,7 +1097,9 @@ def test_v06_5_s3_job_cancel_primary_replay_conflict(
         request_id=f"req-parent-cancel-primary-{adapter}",
         key=f"idem-parent-cancel-{adapter}",
     )
-    primary = _transport_call(adapter, dispatcher, request)
+    primary = _transport_call(
+        adapter, dispatcher, request, case_id="job.cancel/primary-success"
+    )
     assert isinstance(primary, SuccessResponseEnvelope), primary
     assert primary.result["cancellation_disposition"] == "cancellation_requested"
     assert primary.result["job"]["state"] == "running"
@@ -1087,6 +1118,7 @@ def test_v06_5_s3_job_cancel_primary_replay_conflict(
                 request_id=f"req-parent-cancel-replay-{adapter}",
             ),
         ),
+        case_id="job.cancel/honest-replay",
     )
     assert isinstance(replay, SuccessResponseEnvelope), replay
     assert replay.result == primary.result
@@ -1103,6 +1135,7 @@ def test_v06_5_s3_job_cancel_primary_replay_conflict(
             ),
             input={"job_id": f"{job_id}-different"},
         ),
+        case_id="job.cancel/idempotency-conflict",
     )
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == "idempotency_conflict"
@@ -1142,7 +1175,9 @@ def test_v06_5_s3_job_retry_primary_replay_conflict(
         request_id=f"req-parent-retry-primary-{adapter}",
         key=f"idem-parent-retry-{adapter}",
     )
-    primary = _transport_call(adapter, dispatcher, request)
+    primary = _transport_call(
+        adapter, dispatcher, request, case_id="job.retry/primary-success"
+    )
     assert isinstance(primary, SuccessResponseEnvelope), primary
     assert primary.result["recovery_disposition"] == "retry_scheduled"
     assert primary.result["job"]["state"] == "queued"
@@ -1158,6 +1193,7 @@ def test_v06_5_s3_job_retry_primary_replay_conflict(
                 request_id=f"req-parent-retry-replay-{adapter}",
             ),
         ),
+        case_id="job.retry/honest-replay",
     )
     assert isinstance(replay, SuccessResponseEnvelope), replay
     assert replay.result == primary.result
@@ -1173,6 +1209,7 @@ def test_v06_5_s3_job_retry_primary_replay_conflict(
             ),
             input={"job_id": f"{job_id}-different"},
         ),
+        case_id="job.retry/idempotency-conflict",
     )
     assert isinstance(conflict, ErrorResponseEnvelope), conflict
     assert conflict.error.code == "idempotency_conflict"
