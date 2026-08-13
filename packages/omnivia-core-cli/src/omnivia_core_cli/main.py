@@ -110,6 +110,109 @@ READINESS_OPERATION = "core.readiness"
 WORKSPACE_INSPECT_OPERATION = "workspace.inspect"
 WORKSPACE_INSPECTION_PURPOSE = "workspace_inspection"
 
+#: Version of the small lifecycle adapter document emitted by
+#: ``start|stop|status --json``. This is intentionally not the managed-start
+#: document: the latter is a service-owned launcher protocol, while this one is
+#: the stable, least-privilege view adapters such as the Core status menu consume.
+LIFECYCLE_ADAPTER_VERSION = 1
+
+
+def _service_snapshot(
+    *,
+    workspace_id: Any,
+    service_instance_id: Any,
+    state: Any,
+    ready: Any,
+    unmet: Any,
+) -> dict[str, Any]:
+    """Return only the live service facts a lifecycle adapter needs.
+
+    Endpoint and process identity remain internal lifecycle details. In
+    particular, publishing a pid here would encourage UI adapters to infer
+    ownership or offer unsafe process controls instead of using ``stop``.
+    """
+    return {
+        "workspace_id": workspace_id if isinstance(workspace_id, str) else None,
+        "service_instance_id": (
+            service_instance_id if isinstance(service_instance_id, str) else None
+        ),
+        "state": state if isinstance(state, str) else None,
+        "ready": ready is True,
+        "unmet": [str(item) for item in unmet] if isinstance(unmet, list) else [],
+    }
+
+
+def _managed_service_snapshot(service: dict[str, Any]) -> dict[str, Any]:
+    return _service_snapshot(
+        workspace_id=service.get("workspace_id"),
+        service_instance_id=service.get("service_instance_id"),
+        state=service.get("state"),
+        ready=service.get("ready"),
+        unmet=service.get("unmet"),
+    )
+
+
+def _live_service_snapshot(
+    service: ServiceEndpointDescriptor, answer: dict[str, Any]
+) -> dict[str, Any]:
+    return _service_snapshot(
+        workspace_id=service.workspace_id,
+        service_instance_id=service.service_instance_id,
+        state=answer.get("state"),
+        ready=answer.get("ready"),
+        unmet=answer.get("unmet"),
+    )
+
+
+def _write_lifecycle_document(
+    action: str,
+    *,
+    ok: bool,
+    outcome: str,
+    service: dict[str, Any] | None = None,
+    reason: str | None = None,
+) -> None:
+    """Write the one machine-readable lifecycle adapter document."""
+    document: dict[str, Any] = {
+        "lifecycle_adapter_version": LIFECYCLE_ADAPTER_VERSION,
+        "action": action,
+        "ok": ok,
+        "outcome": outcome,
+    }
+    if service is not None:
+        document["service"] = service
+    if reason:
+        document["reason"] = reason
+    sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+
+
+def _finish_lifecycle(
+    action: str,
+    *,
+    json_output: bool,
+    returncode: int,
+    outcome: str,
+    service: dict[str, Any] | None = None,
+    reason: str | None = None,
+    human_stdout: str | None = None,
+    human_stderr: str | None = None,
+) -> int:
+    """Render one lifecycle result without mixing JSON and human prose."""
+    if json_output:
+        _write_lifecycle_document(
+            action,
+            ok=returncode == 0,
+            outcome=outcome,
+            service=service,
+            reason=reason,
+        )
+    else:
+        if human_stdout:
+            sys.stdout.write(human_stdout)
+        if human_stderr:
+            sys.stderr.write(human_stderr)
+    return returncode
+
 
 def _inspect_claims() -> tuple[tuple[str, ...], tuple[CapabilityRequirement, ...]]:
     """The scopes and capability requirement `workspace.inspect` obliges a caller to state.
@@ -168,13 +271,17 @@ def build_parser() -> argparse.ArgumentParser:
             "already. Starts no service"
         ),
     )
-    subparsers.add_parser(
-        "start", help="start the service for this installation and wait until it is ready"
-    )
-    subparsers.add_parser("stop", help="ask the running service to stop, and wait for it")
-    subparsers.add_parser(
-        "status", help="dial the service and report the lifecycle state it answers with"
-    )
+    for name, help_text in (
+        ("start", "start the service for this installation and wait until it is ready"),
+        ("stop", "ask the running service to stop, and wait for it"),
+        ("status", "dial the service and report the lifecycle state it answers with"),
+    ):
+        lifecycle = subparsers.add_parser(name, help=help_text)
+        lifecycle.add_argument(
+            "--json",
+            action="store_true",
+            help="emit the versioned lifecycle adapter document",
+        )
 
     for name, help_text in (
         ("health", "ask the service whether it is alive"),
@@ -441,7 +548,7 @@ def _init(installation: Installation) -> int:
     return 1
 
 
-def _start(installation: Installation) -> int:
+def _start(installation: Installation, *, json_output: bool = False) -> int:
     """Ask the shared managed-start path for a service, and report what it answered.
 
     **This command no longer does the starting.** R004-08 makes managed start a
@@ -470,8 +577,14 @@ def _start(installation: Installation) -> int:
             installation, endpoint_uri=installation.endpoint_uri
         )
     except LifecycleError as refusal:
-        sys.stderr.write(f"{refusal}\n")
-        return 1
+        return _finish_lifecycle(
+            "start",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=str(refusal),
+            human_stderr=f"{refusal}\n",
+        )
 
     status = result.get("status")
     service = result.get("service")
@@ -480,14 +593,28 @@ def _start(installation: Installation) -> int:
         pid = service.get("pid")
         if status == "started" and pid is not None:
             headline = f"started (pid {pid})"
-        sys.stdout.write(headline + "\n" + _describe_service(service))
-        return 0
+        return _finish_lifecycle(
+            "start",
+            json_output=json_output,
+            returncode=0,
+            outcome=status,
+            service=_managed_service_snapshot(service),
+            human_stdout=headline + "\n" + _describe_service(service),
+        )
 
-    sys.stderr.write(f"{result.get('reason') or 'the service could not be started'}\n")
+    reason = str(result.get("reason") or "the service could not be started")
     child_output = result.get("child_output")
+    human_stderr = reason + "\n"
     if isinstance(child_output, str) and child_output.strip():
-        sys.stderr.write(child_output.rstrip("\n") + "\n")
-    return 1
+        human_stderr += child_output.rstrip("\n") + "\n"
+    return _finish_lifecycle(
+        "start",
+        json_output=json_output,
+        returncode=1,
+        outcome="failed",
+        reason=reason,
+        human_stderr=human_stderr,
+    )
 
 
 def _describe_service(service: dict[str, Any]) -> str:
@@ -514,7 +641,7 @@ def _describe_service(service: dict[str, Any]) -> str:
     return "".join(line + "\n" for line in lines)
 
 
-def _stop(runtime_state: Path) -> int:
+def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
     """Signal the running service and wait for it to withdraw its own descriptor.
 
     **The identity check comes before the signal, and it is two checks.** A pid on
@@ -546,34 +673,65 @@ def _stop(runtime_state: Path) -> int:
     if service is None:
         # Symmetric with `start` finding one already running: asking for a state
         # the system is already in is not a failure.
-        sys.stdout.write("not running\n")
-        return 0
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=0,
+            outcome="not_running",
+            human_stdout="not running\n",
+        )
 
-    if _dial(runtime_state, service, READINESS_OPERATION) is None:
-        sys.stderr.write(
+    if _dial(
+        runtime_state, service, READINESS_OPERATION, quiet=json_output
+    ) is None:
+        reason = (
             f"a descriptor is advertised at {runtime_state} but the service it "
             "names is not answering; nothing was signalled. It is left in place: "
             "cleanup belongs to the instance that published it, and the next "
-            "start replaces it\n"
+            "start replaces it"
         )
-        return 1
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=reason,
+            human_stderr=reason + "\n",
+        )
 
     process = service.process
     if process is None:
-        sys.stderr.write(
+        reason = (
             "the advertised descriptor names no process, so there is nothing to "
-            "signal\n"
+            "signal"
         )
-        return 1
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=reason,
+            human_stderr=reason + "\n",
+        )
 
     identity = process_identity(process)
     if identity == IDENTITY_DIFFERENT:
-        sys.stderr.write(
-            f"pid {process.pid} is not the process that published this "
-            "descriptor; nothing was signalled\n"
+        reason = (
+            "the advertised process is not the process that published this "
+            "descriptor; nothing was signalled"
         )
-        return 1
-    if identity == IDENTITY_UNREADABLE:  # pragma: no cover - Windows only
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=reason,
+            human_stderr=(
+                f"pid {process.pid} is not the process that published this "
+                "descriptor; nothing was signalled\n"
+            ),
+        )
+    if identity == IDENTITY_UNREADABLE and not json_output:  # pragma: no cover
         sys.stderr.write(
             "note: this host offers no process start-time reading, so the pid "
             "was not corroborated against the published one\n"
@@ -582,38 +740,80 @@ def _stop(runtime_state: Path) -> int:
     request_stop(process.pid)
     deadline = time.monotonic() + STOP_TIMEOUT_SECONDS
     if not descriptor_is_gone(runtime_state, deadline):
-        sys.stderr.write(
-            f"the service was asked to stop but had not withdrawn its descriptor "
-            f"after {STOP_TIMEOUT_SECONDS:.0f}s\n"
+        reason = (
+            "the service was asked to stop but had not withdrawn its descriptor "
+            f"after {STOP_TIMEOUT_SECONDS:.0f}s"
         )
-        return 1
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=reason,
+            human_stderr=reason + "\n",
+        )
     # Two events, in this order, and only both of them make "stopped" true. The
     # withdrawn descriptor proves the unwind ran; the process is still shutting
     # down after it. Reporting success here would let a caller start a
     # replacement into a lock the old process has not yet dropped.
     if not process_is_gone(process.pid, deadline):
-        sys.stderr.write(
-            f"the service withdrew its descriptor but pid {process.pid} was still "
-            f"running after {STOP_TIMEOUT_SECONDS:.0f}s\n"
+        reason = (
+            "the service withdrew its descriptor but its process was still "
+            f"running after {STOP_TIMEOUT_SECONDS:.0f}s"
         )
-        return 1
-    sys.stdout.write("stopped\n")
-    return 0
+        return _finish_lifecycle(
+            "stop",
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            reason=reason,
+            human_stderr=(
+                f"the service withdrew its descriptor but pid {process.pid} was still "
+                f"running after {STOP_TIMEOUT_SECONDS:.0f}s\n"
+            ),
+        )
+    return _finish_lifecycle(
+        "stop",
+        json_output=json_output,
+        returncode=0,
+        outcome="stopped",
+        human_stdout="stopped\n",
+    )
 
 
-def _status(runtime_state: Path) -> int:
+def _status(runtime_state: Path, *, json_output: bool = False) -> int:
     """Report what a live call answered, never what the file claims."""
-    running = _live_service(runtime_state, quiet=False)
+    running = _live_service(runtime_state, quiet=json_output)
     if running is None:
-        sys.stdout.write("not running\n")
-        return 1
-    sys.stdout.write("running\n" + _describe(*running))
-    return 0
+        return _finish_lifecycle(
+            "status",
+            json_output=json_output,
+            returncode=1,
+            outcome="not_running",
+            human_stdout="not running\n",
+        )
+    if json_output:
+        service, answer = running
+        return _finish_lifecycle(
+            "status",
+            json_output=True,
+            returncode=0,
+            outcome="running",
+            service=_live_service_snapshot(service, answer),
+        )
+    return _finish_lifecycle(
+        "status",
+        json_output=False,
+        returncode=0,
+        outcome="running",
+        human_stdout="running\n" + _describe(*running),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     installation = Installation(home_directory(args.home))
+    json_output = bool(getattr(args, "json", False))
 
     if args.command == "init":
         # Before the `--runtime-state` resolution below, and not subject to it:
@@ -628,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
         # manifest names, which is the path a service actually publishes to; the
         # flag only ever selected which descriptor this command *polled*, and
         # pointing it elsewhere never changed where the started service wrote.
-        return _start(installation)
+        return _start(installation, json_output=json_output)
 
     runtime_state = args.runtime_state
     if runtime_state is None:
@@ -639,19 +839,30 @@ def main(argv: list[str] | None = None) -> int:
             # two lifecycle queries answer in their own vocabulary rather than as
             # a path error.
             if args.command == "stop":
-                sys.stdout.write("not running\n")
-                return 0
+                return _finish_lifecycle(
+                    "stop",
+                    json_output=json_output,
+                    returncode=0,
+                    outcome="not_running",
+                    human_stdout="not running\n",
+                )
             if args.command == "status":
-                sys.stdout.write("not running\n")
-                sys.stderr.write(f"{refusal}\n")
-                return 1
+                return _finish_lifecycle(
+                    "status",
+                    json_output=json_output,
+                    returncode=1,
+                    outcome="not_running",
+                    reason=str(refusal),
+                    human_stdout="not running\n",
+                    human_stderr=f"{refusal}\n",
+                )
             sys.stderr.write(f"{refusal}\n")
             return 1
 
     if args.command == "status":
-        return _status(runtime_state)
+        return _status(runtime_state, json_output=json_output)
     if args.command == "stop":
-        return _stop(runtime_state)
+        return _stop(runtime_state, json_output=json_output)
 
     service = read_descriptor(runtime_state)
 

@@ -109,6 +109,15 @@ def _service_pids(home: Path) -> list[int]:
     return found
 
 
+def _lifecycle_json(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    """Decode the adapter's single stdout document, rejecting prose around it."""
+    assert result.stdout.endswith("\n"), result.stdout
+    assert result.stdout.count("\n") == 1, result.stdout
+    document = json.loads(result.stdout)
+    assert isinstance(document, dict)
+    return dict(document)
+
+
 def _descriptor(home: Path) -> dict[str, object] | None:
     runtime = home / "installation-state" / "runtime" / WORKSPACE_ID / "service.json"
     if not runtime.exists():
@@ -163,6 +172,29 @@ def test_start_then_status_then_stop(home: Path) -> None:
     assert _cli(home, "status").returncode == 1
 
 
+def test_status_json_reports_not_running_as_one_versioned_document(home: Path) -> None:
+    result = _cli(home, "status", "--json")
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert _lifecycle_json(result) == {
+        "lifecycle_adapter_version": 1,
+        "action": "status",
+        "ok": False,
+        "outcome": "not_running",
+    }
+    assert _service_pids(home) == []
+
+    stopped = _cli(home, "stop", "--json")
+    assert stopped.returncode == 0
+    assert _lifecycle_json(stopped) == {
+        "lifecycle_adapter_version": 1,
+        "action": "stop",
+        "ok": True,
+        "outcome": "not_running",
+    }
+
+
 def test_start_twice_does_not_start_a_second_service(home: Path) -> None:
     """Idempotent by dialling, not by trusting the descriptor on disk."""
     assert _cli(home, "start").returncode == 0
@@ -201,6 +233,73 @@ def test_status_refuses_a_service_that_died_without_unwinding(home: Path) -> Non
 
     assert result.returncode == 1, "a dead service was reported as running"
     assert "not running" in result.stdout + result.stderr
+
+
+def test_start_status_and_stop_share_one_json_adapter_contract(home: Path) -> None:
+    started_result = _cli(home, "start", "--json")
+    assert started_result.returncode == 0, started_result.stderr
+    started = _lifecycle_json(started_result)
+    assert started["lifecycle_adapter_version"] == 1
+    assert started["action"] == "start"
+    assert started["ok"] is True
+    assert started["outcome"] == "started"
+    assert "pid" not in started
+    started_service = started["service"]
+    assert isinstance(started_service, dict)
+    assert started_service["workspace_id"] == WORKSPACE_ID
+    assert isinstance(started_service["service_instance_id"], str)
+    assert isinstance(started_service["state"], str)
+    assert started_service["ready"] is True
+    assert started_service["unmet"] == []
+    assert "pid" not in started_service
+
+    attached_result = _cli(home, "start", "--json")
+    assert attached_result.returncode == 0, attached_result.stderr
+    assert _lifecycle_json(attached_result) == {
+        "lifecycle_adapter_version": 1,
+        "action": "start",
+        "ok": True,
+        "outcome": "attached",
+        "service": started_service,
+    }
+
+    status_result = _cli(home, "status", "--json")
+    assert status_result.returncode == 0, status_result.stderr
+    status = _lifecycle_json(status_result)
+    assert status == {
+        "lifecycle_adapter_version": 1,
+        "action": "status",
+        "ok": True,
+        "outcome": "running",
+        "service": started_service,
+    }
+
+    stopped_result = _cli(home, "stop", "--json")
+    assert stopped_result.returncode == 0, stopped_result.stderr
+    assert _lifecycle_json(stopped_result) == {
+        "lifecycle_adapter_version": 1,
+        "action": "stop",
+        "ok": True,
+        "outcome": "stopped",
+    }
+    assert _service_pids(home) == []
+
+
+def test_start_json_failure_is_one_parseable_document() -> None:
+    empty_home = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    try:
+        result = _cli(empty_home, "start", "--json")
+    finally:
+        shutil.rmtree(empty_home, ignore_errors=True)
+
+    assert result.returncode == 1
+    document = _lifecycle_json(result)
+    assert document["lifecycle_adapter_version"] == 1
+    assert document["action"] == "start"
+    assert document["ok"] is False
+    assert document["outcome"] == "failed"
+    assert isinstance(document["reason"], str)
+    assert document["reason"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the byte ceiling is a Unix-socket limit")

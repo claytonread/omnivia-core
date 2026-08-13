@@ -812,6 +812,12 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
     assert "python scripts/check-platform-lock-coverage.py" in _commands(
         _step(steps, "Assert this platform's lock case actually ran")
     )
+    companion = " ".join(
+        _commands(_step(steps, "Build and test the macOS status menu companion"))
+    )
+    assert 'if [ "${RUNNER_OS}" = "macOS" ]; then' in companion
+    assert "swift build --package-path apps/core-status-menu-macos" in companion
+    assert "swift test --package-path apps/core-status-menu-macos" in companion
     assert (REPO_ROOT / "scripts" / "check-platform-lock-coverage.py").is_file()
 
 
