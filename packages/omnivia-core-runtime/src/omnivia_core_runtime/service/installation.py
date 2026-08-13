@@ -53,7 +53,10 @@ from omnivia_core_runtime.service.authorization import (
     AuthorizedApplicationContext,
     ServiceBinding,
 )
-from omnivia_core_runtime.service.handlers.workspace import WORKSPACE_STATUS_ACTIVE
+from omnivia_core_runtime.service.handlers.workspace import (
+    WORKSPACE_STATUS_ACTIVE,
+    canonical_timestamp,
+)
 from omnivia_core_runtime.service.mutation import (
     DEFAULT_GRANT_LIFETIME_US,
     INSTALLATION_ADMINISTRATOR_ROLE,
@@ -920,7 +923,7 @@ class InstallationApplicationService:
                         version, _SUPPORTED_WORKSPACE_VERSIONS
                     ),
                 ),
-                created_at=manifest.created_at,
+                created_at=canonical_timestamp(manifest.created_at),
             )
             result = WorkspaceCreateResult(workspace=descriptor).to_wire()
             WorkspaceCreateResult.from_wire(result)

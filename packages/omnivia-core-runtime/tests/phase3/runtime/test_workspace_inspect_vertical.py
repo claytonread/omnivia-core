@@ -24,7 +24,9 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 from dataclasses import fields
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +63,7 @@ from omnivia_core_runtime.workspace.manifest_store import create_workspace
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
     ERROR_CODE_INVALID_REQUEST,
+    TIMESTAMP_PATTERN,
     CapabilityRef,
     CapabilityRequirement,
     ClientIdentity,
@@ -80,7 +83,12 @@ WORKSPACE_ID = "ws-vertical-0001"
 INSTALLATION_ID = "inst-vertical-0001"
 CORE_VERSION = "0.1.0"
 WORKSPACE_NAME = "Vertical fixture"
+#: The creation instant as the manifest stores it -- the offset spelling
+#: `datetime.now(UTC).isoformat()` writes -- and as the Application Contract spells
+#: the same instant. They are deliberately different strings: `Timestamp` is a
+#: pattern requiring a literal `Z`, so the descriptor may not carry the stored form.
 CREATED_AT = "2026-08-05T00:00:00+00:00"
+CREATED_AT_CANONICAL = "2026-08-05T00:00:00Z"
 CLIENT = ClientIdentity(id="omnivia-core-cli", version="0.1.0")
 ENTRY = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
 
@@ -240,7 +248,7 @@ def test_the_full_authorised_path_answers_with_a_workspace_descriptor(
     # The literal as well as the constant: following the constant alone would agree
     # with whatever it was changed to, which is not an assertion about the wire.
     assert descriptor.status == "active" == handler_module.WORKSPACE_STATUS_ACTIVE
-    assert descriptor.created_at == CREATED_AT
+    assert descriptor.created_at == CREATED_AT_CANONICAL != CREATED_AT
     assert descriptor.compatibility.workspace_format_version == "1.0"
     assert descriptor.compatibility.status == "compatible"
     # The whole response re-encodes, which is the check an in-process assertion alone
@@ -736,3 +744,130 @@ def test_the_two_halves_of_the_wiring_cannot_act_as_different_principals(
             ),
             record=None,
         )
+
+
+# --- the manifest instant, as the contract spells it ---------------------------
+
+
+def _served_created_at(root: Path, created_at: str) -> ServedWorkspace:
+    """A real workspace on disk whose manifest stores `created_at` verbatim."""
+    create_workspace(
+        root,
+        WorkspaceManifest(
+            workspace_id=WORKSPACE_ID,
+            created_at=created_at,
+            name=WORKSPACE_NAME,
+            compatibility=CoreCompatibility(
+                workspace_format_version="1", min_core_version=CORE_VERSION
+            ),
+        ),
+    )
+    return ServedWorkspace(root)
+
+
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [
+        # What `workspace_init` writes into every workspace this build creates:
+        # `datetime.now(UTC).isoformat()`, offset spelling, microsecond precision.
+        # This exact shape is what an official MCP host refused as invalid
+        # structured content against the advertised output schema.
+        ("2026-08-13T15:43:05.456059+00:00", "2026-08-13T15:43:05.456059Z"),
+        ("2026-08-13T15:43:05+00:00", "2026-08-13T15:43:05Z"),
+        # Already canonical: answered byte for byte, not re-rendered.
+        ("2026-08-13T15:43:05.456Z", "2026-08-13T15:43:05.456Z"),
+        # A non-UTC offset is the same instant read off a different clock, so
+        # canonicalizing it has to move the digits and not merely the suffix. A
+        # fix that swapped the `+00:00` substring for `Z` answers
+        # `2026-08-14T01:30:00Z` here -- ten hours wrong -- and fails.
+        ("2026-08-14T01:30:00+10:00", "2026-08-13T15:30:00Z"),
+        ("2026-08-13T10:30:00-05:00", "2026-08-13T15:30:00Z"),
+    ],
+)
+def test_the_answered_created_at_is_always_a_canonical_contract_timestamp(
+    tmp_path: Path, stored: str, expected: str
+) -> None:
+    """`workspace.inspect` answers with the contract's `Timestamp`, whatever the
+    manifest stores.
+
+    `workspace.json` is a workspace-format artifact and its own schema accepts any
+    RFC 3339 spelling; the Application Contract's `Timestamp` is a pattern requiring
+    UTC with a literal `Z`. The conversion happens at the boundary between them, so
+    the wire is valid for a workspace this build actually created and not only for a
+    hand-written fixture.
+
+    Falsifier: return `manifest.created_at` unchanged and every offset case fails on
+    both the equality and the published pattern.
+    """
+    served = _served_created_at(tmp_path / "workspace", stored)
+
+    response = answered(production_path(served).dispatch(request_for()))
+    created_at = response.result["workspace"]["created_at"]
+
+    assert created_at == expected
+    # The published pattern, not a hand-written one, and the instant is preserved --
+    # together these refuse both a spelling that is merely `Z`-suffixed and a
+    # conversion that silently moved the clock.
+    assert re.match(TIMESTAMP_PATTERN, created_at), created_at
+    assert datetime.fromisoformat(created_at) == datetime.fromisoformat(stored)
+    # And it decodes, which is the assertion the raw mapping alone would miss.
+    assert WorkspaceInspectResult.from_wire(response.result).workspace.created_at == (
+        expected
+    )
+
+
+def test_a_manifest_instant_with_no_time_zone_is_refused_rather_than_answered(
+    tmp_path: Path,
+) -> None:
+    """A naive stored instant is not an instant, so it is not guessed at.
+
+    The manifest validator accepts a naive ISO timestamp, so this is reachable rather
+    than hypothetical. Assuming UTC would publish a fact the workspace never stated;
+    the handler refuses instead, with the frozen message -- the manifest's own value
+    does not travel to the caller.
+    """
+    served = _served_created_at(tmp_path / "workspace", "2026-08-13T15:43:05")
+
+    response = production_path(served).dispatch(request_for())
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.message == handler_module._MESSAGE_UNREADABLE_WORKSPACE
+    assert "2026-08-13" not in json.dumps(encode_response(response))
+
+
+def test_a_canonically_spelled_impossible_date_is_refused_rather_than_answered(
+    tmp_path: Path,
+) -> None:
+    """A literal `Z` is not on its own a `Timestamp`: the calendar is checked too.
+
+    `TIMESTAMP_PATTERN` admits `2026-13-01T00:00:00Z` character for character -- a
+    pattern fixes the spelling and cannot fix the calendar, which is why the
+    contract's `Timestamp` also carries `format: date-time` and why `is_timestamp`
+    applies both halves. Answering the stored value verbatim would put a string the
+    contract's own guard refuses onto the wire, under an advertised output schema
+    whose pattern cannot catch it either.
+
+    Reachable rather than hypothetical, and by a different route than the naive case
+    above: `write_manifest` refuses this document, but `read_manifest` runs only the
+    *raw* validator, which checks that `created_at` is present and not that it
+    parses. So the value is stamped on after creation, which is how such a manifest
+    really arrives -- written by another build, restored, or hand-edited -- and the
+    read path admits it.
+
+    Falsifier: test `TIMESTAMP_PATTERN` alone instead of `is_timestamp` and this is
+    answered rather than refused, while `2026-13-01T00:00:00+00:00` -- the same
+    impossible date, spelled the way the manifest stores instants -- is still refused
+    by the parse below it. That asymmetry is what this pins shut.
+    """
+    root = tmp_path / "workspace"
+    served = _served_created_at(root, CREATED_AT)
+    manifest_path = WorkspaceLayout(root=root).manifest_path
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["created_at"] = "2026-13-01T00:00:00Z"
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    response = production_path(served).dispatch(request_for())
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.message == handler_module._MESSAGE_UNREADABLE_WORKSPACE
+    assert "2026-13-01" not in json.dumps(encode_response(response))

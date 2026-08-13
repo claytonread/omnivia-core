@@ -31,6 +31,39 @@ service location, and (for remote mode) credential reference.
 omnivia-core-mcp --config /absolute/path/to/omnivia-mcp.json
 ```
 
+Each supported host profile represents that launch in its native configuration
+form. Claude Desktop (`claude_desktop_config.json`) and Claude Code
+(`.mcp.json`) name it in an `mcpServers` object:
+
+```json
+{"mcpServers": {"omnivia-core": {"command": "<omnivia-core-mcp>",
+                                 "args": ["--config", "<omnivia-mcp.json>"]}}}
+```
+
+Codex (`config.toml`) names it in a `mcp_servers` table:
+
+```toml
+[mcp_servers."omnivia-core"]
+command = "<omnivia-core-mcp>"
+args = ["--config", "<omnivia-mcp.json>"]
+```
+
+A client written directly against the official Python SDK passes the same
+command and arguments as stdio server parameters and needs no file at all.
+`command` and `args` are the whole of an accepted entry: this server reads no
+environment variable, accepts no URL, header or bearer token in a host
+configuration, and has nothing to add to one.
+
+The Standard-profile candidate proves this rather than asserting it. For each
+host profile — `claude_desktop`, `claude_code`, `codex` and
+`official_python_sdk` — it writes that host's native configuration shape, reads
+it back, and starts the server from the launch it yields; one fresh stdio
+session per profile then initialises, lists exactly six tools and calls all six,
+and the four manifests are compared. The client throughout is the official
+Python SDK: the Claude Desktop, Claude Code and Codex applications are not
+installed and do not run there. See
+[MCP host interoperability](../../docs/distribution/mcp-host-interoperability.md).
+
 There is no default configuration path, environment lookup, or `--home`
 fallback. A managed-local document names an absolute `installation_state`; the
 server delegates the whole attach/start/reconnect decision to the shared

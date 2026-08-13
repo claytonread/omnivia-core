@@ -72,14 +72,22 @@ from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 WORKSPACE_ID = "ws-mcp-end-to-end-01"
 WORKSPACE_NAME = "MCP end to end"
 
-#: The workspace's creation instant, spelled the way the Application Contract's
-#: `Timestamp` spells one: millisecond-or-coarser precision and a literal `Z`.
-#: `+00:00` is the same instant and is *not* the same string, and the advertised
-#: `workspace.inspect` output schema is a pattern over the string -- so a fixture
-#: written with the offset form made the official client refuse a correct answer
-#: as invalid structured content. Nothing advertised an output schema before
-#: manifest version 1.1, which is why it went unnoticed.
-WORKSPACE_CREATED_AT = "2026-08-07T00:00:00Z"
+#: The workspace's creation instant *as the manifest stores it*: the offset form
+#: `datetime.now(UTC).isoformat()` writes, which is what `workspace.create` puts in
+#: every real workspace's `workspace.json`. The fixture deliberately stores that
+#: spelling rather than the canonical one, because a fixture written with a literal
+#: `Z` is a workspace this build never creates -- and while it was written that way,
+#: the suite could not see that a real installed wheel emits `+00:00` in structured
+#: content and is refused by the official client against the advertised
+#: `workspace.inspect` output schema, whose `Timestamp` is a pattern over the string.
+WORKSPACE_CREATED_AT = "2026-08-07T00:00:00+00:00"
+
+#: The same instant in the Application Contract's own spelling -- what
+#: `workspace.inspect` must answer with, having canonicalized the manifest's value at
+#: the application boundary. Two constants rather than one on purpose: an assertion
+#: against a single constant would follow the manifest wherever it was respelled and
+#: would stop being an assertion about the wire.
+WORKSPACE_CREATED_AT_CANONICAL = "2026-08-07T00:00:00Z"
 SERVICE_INSTANCE = "svc-mcp-1"
 SEED_INSTANCE = "svc-mcp-seed-1"
 INSTALLATION_ID = "inst-mcp-e2e"

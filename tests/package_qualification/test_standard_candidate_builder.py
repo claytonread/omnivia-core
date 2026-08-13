@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import platform
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +22,15 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "phase2-platform.yml"
 
 def _module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("standard_candidate_builder", BUILDER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _lifecycle_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("standard_lifecycle", LIFECYCLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -318,3 +330,420 @@ def test_existing_required_matrix_runs_and_retains_the_candidate() -> None:
     assert "name: Phase 2 platform (${{ matrix.os }})" in workflow
     assert "uses: actions/upload-artifact@v6" in workflow
     assert "if-no-files-found: error" in workflow
+
+
+def test_the_builder_requires_the_same_four_client_families_the_journey_drives() -> None:
+    """The two lists are hard-coded apart on purpose; nothing else stops drift.
+
+    The builder imports no OmniVia package and does not import the journey
+    either, so its `HOST_FAMILIES` is a second copy of the journey's profile
+    names. A family added to one and not the other would silently stop being
+    gated, which is the whole value of the check.
+    """
+    module = _module()
+    journey = REPO_ROOT / "scripts" / "run-standard-journey.py"
+    tree = ast.parse(journey.read_text(encoding="utf-8"), filename=str(journey))
+    profiles = {
+        call.args[0].value
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "HostProfile"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+    }
+    assert module.HOST_FAMILIES == frozenset(
+        {"claude_desktop", "claude_code", "codex", "official_python_sdk"}
+    )
+    assert profiles == set(module.HOST_FAMILIES)
+
+
+_TOOLS = [
+    "context_pack_build",
+    "evidence_search",
+    "graph_traverse",
+    "knowledge_search",
+    "memory_search",
+    "workspace_inspect",
+]
+_FORMATS = {
+    "claude_desktop": "claude_desktop_json",
+    "claude_code": "claude_code_json",
+    "codex": "codex_toml",
+    "official_python_sdk": "official_python_sdk_stdio",
+}
+
+
+def _accepted_result() -> dict[str, object]:
+    """One journey result carrying accepted evidence for all four families."""
+    return {
+        "verdict": "pass",
+        "mcp": {
+            "hosts": {
+                family: {
+                    "client": family,
+                    "config_format": config_format,
+                    "connected": True,
+                    "session_completed": True,
+                    "tool_count": 6,
+                    "tool_calls": 6,
+                    "tools": list(_TOOLS),
+                    "result_counts": dict.fromkeys(_TOOLS, 1),
+                    "verdict": "pass",
+                }
+                for family, config_format in _FORMATS.items()
+            }
+        },
+    }
+
+
+def test_the_candidate_gate_admits_accepted_host_interoperability_evidence() -> None:
+    module = _module()
+    module._require_host_interoperability(_accepted_result())
+
+
+@pytest.mark.parametrize(
+    "family",
+    ["claude_desktop", "claude_code", "codex", "official_python_sdk"],
+)
+def test_the_candidate_gate_refuses_a_missing_client_family(family: str) -> None:
+    module = _module()
+    result = _accepted_result()
+    del result["mcp"]["hosts"][family]
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == (
+        "the standalone journey omitted host interoperability evidence"
+    )
+
+
+@pytest.mark.parametrize(
+    "mcp",
+    [
+        None,
+        {},
+        {"hosts": None},
+        {"hosts": {}},
+        {"hosts": {"claude_desktop": {}}},
+        "hosts",
+    ],
+)
+def test_the_candidate_gate_refuses_absent_or_malformed_evidence(mcp: object) -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"] = mcp
+
+    with pytest.raises(module.CandidateError):
+        module._require_host_interoperability(result)
+
+
+def test_the_candidate_gate_refuses_an_unnamed_extra_family() -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["some_other_host"] = dict(
+        result["mcp"]["hosts"]["codex"], client="some_other_host"
+    )
+
+    with pytest.raises(module.CandidateError):
+        module._require_host_interoperability(result)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("connected", False),
+        ("session_completed", False),
+        # Python equality alone would admit `1` for `True` and `True` for `1`;
+        # the gate compares types exactly so neither passes.
+        ("connected", 1),
+        ("session_completed", 1),
+        ("tool_count", True),
+        ("tool_count", 5),
+        ("tool_calls", 5),
+        ("tool_calls", "6"),
+        ("tool_calls", True),
+        ("verdict", "fail"),
+        ("verdict", True),
+        ("client", "claude_desktop"),
+        # A configuration form other than the one this family reads.
+        ("config_format", "claude_code_json"),
+        ("config_format", "codex_toml_v2"),
+        ("config_format", None),
+        # A manifest that is not the stable six, in any of its wrong shapes.
+        ("tools", _TOOLS[:5]),
+        ("tools", [*_TOOLS, "context_pack_write"]),
+        ("tools", [*_TOOLS[:-1], "context_pack_write"]),
+        ("tools", list(reversed(_TOOLS))),
+        ("tools", tuple(_TOOLS)),
+        ("tools", [1, 2, 3, 4, 5, 6]),
+        ("tools", "context_pack_build"),
+        ("tools", None),
+        # Result counts that are absent, renamed, uncountable or not positive.
+        ("result_counts", {}),
+        ("result_counts", dict.fromkeys(_TOOLS[:5], 1)),
+        ("result_counts", {**dict.fromkeys(_TOOLS, 1), "extra": 1}),
+        ("result_counts", dict.fromkeys(_TOOLS, 0)),
+        ("result_counts", dict.fromkeys(_TOOLS, -1)),
+        ("result_counts", dict.fromkeys(_TOOLS, True)),
+        ("result_counts", dict.fromkeys(_TOOLS, "1")),
+        ("result_counts", dict.fromkeys(_TOOLS, 1.0)),
+        ("result_counts", dict.fromkeys(_TOOLS, None)),
+        ("result_counts", [1, 1, 1, 1, 1, 1]),
+        ("result_counts", 6),
+    ],
+)
+def test_the_candidate_gate_refuses_a_wrong_required_evidence_field(
+    field: str, value: object
+) -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["codex"][field] = value
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "client",
+        "config_format",
+        "connected",
+        "session_completed",
+        "tool_count",
+        "tool_calls",
+        "tools",
+        "result_counts",
+        "verdict",
+    ],
+)
+def test_the_candidate_gate_refuses_an_absent_required_evidence_field(
+    field: str,
+) -> None:
+    module = _module()
+    result = _accepted_result()
+    del result["mcp"]["hosts"]["claude_code"][field]
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+def test_the_candidate_gate_refuses_an_unexpected_extra_evidence_field() -> None:
+    """The retained object is closed: a field nobody gated is not accepted."""
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["codex"]["command"] = "/usr/bin/omnivia-core-mcp"
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+def test_the_candidate_gate_pins_each_family_to_its_own_configuration_form() -> None:
+    module = _module()
+    assert module.HOST_CONFIG_FORMATS == _FORMATS
+    assert module.HOST_TOOLS == _TOOLS
+    assert module.HOST_FIELDS == frozenset(_accepted_result()["mcp"]["hosts"]["codex"])
+    for family in _FORMATS:
+        result = _accepted_result()
+        # Every family's own form is accepted only under that family: another
+        # accepted family's form, filed here, is still a refusal.
+        other = next(name for name in _FORMATS if name != family)
+        result["mcp"]["hosts"][family]["config_format"] = _FORMATS[other]
+
+        with pytest.raises(module.CandidateError):
+            module._require_host_interoperability(result)
+
+
+def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> None:
+    """The required fields are a second copy of the journey's retained shape.
+
+    The builder imports no OmniVia package and does not import the journey, so
+    a field renamed on one side and not the other would silently stop being
+    gated -- the same drift `HOST_FAMILIES` is guarded against above.
+    """
+    module = _module()
+    journey = REPO_ROOT / "scripts" / "run-standard-journey.py"
+    source = journey.read_text(encoding="utf-8")
+    assert module.HOST_EVIDENCE == {
+        "connected": True,
+        "session_completed": True,
+        "tool_count": 6,
+        "tool_calls": 6,
+        "verdict": "pass",
+    }
+    for field in module.HOST_FIELDS:
+        assert f'"{field}":' in source
+    # The pinned configuration forms and tool names are the journey's own.
+    for config_format in module.HOST_CONFIG_FORMATS.values():
+        assert f'"{config_format}"' in source
+    for tool in module.HOST_TOOLS:
+        assert f'"{tool}"' in source
+
+
+_HOST_FACTS = {
+    "system",
+    "machine",
+    "kernel_release",
+    "kernel_version",
+    "python_implementation",
+    "python_version",
+    "sysconfig_platform",
+    "platform_description",
+    "product",
+}
+
+
+def test_host_identity_names_the_exact_os_the_candidate_ran_on() -> None:
+    """A `*-latest` selector moves; the OS a row proves must be recorded exactly."""
+    module = _module()
+
+    identity = module._host_identity()
+
+    assert set(identity) == _HOST_FACTS
+    assert identity["system"] == platform.system().lower()
+    assert identity["machine"] == platform.machine().lower()
+    assert identity["kernel_release"] == platform.release()
+    assert identity["kernel_version"] == platform.version()
+    for fact in module.REQUIRED_HOST_FACTS:
+        assert isinstance(identity[fact], str) and identity[fact]
+    # Optional product facts keep a stable shape: every key present, an absent
+    # value empty rather than inferred from the kernel or omitted.
+    assert set(identity["product"]) == {"source", "name", "version", "build"}
+    assert all(isinstance(value, str) for value in identity["product"].values())
+
+
+@pytest.mark.parametrize(
+    ("attribute", "fact"),
+    [
+        ("system", "system"),
+        ("machine", "machine"),
+        ("release", "kernel_release"),
+        ("version", "kernel_version"),
+    ],
+)
+def test_host_identity_fails_closed_without_a_required_os_fact(
+    attribute: str, fact: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.platform, attribute, lambda: "")
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._host_identity()
+
+    assert str(excinfo.value) == (
+        f"the build host did not report its identity: ['{fact}']"
+    )
+
+
+def _first_party_packages(builder: ModuleType) -> tuple[object, ...]:
+    return tuple(
+        builder.WheelPackage(
+            name=name,
+            normalized_name=name,
+            version="0.1.0",
+            filename=f"{name.replace('-', '_')}-0.1.0-py3-none-any.whl",
+            sha256=f"{index:064d}",
+            size=1024,
+            requires_python=">=3.11",
+            requires_dist=(),
+            declared_license="MIT",
+            license_members=(),
+        )
+        for index, (name, _path) in enumerate(builder.FIRST_PARTY_PROJECTS)
+    )
+
+
+def _journey() -> dict[str, object]:
+    return {
+        "versions": {
+            "workspace_contract": "1",
+            "protocol": "1",
+            "api": {"minimum": "1", "maximum": "1"},
+        },
+        "workspace": {"format": "1"},
+    }
+
+
+def test_provenance_and_the_current_matrix_row_carry_the_same_host_identity(
+    tmp_path: Path,
+) -> None:
+    builder = _module()
+    builder._write_metadata(
+        tmp_path,
+        builder.SourceState("rev", 0, "1970-01-01T00:00:00Z", False),
+        _first_party_packages(builder),
+        [],
+        _journey(),
+        {},
+        [],
+    )
+    metadata = tmp_path / builder.METADATA_DIRECTORY
+    provenance = json.loads(
+        (metadata / "build-provenance.json").read_text(encoding="utf-8")
+    )
+    matrix = json.loads(
+        (metadata / "compatibility-matrix.json").read_text(encoding="utf-8")
+    )
+
+    assert set(provenance["host"]) == _HOST_FACTS
+    # The row and the provenance record must not be able to disagree about which
+    # OS produced this candidate.
+    assert matrix["current"]["host"] == provenance["host"]
+    assert matrix["current"]["system"] == provenance["host"]["system"]
+    assert matrix["current"]["machine"] == provenance["host"]["machine"]
+    # The moving selector is retained beside the identity, not instead of it.
+    assert matrix["current"]["runner"] == builder.MATRIX_RUNNERS.get(
+        provenance["host"]["system"], ""
+    )
+    assert [row["runner"] for row in matrix["rows"]] == [
+        "ubuntu-latest",
+        "macos-latest",
+        "windows-latest",
+    ]
+
+
+def test_lifecycle_records_the_backup_mechanism_and_a_computed_restore_identity(
+    tmp_path: Path,
+) -> None:
+    """Booleans prove a restore happened; a rollback decision needs which and what.
+
+    The mechanism must be named, and the restored database must be tied to the
+    verified backup by a content digest computed from this run -- a hard-coded
+    digest would be a literal in the script, which the final assertion rejects.
+    """
+    result = _lifecycle_module().qualify(tmp_path)
+
+    evidence = result["backup_restore"]
+    assert evidence["mechanism"] == "sqlite3.Connection.backup"
+    assert evidence["mechanism_description"] == "SQLite online backup API"
+    assert evidence["create_procedure"].endswith("create_verified_backup")
+    assert evidence["verify_procedure"].endswith("verify_backup")
+    assert evidence["restore_procedure"].endswith("rollback_migration")
+    assert evidence["attempt_id"] == "standard-lifecycle-upgrade"
+    assert evidence["verification_status"] == "verified"
+    assert evidence["restore_status"] == "restored"
+    assert evidence["backup_matches_source"] is True
+    assert evidence["restored_matches_backup"] is True
+
+    identity = evidence["identity"]
+    assert identity["algorithm"] == "sha256"
+    assert identity["scope"] == "database content inventory"
+    digests = {identity["source"], identity["backup"], identity["restored"]}
+    assert len(digests) == 1
+    digest = digests.pop()
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert digest not in LIFECYCLE.read_text(encoding="utf-8")
+
+    # The identity is logical, so it can be published: no machine-local path and
+    # no secret rides along with it.
+    assert result["private_paths_recorded"] is False
+    assert result["secrets_recorded"] is False
+    assert str(tmp_path) not in json.dumps(result)

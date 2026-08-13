@@ -409,7 +409,12 @@ def test_workspace_inspect_returns_the_fixture_workspace(
     assert workspace["workspace_id"] == fixture.WORKSPACE_ID
     assert workspace["display_name"] == fixture.WORKSPACE_NAME
     assert workspace["status"] == "active"
-    assert workspace["created_at"] == fixture.WORKSPACE_CREATED_AT
+    # The manifest on disk stores the offset spelling; the wire carries the
+    # contract's canonical one. Both halves are asserted, so a handler that passed
+    # the stored string through -- which is what the official client refused against
+    # the advertised output schema -- fails here rather than only under a host.
+    assert workspace["created_at"] == fixture.WORKSPACE_CREATED_AT_CANONICAL
+    assert workspace["created_at"] != fixture.WORKSPACE_CREATED_AT
     # Nested past the top level on purpose: `dict(response.result)` converted
     # only the outer mapping and left this one a `mappingproxy`, which
     # `to_canonical_json` refuses. Reading it here is what keeps that fixed.

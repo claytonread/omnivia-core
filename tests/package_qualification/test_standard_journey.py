@@ -7,6 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -61,10 +62,52 @@ def test_journey_covers_initialization_governance_mcp_and_recovery() -> None:
         "governance",
         "propose",
         "approve",
+        "workspace_inspect",
+        "evidence_search",
         "knowledge_search",
+        "memory_search",
+        "graph_traverse",
         "context_pack_build",
+        "claude_desktop",
+        "claude_code",
+        "codex",
+        "official_python_sdk",
         "managed-local crash recovery",
     } <= constants
+
+
+def test_the_evidence_query_token_is_on_the_searchable_source_identity() -> None:
+    """`evidence.search` matches source kind, native id and locator -- not content.
+
+    A token that lived only in the captured file's bytes would leave
+    `evidence_search` answering empty while the other five tools found the
+    record, so it has to be part of the source id the capture registers.  Every
+    record source reference then names that same id through `SOURCE_ID`, so the
+    evidence the search finds is the evidence the approved record cites.
+    """
+    module = _module()
+    assert module.QUERY_TOKEN in module.SOURCE_ID
+
+    tree = _tree()
+    references = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and key.value == "source_id"
+    ]
+    arguments = [
+        following
+        for node in ast.walk(tree)
+        if isinstance(node, ast.List)
+        for element, following in zip(node.elts, node.elts[1:])
+        if isinstance(element, ast.Constant) and element.value == "--source-id"
+    ]
+    assert len(references) == 2 and arguments
+    assert all(
+        isinstance(node, ast.Name) and node.id == "SOURCE_ID"
+        for node in references + arguments
+    )
 
 
 def test_journey_has_no_skip_or_xfail_path() -> None:
@@ -719,7 +762,7 @@ def test_mcp_journey_reports_stage_and_error_class_without_leaking_details(
 ) -> None:
     module = _module()
 
-    async def _failing_session(executable, config, diagnostic, stage):
+    async def _failing_session(command, arguments, calls, diagnostic, stage):
         stage[0] = "context_pack_build"
         diagnostic.write("raw mcp server stderr with a secret token\n")
         diagnostic.flush()
@@ -731,7 +774,7 @@ def test_mcp_journey_reports_stage_and_error_class_without_leaking_details(
     monkeypatch.setattr(module, "_mcp_session", _failing_session)
 
     with pytest.raises(module.JourneyError) as excinfo:
-        module._mcp_journey(Path("unused-executable"), Path("unused-config"))
+        module._mcp_journey("unused-executable", [], {}, module.HOST_PROFILES[-1])
 
     message = str(excinfo.value)
     assert message == (
@@ -750,7 +793,7 @@ def test_mcp_journey_reports_nested_mcp_error_codes_without_leaking_details(
 ) -> None:
     module = _module()
 
-    async def _failing_session(executable, config, diagnostic, stage):
+    async def _failing_session(command, arguments, calls, diagnostic, stage):
         stage[0] = "initialize"
         diagnostic.write("raw mcp server stderr with secret token sk-1234\n")
         diagnostic.flush()
@@ -768,7 +811,7 @@ def test_mcp_journey_reports_nested_mcp_error_codes_without_leaking_details(
     monkeypatch.setattr(module, "_mcp_session", _failing_session)
 
     with pytest.raises(module.JourneyError) as excinfo:
-        module._mcp_journey(Path("unused-executable"), Path("unused-config"))
+        module._mcp_journey("unused-executable", [], {}, module.HOST_PROFILES[-1])
 
     message = str(excinfo.value)
     assert message == (
@@ -800,14 +843,740 @@ def test_mcp_journey_removes_its_temporary_diagnostic_file(
 
     monkeypatch.setattr(module.tempfile, "TemporaryDirectory", _tracking_temporary_directory)
 
-    async def _failing_session(executable, config, diagnostic, stage):
+    async def _failing_session(command, arguments, calls, diagnostic, stage):
         stage[0] = "initialize"
         raise RuntimeError("boom")
 
     monkeypatch.setattr(module, "_mcp_session", _failing_session)
 
     with pytest.raises(module.JourneyError):
-        module._mcp_journey(Path("unused-executable"), Path("unused-config"))
+        module._mcp_journey("unused-executable", [], {}, module.HOST_PROFILES[-1])
 
     assert captured_dirs
     assert not captured_dirs[0].exists()
+
+
+def _calls(module: ModuleType) -> dict[str, dict[str, object]]:
+    """One payload per advertised tool; the values are not what is under test."""
+    return {name: {} for name in module._RESULT_KEYS}
+
+
+def _result(module: ModuleType, name: str) -> object:
+    """One accepted, non-empty result body in this tool's own container type."""
+    return {"one": "value"} if name in module._MAPPING_RESULTS else ["one"]
+
+
+def _observation(module: ModuleType, names, **overrides) -> dict[str, object]:
+    """A complete, accepted session observation, before any mutation."""
+    observed = {
+        "server": "omnivia-core-mcp",
+        "tools": [{"name": name} for name in names],
+        "called": {
+            name: {
+                "is_error": False,
+                "structured_content": {module._RESULT_KEYS[name]: _result(module, name)},
+            }
+            for name in names
+        },
+    }
+    observed.update(overrides)
+    return observed
+
+
+def _session(observed):
+    async def _run(command, arguments, calls, diagnostic, stage):
+        return observed
+
+    return _run
+
+
+def test_every_named_client_family_is_driven_once() -> None:
+    module = _module()
+    assert [profile.name for profile in module.HOST_PROFILES] == [
+        "claude_desktop",
+        "claude_code",
+        "codex",
+        "official_python_sdk",
+    ]
+    # The official Python SDK profile is the one with no configuration file: it
+    # is what proves no Claude-specific assumption is embedded in the server.
+    assert [profile.config_name for profile in module.HOST_PROFILES] == [
+        "claude_desktop_config.json",
+        ".mcp.json",
+        "config.toml",
+        None,
+    ]
+    assert [profile.config_format for profile in module.HOST_PROFILES] == [
+        "claude_desktop_json",
+        "claude_code_json",
+        "codex_toml",
+        "official_python_sdk_stdio",
+    ]
+    assert [profile.table for profile in module.HOST_PROFILES] == [
+        "mcpServers",
+        "mcpServers",
+        "mcp_servers",
+        "mcpServers",
+    ]
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_each_generated_configuration_carries_only_the_accepted_stdio_fields(
+    index: int,
+) -> None:
+    module = _module()
+    profile = module.HOST_PROFILES[index]
+    command, arguments = "/opt/omnivia/bin/omnivia-core-mcp", [
+        "--config",
+        "/opt/omnivia/omnivia-mcp.json",
+    ]
+
+    text = module._host_configuration(profile, command, arguments)
+
+    document = tomllib.loads(text) if profile.toml else json.loads(text)
+    assert document == {
+        profile.table: {"omnivia-core": {"command": command, "args": arguments}}
+    }
+    # Field by field, because "equal to the accepted document" is exactly the
+    # claim the published example makes.
+    assert set(document[profile.table]["omnivia-core"]) == module.ACCEPTED_ENTRY_FIELDS
+    for unsafe in ("env", "url", "headers", "cwd", "Bearer", "token", "password"):
+        assert unsafe not in text
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_each_host_configuration_round_trips_the_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, index: int
+) -> None:
+    module = _module()
+    restricted: list[Path] = []
+    monkeypatch.setattr(module, "_restrict", restricted.append)
+    profile = module.HOST_PROFILES[index]
+    executable = tmp_path / "omnivia-core-mcp"
+    config = tmp_path / "omnivia-mcp.json"
+
+    command, arguments = module._host_launch(profile, tmp_path, executable, config)
+
+    written = tmp_path / profile.config_name
+    assert command == str(executable)
+    assert arguments == ["--config", str(config)]
+    # Restricted before it is read back, not after.
+    assert restricted == [written]
+    assert str(executable) in written.read_text(encoding="utf-8")
+
+
+def test_the_official_python_sdk_profile_is_configured_without_a_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module, "_restrict", lambda path: pytest.fail("no file to restrict")
+    )
+    profile = module.HOST_PROFILES[-1]
+
+    command, arguments = module._host_launch(
+        profile, tmp_path, tmp_path / "omnivia-core-mcp", tmp_path / "omnivia-mcp.json"
+    )
+
+    assert profile.config_format == "official_python_sdk_stdio"
+    assert command == str(tmp_path / "omnivia-core-mcp")
+    assert arguments == ["--config", str(tmp_path / "omnivia-mcp.json")]
+    assert list(tmp_path.iterdir()) == []
+
+
+_COMMAND = "/opt/omnivia/bin/omnivia-core-mcp"
+_ARGUMENTS = ["--config", "/opt/omnivia/omnivia-mcp.json"]
+
+
+def _render(profile, servers, *, table: str | None = None, extra: bool = False) -> str:
+    """One configuration document in this family's own form.
+
+    `json.dumps` of a scalar, a list of scalars or a flat mapping is also valid
+    TOML, so the same case table drives both forms.
+    """
+    key = profile.table if table is None else table
+    if not profile.toml:
+        document: dict[str, object] = {key: servers}
+        if extra:
+            document["inputs"] = []
+        return json.dumps(document)
+    lines = []
+    for name, entry in servers.items():
+        lines.append(f'[{key}."{name}"]')
+        lines.extend(f"{field} = {json.dumps(value)}" for field, value in entry.items())
+    if extra:
+        lines.append("[inputs]")
+        lines.append("x = 1")
+    return "\n".join(lines) + "\n"
+
+
+def _entry(**overrides: object) -> dict[str, object]:
+    entry: dict[str, object] = {"command": _COMMAND, "args": list(_ARGUMENTS)}
+    entry.update(overrides)
+    return {field: value for field, value in entry.items() if value is not None}
+
+
+#: One case per rejection class the fail-closed reader owes.  Each is a callable
+#: because the document has to be rendered in the family's own form.
+_REJECTED: dict[str, object] = {
+    "wrong_server_key": lambda p: _render(p, {"other-server": _entry()}),
+    "second_server": lambda p: _render(
+        p, {"omnivia-core": _entry(), "second": _entry()}
+    ),
+    "wrong_table_key": lambda p: _render(p, {"omnivia-core": _entry()}, table="servers"),
+    "extra_top_level_key": lambda p: _render(
+        p, {"omnivia-core": _entry()}, extra=True
+    ),
+    "command_absent": lambda p: _render(
+        p, {"omnivia-core": {"args": list(_ARGUMENTS)}}
+    ),
+    "command_wrong_type": lambda p: _render(p, {"omnivia-core": _entry(command=7)}),
+    "command_wrong_value": lambda p: _render(
+        p, {"omnivia-core": _entry(command="/usr/bin/other")}
+    ),
+    "args_absent": lambda p: _render(p, {"omnivia-core": {"command": _COMMAND}}),
+    "args_wrong_type": lambda p: _render(p, {"omnivia-core": _entry(args="--config")}),
+    "args_element_wrong_type": lambda p: _render(
+        p, {"omnivia-core": _entry(args=["--config", 7])}
+    ),
+    "args_wrong_value": lambda p: _render(
+        p, {"omnivia-core": _entry(args=["--config", "/other/omnivia-mcp.json"])}
+    ),
+    "args_truncated": lambda p: _render(p, {"omnivia-core": _entry(args=[])}),
+    "unsafe_env": lambda p: _render(
+        p, {"omnivia-core": _entry(env={"OMNIVIA_TOKEN": "sk-1234"})}
+    ),
+    "unsafe_url": lambda p: _render(
+        p, {"omnivia-core": _entry(url="https://example.invalid/mcp")}
+    ),
+    "unsafe_headers": lambda p: _render(
+        p, {"omnivia-core": _entry(headers={"Authorization": "Bearer sk-1234"})}
+    ),
+    "unsafe_bearer_token": lambda p: _render(
+        p, {"omnivia-core": _entry(bearer_token="sk-1234")}
+    ),
+    "unsafe_cwd": lambda p: _render(p, {"omnivia-core": _entry(cwd="/opt/omnivia")}),
+    "unsupported_transport": lambda p: _render(
+        p, {"omnivia-core": _entry(transport="sse")}
+    ),
+    "schema_drift": lambda p: _render(
+        p, {"omnivia-core": _entry(type="stdio", timeout_ms=1000)}
+    ),
+}
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+@pytest.mark.parametrize("case", sorted(_REJECTED))
+def test_an_unaccepted_host_configuration_fails_closed(index: int, case: str) -> None:
+    module = _module()
+    profile = module.HOST_PROFILES[index]
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._accepted_launch(
+            _REJECTED[case](profile), profile, _COMMAND, _ARGUMENTS
+        )
+
+    assert str(excinfo.value) == (
+        f"the {profile.name} configuration was not an accepted stdio launch"
+    )
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+@pytest.mark.parametrize(
+    "text", ["", "not a configuration at all", "{\"mcpServers\":", "[[[["]
+)
+def test_a_malformed_host_configuration_fails_closed(index: int, text: str) -> None:
+    module = _module()
+    profile = module.HOST_PROFILES[index]
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._accepted_launch(text, profile, _COMMAND, _ARGUMENTS)
+
+    assert str(excinfo.value) == (
+        f"the {profile.name} configuration was not an accepted stdio launch"
+    )
+
+
+@pytest.mark.parametrize("index", [0, 1])
+@pytest.mark.parametrize("text", ["[]", '"mcpServers"', "3", '{"mcpServers": []}'])
+def test_a_host_configuration_that_is_not_the_accepted_object_fails_closed(
+    index: int, text: str
+) -> None:
+    """TOML has no non-object document, so only the JSON families can be given one."""
+    module = _module()
+    profile = module.HOST_PROFILES[index]
+
+    with pytest.raises(module.JourneyError):
+        module._accepted_launch(text, profile, _COMMAND, _ARGUMENTS)
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_the_accepted_host_configuration_is_admitted(index: int) -> None:
+    module = _module()
+    profile = module.HOST_PROFILES[index]
+
+    command, arguments = module._accepted_launch(
+        module._host_configuration(profile, _COMMAND, _ARGUMENTS),
+        profile,
+        _COMMAND,
+        _ARGUMENTS,
+    )
+
+    assert (command, arguments) == (_COMMAND, _ARGUMENTS)
+
+
+def test_a_configuration_the_file_does_not_yield_fails_closed_before_any_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The launch is read out of the file, never carried over in memory."""
+    module = _module()
+    monkeypatch.setattr(module, "_restrict", lambda path: None)
+    profile = module.HOST_PROFILES[2]
+    monkeypatch.setattr(
+        module,
+        "_host_configuration",
+        lambda p, command, arguments: _render(
+            p, {"omnivia-core": _entry(command="/usr/bin/other")}
+        ),
+    )
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._host_launch(
+            profile, tmp_path, tmp_path / "omnivia-core-mcp", tmp_path / "config.json"
+        )
+
+    assert str(excinfo.value) == (
+        "the codex configuration was not an accepted stdio launch"
+    )
+
+
+def test_retained_host_evidence_exposes_exactly_the_accepted_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_restrict", lambda path: None)
+    names = list(module._RESULT_KEYS)
+    monkeypatch.setattr(module, "_mcp_session", _session(_observation(module, names)))
+
+    result = module._host_interoperability(
+        tmp_path / "omnivia-core-mcp",
+        tmp_path / "omnivia-mcp.json",
+        tmp_path,
+        _calls(module),
+    )
+
+    hosts = result["hosts"]
+    assert set(hosts) == {profile.name for profile in module.HOST_PROFILES}
+    for profile in module.HOST_PROFILES:
+        assert hosts[profile.name] == {
+            "client": profile.name,
+            "config_format": profile.config_format,
+            "connected": True,
+            "session_completed": True,
+            "tool_count": 6,
+            "tool_calls": 6,
+            "tools": sorted(names),
+            "result_counts": dict.fromkeys(names, 1),
+            "verdict": "pass",
+        }
+    # Nothing from the session, the launch or the filesystem reaches the
+    # transcript: no path, argument, stream, identifier or free text.
+    retained = json.dumps(result, sort_keys=True)
+    for leak in (
+        str(tmp_path),
+        "--config",
+        "omnivia-core-mcp",
+        "stderr",
+        "stdout",
+        "pid",
+    ):
+        assert leak not in retained
+
+
+def test_every_advertised_tool_is_called_from_every_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_restrict", lambda path: None)
+    names = list(module._RESULT_KEYS)
+    called: list[tuple[str, str]] = []
+
+    async def _recording(command, arguments, calls, diagnostic, stage):
+        called.extend((command, name) for name in calls)
+        return _observation(module, names)
+
+    monkeypatch.setattr(module, "_mcp_session", _recording)
+
+    result = module._host_interoperability(
+        tmp_path / "omnivia-core-mcp",
+        tmp_path / "omnivia-mcp.json",
+        tmp_path,
+        _calls(module),
+    )
+
+    assert len(called) == 24
+    assert {name for _command, name in called} == set(names)
+    assert result["tool_count"] == 6
+    assert result["tools"] == sorted(names)
+    assert result["knowledge_records"] == 1
+    assert result["context_records"] == 1
+    assert result["stdio_session_completed"] is True
+
+
+def test_each_profile_gets_one_fresh_session_of_its_own(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_restrict", lambda path: None)
+    names = list(module._RESULT_KEYS)
+    entered: list[str] = []
+
+    async def _counting(command, arguments, calls, diagnostic, stage):
+        entered.append(command)
+        return _observation(module, names)
+
+    monkeypatch.setattr(module, "_mcp_session", _counting)
+    runs: list[object] = []
+    real_run = module.anyio.run
+    monkeypatch.setattr(
+        module.anyio,
+        "run",
+        lambda *args, **kwargs: (runs.append(args[0]), real_run(*args, **kwargs))[1],
+    )
+
+    module._host_interoperability(
+        tmp_path / "omnivia-core-mcp",
+        tmp_path / "omnivia-mcp.json",
+        tmp_path,
+        _calls(module),
+    )
+
+    # One transport entry per family, each opened and closed inside its own
+    # `_mcp_session` call -- there is no session to share.
+    assert len(entered) == len(module.HOST_PROFILES) == 4
+    assert len(runs) == 4
+
+
+def test_the_session_transport_is_opened_only_inside_one_session_function() -> None:
+    """No client or transport is constructed outside `_mcp_session`.
+
+    A session hoisted to module scope, or reused across profiles, would make
+    "one fresh session per profile" untrue without changing any assertion above.
+    """
+    functions = {
+        node.name: node
+        for node in ast.walk(_tree())
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    users = {
+        name
+        for name, node in functions.items()
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id in {"stdio_client", "ClientSession", "StdioServerParameters"}
+    }
+    assert users == {"_mcp_session"}
+
+
+def test_a_host_manifest_that_differs_from_the_others_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_restrict", lambda path: None)
+    seen: list[str] = []
+
+    def _per_host(command, arguments, calls, profile):
+        seen.append(profile.name)
+        advertised = sorted(calls)
+        return {
+            "client": profile.name,
+            "config_format": profile.config_format,
+            "connected": True,
+            "session_completed": True,
+            "tool_count": 6,
+            "tool_calls": 6,
+            # The second host sees a different manifest from the first.
+            "tools": advertised[1:] if len(seen) == 2 else advertised,
+            "result_counts": dict.fromkeys(calls, 1),
+            "verdict": "pass",
+        }
+
+    monkeypatch.setattr(module, "_mcp_journey", _per_host)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._host_interoperability(
+            tmp_path / "omnivia-core-mcp",
+            tmp_path / "omnivia-mcp.json",
+            tmp_path,
+            _calls(module),
+        )
+
+    assert str(excinfo.value) == "the advertised tool manifest differed between hosts"
+
+
+def test_a_manifest_that_is_not_the_accepted_six_tools_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    renamed = [{"name": name} for name in (*names[:-1], "context_pack_write")]
+    monkeypatch.setattr(
+        module, "_mcp_session", _session(_observation(module, names, tools=renamed))
+    )
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
+
+    assert str(excinfo.value) == (
+        "the claude_desktop tool manifest was not the accepted six tools"
+    )
+
+
+@pytest.mark.parametrize("count", [5, 7])
+def test_a_manifest_of_the_wrong_size_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    tools = [{"name": name} for name in names[:count]]
+    tools += [{"name": f"extra_{index}"} for index in range(count - len(tools))]
+    monkeypatch.setattr(
+        module, "_mcp_session", _session(_observation(module, names, tools=tools))
+    )
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
+
+    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+
+
+def test_a_session_that_did_not_identify_the_server_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    monkeypatch.setattr(
+        module, "_mcp_session", _session(_observation(module, names, server=""))
+    )
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
+
+    assert str(excinfo.value) == "MCP did not identify itself to codex"
+
+
+def test_a_tool_the_host_could_not_call_fails_closed_naming_that_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["graph_traverse"]["is_error"] = True
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
+
+    assert str(excinfo.value) == "MCP graph_traverse did not return a success for codex"
+
+
+def test_a_tool_result_without_structured_content_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["evidence_search"] = {"is_error": False}
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
+
+    assert str(excinfo.value) == (
+        "MCP evidence_search omitted structuredContent for claude_desktop"
+    )
+
+
+def test_an_empty_result_from_an_advertised_tool_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["memory_search"]["structured_content"] = {"records": []}
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
+
+    assert str(excinfo.value) == "MCP memory_search returned nothing for claude_code"
+
+
+def test_a_tool_that_was_never_called_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that skipped a call cannot be retained as six calls."""
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    del observed["called"]["knowledge_search"]
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[3])
+
+    assert str(excinfo.value) == (
+        "the official_python_sdk session did not call all six tools"
+    )
+
+
+@pytest.mark.parametrize(
+    "called",
+    [
+        None,
+        {},
+        "workspace_inspect",
+        [],
+        {"workspace_inspect": {"is_error": False}},
+    ],
+)
+def test_a_missing_or_malformed_call_table_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, called: object
+) -> None:
+    """`called` is validated as a mapping of exactly the six call names.
+
+    Indexing it blind would raise a `KeyError` or a `TypeError` out of this
+    program rather than a bounded journey failure.
+    """
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names, called=called)
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
+
+    assert str(excinfo.value) == "the codex session did not call all six tools"
+
+
+def test_a_call_table_carrying_a_tool_nobody_called_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["context_pack_write"] = {"is_error": False}
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[0])
+
+    assert str(excinfo.value) == (
+        "the claude_desktop session did not call all six tools"
+    )
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        None,
+        "six",
+        [{"name": "workspace_inspect"}] * 5 + [{"name": None}],
+        [{"name": "workspace_inspect"}] * 5 + [{"name": 6}],
+        [{"name": "workspace_inspect"}] * 5 + [{}],
+        [{"name": "workspace_inspect"}] * 5 + ["evidence_search"],
+        ["workspace_inspect"] * 6,
+        [{"name": "workspace_inspect"}] * 5 + [{"name": ["evidence_search"]}],
+    ],
+)
+def test_a_malformed_tool_entry_or_name_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tools: object
+) -> None:
+    """A non-mapping entry or a non-string name is refused before the sort.
+
+    Sorting a list holding a `None` or an `int` beside a `str` raises a
+    `TypeError`; this journey fails with its own bounded message instead.
+    """
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names, tools=tools)
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[1])
+
+    assert str(excinfo.value) == "MCP did not advertise the accepted six-tool manifest"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        # A scalar, a boolean or a string is not a countable result body.
+        ("knowledge_search", 1),
+        ("knowledge_search", True),
+        ("knowledge_search", "one record"),
+        ("knowledge_search", None),
+        # The five list-shaped results do not accept an object.
+        ("evidence_search", {"one": "value"}),
+        ("graph_traverse", {"one": "value"}),
+        ("context_pack_build", ()),
+        # `workspace_inspect` answers with one object, never a list.
+        ("workspace_inspect", ["one"]),
+        ("workspace_inspect", {}),
+        ("workspace_inspect", True),
+        ("workspace_inspect", 1),
+    ],
+)
+def test_a_result_of_the_wrong_type_or_container_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: object
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"][name]["structured_content"] = {module._RESULT_KEYS[name]: value}
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[2])
+
+    assert str(excinfo.value) == f"MCP {name} returned nothing for codex"
+
+
+def test_a_result_under_a_key_this_tool_does_not_answer_with_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    names = list(module._RESULT_KEYS)
+    observed = _observation(module, names)
+    observed["called"]["graph_traverse"]["structured_content"] = {"records": ["one"]}
+    monkeypatch.setattr(module, "_mcp_session", _session(observed))
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey("unused", [], _calls(module), module.HOST_PROFILES[3])
+
+    assert str(excinfo.value) == (
+        "MCP graph_traverse returned nothing for official_python_sdk"
+    )
+
+
+def test_the_journey_calls_every_tool_the_manifest_advertises() -> None:
+    """The call table and the result-key table are the same six names."""
+    module = _module()
+    assert set(module._RESULT_KEYS) == {
+        "workspace_inspect",
+        "evidence_search",
+        "knowledge_search",
+        "memory_search",
+        "graph_traverse",
+        "context_pack_build",
+    }
+    tree = _tree()
+    keys = {
+        key.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    assert set(module._RESULT_KEYS) <= keys
