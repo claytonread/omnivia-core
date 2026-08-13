@@ -16,6 +16,7 @@ contracts, rather than a source checkout or an in-process test seam.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -249,21 +250,50 @@ def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) 
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
+def _exception_class_names(error: BaseException) -> list[str]:
+    """Sorted, unique class names, flattening nested BaseExceptionGroup leaves."""
+    names: set[str] = set()
+    pending: list[BaseException] = [error]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        else:
+            names.add(type(current).__name__)
+    return sorted(names)
+
+
+def _mcp_failure_message(stage: str, error: BaseException, server_diagnostic: bool) -> str:
+    classes = _exception_class_names(error)
+    return (
+        f"MCP standalone session did not complete: stage={stage} "
+        f"errors={classes} server_diagnostic={'true' if server_diagnostic else 'false'}"
+    )
+
+
 async def _mcp_session(
-    executable: Path, config: Path, diagnostic: TextIO
+    executable: Path, config: Path, diagnostic: TextIO, stage: list[str]
 ) -> dict[str, Any]:
     parameters = StdioServerParameters(
         command=str(executable), args=["--config", str(config)]
     )
-    async with (
-        stdio_client(parameters, errlog=diagnostic) as (read_stream, write_stream),
-        ClientSession(read_stream, write_stream) as session,
-    ):
+    stage[0] = "transport_entry"
+    async with contextlib.AsyncExitStack() as stack:
+        read_stream, write_stream = await stack.enter_async_context(
+            stdio_client(parameters, errlog=diagnostic)
+        )
+        session = await stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        stage[0] = "initialize"
         initialized = await session.initialize()
+        stage[0] = "list_tools"
         listed = await session.list_tools()
+        stage[0] = "knowledge_search"
         knowledge = await session.call_tool(
             "knowledge_search", {"query": QUERY_TOKEN}
         )
+        stage[0] = "context_pack_build"
         context = await session.call_tool(
             "context_pack_build",
             {
@@ -272,6 +302,7 @@ async def _mcp_session(
                 "token_budget": 4000,
             },
         )
+        stage[0] = "shutdown"
     return {
         "server": initialized.server_info.name,
         "tools": [tool.model_dump(mode="json") for tool in listed.tools],
@@ -281,11 +312,19 @@ async def _mcp_session(
 
 
 def _mcp_journey(executable: Path, config: Path) -> dict[str, Any]:
-    try:
-        with open(os.devnull, "w", encoding="utf-8") as diagnostic:
-            observed = anyio.run(_mcp_session, executable, config, diagnostic)
-    except Exception as error:
-        raise JourneyError("MCP standalone session did not complete") from error
+    stage: list[str] = ["transport_entry"]
+    with tempfile.TemporaryDirectory(prefix="omnivia-mcp-diagnostic-") as diagnostic_dir:
+        diagnostic_path = Path(diagnostic_dir) / "mcp-server-stderr.txt"
+        try:
+            with open(diagnostic_path, "w", encoding="utf-8") as diagnostic:
+                observed = anyio.run(_mcp_session, executable, config, diagnostic, stage)
+        except Exception as error:
+            server_diagnostic = (
+                diagnostic_path.is_file() and diagnostic_path.stat().st_size > 0
+            )
+            raise JourneyError(
+                _mcp_failure_message(stage[0], error, server_diagnostic)
+            ) from error
     tools = observed.get("tools")
     if not isinstance(tools, list) or len(tools) != 6:
         raise JourneyError("MCP did not advertise the accepted six-tool manifest")
