@@ -23,7 +23,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             let executable = try CLIResolver().resolve(override: configuration.cliOverride)
             runner = CLICommandRunner(executable: executable, home: configuration.homeOverride)
         } catch {
-            runner = UnavailableLifecycleRunner(reason: error.localizedDescription)
+            runner = UnavailableLifecycleRunner()
         }
         coordinator = LifecycleCoordinator(runner: runner)
         super.init()
@@ -50,6 +50,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         // The status menu is a companion, not the service owner. Quitting it
         // deliberately performs no Core lifecycle command.
         pollTimer?.invalidate()
+        coordinator.companionWillTerminate()
     }
 
     private func configureMenu() {
@@ -133,9 +134,12 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // A fixed phrase: the companion may reveal a log that already exists, but
+        // it names no path of its own — an installation location is not a word
+        // this process puts on screen.
         let alert = NSAlert()
         alert.messageText = "No Core service log yet"
-        alert.informativeText = "Start Core once to create \(log.path)."
+        alert.informativeText = "Start Core once to create the service log."
         alert.alertStyle = .informational
         alert.runModal()
     }
@@ -158,6 +162,10 @@ do {
         application.run()
     }
 } catch {
-    FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+    // One fixed usage line. Even the companion's own argument errors echo the
+    // words they were given, and this process writes none of those back.
+    FileHandle.standardError.write(
+        Data("usage: omnivia-core-status-menu [--cli <absolute path>] [--home <absolute path>]\n".utf8)
+    )
     Darwin.exit(2)
 }

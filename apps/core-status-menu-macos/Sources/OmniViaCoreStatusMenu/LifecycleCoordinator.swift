@@ -36,6 +36,10 @@ final class LifecycleCoordinator: @unchecked Sendable {
         issue(.stop, operation: .stopping)
     }
 
+    /// The companion is not the service owner: quitting it deliberately issues
+    /// no lifecycle command, so Core outlives the menu that watches it.
+    func companionWillTerminate() {}
+
     private func issue(_ action: LifecycleAction, operation: MenuOperation) {
         guard !inFlight else { return }
         inFlight = true
@@ -50,13 +54,7 @@ final class LifecycleCoordinator: @unchecked Sendable {
             case let .success(document):
                 self.snapshot = MenuSnapshot(document: document)
             case let .failure(error):
-                self.snapshot = MenuSnapshot(
-                    condition: .failed(
-                        MenuProjection.displayReason(
-                            error.errorDescription ?? "Core lifecycle command failed"
-                        )
-                    )
-                )
+                self.snapshot = MenuSnapshot(condition: .unavailable(error))
             }
 
             if action != .status {

@@ -1,26 +1,16 @@
 import Foundation
 
-enum LifecycleRunnerError: LocalizedError, Equatable, Sendable {
-    case launchFailed(String)
-    case timedOut(LifecycleAction)
-    case invalidOutput(String)
+/// The closed set of ways this companion ends up with no safe status to show.
+/// Deliberately carries no payload: a launcher message, a decoder complaint or
+/// a line of the adapter's stderr is exactly what must not reach the menu, so
+/// there is nowhere here to put one.
+enum LifecycleRunnerError: Error, Equatable, Sendable {
+    case commandUnavailable
+    case timedOut
+    case unreadableOutput
     case actionMismatch
     case exitStatusMismatch
-
-    var errorDescription: String? {
-        switch self {
-        case let .launchFailed(reason):
-            return "could not launch OmniVia Core: \(reason)"
-        case let .timedOut(action):
-            return "OmniVia Core \(action.rawValue) timed out"
-        case let .invalidOutput(reason):
-            return reason
-        case .actionMismatch:
-            return "Core returned a lifecycle result for a different action"
-        case .exitStatusMismatch:
-            return "Core lifecycle result disagreed with the process exit status"
-        }
-    }
+    case noSafeStatus
 }
 
 typealias LifecycleCompletion = @Sendable (
@@ -95,13 +85,12 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
                 try process.run()
             } catch {
                 callbackQueue.async {
-                    completion(.failure(.launchFailed(error.localizedDescription)))
+                    completion(.failure(.commandUnavailable))
                 }
                 return
             }
 
             let output = LockedData()
-            let errors = LockedData()
             let readers = DispatchGroup()
             readers.enter()
             DispatchQueue.global(qos: .utility).async {
@@ -112,9 +101,10 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
             }
             readers.enter()
             DispatchQueue.global(qos: .utility).async {
-                errors.replace(
-                    with: (try? standardError.fileHandleForReading.readToEnd()) ?? Data()
-                )
+                // Drained so a chatty adapter cannot deadlock on a full pipe,
+                // and discarded on the spot: human stderr is not this
+                // companion's to read, let alone to show.
+                _ = try? standardError.fileHandleForReading.readToEnd()
                 readers.leave()
             }
 
@@ -124,7 +114,7 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
                 _ = terminated.wait(timeout: .now() + 2)
                 _ = readers.wait(timeout: .now() + 2)
                 callbackQueue.async {
-                    completion(.failure(.timedOut(action)))
+                    completion(.failure(.timedOut))
                 }
                 return
             }
@@ -133,8 +123,7 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
             let result = Self.decode(
                 action: action,
                 terminationStatus: process.terminationStatus,
-                output: output.value(),
-                errorOutput: errors.value()
+                output: output.value()
             )
             callbackQueue.async { completion(result) }
         }
@@ -154,20 +143,16 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
     static func decode(
         action: LifecycleAction,
         terminationStatus: Int32,
-        output: Data,
-        errorOutput: Data
+        output: Data
     ) -> Result<LifecycleDocument, LifecycleRunnerError> {
         let document: LifecycleDocument
         do {
             document = try LifecycleDocument.decode(output)
         } catch {
-            let stderr = MenuProjection.displayReason(
-                String(data: errorOutput, encoding: .utf8) ?? ""
-            )
-            let reason = stderr == "Core lifecycle command failed"
-                ? "Core returned invalid lifecycle JSON"
-                : stderr
-            return .failure(.invalidOutput(reason))
+            // The decoder's own complaint names the field, the value and the
+            // path it walked. None of that is shown; the refusal is the whole
+            // of what the menu learns.
+            return .failure(.unreadableOutput)
         }
         guard document.action == action else {
             return .failure(.actionMismatch)
@@ -179,17 +164,13 @@ final class CLICommandRunner: LifecycleRunning, @unchecked Sendable {
     }
 }
 
+/// Stands in when no `omnivia` executable could be resolved. The resolution
+/// error named the path it rejected, so it is dropped here rather than carried.
 final class UnavailableLifecycleRunner: LifecycleRunning, @unchecked Sendable {
-    private let reason: String
-
-    init(reason: String) {
-        self.reason = reason
-    }
-
     func run(
         _ action: LifecycleAction,
         completion: @escaping LifecycleCompletion
     ) {
-        completion(.failure(.launchFailed(reason)))
+        completion(.failure(.commandUnavailable))
     }
 }

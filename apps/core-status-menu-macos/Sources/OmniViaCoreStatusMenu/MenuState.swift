@@ -2,9 +2,10 @@ import Foundation
 
 enum ServiceCondition: Equatable, Sendable {
     case checking
-    case running(ServiceSnapshot)
-    case stopped
-    case failed(String)
+    /// No safe status to show: the adapter published none, or nothing usable
+    /// came back at all. Either way the menu offers no controls.
+    case unavailable(LifecycleRunnerError)
+    case status(CoreSafeStatusV1)
 }
 
 enum MenuOperation: Equatable, Sendable {
@@ -25,22 +26,14 @@ struct MenuSnapshot: Equatable, Sendable {
         self.operation = operation
     }
 
+    /// Only the safe status is read. `outcome` and `code` are validated on the
+    /// way in and then discarded: what a user sees is what the contract says a
+    /// pre-authentication surface may see, and nothing else.
     init(document: LifecycleDocument) {
-        switch document.outcome {
-        case .started, .attached, .running:
-            if let service = document.service {
-                self.init(condition: .running(service))
-            } else {
-                self.init(condition: .failed("Core returned no service snapshot"))
-            }
-        case .notRunning, .stopped:
-            self.init(condition: .stopped)
-        case .failed:
-            self.init(
-                condition: .failed(
-                    MenuProjection.displayReason(document.reason ?? "Core lifecycle command failed")
-                )
-            )
+        if let safeStatus = document.safeStatus {
+            self.init(condition: .status(safeStatus))
+        } else {
+            self.init(condition: .unavailable(.noSafeStatus))
         }
     }
 }
@@ -88,47 +81,115 @@ struct MenuProjection: Equatable, Sendable {
                 startEnabled: false,
                 stopEnabled: false
             )
-        case let .running(service):
-            let unmet = service.unmet.isEmpty ? "" : " · \(service.unmet.joined(separator: ", "))"
+        case let .unavailable(reason):
             return MenuProjection(
-                title: service.ready ? "OmniVia Core — Running" : "OmniVia Core — Not Ready",
-                detail: "\(service.workspaceID) · \(service.state)\(unmet)",
-                symbolName: service.ready ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                title: "OmniVia Core — Status Unavailable",
+                detail: detail(for: reason),
+                symbolName: "questionmark.circle",
                 refreshEnabled: !busy,
+                // No safe status means no permitted actions, and an action this
+                // companion was not told it may take is one it does not offer.
                 startEnabled: false,
-                stopEnabled: !busy
-            )
-        case .stopped:
-            return MenuProjection(
-                title: "OmniVia Core — Stopped",
-                detail: "Service is not running",
-                symbolName: "circle",
-                refreshEnabled: !busy,
-                startEnabled: !busy,
                 stopEnabled: false
             )
-        case let .failed(reason):
+        case let .status(status):
             return MenuProjection(
-                title: "OmniVia Core — Needs Attention",
-                detail: displayReason(reason),
-                symbolName: "exclamationmark.triangle.fill",
+                title: title(for: status),
+                detail: detail(for: status),
+                symbolName: symbolName(for: status),
                 refreshEnabled: !busy,
-                // Both lifecycle commands are safety-checked and idempotent at
-                // the CLI boundary. Keeping them available gives a stale or
-                // degraded service a recovery path without guessing its pid.
-                startEnabled: !busy,
-                stopEnabled: !busy
+                // Availability comes from `permitted_actions` alone: never from
+                // the lifecycle phase, and never from a guess about the process.
+                startEnabled: !busy && status.permittedActions.contains(.start),
+                stopEnabled: !busy && status.permittedActions.contains(.stop)
             )
         }
     }
 
-    static func displayReason(_ reason: String) -> String {
-        let oneLine = reason
-            .split(whereSeparator: \.isNewline)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !oneLine.isEmpty else { return "Core lifecycle command failed" }
-        let prefix = String(oneLine.prefix(180))
-        return prefix.count == oneLine.count ? prefix : prefix + "…"
+    private static func title(for status: CoreSafeStatusV1) -> String {
+        let phase: String
+        switch status.lifecycleState {
+        case .starting:
+            phase = "Starting…"
+        case .running:
+            phase = status.readinessState == .ready ? "Running" : "Not Ready"
+        case .stopping:
+            phase = "Stopping…"
+        case .stopped:
+            phase = "Stopped"
+        case .failed:
+            phase = "Needs Attention"
+        case .unknown:
+            phase = "Status Unknown"
+        }
+        return "OmniVia Core — " + phase
+    }
+
+    /// One fixed local phrase, chosen from the closed advisory set first and the
+    /// closed connection/readiness states otherwise. Nothing the adapter wrote
+    /// is ever echoed.
+    private static func detail(for status: CoreSafeStatusV1) -> String {
+        if let warning = CoreSafeWarningCode.allCases.first(where: status.warningCodes.contains) {
+            switch warning {
+            case .authenticationRequired:
+                return "Core needs you to sign in"
+            case .versionIncompatible:
+                return "A different Core version owns this workspace"
+            case .upgradeRequired:
+                return "Core needs an update"
+            case .workspaceFormatIncompatible:
+                return "This workspace needs an upgrade"
+            case .endpointUnreachable:
+                return "Core is not answering"
+            case .degraded:
+                return "Core is running but not ready"
+            }
+        }
+        switch status.connectionState {
+        case .connected:
+            return status.readinessState == .ready
+                ? "Ready to serve requests"
+                : "Core is running but not ready"
+        case .connecting:
+            return "Contacting the Core Service"
+        case .disconnected:
+            return "Service is not running"
+        case .unreachable:
+            return "Core is not answering"
+        case .authenticationRequired:
+            return "Core needs you to sign in"
+        case .unknown:
+            return "Core status is unknown"
+        }
+    }
+
+    private static func detail(for reason: LifecycleRunnerError) -> String {
+        switch reason {
+        case .commandUnavailable:
+            return "The Core command line tool is unavailable"
+        case .timedOut:
+            return "Core did not answer in time"
+        case .noSafeStatus:
+            return "Core published no status this companion may show"
+        case .unreadableOutput, .actionMismatch, .exitStatusMismatch:
+            return "Core published a status this companion cannot read"
+        }
+    }
+
+    private static func symbolName(for status: CoreSafeStatusV1) -> String {
+        switch status.lifecycleState {
+        case .running:
+            return status.readinessState == .ready
+                ? "checkmark.circle.fill"
+                : "exclamationmark.circle.fill"
+        case .starting, .stopping:
+            return "arrow.triangle.2.circlepath"
+        case .stopped:
+            return "circle"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .unknown:
+            return "questionmark.circle"
+        }
     }
 }
