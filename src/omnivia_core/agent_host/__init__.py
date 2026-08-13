@@ -16,7 +16,12 @@ being done.
 The conformance corpus loader and its report DTOs are re-exported for the same
 reason the mock is: they are what an adapter author runs against. The loader
 only reads the accepted corpus into immutable value objects; executing a case
-against a provider is not its job.
+against a provider is
+:mod:`omnivia_core.agent_host.conformance_runner`'s job, and its comparator,
+one-case executor and corpus runner are re-exported here too. The input recipes
+in :mod:`omnivia_core.agent_host.vector_inputs` are not: they are the runner's
+own half of the lane, and an adapter author runs the corpus rather than
+assembling one call at a time.
 
 The mock is re-exported because developing against it is the point of it
 shipping at all. It holds no durable state: everything it keeps between calls
@@ -33,6 +38,15 @@ from omnivia_core.agent_host.conformance import (
     CorpusReport,
     ExpectedOutcome,
     load_corpus,
+)
+from omnivia_core.agent_host.conformance_runner import (
+    CaseComparison,
+    ConformanceRunError,
+    Mismatch,
+    compare_case,
+    execute_case,
+    run_corpus,
+    run_corpus_file,
 )
 from omnivia_core.agent_host.mock import MockProvider, ProviderProfile
 from omnivia_core.agent_host.spi import (
@@ -56,9 +70,11 @@ __all__ = [
     "SPI_VERSION_MAXIMUM",
     "SPI_VERSION_MINIMUM",
     "ApprovalKind",
+    "CaseComparison",
     "CaseReport",
     "ConformanceCase",
     "ConformanceCorpus",
+    "ConformanceRunError",
     "CorpusError",
     "CorpusReport",
     "Disposition",
@@ -66,6 +82,7 @@ __all__ = [
     "Hook",
     "HookIntent",
     "HookOutcome",
+    "Mismatch",
     "MockProvider",
     "ProviderProfile",
     "Reason",
@@ -73,5 +90,9 @@ __all__ = [
     "SpiProvenance",
     "SpiRequest",
     "VersionAxes",
+    "compare_case",
+    "execute_case",
     "load_corpus",
+    "run_corpus",
+    "run_corpus_file",
 ]
