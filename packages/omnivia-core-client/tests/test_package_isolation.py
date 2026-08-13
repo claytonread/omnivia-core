@@ -160,6 +160,7 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "http_transport.py",
         "local_ipc.py",
         "transport.py",
+        "windows_pipe.py",
     }
 
 
@@ -183,6 +184,14 @@ def test_only_the_local_ipc_module_opens_a_socket() -> None:
         path.name for path in MODULES if "socket" in _imported_roots(path)
     )
     assert importers == [SOCKET_MODULE]
+
+
+def test_only_the_windows_pipe_module_reaches_for_ctypes() -> None:
+    """Native pipe access is confined to the one Windows transport module."""
+    importers = sorted(
+        path.name for path in MODULES if "ctypes" in _imported_roots(path)
+    )
+    assert importers == ["discovery.py", "windows_pipe.py"]
 
 
 @pytest.mark.parametrize("module_name", HTTP_ONLY_IMPORTS)
@@ -357,17 +366,14 @@ def test_the_typing_marker_ships() -> None:
 def test_the_readme_marks_the_unimplemented_surfaces() -> None:
     """What is still absent, after the authenticated HTTP transport landed.
 
-    ``local socket`` left this list when R005-01 landed the local transport, and
-    ``HTTP transport`` has now left it the same way. The four that remain are
-    unchanged: the Windows named pipe is the half of local IPC that is still a
-    successor, and retry, managed startup and the high-level client are each
-    their own packet.
+    ``local socket`` left this list when R005-01 landed the local transport;
+    HTTP and Windows named-pipe transport have now left it too. Retry, managed
+    startup and the high-level client remain their own packets.
     """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     not_implemented = readme.split("## Not implemented yet", 1)
     assert len(not_implemented) == 2, "README must state what is not implemented yet"
     for surface in (
-        "named-pipe",
         "retry",
         "managed service startup",
         "high-level client",
@@ -386,3 +392,4 @@ def test_the_readme_no_longer_claims_http_or_credentials_are_absent() -> None:
     absent = readme.split("## Not implemented yet", 1)[1].lower()
     assert "http" not in absent
     assert "credential" not in absent
+    assert "named-pipe" not in absent

@@ -276,8 +276,8 @@ PHASE2_LOCAL_INSTALLS = (
     "python -m pip install -e .",
     'python -m pip install -e "services/omnivia-memory[dev]"',
     "python -m pip install -e packages/omnivia-core-runtime",
-    # Packet section 17b.2: installed here only so the CLI install after it can
-    # resolve the dependency it declares. No suite this matrix runs imports it.
+    # Packet section 17b.2: installed before the CLI dependency edge; the
+    # named-pipe parity suite also imports it directly.
     "python -m pip install -e packages/omnivia-core-client",
     "python -m pip install -e packages/omnivia-core-cli",
     "python -m pip install -e packages/omnivia-core-mcp",
@@ -785,7 +785,7 @@ def test_phase2_install_commands_are_quoted_for_every_hosted_shell() -> None:
 
 
 def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> None:
-    """The matrix and its two steps are the evidence this workflow exists to
+    """The matrix and its qualification steps are the evidence this workflow exists to
     collect, so none of it may be narrowed, skipped or made informational to get a
     green run: a suppressed Windows row reports success for the one platform that
     has never proved anything."""
@@ -808,6 +808,12 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
     assert (
         "python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs"
         in _commands(_step(steps, "Run Phase 2 acceptance suite"))
+    )
+    assert (
+        "python -m pytest "
+        "packages/omnivia-core-runtime/tests/phase3/protocol/"
+        "test_windows_named_pipe.py -q -rs"
+        in _commands(_step(steps, "Run Windows named-pipe client parity"))
     )
     assert "python scripts/check-platform-lock-coverage.py" in _commands(
         _step(steps, "Assert this platform's lock case actually ran")

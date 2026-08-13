@@ -173,8 +173,17 @@ implementation derives its remaining time at the moment it is about to wait.
 calls before writing its first byte: cancellation first, then the deadline.
 
 Two concrete transports satisfy it, both in this package: `LocalIpcTransport`
-over the installation-local `unix://` endpoint, and `HttpTransport` over an
-authenticated HTTP v1 endpoint.
+over the installation-local `unix://` endpoint on POSIX or `pipe://` endpoint on
+Windows, and `HttpTransport` over an authenticated HTTP v1 endpoint.
+
+`LocalIpcTransport` carries the same raw OVC1 byte stream over both platform
+mechanisms. The Windows client uses overlapped `WaitNamedPipeW`/`CreateFileW`,
+`ReadFile` and `WriteFile` calls with one absolute call deadline; it asks for
+duplex access, which preserves the Runtime listener's creating-user boundary,
+and retries only the unavoidable wait/create busy race. Native APIs are loaded
+lazily, so importing the package remains safe on POSIX. Neither local mechanism
+claims cryptographic peer identity; it establishes only that this process could
+open the operating-system-protected endpoint.
 
 ### `credentials` — a name for a credential, bound to one endpoint origin
 
@@ -352,8 +361,9 @@ passed unchanged to the transport.
 This is candidate-level discovery through an injected transport. `discovery` itself
 ships no transport: it is handed one, and the two this package provides —
 `LocalIpcTransport` and `HttpTransport` — are constructed by the caller, not by it.
-It does not claim integrated discovery over a real local endpoint, and there is
-still no named-pipe transport to inject on Windows.
+It does not claim integrated discovery over a real local endpoint by itself;
+the caller supplies `LocalIpcTransport`, which now covers the accepted local
+mechanism on both POSIX and Windows.
 
 ### `errors` — the typed failures
 
@@ -378,8 +388,6 @@ traceback rendering hides them.
 
 None of the following exists in this package, and no caller may assume it:
 
-- **a Windows named-pipe transport** — `LocalIpcTransport` dials `unix://`
-  endpoints and refuses `pipe://` explicitly rather than half-supporting it;
 - **retry, backoff, or idempotent replay**;
 - **managed service startup** — launching or supervising a service;
 - **the high-level client** — the object that would put the above together and

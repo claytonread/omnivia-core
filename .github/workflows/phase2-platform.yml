@@ -62,8 +62,8 @@ jobs:
         # `omnivia-core-client` obeys that same rule one edge further down: it is
         # as unpublished as `omnivia-core`, and `omnivia-core-cli` declares it, so
         # the CLI install below resolves against the index and fails unless the
-        # client precedes it. Packet section 17b.2. No suite this job runs imports
-        # the client; it is installed so the line after it can succeed.
+        # client precedes it. Packet section 17b.2. The named-pipe parity suite
+        # below also imports the shared client directly.
         #
         # Every argument is quoted so the one line with shell metacharacters
         # (`[`, `]`, `>`, `<`) is a literal in bash, zsh and PowerShell alike; the
@@ -80,6 +80,12 @@ jobs:
 
       - name: Run Phase 2 acceptance suite
         run: python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs
+
+      - name: Run Windows named-pipe client parity
+        # Deterministic Runtime cases run everywhere. The real pipe cases state
+        # their platform requirement explicitly and execute in the Windows row,
+        # including a public LocalIpcTransport call against the real listener.
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase3/protocol/test_windows_named_pipe.py -q -rs
 
       - name: Assert this platform's lock case actually ran
         # The whole point of the matrix. `msvcrt` byte-range locking has exactly one

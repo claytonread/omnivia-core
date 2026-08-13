@@ -123,6 +123,7 @@ from omnivia_core_client.transport import (
     ClientTransport,
     enforce_send_preconditions,
 )
+from omnivia_core_client.windows_pipe import PIPE_SCHEME, pipe_address_for
 
 __version__ = "0.1.0"
 
@@ -144,6 +145,7 @@ __all__ = [
     "MAXIMUM_JSON_NESTING_DEPTH",
     "MAXIMUM_REFERENCE_CHARACTERS",
     "MAXIMUM_TIMEOUT_SECONDS",
+    "PIPE_SCHEME",
     "SUPPORTED_DESCRIPTOR_VERSION",
     "SUPPORTED_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
@@ -180,6 +182,7 @@ __all__ = [
     "enforce_send_preconditions",
     "negotiate_endpoint",
     "parse_http_endpoint",
+    "pipe_address_for",
     "select_api_version",
     "select_protocol_version",
     "socket_path_for",
