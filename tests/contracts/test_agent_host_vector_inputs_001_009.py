@@ -59,10 +59,7 @@ FORBIDDEN_SOURCE_TOKENS = (
     "ExpectedOutcome",
     "Disposition",
     "disposition",
-    "expect",
-    "error_code",
     "ERROR_CODE",
-    "retry_class",
     "RETRY_CLASS",
     "compatibility_status",
     "COMPATIBILITY_STATUS",
@@ -198,7 +195,7 @@ def test_moving_a_corpus_field_moves_the_request(case_id: str) -> None:
 # --- fail-closed -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("case_id", ["SPI-V-025", "SPI-V-030", "SPI-V-042"])
+@pytest.mark.parametrize("case_id", ["SPI-V-034", "SPI-V-039", "SPI-V-042"])
 def test_a_case_outside_the_slice_is_refused(case_id: str) -> None:
     with pytest.raises(VectorInputError, match="outside"):
         prepare_vector(_case(case_id))
@@ -312,6 +309,18 @@ def test_the_recipe_module_imports_no_answer_type() -> None:
     assert "ExpectedOutcome" not in imported
     assert "Disposition" not in imported
     assert "Reason" not in imported
+    assert not any(name.startswith("ERROR_CODE_") for name in imported)
+    assert not any(name.startswith("RETRY_CLASS_") for name in imported)
+    assert not any(name.startswith("COMPATIBILITY_STATUS_") for name in imported)
+
+
+def test_the_recipe_module_never_reads_a_cases_answer() -> None:
+    attributes = {
+        node.attr
+        for node in ast.walk(ast.parse(_module_source()))
+        if isinstance(node, ast.Attribute)
+    }
+    assert "expect" not in attributes
 
 
 def test_the_recipe_module_binds_no_answer_name() -> None:

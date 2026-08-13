@@ -1,4 +1,4 @@
-"""Input recipes for provider-SPI vectors `SPI-V-001` to `SPI-V-024` (V06-8, A9-P2).
+"""Input recipes for provider-SPI vectors `SPI-V-001` to `SPI-V-033` (V06-8, A9-P2).
 
 Standard library only. One function -- :func:`prepare_vector` -- turns a loaded
 :class:`~omnivia_core.agent_host.conformance.ConformanceCase` into a
@@ -28,6 +28,7 @@ a differing payload digest, a turn-control purpose.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -117,6 +118,30 @@ _PARENT_REMAINING_MS: Final = 2_000
 #: case's `when` describes is met by the observed call and by nothing before it.
 _HEALTHY_PROFILE: Final = ProviderProfile()
 
+#: The cases whose observed call is itself a lifecycle hook made *before* any
+#: handshake. They are the one setup shape where the wrapper must not open with
+#: a negotiation of its own, because the missing handshake is the input.
+_UNNEGOTIATED_CASE_IDS: Final[tuple[str, ...]] = ("SPI-V-025",)
+
+#: Anything the corpus quotes in a `when.action` sentence: hook names, failure
+#: names, field names. The retry recipes read their inputs out of these rather
+#: than out of a table keyed on the case.
+_QUOTED = re.compile(r"`([^`]+)`")
+
+#: A quoted token shaped like a failure name -- lower snake case, no dot, so a
+#: hook name (`capture.after_turn`) cannot be mistaken for one.
+_FAILURE_NAME = re.compile(r"\A[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
+
+#: The elapsed time a precondition that must run out of time is driven with,
+#: paired with the deadline it is given so exhaustion is a property of the two
+#: values rather than of a clock.
+_EXHAUSTED_ELAPSED_MS: Final = DEFAULT_DEADLINE_MS
+
+#: `SPI-V-033` is about a classification a future server invents, so the corpus
+#: states no spelling for it. This is the recipe's own fixed one: deterministic,
+#: and deliberately not any token the frozen vocabulary holds.
+_FUTURE_CLASSIFICATION: Final = "classification-from-a-future-server"
+
 
 class VectorInputError(ValueError):
     """A case this module has no recipe for, or one whose input is malformed."""
@@ -192,6 +217,51 @@ def _when_elapsed_ms(case: ConformanceCase) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise VectorInputError(f"{case.id} when.elapsed_ms must be an integer")
     return value
+
+
+def _when_spi_version(case: ConformanceCase) -> str | None:
+    """The SPI version `when` says the adapter declared, if it says one."""
+    value = case.when.get("declared_spi_version")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise VectorInputError(f"{case.id} when.declared_spi_version must be a string")
+    return value
+
+
+def _when_action(case: ConformanceCase) -> str:
+    value = case.when.get("action", "")
+    if not isinstance(value, str):
+        raise VectorInputError(f"{case.id} when.action must be a string")
+    return value
+
+
+def _quoted_tokens(case: ConformanceCase) -> tuple[str, ...]:
+    return tuple(_QUOTED.findall(_when_action(case)))
+
+
+def _prior_failure(case: ConformanceCase) -> str | None:
+    """The failure name the action quotes, if it quotes one.
+
+    Some actions state the prior failure only as prose. Reading it back out of
+    that prose keeps the recipe reading the corpus rather than answering from a
+    table of its own.
+    """
+    for token in _quoted_tokens(case):
+        if _FAILURE_NAME.match(token):
+            return token
+    return None
+
+
+def _retried_hook(case: ConformanceCase) -> Hook | None:
+    """The hook the action says already ran and failed, if it names one."""
+    for token in _quoted_tokens(case):
+        if token != case.hook.value:
+            try:
+                return Hook(token)
+            except ValueError:
+                continue
+    return None
 
 
 def _approval_kind(case: ConformanceCase) -> ApprovalKind | None:
@@ -274,6 +344,9 @@ def _request(
         payload_digest=payload_digest,
         approval_kind=(
             _approval_kind(case) if chosen is Hook.APPROVAL_REQUEST else None
+        ),
+        declared_spi_version=(
+            _when_spi_version(case) if chosen is Hook.NEGOTIATE else None
         ),
         intent=intent if intent is not None else HookIntent(),
     )
@@ -700,6 +773,72 @@ def _recall_without_a_deadline(
     return _request(case, deadline_ms=None)
 
 
+# --- the recipes: handshake and recovery conditions ------------------------------
+
+
+def _lifecycle_before_negotiation(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-025: the call arrives first. Nothing runs beneath it, handshake included."""
+    return _request(case)
+
+
+def _negotiation(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-026 to SPI-V-030: the handshake itself, with no handshake before it.
+
+    Everything that separates these five is already in the corpus: the version
+    `when` declares, the capabilities it marks required, and -- for the legacy
+    workspace -- the workspace `given` names, which the profile is keyed from.
+    """
+    return _request(case)
+
+
+def _retry_after_failure(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-031 and SPI-V-032: a live turn, and the failure the action describes.
+
+    When the action names the hook that already failed, that hook is really
+    driven -- under the case's own key, and given no time left to run in -- so
+    the provider's own ledger, not the recipe, decides what a retry under that
+    key means. When it names only the failure, the retry carries it forward.
+    """
+    sequence = _sequence_of(case)
+    _live_turn(case, provider, log, sequence=sequence - 2, purpose=_RECALL_PURPOSE)
+    failed = _retried_hook(case)
+    if failed is not None:
+        _drive(
+            provider,
+            log,
+            _request(
+                case,
+                hook=failed,
+                sequence=sequence - 1,
+                purpose=_CAPTURE_PURPOSE,
+                required_capabilities=(),
+                deadline_ms=DEFAULT_DEADLINE_MS,
+                elapsed_ms=_EXHAUSTED_ELAPSED_MS,
+            ),
+            profile=_HEALTHY_PROFILE,
+        )
+    return _request(case, intent=HookIntent(prior_failure_code=_prior_failure(case)))
+
+
+def _retry_of_an_unknown_classification(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-033: a live turn, and a retry carrying a classification from the future."""
+    _live_turn(
+        case, provider, log, sequence=_sequence_of(case) - 1, purpose=_RECALL_PURPOSE
+    )
+    return _request(
+        case,
+        intent=HookIntent(unrecognised_retry_class=_FUTURE_CLASSIFICATION),
+    )
+
+
 _Recipe = Callable[[ConformanceCase, MockProvider, list[SpiRequest]], SpiRequest]
 
 _RECIPES: Final[MappingProxyType[str, _Recipe]] = MappingProxyType(
@@ -728,6 +867,15 @@ _RECIPES: Final[MappingProxyType[str, _Recipe]] = MappingProxyType(
         "SPI-V-022": _capture_past_its_deadline,
         "SPI-V-023": _nested_search_beyond_parent,
         "SPI-V-024": _recall_without_a_deadline,
+        "SPI-V-025": _lifecycle_before_negotiation,
+        "SPI-V-026": _negotiation,
+        "SPI-V-027": _negotiation,
+        "SPI-V-028": _negotiation,
+        "SPI-V-029": _negotiation,
+        "SPI-V-030": _negotiation,
+        "SPI-V-031": _retry_after_failure,
+        "SPI-V-032": _retry_after_failure,
+        "SPI-V-033": _retry_of_an_unknown_classification,
     }
 )
 
@@ -735,11 +883,16 @@ _RECIPES: Final[MappingProxyType[str, _Recipe]] = MappingProxyType(
 def _profile(case: ConformanceCase) -> ProviderProfile:
     """The server the observed call meets.
 
-    Two cases state a condition that is the server's rather than the call's: a
-    caller with no authenticated session behind it, and a workspace whose lease
-    another writer holds. Both are read off the case's own identity fields, so
-    the profile names the case's caller and workspace rather than a fixed one.
+    Three cases state a condition that is the server's rather than the call's:
+    a caller with no authenticated session behind it, a workspace whose lease
+    another writer holds, and a workspace whose stored format predates what the
+    server still reads. All three are read off the case's own identity fields,
+    so the profile names the case's caller and workspace rather than a fixed one.
     """
+    if case.id == "SPI-V-030":
+        return ProviderProfile(
+            workspaces_below_minimum_format=frozenset({_label(case, "workspace")})
+        )
     if case.id == "SPI-V-010":
         return ProviderProfile(
             unauthenticated_callers=frozenset({_label(case, "caller")})
@@ -759,6 +912,11 @@ def prepare_vector(case: ConformanceCase) -> VectorScenario:
     Every hook call the setup makes is a real call through a real
     :class:`~omnivia_core.agent_host.mock.MockProvider`, negotiation included:
     a scenario is the provider's actual state, not a description of one.
+
+    The handshake is the one precondition the wrapper runs for every case that
+    needs one, and it is skipped for exactly those cases whose input *is* an
+    unnegotiated provider: a case observing the handshake itself, and the case
+    calling a lifecycle hook before any handshake happened.
     """
     if not isinstance(case, ConformanceCase):
         raise VectorInputError("case must be a ConformanceCase")
@@ -769,19 +927,20 @@ def prepare_vector(case: ConformanceCase) -> VectorScenario:
         )
     provider = MockProvider(_profile(case))
     log: list[SpiRequest] = []
-    _drive(
-        provider,
-        log,
-        _request(
-            case,
-            hook=Hook.NEGOTIATE,
-            sequence=0,
-            idempotency_key=None,
-            required_capabilities=(),
-            elapsed_ms=0,
-        ),
-        profile=_HEALTHY_PROFILE,
-    )
+    if case.hook is not Hook.NEGOTIATE and case.id not in _UNNEGOTIATED_CASE_IDS:
+        _drive(
+            provider,
+            log,
+            _request(
+                case,
+                hook=Hook.NEGOTIATE,
+                sequence=0,
+                idempotency_key=None,
+                required_capabilities=(),
+                elapsed_ms=0,
+            ),
+            profile=_HEALTHY_PROFILE,
+        )
     request = recipe(case, provider, log)
     return VectorScenario(
         case_id=case.id,
