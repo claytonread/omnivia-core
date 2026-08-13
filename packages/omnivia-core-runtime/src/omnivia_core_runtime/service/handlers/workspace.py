@@ -26,6 +26,7 @@ from the other end.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
@@ -35,6 +36,7 @@ from omnivia_core.contracts.v1 import (
     WorkspaceDescriptor,
     WorkspaceInspectResult,
     classify_version_compatibility,
+    is_timestamp,
 )
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.service.versions import (
@@ -76,6 +78,42 @@ _MESSAGE_UNREADABLE_WORKSPACE: Final = (
 )
 
 
+def canonical_timestamp(value: str) -> str:
+    """A manifest instant as the Application Contract's canonical `Timestamp`.
+
+    `workspace.json` is a workspace-format artifact, and its own schema accepts any
+    RFC 3339 spelling -- `datetime.now(UTC).isoformat()` writes `+00:00`, which is
+    what a workspace created by this build actually stores. The Application Contract
+    is stricter: `Timestamp` is UTC with a literal `Z`, and a descriptor carrying
+    `+00:00` is refused by any peer that validates the result against the published
+    schema. Storage and the contract simply spell the same instant differently, so
+    the conversion belongs here, at the boundary where manifest facts become contract
+    values, and not in the manifest (whose spelling is legitimate) nor in the schema
+    (which must not be widened to accept it).
+
+    An instant already spelled as a valid `Timestamp` is returned untouched; anything
+    that is not an offset-carrying RFC 3339 instant raises `ValueError`, which both
+    callers already contain into their own refusal rather than leaking a manifest
+    value.
+
+    The already-canonical test is the contract's own `is_timestamp`, not the pattern
+    alone. `TIMESTAMP_PATTERN` fixes the spelling and cannot fix the calendar, so it
+    admits `2026-13-01T00:00:00Z`; `is_timestamp` is that pattern *and* the
+    `format: date-time` half. Testing on the pattern alone let a calendar-invalid
+    instant spelled with a `Z` past this boundary verbatim while the same impossible
+    date spelled `+00:00` was refused below -- and `read_manifest` runs only the raw
+    document validator, which checks that `created_at` is present and not that it
+    parses, so such a manifest is one another build or a restore away rather than
+    hypothetical.
+    """
+    if is_timestamp(value):
+        return value
+    moment = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        raise ValueError("manifest timestamp carries no time zone")
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def workspace_inspect(context: OperationContext) -> Mapping[str, Any]:
     """Describe the served workspace, read-only.
 
@@ -108,7 +146,7 @@ def workspace_inspect(context: OperationContext) -> Mapping[str, Any]:
     descriptor: WorkspaceDescriptor | None
     try:
         descriptor = _descriptor(context.workspace_id, inspection)
-    except WorkspaceVersionError:
+    except (WorkspaceVersionError, ValueError):
         descriptor = None
     if descriptor is None:
         raise OperationError(
@@ -147,8 +185,8 @@ def _descriptor(
                 version, _SUPPORTED_WORKSPACE_VERSIONS
             ),
         ),
-        created_at=manifest.created_at,
+        created_at=canonical_timestamp(manifest.created_at),
     )
 
 
-__all__ = ["WORKSPACE_STATUS_ACTIVE", "workspace_inspect"]
+__all__ = ["WORKSPACE_STATUS_ACTIVE", "canonical_timestamp", "workspace_inspect"]
