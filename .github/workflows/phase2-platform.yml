@@ -113,3 +113,16 @@ jobs:
         # dedicated case and it has never executed on any machine, so a silent skip
         # here would leave the Windows row green while proving nothing.
         run: python scripts/check-platform-lock-coverage.py
+
+      - name: Build and test the macOS status menu companion
+        # Keep the protected three-row matrix and its exact check names intact.
+        # The package imports AppKit, so only the existing macOS row can build
+        # it; the same command is a deliberate no-op on Linux and Windows.
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            swift build --package-path apps/core-status-menu-macos
+            swift test --package-path apps/core-status-menu-macos
+          else
+            echo "skipped: the status menu companion requires macOS AppKit"
+          fi

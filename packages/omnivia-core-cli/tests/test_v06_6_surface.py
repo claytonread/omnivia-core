@@ -21,6 +21,7 @@ from omnivia_core_cli import surface
 from omnivia_core_cli.surface import (
     APPLICATION_COMMANDS,
     EXIT_CODES,
+    LIFECYCLE_COMMANDS,
     PROBE_COMMANDS,
     exit_code_for,
 )
@@ -54,6 +55,12 @@ EXPECTED_PROBES = (
     (("service", "health"), "service.health"),
     (("service", "readiness"), "service.readiness"),
     (("service", "discover"), "service.discover"),
+)
+
+EXPECTED_LIFECYCLE = (
+    (("service", "start"), "start"),
+    (("service", "stop"), "stop"),
+    (("service", "status"), "status"),
 )
 
 EXPECTED_EXITS = {
@@ -120,6 +127,15 @@ def test_the_probe_commands_are_exactly_the_three_runtime_probes() -> None:
     assert not hasattr(PROBE_COMMANDS[0], "purpose")
 
 
+def test_lifecycle_is_a_separate_three_command_administrative_surface() -> None:
+    assert tuple((item.path, item.action) for item in LIFECYCLE_COMMANDS) == (
+        EXPECTED_LIFECYCLE
+    )
+    assert not {item.path for item in LIFECYCLE_COMMANDS} & {
+        item.path for item in (*APPLICATION_COMMANDS, *PROBE_COMMANDS)
+    }
+
+
 @pytest.mark.parametrize(("error_code", "expected"), sorted(EXPECTED_EXITS.items()))
 def test_each_frozen_error_code_maps_to_its_exit_code(
     error_code: str, expected: int
@@ -143,6 +159,7 @@ def test_an_unknown_error_code_exits_one() -> None:
 def test_the_surface_is_immutable() -> None:
     assert isinstance(APPLICATION_COMMANDS, tuple)
     assert isinstance(PROBE_COMMANDS, tuple)
+    assert isinstance(LIFECYCLE_COMMANDS, tuple)
     with pytest.raises(dataclasses.FrozenInstanceError):
         APPLICATION_COMMANDS[0].operation = "workspace.create"  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -163,13 +180,14 @@ def test_the_surface_imports_neither_the_runtime_nor_the_mcp_adapter() -> None:
     assert not [line for line in imports if "omnivia_core_mcp" in line]
 
 
-def test_the_production_package_contains_only_the_frozen_cli_modules() -> None:
-    """Deleted lifecycle and request-printing modules cannot silently return."""
+def test_the_production_package_contains_only_the_declared_cli_modules() -> None:
+    """No legacy request-printing or ambient-home lifecycle module may return."""
     package = Path(surface.__file__).parent
     assert {path.name for path in package.iterdir() if path.is_file()} == {
         "__init__.py",
         "dispatch.py",
         "main.py",
         "py.typed",
+        "safe_status.py",
         "surface.py",
     }

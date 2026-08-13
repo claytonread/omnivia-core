@@ -45,8 +45,10 @@ ALLOWED_IMPORTS = frozenset(
         "omnivia_core_client",
         "os",
         "pathlib",
+        "platform",
         "re",
         "shutil",
+        "signal",
         "socket",
         "ssl",
         "stat",
@@ -255,7 +257,7 @@ def test_the_high_level_client_only_composes_what_this_package_already_has() -> 
     }, sorted(roots)
 
 
-def test_only_managed_local_may_locate_or_start_a_process() -> None:
+def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     """Process ownership is one named client module, never an adapter leak.
 
     ``tempfile`` is pinned here with the rest rather than admitted package-wide:
@@ -264,7 +266,15 @@ def test_only_managed_local_may_locate_or_start_a_process() -> None:
     in ``discovery.py`` or ``framing.py`` would be a protocol foundation that had
     started writing to disk.
     """
-    for imported in ("hashlib", "shutil", "subprocess", "sys", "tempfile"):
+    for imported in (
+        "hashlib",
+        "platform",
+        "shutil",
+        "signal",
+        "subprocess",
+        "sys",
+        "tempfile",
+    ):
         importers = sorted(
             path.name for path in MODULES if imported in _imported_roots(path)
         )

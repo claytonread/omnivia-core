@@ -117,6 +117,12 @@ omnivia-core-runtime  omnivia-core-mcp  omnivia-core-cli  omnivia-core-client
 | `omnivia-core-cli` | `omnivia_core_cli` | `packages/omnivia-core-cli` | `omnivia-core` |
 | `omnivia-core-client` | `omnivia_core_client` | `packages/omnivia-core-client` | `omnivia-core` |
 
+An optional, separate macOS lifecycle companion lives at
+[`apps/core-status-menu-macos`](apps/core-status-menu-macos/README.md). It keeps
+the authoritative Core Service headless and consumes the versioned
+`omnivia start|stop|status --json` adapter instead of duplicating service
+ownership or process-control logic.
+
 Rules enforced by `scripts/check-package-boundaries.py`:
 
 - `omnivia-core` never depends on or imports any sibling distribution — the

@@ -57,6 +57,14 @@ class ProbeCommand:
     probe: str
 
 
+@dataclass(frozen=True, slots=True)
+class LifecycleCommand:
+    """One administrative path under the explicit ``service`` namespace."""
+
+    path: tuple[str, ...]
+    action: str
+
+
 APPLICATION_COMMANDS: Final[tuple[ApplicationCommand, ...]] = (
     ApplicationCommand(("workspace", "list"), "workspace.list", "workspace_inspection"),
     ApplicationCommand(
@@ -102,6 +110,12 @@ PROBE_COMMANDS: Final[tuple[ProbeCommand, ...]] = (
     ProbeCommand(("service", "health"), "service.health"),
     ProbeCommand(("service", "readiness"), "service.readiness"),
     ProbeCommand(("service", "discover"), "service.discover"),
+)
+
+LIFECYCLE_COMMANDS: Final[tuple[LifecycleCommand, ...]] = (
+    LifecycleCommand(("service", "start"), "start"),
+    LifecycleCommand(("service", "stop"), "stop"),
+    LifecycleCommand(("service", "status"), "status"),
 )
 
 #: The exit code for an error code this build does not recognise, and for
@@ -167,6 +181,7 @@ def _validate() -> None:
         raise RuntimeError(f"surface: legacy core.* operations declared: {legacy}")
     paths = [command.path for command in APPLICATION_COMMANDS]
     paths.extend(probe.path for probe in PROBE_COMMANDS)
+    paths.extend(command.path for command in LIFECYCLE_COMMANDS)
     if len(paths) != len(set(paths)):
         raise RuntimeError("surface: a command path is declared more than once")
     if set(EXIT_CODES) != set(FROZEN_ERROR_CODES):

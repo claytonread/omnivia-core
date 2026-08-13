@@ -51,17 +51,23 @@ from omnivia_core_client import (
     CredentialError,
     Deadline,
     DeadlineExceededError,
+    EndpointUnavailableError,
     InstallationServiceConfig,
     ManagedStartError,
     OperationCancelledError,
     ServiceClient,
     connect_managed_local,
+    stop_managed_local,
 )
 
 from omnivia_core.contracts.v1 import (
+    ContractSemanticError,
+    CoreSafeStatusV1,
+    CoreTargetV1,
     ResponseEnvelope,
     ServiceProbeResult,
     codec,
+    encode_core_safe_status,
     encode_service_probe_result,
     get_operation_metadata,
 )
@@ -70,10 +76,20 @@ from omnivia_core_cli.dispatch import (
     dispatch_application,
     dispatch_probe,
 )
+from omnivia_core_cli.safe_status import (
+    degraded_status,
+    incompatible_status,
+    live_status,
+    resolve_local_target,
+    stopped_status,
+    unreachable_status,
+)
 from omnivia_core_cli.surface import (
     APPLICATION_COMMANDS,
+    LIFECYCLE_COMMANDS,
     PROBE_COMMANDS,
     ApplicationCommand,
+    LifecycleCommand,
     exit_code_for,
 )
 
@@ -108,6 +124,127 @@ _BAD_INPUT: Final = (
     "must be exactly one JSON object, with unique member names and finite numbers"
 )
 _BAD_ARGUMENTS: Final = "the command arguments are not valid"
+
+#: Version of the small lifecycle adapter document emitted by
+#: ``start|stop|status --json``. This is intentionally not the managed-start
+#: document: the latter is a service-owned launcher protocol, while this one is
+#: the stable, least-privilege view adapters such as the Core status menu consume.
+#:
+#: **Version 2 removed `service` and `reason`.** Both were this installation's
+#: internals -- a workspace id, a service instance id, the runtime's raw state
+#: name and its raw `unmet` list; a free-form sentence naming directories,
+#: endpoints, pids and the launcher's own words -- published to a surface that
+#: has authenticated nothing. What replaced them is a required `code` from the
+#: closed set below and an optional `safe_status`, which is `CoreSafeStatusV1`
+#: and is rendered only by the contract encoder.
+LIFECYCLE_ADAPTER_VERSION = 2
+
+#: Every `code` this adapter may publish, and the whole of what a machine caller
+#: learns about *why*. Closed and bounded on purpose: a caller can branch on
+#: these, a UI can phrase them in its own words, and neither ever receives a
+#: string this process assembled from a path, an endpoint, a launcher result or
+#: an exception. `internal_error` is the fail-closed landing place for a code
+#: this module did not declare -- publishing an undeclared one is the defect the
+#: set exists to prevent.
+LIFECYCLE_CODES: Final = frozenset(
+    {
+        "start_started",
+        "start_attached",
+        "start_workspace_missing",
+        "start_incompatible_service",
+        "start_timeout",
+        "start_spawn_failed",
+        "start_not_ready",
+        "start_failed",
+        "stop_stopped",
+        "stop_not_running",
+        "stop_service_unreachable",
+        "stop_no_process",
+        "stop_identity_mismatch",
+        "stop_timeout",
+        "stop_process_lingering",
+        "status_running",
+        "status_not_running",
+        "status_unreachable",
+        "status_incompatible",
+        "internal_error",
+    }
+)
+
+def _write_lifecycle_document(
+    action: str,
+    *,
+    ok: bool,
+    outcome: str,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
+) -> None:
+    """Write the one machine-readable lifecycle adapter document.
+
+    The safe status goes through `encode_core_safe_status` and through nothing
+    else, so a status that does not satisfy the contract's cross-field
+    invariants -- an action offered for a target that may not be acted on, a
+    version disagreement -- is omitted rather than published. Omission is the
+    fail-closed answer: a caller that receives no `safe_status` offers no
+    actions, while a caller that receives an invalid one might.
+    """
+    document: dict[str, Any] = {
+        "lifecycle_adapter_version": LIFECYCLE_ADAPTER_VERSION,
+        "action": action,
+        "ok": ok,
+        "outcome": outcome,
+        "code": code if code in LIFECYCLE_CODES else "internal_error",
+    }
+    if safe_status is not None:
+        try:
+            document["safe_status"] = encode_core_safe_status(safe_status)
+        except ContractSemanticError:
+            pass
+    sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+
+
+def _finish_lifecycle(
+    action: str,
+    *,
+    json_output: bool,
+    returncode: int,
+    outcome: str,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
+    human_stdout: str | None = None,
+    human_stderr: str | None = None,
+) -> int:
+    """Render one lifecycle result without mixing JSON and human prose."""
+    if json_output:
+        _write_lifecycle_document(
+            action,
+            ok=returncode == 0,
+            outcome=outcome,
+            code=code,
+            safe_status=safe_status,
+        )
+    else:
+        if human_stdout:
+            sys.stdout.write(human_stdout)
+        if human_stderr:
+            sys.stderr.write(human_stderr)
+    return returncode
+
+
+def _selected_target(
+    installation_state: Path, workspace_id: str, *, json_output: bool
+) -> CoreTargetV1 | None:
+    """The one target this command addresses, or None if it cannot be formed.
+
+    Resolved only when a machine document will be written: the human paths
+    publish no target, and reading a manifest they will not use is work for
+    nothing.
+    """
+    return (
+        resolve_local_target(installation_state, workspace_id)
+        if json_output
+        else None
+    )
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -202,6 +339,16 @@ def build_parser() -> argparse.ArgumentParser:
         )
         leaf.set_defaults(**{_COMMAND: probe})
 
+    for lifecycle in LIFECYCLE_COMMANDS:
+        group, leaf_name = lifecycle.path
+        leaf = leaves(group).add_parser(
+            leaf_name, allow_abbrev=False, help=f"{lifecycle.action} this service"
+        )
+        leaf.add_argument(
+            "--json", action="store_true", help="emit the safe lifecycle document"
+        )
+        leaf.set_defaults(**{_COMMAND: lifecycle})
+
     return parser
 
 
@@ -223,6 +370,7 @@ def main(
     would run for longer than was asked for.
     """
     parser = build_parser()
+    client: ServiceClient | None
     try:
         arguments = parser.parse_args(argv)
         command = getattr(arguments, _COMMAND)
@@ -232,6 +380,9 @@ def main(
         # argparse exits rather than returning, and this function is declared to
         # return a status. Both are the same number.
         return requested.code if isinstance(requested.code, int) else 0
+
+    if isinstance(command, LifecycleCommand):
+        return _run_lifecycle(arguments, command, connected_client=connected_client)
 
     try:
         deadline = Deadline.after_ms(arguments.timeout_ms)
@@ -276,6 +427,191 @@ def main(
         return _refuse(_REFUSED_LOCALLY, 2)
     except (ClientError, DispatchError, OSError):
         return _refuse(_NO_ANSWER, 1)
+
+
+def _safe_live_status(
+    target: CoreTargetV1 | None,
+    client: ServiceClient,
+    readiness: ServiceProbeResult,
+) -> CoreSafeStatusV1 | None:
+    """Project a live readiness answer through the accepted safe contract."""
+    if target is None:
+        return None
+    return live_status(
+        target,
+        state=client.descriptor.lifecycle_state,
+        ready=readiness.status == "pass",
+        server_version=readiness.server_version,
+        protocol_version=client.descriptor.protocol_version,
+    )
+
+
+def _readiness(client: ServiceClient, deadline: Deadline) -> ServiceProbeResult:
+    command = next(
+        probe for probe in PROBE_COMMANDS if probe.probe == "service.readiness"
+    )
+    return dispatch_probe(client, command, deadline=deadline)
+
+
+def _run_lifecycle(
+    arguments: argparse.Namespace,
+    command: LifecycleCommand,
+    *,
+    connected_client: ServiceClient | None,
+) -> int:
+    """Run one explicit ``service`` administration command.
+
+    Application and probe counts remain exactly 20 and 3.  These three commands
+    are a separate administrative class and always address the explicit
+    installation-state/workspace pair supplied to the root parser.
+    """
+    action = command.action
+    json_output = bool(arguments.json)
+    target = _selected_target(
+        arguments.installation_state,
+        arguments.workspace_id,
+        json_output=json_output,
+    )
+    config = InstallationServiceConfig(
+        installation_state=arguments.installation_state,
+        workspace_id=arguments.workspace_id,
+    )
+    deadline = Deadline.after_ms(arguments.timeout_ms)
+
+    if action == "stop":
+        result = stop_managed_local(config, deadline=deadline)
+        status = result.status
+        returncode = 0 if status in {"stopped", "not_running"} else 1
+        code = {
+            "stopped": "stop_stopped",
+            "not_running": "stop_not_running",
+            "unreachable": "stop_service_unreachable",
+            "no_process": "stop_no_process",
+            "identity_mismatch": "stop_identity_mismatch",
+            "timeout": "stop_timeout",
+            "process_lingering": "stop_process_lingering",
+        }.get(status, "internal_error")
+        if target is None:
+            safe = None
+        elif status in {"stopped", "not_running"}:
+            safe = stopped_status(target)
+        elif status == "unreachable":
+            safe = unreachable_status(target, may_start=True)
+        elif status in {"timeout", "process_lingering"}:
+            safe = degraded_status(target, lifecycle_state="stopping")
+        else:
+            safe = degraded_status(target, lifecycle_state="running")
+        human = {
+            "stopped": "stopped\n",
+            "not_running": "not running\n",
+        }.get(status)
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=returncode,
+            outcome=status if returncode == 0 else "failed",
+            code=code,
+            safe_status=safe,
+            human_stdout=human,
+            human_stderr=None if human is not None else "the service was not stopped\n",
+        )
+
+    client: ServiceClient | None
+    try:
+        if action == "start":
+            managed = connect_managed_local(config, deadline=deadline)
+            client = managed.client
+            outcome = managed.status
+        else:
+            client = connected_client
+            if client is None:
+                client = ServiceClient.connect(config, deadline=deadline)
+            if client is None:
+                return _finish_lifecycle(
+                    action,
+                    json_output=json_output,
+                    returncode=1,
+                    outcome="not_running",
+                    code="status_not_running",
+                    safe_status=stopped_status(target) if target is not None else None,
+                    human_stdout="not running\n",
+                )
+            outcome = "running"
+        assert client is not None
+        readiness = _readiness(client, deadline)
+    except CompatibilityError:
+        code = "start_incompatible_service" if action == "start" else "status_incompatible"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=incompatible_status(target) if target is not None else None,
+            human_stderr="the service is incompatible\n",
+        )
+    except EndpointUnavailableError:
+        code = "start_failed" if action == "start" else "status_unreachable"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr="the service is unreachable\n",
+        )
+    except (DeadlineExceededError, OperationCancelledError):
+        code = "start_timeout" if action == "start" else "status_unreachable"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr=_OUT_OF_TIME + "\n",
+        )
+    except (ManagedStartError, ClientError, DispatchError, OSError):
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code="start_failed" if action == "start" else "status_unreachable",
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr=_NO_ANSWER + "\n",
+        )
+
+    return _finish_lifecycle(
+        action,
+        json_output=json_output,
+        returncode=0,
+        outcome=outcome,
+        code=(
+            "status_running"
+            if action == "status"
+            else "start_attached" if outcome == "attached" else "start_started"
+        ),
+        safe_status=_safe_live_status(target, client, readiness),
+        human_stdout=(
+            "running\n"
+            if action == "status"
+            else "already running\n" if outcome == "attached" else "started\n"
+        ),
+    )
 
 
 def _check_mutation_metadata(

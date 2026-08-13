@@ -45,15 +45,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, NoReturn
 
+from omnivia_core.contracts.v1 import ServiceProcessEvidence
 from omnivia_core_client.deadline import Deadline
+from omnivia_core_client.discovery import descriptor_path
 from omnivia_core_client.errors import EndpointUnavailableError, ManagedStartError
 from omnivia_core_client.service_client import InstallationServiceConfig, ServiceClient
 
@@ -62,8 +67,10 @@ __all__ = [
     "MANAGED_START_VERSION",
     "SERVICE_EXECUTABLE",
     "ManagedServiceConnection",
+    "StopResult",
     "connect_managed_local",
     "locate_service",
+    "stop_managed_local",
 ]
 
 #: The console script ``omnivia-core-runtime`` installs. Located and launched,
@@ -96,6 +103,15 @@ _MANIFEST_NAME: Final = "workspace.json"
 #: this sentence more specific is material from a child process, a filesystem
 #: path or a caught exception, and none of the three may cross this boundary.
 _MANAGED_START_FAILED: Final = "the managed service could not be started"
+
+_POLL_SECONDS: Final = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class StopResult:
+    """The closed result of one administrative stop attempt."""
+
+    status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +242,99 @@ def connect_managed_local(
     if started is None:
         _refuse()
     return ManagedServiceConnection(client=started, status=status)
+
+
+def _process_start_time(pid: int) -> str | None:
+    """Read a process start time in the format Runtime publishes."""
+    system = platform.system()
+    if system == "Linux":
+        try:
+            return Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21]
+        except (OSError, IndexError):
+            return None
+    if system in ("Darwin", "FreeBSD"):
+        try:
+            completed = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):  # pragma: no cover
+            return None
+        return completed.stdout.strip() or None
+    return None  # pragma: no cover - Windows and other hosts
+
+
+def _same_process(process: ServiceProcessEvidence) -> bool | None:
+    """True for a matching process, false for a mismatch, None if unreadable."""
+    if process.pid <= 0:
+        return False
+    observed = _process_start_time(process.pid)
+    if observed is not None:
+        return observed == process.start_time
+    if platform.system() in ("Linux", "Darwin", "FreeBSD"):
+        return False
+    return None  # pragma: no cover - Windows only
+
+
+def _request_stop(pid: int) -> None:
+    """Use the graceful signal Runtime installs on this platform."""
+    break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
+    os.kill(pid, signal.SIGTERM if break_event is None else break_event)
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _pause(deadline: Deadline) -> None:
+    time.sleep(min(_POLL_SECONDS, deadline.remaining_seconds()))
+
+
+def stop_managed_local(
+    config: InstallationServiceConfig, *, deadline: Deadline
+) -> StopResult:
+    """Stop ``config`` only after its live service corroborates process identity.
+
+    A stale descriptor never authorises a signal. Success requires the service
+    to withdraw its own descriptor and the corroborated process to exit within
+    the caller's original deadline.
+    """
+    try:
+        client = ServiceClient.connect(config, deadline=deadline)
+    except EndpointUnavailableError:
+        return StopResult("unreachable")
+    if client is None:
+        return StopResult("not_running")
+
+    process = client.descriptor.process
+    if process is None:
+        return StopResult("no_process")
+    if _same_process(process) is False:
+        return StopResult("identity_mismatch")
+
+    try:
+        _request_stop(process.pid)
+    except (OSError, ValueError):
+        return StopResult("identity_mismatch")
+
+    advertised = descriptor_path(config.installation_state, config.workspace_id)
+    while advertised.exists() and not deadline.expired:
+        _pause(deadline)
+    if advertised.exists():
+        return StopResult("timeout")
+
+    while _process_exists(process.pid) and not deadline.expired:
+        _pause(deadline)
+    if _process_exists(process.pid):
+        return StopResult("process_lingering")
+    return StopResult("stopped")
 
 
 def _refuse() -> NoReturn:

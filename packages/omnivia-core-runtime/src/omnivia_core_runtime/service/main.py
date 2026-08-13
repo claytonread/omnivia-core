@@ -355,6 +355,49 @@ def _http_bind_to_serve(endpoint: str | None) -> HttpBind | None:
     return parse_http_endpoint(endpoint)
 
 
+def _serve_until_stopped(runner: ServiceRunner, stopping: threading.Event) -> int:
+    """Hold the workspace until asked to stop, keeping the lease current meanwhile.
+
+    A single indefinite `wait()` never returns to the bytecode loop, so on Windows
+    the pending signal set by the console control handler thread is never serviced:
+    `Event.wait()` with no timeout blocks in a native `WaitForSingleObject(INFINITE)`
+    call, and CPython only checks for pending signals between bytecode instructions
+    on the main thread. POSIX does not need this -- a blocking syscall there is
+    interrupted (EINTR) and the signal runs immediately -- but polling is harmless
+    there too, so one path serves both platforms.
+
+    **That poll is the lease-renewal seam as well as the signal seam, and it is why
+    there is no scheduler here.** Renewal has to run on the thread that opened the
+    exclusive connection, this loop already runs there, and `renew_lease_if_due()`
+    decides for itself whether the interval has elapsed -- so nothing is written on
+    the other 39 ticks out of 40.
+
+    A renewal this instance can no longer show succeeded ends the run, through the
+    same unwind and the same reverse resource order a signal takes. Nothing keeps
+    advertising or serving against a lease that is not demonstrably current, and the
+    non-zero exit says the process did not stop because it was asked to.
+    """
+    renewal_failed = False
+    try:
+        while not stopping.wait(timeout=0.25):
+            try:
+                runner.renew_lease_if_due()
+            except Exception:  # noqa: BLE001 - the public message is structural only
+                renewal_failed = True
+                break
+    finally:
+        # One unwind, in reverse acquisition order: the socket server was pushed onto
+        # the same stack as the guard, lease, connection and lock.
+        runner.stop()
+    if renewal_failed:
+        # Structural, and built from nothing the failure carried: a lease error
+        # quotes workspace, instance and generation identifiers, and this stream is
+        # the service's public output.
+        sys.stderr.write("stopping: the workspace lease could not be renewed\n")
+        return 1
+    return 0
+
+
 def _init(args: argparse.Namespace) -> int:
     """Run the shared bootstrap path and write its result to stdout.
 
@@ -663,22 +706,10 @@ def main(
     for signum in stop_signals:
         signal.signal(signum, request_stop)
 
-    try:
-        # A single indefinite wait() never returns to the bytecode loop, so on
-        # Windows the pending signal set by the console control handler thread
-        # is never serviced: Event.wait() with no timeout blocks in a native
-        # WaitForSingleObject(INFINITE) call, and CPython only checks for
-        # pending signals between bytecode instructions on the main thread.
-        # POSIX does not need this -- a blocking syscall there is interrupted
-        # (EINTR) and the signal runs immediately -- but polling is harmless
-        # there too, so one path serves both platforms.
-        while not stopping.wait(timeout=0.25):
-            pass
-    finally:
-        # One unwind, in reverse acquisition order: the socket server was pushed onto
-        # the same stack as the guard, lease, connection and lock.
-        runner.stop()
-    return 0
+    # Reached only by a process that serves. `--check-only` stopped and returned
+    # above, so it never enters the loop and never renews a lease it took only to
+    # report on.
+    return _serve_until_stopped(runner, stopping)
 
 
 if __name__ == "__main__":

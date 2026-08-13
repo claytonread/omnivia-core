@@ -26,7 +26,11 @@ from typing import Any
 
 import pytest
 from omnivia_core_cli.main import build_parser, main
-from omnivia_core_cli.surface import APPLICATION_COMMANDS, PROBE_COMMANDS
+from omnivia_core_cli.surface import (
+    APPLICATION_COMMANDS,
+    LIFECYCLE_COMMANDS,
+    PROBE_COMMANDS,
+)
 
 from omnivia_core.contracts.v1 import get_operation_metadata
 
@@ -113,6 +117,13 @@ SECRET_BEARING = {
 def test_each_frozen_command_parses_from_its_exact_two_segments(command: Any) -> None:
     """The leaf hands back the frozen command object itself."""
     assert len(command.path) == 2
+    arguments = build_parser().parse_args([*BASE, *command.path])
+    assert arguments.command is command
+    assert (arguments.group, arguments.leaf) == command.path
+
+
+@pytest.mark.parametrize("command", LIFECYCLE_COMMANDS, ids=lambda c: ".".join(c.path))
+def test_each_lifecycle_command_is_explicitly_namespaced(command: Any) -> None:
     arguments = build_parser().parse_args([*BASE, *command.path])
     assert arguments.command is command
     assert (arguments.group, arguments.leaf) == command.path

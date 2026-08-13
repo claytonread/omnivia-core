@@ -5,11 +5,10 @@ topology. It parses one frozen command, calls it on a running Core Service
 through `omnivia_core_client.ServiceClient`, prints the answer, and exits with
 the code that answer maps to.
 
-It owns no state. It does not create, migrate, supervise or stop anything; it
-holds no lease, takes no lock, opens no database, reads no descriptor, and
-constructs no transport. The shared client is the only way it reaches a service
-and owns the complete managed-local attach/start/reconnect decision. The CLI
-holds no launcher, path convention or service argv.
+It owns no state. It does not create or migrate a workspace, holds no lease,
+takes no lock, opens no database, and constructs no transport. The shared
+client owns managed-local attach/start/reconnect. The isolated administrative
+module may stop only a live, identity-corroborated local service.
 
 The compile-time dependency boundary is the one PM ADR-036 defines: this
 surface depends on the public `omnivia-core` contracts and on
@@ -38,6 +37,24 @@ The parser is built from the frozen surface and from nothing else. Every command
 is exactly two segments, and there is no alias, no prefix abbreviation and no
 path written anywhere but `surface.py` — so a command that is not below cannot
 be reached, and cannot be added without adding it to the frozen surface first.
+
+## Service administration
+
+The administrative commands are explicitly namespaced and do not change the
+20-command application surface or the 3-probe surface:
+
+- `service start` attaches to the selected service or uses the shared managed
+  local launcher and waits for a live readiness answer.
+- `service status` dials without starting and reports only a live answer.
+- `service stop` dials first, corroborates the published process identity,
+  requests graceful shutdown, then waits for both descriptor withdrawal and
+  process exit. It never removes the descriptor itself.
+
+Each accepts `--json` and emits one version-2 lifecycle adapter document. The
+optional `safe_status` is encoded as `CoreSafeStatusV1`; it carries no endpoint,
+pid, path, service-instance identity, credential, exception, or launcher output.
+Its target is derived from the explicitly selected installation-state and
+workspace id, with opaque references that reveal neither local path nor endpoint.
 
 ## The 20 application commands
 

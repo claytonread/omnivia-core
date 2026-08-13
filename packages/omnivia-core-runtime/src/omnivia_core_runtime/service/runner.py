@@ -33,8 +33,11 @@ from omnivia_core_runtime.ownership.identity import (
     SystemProcessEvidence,
 )
 from omnivia_core_runtime.ownership.lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
+    LeaseHeld,
     acquire_lease,
     assert_current_authority,
+    heartbeat,
     release_lease,
 )
 from omnivia_core_runtime.ownership.locks import (
@@ -75,6 +78,24 @@ from omnivia_core_runtime.storage.migrations import (
 )
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 from omnivia_core_runtime.workspace.manifest_store import read_manifest
+
+#: How often a served instance renews its lease.
+#:
+#: A third of `DEFAULT_LEASE_TTL_SECONDS`, so two consecutive attempts can be lost
+#: and the heartbeat is still current. `heartbeat()` existed with no production
+#: caller, which meant a live service's lease read as stale after the TTL while it
+#: still held the lifetime storage lock and the exclusive connection -- the one
+#: state ADR-037 invariant 8 has to investigate rather than trust.
+LEASE_RENEWAL_INTERVAL_SECONDS = DEFAULT_LEASE_TTL_SECONDS / 3
+
+#: How long renewal may keep failing before the instance stops serving.
+#:
+#: Failing closed on the *first* failure would stop a healthy service: the exclusive
+#: connection is shared with the serving thread, so a `BEGIN IMMEDIATE` can lose a
+#: race it will win 250ms later. Failing closed on none of them would serve against
+#: a lease nothing renewed. This is the line between the two, and it is under the
+#: TTL, so the instance stops while its lease is still demonstrably current.
+LEASE_RENEWAL_DEADLINE_SECONDS = DEFAULT_LEASE_TTL_SECONDS * 2 / 3
 
 
 @dataclass(frozen=True)
@@ -130,6 +151,10 @@ class ServiceRunner:
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
+        #: Monotonic reading of the last heartbeat this instance wrote, which is the
+        #: acquisition itself until the first renewal. `None` until a lease is held,
+        #: so nothing can renew before there is something to renew.
+        self._lease_renewed_at: float | None = None
 
     # --- startup -------------------------------------------------------------
 
@@ -237,6 +262,7 @@ class ServiceRunner:
             endpoint=settings.endpoint,
         )
         self.generation = lease.fencing_generation
+        self._lease_renewed_at = lease.heartbeat_monotonic
         self.lifecycle.resources.push("workspace_lease", self._release_lease)
 
         pending = [
@@ -496,6 +522,48 @@ class ServiceRunner:
             )
         return True
 
+    # --- keeping the lease current -------------------------------------------
+
+    def renew_lease_if_due(self) -> bool:
+        """Renew this instance's lease when the interval has elapsed.
+
+        Returns whether a heartbeat was written, so a caller sees the difference
+        between "not due yet" and "renewed" without reading the lease back.
+
+        **Called from the main service wait loop, and that is a constraint rather
+        than a convenience.** SQLite has one owning thread, the exclusive connection
+        was opened on the main thread, and a lease is not authority that may be held
+        through a second writable connection -- so renewal is a method the loop
+        drives on that same thread, not a timer with a connection of its own.
+
+        **Fails closed by raising, and distinguishes the two ways it can fail.**
+        `LeaseHeld` is positive evidence that another instance now owns this
+        workspace, so it stops the run at once with no margin spent on it. Anything
+        else -- contention on the shared connection above all -- is tolerated until
+        `LEASE_RENEWAL_DEADLINE_SECONDS`, past which this instance can no longer show
+        its lease is current and must stop serving. Both are under the TTL.
+        """
+        assert self.connection is not None
+        assert self.identity is not None
+        assert self._lease_renewed_at is not None
+
+        now = self.clock.monotonic()
+        age = now - self._lease_renewed_at
+        if age < LEASE_RENEWAL_INTERVAL_SECONDS:
+            return False
+        try:
+            heartbeat(self.connection, self.identity, clock=self.clock)
+        except LeaseHeld:
+            raise
+        except Exception:
+            if age < LEASE_RENEWAL_DEADLINE_SECONDS:
+                # Retried on the next 250ms tick, not swallowed: `age` keeps growing
+                # from the last heartbeat this instance actually wrote.
+                return False
+            raise
+        self._lease_renewed_at = now
+        return True
+
     # --- shutdown ------------------------------------------------------------
 
     def _release_lease(self) -> None:
@@ -537,4 +605,10 @@ class ServiceRunner:
         )
 
 
-__all__ = ["ServiceRunner", "ServiceSettings", "StartupReport"]
+__all__ = [
+    "LEASE_RENEWAL_DEADLINE_SECONDS",
+    "LEASE_RENEWAL_INTERVAL_SECONDS",
+    "ServiceRunner",
+    "ServiceSettings",
+    "StartupReport",
+]

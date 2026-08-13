@@ -40,7 +40,7 @@ export type JsonValue =
 /**
  * Contract version of this generated module.
  */
-export const CONTRACT_VERSION = "1.2" as const;
+export const CONTRACT_VERSION = "1.3" as const;
 
 /**
  * Base URI every canonical v1 schema `$id` is rooted at.
@@ -1512,6 +1512,254 @@ export function assertServiceEndpointUri(value: unknown): asserts value is Servi
 }
 
 /**
+ * Closed vocabulary naming how a Core target is reached: `local` for a same-host instance,
+ * `private_remote` for an instance reached over a private, self-hosted network, `cloud` for a
+ * hosted multi-tenant instance. Closed to exactly these three; an unknown kind fails closed
+ * rather than being guessed at.
+ */
+export type CoreTargetKind = string;
+
+/**
+ * The closed `CoreTargetKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_TARGET_KIND_VALUES = [
+  "local",
+  "private_remote",
+  "cloud",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreTargetKind`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isCoreTargetKind(value: unknown): value is CoreTargetKind {
+  return (
+    typeof value === "string" &&
+    (CORE_TARGET_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed vocabulary naming who owns a Core target's process lifecycle: `locally_managed` when
+ * this client started and owns the instance, `externally_managed` when some other process or
+ * operator owns it. Closed to exactly these two; an unknown value fails closed. A lifecycle
+ * action such as `start`/`stop`/`restart` is only ever safe to offer for a `locally_managed`
+ * target, since only the owner of a process may start or stop it.
+ */
+export type CoreTargetManagement = string;
+
+/**
+ * The closed `CoreTargetManagement` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_TARGET_MANAGEMENT_VALUES = [
+  "locally_managed",
+  "externally_managed",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreTargetManagement`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreTargetManagement(value: unknown): value is CoreTargetManagement {
+  return (
+    typeof value === "string" &&
+    (CORE_TARGET_MANAGEMENT_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed, normalized vocabulary for a target's lifecycle phase, deliberately narrower than a
+ * provider's raw lifecycle codes so a safe status may publish it pre-authentication. `failed` is
+ * a real service failure -- the process reached a terminal error rather than a requested stop --
+ * and is distinct from `stopped`, which is the ordinary not-running phase; neither carries a
+ * reason, because a safe status may not publish one. Closed to exactly these values; an unknown
+ * value fails closed.
+ */
+export type CoreLifecycleState = string;
+
+/**
+ * The closed `CoreLifecycleState` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_LIFECYCLE_STATE_VALUES = [
+  "starting",
+  "running",
+  "stopping",
+  "stopped",
+  "failed",
+  "unknown",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreLifecycleState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreLifecycleState(value: unknown): value is CoreLifecycleState {
+  return (
+    typeof value === "string" &&
+    (CORE_LIFECYCLE_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed, normalized vocabulary for whether a target is ready to serve requests now. Closed to
+ * exactly these values; an unknown value fails closed.
+ */
+export type CoreReadinessState = string;
+
+/**
+ * The closed `CoreReadinessState` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_READINESS_STATE_VALUES = [
+  "ready",
+  "not_ready",
+  "unknown",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreReadinessState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreReadinessState(value: unknown): value is CoreReadinessState {
+  return (
+    typeof value === "string" &&
+    (CORE_READINESS_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed, normalized vocabulary mirroring `compatibility.schema.json`'s `x-omnivia-
+ * compatibility-statuses`, restated here as a closed enum because a safe status is published
+ * pre-authentication and must fail closed on a value it does not recognize rather than forward
+ * an unrecognized open code to that surface.
+ */
+export type CoreCompatibilityState = string;
+
+/**
+ * The closed `CoreCompatibilityState` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_COMPATIBILITY_STATE_VALUES = [
+  "compatible",
+  "compatible_with_deprecations",
+  "upgrade_required",
+  "incompatible",
+  "unknown",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreCompatibilityState`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreCompatibilityState(value: unknown): value is CoreCompatibilityState {
+  return (
+    typeof value === "string" &&
+    (CORE_COMPATIBILITY_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed, normalized vocabulary for a target's transport connection state.
+ * `authentication_required` is the normalized state of a target that is reachable but will not
+ * serve this caller until it authenticates -- distinct from `disconnected`, which says nothing
+ * about why. The matching `authentication_required` `CoreSafeWarningCode` stays the actionable
+ * advisory a caller surfaces; this field is the state. Closed to exactly these values; an
+ * unknown value fails closed.
+ */
+export type CoreConnectionState = string;
+
+/**
+ * The closed `CoreConnectionState` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_CONNECTION_STATE_VALUES = [
+  "connected",
+  "connecting",
+  "disconnected",
+  "unreachable",
+  "authentication_required",
+  "unknown",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreConnectionState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreConnectionState(value: unknown): value is CoreConnectionState {
+  return (
+    typeof value === "string" &&
+    (CORE_CONNECTION_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed vocabulary of non-fatal advisories a safe status may attach. Deliberately a closed enum
+ * rather than `common.schema.json`'s open `OpenCode`: a safe status is published pre-
+ * authentication and must never carry a free-form reason or an unrecognized code a caller cannot
+ * reason about.
+ */
+export type CoreSafeWarningCode = string;
+
+/**
+ * The closed `CoreSafeWarningCode` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_SAFE_WARNING_CODE_VALUES = [
+  "endpoint_unreachable",
+  "authentication_required",
+  "version_incompatible",
+  "upgrade_required",
+  "workspace_format_incompatible",
+  "degraded",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreSafeWarningCode`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isCoreSafeWarningCode(value: unknown): value is CoreSafeWarningCode {
+  return (
+    typeof value === "string" &&
+    (CORE_SAFE_WARNING_CODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Closed vocabulary of actions a caller may be permitted to attempt against a target, given only
+ * what a safe status may say pre-authentication. `start`/`stop`/`restart` are process-lifecycle
+ * actions and must only be offered for a `locally_managed` `local` target (see
+ * `CoreSafeStatusV1.permitted_actions`); `reconnect` and `open` are safe to offer for any
+ * target.
+ */
+export type CoreSafeAction = string;
+
+/**
+ * The closed `CoreSafeAction` vocabulary, emitted from the schema's `enum`.
+ */
+export const CORE_SAFE_ACTION_VALUES = [
+  "start",
+  "stop",
+  "restart",
+  "reconnect",
+  "open",
+] as const;
+
+/**
+ * Return whether a value is a declared `CoreSafeAction`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isCoreSafeAction(value: unknown): value is CoreSafeAction {
+  return (
+    typeof value === "string" &&
+    (CORE_SAFE_ACTION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming a workspace's lifecycle status, such as `active` or
  * `provisioning` or `archived`. Open by design so a compatible minor release can add statuses
  * without breaking existing decoders.
@@ -2588,6 +2836,138 @@ export interface ServiceProcessEvidence {
 }
 
 /**
+ * The provider-neutral identity of one Core target a client may select and address: what kind of
+ * instance it is, which workspace it serves, who manages its process lifecycle, and an opaque
+ * reference to its endpoint profile. Deliberately carries no dialable endpoint, credential,
+ * process identity, or filesystem path of its own; resolving `endpoint_profile_ref` to a
+ * concrete transport address is a separate, authenticated step this descriptor does not perform.
+ */
+export interface CoreTargetV1 {
+  /**
+   * Contract version this target descriptor is published at.
+   */
+  readonly contract_version: ContractVersion;
+  /**
+   * Stable, caller-opaque identifier of this target. Never a workspace, service instance, or
+   * installation identifier -- selecting a target is a separate concept from any of those.
+   */
+  readonly target_ref: Identifier;
+  /**
+   * Human-readable name for this target.
+   */
+  readonly display_name: string;
+  /**
+   * How this target is reached.
+   */
+  readonly kind: CoreTargetKind;
+  /**
+   * Workspace this target serves.
+   */
+  readonly workspace_ref: WorkspaceId;
+  /**
+   * Who owns this target's process lifecycle.
+   */
+  readonly management: CoreTargetManagement;
+  /**
+   * Opaque reference to this target's endpoint profile. Never a dialable URI, credential, or
+   * filesystem path; resolving it to a concrete transport address is a separate, authenticated
+   * step this reference does not perform.
+   */
+  readonly endpoint_profile_ref: Identifier;
+}
+
+/**
+ * Assert target semantics without echoing a rejected value. Checks exactly the clauses
+ * `validate_core_target` checks in Python: `kind` and `management` against their closed
+ * vocabularies, and every scalar against the value domain the schema `$ref`s it to --
+ * `contract_version` as a `ContractVersion`, `target_ref` and `endpoint_profile_ref` as
+ * `Identifier`s, `workspace_ref` as a `WorkspaceId`, and `display_name` within its declared
+ * 1..256 bound. All of them arrive as tolerant strings, and this is where the declared domains
+ * are enforced on a publication path.
+ */
+export function assertCoreTargetV1Semantics(value: CoreTargetV1): void {
+  if (!isContractVersion(value.contract_version)) {
+    throw new TypeError("contract_version is not a well-formed ContractVersion");
+  }
+  if (!isIdentifier(value.target_ref)) {
+    throw new TypeError("target_ref is not a well-formed Identifier");
+  }
+  if (
+    typeof value.display_name !== "string" ||
+    value.display_name.length < 1 ||
+    value.display_name.length > 256
+  ) {
+    throw new TypeError("display_name is not a string of 1..256 characters");
+  }
+  if (!isCoreTargetKind(value.kind)) {
+    throw new TypeError("kind is not a known CoreTargetKind");
+  }
+  if (!isWorkspaceId(value.workspace_ref)) {
+    throw new TypeError("workspace_ref is not a well-formed WorkspaceId");
+  }
+  if (!isCoreTargetManagement(value.management)) {
+    throw new TypeError("management is not a known CoreTargetManagement");
+  }
+  if (!isIdentifier(value.endpoint_profile_ref)) {
+    throw new TypeError("endpoint_profile_ref is not a well-formed Identifier");
+  }
+}
+
+/**
+ * Return whether a structurally decoded target satisfies mandatory semantics. Derived from the
+ * assertion rather than restating its clauses, so the predicate and the assertion cannot
+ * disagree about one field.
+ */
+export function isCoreTargetV1SemanticallyValid(value: CoreTargetV1): boolean {
+  try {
+    assertCoreTargetV1Semantics(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Assert the set-level authority rule `validate_core_target_authorities` enforces in Python:
+ * every target is individually valid, and across the set neither `target_ref` nor
+ * `workspace_ref` repeats. A writable workspace identity belongs to exactly one target
+ * authority, so two descriptors naming the same `workspace_ref` are two authorities claiming one
+ * writable store -- an invariant no single descriptor can see. No refusal echoes a rejected
+ * value.
+ */
+export function assertCoreTargetV1Authorities(value: readonly CoreTargetV1[]): void {
+  const targetRefs = new Set<string>();
+  const workspaceRefs = new Set<string>();
+  for (const target of value) {
+    assertCoreTargetV1Semantics(target);
+    if (targetRefs.has(target.target_ref)) {
+      throw new TypeError("target_ref repeats across the target set");
+    }
+    if (workspaceRefs.has(target.workspace_ref)) {
+      throw new TypeError(
+        "workspace_ref repeats across the target set: two target authorities " +
+          "may not share one writable workspace identity"
+      );
+    }
+    targetRefs.add(target.target_ref);
+    workspaceRefs.add(target.workspace_ref);
+  }
+}
+
+/**
+ * Return whether a set of structurally decoded targets carries non-colliding authorities.
+ * Derived from the assertion rather than restating its clauses.
+ */
+export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]): boolean {
+  try {
+    assertCoreTargetV1Authorities(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Server-produced, validated authority actually applied to a request. This is the only authority
  * statement a client may trust.
  */
@@ -3485,6 +3865,149 @@ export function isServiceEndpointDescriptorSemanticallyValid(value: ServiceEndpo
 export function assertServiceEndpointDescriptorSemantics(value: ServiceEndpointDescriptor): void {
   if (!isServiceEndpointDescriptorSemanticallyValid(value)) {
     throw new TypeError("service endpoint descriptor is not safe to publish");
+  }
+}
+
+/**
+ * A Core target's status, narrowed to values safe to publish before authentication or to any
+ * caller regardless of authority. It carries no dialable endpoint, process identity, filesystem
+ * path, credential, token, callback, account, entitlement, vault reference, stack trace, raw
+ * exception, or free-form reason: every advisory is one of the closed `CoreSafeWarningCode`
+ * values, and every offered action is one of the closed `CoreSafeAction` values.
+ */
+export interface CoreSafeStatusV1 {
+  /**
+   * Contract version this status is published at.
+   */
+  readonly contract_version: ContractVersion;
+  /**
+   * The target this status describes.
+   */
+  readonly target: CoreTargetV1;
+  /**
+   * Normalized lifecycle phase.
+   */
+  readonly lifecycle_state: CoreLifecycleState;
+  /**
+   * Normalized readiness to serve requests.
+   */
+  readonly readiness_state: CoreReadinessState;
+  /**
+   * Normalized version compatibility posture.
+   */
+  readonly compatibility_state: CoreCompatibilityState;
+  /**
+   * Normalized transport connection state.
+   */
+  readonly connection_state: CoreConnectionState;
+  /**
+   * Concrete server build version, when safe to disclose and known.
+   */
+  readonly server_version?: ReleaseVersion;
+  /**
+   * Wire protocol version this target is speaking, when known.
+   */
+  readonly protocol_version?: ContractVersion;
+  /**
+   * Non-fatal advisories, each a closed `CoreSafeWarningCode`. No two entries may repeat the
+   * same code.
+   */
+  readonly warning_codes: readonly CoreSafeWarningCode[];
+  /**
+   * Actions the caller may attempt against this target, each a closed `CoreSafeAction`.
+   * `start`/`stop`/`restart` are present only when `target.management` is `locally_managed`
+   * and `target.kind` is `local`. No two entries may repeat the same action.
+   */
+  readonly permitted_actions: readonly CoreSafeAction[];
+}
+
+/**
+ * Process-lifecycle actions: safe to offer only for a `locally_managed` `local` target, because
+ * no other target's process is this caller's to act on.
+ */
+export const CORE_LOCAL_ONLY_ACTIONS = ["start", "stop", "restart"] as const;
+
+/**
+ * Assert safe-status semantics before it reaches a public boundary. Checks exactly what
+ * `validate_core_safe_status` checks in Python: the nested target, its own `contract_version`
+ * and the two optional versions against their value domains, each of the four normalized states
+ * against its closed vocabulary, `warning_codes` and `permitted_actions` for their declared
+ * caps, for duplicates and for undeclared entries, and then the cross-field invariants the
+ * schema cannot express -- the status is published at the target's `contract_version`, and
+ * `start`/`stop`/`restart` are refused unless the target is both `locally_managed` and `local`.
+ * No refusal includes the rejected value: a safe status is published pre-authentication, and so
+ * is anything thrown while validating one.
+ */
+export function assertCoreSafeStatusV1Semantics(value: CoreSafeStatusV1): void {
+  assertCoreTargetV1Semantics(value.target);
+  if (!isContractVersion(value.contract_version)) {
+    throw new TypeError("contract_version is not a well-formed ContractVersion");
+  }
+  if (value.contract_version !== value.target.contract_version) {
+    throw new TypeError(
+      "contract_version does not match the target's contract_version"
+    );
+  }
+  if (value.server_version !== undefined && !isReleaseVersion(value.server_version)) {
+    throw new TypeError("server_version is not a well-formed ReleaseVersion");
+  }
+  if (
+    value.protocol_version !== undefined &&
+    !isContractVersion(value.protocol_version)
+  ) {
+    throw new TypeError("protocol_version is not a well-formed ContractVersion");
+  }
+  if (!isCoreLifecycleState(value.lifecycle_state)) {
+    throw new TypeError("lifecycle_state is not a known CoreLifecycleState");
+  }
+  if (!isCoreReadinessState(value.readiness_state)) {
+    throw new TypeError("readiness_state is not a known CoreReadinessState");
+  }
+  if (!isCoreCompatibilityState(value.compatibility_state)) {
+    throw new TypeError("compatibility_state is not a known CoreCompatibilityState");
+  }
+  if (!isCoreConnectionState(value.connection_state)) {
+    throw new TypeError("connection_state is not a known CoreConnectionState");
+  }
+  if (value.warning_codes.length > 32) {
+    throw new TypeError("warning_codes carries more than 32 entries");
+  }
+  if (new Set(value.warning_codes).size !== value.warning_codes.length) {
+    throw new TypeError("warning_codes contains a duplicate code");
+  }
+  if (!value.warning_codes.every(isCoreSafeWarningCode)) {
+    throw new TypeError("warning_codes contains a value that is not a known CoreSafeWarningCode");
+  }
+  if (value.permitted_actions.length > 16) {
+    throw new TypeError("permitted_actions carries more than 16 entries");
+  }
+  if (new Set(value.permitted_actions).size !== value.permitted_actions.length) {
+    throw new TypeError("permitted_actions contains a duplicate action");
+  }
+  if (!value.permitted_actions.every(isCoreSafeAction)) {
+    throw new TypeError("permitted_actions contains a value that is not a known CoreSafeAction");
+  }
+  const ownsTheProcess =
+    value.target.management === "locally_managed" && value.target.kind === "local";
+  const localOnly: readonly string[] = CORE_LOCAL_ONLY_ACTIONS;
+  if (!ownsTheProcess && value.permitted_actions.some((a) => localOnly.includes(a))) {
+    throw new TypeError(
+      "start/stop/restart may only be offered for a locally_managed local target"
+    );
+  }
+}
+
+/**
+ * Return whether a structurally decoded safe status is safe to publish. Derived from the
+ * assertion rather than restating its clauses, so the predicate and the assertion cannot
+ * disagree about one field.
+ */
+export function isCoreSafeStatusV1SemanticallyValid(value: CoreSafeStatusV1): boolean {
+  try {
+    assertCoreSafeStatusV1Semantics(value);
+    return true;
+  } catch {
+    return false;
   }
 }
 

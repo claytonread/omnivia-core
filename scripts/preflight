@@ -128,4 +128,16 @@ step "Run benchmark tests" python -m pytest benchmarks/tests -q
 step_from_workflow "Run Ruff"
 step_from_workflow "Run strict mypy"
 
+# Guarded rather than `step_from_workflow`: the workflow's own copy of this
+# check is guarded by `if: runner.os == 'macOS'`, a condition the extracted
+# shell text cannot express, and this package builds only on Darwin because it
+# imports AppKit. A non-macOS host may still have Swift installed, so platform
+# and tool availability are separate guards.
+if [ "$(uname -s)" = "Darwin" ] && command -v swift >/dev/null 2>&1; then
+  step "Build and test the macOS status menu companion" \
+    bash -c "swift build --package-path apps/core-status-menu-macos && swift test --package-path apps/core-status-menu-macos"
+else
+  printf '\n=== Build and test the macOS status menu companion\nskipped: requires macOS and swift on PATH\n'
+fi
+
 printf '\nCore preflight passed. Open the pull request.\n'

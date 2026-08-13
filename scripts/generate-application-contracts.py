@@ -44,7 +44,10 @@ together with the declared ``minLength``/``maxLength``, and, for a declared
 ``format: date-time``, the calendar the pattern cannot express. The guards are
 emitted from the declaration rather than from a list of definition names, in both
 languages from the same loop, so a value one binding publishes and the other
-refuses is not a state this generator can reach.
+refuses is not a state this generator can reach. A ``$defs`` entry declaring a
+closed ``enum`` gets the same treatment in TypeScript: its values and an
+``is<Name>`` membership guard, emitted from the declaration, so a vocabulary joins
+or leaves by being edited in the schema.
 
 Nothing calls a guard from ``from_wire``. A guard is a primitive for a caller that
 needs the declared domain -- a public boundary, a publication path -- so that such
@@ -162,6 +165,9 @@ class Definition:
     min_length: int | None = None
     max_length: int | None = None
     string_format: str | None = None
+    #: A declared closed ``enum``, carried for the same reason as ``pattern``: the
+    #: value domain is emitted from the declaration, not from a hand-kept table.
+    enum_values: tuple[str, ...] = ()
     members: tuple[str, ...] = ()
     discriminators: tuple[tuple[str, str], ...] = ()
     dependencies: frozenset[str] = field(default_factory=frozenset)
@@ -341,6 +347,18 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
         string_format = node.get("format")
         if string_format is not None and not isinstance(string_format, str):
             raise UnsupportedSchemaError(f"{location}: format must be a string")
+        enum_values: tuple[str, ...] = ()
+        if "enum" in node:
+            raw_enum = node["enum"]
+            if (
+                not isinstance(raw_enum, list)
+                or not raw_enum
+                or not all(isinstance(item, str) for item in raw_enum)
+            ):
+                raise UnsupportedSchemaError(f"{location}: enum must be a non-empty array of strings")
+            enum_values = tuple(str(item) for item in raw_enum)
+            if len(set(enum_values)) != len(enum_values):
+                raise UnsupportedSchemaError(f"{location}: enum repeats a value")
         return Definition(
             name=name,
             kind="string",
@@ -351,6 +369,7 @@ def parse_definition(name: str, node: dict[str, Any], source: str, order: int) -
             min_length=min_length,
             max_length=max_length,
             string_format=string_format,
+            enum_values=enum_values,
         )
     if node_type == "integer":
         return Definition(
@@ -1680,6 +1699,277 @@ def typescript_scalar_guard(definition: Definition) -> list[str]:
     return lines
 
 
+def typescript_enum_guard(definition: Definition) -> list[str]:
+    """Emit the closed value domain and its guard for a definition declaring an ``enum``.
+
+    The enum counterpart of :func:`typescript_scalar_guard`, and emitted by the same
+    rule: any string ``$defs`` entry that declares an ``enum`` gets its values and a
+    membership guard, so a vocabulary joins or leaves by being edited in the schema
+    rather than by anyone remembering to touch this file.
+
+    The emitted alias stays ``string``: decoding is tolerant and must preserve a value
+    it does not recognize. The guard is what a publication boundary calls to refuse one.
+    """
+    name = definition.name
+    constant = f"{screaming_snake(name)}_VALUES"
+
+    lines = typescript_doc(
+        f"The closed `{name}` vocabulary, emitted from the schema's `enum`.", ""
+    )
+    lines.append(f"export const {constant} = [")
+    lines += [f"  {json.dumps(value)}," for value in definition.enum_values]
+    lines.append("] as const;")
+    lines.append("")
+    lines += typescript_doc(
+        f"Return whether a value is a declared `{name}`. The generated decoders do not "
+        "call this -- decoding stays tolerant and preserves an unrecognized value -- and "
+        "this is the primitive a caller enforcing the closed domain validates with.",
+        "",
+    )
+    lines.append(f"export function is{name}(value: unknown): value is {name} {{")
+    lines.append("  return (")
+    lines.append('    typeof value === "string" &&')
+    lines.append(f"    ({constant} as readonly string[]).includes(value)")
+    lines.append("  );")
+    lines.append("}")
+    return lines
+
+
+def typescript_core_target_semantics() -> list[str]:
+    """Emit the `CoreTargetV1` semantic helpers, mirroring `validate_core_target`."""
+    lines = typescript_doc(
+        "Assert target semantics without echoing a rejected value. Checks exactly the "
+        "clauses `validate_core_target` checks in Python: `kind` and `management` against "
+        "their closed vocabularies, and every scalar against the value domain the schema "
+        "`$ref`s it to -- `contract_version` as a `ContractVersion`, `target_ref` and "
+        "`endpoint_profile_ref` as `Identifier`s, `workspace_ref` as a `WorkspaceId`, and "
+        "`display_name` within its declared 1..256 bound. All of them arrive as tolerant "
+        "strings, and this is where the declared domains are enforced on a publication path.",
+        "",
+    )
+    lines.append("export function assertCoreTargetV1Semantics(value: CoreTargetV1): void {")
+    lines.append("  if (!isContractVersion(value.contract_version)) {")
+    lines.append(
+        '    throw new TypeError("contract_version is not a well-formed ContractVersion");'
+    )
+    lines.append("  }")
+    lines.append("  if (!isIdentifier(value.target_ref)) {")
+    lines.append('    throw new TypeError("target_ref is not a well-formed Identifier");')
+    lines.append("  }")
+    lines.append("  if (")
+    lines.append('    typeof value.display_name !== "string" ||')
+    lines.append("    value.display_name.length < 1 ||")
+    lines.append("    value.display_name.length > 256")
+    lines.append("  ) {")
+    lines.append(
+        '    throw new TypeError("display_name is not a string of 1..256 characters");'
+    )
+    lines.append("  }")
+    lines.append("  if (!isCoreTargetKind(value.kind)) {")
+    lines.append('    throw new TypeError("kind is not a known CoreTargetKind");')
+    lines.append("  }")
+    lines.append("  if (!isWorkspaceId(value.workspace_ref)) {")
+    lines.append('    throw new TypeError("workspace_ref is not a well-formed WorkspaceId");')
+    lines.append("  }")
+    lines.append("  if (!isCoreTargetManagement(value.management)) {")
+    lines.append('    throw new TypeError("management is not a known CoreTargetManagement");')
+    lines.append("  }")
+    lines.append("  if (!isIdentifier(value.endpoint_profile_ref)) {")
+    lines.append(
+        '    throw new TypeError("endpoint_profile_ref is not a well-formed Identifier");'
+    )
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    lines += typescript_doc(
+        "Return whether a structurally decoded target satisfies mandatory semantics. Derived "
+        "from the assertion rather than restating its clauses, so the predicate and the "
+        "assertion cannot disagree about one field.",
+        "",
+    )
+    lines.append(
+        "export function isCoreTargetV1SemanticallyValid(value: CoreTargetV1): boolean {"
+    )
+    lines.append("  try {")
+    lines.append("    assertCoreTargetV1Semantics(value);")
+    lines.append("    return true;")
+    lines.append("  } catch {")
+    lines.append("    return false;")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    lines += typescript_doc(
+        "Assert the set-level authority rule `validate_core_target_authorities` enforces in "
+        "Python: every target is individually valid, and across the set neither `target_ref` "
+        "nor `workspace_ref` repeats. A writable workspace identity belongs to exactly one "
+        "target authority, so two descriptors naming the same `workspace_ref` are two "
+        "authorities claiming one writable store -- an invariant no single descriptor can "
+        "see. No refusal echoes a rejected value.",
+        "",
+    )
+    lines.append(
+        "export function assertCoreTargetV1Authorities("
+        "value: readonly CoreTargetV1[]): void {"
+    )
+    lines.append("  const targetRefs = new Set<string>();")
+    lines.append("  const workspaceRefs = new Set<string>();")
+    lines.append("  for (const target of value) {")
+    lines.append("    assertCoreTargetV1Semantics(target);")
+    lines.append("    if (targetRefs.has(target.target_ref)) {")
+    lines.append('      throw new TypeError("target_ref repeats across the target set");')
+    lines.append("    }")
+    lines.append("    if (workspaceRefs.has(target.workspace_ref)) {")
+    lines.append("      throw new TypeError(")
+    lines.append(
+        '        "workspace_ref repeats across the target set: '
+        'two target authorities " +'
+    )
+    lines.append('          "may not share one writable workspace identity"')
+    lines.append("      );")
+    lines.append("    }")
+    lines.append("    targetRefs.add(target.target_ref);")
+    lines.append("    workspaceRefs.add(target.workspace_ref);")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    lines += typescript_doc(
+        "Return whether a set of structurally decoded targets carries non-colliding "
+        "authorities. Derived from the assertion rather than restating its clauses.",
+        "",
+    )
+    lines.append(
+        "export function areCoreTargetV1AuthoritiesValid("
+        "value: readonly CoreTargetV1[]): boolean {"
+    )
+    lines.append("  try {")
+    lines.append("    assertCoreTargetV1Authorities(value);")
+    lines.append("    return true;")
+    lines.append("  } catch {")
+    lines.append("    return false;")
+    lines.append("  }")
+    lines.append("}")
+    return lines
+
+
+def typescript_core_safe_status_semantics() -> list[str]:
+    """Emit the `CoreSafeStatusV1` semantic helpers, mirroring `validate_core_safe_status`.
+
+    The local-action rule is the one clause here no schema field expresses, so the
+    action list below is stated rather than derived, exactly as `_LOCAL_ONLY_ACTIONS`
+    is in `src/omnivia_core/contracts/v1/semantics_core_target.py`. Both bindings state
+    it once; `tests/contracts/test_core_target_semantics.py` holds them to the same
+    verdict.
+    """
+    lines = typescript_doc(
+        "Process-lifecycle actions: safe to offer only for a `locally_managed` `local` "
+        "target, because no other target's process is this caller's to act on.",
+        "",
+    )
+    lines.append('export const CORE_LOCAL_ONLY_ACTIONS = ["start", "stop", "restart"] as const;')
+    lines.append("")
+    lines += typescript_doc(
+        "Assert safe-status semantics before it reaches a public boundary. Checks exactly "
+        "what `validate_core_safe_status` checks in Python: the nested target, its own "
+        "`contract_version` and the two optional versions against their value domains, each "
+        "of the four normalized states against its closed vocabulary, `warning_codes` and "
+        "`permitted_actions` for their declared caps, for duplicates and for undeclared "
+        "entries, and then the cross-field invariants the schema cannot express -- the "
+        "status is published at the target's `contract_version`, and `start`/`stop`/"
+        "`restart` are refused unless the target is both `locally_managed` and `local`. No "
+        "refusal includes the rejected value: a safe status is published pre-authentication, "
+        "and so is anything thrown while validating one.",
+        "",
+    )
+    lines.append(
+        "export function assertCoreSafeStatusV1Semantics(value: CoreSafeStatusV1): void {"
+    )
+    lines.append("  assertCoreTargetV1Semantics(value.target);")
+    lines.append("  if (!isContractVersion(value.contract_version)) {")
+    lines.append(
+        '    throw new TypeError("contract_version is not a well-formed ContractVersion");'
+    )
+    lines.append("  }")
+    lines.append("  if (value.contract_version !== value.target.contract_version) {")
+    lines.append("    throw new TypeError(")
+    lines.append('      "contract_version does not match the target\'s contract_version"')
+    lines.append("    );")
+    lines.append("  }")
+    lines.append(
+        "  if (value.server_version !== undefined && !isReleaseVersion(value.server_version)) {"
+    )
+    lines.append('    throw new TypeError("server_version is not a well-formed ReleaseVersion");')
+    lines.append("  }")
+    lines.append("  if (")
+    lines.append("    value.protocol_version !== undefined &&")
+    lines.append("    !isContractVersion(value.protocol_version)")
+    lines.append("  ) {")
+    lines.append(
+        '    throw new TypeError("protocol_version is not a well-formed ContractVersion");'
+    )
+    lines.append("  }")
+    for state, vocabulary in (
+        ("lifecycle_state", "CoreLifecycleState"),
+        ("readiness_state", "CoreReadinessState"),
+        ("compatibility_state", "CoreCompatibilityState"),
+        ("connection_state", "CoreConnectionState"),
+    ):
+        lines.append(f"  if (!is{vocabulary}(value.{state})) {{")
+        lines.append(f'    throw new TypeError("{state} is not a known {vocabulary}");')
+        lines.append("  }")
+    for collection, singular, vocabulary, cap in (
+        ("warning_codes", "code", "CoreSafeWarningCode", 32),
+        ("permitted_actions", "action", "CoreSafeAction", 16),
+    ):
+        lines.append(f"  if (value.{collection}.length > {cap}) {{")
+        lines.append(
+            f'    throw new TypeError("{collection} carries more than {cap} entries");'
+        )
+        lines.append("  }")
+        lines.append(f"  if (new Set(value.{collection}).size !== value.{collection}.length) {{")
+        lines.append(f'    throw new TypeError("{collection} contains a duplicate {singular}");')
+        lines.append("  }")
+        lines.append(f"  if (!value.{collection}.every(is{vocabulary})) {{")
+        lines.append(
+            f'    throw new TypeError("{collection} contains a value that is not a known '
+            f'{vocabulary}");'
+        )
+        lines.append("  }")
+    lines.append("  const ownsTheProcess =")
+    lines.append(
+        '    value.target.management === "locally_managed" && value.target.kind === "local";'
+    )
+    lines.append("  const localOnly: readonly string[] = CORE_LOCAL_ONLY_ACTIONS;")
+    lines.append(
+        "  if (!ownsTheProcess && value.permitted_actions.some((a) => localOnly.includes(a))) {"
+    )
+    lines.append("    throw new TypeError(")
+    lines.append(
+        '      "start/stop/restart may only be offered for a locally_managed local target"'
+    )
+    lines.append("    );")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    lines += typescript_doc(
+        "Return whether a structurally decoded safe status is safe to publish. Derived from "
+        "the assertion rather than restating its clauses, so the predicate and the assertion "
+        "cannot disagree about one field.",
+        "",
+    )
+    lines.append(
+        "export function isCoreSafeStatusV1SemanticallyValid("
+        "value: CoreSafeStatusV1): boolean {"
+    )
+    lines.append("  try {")
+    lines.append("    assertCoreSafeStatusV1Semantics(value);")
+    lines.append("    return true;")
+    lines.append("  } catch {")
+    lines.append("    return false;")
+    lines.append("  }")
+    lines.append("}")
+    return lines
+
+
 def typescript_catalogue_lines(value: CatalogueValue, indent: int) -> list[str]:
     """Render one validated catalogue value as TypeScript source lines.
 
@@ -1824,6 +2114,9 @@ def emit_typescript(contract: Contract) -> str:
                     )
                     lines.append("  }")
                     lines.append("}")
+            if definition.enum_values:
+                lines.append("")
+                lines += typescript_enum_guard(definition)
             lines.append("")
         elif definition.kind == "integer":
             lines += typescript_doc(definition.description, "")
@@ -1910,6 +2203,12 @@ def emit_typescript(contract: Contract) -> str:
                 lines.append("    assertServiceEndpointDescriptorSemantics(descriptor);")
                 lines.append("  }")
                 lines.append("}")
+            elif definition.name == "CoreTargetV1":
+                lines.append("")
+                lines += typescript_core_target_semantics()
+            elif definition.name == "CoreSafeStatusV1":
+                lines.append("")
+                lines += typescript_core_safe_status_semantics()
             lines.append("")
 
     lines += typescript_doc(

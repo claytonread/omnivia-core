@@ -130,7 +130,9 @@ from omnivia_core_client.managed_local import (
     MANAGED_START_VERSION,
     SERVICE_EXECUTABLE,
     ManagedServiceConnection,
+    StopResult,
     connect_managed_local,
+    stop_managed_local,
 )
 from omnivia_core_client.service_client import (
     HttpServiceConfig,
@@ -201,6 +203,7 @@ __all__ = [
     "ProtocolError",
     "ServiceClient",
     "ServiceConfig",
+    "StopResult",
     "TransportError",
     "__version__",
     "canonical_json_bytes",
@@ -216,5 +219,6 @@ __all__ = [
     "select_api_version",
     "select_protocol_version",
     "socket_path_for",
+    "stop_managed_local",
     "validate_descriptor_version",
 ]
