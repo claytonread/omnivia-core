@@ -358,12 +358,82 @@ only: it never overrides a live identity mismatch and is not process authority.
 Cancellation is checked before the probe is sent, and the same deadline/token are
 passed unchanged to the transport.
 
+The two halves are also available on their own, and `discover_endpoint()` is
+composed of them rather than beside them: `read_local_descriptor()` performs the
+file half — the provenance-checked read, the payload-free decode, the workspace
+agreement and the locality rule — and `probe_live_descriptor()` performs the live
+half over an injected transport, holding the answer to the same admission and
+deciding no identity of its own. They exist because the high-level client needs
+the endpoint URI before it can build a transport, and because an explicitly
+configured endpoint has no file at all; neither weakens `discover_endpoint()`,
+which still applies every check to the file it vouches for.
+
 This is candidate-level discovery through an injected transport. `discovery` itself
 ships no transport: it is handed one, and the two this package provides —
 `LocalIpcTransport` and `HttpTransport` — are constructed by the caller, not by it.
 It does not claim integrated discovery over a real local endpoint by itself;
 the caller supplies `LocalIpcTransport`, which now covers the accepted local
 mechanism on both POSIX and Windows.
+
+### `service_client` — the high-level client
+
+`ServiceClient.connect()` is the one place the pieces above are put in order.
+Every caller that dials a Core service used to assemble that order itself — read
+`service.json`, pick a transport from the scheme it found, dial discovery with
+it, compare the two descriptors, then call — and the CLI and MCP already differed
+on some of those steps. **Nothing here is a new mechanism**: there is no framing,
+contract decoding, credential resolution, transport, retry or process launch in
+this module, only the composition and the refusals the composition can make.
+
+Two configurations, and the difference is who says where the service is.
+
+- `InstallationServiceConfig(installation_state, workspace_id)` — the
+  *installation* says. The published descriptor is read through
+  `read_local_descriptor()`, with the provenance, locality and identity rules of
+  `discovery` intact, and the local transport is built from the endpoint it
+  publishes. **A caller never reads `service.json`, never handles a socket path
+  or pipe name, and never chooses a transport**; the same configuration reaches
+  `unix://` on POSIX and `pipe://` on Windows because `LocalIpcTransport` carries
+  both.
+- `HttpServiceConfig(endpoint_uri, credential_reference, credentials)` — the
+  *caller* says, so there is no file to check against and the service's own
+  `service.discover` answer is what gets negotiated. **The configuration takes
+  the name of a credential and never a secret**: a `Credential` handed to
+  `credential_reference` is refused, and the secret is resolved per call through
+  the injected `CredentialCache`. **Unverified TLS is not configurable either**,
+  and not by default but by construction — the endpoint is an `HttpEndpoint`, so
+  `https` is verified and cleartext reaches a loopback IP literal or nothing.
+
+Both are frozen and validated where they are written, so a mistyped root, an
+inadmissible `WorkspaceId`, a URL with a place to put a credential, or a secret
+in the reference field is a refusal at the point that can be fixed rather than at
+the first call.
+
+`connect()` returns `None` when an installation has published no descriptor —
+absence is an ordinary state, exactly as it is for `discover_endpoint()`, not an
+exception every caller has to catch to ask a question. The local path reads the
+descriptor twice on purpose: once for the endpoint URI the transport needs and
+once inside `discover_endpoint()`, which must apply its checks to the file it
+vouches for rather than to one handed in. Publication is atomic, so the two reads
+can legitimately see different files, and a client dialling the first while
+discovery approved the second would carry an approval for an endpoint it is not
+talking to; the descriptors must be equal or nothing is returned.
+
+What comes back is frozen and carries the three things that mean something
+together: the composed `transport`, the `descriptor` the endpoint answered with
+(which is where the `workspace_id` for a request comes from), and the
+`negotiated` versions in force. `client.call(request, deadline=…,
+cancellation=…)` forwards to the transport unchanged — the same whole-call
+`Deadline` and the same `CancellationToken`, not copied or re-derived — and
+returns the response envelope, including a typed application error, because a
+peer that answered with one has answered. There is nothing to close: both
+transports open one connection per call, and the credential cache belongs to the
+host that injected it.
+
+Diagnostics are fixed sentences. No endpoint, path, workspace identifier,
+credential reference or secret appears in any message raised here, and the two
+refusals this module owns are raised outside every handler, so neither
+`__cause__` nor `__context__` survives to carry a transport's own words.
 
 ### `errors` — the typed failures
 
@@ -389,9 +459,7 @@ traceback rendering hides them.
 None of the following exists in this package, and no caller may assume it:
 
 - **retry, backoff, or idempotent replay**;
-- **managed service startup** — launching or supervising a service;
-- **the high-level client** — the object that would put the above together and
-  execute an operation end to end.
+- **managed service startup** — launching or supervising a service.
 
 Each arrives in its own packet and will satisfy the contracts above rather than
 change them.

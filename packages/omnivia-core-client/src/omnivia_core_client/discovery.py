@@ -45,6 +45,11 @@ from omnivia_core_client.deadline import (
 )
 from omnivia_core_client.errors import (
     CompatibilityError,
+    CredentialDeniedError,
+    CredentialError,
+    CredentialInvalidError,
+    CredentialMissingError,
+    CredentialUnavailableError,
     DeadlineExceededError,
     OperationCancelledError,
     ProtocolError,
@@ -57,6 +62,8 @@ __all__ = [
     "DiscoveredEndpoint",
     "descriptor_path",
     "discover_endpoint",
+    "probe_live_descriptor",
+    "read_local_descriptor",
 ]
 
 MAXIMUM_DESCRIPTOR_BYTES: Final = 64 * 1024
@@ -117,6 +124,28 @@ def _raise_provenance() -> NoReturn:
 
 def _raise_access() -> NoReturn:
     raise TransportError("descriptor could not be read safely")
+
+
+def _raise_live_credential_missing() -> NoReturn:
+    raise CredentialMissingError("no credential is held for the live endpoint")
+
+
+def _raise_live_credential_denied() -> NoReturn:
+    raise CredentialDeniedError("the credential was not released for the live endpoint")
+
+
+def _raise_live_credential_unavailable() -> NoReturn:
+    raise CredentialUnavailableError("the credential could not be resolved")
+
+
+def _raise_live_credential_invalid() -> NoReturn:
+    raise CredentialInvalidError(
+        "the credential resolver returned no usable credential"
+    )
+
+
+def _raise_live_credential_failure() -> NoReturn:
+    raise CredentialError("the live endpoint could not be authenticated")
 
 
 def _raise_size() -> NoReturn:
@@ -761,6 +790,121 @@ def _decode_descriptor(content: bytes) -> ServiceEndpointDescriptor:
     return value
 
 
+def read_local_descriptor(
+    installation_state: Path, workspace_id: str
+) -> ServiceEndpointDescriptor | None:
+    """Return the descriptor this installation publishes, or ``None`` when absent.
+
+    Exactly the steps :func:`discover_endpoint` takes before it negotiates or
+    contacts anything: the provenance-checked bounded read, the payload-free
+    decode, the workspace identity agreement, and the platform locality rule.
+
+    It is a function of its own because a caller that must *construct* the local
+    transport needs the endpoint URI this file publishes, and the alternative is
+    that caller reading ``service.json`` itself -- which is a second copy of
+    every check above, written by whoever needed a socket path.  Nothing here is
+    authority: it is the same coordination hint, with the same refusals, handed
+    back before anybody has been asked whether they are listening.
+    """
+    identifier = _require_workspace_id(workspace_id)
+    content = _read_descriptor(Path(installation_state), identifier)
+    if content is None:
+        return None
+    descriptor = _decode_descriptor(content)
+    if descriptor.workspace_id != identifier:
+        _raise_live_identity()
+    _require_local_endpoint(descriptor)
+    return descriptor
+
+
+def probe_live_descriptor(
+    transport: ClientTransport,
+    *,
+    deadline: Deadline,
+    cancellation: CancellationToken | None = None,
+) -> ServiceEndpointDescriptor:
+    """Ask one endpoint, over the injected transport, what it is serving now.
+
+    The live half of discovery, separated from the file half for the endpoint
+    that has no file: an explicitly configured service is not published under an
+    installation root, and the only thing that can say what it is is the service
+    itself.  What it answers is held to the same admission the local path holds
+    it to -- the accepted probe kind, a passing status, a re-decoded result, and
+    a descriptor present in it -- and *nothing here decides identity*.  Whether
+    the answer describes the endpoint the caller meant is the caller's question,
+    because only the caller knows what it meant.
+
+    The same whole-call deadline and cancellation token are passed unchanged to
+    the transport.
+    """
+    remaining = enforce_send_preconditions(
+        deadline=deadline,
+        cancellation=cancellation,
+        operation=_DISCOVER_PROBE,
+    )
+    deadline_ms = min(MAXIMUM_DURATION_MS, math.floor(remaining * 1000))
+    # A transport's failure keeps its *kind* and loses its *words*. Which failure
+    # happened is what a caller acts on -- cancellation, expiry and the four
+    # credential outcomes have distinct recovery and exit classifications. The
+    # message is another matter: an injected transport is third-party code, its
+    # diagnostic is outside this package's payload-free rule, and it may name a
+    # credential or a local path. So a fresh, fixed-text instance of the same
+    # declared type is raised, never the transport's own object -- and, like every
+    # refusal here, raised outside the handler so no chain survives to render it.
+    answer: ServiceProbeResult | None = None
+    outcome = "answered"
+    try:
+        answer = transport.probe(
+            ServiceProbeRequest(probe=_DISCOVER_PROBE, deadline_ms=deadline_ms),
+            deadline=deadline,
+            cancellation=cancellation,
+        )
+    except DeadlineExceededError:
+        outcome = "expired"
+    except OperationCancelledError:
+        outcome = "cancelled"
+    except CredentialMissingError:
+        outcome = "credential-missing"
+    except CredentialDeniedError:
+        outcome = "credential-denied"
+    except CredentialUnavailableError:
+        outcome = "credential-unavailable"
+    except CredentialInvalidError:
+        outcome = "credential-invalid"
+    except CredentialError:
+        outcome = "credential-failure"
+    except Exception:  # noqa: BLE001 -- a transport diagnostic is not payload-free.
+        outcome = "unreachable"
+    if outcome == "expired":
+        _raise_live_deadline()
+    if outcome == "cancelled":
+        _raise_live_cancelled()
+    if outcome == "credential-missing":
+        _raise_live_credential_missing()
+    if outcome == "credential-denied":
+        _raise_live_credential_denied()
+    if outcome == "credential-unavailable":
+        _raise_live_credential_unavailable()
+    if outcome == "credential-invalid":
+        _raise_live_credential_invalid()
+    if outcome == "credential-failure":
+        _raise_live_credential_failure()
+    if outcome != "answered" or answer is None:
+        _raise_live_transport()
+    result = _validate_live_result(answer)
+    if (
+        type(result.probe) is not str
+        or result.probe != _DISCOVER_PROBE
+        or type(result.status) is not str
+        or result.status != "pass"
+    ):
+        _raise_live_discovery()
+    live = result.descriptor
+    if live is None:
+        _raise_live_discovery()
+    return live
+
+
 def discover_endpoint(
     installation_state: Path,
     workspace_id: str,
@@ -780,62 +924,13 @@ def discover_endpoint(
     declared type, so an expired deadline and a cancellation stay distinguishable
     from a transport that could not carry the call.
     """
-    identifier = _require_workspace_id(workspace_id)
-    content = _read_descriptor(Path(installation_state), identifier)
-    if content is None:
+    descriptor = read_local_descriptor(installation_state, workspace_id)
+    if descriptor is None:
         return None
-    descriptor = _decode_descriptor(content)
-    if descriptor.workspace_id != identifier:
-        _raise_live_identity()
-    _require_local_endpoint(descriptor)
     negotiated = _negotiate_descriptor(descriptor)
-
-    remaining = enforce_send_preconditions(
-        deadline=deadline,
-        cancellation=cancellation,
-        operation=_DISCOVER_PROBE,
+    live = probe_live_descriptor(
+        transport, deadline=deadline, cancellation=cancellation
     )
-    deadline_ms = min(MAXIMUM_DURATION_MS, math.floor(remaining * 1000))
-    # A transport's failure keeps its *kind* and loses its *words*. Which of the
-    # three ways a call can fail happened is what a caller acts on -- a cancelled
-    # call was abandoned by the caller, an expired one by the clock, and reporting
-    # either as "the transport could not carry this" misattributes the cause. The
-    # message is another matter: an injected transport is third-party code, its
-    # diagnostic is outside this package's payload-free rule, and it may name a
-    # credential or a local path. So a fresh, fixed-text instance of the same
-    # declared type is raised, never the transport's own object -- and, like every
-    # refusal here, raised outside the handler so no chain survives to render it.
-    answer: ServiceProbeResult | None = None
-    outcome = "answered"
-    try:
-        answer = transport.probe(
-            ServiceProbeRequest(probe=_DISCOVER_PROBE, deadline_ms=deadline_ms),
-            deadline=deadline,
-            cancellation=cancellation,
-        )
-    except DeadlineExceededError:
-        outcome = "expired"
-    except OperationCancelledError:
-        outcome = "cancelled"
-    except Exception:  # noqa: BLE001 -- a transport diagnostic is not payload-free.
-        outcome = "unreachable"
-    if outcome == "expired":
-        _raise_live_deadline()
-    if outcome == "cancelled":
-        _raise_live_cancelled()
-    if outcome != "answered" or answer is None:
-        _raise_live_transport()
-    result = _validate_live_result(answer)
-    if (
-        type(result.probe) is not str
-        or result.probe != _DISCOVER_PROBE
-        or type(result.status) is not str
-        or result.status != "pass"
-    ):
-        _raise_live_discovery()
-    live = result.descriptor
-    if live is None:
-        _raise_live_discovery()
     if (
         type(live.workspace_id) is not str
         or type(live.service_instance_id) is not str

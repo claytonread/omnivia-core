@@ -27,10 +27,13 @@ library.
 - :mod:`~omnivia_core_client.http_transport` -- :class:`HttpTransport`, the
   authenticated HTTP v1 transport, over a verified ``https`` endpoint or a
   loopback cleartext one
+- :mod:`~omnivia_core_client.service_client` -- :class:`ServiceClient` and the
+  two configurations it connects from: :class:`InstallationServiceConfig` for
+  whatever an installation publishes, :class:`HttpServiceConfig` for an
+  explicitly named HTTP service
 
-**What is not here yet**, and must not be assumed: retry or backoff, managed
-service startup, the Windows named-pipe transport, and the high-level client that
-would put them together. Each arrives in its own packet.
+**What is not here yet**, and must not be assumed: retry or backoff, and managed
+service startup. Each arrives in its own packet.
 
 :class:`LocalIpcTransport` and :class:`HttpTransport` are the two concrete
 transports, and both live here -- the first by owner resolution 005 R005-01, the
@@ -119,6 +122,12 @@ from omnivia_core_client.local_ipc import (
     LocalIpcTransport,
     socket_path_for,
 )
+from omnivia_core_client.service_client import (
+    HttpServiceConfig,
+    InstallationServiceConfig,
+    ServiceClient,
+    ServiceConfig,
+)
 from omnivia_core_client.transport import (
     ClientTransport,
     enforce_send_preconditions,
@@ -166,12 +175,16 @@ __all__ = [
     "DeadlineExceededError",
     "DiscoveredEndpoint",
     "HttpEndpoint",
+    "HttpServiceConfig",
     "HttpTransport",
+    "InstallationServiceConfig",
     "LocalIpcTransport",
     "MonotonicClock",
     "NegotiatedEndpoint",
     "OperationCancelledError",
     "ProtocolError",
+    "ServiceClient",
+    "ServiceConfig",
     "TransportError",
     "__version__",
     "canonical_json_bytes",

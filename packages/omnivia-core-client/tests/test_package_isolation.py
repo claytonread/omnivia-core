@@ -159,6 +159,7 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "framing.py",
         "http_transport.py",
         "local_ipc.py",
+        "service_client.py",
         "transport.py",
         "windows_pipe.py",
     }
@@ -227,6 +228,25 @@ def test_the_credential_module_needs_no_privileged_import() -> None:
         "re",
         "threading",
         "time",
+        "typing",
+    }, sorted(roots)
+
+
+def test_the_high_level_client_only_composes_what_this_package_already_has() -> None:
+    """The seam that puts the package together adds no mechanism of its own.
+
+    Not socket, http, ssl, urllib, ipaddress, ctypes, os or json: every one of
+    those would be this module doing a job one of the modules below it already
+    does. What is left is the composition -- a dataclass, a path, a type, the
+    public contracts, and this package's own parts.
+    """
+    roots = _imported_roots(SOURCE_ROOT / "service_client.py")
+    assert roots <= {
+        "__future__",
+        "dataclasses",
+        "omnivia_core",
+        "omnivia_core_client",
+        "pathlib",
         "typing",
     }, sorted(roots)
 
@@ -364,11 +384,11 @@ def test_the_typing_marker_ships() -> None:
 
 
 def test_the_readme_marks_the_unimplemented_surfaces() -> None:
-    """What is still absent, after the authenticated HTTP transport landed.
+    """What is still absent, after the high-level client landed.
 
     ``local socket`` left this list when R005-01 landed the local transport;
-    HTTP and Windows named-pipe transport have now left it too. Retry, managed
-    startup and the high-level client remain their own packets.
+    HTTP, the Windows named pipe and now the high-level client have left it too.
+    Retry and managed startup remain their own packets.
     """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     not_implemented = readme.split("## Not implemented yet", 1)
@@ -376,20 +396,21 @@ def test_the_readme_marks_the_unimplemented_surfaces() -> None:
     for surface in (
         "retry",
         "managed service startup",
-        "high-level client",
     ):
         assert surface in not_implemented[1], surface
 
 
-def test_the_readme_no_longer_claims_http_or_credentials_are_absent() -> None:
+def test_the_readme_no_longer_claims_shipped_surfaces_are_absent() -> None:
     """The counterweight: a README that lists a shipped surface as missing is wrong.
 
     Asserted on the "not implemented" section specifically rather than on the
-    whole file, because both words appear -- correctly -- in the sections that
-    describe what the transport and the credential seam now do.
+    whole file, because every one of these words appears -- correctly -- in the
+    sections that describe what those surfaces now do.
     """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     absent = readme.split("## Not implemented yet", 1)[1].lower()
     assert "http" not in absent
     assert "credential" not in absent
     assert "named-pipe" not in absent
+    assert "high-level" not in absent
+    assert "service client" not in absent
