@@ -3,7 +3,7 @@
   "$id": "https://contracts.omnivia.dev/application/v1/application-v1.schema.json",
   "title": "OmniVia Core Application Contract v1 - registry",
   "description": "Reference-only registry of every type in the v1 application contract. This document validates nothing on its own and declares no root type: it exists so one stable URI enumerates the whole contract surface, and so tooling can detect a definition that was added to a source schema but never published. The sibling source documents remain canonical.",
-  "x-omnivia-contract-version": "1.2",
+  "x-omnivia-contract-version": "1.3",
   "x-omnivia-schema-sources": [
     "https://contracts.omnivia.dev/application/v1/common.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility.schema.json",
@@ -186,6 +186,36 @@
     },
     "ServiceProbeResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/ServiceProbeResult"
+    },
+    "CoreTargetKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetKind"
+    },
+    "CoreTargetManagement": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetManagement"
+    },
+    "CoreTargetV1": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetV1"
+    },
+    "CoreLifecycleState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreLifecycleState"
+    },
+    "CoreReadinessState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreReadinessState"
+    },
+    "CoreCompatibilityState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreCompatibilityState"
+    },
+    "CoreConnectionState": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreConnectionState"
+    },
+    "CoreSafeWarningCode": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreSafeWarningCode"
+    },
+    "CoreSafeAction": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreSafeAction"
+    },
+    "CoreSafeStatusV1": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreSafeStatusV1"
     },
     "RecordId": {
       "$ref": "https://contracts.omnivia.dev/application/v1/records.schema.json#/$defs/RecordId"
