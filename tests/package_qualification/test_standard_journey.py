@@ -248,7 +248,8 @@ def test_the_posix_configuration_is_written_owner_read_write_only(
 
 
 class _FakeKernel32:
-    """A fake kernel32, recording calls so the wait path is testable off Windows."""
+    """A fake kernel32, recording calls so the stop and wait paths are testable
+    off Windows."""
 
     def __init__(
         self,
@@ -281,6 +282,12 @@ class _FakeKernel32:
         if self.raise_from == "WaitForSingleObject":
             raise OSError("boom")
         return self.wait_result
+
+    def TerminateProcess(self, handle: int, exit_code: int) -> int:
+        self.calls.append(("TerminateProcess", (handle, exit_code)))
+        if self.raise_from == "TerminateProcess":
+            raise OSError("boom")
+        return 1
 
     def CloseHandle(self, handle: int) -> int:
         self.calls.append(("CloseHandle", (handle,)))
@@ -455,6 +462,147 @@ def test_posix_wait_for_exit_continues_polling_on_permission_error(
     # A `PermissionError` on the first probes must not be accepted as "gone" --
     # only the later `ProcessLookupError` ends the wait.
     assert len(attempts) == 3
+
+
+def _no_signals(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any signal delivery a hard failure.
+
+    `os.kill(pid, CTRL_BREAK_EVENT)` on Windows is `GenerateConsoleCtrlEvent`,
+    which addresses a process *group*. The recovered descriptor's PID is not
+    guaranteed to be that group ID, so the event can reach the shared CI console.
+    The Windows replacement stop must therefore never reach `os.kill` at all.
+    """
+
+    def _forbidden(pid: int, signum: int) -> None:
+        raise AssertionError("the Windows replacement stop signalled a process")
+
+    monkeypatch.setattr(module.os, "kill", _forbidden)
+
+
+def test_windows_replacement_stop_terminates_only_that_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32()
+    _windows_wait(module, monkeypatch, library)
+    _no_signals(module, monkeypatch)
+
+    module._stop_replacement(4321)
+
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "TerminateProcess",
+        "CloseHandle",
+    ]
+    # `PROCESS_TERMINATE` on one handle: this cannot address a group or a console.
+    assert library.calls[0][1] == (module._PROCESS_TERMINATE, False, 4321)
+    assert library.calls[1][1] == (library.handle, 1)
+    assert library.calls[2][1] == (library.handle,)
+
+
+def test_windows_replacement_stop_is_a_noop_when_the_process_is_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(handle=0, last_error=module._ERROR_INVALID_PARAMETER)
+    _windows_wait(module, monkeypatch, library)
+    _no_signals(module, monkeypatch)
+
+    module._stop_replacement(4321)
+
+    assert [name for name, _ in library.calls] == ["OpenProcess"]
+
+
+def test_windows_replacement_stop_closes_the_handle_when_terminate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(raise_from="TerminateProcess")
+    _windows_wait(module, monkeypatch, library)
+    _no_signals(module, monkeypatch)
+
+    # Best effort: the stop stays silent, and the wait below is what fails closed.
+    module._stop_replacement(4321)
+
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "TerminateProcess",
+        "CloseHandle",
+    ]
+
+
+def test_windows_replacement_teardown_waits_and_fails_closed_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(wait_result=module._WAIT_TIMEOUT)
+    _windows_wait(module, monkeypatch, library)
+    _no_signals(module, monkeypatch)
+
+    module._stop_replacement(999999)
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(999999, timeout=1.0)
+
+    # The stop is still followed by the deterministic Win32 handle wait.
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "TerminateProcess",
+        "CloseHandle",
+        "OpenProcess",
+        "WaitForSingleObject",
+        "CloseHandle",
+    ]
+    assert library.calls[3][1] == (module._PROCESS_SYNCHRONIZE, False, 999999)
+    error = excinfo.value
+    assert str(error) == module._EXIT_WAIT_FAILED
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    for secret in ("999999", "4242"):
+        assert secret not in repr(error.args)
+
+
+def test_posix_replacement_stop_stays_a_graceful_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_IS_WINDOWS", False)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        module.os, "kill", lambda pid, signum: signals.append((pid, signum))
+    )
+
+    module._stop_replacement(4321)
+
+    assert signals == [(4321, module.signal.SIGTERM)]
+
+
+def _function(name: str) -> ast.FunctionDef:
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} is absent")
+
+
+def test_final_cleanup_routes_the_replacement_through_the_pid_only_stop() -> None:
+    called = {
+        node.func.id
+        for node in ast.walk(_function("run"))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_stop_replacement" in called
+    # Names, not the source text: both docstrings name the call they replace.
+    for name in ("_stop_replacement", "_terminate_windows"):
+        attributes = {
+            node.attr
+            for node in ast.walk(_function(name))
+            if isinstance(node, ast.Attribute)
+        }
+        assert not {"CTRL_BREAK_EVENT", "CTRL_C_EVENT"} & attributes
+    assert "kill" not in {
+        node.attr
+        for node in ast.walk(_function("_terminate_windows"))
+        if isinstance(node, ast.Attribute)
+    }
 
 
 def test_exception_class_names_flattens_nested_exception_groups() -> None:

@@ -193,17 +193,19 @@ _EXIT_WAIT_FAILED: Final = "the service did not exit before the deadline"
 #: `SYNCHRONIZE` is the only access `WaitForSingleObject` needs; this handle
 #: never queries or modifies the target process.
 _PROCESS_SYNCHRONIZE: Final = 0x00100000
+#: Likewise the only access `TerminateProcess` needs.
+_PROCESS_TERMINATE: Final = 0x0001
 _WAIT_OBJECT_0: Final = 0
 _WAIT_TIMEOUT: Final = 0x102
 _ERROR_INVALID_PARAMETER: Final = 87
 
 
 def _win32_kernel32() -> ctypes.WinDLL:
-    """Bind the kernel32 calls `_wait_for_exit_windows` needs.
+    """Bind the kernel32 calls the Windows stop-and-wait path needs.
 
     Loaded lazily -- inside a call, not at import time -- so this module still
     imports on POSIX. `_win32_kernel32_loader` is the seam a POSIX test
-    replaces with a fake library to exercise the Windows wait path.
+    replaces with a fake library to exercise the Windows stop and wait paths.
     """
     library = ctypes.WinDLL("kernel32", use_last_error=True)
     library.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -212,6 +214,8 @@ def _win32_kernel32() -> ctypes.WinDLL:
     library.GetLastError.restype = wintypes.DWORD
     library.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     library.WaitForSingleObject.restype = wintypes.DWORD
+    library.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    library.TerminateProcess.restype = wintypes.BOOL
     library.CloseHandle.argtypes = [wintypes.HANDLE]
     library.CloseHandle.restype = wintypes.BOOL
     return library
@@ -265,6 +269,39 @@ def _wait_for_exit(pid: int, timeout: float = 10.0) -> None:
             break
         time.sleep(0.05)
     raise JourneyError(_EXIT_WAIT_FAILED)
+
+
+def _terminate_windows(pid: int) -> None:
+    """Stop exactly one process, by handle, emitting no console-control event.
+
+    `os.kill(pid, CTRL_BREAK_EVENT)` is `GenerateConsoleCtrlEvent`, whose target
+    is a process *group*, not a PID.  The service this program starts itself is a
+    group leader (`CREATE_NEW_PROCESS_GROUP`), so the event stays inside it.  The
+    recovered descriptor's PID is not guaranteed to be that replacement's console
+    process-group ID, so reusing it as one can deliver on the shared console and
+    reach the shell that launched the journey.  A handle opened for
+    `PROCESS_TERMINATE` alone cannot address anything but this PID, and
+    `TerminateProcess` is not a signal.
+
+    Best effort, and suppressed for the reason `_wait_for_exit_windows` gives:
+    the caller's wait is what fails closed, with the one fixed message.
+    """
+    with contextlib.suppress(OSError, ctypes.ArgumentError):
+        library = _win32_kernel32_loader()
+        handle = library.OpenProcess(_PROCESS_TERMINATE, False, pid)
+        if handle:
+            try:
+                library.TerminateProcess(handle, 1)
+            finally:
+                library.CloseHandle(handle)
+
+
+def _stop_replacement(pid: int) -> None:
+    """Stop the recovered replacement service; PID-only on Windows."""
+    if _IS_WINDOWS:
+        _terminate_windows(pid)
+        return
+    _stop_pid(pid, graceful=True)
 
 
 def _wait_for_descriptor(path: Path, process: subprocess.Popen[str]) -> dict[str, Any]:
@@ -835,7 +872,7 @@ def run(output: Path) -> dict[str, Any]:
                 except subprocess.TimeoutExpired:
                     process.kill()
             if replacement_pid is not None:
-                _stop_pid(replacement_pid, graceful=True)
+                _stop_replacement(replacement_pid)
                 _wait_for_exit(replacement_pid)
 
 
