@@ -268,10 +268,16 @@ def test_a_mistyped_elapsed_time_is_refused(value: Any) -> None:
         prepare_vector(replace(case, when={**case.when, "elapsed_ms": value}))
 
 
-@pytest.mark.parametrize("case_id", ["SPI-V-034", "SPI-V-038", "SPI-V-042"])
-def test_a_case_outside_the_supported_range_is_refused(case_id: str) -> None:
+def test_this_slice_is_exactly_its_window_of_the_supported_range() -> None:
+    """The catalogue is complete, so the slice is a window rather than a bound."""
+    assert SUPPORTED_CASE_IDS[9 : 9 + len(SLICE_IDS)] == SLICE_IDS
+    assert SUPPORTED_CASE_IDS[9 + len(SLICE_IDS)] == "SPI-V-025"
+    assert len(SUPPORTED_CASE_IDS) == 42
+
+
+def test_an_id_the_catalogue_does_not_hold_is_still_refused() -> None:
     with pytest.raises(VectorInputError, match="outside"):
-        prepare_vector(_case(case_id))
+        prepare_vector(replace(_case("SPI-V-010"), id="SPI-V-999"))
 
 
 # --- the recipes still do not know the answers -----------------------------------

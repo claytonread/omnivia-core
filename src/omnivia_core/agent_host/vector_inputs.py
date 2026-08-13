@@ -1,4 +1,4 @@
-"""Input recipes for provider-SPI vectors `SPI-V-001` to `SPI-V-033` (V06-8, A9-P2).
+"""Input recipes for provider-SPI vectors `SPI-V-001` to `SPI-V-042` (V06-8, A9-P2).
 
 Standard library only. One function -- :func:`prepare_vector` -- turns a loaded
 :class:`~omnivia_core.agent_host.conformance.ConformanceCase` into a
@@ -141,6 +141,15 @@ _EXHAUSTED_ELAPSED_MS: Final = DEFAULT_DEADLINE_MS
 #: states no spelling for it. This is the recipe's own fixed one: deterministic,
 #: and deliberately not any token the frozen vocabulary holds.
 _FUTURE_CLASSIFICATION: Final = "classification-from-a-future-server"
+
+#: The purpose of the host-local compaction `SPI-V-037` performs before the
+#: capture it observes. That capture carries the capture purpose, not this one.
+_COMPACTION_PURPOSE: Final = "context_compaction"
+
+#: One byte past the server's declared inline ceiling. `SPI-V-038`'s `when`
+#: states only "above the declared byte ceiling", so the bound is read off the
+#: profile the call meets rather than written down as a number here.
+_OVERSIZED_INLINE_BYTES: Final = _HEALTHY_PROFILE.max_inline_result_bytes + 1
 
 
 class VectorInputError(ValueError):
@@ -839,6 +848,138 @@ def _retry_of_an_unknown_classification(
     )
 
 
+# --- the recipes: boundary conditions --------------------------------------------
+
+
+def _negotiation_needing_a_host_patch(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-034: the handshake, declaring a hook it can only satisfy by forking the host.
+
+    The corpus states the condition as prose, so the intent flag is the recipe's
+    own spelling of it. Nothing runs beneath a handshake.
+    """
+    return _request(case, intent=HookIntent(requires_host_source_patch=True))
+
+
+def _search_reaching_past_the_boundary(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-035: a real live turn, then a search that opens the store itself."""
+    _live_turn(case, provider, log, sequence=_sequence_of(case) - 1)
+    return _request(case, intent=HookIntent(direct_storage_access=True))
+
+
+def _compaction_asking_core_to_hold_run_state(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-036: compaction offers Core the host-local task graph to keep."""
+    return _request(case, intent=HookIntent(request_core_run_state=True))
+
+
+def _capture_of_a_compaction_summary(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-037: an open turn, a real host-local compaction, then the promotion ask."""
+    sequence = _sequence_of(case)
+    _live_turn(case, provider, log, sequence=sequence - 2, purpose=_RECALL_PURPOSE)
+    _drive(
+        provider,
+        log,
+        _request(
+            case,
+            hook=Hook.CONTEXT_COMPACT,
+            sequence=sequence - 1,
+            purpose=_COMPACTION_PURPOSE,
+            idempotency_key=None,
+            required_capabilities=(),
+            elapsed_ms=0,
+        ),
+        profile=_HEALTHY_PROFILE,
+    )
+    return _request(case, intent=HookIntent(promote_to_governed_knowledge=True))
+
+
+def _oversized_inline_tool_result(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-038: an open turn, then a payload inlined past the profile's ceiling."""
+    _live_turn(
+        case, provider, log, sequence=_sequence_of(case) - 1, purpose=_RECALL_PURPOSE
+    )
+    return _request(
+        case, intent=HookIntent(inline_payload_bytes=_OVERSIZED_INLINE_BYTES)
+    )
+
+
+def _recall_for_a_turn_after_a_completed_one(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-039: the previous ordinal is really opened and really completed.
+
+    The ordinal that completed is the one below the ordinal the case observes,
+    so the ladder is read off `given.turn_ordinal` rather than written down.
+    """
+    sequence = _sequence_of(case)
+    earlier = _whole(case, "turn_ordinal", 0) - 1
+    _live_turn(
+        case,
+        provider,
+        log,
+        sequence=sequence - 2,
+        turn_ordinal=earlier,
+        purpose=_RECALL_PURPOSE,
+    )
+    _drive(
+        provider,
+        log,
+        _request(
+            case,
+            hook=Hook.TURN_COMPLETE,
+            sequence=sequence - 1,
+            turn_ordinal=earlier,
+            purpose=_TURN_CONTROL_PURPOSE,
+            idempotency_key=None,
+            required_capabilities=(),
+            elapsed_ms=0,
+        ),
+        profile=_HEALTHY_PROFILE,
+    )
+    return _request(case)
+
+
+def _retry_composing_core_job_retry(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-040: a live turn, then a retry asked to take the Core durable job with it."""
+    _live_turn(
+        case, provider, log, sequence=_sequence_of(case) - 1, purpose=_RECALL_PURPOSE
+    )
+    return _request(case, intent=HookIntent(compose_core_job_control=True))
+
+
+def _approval_presented_as_governance(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-041: a live turn, then the escalation `when` names, requiring what it names.
+
+    Both the approval kind and the capability the call requires are structured
+    corpus fields, so this recipe supplies neither.
+    """
+    _live_turn(
+        case, provider, log, sequence=_sequence_of(case) - 1, purpose=_RECALL_PURPOSE
+    )
+    return _request(case)
+
+
+def _recall_injecting_host_identity(
+    case: ConformanceCase, provider: MockProvider, log: list[SpiRequest]
+) -> SpiRequest:
+    """SPI-V-042: a live turn, then a recall whose nested call carries host identity."""
+    _live_turn(case, provider, log, sequence=_sequence_of(case) - 1)
+    return _request(case, intent=HookIntent(inject_host_identity=True))
+
+
 _Recipe = Callable[[ConformanceCase, MockProvider, list[SpiRequest]], SpiRequest]
 
 _RECIPES: Final[MappingProxyType[str, _Recipe]] = MappingProxyType(
@@ -876,6 +1017,15 @@ _RECIPES: Final[MappingProxyType[str, _Recipe]] = MappingProxyType(
         "SPI-V-031": _retry_after_failure,
         "SPI-V-032": _retry_after_failure,
         "SPI-V-033": _retry_of_an_unknown_classification,
+        "SPI-V-034": _negotiation_needing_a_host_patch,
+        "SPI-V-035": _search_reaching_past_the_boundary,
+        "SPI-V-036": _compaction_asking_core_to_hold_run_state,
+        "SPI-V-037": _capture_of_a_compaction_summary,
+        "SPI-V-038": _oversized_inline_tool_result,
+        "SPI-V-039": _recall_for_a_turn_after_a_completed_one,
+        "SPI-V-040": _retry_composing_core_job_retry,
+        "SPI-V-041": _approval_presented_as_governance,
+        "SPI-V-042": _recall_injecting_host_identity,
     }
 )
 

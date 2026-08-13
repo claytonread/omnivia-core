@@ -75,8 +75,10 @@ def _case(case_id: str) -> ConformanceCase:
 # --- the nine scenarios ----------------------------------------------------------
 
 
-def test_the_slice_completes_the_supported_range() -> None:
-    assert SUPPORTED_CASE_IDS == EARLIER_IDS + SLICE_IDS
+def test_the_slice_follows_the_earlier_ones_in_corpus_order() -> None:
+    assert SUPPORTED_CASE_IDS[: len(EARLIER_IDS) + len(SLICE_IDS)] == (
+        EARLIER_IDS + SLICE_IDS
+    )
 
 
 @pytest.mark.parametrize("case_id", SLICE_IDS)
@@ -333,10 +335,16 @@ def test_a_mistyped_key_is_refused(value: Any) -> None:
         prepare_vector(replace(case, given={**case.given, "idempotency_key": value}))
 
 
-@pytest.mark.parametrize("case_id", ["SPI-V-034", "SPI-V-038", "SPI-V-042"])
-def test_a_case_beyond_the_supported_range_is_refused(case_id: str) -> None:
+def test_this_slice_is_exactly_its_window_of_the_supported_range() -> None:
+    """The catalogue is complete, so the slice is a window rather than a bound."""
+    assert SUPPORTED_CASE_IDS[24 : 24 + len(SLICE_IDS)] == SLICE_IDS
+    assert SUPPORTED_CASE_IDS[24 + len(SLICE_IDS)] == "SPI-V-034"
+    assert len(SUPPORTED_CASE_IDS) == 42
+
+
+def test_an_id_the_catalogue_does_not_hold_is_still_refused() -> None:
     with pytest.raises(VectorInputError, match="outside"):
-        prepare_vector(_case(case_id))
+        prepare_vector(replace(_case("SPI-V-025"), id="SPI-V-999"))
 
 
 # --- the recipes still do not know the answers -----------------------------------

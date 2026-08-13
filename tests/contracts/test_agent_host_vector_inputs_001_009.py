@@ -195,10 +195,16 @@ def test_moving_a_corpus_field_moves_the_request(case_id: str) -> None:
 # --- fail-closed -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("case_id", ["SPI-V-034", "SPI-V-039", "SPI-V-042"])
-def test_a_case_outside_the_slice_is_refused(case_id: str) -> None:
+def test_this_slice_is_exactly_the_head_of_the_supported_range() -> None:
+    """The catalogue is complete, so the slice is a window rather than a bound."""
+    assert SUPPORTED_CASE_IDS[: len(SLICE_IDS)] == SLICE_IDS
+    assert SUPPORTED_CASE_IDS[len(SLICE_IDS)] == "SPI-V-010"
+    assert len(SUPPORTED_CASE_IDS) == 42
+
+
+def test_an_id_the_catalogue_does_not_hold_is_still_refused() -> None:
     with pytest.raises(VectorInputError, match="outside"):
-        prepare_vector(_case(case_id))
+        prepare_vector(replace(_case("SPI-V-001"), id="SPI-V-999"))
 
 
 @pytest.mark.parametrize("value", ["SPI-V-001", None, {"id": "SPI-V-001"}, 1])
@@ -256,7 +262,7 @@ def test_an_unknown_approval_kind_is_refused() -> None:
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"case_id": "SPI-V-042"}, "has no recipe"),
+        ({"case_id": "SPI-V-999"}, "has no recipe"),
         ({"provider": "a provider"}, "provider must be a MockProvider"),
         ({"request": None}, "request must be an SpiRequest"),
         ({"setup": "spi.negotiate@0"}, "setup must be a sequence"),
