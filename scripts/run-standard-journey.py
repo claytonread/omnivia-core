@@ -45,6 +45,14 @@ from mcp.shared.exceptions import MCPError
 
 TIMEOUT_SECONDS: Final = 60
 QUERY_TOKEN: Final = "omnivia-standalone-journey-token"
+
+#: The captured source's native id, and the value every record source reference
+#: repeats.  It carries `QUERY_TOKEN` because `evidence.search` matches the
+#: artifact's identity surface -- source kind, native id and locator -- and never
+#: file content: a token that lived only in the captured bytes would leave
+#: `evidence_search` answering empty while the other five tools found the record.
+SOURCE_ID: Final = f"standalone-source-1-{QUERY_TOKEN}"
+
 PRINCIPAL: Final = "local-user"
 
 #: The server key inside every host configuration.  Opaque and fixed: a host
@@ -848,7 +856,7 @@ def run(output: Path) -> dict[str, Any]:
                 "--capture-source",
                 str(source),
                 "--source-id",
-                "standalone-source-1",
+                SOURCE_ID,
                 "--media-type",
                 "text/plain",
             ]
@@ -928,7 +936,7 @@ def run(output: Path) -> dict[str, Any]:
                                 {
                                     "source": {
                                         "kind": "document",
-                                        "source_id": "standalone-source-1",
+                                        "source_id": SOURCE_ID,
                                     }
                                 }
                             ],
@@ -938,7 +946,7 @@ def run(output: Path) -> dict[str, Any]:
                         "evidence_disposition": "available",
                         "record_type": "memory.fact",
                         "sources": [
-                            {"kind": "document", "source_id": "standalone-source-1"}
+                            {"kind": "document", "source_id": SOURCE_ID}
                         ],
                     },
                     idempotency_key="standard-memory-create-1",

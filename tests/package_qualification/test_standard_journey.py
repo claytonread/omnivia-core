@@ -76,6 +76,40 @@ def test_journey_covers_initialization_governance_mcp_and_recovery() -> None:
     } <= constants
 
 
+def test_the_evidence_query_token_is_on_the_searchable_source_identity() -> None:
+    """`evidence.search` matches source kind, native id and locator -- not content.
+
+    A token that lived only in the captured file's bytes would leave
+    `evidence_search` answering empty while the other five tools found the
+    record, so it has to be part of the source id the capture registers.  Every
+    record source reference then names that same id through `SOURCE_ID`, so the
+    evidence the search finds is the evidence the approved record cites.
+    """
+    module = _module()
+    assert module.QUERY_TOKEN in module.SOURCE_ID
+
+    tree = _tree()
+    references = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and key.value == "source_id"
+    ]
+    arguments = [
+        following
+        for node in ast.walk(tree)
+        if isinstance(node, ast.List)
+        for element, following in zip(node.elts, node.elts[1:])
+        if isinstance(element, ast.Constant) and element.value == "--source-id"
+    ]
+    assert len(references) == 2 and arguments
+    assert all(
+        isinstance(node, ast.Name) and node.id == "SOURCE_ID"
+        for node in references + arguments
+    )
+
+
 def test_journey_has_no_skip_or_xfail_path() -> None:
     attributes = {
         node.attr for node in ast.walk(_tree()) if isinstance(node, ast.Attribute)
