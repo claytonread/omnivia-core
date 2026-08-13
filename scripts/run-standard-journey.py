@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Final, TextIO
 
@@ -182,14 +184,87 @@ def _stop_pid(pid: int, *, graceful: bool) -> None:
         return
 
 
+#: Fixed and payload-free: every failure path below -- timeout, an unexpected
+#: wait result, an `OpenProcess` error that is not "no such process", a failed
+#: `CloseHandle`, or a ctypes/OS failure -- collapses to this one message, so
+#: no PID, handle or Win32 error code ever reaches a transcript.
+_EXIT_WAIT_FAILED: Final = "the service did not exit before the deadline"
+
+#: `SYNCHRONIZE` is the only access `WaitForSingleObject` needs; this handle
+#: never queries or modifies the target process.
+_PROCESS_SYNCHRONIZE: Final = 0x00100000
+_WAIT_OBJECT_0: Final = 0
+_WAIT_TIMEOUT: Final = 0x102
+_ERROR_INVALID_PARAMETER: Final = 87
+
+
+def _win32_kernel32() -> ctypes.WinDLL:
+    """Bind the kernel32 calls `_wait_for_exit_windows` needs.
+
+    Loaded lazily -- inside a call, not at import time -- so this module still
+    imports on POSIX. `_win32_kernel32_loader` is the seam a POSIX test
+    replaces with a fake library to exercise the Windows wait path.
+    """
+    library = ctypes.WinDLL("kernel32", use_last_error=True)
+    library.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    library.OpenProcess.restype = wintypes.HANDLE
+    library.GetLastError.argtypes = []
+    library.GetLastError.restype = wintypes.DWORD
+    library.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    library.WaitForSingleObject.restype = wintypes.DWORD
+    library.CloseHandle.argtypes = [wintypes.HANDLE]
+    library.CloseHandle.restype = wintypes.BOOL
+    return library
+
+
+_win32_kernel32_loader = _win32_kernel32
+
+
+def _wait_for_exit_windows(pid: int, timeout: float) -> None:
+    """Block on the OS exit notification instead of polling `os.kill(pid, 0)`.
+
+    Windows has no `kill(pid, 0)` liveness probe -- `os.kill` there only ever
+    sends real signals -- so the previous polling loop could never observe an
+    exit. Suppressed rather than caught and re-raised, matching `_restrict`
+    above: raising inside the handler would keep the original exception on
+    `__cause__`/`__context__`, and its text can quote a handle value or a
+    Win32 error code.
+    """
+    exited = False
+    with contextlib.suppress(OSError, ctypes.ArgumentError):
+        library = _win32_kernel32_loader()
+        handle = library.OpenProcess(_PROCESS_SYNCHRONIZE, False, pid)
+        if not handle:
+            exited = library.GetLastError() == _ERROR_INVALID_PARAMETER
+        else:
+            try:
+                result = library.WaitForSingleObject(handle, int(timeout * 1000))
+            finally:
+                closed = bool(library.CloseHandle(handle))
+            # Any result other than WAIT_OBJECT_0 -- including WAIT_TIMEOUT
+            # and WAIT_FAILED -- fails closed.
+            exited = result == _WAIT_OBJECT_0 and closed
+    if not exited:
+        raise JourneyError(_EXIT_WAIT_FAILED)
+
+
 def _wait_for_exit(pid: int, timeout: float = 10.0) -> None:
+    if _IS_WINDOWS:
+        _wait_for_exit_windows(pid, timeout)
+        return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
-        except OSError:
+        except ProcessLookupError:
             return
+        except PermissionError:
+            time.sleep(0.05)
+            continue
+        except OSError:
+            break
         time.sleep(0.05)
+    raise JourneyError(_EXIT_WAIT_FAILED)
 
 
 def _wait_for_descriptor(path: Path, process: subprocess.Popen[str]) -> dict[str, Any]:

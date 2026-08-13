@@ -247,6 +247,216 @@ def test_the_posix_configuration_is_written_owner_read_write_only(
     assert commands == []
 
 
+class _FakeKernel32:
+    """A fake kernel32, recording calls so the wait path is testable off Windows."""
+
+    def __init__(
+        self,
+        *,
+        handle: int = 4242,
+        last_error: int = 0,
+        wait_result: int = 0,
+        close_result: int = 1,
+        raise_from: str | None = None,
+    ) -> None:
+        self.handle = handle
+        self.last_error = last_error
+        self.wait_result = wait_result
+        self.close_result = close_result
+        self.raise_from = raise_from
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def OpenProcess(self, access: int, inherit: bool, pid: int) -> int:
+        self.calls.append(("OpenProcess", (access, inherit, pid)))
+        if self.raise_from == "OpenProcess":
+            raise OSError("boom")
+        return self.handle
+
+    def GetLastError(self) -> int:
+        self.calls.append(("GetLastError", ()))
+        return self.last_error
+
+    def WaitForSingleObject(self, handle: int, timeout_ms: int) -> int:
+        self.calls.append(("WaitForSingleObject", (handle, timeout_ms)))
+        if self.raise_from == "WaitForSingleObject":
+            raise OSError("boom")
+        return self.wait_result
+
+    def CloseHandle(self, handle: int) -> int:
+        self.calls.append(("CloseHandle", (handle,)))
+        if self.raise_from == "CloseHandle":
+            raise OSError("boom")
+        return self.close_result
+
+
+def _windows_wait(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, library: _FakeKernel32
+) -> None:
+    monkeypatch.setattr(module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(module, "_win32_kernel32_loader", lambda: library)
+
+
+def test_windows_wait_for_exit_returns_when_signaled_and_the_handle_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(wait_result=module._WAIT_OBJECT_0, close_result=1)
+    _windows_wait(module, monkeypatch, library)
+
+    module._wait_for_exit(4321, timeout=1.0)
+
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "WaitForSingleObject",
+        "CloseHandle",
+    ]
+    assert library.calls[0][1] == (module._PROCESS_SYNCHRONIZE, False, 4321)
+    assert library.calls[1][1] == (library.handle, 1000)
+    assert library.calls[2][1] == (library.handle,)
+
+
+def test_windows_wait_for_exit_treats_error_87_as_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(handle=0, last_error=module._ERROR_INVALID_PARAMETER)
+    _windows_wait(module, monkeypatch, library)
+
+    module._wait_for_exit(4321, timeout=1.0)
+
+    assert [name for name, _ in library.calls] == ["OpenProcess", "GetLastError"]
+
+
+def test_windows_wait_for_exit_fails_closed_on_a_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(wait_result=module._WAIT_TIMEOUT, close_result=1)
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(4321, timeout=1.0)
+
+    assert str(excinfo.value) == module._EXIT_WAIT_FAILED
+    # Timed out, but the handle it opened was still closed.
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "WaitForSingleObject",
+        "CloseHandle",
+    ]
+
+
+def test_windows_wait_for_exit_fails_closed_on_an_unexpected_wait_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(wait_result=0xFFFFFFFF, close_result=1)  # WAIT_FAILED
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(4321, timeout=1.0)
+
+    assert str(excinfo.value) == module._EXIT_WAIT_FAILED
+
+
+def test_windows_wait_for_exit_fails_closed_when_open_process_fails_for_another_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(handle=0, last_error=5)  # ERROR_ACCESS_DENIED
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(4321, timeout=1.0)
+
+    assert str(excinfo.value) == module._EXIT_WAIT_FAILED
+    assert [name for name, _ in library.calls] == ["OpenProcess", "GetLastError"]
+
+
+def test_windows_wait_for_exit_fails_closed_when_close_handle_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(wait_result=0, close_result=0)
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(4321, timeout=1.0)
+
+    assert str(excinfo.value) == module._EXIT_WAIT_FAILED
+
+
+def test_windows_wait_for_exit_fails_closed_on_a_ctypes_or_os_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(raise_from="WaitForSingleObject")
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(4321, timeout=1.0)
+
+    assert str(excinfo.value) == module._EXIT_WAIT_FAILED
+    # The handle opened before the failing call was still closed.
+    assert [name for name, _ in library.calls] == [
+        "OpenProcess",
+        "WaitForSingleObject",
+        "CloseHandle",
+    ]
+
+
+def test_windows_wait_for_exit_failure_is_sanitized_and_unchained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    library = _FakeKernel32(raise_from="OpenProcess")
+    _windows_wait(module, monkeypatch, library)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._wait_for_exit(999999, timeout=1.0)
+
+    error = excinfo.value
+    assert str(error) == "the service did not exit before the deadline"
+    # No pid, handle or Win32 error code on any surface, and no chained cause:
+    # a suppressed failure re-raised inside its own handler would keep the
+    # original on `__cause__`/`__context__`, and that text can quote them.
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    surfaces = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(error.__cause__),
+        repr(error.__context__),
+    )
+    for secret in ("999999", "4242", "boom"):
+        for surface in surfaces:
+            assert secret not in surface
+
+
+def test_posix_wait_for_exit_continues_polling_on_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    attempts: list[int] = []
+
+    def _fake_kill(pid: int, signum: int) -> None:
+        attempts.append(pid)
+        if len(attempts) < 3:
+            raise PermissionError("access denied")
+        raise ProcessLookupError("gone")
+
+    monkeypatch.setattr(module.os, "kill", _fake_kill)
+
+    module._wait_for_exit(4321, timeout=5.0)
+
+    # A `PermissionError` on the first probes must not be accepted as "gone" --
+    # only the later `ProcessLookupError` ends the wait.
+    assert len(attempts) == 3
+
+
 def test_exception_class_names_flattens_nested_exception_groups() -> None:
     module = _module()
     nested = BaseExceptionGroup(
