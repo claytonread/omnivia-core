@@ -329,6 +329,21 @@ class FilesystemQualification:
         return self.verdict is FilesystemVerdict.QUALIFIED
 
 
+def nearest_existing(path: Path) -> Path:
+    """`path`, or the closest ancestor of it that exists.
+
+    `path.parent` alone is not enough. A workspace root is created with
+    `parents=True`, so a caller qualifying one *before* creating it can name several
+    levels that are not there yet -- and probing a path that does not exist reports
+    `"unknown"`, which default-deny then refuses. That would make the gate refuse
+    every fresh workspace rather than every unqualified filesystem.
+    """
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate
+    return path
+
+
 def detect_filesystem(path: Path) -> str:
     """Best-effort filesystem type name for `path`, lowercased.
 
@@ -337,7 +352,7 @@ def detect_filesystem(path: Path) -> str:
     closed and corrupting a workspace.
     """
     system = platform.system()
-    target = path if path.exists() else path.parent
+    target = nearest_existing(path)
     try:
         if system == "Darwin":
             # `stat -f %T` on BSD reports the *file type* suffix (`/`, `@`), not the
@@ -500,8 +515,14 @@ def qualify_filesystem(
 
 
 def _locking_works(path: Path) -> bool:
-    """Probe that an exclusive lock can be taken and released here."""
-    directory = path if path.is_dir() else path.parent
+    """Probe that an exclusive lock can be taken and released here.
+
+    The probe is taken in the nearest existing directory rather than in `path`, so
+    qualifying a workspace root that has not been created yet does not create it --
+    and does not leave a probe file inside a tree the caller may still refuse.
+    """
+    existing = nearest_existing(path)
+    directory = existing if existing.is_dir() else existing.parent
     probe = directory / ".omnivia-lock-probe"
     lock = create_lock(probe, LockRole.BOOTSTRAP_MUTEX)
     try:
@@ -532,5 +553,6 @@ __all__ = [
     "WindowsFileLock",
     "create_lock",
     "detect_filesystem",
+    "nearest_existing",
     "qualify_filesystem",
 ]

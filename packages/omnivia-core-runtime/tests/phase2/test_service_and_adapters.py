@@ -19,6 +19,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import omnivia_core_runtime.service.main as service_main_module
 import pytest
 from omnivia_core_cli.client import build_request
 from omnivia_core_runtime.ownership.discovery import discover, is_compatible, publish
@@ -28,7 +29,7 @@ from omnivia_core_runtime.service.authorization import (
     authorize,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
-from omnivia_core_runtime.service.main import _endpoint_to_serve
+from omnivia_core_runtime.service.main import _endpoint_to_serve, _serve_until_stopped
 from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
@@ -995,8 +996,16 @@ def test_main_refuses_a_mismatched_scheme_before_touching_the_workspace(
     assert not (tmp_path / "workspace").exists(), "nothing was touched before the refusal"
 
 
-def test_main_check_only_bypasses_endpoint_validation(tmp_path: Path) -> None:
+def test_main_check_only_bypasses_endpoint_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`--check-only` reports readiness without ever needing an endpoint."""
+    def unexpected_wait_loop(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("check-only entered the served lease-renewal loop")
+
+    monkeypatch.setattr(
+        service_main_module, "_serve_until_stopped", unexpected_wait_loop
+    )
     code = service_main(
         [
             "--workspace",
@@ -1009,6 +1018,144 @@ def test_main_check_only_bypasses_endpoint_validation(tmp_path: Path) -> None:
     # No workspace exists, so readiness is refused -- but for that reason, and
     # not for a missing or invalid endpoint.
     assert code == 1
+
+
+def test_the_service_wait_loop_fails_closed_and_unwinds_once(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A renewal failure stops serving, releases resources, and exits non-zero."""
+    class KeepRunning:
+        def wait(self, *, timeout: float) -> bool:
+            assert timeout == 0.25
+            return False
+
+    class FailedRenewal:
+        stops = 0
+
+        def renew_lease_if_due(self) -> bool:
+            raise RuntimeError("sensitive workspace detail")
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    runner = FailedRenewal()
+    code = _serve_until_stopped(runner, KeepRunning())  # type: ignore[arg-type]
+
+    assert code == 1
+    assert runner.stops == 1
+    error = capsys.readouterr().err
+    assert error == "stopping: the workspace lease could not be renewed\n"
+    assert "sensitive" not in error
+
+
+def test_the_service_wait_loop_stops_cleanly_without_an_extra_renewal() -> None:
+    """A requested stop follows the same unwind and retains a successful exit."""
+    class StopRequested:
+        def wait(self, *, timeout: float) -> bool:
+            assert timeout == 0.25
+            return True
+
+    class CleanRunner:
+        renewals = 0
+        stops = 0
+
+        def renew_lease_if_due(self) -> bool:
+            self.renewals += 1
+            return True
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    runner = CleanRunner()
+    code = _serve_until_stopped(runner, StopRequested())  # type: ignore[arg-type]
+
+    assert code == 0
+    assert runner.renewals == 0
+    assert runner.stops == 1
+
+
+def test_check_only_stops_a_ready_workspace_without_entering_the_renewal_loop(
+    tmp_path: Path, migrated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mode this has to be proved on: one that gets all the way to ready.
+
+    `--check-only` on a workspace that does not exist refuses before the loop for a
+    reason that has nothing to do with renewal, so guarding it there proves only
+    that a refusal returns early. This run takes the lock, the connection and the
+    lease, publishes readiness and stops -- the whole sequence a served run does --
+    and still must not renew, because this process is not the one that will go on
+    holding the workspace.
+    """
+    workspace, installation = migrated
+
+    def unexpected_wait_loop(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("check-only entered the served lease-renewal loop")
+
+    monkeypatch.setattr(
+        service_main_module, "_serve_until_stopped", unexpected_wait_loop
+    )
+
+    code = service_main(
+        [
+            "--workspace",
+            str(workspace.root),
+            "--installation-state",
+            str(installation.root),
+            "--check-only",
+        ]
+    )
+
+    assert code == 0
+    # Stopped, not left holding anything: a successor can take the lock straight away.
+    assert discover(installation.runtime_for(WORKSPACE_ID)) is None
+
+
+def test_a_serving_run_hands_the_started_runner_to_the_renewal_loop(
+    tmp_path: Path, migrated, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the same seam: a run that serves does enter it.
+
+    `_serve_until_stopped` is what renews, so proving it is skipped for
+    `--check-only` says nothing on its own -- a build that never called it at all
+    would pass that test too. What is asserted here is the composition: the object
+    handed to the loop is the live runner that just published readiness, which is
+    the one holding the lease that has to stay current.
+    """
+    import tempfile as tf
+
+    workspace, installation = migrated
+    entered: list[object] = []
+
+    def record(runner: object, stopping: object) -> int:
+        entered.append(runner)
+        runner.stop()  # type: ignore[attr-defined]
+        return 0
+
+    monkeypatch.setattr(service_main_module, "_serve_until_stopped", record)
+
+    # A short socket directory, not `tmp_path`: an AF_UNIX path is capped near 104
+    # bytes and pytest's per-test directory is longer than that on its own.
+    socket_directory = Path(tf.mkdtemp(prefix="ovr-", dir=tf.gettempdir()))
+    try:
+        code = service_main(
+            [
+                "--workspace",
+                str(workspace.root),
+                "--installation-state",
+                str(installation.root),
+                "--endpoint",
+                endpoint_for_path(socket_directory / "s.sock").url,
+            ]
+        )
+    finally:
+        shutil.rmtree(socket_directory, ignore_errors=True)
+
+    assert code == 0
+    assert len(entered) == 1
+    runner = entered[0]
+    assert isinstance(runner, ServiceRunner)
+    assert runner.workspace_id == WORKSPACE_ID
+    assert runner.generation is not None
 
 
 def _serve_subprocess(workspace: Path, installation: InstallationLayout, endpoint: str):

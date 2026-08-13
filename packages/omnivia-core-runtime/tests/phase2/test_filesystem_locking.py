@@ -36,6 +36,7 @@ from omnivia_core_runtime.ownership.locks import (
     _windows_filesystem,
     create_lock,
     detect_filesystem,
+    nearest_existing,
     qualify_filesystem,
 )
 
@@ -346,6 +347,43 @@ def test_lock_probe_is_part_of_qualification(tmp_path: Path) -> None:
     )
     # The probe leaves nothing behind.
     assert not (tmp_path / ".omnivia-lock-probe").exists()
+
+
+def test_qualification_resolves_up_to_the_nearest_existing_ancestor(
+    tmp_path: Path,
+) -> None:
+    """A target that does not exist yet is still qualified against its volume.
+
+    `workspace_init` has to decide this *before* creating anything, and a workspace
+    root is created with `parents=True` -- so the path it asks about can be several
+    levels below anything on disk. Answering `"unknown"` there would default-deny
+    every fresh workspace on an ordinary local disk rather than every unqualified
+    filesystem, which is the opposite of the gate's purpose.
+
+    The probe is included, because that is the half with a side effect: it must find
+    a directory to take a lock in without creating the tree it was asked about.
+    """
+    missing = tmp_path / "not" / "created" / "yet" / "workspace"
+    assert nearest_existing(missing) == tmp_path
+
+    assert detect_filesystem(missing) == detect_filesystem(tmp_path)
+    assert qualify_filesystem(missing).verdict is qualify_filesystem(tmp_path).verdict
+
+    assert not missing.exists(), "qualification must not create its own target"
+    assert not (tmp_path / "not").exists()
+    assert not (tmp_path / ".omnivia-lock-probe").exists()
+
+
+def test_a_refused_filesystem_never_reaches_the_lock_probe(tmp_path: Path) -> None:
+    """A remote mount is refused by name, so nothing is written to decide it.
+
+    Order, not decoration: the probe writes a file, and the callers that qualify
+    before creating a workspace rely on a refusal costing nothing at all.
+    """
+    qualification = qualify_filesystem(tmp_path, filesystem="nfs", probe_locking=True)
+    assert qualification.verdict is FilesystemVerdict.REFUSED_REMOTE
+    assert not (tmp_path / ".omnivia-lock-probe").exists()
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == []
 
 
 # FL-08
