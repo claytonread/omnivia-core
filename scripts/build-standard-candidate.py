@@ -44,6 +44,38 @@ FIRST_PARTY_PROJECTS: Final = (
     ("omnivia-core-mcp", REPO_ROOT / "packages" / "omnivia-core-mcp"),
 )
 FIRST_PARTY_NAMES: Final = frozenset(name for name, _path in FIRST_PARTY_PROJECTS)
+#: The four client families the journey must have driven and the configuration
+#: form each one read, held here rather than imported: this script and the
+#: journey share no module by design.
+HOST_CONFIG_FORMATS: Final = {
+    "claude_desktop": "claude_desktop_json",
+    "claude_code": "claude_code_json",
+    "codex": "codex_toml",
+    "official_python_sdk": "official_python_sdk_stdio",
+}
+HOST_FAMILIES: Final = frozenset(HOST_CONFIG_FORMATS)
+#: The stable six-tool manifest, sorted as the journey retains it.
+HOST_TOOLS: Final = [
+    "context_pack_build",
+    "evidence_search",
+    "graph_traverse",
+    "knowledge_search",
+    "memory_search",
+    "workspace_inspect",
+]
+#: The evidence each family must carry.  Every value is fixed, so a partial or
+#: degraded session cannot be presented as interoperability.
+HOST_EVIDENCE: Final = {
+    "connected": True,
+    "session_completed": True,
+    "tool_count": 6,
+    "tool_calls": 6,
+    "verdict": "pass",
+}
+#: The complete retained shape: exactly these keys, no more and no fewer.
+HOST_FIELDS: Final = frozenset(
+    {"client", "config_format", "tools", "result_counts", *HOST_EVIDENCE}
+)
 METADATA_DIRECTORY: Final = "metadata"
 EVIDENCE_DIRECTORY: Final = "evidence"
 WHEEL_DIRECTORY: Final = "wheels"
@@ -434,6 +466,40 @@ def _wheel_environment(virtual_environment: Path) -> dict[str, str]:
     return environment
 
 
+def _require_host_interoperability(result: Mapping[str, Any]) -> None:
+    """Refuse a journey result without accepted evidence for all four families.
+
+    A candidate without it cannot close G5, so it is not shippable as a
+    candidate either.  The whole retained object is checked, field by field and
+    with no field left over: a host that connected but called four tools, read a
+    configuration form nobody names, or reported a manifest of its own is not
+    the evidence this gate exists for.  Types are compared exactly, so `True`
+    cannot stand in for a count of one.
+    """
+    mcp = result.get("mcp")
+    hosts = mcp.get("hosts") if isinstance(mcp, Mapping) else None
+    if not isinstance(hosts, Mapping) or set(hosts) != HOST_FAMILIES:
+        raise CandidateError("the standalone journey omitted host interoperability evidence")
+    rejected = CandidateError("the standalone journey host evidence was not accepted")
+    for family, host in hosts.items():
+        if not isinstance(host, Mapping) or set(host) != HOST_FIELDS:
+            raise rejected
+        if host["client"] != family:
+            raise rejected
+        if host["config_format"] != HOST_CONFIG_FORMATS[family]:
+            raise rejected
+        for field, value in HOST_EVIDENCE.items():
+            if type(host[field]) is not type(value) or host[field] != value:
+                raise rejected
+        if not isinstance(host["tools"], list) or host["tools"] != HOST_TOOLS:
+            raise rejected
+        counts = host["result_counts"]
+        if not isinstance(counts, Mapping) or set(counts) != set(HOST_TOOLS):
+            raise rejected
+        if any(type(count) is not int or count < 1 for count in counts.values()):
+            raise rejected
+
+
 def _offline_qualification(
     wheelhouse: Path, evidence: Path, temporary: Path
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
@@ -479,6 +545,7 @@ def _offline_qualification(
         raise CandidateError("the standalone journey result is absent or malformed") from error
     if result.get("verdict") != "pass":
         raise CandidateError("the standalone journey did not pass")
+    _require_host_interoperability(result)
     lifecycle_path = evidence / "standard-lifecycle-result.json"
     _run(
         [str(python), str(LIFECYCLE), "--output", str(lifecycle_path)],

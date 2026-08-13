@@ -318,3 +318,259 @@ def test_existing_required_matrix_runs_and_retains_the_candidate() -> None:
     assert "name: Phase 2 platform (${{ matrix.os }})" in workflow
     assert "uses: actions/upload-artifact@v6" in workflow
     assert "if-no-files-found: error" in workflow
+
+
+def test_the_builder_requires_the_same_four_client_families_the_journey_drives() -> None:
+    """The two lists are hard-coded apart on purpose; nothing else stops drift.
+
+    The builder imports no OmniVia package and does not import the journey
+    either, so its `HOST_FAMILIES` is a second copy of the journey's profile
+    names. A family added to one and not the other would silently stop being
+    gated, which is the whole value of the check.
+    """
+    module = _module()
+    journey = REPO_ROOT / "scripts" / "run-standard-journey.py"
+    tree = ast.parse(journey.read_text(encoding="utf-8"), filename=str(journey))
+    profiles = {
+        call.args[0].value
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "HostProfile"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+    }
+    assert module.HOST_FAMILIES == frozenset(
+        {"claude_desktop", "claude_code", "codex", "official_python_sdk"}
+    )
+    assert profiles == set(module.HOST_FAMILIES)
+
+
+_TOOLS = [
+    "context_pack_build",
+    "evidence_search",
+    "graph_traverse",
+    "knowledge_search",
+    "memory_search",
+    "workspace_inspect",
+]
+_FORMATS = {
+    "claude_desktop": "claude_desktop_json",
+    "claude_code": "claude_code_json",
+    "codex": "codex_toml",
+    "official_python_sdk": "official_python_sdk_stdio",
+}
+
+
+def _accepted_result() -> dict[str, object]:
+    """One journey result carrying accepted evidence for all four families."""
+    return {
+        "verdict": "pass",
+        "mcp": {
+            "hosts": {
+                family: {
+                    "client": family,
+                    "config_format": config_format,
+                    "connected": True,
+                    "session_completed": True,
+                    "tool_count": 6,
+                    "tool_calls": 6,
+                    "tools": list(_TOOLS),
+                    "result_counts": dict.fromkeys(_TOOLS, 1),
+                    "verdict": "pass",
+                }
+                for family, config_format in _FORMATS.items()
+            }
+        },
+    }
+
+
+def test_the_candidate_gate_admits_accepted_host_interoperability_evidence() -> None:
+    module = _module()
+    module._require_host_interoperability(_accepted_result())
+
+
+@pytest.mark.parametrize(
+    "family",
+    ["claude_desktop", "claude_code", "codex", "official_python_sdk"],
+)
+def test_the_candidate_gate_refuses_a_missing_client_family(family: str) -> None:
+    module = _module()
+    result = _accepted_result()
+    del result["mcp"]["hosts"][family]
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == (
+        "the standalone journey omitted host interoperability evidence"
+    )
+
+
+@pytest.mark.parametrize(
+    "mcp",
+    [
+        None,
+        {},
+        {"hosts": None},
+        {"hosts": {}},
+        {"hosts": {"claude_desktop": {}}},
+        "hosts",
+    ],
+)
+def test_the_candidate_gate_refuses_absent_or_malformed_evidence(mcp: object) -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"] = mcp
+
+    with pytest.raises(module.CandidateError):
+        module._require_host_interoperability(result)
+
+
+def test_the_candidate_gate_refuses_an_unnamed_extra_family() -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["some_other_host"] = dict(
+        result["mcp"]["hosts"]["codex"], client="some_other_host"
+    )
+
+    with pytest.raises(module.CandidateError):
+        module._require_host_interoperability(result)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("connected", False),
+        ("session_completed", False),
+        # Python equality alone would admit `1` for `True` and `True` for `1`;
+        # the gate compares types exactly so neither passes.
+        ("connected", 1),
+        ("session_completed", 1),
+        ("tool_count", True),
+        ("tool_count", 5),
+        ("tool_calls", 5),
+        ("tool_calls", "6"),
+        ("tool_calls", True),
+        ("verdict", "fail"),
+        ("verdict", True),
+        ("client", "claude_desktop"),
+        # A configuration form other than the one this family reads.
+        ("config_format", "claude_code_json"),
+        ("config_format", "codex_toml_v2"),
+        ("config_format", None),
+        # A manifest that is not the stable six, in any of its wrong shapes.
+        ("tools", _TOOLS[:5]),
+        ("tools", [*_TOOLS, "context_pack_write"]),
+        ("tools", [*_TOOLS[:-1], "context_pack_write"]),
+        ("tools", list(reversed(_TOOLS))),
+        ("tools", tuple(_TOOLS)),
+        ("tools", [1, 2, 3, 4, 5, 6]),
+        ("tools", "context_pack_build"),
+        ("tools", None),
+        # Result counts that are absent, renamed, uncountable or not positive.
+        ("result_counts", {}),
+        ("result_counts", dict.fromkeys(_TOOLS[:5], 1)),
+        ("result_counts", {**dict.fromkeys(_TOOLS, 1), "extra": 1}),
+        ("result_counts", dict.fromkeys(_TOOLS, 0)),
+        ("result_counts", dict.fromkeys(_TOOLS, -1)),
+        ("result_counts", dict.fromkeys(_TOOLS, True)),
+        ("result_counts", dict.fromkeys(_TOOLS, "1")),
+        ("result_counts", dict.fromkeys(_TOOLS, 1.0)),
+        ("result_counts", dict.fromkeys(_TOOLS, None)),
+        ("result_counts", [1, 1, 1, 1, 1, 1]),
+        ("result_counts", 6),
+    ],
+)
+def test_the_candidate_gate_refuses_a_wrong_required_evidence_field(
+    field: str, value: object
+) -> None:
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["codex"][field] = value
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "client",
+        "config_format",
+        "connected",
+        "session_completed",
+        "tool_count",
+        "tool_calls",
+        "tools",
+        "result_counts",
+        "verdict",
+    ],
+)
+def test_the_candidate_gate_refuses_an_absent_required_evidence_field(
+    field: str,
+) -> None:
+    module = _module()
+    result = _accepted_result()
+    del result["mcp"]["hosts"]["claude_code"][field]
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+def test_the_candidate_gate_refuses_an_unexpected_extra_evidence_field() -> None:
+    """The retained object is closed: a field nobody gated is not accepted."""
+    module = _module()
+    result = _accepted_result()
+    result["mcp"]["hosts"]["codex"]["command"] = "/usr/bin/omnivia-core-mcp"
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._require_host_interoperability(result)
+
+    assert str(excinfo.value) == "the standalone journey host evidence was not accepted"
+
+
+def test_the_candidate_gate_pins_each_family_to_its_own_configuration_form() -> None:
+    module = _module()
+    assert module.HOST_CONFIG_FORMATS == _FORMATS
+    assert module.HOST_TOOLS == _TOOLS
+    assert module.HOST_FIELDS == frozenset(_accepted_result()["mcp"]["hosts"]["codex"])
+    for family in _FORMATS:
+        result = _accepted_result()
+        # Every family's own form is accepted only under that family: another
+        # accepted family's form, filed here, is still a refusal.
+        other = next(name for name in _FORMATS if name != family)
+        result["mcp"]["hosts"][family]["config_format"] = _FORMATS[other]
+
+        with pytest.raises(module.CandidateError):
+            module._require_host_interoperability(result)
+
+
+def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> None:
+    """The required fields are a second copy of the journey's retained shape.
+
+    The builder imports no OmniVia package and does not import the journey, so
+    a field renamed on one side and not the other would silently stop being
+    gated -- the same drift `HOST_FAMILIES` is guarded against above.
+    """
+    module = _module()
+    journey = REPO_ROOT / "scripts" / "run-standard-journey.py"
+    source = journey.read_text(encoding="utf-8")
+    assert module.HOST_EVIDENCE == {
+        "connected": True,
+        "session_completed": True,
+        "tool_count": 6,
+        "tool_calls": 6,
+        "verdict": "pass",
+    }
+    for field in module.HOST_FIELDS:
+        assert f'"{field}":' in source
+    # The pinned configuration forms and tool names are the journey's own.
+    for config_format in module.HOST_CONFIG_FORMATS.values():
+        assert f'"{config_format}"' in source
+    for tool in module.HOST_TOOLS:
+        assert f'"{tool}"' in source

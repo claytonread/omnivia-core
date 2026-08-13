@@ -4,9 +4,11 @@
 The caller supplies only an evidence directory.  This program finds the three
 installed console scripts beside its interpreter, creates a temporary workspace,
 starts the real service, writes and approves one source-cited record through the
-CLI, then reads it and builds a Context Pack through the installed MCP server.
-It finally kills the first service, proves managed-local crash recovery, and
-stops the replacement.  Only a redacted result transcript is retained.
+CLI, then drives the installed MCP server once for each named client profile --
+Claude Desktop, Claude Code, Codex and the official Python SDK -- calling every
+advertised tool from each.  It finally kills the first service, proves
+managed-local crash recovery, and stops the replacement.  Only a redacted result
+transcript is retained.
 
 The program intentionally imports no OmniVia package.  Running from an isolated
 virtual environment therefore proves the public executables and their wire
@@ -28,9 +30,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
 from collections.abc import Mapping, Sequence
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, TextIO
 
@@ -42,6 +46,65 @@ from mcp.shared.exceptions import MCPError
 TIMEOUT_SECONDS: Final = 60
 QUERY_TOKEN: Final = "omnivia-standalone-journey-token"
 PRINCIPAL: Final = "local-user"
+
+#: The server key inside every host configuration.  Opaque and fixed: a host
+#: configuration this program writes never carries a credential, a bearer token
+#: or a real endpoint, only this name and the launch it round-trips.
+SERVER_KEY: Final = "omnivia-core"
+
+
+#: The only two fields an accepted stdio server entry may carry.  Anything else
+#: -- `env`, `url`, `headers`, `cwd`, a bearer token, a transport selector, or a
+#: field a later schema adds -- is refused rather than ignored: a configuration
+#: this journey cannot account for in full is not one it has qualified.
+ACCEPTED_ENTRY_FIELDS: Final = frozenset({"command", "args"})
+
+
+@dataclass(frozen=True)
+class HostProfile:
+    """One MCP client family and the configuration form it reads.
+
+    `config_name` is `None` for the official Python SDK profile, which is
+    configured directly in code rather than by a file; that profile is what
+    proves no Claude-specific assumption is embedded in the server.
+    """
+
+    name: str
+    config_format: str
+    config_name: str | None = None
+    toml: bool = False
+
+    @property
+    def table(self) -> str:
+        """The one accepted top-level key of this family's configuration."""
+        return "mcp_servers" if self.toml else "mcpServers"
+
+
+#: Claude Desktop and Claude Code both read the `mcpServers` object, from
+#: different files; Codex reads a `mcp_servers` TOML table.
+HOST_PROFILES: Final = (
+    HostProfile("claude_desktop", "claude_desktop_json", "claude_desktop_config.json"),
+    HostProfile("claude_code", "claude_code_json", ".mcp.json"),
+    HostProfile("codex", "codex_toml", "config.toml", toml=True),
+    HostProfile("official_python_sdk", "official_python_sdk_stdio"),
+)
+
+#: Every advertised tool, with the arguments each needs and the one result key
+#: that must be present and non-empty.  The journey creates the data all six
+#: read, so an empty answer here is a failure, not an accepted empty workspace.
+_RESULT_KEYS: Final = {
+    "workspace_inspect": "workspace",
+    "evidence_search": "evidence",
+    "knowledge_search": "records",
+    "memory_search": "records",
+    "graph_traverse": "nodes",
+    "context_pack_build": "records",
+}
+
+#: `workspace_inspect` answers with one descriptor object; the other five answer
+#: with a list.  The container type is checked before it is counted, so a scalar
+#: or a boolean is a refusal rather than a `TypeError` out of `len`.
+_MAPPING_RESULTS: Final = frozenset({"workspace_inspect"})
 
 #: `whoami /user` reports the SID in this form, mixed into a CSV row.
 _SID_RE: Final = re.compile(r"S-1-[0-9-]+")
@@ -490,12 +553,94 @@ def _mcp_failure_message(stage: str, error: BaseException, server_diagnostic: bo
     )
 
 
-async def _mcp_session(
-    executable: Path, config: Path, diagnostic: TextIO, stage: list[str]
-) -> dict[str, Any]:
-    parameters = StdioServerParameters(
-        command=str(executable), args=["--config", str(config)]
+def _host_configuration(
+    profile: HostProfile, command: str, arguments: Sequence[str]
+) -> str:
+    """This family's configuration document, carrying its accepted fields only."""
+    if profile.toml:
+        # `json.dumps` of a string or a list of strings is also a TOML basic
+        # string or array, escapes included -- which matters on Windows, whose
+        # paths are full of backslashes.
+        return (
+            f'[{profile.table}."{SERVER_KEY}"]\n'
+            f"command = {json.dumps(command)}\n"
+            f"args = {json.dumps(list(arguments))}\n"
+        )
+    return json.dumps(
+        {profile.table: {SERVER_KEY: {"command": command, "args": list(arguments)}}},
+        sort_keys=True,
     )
+
+
+def _accepted_launch(
+    text: str, profile: HostProfile, command: str, arguments: Sequence[str]
+) -> tuple[str, list[str]]:
+    """The launch this configuration yields, or nothing at all.
+
+    Every rejection -- a document that does not parse, a top-level key that is
+    not this family's server table, a second or renamed server, an entry field
+    outside `ACCEPTED_ENTRY_FIELDS`, a command or argument list of the wrong
+    type or value -- collapses to one payload-free message.  Fail-closed is the
+    contract: a host configuration this program cannot account for field by
+    field has not been qualified, whether the surplus is `env`, `url`,
+    `headers`, `cwd`, a bearer token or a field a later schema adds.
+    """
+    rejection = JourneyError(
+        f"the {profile.name} configuration was not an accepted stdio launch"
+    )
+    try:
+        document = tomllib.loads(text) if profile.toml else json.loads(text)
+    except ValueError as error:  # both decoders raise a ValueError subclass
+        raise rejection from error
+    if not isinstance(document, dict) or set(document) != {profile.table}:
+        raise rejection
+    table = document[profile.table]
+    if not isinstance(table, dict) or set(table) != {SERVER_KEY}:
+        raise rejection
+    entry = table[SERVER_KEY]
+    if not isinstance(entry, dict) or set(entry) != ACCEPTED_ENTRY_FIELDS:
+        raise rejection
+    read_command, read_arguments = entry["command"], entry["args"]
+    if not isinstance(read_command, str) or read_command != command:
+        raise rejection
+    if (
+        not isinstance(read_arguments, list)
+        or not all(isinstance(argument, str) for argument in read_arguments)
+        or read_arguments != list(arguments)
+    ):
+        raise rejection
+    return read_command, list(read_arguments)
+
+
+def _host_launch(
+    profile: HostProfile, directory: Path, executable: Path, config: Path
+) -> tuple[str, list[str]]:
+    """Write this host's own configuration form, then read the launch back out.
+
+    The round trip is the point.  Starting the server from what this program
+    already knew would prove nothing about a host's configuration mechanism; the
+    command and arguments used below are the ones the host's own file yields.
+    The official Python SDK profile takes no file: it is configured in code.
+    """
+    command, arguments = str(executable), ["--config", str(config)]
+    if profile.config_name is None:
+        return command, arguments
+    path = directory / profile.config_name
+    path.write_text(_host_configuration(profile, command, arguments), encoding="utf-8")
+    _restrict(path)
+    return _accepted_launch(
+        path.read_text(encoding="utf-8"), profile, command, arguments
+    )
+
+
+async def _mcp_session(
+    command: str,
+    arguments: Sequence[str],
+    calls: Mapping[str, Mapping[str, Any]],
+    diagnostic: TextIO,
+    stage: list[str],
+) -> dict[str, Any]:
+    parameters = StdioServerParameters(command=command, args=list(arguments))
     stage[0] = "transport_entry"
     async with contextlib.AsyncExitStack() as stack:
         read_stream, write_stream = await stack.enter_async_context(
@@ -508,35 +653,46 @@ async def _mcp_session(
         initialized = await session.initialize()
         stage[0] = "list_tools"
         listed = await session.list_tools()
-        stage[0] = "knowledge_search"
-        knowledge = await session.call_tool(
-            "knowledge_search", {"query": QUERY_TOKEN}
-        )
-        stage[0] = "context_pack_build"
-        context = await session.call_tool(
-            "context_pack_build",
-            {
-                "query": QUERY_TOKEN,
-                "mode": "deterministic_view",
-                "token_budget": 4000,
-            },
-        )
+        called: dict[str, Any] = {}
+        for name, payload in calls.items():
+            stage[0] = name
+            called[name] = (await session.call_tool(name, dict(payload))).model_dump(
+                mode="json"
+            )
         stage[0] = "shutdown"
     return {
         "server": initialized.server_info.name,
         "tools": [tool.model_dump(mode="json") for tool in listed.tools],
-        "knowledge_search": knowledge.model_dump(mode="json"),
-        "context_pack_build": context.model_dump(mode="json"),
+        "called": called,
     }
 
 
-def _mcp_journey(executable: Path, config: Path) -> dict[str, Any]:
+def _mcp_journey(
+    command: str,
+    arguments: Sequence[str],
+    calls: Mapping[str, Mapping[str, Any]],
+    profile: HostProfile,
+) -> dict[str, Any]:
+    """One complete stdio session: initialize, list, then call every tool.
+
+    Nothing here inspects stdout separately.  The official SDK decodes stdio
+    stdout as JSON-RPC and nothing else, so a log line or a child-process byte
+    on it is a decode failure and this session does not complete.
+
+    The returned object is what the transcript retains, and it is built field by
+    field: the client, the configuration form it read, the four proofs, the
+    stable tool names and the result counts.  No executable, path, argument,
+    stream, identifier or free text from the session reaches it.
+    """
+    host = profile.name
     stage: list[str] = ["transport_entry"]
     with tempfile.TemporaryDirectory(prefix="omnivia-mcp-diagnostic-") as diagnostic_dir:
         diagnostic_path = Path(diagnostic_dir) / "mcp-server-stderr.txt"
         try:
             with open(diagnostic_path, "w", encoding="utf-8") as diagnostic:
-                observed = anyio.run(_mcp_session, executable, config, diagnostic, stage)
+                observed = anyio.run(
+                    _mcp_session, command, arguments, calls, diagnostic, stage
+                )
         except Exception as error:
             server_diagnostic = (
                 diagnostic_path.is_file() and diagnostic_path.stat().st_size > 0
@@ -544,30 +700,83 @@ def _mcp_journey(executable: Path, config: Path) -> dict[str, Any]:
             raise JourneyError(
                 _mcp_failure_message(stage[0], error, server_diagnostic)
             ) from error
+    if not isinstance(observed.get("server"), str) or not observed["server"]:
+        raise JourneyError(f"MCP did not identify itself to {host}")
     tools = observed.get("tools")
-    if not isinstance(tools, list) or len(tools) != 6:
+    if (
+        not isinstance(tools, list)
+        or len(tools) != 6
+        or not all(
+            isinstance(tool, Mapping) and isinstance(tool.get("name"), str)
+            for tool in tools
+        )
+    ):
+        # Checked before the sort: a missing or non-string name would otherwise
+        # raise a `TypeError` out of `sorted` rather than fail this journey.
         raise JourneyError("MCP did not advertise the accepted six-tool manifest")
-    called: dict[str, Mapping[str, Any]] = {}
-    for name in ("knowledge_search", "context_pack_build"):
-        result = observed.get(name)
+    advertised = sorted(tool["name"] for tool in tools)
+    if advertised != sorted(calls):
+        raise JourneyError(f"the {host} tool manifest was not the accepted six tools")
+    called = observed.get("called")
+    if not isinstance(called, Mapping) or set(called) != set(calls):
+        raise JourneyError(f"the {host} session did not call all six tools")
+    populated: dict[str, int] = {}
+    for name in calls:
+        result = called[name]
         if not isinstance(result, dict) or result.get("is_error") is True:
-            raise JourneyError(f"MCP {name} did not return a success")
+            raise JourneyError(f"MCP {name} did not return a success for {host}")
         structured = result.get("structured_content")
         if not isinstance(structured, dict):
-            raise JourneyError(f"MCP {name} omitted structuredContent")
-        called[name] = structured
-    records = called["knowledge_search"].get("records")
-    if not isinstance(records, list) or not records:
-        raise JourneyError("MCP knowledge search did not return the approved record")
-    pack = called["context_pack_build"]
-    if not isinstance(pack.get("records"), list) or not pack["records"]:
-        raise JourneyError("MCP Context Pack did not contain an approved record")
+            raise JourneyError(f"MCP {name} omitted structuredContent for {host}")
+        value = structured.get(_RESULT_KEYS[name])
+        expected = Mapping if name in _MAPPING_RESULTS else list
+        if not isinstance(value, expected) or not value:
+            # Type first, emptiness second: a scalar, a boolean or a string
+            # here is a malformed answer, not a countable one.
+            raise JourneyError(f"MCP {name} returned nothing for {host}")
+        populated[name] = len(value)
     return {
-        "server": observed["server"],
+        "client": host,
+        "config_format": profile.config_format,
+        "connected": True,
+        "session_completed": True,
         "tool_count": len(tools),
-        "knowledge_records": len(records),
-        "context_records": len(pack["records"]),
+        "tool_calls": len(populated),
+        "tools": advertised,
+        "result_counts": populated,
+        "verdict": "pass",
+    }
+
+
+def _host_interoperability(
+    executable: Path,
+    config: Path,
+    directory: Path,
+    calls: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Drive every named client family once, through its own configuration.
+
+    Each profile gets one fresh stdio session of its own against the same
+    immutable candidate -- `_mcp_journey` opens and closes the transport per
+    call, so nothing is shared between families -- and the manifests they see
+    are compared, because a host-dependent tool list is exactly the
+    interoperability failure this evidence exists to exclude.
+    """
+    hosts: dict[str, dict[str, Any]] = {}
+    for profile in HOST_PROFILES:
+        command, arguments = _host_launch(profile, directory, executable, config)
+        hosts[profile.name] = _mcp_journey(command, arguments, calls, profile)
+    manifests = {tuple(host["tools"]) for host in hosts.values()}
+    if len(manifests) != 1:
+        raise JourneyError("the advertised tool manifest differed between hosts")
+    sdk = hosts["official_python_sdk"]
+    return {
+        "tool_count": sdk["tool_count"],
+        "tools": sdk["tools"],
+        "knowledge_records": sdk["result_counts"]["knowledge_search"],
+        "context_records": sdk["result_counts"]["context_pack_build"],
         "stdio_session_completed": True,
+        "hosts": hosts,
     }
 
 
@@ -783,7 +992,7 @@ def run(output: Path) -> dict[str, Any]:
             updated = approved.get("updated_record")
             if not isinstance(updated, dict):
                 raise JourneyError("candidate.approve omitted its updated record")
-            approved_id, _approved_version = _identity(updated, "candidate.approve")
+            approved_id, approved_version = _identity(updated, "candidate.approve")
             if approved_id != record_id:
                 raise JourneyError("approval changed the record identity")
 
@@ -803,7 +1012,29 @@ def run(output: Path) -> dict[str, Any]:
 
             config = root / "omnivia-mcp.json"
             _write_mcp_configuration(config, installation, workspace_id)
-            mcp_result = _mcp_journey(mcp, config)
+            hosts = root / "host-configurations"
+            hosts.mkdir()
+            mcp_result = _host_interoperability(
+                mcp,
+                config,
+                hosts,
+                {
+                    "workspace_inspect": {},
+                    "evidence_search": {"query": QUERY_TOKEN},
+                    "knowledge_search": {"query": QUERY_TOKEN},
+                    "memory_search": {"query": QUERY_TOKEN},
+                    "graph_traverse": {
+                        "start": [
+                            {"record_id": record_id, "version": approved_version}
+                        ]
+                    },
+                    "context_pack_build": {
+                        "query": QUERY_TOKEN,
+                        "mode": "deterministic_view",
+                        "token_budget": 4000,
+                    },
+                },
+            )
 
             first_pid = first_descriptor.get("process", {}).get("pid")
             if not isinstance(first_pid, int):
