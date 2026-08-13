@@ -5,14 +5,14 @@
 This document records the *current, as-built* state of dependency handling for
 OmniVia Core's two ecosystems -- npm (the root `package.json`) and Python (the
 root distribution plus the five `packages/` and `services/` distributions) --
-and the one open question about release-time Python dependency resolution that
-follows from it.
+including the resolved dependency policy for the V06-7 Standard-profile wheel
+candidate.
 
 It is a description of what the repository does today, read from
 `package.json`, `package-lock.json`, `pyproject.toml`, `uv.lock`, and the three
-workflows under `.github/workflows/`. It does not prescribe changes to any of
-that, and it does not select or create a Python lock or constraints artifact --
-see "Open decision" below.
+workflows under `.github/workflows/`. The ordinary development environment and
+the Standard candidate deliberately have different resolution postures, stated
+below rather than conflated.
 
 ## npm dependency handling (current state)
 
@@ -91,35 +91,42 @@ see "Open decision" below.
   caches downloaded artifacts, not a resolved dependency set -- caching it
   would not make an already-nondeterministic resolution reproducible, so it
   is left off.
-- Net effect: unlike the npm install, every Python dependency resolution in
-  CI -- tooling and (for anything with a non-empty dependency list) local
-  distributions -- resolves fresh against the configured index on every run,
-  constrained only by the declared ranges, not pinned to exact, previously
-  resolved versions. Two runs of the same commit can legitimately install
-  different exact versions of a range-pinned dependency if a new compatible
-  release appears on the index between them.
+- Net effect for ordinary editable development and acceptance installs: unlike
+  the npm install, Python tooling and local-distribution setup resolve fresh
+  against the configured index on every run, constrained by declared ranges.
+  That path remains intentionally separate from the release-candidate path.
+- Net effect for the V06-7 Standard-profile candidate: the five first-party
+  wheels are built from one revision with `SOURCE_DATE_EPOCH` set to that
+  revision's commit time; `scripts/mcp-wheelhouse-constraints.txt` fixes the
+  complete third-party MCP closure to exact versions; the resolved wheelhouse
+  is checked back against those pins; and the Standard profile is installed in
+  a clean environment with `--no-index --only-binary=:all:` before its public
+  CLI/service/MCP journey runs. The candidate records wheel hashes, the
+  constraints hash, installed distributions, provenance, SPDX SBOM, licenses,
+  checksums, and its unsigned state.
 - No workflow in this repository publishes or installs from a controlled
   staging index; every Python install in CI is either editable-from-checkout
   or resolved live against the public index. There is no dedicated
   release/publish workflow under `.github/workflows/` today.
 
-## Open decision: Python resolution artifact for release
+## Decision: Python resolution artifact for the Standard candidate
 
-**Status: open, unresolved. No format is selected here, and no lockfile or
-constraints file is created by this document or alongside it.**
+**Status: resolved for the V06-7 wheels-only Standard channel.**
 
-The npm side has a committed lockfile consumed by `npm ci` in CI, which makes
-its resolution reproducible. The Python side has no equivalent used in CI:
-`uv.lock` exists and locks the *local development* environment, but no
-workflow reads it, and the six locally-installed distributions on the Python
-side depend on each other by range, not by an exact, release-time-resolved
-set.
+The reviewed release-resolution artifact is
+`scripts/mcp-wheelhouse-constraints.txt`. It pins every third-party package in
+the MCP closure exactly. First-party distributions remain version-range linked
+in their published metadata, but the candidate wheelhouse must contain exactly
+one wheel for each of Core, Runtime, Client, CLI, and MCP from the same source
+revision. The builder rejects a missing, duplicate, additional, or differently
+versioned closure member.
 
-What Core's release process should use, if anything, as the resolved-artifact
-record of exact Python dependency versions at release time -- a `uv.lock`-style
-lockfile consumed in CI the way `package-lock.json` is, a generated
-constraints file (e.g. `pip install -c constraints.txt`), some other format,
-or a deliberate decision to keep ranges and no lock at release time -- is an
-Architecture/Release decision that has not been made. This document
-deliberately takes no position on it and defers it to that decision, tracked
-separately from this packet.
+This decision does not turn `uv.lock` into a release lock and does not claim the
+ordinary editable CI setup is reproducible. It selects a narrower artifact for
+the first release channel actually being qualified. A future channel that adds
+extras or platform integrations must extend or replace the reviewed constraints
+as an explicit dependency change; it may not silently inherit this closure.
+
+Candidate construction is not release authorization. The builder records
+`status: unsigned` and `production_release_eligible: false`; production signing
+remains a separate release act requiring an approved signing identity.

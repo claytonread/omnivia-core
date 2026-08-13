@@ -1,12 +1,13 @@
 # omnivia-core-runtime
 
-`omnivia-core-runtime` is the skeleton runtime distribution in the OmniVia
-Core package topology.
+`omnivia-core-runtime` is the authoritative local service and workspace runtime
+in the OmniVia Core package topology. It owns storage, migrations, leases,
+fencing, recovery, discovery, local IPC, the frozen application catalogue, and
+service-owned maintenance paths such as bounded local evidence capture.
 
-This package currently has **no operational behavior**. It exists to
-establish the compile-time dependency boundary defined by PM ADR-036: runtime
-implementation code depends on the public `omnivia-core` contracts, and
-nothing in `omnivia-core` may depend back on this package.
+The compile-time dependency boundary defined by PM ADR-036 remains strict:
+runtime implementation code depends on the public `omnivia-core` contracts, and
+nothing in `omnivia-core` depends back on this package.
 
 ## Dependency direction
 
@@ -21,5 +22,7 @@ omnivia-core-runtime  -->  omnivia-core
 
 ## Status
 
-Skeleton only. No storage, service-launch, lease, or lifecycle behavior has
-been added yet. Do not depend on this package for runtime functionality.
+The `omnivia-core-service` executable serves the exact accepted operation and
+probe surfaces. The V06-7 Standard profile installs this distribution beside
+Core, Client, CLI, and MCP from wheels and qualifies their public process and
+wire boundaries through `scripts/run-standard-journey.py`.

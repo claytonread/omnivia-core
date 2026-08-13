@@ -93,6 +93,21 @@ jobs:
         # entry points through this row's native shell. There is no skip path.
         run: python scripts/check-v06-6-executables.py
 
+      - name: Build and qualify Standard distribution candidate
+        # One platform candidate per matrix row. The builder uses the reviewed
+        # dependency constraints, installs only from its wheelhouse, drives the
+        # installed CLI/service/MCP journey, and records the unsigned state
+        # explicitly rather than implying release signing happened here.
+        run: python scripts/build-standard-candidate.py --output standard-candidate
+
+      - name: Retain Standard candidate evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: omnivia-standard-${{ runner.os }}-${{ runner.arch }}
+          path: standard-candidate
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assert this platform's lock case actually ran
         # The whole point of the matrix. `msvcrt` byte-range locking has exactly one
         # dedicated case and it has never executed on any machine, so a silent skip

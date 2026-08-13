@@ -402,6 +402,21 @@ def run(output: Path) -> dict[str, Any]:
         replacement_pid: int | None = None
         try:
             first_descriptor = _wait_for_descriptor(descriptor, process)
+            protocol_version = first_descriptor.get("protocol_version")
+            server_version = first_descriptor.get("server_version")
+            api_versions = first_descriptor.get("supported_api_versions")
+            workspace_contract_version = first_descriptor.get(
+                "workspace_format_version"
+            )
+            if (
+                not isinstance(protocol_version, str)
+                or not isinstance(server_version, str)
+                or not isinstance(api_versions, dict)
+                or not isinstance(api_versions.get("minimum"), str)
+                or not isinstance(api_versions.get("maximum"), str)
+                or not isinstance(workspace_contract_version, str)
+            ):
+                raise JourneyError("the service descriptor omitted version evidence")
             health = _probe_success(
                 _cli(cli, installation, workspace_id, ("service", "health")),
                 "CLI health",
@@ -563,6 +578,15 @@ def run(output: Path) -> dict[str, Any]:
                         else None
                     ),
                     "identity_preserved": approved_id == record_id,
+                },
+                "versions": {
+                    "server": server_version,
+                    "protocol": protocol_version,
+                    "api": {
+                        "minimum": api_versions["minimum"],
+                        "maximum": api_versions["maximum"],
+                    },
+                    "workspace_contract": workspace_contract_version,
                 },
                 "service": {
                     "health": health.get("status"),
