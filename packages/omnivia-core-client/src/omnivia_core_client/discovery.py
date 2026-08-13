@@ -404,8 +404,14 @@ def _read_posix(root: Path, workspace_id: str) -> bytes | None:
     workspace_fd: int | None = None
     file_fd: int | None = None
     try:
-        root_fd = _open_posix(root, directory=True, trusted_root=True)
-        assert root_fd is not None
+        root_fd = _open_posix(
+            root,
+            directory=True,
+            missing_is_absent=True,
+            trusted_root=True,
+        )
+        if root_fd is None:
+            return None
         runtime_fd = _open_posix(
             _RUNTIME_DIRECTORY,
             directory=True,

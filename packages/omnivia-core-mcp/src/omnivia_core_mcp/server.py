@@ -14,33 +14,33 @@ contained twice over. No guard of this package's own would be better than the
 transport's own claim on the descriptor, and a second one would be a second thing
 to get wrong.
 
-**Managed start runs before the transport opens, on purpose.** R004-07 requires
-readiness before tools are advertised and a protocol-safe diagnostic when the
-service cannot be made ready. Failing before `stdio_server()` is entered
-satisfies both in the strongest available way: the tools are never advertised
-because the server never starts, and the diagnostic is protocol-safe because not
-one byte of protocol was written. The message goes to stderr and the process
-exits non-zero, which is what an MCP host surfaces to its user.
+**Everything is decided before the transport opens.** The configuration is read,
+the service is connected, and the workspace is agreed before `stdio_server()` is
+entered, so a refusal is a startup failure on stderr with not one byte of
+protocol written -- R004-07's protocol-safe diagnostic in its strongest form --
+and tools are never advertised by a server that cannot serve them.
+
+**The call path is composed by `omnivia-core-client`, not here.**
+:class:`~omnivia_core_client.ServiceClient` reads the published descriptor,
+picks the transport, negotiates versions and proves the endpoint is live; this
+package holds no dial loop, no descriptor read, no transport choice and no
+credential source. What was a `TransportFactory` seam is gone with the direct
+transport construction it existed for: a connected :class:`ConnectedSession` is
+what a test substitutes now, and it substitutes the same object production uses.
+
+**Authority is the configuration's, never the model's.** The principal, the
+workspace, the allowed purposes, the endpoint and the credential *reference* all
+come from the trusted `omnivia.mcp-config.v1` document, which is read from an
+explicit owner-private path before anything else happens. A tool call cannot
+name any of them: :data:`RESERVED_ARGUMENTS` refuses the attempt by name and the
+advertised closed schema refuses it again as an undeclared key, both before a
+request exists, let alone a call.
 
 **MCP does not own the lease and does not stop what it started.** Neither
 appears below, and their absence is the implementation: there is no lease call,
 no stop call and no shutdown hook. A service started here is an independent Core
-service and outlives the stdio session, exactly as R004-07 requires.
-
-**The call path is complete, and the transport is not this package's.**
-`omnivia-core-client` exports the :class:`~omnivia_core_client.ClientTransport`
-protocol, the OVC1 frame, deadlines, discovery -- and, since owner resolution 005
-R005-01, :class:`~omnivia_core_client.LocalIpcTransport`, the one concrete local
-transport in the repository. This package constructs it in
-:func:`_default_transport_factory` and holds no dial loop of its own. It does not
-import the CLI, which ADR-036 forbids, and a sibling copy would have been the
-third implementation of one dial loop -- the shape R004-08 rejected for process
-control, and the shape that let the CLI's socket-path guard drift 11 to 15 bytes
-from the runtime's.
-
-:data:`TransportFactory` remains the seam, now for tests rather than for a pending
-decision: the server takes one, every call goes through it, and a test can pass a
-double instead of standing up a service.
+service and outlives the stdio session, exactly as R004-07 requires. The one
+thing this process does drop at shutdown is its own credential cache.
 """
 
 from __future__ import annotations
@@ -48,8 +48,9 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -61,27 +62,35 @@ from mcp.server.stdio import stdio_server
 from omnivia_core_client import (
     CLIENT_API_VERSION,
     ClientError,
-    ClientTransport,
+    CredentialCache,
+    CredentialResolver,
     Deadline,
-    LocalIpcTransport,
+    HttpServiceConfig,
+    InstallationServiceConfig,
+    ServiceClient,
 )
 
 from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
     ClientIdentity,
+    PrincipalClaim,
     RequestEnvelope,
     RequestMetadata,
+    ResponseEnvelope,
     SuccessResponseEnvelope,
     codec,
     get_operation_metadata,
 )
 from omnivia_core_mcp import __version__
+from omnivia_core_mcp.configuration import (
+    McpConfiguration,
+    McpConfigurationError,
+    read_configuration,
+)
 from omnivia_core_mcp.managed_start import (
-    Attachment,
     Installation,
     ManagedStartError,
     ensure_service,
-    home_directory,
 )
 from omnivia_core_mcp.manifest import (
     ExposedOperation,
@@ -93,9 +102,13 @@ from omnivia_core_mcp.manifest import (
 __all__ = [
     "CALL_TIMEOUT_SECONDS",
     "CLIENT_NAME",
+    "CONNECT_TIMEOUT_SECONDS",
+    "RESERVED_ARGUMENTS",
     "SERVER_NAME",
-    "TransportFactory",
+    "ConnectedSession",
+    "StartupError",
     "build_server",
+    "connect",
     "main",
     "serve",
 ]
@@ -112,52 +125,239 @@ CLIENT_NAME: Final = "omnivia-core-mcp"
 #: service is already ready by the time any of these are made.
 CALL_TIMEOUT_SECONDS: Final = 30.0
 
-#: Constructs a transport for one endpoint URI. The seam between this server and
-#: the client-owned local transport, kept so a test can substitute a double; see
-#: the module docstring.
-TransportFactory = Callable[[str], ClientTransport]
+#: Budget for one connect, including the live probe behind it.
+CONNECT_TIMEOUT_SECONDS: Final = 30.0
+
+#: Argument names a tool call may never carry, whatever a schema says.
+#:
+#: Every one of these is authority the trusted configuration fixes: who the
+#: caller is, which workspace it reaches, what it may claim to be doing, what it
+#: has been granted, whether it may write, where the service is and which
+#: credential is presented there. The advertised schemas are closed and declare
+#: none of them, so this is the second of two refusals rather than the only one
+#: -- and it is the one that stays true if a canonical contract ever grows a
+#: field with one of these names.
+RESERVED_ARGUMENTS: Final[frozenset[str]] = frozenset(
+    {
+        "principal_id",
+        "principal_claim",
+        "claimed_principal_id",
+        "claimed_roles",
+        "workspace_id",
+        "allowed_workspace_ids",
+        "default_workspace_id",
+        "purpose",
+        "purposes",
+        "allowed_purposes",
+        "scopes",
+        "grants",
+        "granted_authority",
+        "required_capabilities",
+        "mutation_enabled",
+        "endpoint",
+        "endpoint_uri",
+        "credential_reference",
+        "credentials",
+    }
+)
 
 
-def _default_transport_factory(endpoint_uri: str) -> ClientTransport:
-    """Construct the client-owned local transport for an endpoint.
+class StartupError(Exception):
+    """A fixed-text refusal raised before MCP initialization.
 
-    Owner resolution 005 R005-01 moved `LocalIpcTransport` into
-    `omnivia-core-client`, and this is the whole of what that changed here: the
-    seam was already in place, so constructing the real transport is the entire
-    edit. Every caller already goes through :data:`TransportFactory`, the request
-    envelopes are already built from the catalogue, and the response decoding
-    already runs against the public contract.
-
-    This package imports the transport from the client distribution it already
-    declares. It does not import the CLI, and there is no copy of the dial loop
-    here -- which is the point of the move.
-
-    Nothing is caught here. A bad endpoint URI raises `TransportError` from
-    `socket_path_for` at call time, not at construction: the dataclass is frozen
-    and holds only the URI, so constructing it cannot fail. Either way the caller's
-    `ClientError` handler is what answers.
+    Same contract as :class:`~omnivia_core_mcp.configuration.McpConfigurationError`
+    and for the same reason: every one of these is decided before the stdio
+    transport opens, reaches the host on stderr, and quotes no endpoint, path,
+    workspace identifier or credential reference.
     """
-    return LocalIpcTransport(endpoint_uri=endpoint_uri)
 
 
-def build_server(
+_AMBIGUOUS_WORKSPACE: Final = (
+    "the MCP configuration does not select one unambiguous workspace"
+)
+_WORKSPACE_MISMATCH: Final = (
+    "the connected service does not serve the selected workspace"
+)
+_NO_LOCAL_SERVICE: Final = (
+    "no local service is published for this configuration and this "
+    "installation state is not one this server may start a service for"
+)
+_MANAGED_START_UNREACHABLE: Final = (
+    "the managed service did not become reachable for this configuration"
+)
+_NO_CREDENTIAL_RESOLVER: Final = (
+    "remote service mode requires an injected trusted credential resolver"
+)
+_SERVICE_UNAVAILABLE: Final = "the configured service could not be connected"
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectedSession:
+    """One trusted configuration, one live service, and how it was reached.
+
+    Built only by :func:`connect`, which is what makes the fields mean something
+    together: `workspace_id` is the configuration's unambiguous selection *and*
+    the descriptor the connected service answered with, checked equal before
+    this exists. Frozen, because nothing serving a session may swap the service
+    or the authority under it.
+
+    `credentials` is the cache this process created for a remote endpoint, held
+    for exactly one reason -- :meth:`clear_credentials` at shutdown and on every
+    failed startup path. Local mode has none, and `None` is that fact rather
+    than an empty one.
+    """
+
+    configuration: McpConfiguration
+    client: ServiceClient
+    workspace_id: str
+    status: str
+    credentials: CredentialCache | None = None
+
+    def clear_credentials(self) -> None:
+        """Drop any credential this process resolved. Safe to call twice."""
+        if self.credentials is not None:
+            self.credentials.clear()
+
+
+def connect(
+    configuration: McpConfiguration,
     *,
-    attachment: Attachment,
-    transport_factory: TransportFactory | None = None,
-) -> Server[object]:
-    """The MCP server for one attached Core service.
+    credential_resolver: CredentialResolver | None = None,
+) -> ConnectedSession:
+    """Reach the service this configuration names, or refuse before MCP starts.
 
-    `transport_factory` defaults to :func:`_default_transport_factory`, which
-    constructs the real client-owned `LocalIpcTransport` and dials the attached
-    service. A test passes a double satisfying `ClientTransport` instead.
+    The workspace is settled first and settled once. A configuration that
+    allow-lists several workspaces without naming a default selects none of
+    them, and this server takes no argument that would choose between them --
+    so it refuses rather than picking, because picking is the decision R004-06
+    keeps away from the model.
 
-    This said "defaults to the one that cannot be built yet ... reports the
-    missing dial when one is called" until owner resolution 005 R005-01 landed the
-    transport in `omnivia-core-client`. There is no stand-in left to report.
+    `credential_resolver` is the host's, injected. There is no default, no
+    environment lookup, no argv secret and no file beside the configuration: a
+    remote endpoint with no resolver fails closed here.
     """
-    factory = (
-        _default_transport_factory if transport_factory is None else transport_factory
+    workspace_id = configuration.selected_workspace_id
+    if workspace_id is None:
+        raise StartupError(_AMBIGUOUS_WORKSPACE)
+
+    if configuration.service_mode == "managed_local":
+        client, status = _connect_managed_local(configuration, workspace_id)
+        session = ConnectedSession(
+            configuration=configuration,
+            client=client,
+            workspace_id=workspace_id,
+            status=status,
+        )
+    else:
+        session = _connect_service_client(
+            configuration, workspace_id, credential_resolver
+        )
+
+    if session.client.descriptor.workspace_id != workspace_id:
+        # The one check both modes need and neither transport can make: a
+        # service may be reachable, compatible and live, and still be serving a
+        # workspace this configuration never allow-listed.
+        session.clear_credentials()
+        raise StartupError(_WORKSPACE_MISMATCH)
+    return session
+
+
+def _connect_managed_local(
+    configuration: McpConfiguration, workspace_id: str
+) -> tuple[ServiceClient, str]:
+    """Connect to what the installation publishes, having one started if it must.
+
+    Discovery, the transport choice and the liveness probe are all
+    :class:`~omnivia_core_client.ServiceClient`'s, and starting a service is the
+    service package's own `--managed-start`. Nothing between them is
+    reimplemented here: an absent descriptor is `None` from `connect`, which is
+    the ordinary "nothing is running" state rather than a failure.
+
+    **A start is authorised by the installation layout, not by the request for
+    one.** `--managed-start` is invoked only when the configured state root is
+    the one :class:`~omnivia_core_mcp.managed_start.Installation` derives from
+    its own parent -- i.e. this is a whole installation this server understands
+    -- so a configuration pointing at a bare state directory somewhere else gets
+    a refusal instead of a service started against a root nobody sanctioned.
+    Then exactly one start, one reconnect, and a live client required.
+    """
+    state = configuration.installation_state
+    if state is None:  # pragma: no cover - the configuration model forbids it
+        raise StartupError(_SERVICE_UNAVAILABLE)
+    service_config = InstallationServiceConfig(
+        installation_state=state, workspace_id=workspace_id
     )
+    client = ServiceClient.connect(
+        service_config, deadline=Deadline.after(CONNECT_TIMEOUT_SECONDS)
+    )
+    if client is not None:
+        return client, "attached"
+
+    installation = Installation(home=state.parent)
+    if installation.installation_state != state:
+        raise StartupError(_NO_LOCAL_SERVICE)
+    attachment = ensure_service(installation)
+    client = ServiceClient.connect(
+        service_config, deadline=Deadline.after(CONNECT_TIMEOUT_SECONDS)
+    )
+    if client is None:
+        raise StartupError(_MANAGED_START_UNREACHABLE)
+    return client, attachment.status
+
+
+def _connect_service_client(
+    configuration: McpConfiguration,
+    workspace_id: str,
+    credential_resolver: CredentialResolver | None,
+) -> ConnectedSession:
+    """Connect to the configured HTTP endpoint with the host's own resolver.
+
+    The configuration carries the *name* of a credential and the normalized
+    origin it may be presented to; the secret exists only inside the cache, only
+    for as long as its TTL, and only because a resolver this process was handed
+    answered for that pair. A startup that does not complete drops the cache on
+    the way out, so a refused start leaves nothing resolved behind it.
+    """
+    if credential_resolver is None:
+        raise StartupError(_NO_CREDENTIAL_RESOLVER)
+    endpoint = configuration.endpoint
+    reference = configuration.credential_reference
+    if endpoint is None or reference is None:  # pragma: no cover - model forbids it
+        raise StartupError(_SERVICE_UNAVAILABLE)
+
+    credentials = CredentialCache(credential_resolver)
+    connected: ServiceClient | None = None
+    try:
+        connected = ServiceClient.connect(
+            HttpServiceConfig(
+                endpoint_uri=endpoint,
+                credential_reference=reference,
+                credentials=credentials,
+            ),
+            deadline=Deadline.after(CONNECT_TIMEOUT_SECONDS),
+        )
+    finally:
+        if connected is None:
+            credentials.clear()
+    if connected is None:
+        raise StartupError(_SERVICE_UNAVAILABLE)
+    return ConnectedSession(
+        configuration=configuration,
+        client=connected,
+        workspace_id=workspace_id,
+        status="connected",
+        credentials=credentials,
+    )
+
+
+def build_server(*, session: ConnectedSession) -> Server[object]:
+    """The MCP server for one connected Core service.
+
+    Everything authority-shaped is already settled in `session`, so there is no
+    factory, no endpoint and no credential argument here any more: a test that
+    wants a different service connects a different session, which is the same
+    object this takes in production.
+    """
 
     async def on_list_tools(
         _context: object, _params: types.PaginatedRequestParams | None
@@ -167,17 +367,18 @@ def build_server(
         R004-06 requires this to be deterministic for a given package version. It
         is built once at import in :mod:`omnivia_core_mcp.manifest` and returned
         as it stands: nothing is filtered, sorted, or read from the environment
-        here, and the attachment is not consulted -- a listing that varied with
-        the service it happened to reach would not be deterministic.
+        here, and neither the session nor the configuration is consulted. In
+        particular the allowed-purpose set does *not* filter the listing -- a
+        listing that varied with the authority granted to one host would not be
+        deterministic, and the purpose is enforced on call instead, which is
+        where refusing it is a decision rather than a disappearance.
         """
         return types.ListToolsResult(tools=list(tools()))
 
     async def on_call_tool(
         _context: object, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
-        return _call_tool(
-            params, attachment=attachment, transport_factory=factory
-        )
+        return _call_tool(params, session=session)
 
     return Server(
         SERVER_NAME,
@@ -194,17 +395,20 @@ def build_server(
 
 
 def _call_tool(
-    params: types.CallToolRequestParams,
-    *,
-    attachment: Attachment,
-    transport_factory: TransportFactory,
+    params: types.CallToolRequestParams, *, session: ConnectedSession
 ) -> types.CallToolResult:
-    """Dispatch one tool call against the allow-list, or refuse it.
+    """Dispatch one tool call against the allow-list and the configured authority.
 
-    The allow-list is the *only* lookup: there is no path from a tool name to an
-    operation that does not go through it, so an operation absent from the
-    manifest is not callable rather than merely unadvertised. A model that guesses
-    `workspace_create` gets this refusal and no request is built, let alone sent.
+    Three refusals come before anything is sent, in this order and for three
+    different reasons. The allow-list is the *only* lookup, so an operation
+    absent from the manifest is not callable rather than merely unadvertised.
+    The manifest's purpose must be one the configuration allows, so a host
+    granted `workspace_inspection` alone cannot retrieve knowledge with a tool
+    it can see. And the payload must be one the advertised schema declares, with
+    no authority-shaped key anywhere in it.
+
+    None of the three reaches the client, so none of them costs a dial, a
+    credential resolution or a service round trip.
     """
     exposed = exposed_by_tool_name(params.name)
     if exposed is None:
@@ -213,24 +417,44 @@ def _call_tool(
             f"Available: {', '.join(tool.name for tool in tools())}."
         )
 
+    if exposed.purpose not in session.configuration.allowed_purposes:
+        return _failure(
+            f"{params.name} states a purpose this server's configuration does "
+            "not allow, so it was not called."
+        )
+
     try:
-        request = _request(exposed, workspace_id=attachment.workspace_id,
-                           arguments=params.arguments)
+        request = _request(
+            exposed,
+            configuration=session.configuration,
+            workspace_id=session.workspace_id,
+            arguments=params.arguments,
+        )
     except ValueError as refusal:
         return _failure(f"{params.name}: {refusal}")
 
     try:
-        transport = transport_factory(attachment.endpoint_uri)
-        response = transport.call(
+        response = session.client.call(
             request, deadline=Deadline.after(CALL_TIMEOUT_SECONDS)
         )
     except ClientError as failure:
-        # Every way a transport is documented to fail: it could not carry the
-        # call, what came back was not a frame, the deadline passed, or the
-        # caller cancelled. All four are answers to give a model, not tracebacks.
-        # The client's diagnostics are payload-free by construction, so passing
-        # one through to a model quotes no workspace content and no local path.
+        # Every way a client call is documented to fail: it could not carry the
+        # call, what came back was not a frame, a credential did not resolve,
+        # the deadline passed, or the caller cancelled. All of them are answers
+        # to give a model, not tracebacks. The client's diagnostics are
+        # payload-free by construction, so passing one through to a model quotes
+        # no workspace content, no endpoint and no local path.
         return _failure(f"{params.name} could not be called: {failure}")
+
+    if not _correlates(request, response):
+        # Before either branch below publishes anything: an answer that does not
+        # carry this request's correlation identifier is not this request's
+        # answer, and publishing it as `structuredContent` would attribute one
+        # call's result to another.
+        return _failure(
+            f"{params.name} was answered by a response that does not correlate "
+            "with the request, so the answer was not published."
+        )
 
     if not isinstance(response, SuccessResponseEnvelope):
         return _failure(
@@ -240,11 +464,8 @@ def _call_tool(
     # Through the codec's own encoder, not `dict(response.result)`. `dict()`
     # converts the top level only, and a decoded envelope carries read-only
     # mappings further down -- `to_canonical_json` is `json.dumps`, which refuses
-    # a nested `mappingproxy` outright. The stand-in transport this package used
-    # before R005-01 answered with plain dicts and could never show that; the
-    # first call over the real transport failed with "Object of type mappingproxy
-    # is not JSON serializable". `encode_response` is the accepted way to get a
-    # wire-shaped document, and is what the CLI has always used.
+    # a nested `mappingproxy` outright. `encode_response` is the accepted way to
+    # get a wire-shaped document, and is what the CLI has always used.
     encoded = codec.encode_response(response)["result"]
     if not isinstance(encoded, dict):
         # Refused rather than substituted. This read `encoded if isinstance(...)
@@ -264,9 +485,21 @@ def _call_tool(
         # structured content still gets the whole answer, and one that has it can
         # check the two agree. Serialised through the codec's canonical encoder, so
         # the mirror is byte-stable rather than dict-order-dependent.
-        content=[
-            types.TextContent(type="text", text=codec.to_canonical_json(encoded))
-        ],
+        content=[types.TextContent(type="text", text=codec.to_canonical_json(encoded))],
+    )
+
+
+def _correlates(request: RequestEnvelope, response: ResponseEnvelope) -> bool:
+    """Whether this response is an answer to this request.
+
+    Both identifiers are checked because both are this process's own: the
+    request id and the correlation id are minted together below, and a peer that
+    echoes neither -- or echoes one from an earlier call -- has not answered the
+    call being published.
+    """
+    return (
+        response.metadata.correlation_id == request.metadata.correlation_id
+        and response.metadata.request_id == request.metadata.request_id
     )
 
 
@@ -275,8 +508,8 @@ def _failure(message: str) -> types.CallToolResult:
 
     `is_error` rather than a raise: an exception out of a handler is a protocol
     error the model never sees the text of, and every refusal here is information
-    it should act on -- a wrong tool name, an unavailable call, a service that
-    said no.
+    it should act on -- a wrong tool name, a purpose it was not granted, an
+    unavailable call, a service that said no.
     """
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=message)], is_error=True
@@ -286,6 +519,7 @@ def _failure(message: str) -> types.CallToolResult:
 def _request(
     exposed: ExposedOperation,
     *,
+    configuration: McpConfiguration,
     workspace_id: str,
     arguments: Mapping[str, Any] | None,
 ) -> RequestEnvelope:
@@ -298,31 +532,34 @@ def _request(
     a renamed capability fails as a rename rather than as a mystery refusal two
     files away.
 
-    `workspace_id` comes from the attachment, which came from the launcher, which
-    read it from the running service. A model cannot name a workspace: there is no
-    argument for one anywhere in this package, which is R004-06's "unrestricted
-    filesystem path selection" boundary enforced by there being no path to select.
+    **The principal and the workspace come from the trusted configuration.** The
+    principal claim is exactly `principal_id` from the configuration document and
+    is a *claim*: the service decides from its own grant, and a claim that is not
+    granted is refused there. The workspace is the one unambiguous allow-listed
+    selection the session connected to and proved the service serves.
 
-    **The advertised closed payload is enforced here, and was not.** This copied
-    `params.arguments` into `input` verbatim, so arbitrary JSON reached the
-    envelope while `tools/list` advertised a closed object. It was inert while the
-    one exposed operation took no arguments, but "inert" was a property of that
-    exposure manifest rather than of this function, and the paragraph above
-    claimed there was no path to select while every key a model sent was still
-    being forwarded.
-
-    The check reads the advertised schema's own `properties` rather than a literal
-    list, so it says exactly what `tools/list` said and moves with it. Every
-    advertised payload declares `unevaluatedProperties: false`, so a key outside
-    that set is one the contract refuses anyway -- refusing it here costs the model
-    a round trip to find that out. Value-level validation stays where it belongs:
-    the service validates the payload against the operation contract and answers
-    with its own typed refusal. This is here rather than in :func:`_call_tool`
-    because this is the one place every call builds its envelope.
+    **A model supplies neither, and cannot.** :data:`RESERVED_ARGUMENTS` refuses
+    an authority-shaped key by name, and the advertised schema's own `properties`
+    refuses every key it does not declare -- read off the projection rather than
+    from a literal list, so what `tools/list` says and what this accepts stay one
+    document. Every advertised payload declares `unevaluatedProperties: false`,
+    so a key outside that set is one the contract refuses anyway; refusing it
+    here costs the model a round trip to find that out. Value-level validation
+    stays where it belongs: the service validates the payload against the
+    operation contract and answers with its own typed refusal.
     """
+    supplied = set(arguments or {})
+    reserved = sorted(supplied & RESERVED_ARGUMENTS)
+    if reserved:
+        raise ValueError(
+            f"{exposed.tool_name} does not take {reserved[0]!r}: the principal, "
+            "the workspace, the purpose, the granted authority, the endpoint and "
+            "the credential are fixed by this server's trusted configuration and "
+            "cannot be set by a caller"
+        )
     entry = get_operation_metadata(exposed.operation)
     advertised = set(input_schema(entry)["properties"])
-    unknown = sorted(set(arguments or {}) - advertised)
+    unknown = sorted(supplied - advertised)
     if unknown:
         raise ValueError(
             f"{exposed.tool_name} accepts no argument named {unknown[0]!r}"
@@ -350,17 +587,16 @@ def _request(
                     required=required.required,
                 ),
             ),
+            principal_claim=PrincipalClaim(
+                claimed_principal_id=configuration.principal_id
+            ),
         ),
         input=dict(arguments or {}),
     )
 
 
-async def serve(
-    *,
-    attachment: Attachment,
-    transport_factory: TransportFactory | None = None,
-) -> None:
-    """Serve one stdio session for an already-attached service.
+async def serve(*, session: ConnectedSession) -> None:
+    """Serve one stdio session against an already-connected service.
 
     The `redirect_stdout` closes a real gap the SDK's descriptor claim cannot.
     `stdio_server()` has by this point taken its private duplicate of fd 1 for the
@@ -374,9 +610,7 @@ async def serve(
     `test_every_byte_the_server_writes_to_stdout_is_valid_protocol`, which caught
     exactly this leak.
     """
-    server = build_server(
-        attachment=attachment, transport_factory=transport_factory
-    )
+    server = build_server(session=session)
     async with stdio_server() as (read_stream, write_stream):
         with redirect_stdout(sys.stderr):
             await server.run(
@@ -402,43 +636,57 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omnivia-core-mcp",
         description=(
-            "Serve a local OmniVia Core workspace to an MCP host over stdio. "
+            "Serve one OmniVia Core workspace to an MCP host over stdio. "
             "Read-only, and never creates a workspace."
         ),
     )
     parser.add_argument(
-        "--home",
+        "--config",
         type=Path,
-        default=None,
+        required=True,
         help=(
-            "the OmniVia installation root. Defaults to ~/.omnivia. There is no "
-            "environment variable for this and there will not be one."
+            "absolute path to the trusted omnivia.mcp-config.v1 file. It must be "
+            "a regular owner-private file, and it is the only place the "
+            "principal, the workspace allow-list, the allowed purposes and the "
+            "service location come from. There is no default, no environment "
+            "variable and no fallback."
         ),
     )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Resolve the installation, ensure a service, then serve stdio.
+    """Read the trusted configuration, connect, then serve stdio.
 
-    Writes nothing to stdout on any failure path: every diagnostic goes to stderr
-    and the exit status carries the outcome. That is R004-07's protocol-safe
-    failure in its strongest form -- a host reading this process's stdout sees
-    either valid MCP or nothing at all.
+    Writes nothing to stdout on any path: the startup line and every diagnostic
+    go to stderr and the exit status carries the outcome. That is R004-07's
+    protocol-safe failure in its strongest form -- a host reading this process's
+    stdout sees either valid MCP or nothing at all.
+
+    **There is no ambient credential resolver here, and that is the design.**
+    A console process holds no trusted way to release a secret, so a
+    configuration in `service_client` mode fails closed at :func:`connect`
+    rather than reaching for an environment variable, an argv secret or a file
+    beside the configuration. A host that has a resolver calls :func:`connect`
+    and :func:`serve` itself and injects one.
     """
     args = build_parser().parse_args(argv)
-    installation = Installation(home=home_directory(args.home))
     try:
-        attachment = ensure_service(installation)
-    except ManagedStartError as refusal:
+        session = connect(read_configuration(args.config))
+    except (
+        McpConfigurationError,
+        StartupError,
+        ManagedStartError,
+        ClientError,
+    ) as refusal:
         sys.stderr.write(f"{refusal}\n")
         return 1
 
-    sys.stderr.write(
-        f"{SERVER_NAME}: {attachment.status} {attachment.workspace_id} at "
-        f"{attachment.endpoint_uri}\n"
-    )
-    anyio.run(lambda: serve(attachment=attachment))
+    sys.stderr.write(f"{SERVER_NAME}: {session.status} {session.workspace_id}\n")
+    try:
+        anyio.run(lambda: serve(session=session))
+    finally:
+        session.clear_credentials()
     return 0
 
 

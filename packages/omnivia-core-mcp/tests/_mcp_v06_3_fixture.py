@@ -99,6 +99,7 @@ SOURCE_RECORD_ID = f"rec-{SEEDED_TOKEN}-a"
 TARGET_RECORD_ID = f"rec-{SEEDED_TOKEN}-b"
 RELATION_RECORD_ID = f"rel-{SEEDED_TOKEN}-ab"
 
+
 #: `ver-<record id>` for every record this fixture seals, because it seals one
 #: governed version per record. A caller naming a start point needs the exact
 #: version, so the rule is stated once here rather than spelled out per call.
@@ -267,7 +268,13 @@ def _seed_evidence_chain(holder: _Holder) -> None:
                 "recorded_at_us": BASE_US + 3,
             },
         )
-        _artifact(holder, "evd-0001", native_id="doc-1", locator="archive://doc.md", at=BASE_US + 4)
+        _artifact(
+            holder,
+            "evd-0001",
+            native_id="doc-1",
+            locator="archive://doc.md",
+            at=BASE_US + 4,
+        )
         _insert(
             holder.connection,
             NORMALIZED_RECORDS,
@@ -493,7 +500,9 @@ def _event_row(
         "policy_version": None,
         "occurred_at_us": BASE_US + sequence,
         "recorded_at_us": BASE_US + sequence + 1,
-        "reason_code": "governance.reviewed" if action.startswith("governance.") else None,
+        "reason_code": "governance.reviewed"
+        if action.startswith("governance.")
+        else None,
         "reason_comment": None,
         "audit_ref": audit_ref,
         "correlation_kind": "m1_audit",
@@ -620,7 +629,9 @@ def _seal(
                 audit_ref=audit_ref,
             ),
         )
-        _insert(holder.connection, EVIDENCE_LINKS, _link_row(proposed, candidate_assembly))
+        _insert(
+            holder.connection, EVIDENCE_LINKS, _link_row(proposed, candidate_assembly)
+        )
         if endpoint is not None:
             asserted = f"ev-{candidate_assembly}-asserted"
             _insert(
@@ -636,7 +647,9 @@ def _seal(
                 ),
             )
             _insert(
-                holder.connection, EVIDENCE_LINKS, _link_row(asserted, candidate_assembly, 2)
+                holder.connection,
+                EVIDENCE_LINKS,
+                _link_row(asserted, candidate_assembly, 2),
             )
             write_endpoint(candidate_assembly, asserted)
         _insert(
@@ -681,7 +694,9 @@ def _seal(
                 predecessor_version_id=candidate_version,
             ),
         )
-        _insert(holder.connection, EVIDENCE_LINKS, _link_row(accepted, governed_assembly))
+        _insert(
+            holder.connection, EVIDENCE_LINKS, _link_row(accepted, governed_assembly)
+        )
         if endpoint is not None:
             asserted = f"ev-{governed_assembly}-asserted"
             _insert(
@@ -698,7 +713,9 @@ def _seal(
                 ),
             )
             _insert(
-                holder.connection, EVIDENCE_LINKS, _link_row(asserted, governed_assembly, 2)
+                holder.connection,
+                EVIDENCE_LINKS,
+                _link_row(asserted, governed_assembly, 2),
             )
             write_endpoint(governed_assembly, asserted)
         _insert(
@@ -804,18 +821,25 @@ def build(root: Path) -> GovernedWorkspace:
 
 @dataclass(frozen=True)
 class GovernedService:
-    """A running `omnivia-core-service` and the two facts a caller needs to dial it.
+    """A running `omnivia-core-service` and the facts a caller needs to reach it.
 
-    Two strings and nothing else, deliberately. Starting the service is here
-    rather than in the test module because the runtime import has to stay in one
-    file: a test that reached for `endpoint_for_path` or `discover` itself would
+    Three, and no object with behaviour: starting the service is here rather
+    than in the test module because the runtime import has to stay in one file
+    -- a test that reached for `endpoint_for_path` or `discover` itself would
     import `omnivia_core_runtime` beside the MCP server under test, and the
     boundary those tests assert would be the fixture's arrangement rather than
     the package's property.
+
+    `installation_state` is the root this service published its descriptor
+    under, and it is what a `managed_local` MCP configuration names. The MCP
+    server reads that descriptor through `omnivia-core-client`, so the test
+    hands over a directory rather than an endpoint: nothing on the MCP side is
+    told where the socket is.
     """
 
     endpoint_uri: str
     workspace_id: str
+    installation_state: Path
 
 
 @contextmanager
@@ -861,7 +885,7 @@ def serving() -> Iterator[GovernedService]:
                 break
             time.sleep(0.05)
         assert found is not None and found.ready, "the service never became ready"
-        yield GovernedService(endpoint.url, built.workspace_id)
+        yield GovernedService(endpoint.url, built.workspace_id, built.installation.root)
     finally:
         if process.poll() is None:
             process.send_signal(signal.SIGTERM)

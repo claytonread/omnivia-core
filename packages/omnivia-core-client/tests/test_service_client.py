@@ -508,6 +508,16 @@ def test_an_installation_that_has_published_nothing_is_absent_not_broken(
     assert local_factory.transport.probes == []
 
 
+def test_an_installation_state_root_that_does_not_exist_is_absent_not_broken(
+    tmp_path: Path, local_factory: TransportFactory
+) -> None:
+    missing = tmp_path / "installation-state"
+
+    assert connect_local(missing) is None
+    assert local_factory.built == []
+    assert local_factory.transport.probes == []
+
+
 def test_a_descriptor_replaced_between_the_two_reads_is_refused(
     tmp_path: Path, local_factory: TransportFactory
 ) -> None:
