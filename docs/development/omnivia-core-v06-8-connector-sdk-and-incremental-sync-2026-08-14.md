@@ -2,17 +2,19 @@
 
 - **Date:** 2026-08-14
 - **Slice:** V06-8, architecture specification section 8
-- **Status:** Foundation implemented; the V06-8 A6 lane is **not** complete.
-  What is built is the contract, the durable state and the run coordinator, and
-  this document records that, who owns it, and what was deliberately left out.
-  Accepted A6 scope that is still absent is listed under
-  [Remaining A6 scope](#remaining-a6-scope) — that section, not this one, is the
-  answer to "is the lane done".
+- **Status:** Foundation implemented, **plus accepted packet A6-N1** — the
+  four-operation `describe` / `migrate_cursor` / `probe` / `poll` SPI, its
+  host-side checks, a deterministic fake and the corpus-driven conformance kit
+  over all 65 cases. The V06-8 A6 lane is still **not** complete: no real source
+  adapter exists, and the coordinator still drives the three-method protocol
+  rather than the new SPI. Accepted A6 scope that is still absent is listed
+  under [Remaining A6 scope](#remaining-a6-scope) — that section, not this one,
+  is the answer to "is the lane done".
 
 ## Why this document exists
 
 The connector work spans two distributions and reuses three pieces of durable
-infrastructure that already existed. Without a record, the next reader has four
+infrastructure that already existed. Without a record, the next reader has five
 plausible and wrong conclusions available:
 
 - that `omnivia_core.connector` is a connector *implementation* rather than a
@@ -21,13 +23,18 @@ plausible and wrong conclusions available:
   no checkpoint table;
 - that `system.connector_sync` is an application operation, because it appears
   in the audit trail beside operations that are;
-- that bidirectional synchronisation is unfinished rather than out of scope.
+- that bidirectional synchronisation is unfinished rather than out of scope;
+- that there is one `SourceConnector` here. There are two connector surfaces,
+  they are both current, and [Two connector surfaces](#two-connector-surfaces)
+  says which is which.
 
 ## Ownership
 
 | Concern | Owner | Location |
 | --- | --- | --- |
 | Connector protocol and wire/state values | `omnivia-core` | `src/omnivia_core/connector/` |
+| A6 SPI, host checks, fake, conformance kit | `omnivia-core` | `src/omnivia_core/connector/{spi,host,fake,conformance}.py` |
+| The accepted A6 case corpus | `omnivia-pm`, copied here byte-for-byte | `docs/quality/fixtures/core-connectors/` |
 | Durable connector state | `omnivia-core-runtime` | `storage/migration_files/0017_connector_sync_state.sql`, `storage/connectors.py` |
 | Run coordination | `omnivia-core-runtime` | `service/ingestion_coordinator.py` |
 | Connector implementations | **Nobody, here** | out of repository |
@@ -330,39 +337,190 @@ fail-closed in every direction:
   it is committed, which is the case the first two rules cannot help with,
   because by the time such a cursor is durable the damage is permanent.
 
+## Packet A6-N1: the four-operation SPI
+
+The accepted contract is A6-R3, and the accepted packet is its section 11.
+What that packet authorised, and what now exists, is the SPI surface and its
+DTOs, the host-side cursor and batch checks, a first-party deterministic fake,
+the corpus-driven conformance kit, and the packaging assertion. It explicitly
+excluded a real source adapter, any migration, any operation handler, network
+egress, a credential store and a scheduler. None of those was added.
+
+### Two connector surfaces
+
+They are not the same surface and neither is deprecated by the other.
+
+| | Runtime foundation | A6-N1 |
+| --- | --- | --- |
+| Name | `SourceConnector` | `SourceConnectorSpi` |
+| Module | `connector/protocols.py` | `connector/spi.py` |
+| Operations | `health`, `fetch`, `content` | `describe`, `migrate_cursor`, `probe`, `poll` |
+| Cursor | `ConnectorCursor` (version, token) | `CursorState` (version, payload, witness, predecessor) |
+| Item | `SourceChange` | `Observation` |
+| Driven by | `IngestionCoordinator` | the conformance kit |
+
+The A6 names were *not* given to the existing types. A `CursorState` accepts
+values a `ConnectorCursor` refuses and the reverse, so one name over both would
+mean a value that validates at one call site and aborts at another. Where the
+two genuinely agree, the A6 name is an alias rather than a second type:
+`HealthStatus` **is** `SourceHealth` and `CancellationToken` **is**
+`Cancellation`, so `probe` and `health` cannot drift into two typed statuses
+meaning the same thing.
+
+### The cursor lineage digest
+
+`CursorState` carries exactly four fields: `state_version`, `payload`,
+`witness_seq`, `predecessor_digest`. The payload is the validated unpadded
+base64url text as ASCII bytes, at most 4096 of them, checked for alphabet *and*
+length group — a length of 4n+1 is one no unpadded base64url string can have.
+The predecessor is absent or exactly 32 bytes; there is no other genesis.
+
+The host, and only the host, computes SHA-256 over seven `u32be`
+length-prefixed fields in one fixed order: domain tag
+`omnivia.connector.cursor-state.v2`, frozen workspace id, frozen connector id,
+then all four parent fields including the parent's own predecessor digest.
+Genesis contributes a zero-length final frame, exactly `00 00 00 00`.
+
+Including the parent's predecessor digest is the whole of the A6-R3 repair, and
+`tests/contracts/test_connector_spi.py` keeps it honest with six *omission
+mutants*: for each of workspace id, connector id, state version, payload,
+witness and predecessor digest, a preimage that left that field out makes two
+distinguishable states hash alike, while the seven-frame construction does not.
+
+Refusals are distinct because the diagnosis has to be:
+
+| Defect | Identifier | Where |
+| --- | --- | --- |
+| payload alphabet, padding, length group | `connector_state_invalid` | `CursorState.__post_init__` |
+| payload over 4096 bytes | `size_limit_exceeded` | `CursorState.__post_init__` |
+| persisted binding is not the current one | `connector_cursor_foreign` | `validate_successor` |
+| successor names another state | `connector_state_invalid` | `validate_successor` |
+| witness regressed | `connector_cursor_not_monotonic` | `validate_successor` |
+
+Encoding necessarily precedes everything else, because it is enforced by the
+type: no malformed payload can reach a binding, lineage or witness comparison
+at all.
+
+### Migration
+
+`migrate_cursor` takes and returns a whole `CursorState`. `validate_migration`
+enforces all four obligations — state version strictly increasing into the
+declared supported set, witness *exactly* equal, predecessor byte-identical
+including when both are absent, payload within encoding and bound — and returns
+a `MigrationAudit` carrying the pre- and post-migration canonical digest pair,
+so the chain stays auditable across a version change instead of showing an
+unexplained break. `run_cursor_migration` calls the connector twice and refuses
+a non-deterministic answer; purity is observed by the caller, which owns the
+resolver and can see it was never used. An unmigratable state version is an
+explicit `resync_required` outcome carrying
+`connector_cursor_unmigratable`, never a silent reset.
+
+### The batch validator
+
+`validate_batch` is coordinator-side and storage-free: it decides what would be
+committed, entirely in memory, before anything is durable. It counts the batch
+itself rather than trusting a declared count; enforces the per-item metadata
+ceiling as a dead letter and the batch and run ceilings as whole-batch
+refusals; refuses hostile identifiers, traversal-shaped locators and
+over-deep metadata before persistence; collapses duplicates; refuses labels
+outside the accepted vocabulary without echoing the grant; defers a
+locator-derived batch to reconciliation instead of guessing at a rename; runs
+the known-material comparison; and then applies the cursor binding, lineage and
+witness checks.
+
+The metadata depth ceiling is checked by *scanning* rather than parsing.
+Parsing is what the ceiling exists to avoid: a document nested a few thousand
+levels deep exhausts the interpreter stack inside `json.loads` before a ceiling
+written in terms of the parsed value could be consulted.
+
+### What A6-N1 does not establish
+
+Three claims are gated on `CON-P09` and are not made here, in code, in tests or
+in this document:
+
+- **No sandbox.** Withholding storage handles is an API ownership boundary. It
+  decides what the host hands a connector, not what connector code can reach
+  through platform APIs. `poll_context_surface_defects()` checks the surface and
+  claims exactly that much.
+- **No information-flow enforcement.** The known-material comparison catches
+  verbatim and *declared-encoding* copies of material this run resolved, and
+  nothing else. `CON-C030` drives a fake that leaks the material transformed,
+  and the kit records that it was **not** caught. That is defence in depth.
+- **No remote completeness proof.** `CON-C058` hands the host a cursor at
+  witness 9 and an empty batch with a correctly chained successor at witness
+  100, while 91 observations sit inside the window. Every host-checkable
+  property holds, so the host accepts and the cursor advances past all 91. The
+  kit detects the omission by comparing against the fake's expected observation
+  set, which this corpus fixes independently — detection that has no equivalent
+  against a real source until `CON-P08` and `CON-P09` resolve. Those 91 are
+  lost, not deferred.
+
+### The conformance kit
+
+`run_conformance` executes all 65 cases and records one of three dispositions
+for every one of them. Today, against the first-party fake: **48 passed, 0
+failed, 17 declared-not-applicable**. No case is skipped, and a case with no
+assertion binding is a *failure* rather than a quiet pass — there is a test that
+removes a binding and requires exactly that.
+
+Every not-applicable names a limitation the fake declared at discovery and
+records a reason. `acl_withdrawal` covers `CON-C021`. `durable_persistence`
+covers the sixteen cases whose vector is a durable fact the connector does not
+own and this storage-free kit cannot produce: re-observation and version
+succession, rename against a durable current locator, reappearance, ACL attach,
+ordering, crash recovery, fencing and takeover, the single-writer lease
+invariant, attempt ordinals and dead-letter records, and provenance across
+replay. Those are honest gaps in what a *connector* conformance kit can show,
+not gaps in the coordinator, which has its own adversarial coverage in
+`test_v06_8_ingestion_coordinator.py`.
+
+Assertions are bound to behaviour rather than to the corpus's own expectations.
+`test_a6_conformance.py` breaks the digest construction and requires the
+lineage cases to fail; a kit that echoed each case's `expected_outcome` would
+stay green through that.
+
 ## Remaining A6 scope
 
-These are accepted V06-8 A6 contract obligations that this foundation does
-**not** discharge. They are listed as outstanding work, not as non-goals — the
-section below is for the things that are deliberately never coming.
+These are accepted V06-8 A6 obligations that are still **not** discharged. They
+are outstanding work, not non-goals — the section below is for the things that
+are deliberately never coming.
 
-- **The four-operation connector SPI.** The accepted contract is
-  `describe` / `migrate_cursor` / `probe` / `poll`, with a `PollContext` carrying
-  what a poll is entitled to know. What ships here is the three-method
-  `SourceConnector` (`health`, `fetch`, `content`) the coordinator needs; the
-  other operations and the context type do not exist yet.
-- **Cursor witness and full parent lineage validation.** The cursor is opaque and
-  versioned, and the durable resume point is a single deterministic row, but
-  nothing validates a cursor *witness* or checks a full parent lineage, and the
-  migration obligations that lineage validation implies are not written.
-- **A deterministic fake connector.** The connector fakes in this slice live
-  inside the test modules that use them. No shared, deterministic fake ships as
-  part of the contract for other suites — or other repositories — to build on.
-- **The corpus-driven conformance kit.** The accepted 65-case conformance corpus
-  and the kit that runs a candidate connector against it are absent. Coverage
-  today is the acceptance suites listed above, which test *this* coordinator
-  rather than an arbitrary connector's conformance.
-- **The packaging assertion.** Nothing asserts that the connector SDK is
-  packaged and consumable as the accepted artefact; the package boundary is
-  checked, its distribution shape is not.
+- **No real source adapter.** Gated on `CON-P08`, which must select the first
+  source, its authorized scope, its capability and purpose grants, its
+  hostile-input control set and the evidence by which window completeness is
+  demonstrated for a source the host cannot enumerate. Nothing in this packet
+  may be read as choosing one.
+- **The coordinator does not drive the new SPI.** `IngestionCoordinator` still
+  calls `health` / `fetch` / `content` and still persists `ConnectorCursor`
+  tokens. The witness, the canonical lineage digest and the batch validator
+  exist and are tested, and nothing durable is yet written through them. Wiring
+  them into the fenced commit path — including the reserved `checkpoint_kind`
+  spelling — is a later packet and depends on `CON-P01` and `CON-P02`.
+- **The corpus is not packaged into the wheel.** It lives under
+  `docs/quality/fixtures/core-connectors/` and `load_corpus` takes the directory
+  as an argument. A consumer in another repository has to supply the bytes. The
+  kit verifies the recorded digests on load, so a drifted copy is refused rather
+  than silently used.
+- **JSON Schema validation of the corpus lives in the test, not the kit.**
+  `omnivia-core` declares no third-party dependency, and a loader that imported
+  `jsonschema` would put it on the import path of every consumer of the public
+  connector contract. `load_corpus` does digest, identifier and closure
+  validation with the standard library; `tests/contracts/test_a6_corpus.py` runs
+  `Draft202012Validator`.
+- **Nine provisional dependencies are still open.** `CON-P01` and `CON-P04`
+  block a final freeze of the contract, because they change what a connector is
+  required to emit. `CON-P09` blocks any isolation, non-disclosure or
+  completeness claim.
 
 ## Non-goals, stated so they are not read as gaps
 
 - **Bidirectional synchronisation is out of scope by decision.** Nothing writes
   to a source, and no part of this slice is a partial step toward it.
 - **No connector implementation ships here.** Not a filesystem one, not a cloud
-  one. The `SourceConnector` protocol is structural: an implementation inherits
-  nothing and registers nowhere.
+  one. Both connector protocols are structural: an implementation inherits
+  nothing and registers nowhere. `FakeSourceConnector` is a scripted test double
+  with no source behind it; it is the reference the SPI surface is judged
+  against, not an adapter.
 - **No new application operation.** The frozen 20-operation catalogue is
   unchanged. `system.connector_sync` is a durable audit and metadata label for a
   service-initiated maintenance run — the same family as the existing
@@ -404,3 +562,21 @@ section below is for the things that are deliberately never coming.
   Failing it is the honest outcome — see Limits — but the failure repeats every
   run until the connector pages more finely or the ceiling is raised. Nothing
   raises it automatically, and nothing alerts on the repetition.
+- **A connector can silently lose evidence and pass every host check.** This is
+  the largest open risk in the accepted contract and A6-N1 does not close it —
+  it demonstrates it. See `CON-C058` above. Detection exists against the
+  first-party fake because this corpus fixes its expected observation set, and
+  has no equivalent against a real source until `CON-P08` and `CON-P09` resolve.
+- **Seventeen conformance cases are declared-not-applicable.** Each names a
+  discovery-declared limitation and a reason, and none is silently skipped. They
+  are cases whose vector is a durable fact a connector does not own; a kit that
+  reported them as passes would be claiming coverage it does not have.
+- **A migrated payload denoting the same source position is connector-attested.**
+  The host checks version direction, exact witness equality, byte-identical
+  digest carry-through and encoding. Semantic equivalence is not checkable and is
+  not checked.
+- **The fake's misbehaviours are constructor flags.** `omitted_windows`,
+  `migration_defect` and `secret_leak` exist so the negative cases drive real
+  code rather than assert prose. They make the fake a poor template for a real
+  adapter, and `migration_defect="nondeterministic"` is the one place the fake
+  holds mutable state at all.

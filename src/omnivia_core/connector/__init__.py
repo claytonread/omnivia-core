@@ -9,6 +9,17 @@ The runtime side -- durable runs, checkpoints, dead letters, health history --
 lives in `omnivia_core_runtime`, which depends on this package and never the
 other way round. Bidirectional synchronisation back to a source is out of
 scope by decision, not by omission: nothing here writes to a source.
+
+Two connector surfaces live here and they are not the same surface. The
+runtime-foundation `SourceConnector` (`health` / `fetch` / `content`) is what
+`IngestionCoordinator` drives today. The accepted A6 SPI --
+`describe` / `migrate_cursor` / `probe` / `poll` -- ships as
+`SourceConnectorSpi` in `omnivia_core.connector.spi`, with its host-side checks
+in `.host`, a deterministic reference implementation in `.fake` and the
+corpus-driven conformance kit in `.conformance`. Those four modules are not
+re-exported from here: they are a larger surface than most callers of the
+contract want, and importing them by name says which of the two connector
+worlds a call site is in.
 """
 
 from __future__ import annotations
