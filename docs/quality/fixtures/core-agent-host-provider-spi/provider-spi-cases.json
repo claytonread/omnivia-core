@@ -1,0 +1,1794 @@
+{
+  "fixture_id": "core-agent-host-provider-spi",
+  "fixture_version": "1.1.0",
+  "status": "candidate-preparation-only",
+  "generated_date": "2026-08-03",
+  "spi_version": "1.0.0",
+  "authority": {
+    "pm_base_commit": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+    "core_checkpoint_commit": "0278d3cb1da3199dd116ed0710a7459599e142df",
+    "architecture_spec": "docs/specs/omnivia-core-architecture-spec-v0.6-2026-07-29.md",
+    "programme_plan": "docs/tasks/2026-08-03-omnivia-core-independent-assurance-and-v06-8-preparation-plan.md",
+    "candidate_document": "docs/tasks/2026-08-03-omnivia-core-agent-host-provider-spi-preparation.md",
+    "core_contract_root": "contracts/application/v1",
+    "lane_a8_candidate_document": "docs/tasks/2026-08-03-omnivia-core-workflow-run-memory-boundary-preparation.md",
+    "lane_a8_candidate_commit": "75d2ff15a21e51e23a18057c51dc8b2818e7cb8a"
+  },
+  "boundary": {
+    "implements_product_behaviour": false,
+    "authorises_acceptance": false,
+    "requires_host_source_patch": false,
+    "requires_network_access": false,
+    "contains_executable_payload": false,
+    "contains_credentials_or_key_material": false,
+    "reconciled_against_lane_a8_candidate": true,
+    "accepts_lane_a8_as_frozen": false,
+    "persists_core_run_state": false,
+    "implies_core_job_control": false,
+    "injects_host_identity_into_request_metadata": false,
+    "owns_migration_number": false
+  },
+  "hooks": [
+    "spi.negotiate",
+    "recall.before_turn",
+    "capture.after_turn",
+    "tool_result.persist",
+    "context.compact",
+    "memory.search",
+    "approval.request",
+    "turn.complete",
+    "turn.cancel",
+    "turn.retry"
+  ],
+  "cases": [
+    {
+      "id": "SPI-V-001",
+      "title": "Identical after-turn capture replayed under the same idempotency key",
+      "family": "duplicate_callback",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-023",
+        "SPI-R-024"
+      ],
+      "given": {
+        "caller": "caller-alpha",
+        "agent": "agent-alpha",
+        "session": "session-alpha",
+        "run": "run-alpha-0001",
+        "workspace": "workspace-alpha",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0001",
+        "sequence": 12,
+        "turn_ordinal": 3
+      },
+      "when": {
+        "action": "The host redelivers a byte-identical after-turn capture request after a transport timeout."
+      },
+      "expect": {
+        "disposition": "idempotent_replay",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A redelivered identical request returns the first recorded result. No second candidate observation is produced and no additional effect is created."
+      }
+    },
+    {
+      "id": "SPI-V-002",
+      "title": "Divergent after-turn capture reusing a spent idempotency key",
+      "family": "duplicate_callback",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-023",
+        "SPI-R-025"
+      ],
+      "given": {
+        "caller": "caller-alpha",
+        "agent": "agent-alpha",
+        "session": "session-alpha",
+        "run": "run-alpha-0001",
+        "workspace": "workspace-alpha",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0001",
+        "sequence": 13,
+        "turn_ordinal": 3
+      },
+      "when": {
+        "action": "The host reuses a spent idempotency key while sending a different capture payload.",
+        "repeat_of": "SPI-V-001"
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "idempotency_conflict",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Reusing a key for a different request is a caller defect, not a transient fault. Retrying the identical request fails identically, so the failure is non-retryable."
+      }
+    },
+    {
+      "id": "SPI-V-003",
+      "title": "Effecting hook submitted with no idempotency key",
+      "family": "duplicate_callback",
+      "hook": "tool_result.persist",
+      "requirements": [
+        "SPI-R-023"
+      ],
+      "given": {
+        "caller": "caller-alpha",
+        "agent": "agent-alpha",
+        "session": "session-alpha",
+        "run": "run-alpha-0002",
+        "workspace": "workspace-alpha",
+        "purpose": "tool_result_persistence",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The host omits the idempotency key on a hook that can produce an effect."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The frozen contract makes the idempotency key required on effecting operations. Accepting the call would leave duplicate suppression undefined for the whole run."
+      }
+    },
+    {
+      "id": "SPI-V-004",
+      "title": "Duplicate tool-result persistence for one tool call",
+      "family": "duplicate_callback",
+      "hook": "tool_result.persist",
+      "requirements": [
+        "SPI-R-024",
+        "SPI-R-029"
+      ],
+      "given": {
+        "caller": "caller-alpha",
+        "agent": "agent-alpha",
+        "session": "session-alpha",
+        "run": "run-alpha-0002",
+        "workspace": "workspace-alpha",
+        "purpose": "tool_result_persistence",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-tool-0007",
+        "sequence": 7,
+        "turn_ordinal": 2
+      },
+      "when": {
+        "action": "The host persists the same oversized tool result twice, both times by reference to the same content handle."
+      },
+      "expect": {
+        "disposition": "idempotent_replay",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The reference handle and idempotency key together identify one persistence effect. The second call returns the first handle rather than creating a second record."
+      }
+    },
+    {
+      "id": "SPI-V-005",
+      "title": "Duplicate run-local tool approval for an already-decided approval",
+      "family": "duplicate_callback",
+      "hook": "approval.request",
+      "requirements": [
+        "SPI-R-024",
+        "SPI-R-031",
+        "SPI-R-040"
+      ],
+      "given": {
+        "caller": "caller-alpha",
+        "agent": "agent-alpha",
+        "session": "session-alpha",
+        "run": "run-alpha-0003",
+        "workspace": "workspace-alpha",
+        "purpose": "runtime_tool_approval",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-approval-0002",
+        "sequence": 21,
+        "turn_ordinal": 4
+      },
+      "when": {
+        "action": "The host re-requests a run-local tool approval that a human operator has already denied within the same turn.",
+        "approval_kind": "runtime_tool_approval"
+      },
+      "expect": {
+        "disposition": "idempotent_replay",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A decided run-local approval is replayed with its recorded decision, so re-asking cannot re-open a denial or produce a second prompt the operator could tire of and accept. The decision stays run-local: it is never a Core governance decision, creates no Core governance audit entry and grants no capability."
+      }
+    },
+    {
+      "id": "SPI-V-006",
+      "title": "After-turn capture arrives before the turn it belongs to opened",
+      "family": "reordered_callback",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-005",
+        "SPI-R-027",
+        "SPI-R-038"
+      ],
+      "given": {
+        "caller": "caller-beta",
+        "agent": "agent-beta",
+        "session": "session-beta",
+        "run": "run-beta-0001",
+        "workspace": "workspace-beta",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0100",
+        "sequence": 4,
+        "turn_ordinal": 3
+      },
+      "when": {
+        "action": "A capture callback for turn ordinal 3 at sequence 4 is delivered while the run has only opened turn ordinals 0 through 1."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A capture for an unopened turn has no lifecycle position to attach to. Buffering it would let the SPI hold run state, which it does not own."
+      }
+    },
+    {
+      "id": "SPI-V-007",
+      "title": "Stale recall callback delivered after a newer turn opened",
+      "family": "reordered_callback",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-027"
+      ],
+      "given": {
+        "caller": "caller-beta",
+        "agent": "agent-beta",
+        "session": "session-beta",
+        "run": "run-beta-0001",
+        "workspace": "workspace-beta",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "sequence": 2,
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "A delayed before-turn recall for sequence 2 is redelivered after sequence 5 has already been served."
+      },
+      "expect": {
+        "disposition": "ignored",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A recall is a read with no effect, so a stale delivery is dropped rather than refused. It is still audited so a reordering host can be diagnosed."
+      }
+    },
+    {
+      "id": "SPI-V-008",
+      "title": "Host-local compaction notification interleaved between recall and capture",
+      "family": "reordered_callback",
+      "hook": "context.compact",
+      "requirements": [
+        "SPI-R-028"
+      ],
+      "given": {
+        "caller": "caller-beta",
+        "agent": "agent-beta",
+        "session": "session-beta",
+        "run": "run-beta-0002",
+        "workspace": "workspace-beta",
+        "purpose": "context_compaction",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "sequence": 9
+      },
+      "when": {
+        "action": "The host compacts its own transcript midway through an open turn and notifies the provider."
+      },
+      "expect": {
+        "disposition": "ignored",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Compaction is host and run-state owned. The provider acknowledges the host-local lifecycle notification and drops it: Core writes no run-state record and no audit entry, and Core exposes no compaction or run-state operation, so ordering relative to the turn is not Core's concern."
+      }
+    },
+    {
+      "id": "SPI-V-009",
+      "title": "Effecting hook delivered after its own turn reached a terminal state",
+      "family": "reordered_callback",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-006",
+        "SPI-R-027",
+        "SPI-R-038"
+      ],
+      "given": {
+        "caller": "caller-beta",
+        "agent": "agent-beta",
+        "session": "session-beta",
+        "run": "run-beta-0003",
+        "workspace": "workspace-beta",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0300",
+        "sequence": 40,
+        "turn_ordinal": 7
+      },
+      "when": {
+        "action": "A capture for turn ordinal 7 arrives after `turn.complete` closed that turn."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "conflict",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Turn completion is terminal for the identified turn, so a late effect for that turn fails closed. It is not run completion: the Workflow Run stays open and a later turn remains possible, which `SPI-V-039` asserts."
+      }
+    },
+    {
+      "id": "SPI-V-010",
+      "title": "Recall attempted without an authenticated principal",
+      "family": "denial",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-017"
+      ],
+      "given": {
+        "caller": "caller-unauthenticated",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0001",
+        "workspace": "workspace-gamma",
+        "purpose": "context_recall",
+        "granted_capabilities": [],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The host presents a caller claim with no authenticated session behind it."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "authentication_required",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Host-supplied identity is a claim. Without validation against an authenticated session or trusted local configuration it grants nothing."
+      }
+    },
+    {
+      "id": "SPI-V-011",
+      "title": "Recall targets a workspace the principal was never granted",
+      "family": "denial",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-018"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0002",
+        "workspace": "workspace-not-granted",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The host rebinds the run to a second workspace mid-session and recalls from it."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "workspace_not_granted",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Workspace binding is fixed for the run. Cross-workspace recall is denied before any candidate is ranked, so nothing unauthorised is ever scored."
+      }
+    },
+    {
+      "id": "SPI-V-012",
+      "title": "Capture requested without the write capability",
+      "family": "denial",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-020",
+        "SPI-R-022"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0003",
+        "workspace": "workspace-gamma",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-capture-0400",
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "A read-only adapter invokes after-turn capture.",
+        "required_capabilities": [
+          "memory.write@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "capability_not_granted",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The effective capability set is the intersection of what the server supports and what the principal was granted. A hook cannot draw on anything outside it."
+      }
+    },
+    {
+      "id": "SPI-V-013",
+      "title": "Search submitted with a purpose outside the granted allowlist",
+      "family": "denial",
+      "hook": "memory.search",
+      "requirements": [
+        "SPI-R-021"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0004",
+        "workspace": "workspace-gamma",
+        "purpose": "purpose-not-allowlisted",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The host declares a purpose that no session grant or allowlist entry covers."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_purpose",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Purpose is validated before retrieval runs. Deferring the check until after ranking would already have read content the purpose did not license."
+      }
+    },
+    {
+      "id": "SPI-V-014",
+      "title": "Recalled content instructs the adapter to widen its capabilities",
+      "family": "denial",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-019",
+        "SPI-R-020"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0005",
+        "workspace": "workspace-gamma",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "Recalled evidence text contains an embedded instruction to grant governed mutation, and the host forwards it as a capability request.",
+        "required_capabilities": [
+          "knowledge.govern@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "capability_not_granted",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Recalled content, tool arguments and model output are untrusted data. They can never expand the granted set, so the injection has no privileged path to act on."
+      }
+    },
+    {
+      "id": "SPI-V-015",
+      "title": "Governed mutation attempted directly instead of through the approval boundary",
+      "family": "denial",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-030",
+        "SPI-R-031",
+        "SPI-R-040"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0006",
+        "workspace": "workspace-gamma",
+        "purpose": "governed_mutation",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0500",
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The adapter asks capture to write a governed record rather than a candidate observation."
+      },
+      "expect": {
+        "disposition": "escalation_required",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Capture produces candidate observations only. Promotion to governed knowledge is a separate application-contract governance path taken by a validated principal holding `knowledge.govern`, with its own approval and audit. A run-local host approval cannot stand in for it, and a turn ending never promotes anything."
+      }
+    },
+    {
+      "id": "SPI-V-016",
+      "title": "Search requested while the workspace lease is held elsewhere",
+      "family": "denial",
+      "hook": "memory.search",
+      "requirements": [
+        "SPI-R-010",
+        "SPI-R-011"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0007",
+        "workspace": "workspace-gamma",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "Another writer holds the workspace service lease when the hook is invoked."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "workspace_lease_unavailable",
+        "retry_class": "retryable_after_delay",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The SPI reuses the frozen error catalogue rather than minting a host-specific code, so an adapter's backoff behaviour matches every other client of the same workspace."
+      }
+    },
+    {
+      "id": "SPI-V-017",
+      "title": "Turn cancellation accepted while a recall is in flight",
+      "family": "cancellation",
+      "hook": "turn.cancel",
+      "requirements": [
+        "SPI-R-032",
+        "SPI-R-041"
+      ],
+      "given": {
+        "caller": "caller-delta",
+        "agent": "agent-delta",
+        "session": "session-delta",
+        "run": "run-delta-0001",
+        "workspace": "workspace-delta",
+        "purpose": "turn_control",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-cancel-0001",
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The operator cancels the turn while a before-turn recall is still executing and a Core durable job the turn started is outstanding."
+      },
+      "expect": {
+        "disposition": "accepted",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Cancellation is cooperative and turn-scoped. The in-flight recall's result is discarded rather than delivered, and the outstanding Core job handle is returned unchanged so the host can act on it separately. `turn.cancel` never composes `job.cancel`, and cancelling provider turn state needs no `job.control`."
+      }
+    },
+    {
+      "id": "SPI-V-018",
+      "title": "Cancellation of an already-cancelled turn",
+      "family": "cancellation",
+      "hook": "turn.cancel",
+      "requirements": [
+        "SPI-R-032",
+        "SPI-R-024"
+      ],
+      "given": {
+        "caller": "caller-delta",
+        "agent": "agent-delta",
+        "session": "session-delta",
+        "run": "run-delta-0001",
+        "workspace": "workspace-delta",
+        "purpose": "turn_control",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-cancel-0002",
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "A second cancellation is issued for a turn already in a cancelled state.",
+        "repeat_of": "SPI-V-017"
+      },
+      "expect": {
+        "disposition": "idempotent_replay",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A state-based refusal of a control call is a successful idempotent result carrying the unchanged handle, not a `conflict` error, matching the frozen `JobCancellationDisposition` semantics. The replay composes no Core job control either."
+      }
+    },
+    {
+      "id": "SPI-V-019",
+      "title": "Turn cancellation races an after-turn capture that has already taken effect",
+      "family": "cancellation",
+      "hook": "turn.cancel",
+      "requirements": [
+        "SPI-R-032",
+        "SPI-R-026"
+      ],
+      "given": {
+        "caller": "caller-delta",
+        "agent": "agent-delta",
+        "session": "session-delta",
+        "run": "run-delta-0002",
+        "workspace": "workspace-delta",
+        "purpose": "turn_control",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-cancel-0003",
+        "sequence": 15,
+        "turn_ordinal": 3
+      },
+      "when": {
+        "action": "Cancellation arrives after a capture committed its candidate observation but before the host observed the response."
+      },
+      "expect": {
+        "disposition": "accepted",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Cancellation stops future work; it never rewinds a completed effect. The already-recorded candidate keeps its audit reference and remains discoverable, and any Core durable job the turn started keeps running until the host issues its own `job.cancel`."
+      }
+    },
+    {
+      "id": "SPI-V-020",
+      "title": "Turn cancellation asked to cancel the outstanding Core durable job",
+      "family": "cancellation",
+      "hook": "turn.cancel",
+      "requirements": [
+        "SPI-R-041",
+        "SPI-R-032"
+      ],
+      "given": {
+        "caller": "caller-delta",
+        "agent": "agent-delta",
+        "session": "session-delta",
+        "run": "run-delta-0003",
+        "workspace": "workspace-delta",
+        "purpose": "turn_control",
+        "granted_capabilities": [
+          "memory.read@1.0",
+          "job.control@1.0"
+        ],
+        "idempotency_key": "idem-cancel-0004",
+        "turn_ordinal": 2
+      },
+      "when": {
+        "action": "The adapter asks `turn.cancel` to also cancel the Core durable job the turn started, as one composed call.",
+        "required_capabilities": [
+          "job.control@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Turn cancellation cancels provider turn state only. Composing `job.cancel` implicitly would stop durable Core work on the authority of a host-local control action. The outstanding job handles are returned instead, and the host makes a separate, explicitly authorized and idempotent application-contract `job.cancel` call. Holding `job.control` does not change this: the composition is what is refused, not the capability."
+      }
+    },
+    {
+      "id": "SPI-V-021",
+      "title": "Recall exceeds the deadline the host declared",
+      "family": "deadline",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-013",
+        "SPI-R-015"
+      ],
+      "given": {
+        "caller": "caller-epsilon",
+        "agent": "agent-epsilon",
+        "session": "session-epsilon",
+        "run": "run-epsilon-0001",
+        "workspace": "workspace-epsilon",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "deadline_ms": 2000,
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The recall is still ranking when the declared deadline elapses.",
+        "elapsed_ms": 2000
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "deadline_exceeded",
+        "retry_class": "retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A recall has no effect to unwind, so the identical request may be retried. The host receives no partial ranking it could mistake for a complete one."
+      }
+    },
+    {
+      "id": "SPI-V-022",
+      "title": "Effecting hook exceeds its deadline mid-flight",
+      "family": "deadline",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-015",
+        "SPI-R-024"
+      ],
+      "given": {
+        "caller": "caller-epsilon",
+        "agent": "agent-epsilon",
+        "session": "session-epsilon",
+        "run": "run-epsilon-0002",
+        "workspace": "workspace-epsilon",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "deadline_ms": 5000,
+        "idempotency_key": "idem-capture-0600",
+        "turn_ordinal": 5
+      },
+      "when": {
+        "action": "The capture deadline elapses while the effect is uncertain from the host's point of view.",
+        "elapsed_ms": 5000
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "deadline_exceeded",
+        "retry_class": "retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The deadline leaves no partial canonical effect. The retained idempotency key makes the retry safe: it either replays the recorded result or performs the effect once."
+      }
+    },
+    {
+      "id": "SPI-V-023",
+      "title": "Nested hook declares a deadline longer than its parent",
+      "family": "deadline",
+      "hook": "memory.search",
+      "requirements": [
+        "SPI-R-014"
+      ],
+      "given": {
+        "caller": "caller-epsilon",
+        "agent": "agent-epsilon",
+        "session": "session-epsilon",
+        "run": "run-epsilon-0003",
+        "workspace": "workspace-epsilon",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "deadline_ms": 30000,
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "A search nested inside a recall with 2000 ms remaining declares a 30000 ms deadline.",
+        "elapsed_ms": 0
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Deadlines shrink monotonically down a call chain. A child that could outlive its parent would let a cancelled turn keep consuming workspace resources."
+      }
+    },
+    {
+      "id": "SPI-V-024",
+      "title": "Hook submitted with no deadline at all",
+      "family": "deadline",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-013"
+      ],
+      "given": {
+        "caller": "caller-epsilon",
+        "agent": "agent-epsilon",
+        "session": "session-epsilon",
+        "run": "run-epsilon-0004",
+        "workspace": "workspace-epsilon",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The adapter omits `deadline_ms` and relies on an implicit server default."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "An unbounded hook call has no cancellation story. Requiring an explicit deadline keeps turn latency a property the host states rather than one it discovers."
+      }
+    },
+    {
+      "id": "SPI-V-025",
+      "title": "Hook invoked before negotiation completed",
+      "family": "version_capability",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-003"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0001",
+        "workspace": "workspace-zeta",
+        "purpose": "context_recall",
+        "granted_capabilities": [],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The adapter calls a lifecycle hook without first completing `spi.negotiate`."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Without negotiation neither side knows the agreed SPI version or effective capability set, so any subsequent hook would be interpreting fields on an unagreed contract."
+      }
+    },
+    {
+      "id": "SPI-V-026",
+      "title": "Adapter declares a newer compatible minor SPI version",
+      "family": "version_capability",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-012",
+        "SPI-R-034"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0002",
+        "workspace": "workspace-zeta",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "The adapter declares SPI 1.2.0 against a server supporting 1.0.0 through 1.1.0 and sends unknown optional fields.",
+        "declared_spi_version": "1.2.0"
+      },
+      "expect": {
+        "disposition": "negotiated",
+        "compatibility_status": "compatible",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The server selects 1.1.0 and ignores the unknown optional fields. An additive minor difference must not present as a production break."
+      }
+    },
+    {
+      "id": "SPI-V-027",
+      "title": "Adapter declares an unsupported major SPI version",
+      "family": "version_capability",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-034"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0003",
+        "workspace": "workspace-zeta",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "The adapter declares SPI 2.0.0 against a server that supports only the 1.x line.",
+        "declared_spi_version": "2.0.0"
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "incompatible_version",
+        "retry_class": "non_retryable",
+        "compatibility_status": "incompatible",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A major difference is a breaking wire change. Negotiating down would silently reinterpret fields whose meaning changed."
+      }
+    },
+    {
+      "id": "SPI-V-028",
+      "title": "Adapter requires a capability version the server does not implement",
+      "family": "version_capability",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-035"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0004",
+        "workspace": "workspace-zeta",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "The adapter marks `memory.write@9.0` as required during negotiation.",
+        "declared_spi_version": "1.0.0",
+        "required_capabilities": [
+          "memory.write@9.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "capability_not_granted",
+        "retry_class": "non_retryable",
+        "compatibility_status": "incompatible",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Servers reject unknown required capability versions rather than proceeding degraded, so the adapter fails at handshake instead of part-way through a turn."
+      }
+    },
+    {
+      "id": "SPI-V-029",
+      "title": "Negotiation succeeds with a deprecated but supported capability",
+      "family": "version_capability",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-034"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0005",
+        "workspace": "workspace-zeta",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "The adapter negotiates against a capability carrying deprecation metadata and a stated removal version.",
+        "declared_spi_version": "1.0.0",
+        "required_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "negotiated",
+        "compatibility_status": "compatible_with_deprecations",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Deprecation is reported in the handshake, not discovered at removal. The adapter keeps working and has a named version to migrate before."
+      }
+    },
+    {
+      "id": "SPI-V-030",
+      "title": "Workspace format requires migration before any hook can run",
+      "family": "version_capability",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-034",
+        "SPI-R-010"
+      ],
+      "given": {
+        "caller": "caller-zeta",
+        "agent": "agent-zeta",
+        "session": "session-zeta",
+        "run": "run-zeta-0006",
+        "workspace": "workspace-zeta-legacy",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "Negotiation targets a workspace whose format predates the server's minimum supported version.",
+        "declared_spi_version": "1.0.0"
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "workspace_migration_required",
+        "retry_class": "non_retryable",
+        "compatibility_status": "upgrade_required",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The SPI never migrates a workspace as a side effect of a handshake. Migration is an explicit operator action with its own gate."
+      }
+    },
+    {
+      "id": "SPI-V-031",
+      "title": "Retry of a failed capture reuses the original idempotency key",
+      "family": "retry_recovery",
+      "hook": "turn.retry",
+      "requirements": [
+        "SPI-R-033",
+        "SPI-R-024",
+        "SPI-R-041"
+      ],
+      "given": {
+        "caller": "caller-eta",
+        "agent": "agent-eta",
+        "session": "session-eta",
+        "run": "run-eta-0001",
+        "workspace": "workspace-eta",
+        "purpose": "turn_recovery",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0600",
+        "turn_ordinal": 5
+      },
+      "when": {
+        "action": "The host retries the failed `capture.after_turn` hook after a `deadline_exceeded`, presenting the original key.",
+        "repeat_of": "SPI-V-022"
+      },
+      "expect": {
+        "disposition": "idempotent_replay",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "`turn.retry` re-drives the failed provider hook under the original key and the frozen retry classification. The retained key is what makes a retryable failure safe to retry, and server state decides whether the recorded result is replayed or the effect is performed once. No Core `job.retry` is composed."
+      }
+    },
+    {
+      "id": "SPI-V-032",
+      "title": "Retry attempted on a non-retryable authorization denial",
+      "family": "retry_recovery",
+      "hook": "turn.retry",
+      "requirements": [
+        "SPI-R-011",
+        "SPI-R-033"
+      ],
+      "given": {
+        "caller": "caller-eta",
+        "agent": "agent-eta",
+        "session": "session-eta",
+        "run": "run-eta-0002",
+        "workspace": "workspace-eta",
+        "purpose": "turn_recovery",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-retry-0002",
+        "turn_ordinal": 2
+      },
+      "when": {
+        "action": "The host retries a hook that previously failed with `authorization_denied`."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "authorization_denied",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The identical request fails identically. Retry must not be a way to grind against an authorization boundary."
+      }
+    },
+    {
+      "id": "SPI-V-033",
+      "title": "Adapter presents an unrecognised retry class",
+      "family": "retry_recovery",
+      "hook": "turn.retry",
+      "requirements": [
+        "SPI-R-011"
+      ],
+      "given": {
+        "caller": "caller-eta",
+        "agent": "agent-eta",
+        "session": "session-eta",
+        "run": "run-eta-0003",
+        "workspace": "workspace-eta",
+        "purpose": "turn_recovery",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "idempotency_key": "idem-retry-0003",
+        "turn_ordinal": 2
+      },
+      "when": {
+        "action": "A future server returns a retry class the adapter build does not know, and the adapter must decide whether to retry."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "internal_non_recoverable",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "An unrecognised retry class is preserved but never inferred to be retryable. Guessing would turn an open vocabulary into an accidental retry storm."
+      }
+    },
+    {
+      "id": "SPI-V-034",
+      "title": "Adapter requires a patch to host source to satisfy the SPI",
+      "family": "boundary",
+      "hook": "spi.negotiate",
+      "requirements": [
+        "SPI-R-036"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0001",
+        "workspace": "workspace-theta",
+        "purpose": "spi_negotiation",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ]
+      },
+      "when": {
+        "action": "A candidate hook signature can only be satisfied by editing the agent host's own source tree.",
+        "declared_spi_version": "1.0.0"
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Hosts are adapters. A hook that cannot be implemented from a host's public extension surface is a design defect in the SPI, not a licence to fork the host."
+      }
+    },
+    {
+      "id": "SPI-V-035",
+      "title": "Adapter attempts to read the workspace database directly",
+      "family": "boundary",
+      "hook": "memory.search",
+      "requirements": [
+        "SPI-R-037"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0002",
+        "workspace": "workspace-theta",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The adapter bypasses the application boundary and opens the workspace store itself."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "authorization_denied",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Direct storage access bypasses ACL enforcement, the lease and audit at once. The SPI has no path that reaches storage other than the application contract."
+      }
+    },
+    {
+      "id": "SPI-V-036",
+      "title": "Host asks Core to hold run state between turns",
+      "family": "boundary",
+      "hook": "context.compact",
+      "requirements": [
+        "SPI-R-028",
+        "SPI-R-037"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0003",
+        "workspace": "workspace-theta",
+        "purpose": "context_compaction",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "sequence": 3
+      },
+      "when": {
+        "action": "The host asks Core to store the task graph and token budget so the host can drop them."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Run state is owned by the Workflow Runtime or a shared Run State service. Core exposes no operation that creates, reads, lists, cancels or replays workflow-run state, so there is no hook that could accept the task graph or token budget."
+      }
+    },
+    {
+      "id": "SPI-V-037",
+      "title": "Compaction summary offered as canonical knowledge",
+      "family": "boundary",
+      "hook": "capture.after_turn",
+      "requirements": [
+        "SPI-R-028",
+        "SPI-R-030"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0004",
+        "workspace": "workspace-theta",
+        "purpose": "assistant_turn_capture",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-capture-0700",
+        "sequence": 11,
+        "turn_ordinal": 4
+      },
+      "when": {
+        "action": "After a host-local compaction the adapter submits the lossy summary through capture, for promotion into governed knowledge."
+      },
+      "expect": {
+        "disposition": "escalation_required",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Compression is lossy and unreviewed. A compaction summary may enter Core only through capture, as a candidate observation carrying bounded provenance that a host-local compaction occurred — never as canonical truth, and never through `context.compact`, which persists nothing in Core."
+      }
+    },
+    {
+      "id": "SPI-V-038",
+      "title": "Oversized tool result submitted inline instead of by reference",
+      "family": "boundary",
+      "hook": "tool_result.persist",
+      "requirements": [
+        "SPI-R-029"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0005",
+        "workspace": "workspace-theta",
+        "purpose": "tool_result_persistence",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "idempotency_key": "idem-tool-0099",
+        "turn_ordinal": 1
+      },
+      "when": {
+        "action": "The adapter inlines a tool result above the declared byte ceiling rather than passing a content reference."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "size_limit_exceeded",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Oversized payloads move by reference so the hook stays bounded. Resending the identical inline payload fails identically, so the failure is non-retryable."
+      }
+    },
+    {
+      "id": "SPI-V-039",
+      "title": "A later turn opens in a run whose earlier turn already completed",
+      "family": "reordered_callback",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-006",
+        "SPI-R-038"
+      ],
+      "given": {
+        "caller": "caller-beta",
+        "agent": "agent-beta",
+        "session": "session-beta",
+        "run": "run-beta-0003",
+        "workspace": "workspace-beta",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "deadline_ms": 2000,
+        "sequence": 41,
+        "turn_ordinal": 8
+      },
+      "when": {
+        "action": "Turn ordinal 7 completed; the host opens turn ordinal 8 in the same run and calls before-turn recall."
+      },
+      "expect": {
+        "disposition": "accepted",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "Turn completion is terminal for one turn, not for the run. A Workflow Run may contain many turns or task nodes, so a later turn must remain possible. Refusing it would make `turn.complete` behave as run completion, a boundary the SPI does not own."
+      }
+    },
+    {
+      "id": "SPI-V-040",
+      "title": "Turn retry asked to retry the outstanding Core durable job",
+      "family": "retry_recovery",
+      "hook": "turn.retry",
+      "requirements": [
+        "SPI-R-041",
+        "SPI-R-033"
+      ],
+      "given": {
+        "caller": "caller-eta",
+        "agent": "agent-eta",
+        "session": "session-eta",
+        "run": "run-eta-0004",
+        "workspace": "workspace-eta",
+        "purpose": "turn_recovery",
+        "granted_capabilities": [
+          "memory.write@1.0",
+          "job.control@1.0"
+        ],
+        "idempotency_key": "idem-retry-0004",
+        "turn_ordinal": 3
+      },
+      "when": {
+        "action": "The adapter asks `turn.retry` to also retry the Core durable job the failed hook had started, as one composed call.",
+        "required_capabilities": [
+          "job.control@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "`turn.retry` resumes the provider hook only. A Core durable job retry is a separate application operation with its own authorization and its own idempotency key; composing it implicitly would re-drive durable Core work on the authority of a host-local recovery action. Holding `job.control` does not change this."
+      }
+    },
+    {
+      "id": "SPI-V-041",
+      "title": "Run-local tool approval offered as authority for a governed mutation",
+      "family": "denial",
+      "hook": "approval.request",
+      "requirements": [
+        "SPI-R-040",
+        "SPI-R-020"
+      ],
+      "given": {
+        "caller": "caller-gamma",
+        "agent": "agent-gamma",
+        "session": "session-gamma",
+        "run": "run-gamma-0008",
+        "workspace": "workspace-gamma",
+        "purpose": "governed_mutation",
+        "granted_capabilities": [
+          "memory.write@1.0"
+        ],
+        "turn_ordinal": 6
+      },
+      "when": {
+        "action": "The host presents a run-local tool approval a human granted during the turn as the authority for a governed mutation.",
+        "approval_kind": "core_governance_escalation",
+        "required_capabilities": [
+          "knowledge.govern@1.0"
+        ]
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "capability_not_granted",
+        "retry_class": "non_retryable",
+        "audit_record_required": true,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "A host or runtime tool approval is run-local. It is not a Core governance decision, records no Core governance audit entry and cannot grant `knowledge.govern`. A Core governance escalation is a separate application-contract path taken by a validated principal. Core audits the denied authorization attempt; the run-local approval itself is never recorded as a decision."
+      }
+    },
+    {
+      "id": "SPI-V-042",
+      "title": "Adapter injects host identity into the frozen request envelope",
+      "family": "boundary",
+      "hook": "recall.before_turn",
+      "requirements": [
+        "SPI-R-039",
+        "SPI-R-016"
+      ],
+      "given": {
+        "caller": "caller-theta",
+        "agent": "agent-theta",
+        "session": "session-theta",
+        "run": "run-theta-0006",
+        "workspace": "workspace-theta",
+        "purpose": "context_recall",
+        "granted_capabilities": [
+          "memory.read@1.0"
+        ],
+        "deadline_ms": 2000,
+        "turn_ordinal": 2
+      },
+      "when": {
+        "action": "The adapter adds agent, session, run and turn-ordinal fields to `RequestMetadata` on the nested Core application call."
+      },
+      "expect": {
+        "disposition": "refused",
+        "error_code": "invalid_request",
+        "retry_class": "non_retryable",
+        "audit_record_required": false,
+        "canonical_mutation_applied": false,
+        "host_source_patched": false,
+        "direct_storage_access": false,
+        "capability_expanded": false,
+        "core_run_state_persisted": false,
+        "core_governance_decision_recorded": false,
+        "implies_core_job_cancel": false,
+        "implies_core_job_retry": false,
+        "host_identity_in_request_metadata": false,
+        "rationale": "The frozen `RequestMetadata` sets `unevaluatedProperties: false` and defines no agent, session, run or turn field, so the injection is a malformed envelope. Host identifiers are SPI-local provenance carried by the host-provider wrapper; caller and workspace authority stay Core-validated, and no agent, session, run or turn value ever widens authority."
+      }
+    }
+  ]
+}

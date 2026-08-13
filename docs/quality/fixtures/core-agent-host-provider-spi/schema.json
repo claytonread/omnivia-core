@@ -1,0 +1,626 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pm.omnivia.dev/quality/fixtures/core-agent-host-provider-spi/schema.json",
+  "title": "OmniVia Core agent-host provider SPI preparation vectors",
+  "description": "Strict envelope for `provider-spi-cases.json`. The file is inert preparation evidence for the A9 agent-host provider SPI candidate. It is not a product contract, not an acceptance record and not an executable test suite. Every case is synthetic, bounded and fail-closed: no case asserts a canonical mutation, a host source patch, a direct storage reach, an implemented product behaviour, a Core run-state record, a Core governance decision, an implied Core `job.cancel` or `job.retry`, or a host identifier inside the frozen `RequestMetadata`. The schema fixes all nine facts as machine-checkable `false` constants so the Workflow Run boundary cannot be eroded by a later edit. It also partitions the hook vocabulary into `TurnScopedHook` and `RunLevelHook` and makes `given.turn_ordinal` structurally required on the first and forbidden on the second, so the turn-versus-run distinction is enforced by the schema rather than left to case-by-case discipline.",
+  "type": "object",
+  "properties": {
+    "fixture_id": {
+      "$ref": "#/$defs/FixtureId"
+    },
+    "fixture_version": {
+      "$ref": "#/$defs/SemanticVersion"
+    },
+    "status": {
+      "description": "Preparation status. Fixed so a reader cannot mistake this corpus for an accepted contract.",
+      "const": "candidate-preparation-only"
+    },
+    "generated_date": {
+      "$ref": "#/$defs/IsoDate"
+    },
+    "spi_version": {
+      "description": "Candidate SPI semantic version the vectors are written against.",
+      "$ref": "#/$defs/SemanticVersion"
+    },
+    "authority": {
+      "$ref": "#/$defs/Authority"
+    },
+    "boundary": {
+      "$ref": "#/$defs/Boundary"
+    },
+    "hooks": {
+      "description": "The candidate lifecycle hook vocabulary the cases draw from. Declared once so case `hook` values are checkable against a single list.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 24,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/HookName"
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/Case"
+      }
+    }
+  },
+  "required": [
+    "fixture_id",
+    "fixture_version",
+    "status",
+    "generated_date",
+    "spi_version",
+    "authority",
+    "boundary",
+    "hooks",
+    "cases"
+  ],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "FixtureId": {
+      "description": "Stable fixture root identifier.",
+      "const": "core-agent-host-provider-spi"
+    },
+    "SemanticVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "IsoDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "CommitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "RepoPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9._/-]+$"
+    },
+    "ShortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "MediumText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "Authority": {
+      "description": "Immutable inputs this corpus was written against. Recorded so a later reader can tell whether the vectors still apply.",
+      "type": "object",
+      "properties": {
+        "pm_base_commit": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "core_checkpoint_commit": {
+          "$ref": "#/$defs/CommitSha"
+        },
+        "architecture_spec": {
+          "$ref": "#/$defs/RepoPath"
+        },
+        "programme_plan": {
+          "$ref": "#/$defs/RepoPath"
+        },
+        "candidate_document": {
+          "$ref": "#/$defs/RepoPath"
+        },
+        "core_contract_root": {
+          "$ref": "#/$defs/RepoPath"
+        },
+        "lane_a8_candidate_document": {
+          "description": "The A8 Workflow Run memory boundary candidate consumed for reconciliation. Consumed only; not accepted, not frozen and not an authority this corpus may cite as settled.",
+          "$ref": "#/$defs/RepoPath"
+        },
+        "lane_a8_candidate_commit": {
+          "description": "Maker commit the reconciled A8 candidate was sourced from.",
+          "$ref": "#/$defs/CommitSha"
+        }
+      },
+      "required": [
+        "pm_base_commit",
+        "core_checkpoint_commit",
+        "architecture_spec",
+        "programme_plan",
+        "candidate_document",
+        "core_contract_root",
+        "lane_a8_candidate_document",
+        "lane_a8_candidate_commit"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Boundary": {
+      "description": "Corpus-wide facts fixed as machine-checkable constants. Except for `reconciled_against_lane_a8_candidate`, a future edit that needs any of these to change is out of A9 scope and must be rejected.",
+      "type": "object",
+      "properties": {
+        "implements_product_behaviour": {
+          "const": false
+        },
+        "authorises_acceptance": {
+          "const": false
+        },
+        "requires_host_source_patch": {
+          "const": false
+        },
+        "requires_network_access": {
+          "const": false
+        },
+        "contains_executable_payload": {
+          "const": false
+        },
+        "contains_credentials_or_key_material": {
+          "const": false
+        },
+        "reconciled_against_lane_a8_candidate": {
+          "description": "True: the A8 Workflow Run memory boundary candidate named in `authority` was read and reconciled against. A8 owns the Workflow Run and run-state boundary; A9 owns host-provider lifecycle composition and does not redefine A8.",
+          "const": true
+        },
+        "accepts_lane_a8_as_frozen": {
+          "description": "False: A8 was consumed for reconciliation only. This corpus makes no claim that A8 is accepted, frozen or authoritative.",
+          "const": false
+        },
+        "persists_core_run_state": {
+          "description": "False: no vector causes Core to store, read, list, cancel or replay workflow-run state. Core exposes no compaction or run-state operation.",
+          "const": false
+        },
+        "implies_core_job_control": {
+          "description": "False: no turn-scoped cancellation or retry vector composes a Core `job.cancel` or `job.retry`. Core durable job control is a separate application operation with its own authorization and idempotency.",
+          "const": false
+        },
+        "injects_host_identity_into_request_metadata": {
+          "description": "False: agent, session, run and turn values are SPI-local provenance carried by the host-provider wrapper. The frozen `RequestMetadata` defines no such field and is not widened here.",
+          "const": false
+        },
+        "owns_migration_number": {
+          "const": false
+        }
+      },
+      "required": [
+        "implements_product_behaviour",
+        "authorises_acceptance",
+        "requires_host_source_patch",
+        "requires_network_access",
+        "contains_executable_payload",
+        "contains_credentials_or_key_material",
+        "reconciled_against_lane_a8_candidate",
+        "accepts_lane_a8_as_frozen",
+        "persists_core_run_state",
+        "implies_core_job_control",
+        "injects_host_identity_into_request_metadata",
+        "owns_migration_number"
+      ],
+      "unevaluatedProperties": false
+    },
+    "CaseId": {
+      "description": "Stable vector identifier. Unique within the corpus and cross-referenced from the candidate document.",
+      "type": "string",
+      "pattern": "^SPI-V-[0-9]{3}$"
+    },
+    "RequirementId": {
+      "description": "Stable requirement identifier owned by the candidate document.",
+      "type": "string",
+      "pattern": "^SPI-R-[0-9]{3}$"
+    },
+    "HookName": {
+      "description": "Candidate lifecycle hook. Dot-namespaced lowercase, matching the shape the frozen application contract uses for open code vocabularies.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "TurnScopedHook": {
+      "description": "The eight hooks whose effect and terminal state belong to one identified turn. Each must locate itself with `given.turn_ordinal`, or `turn.complete` could not be terminal for a turn without closing the run. This enum and `RunLevelHook` partition the ten-hook candidate vocabulary; a hook belongs to exactly one of them.",
+      "enum": [
+        "recall.before_turn",
+        "memory.search",
+        "capture.after_turn",
+        "tool_result.persist",
+        "approval.request",
+        "turn.complete",
+        "turn.cancel",
+        "turn.retry"
+      ]
+    },
+    "RunLevelHook": {
+      "description": "The two hooks that sit outside the turn state machine. `spi.negotiate` precedes every turn; `context.compact` is a host-local run-level notice that produces nothing Core holds, so its ordering relative to a turn is not Core's concern. Neither may carry `given.turn_ordinal`: a turn coordinate on a run-level hook would imply a turn position the hook does not have.",
+      "enum": [
+        "spi.negotiate",
+        "context.compact"
+      ]
+    },
+    "Family": {
+      "description": "Vector family. Fixed so coverage across the required adversarial dimensions is countable.",
+      "enum": [
+        "duplicate_callback",
+        "reordered_callback",
+        "denial",
+        "cancellation",
+        "deadline",
+        "version_capability",
+        "retry_recovery",
+        "boundary"
+      ]
+    },
+    "Disposition": {
+      "description": "The outcome the SPI must produce. No disposition asserts a completed canonical mutation, a Core run-state record or a Core governance decision. `refused` returns a typed error; `idempotent_replay` returns the prior result and no new effect; `ignored` drops a stale or out-of-order callback; `negotiated` reports a compatibility outcome; `escalation_required` stops and demands an explicit governance decision the caller does not already hold; `accepted` proceeds within the granted authority, and is used where the required behaviour is that the SPI must *not* fail closed — a later turn opening in an already-continuing run, or a turn cancellation that is honoured without composing Core job control.",
+      "enum": [
+        "refused",
+        "idempotent_replay",
+        "ignored",
+        "negotiated",
+        "escalation_required",
+        "accepted"
+      ]
+    },
+    "ErrorCode": {
+      "description": "Frozen v1 application error code. The SPI defines no error code of its own; it reuses this catalogue. Open patterned string, mirroring the Core contract, so a compatible minor release can add vocabulary.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "RetryClass": {
+      "description": "Frozen v1 retry class. An unrecognised value must fail safe as non-retryable.",
+      "enum": [
+        "non_retryable",
+        "retryable",
+        "retryable_after_delay",
+        "retryable_after_precondition_refresh"
+      ]
+    },
+    "CompatibilityStatus": {
+      "enum": [
+        "compatible",
+        "compatible_with_deprecations",
+        "upgrade_required",
+        "incompatible"
+      ]
+    },
+    "Given": {
+      "description": "Bounded synthetic precondition. Identity values are opaque labels, never real principals, tokens or workspace paths. The five identity terms — caller, agent, session, run, workspace — are the frozen vocabulary and are required on every case. `turn_ordinal` is a lifecycle coordinate, not a sixth identity, and is required or forbidden by hook taxonomy rather than being optional; see `Case`.",
+      "type": "object",
+      "properties": {
+        "caller": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "agent": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "session": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "run": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "workspace": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "purpose": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "granted_capabilities": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ShortText"
+          }
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000
+        },
+        "idempotency_key": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "turn_ordinal": {
+          "description": "Non-authoritative turn lifecycle coordinate within a Workflow Run. It locates a turn-scoped hook against the turn it belongs to, so that `turn.complete` and `turn.cancel` can be terminal for one turn while the run stays open. It is not a sixth identity, is never an authorization input, and never widens what a call may do. Presence is not optional and not by convention: `Case` requires it on every `TurnScopedHook` and forbids it on every `RunLevelHook`.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "notes": {
+          "$ref": "#/$defs/MediumText"
+        }
+      },
+      "required": [
+        "caller",
+        "agent",
+        "session",
+        "run",
+        "workspace"
+      ],
+      "unevaluatedProperties": false
+    },
+    "When": {
+      "description": "The stimulus applied to the hook. Description only; no payload is executed or replayed against a live system.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "approval_kind": {
+          "description": "Which approval boundary the stimulus crosses. `runtime_tool_approval` is a run-local host or runtime decision: it creates no Core governance audit entry and cannot grant capability. `core_governance_escalation` is a separate application-contract path taken by a validated principal holding `knowledge.govern`. The two are never interchangeable.",
+          "enum": [
+            "runtime_tool_approval",
+            "core_governance_escalation"
+          ]
+        },
+        "repeat_of": {
+          "$ref": "#/$defs/CaseId"
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000
+        },
+        "declared_spi_version": {
+          "$ref": "#/$defs/SemanticVersion"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ShortText"
+          }
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Expect": {
+      "description": "The required outcome. Nine fields are `false` constants: a vector that needed any of them to be true would be asserting behaviour A9 is not allowed to authorise. Four fix the original A9 boundary — no canonical mutation, no host source patch, no direct storage reach, no capability expansion. Five fix the Workflow Run boundary reconciled from the A8 candidate — no Core run-state record, no Core governance decision, no implied Core `job.cancel`, no implied Core `job.retry`, and no host identifier inside the frozen `RequestMetadata`.",
+      "type": "object",
+      "properties": {
+        "disposition": {
+          "$ref": "#/$defs/Disposition"
+        },
+        "error_code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "retry_class": {
+          "$ref": "#/$defs/RetryClass"
+        },
+        "compatibility_status": {
+          "$ref": "#/$defs/CompatibilityStatus"
+        },
+        "audit_record_required": {
+          "description": "Whether Core is required to write an audit record for this outcome. A host-local lifecycle notification such as compaction, and a run-local runtime approval, are `false`: they never reach a Core operation.",
+          "type": "boolean"
+        },
+        "canonical_mutation_applied": {
+          "const": false
+        },
+        "host_source_patched": {
+          "const": false
+        },
+        "direct_storage_access": {
+          "const": false
+        },
+        "capability_expanded": {
+          "const": false
+        },
+        "core_run_state_persisted": {
+          "description": "False on every case. Core never stores a workflow-run-state record, including for `context.compact`, which is a host-local notification the provider may acknowledge or drop.",
+          "const": false
+        },
+        "core_governance_decision_recorded": {
+          "description": "False on every case. No hook records a Core governance decision. A run-local runtime approval is not one, and `escalation_required` demands one rather than making one.",
+          "const": false
+        },
+        "implies_core_job_cancel": {
+          "description": "False on every case. `turn.cancel` cancels the provider turn only and never composes `job.cancel`. Outstanding Core job handles are returned so the host can make a separate, explicitly authorized and idempotent application-contract call.",
+          "const": false
+        },
+        "implies_core_job_retry": {
+          "description": "False on every case. `turn.retry` re-drives the failed provider hook under its original key and never composes `job.retry`. A Core durable job retry is a separate application operation.",
+          "const": false
+        },
+        "host_identity_in_request_metadata": {
+          "description": "False on every case. Agent, session, run and turn values travel as SPI-local provenance in the host-provider wrapper; the frozen `RequestMetadata` of any nested Core application call is unchanged.",
+          "const": false
+        },
+        "rationale": {
+          "$ref": "#/$defs/MediumText"
+        }
+      },
+      "required": [
+        "disposition",
+        "audit_record_required",
+        "canonical_mutation_applied",
+        "host_source_patched",
+        "direct_storage_access",
+        "capability_expanded",
+        "core_run_state_persisted",
+        "core_governance_decision_recorded",
+        "implies_core_job_cancel",
+        "implies_core_job_retry",
+        "host_identity_in_request_metadata",
+        "rationale"
+      ],
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "description": "A refusal must name a frozen error code and its retry class.",
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "refused"
+              }
+            },
+            "required": [
+              "disposition"
+            ]
+          },
+          "then": {
+            "required": [
+              "error_code",
+              "retry_class"
+            ]
+          }
+        },
+        {
+          "description": "A negotiation outcome must name a compatibility status.",
+          "if": {
+            "properties": {
+              "disposition": {
+                "const": "negotiated"
+              }
+            },
+            "required": [
+              "disposition"
+            ]
+          },
+          "then": {
+            "required": [
+              "compatibility_status"
+            ]
+          }
+        },
+        {
+          "description": "Only a refusal carries an error code, so a suppressed duplicate, a dropped callback or an accepted continuation cannot be misread as a typed failure.",
+          "if": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "idempotent_replay",
+                  "ignored",
+                  "accepted"
+                ]
+              }
+            },
+            "required": [
+              "disposition"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "error_code"
+                  ]
+                },
+                {
+                  "required": [
+                    "retry_class"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Case": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/CaseId"
+        },
+        "title": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "family": {
+          "$ref": "#/$defs/Family"
+        },
+        "hook": {
+          "$ref": "#/$defs/HookName"
+        },
+        "requirements": {
+          "description": "Candidate-document requirements this vector exercises.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/RequirementId"
+          }
+        },
+        "given": {
+          "$ref": "#/$defs/Given"
+        },
+        "when": {
+          "$ref": "#/$defs/When"
+        },
+        "expect": {
+          "$ref": "#/$defs/Expect"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "family",
+        "hook",
+        "requirements",
+        "given",
+        "when",
+        "expect"
+      ],
+      "unevaluatedProperties": false,
+      "allOf": [
+        {
+          "description": "A turn-scoped hook must carry the turn coordinate. Without it the case states no turn position, so a late effect for a completed turn could not be told from a legal effect in a later turn of the same run.",
+          "if": {
+            "properties": {
+              "hook": {
+                "$ref": "#/$defs/TurnScopedHook"
+              }
+            },
+            "required": [
+              "hook"
+            ]
+          },
+          "then": {
+            "properties": {
+              "given": {
+                "required": [
+                  "turn_ordinal"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "A run-level hook must not carry the turn coordinate. `context.compact` and `spi.negotiate` have no position in the turn state machine, and a turn coordinate on either would reintroduce the turn-is-a-run confusion this corpus exists to prevent.",
+          "if": {
+            "properties": {
+              "hook": {
+                "$ref": "#/$defs/RunLevelHook"
+              }
+            },
+            "required": [
+              "hook"
+            ]
+          },
+          "then": {
+            "properties": {
+              "given": {
+                "not": {
+                  "required": [
+                    "turn_ordinal"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
