@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -609,6 +610,197 @@ def test_the_service_not_the_launcher_owns_the_writable_workspace_lease(
     # The coordination lock the launcher held is not ownership, by construction.
     assert not LockRole.BOOTSTRAP_MUTEX.grants_write_authority
     assert LockRole.LIFETIME_STORAGE.grants_write_authority
+
+
+# --- R004-11: authority is per writable workspace, not one service per machine ---
+
+
+@dataclass(frozen=True)
+class _Selection:
+    """One workspace a caller can select, and the endpoint it is served on."""
+
+    workspace_root: Path
+    workspace_id: str
+    endpoint_uri: str
+
+
+def _runtime_for(root: Path, workspace_id: str) -> Path:
+    installation = InstallationLayout(root=root / "installation-state")
+    return installation.runtime_for(workspace_id)
+
+
+def _initialise(root: Path, name: str) -> _Selection:
+    """One workspace, made by the shipped `--init`, under the shared installation.
+
+    `--init` mints the workspace identity itself, so the two selections here differ
+    by construction rather than by a constant this file chose -- and the fixed
+    `WORKSPACE_ID` the rest of the file relies on is untouched.
+    """
+    workspace = root / name
+    completed = subprocess.run(
+        [
+            _locate(),
+            "--init",
+            "--workspace",
+            str(workspace),
+            "--installation-state",
+            str(root / "installation-state"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(completed.stdout)
+    assert document["status"] == "initialised", document
+    return _Selection(
+        workspace_root=workspace,
+        workspace_id=document["workspace"]["workspace_id"],
+        # Beside the root rather than inside the workspace: `sockaddr_un` is the
+        # binding constraint here, not tidiness.
+        endpoint_uri=f"unix://{root / name}.sock",
+    )
+
+
+def _managed_start_selection(root: Path, selection: _Selection) -> dict[str, Any]:
+    """One managed start for one selected workspace, through the console script."""
+    completed = subprocess.run(
+        [
+            _locate(),
+            "--managed-start",
+            "--workspace",
+            str(selection.workspace_root),
+            "--installation-state",
+            str(root / "installation-state"),
+            "--endpoint",
+            selection.endpoint_uri,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=240,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return dict(json.loads(completed.stdout))
+
+
+@pytest.fixture
+def two_selections() -> Iterator[tuple[Path, tuple[_Selection, _Selection]]]:
+    """Two workspaces, two identities, one installation-state root, nothing left."""
+    root = Path(tempfile.mkdtemp(prefix=HOME_PREFIX, dir="/tmp"))
+    try:
+        yield root, (_initialise(root, "a"), _initialise(root, "b"))
+    finally:
+        # `_service_pids` is scoped to this root's installation state, so this
+        # reaches both services and nothing else on the machine.
+        for pid in _service_pids(root):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:  # pragma: no cover - already gone
+                pass
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_two_writable_workspaces_each_own_one_authoritative_service(
+    two_selections: tuple[Path, tuple[_Selection, _Selection]],
+) -> None:
+    """One authority per writable workspace -- not one authority per machine.
+
+    The concurrency test above proves the ceiling: many starters against *one*
+    workspace converge on one service. On its own that is compatible with a
+    stricter and wrong reading -- one Core Service process globally -- and nothing
+    in this file refuted it. This is the floor. Two workspaces selected at once run
+    two services at once, and the two are related by nothing but the installation
+    they share.
+
+    **Both selections share one installation-state root, and that is the point.**
+    Giving each workspace its own home would put a whole private tree between them
+    -- separate catalogue, separate `runtime/`, separate backups -- and would
+    demonstrate only that two unrelated installations do not collide, which no
+    reading of the topology ever denied. Sharing the installation root removes that
+    insulation: `runtime/<workspace-id>/` is then the *only* thing keeping the two
+    services' descriptors, identities and bootstrap mutexes apart, which is exactly
+    the production arrangement one user with two projects gets. If authority were
+    keyed to the installation rather than the workspace, this is where it would
+    show, and the second start would attach to, replace, or refuse the first.
+
+    Round two is not a repeat. Attaching is per workspace as well: each second
+    start must find *its own* prior owner, so a re-selection cannot be answered by
+    whichever service happens to be running.
+
+    Not asserted here, and observable only in this arrangement: the two services
+    publish *different* `installation_id`s despite sharing an installation, because
+    `InstallationIdentity` is loaded from `runtime/<workspace-id>/` -- which is the
+    per-workspace keying `storage/backup.py` says the catalogue exists to prevent.
+    `--init` writes no catalogue at all, so there is nothing yet for either to
+    agree with. Left as a finding rather than pinned: a test that asserted either
+    value would freeze one side of an unresolved question about installation
+    identity, and neither side is this file's to settle.
+    """
+    root, (first, second) = two_selections
+
+    started = [
+        _managed_start_selection(root, first),
+        _managed_start_selection(root, second),
+    ]
+
+    assert [result["status"] for result in started] == [
+        ManagedStartStatus.STARTED.value
+    ] * 2, started
+    assert all(result["service"]["ready"] is True for result in started)
+
+    # Two distinct workspaces, and each service owns the one it was selected for.
+    assert [result["service"]["workspace_id"] for result in started] == [
+        first.workspace_id,
+        second.workspace_id,
+    ]
+    assert first.workspace_id != second.workspace_id
+
+    instances = [result["service"]["service_instance_id"] for result in started]
+    pids = [result["service"]["pid"] for result in started]
+    assert len(set(instances)) == 2, (
+        f"one service answered for both workspaces: {instances}"
+    )
+    assert len(set(pids)) == 2, f"one process answered for both workspaces: {pids}"
+
+    # Two real processes, coexisting. Not one, and not three.
+    assert sorted(_service_pids(root)) == sorted(pids)
+
+    for selection, result in zip((first, second), started, strict=True):
+        runtime = _runtime_for(root, selection.workspace_id)
+        descriptor = json.loads((runtime / "service.json").read_text(encoding="utf-8"))
+        assert descriptor["workspace_id"] == selection.workspace_id
+        assert (
+            descriptor["service_instance_id"]
+            == result["service"]["service_instance_id"]
+        )
+        assert descriptor["process"]["pid"] == result["service"]["pid"]
+
+        # The writable lease each service holds is its own workspace's, and the
+        # advisory payload on it names that service rather than its neighbour.
+        lease = json.loads(
+            (selection.workspace_root / "locks" / "storage.lock").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert lease["role"] == LockRole.LIFETIME_STORAGE.value
+        assert lease["pid"] == result["service"]["pid"]
+        assert lease["service_instance_id"] == result["service"]["service_instance_id"]
+
+    # Re-selecting either workspace finds its own owner, not the other's.
+    attached = [
+        _managed_start_selection(root, first),
+        _managed_start_selection(root, second),
+    ]
+    assert [result["status"] for result in attached] == [
+        ManagedStartStatus.ATTACHED.value
+    ] * 2, attached
+    assert [result["service"]["pid"] for result in attached] == pids
+    assert [
+        result["service"]["service_instance_id"] for result in attached
+    ] == instances
+    assert sorted(_service_pids(root)) == sorted(pids), "a second start crossed owners"
 
 
 # --- R004-09: production integration evidence ---
