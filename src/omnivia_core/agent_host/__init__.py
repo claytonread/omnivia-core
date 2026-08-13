@@ -13,6 +13,11 @@ boundary layer's tools for proving what a hook reached in Core, not an
 adapter's, and naming the module at the call site says which of the two jobs is
 being done.
 
+The conformance corpus loader and its report DTOs are re-exported for the same
+reason the mock is: they are what an adapter author runs against. The loader
+only reads the accepted corpus into immutable value objects; executing a case
+against a provider is not its job.
+
 The mock is re-exported because developing against it is the point of it
 shipping at all. It holds no durable state: everything it keeps between calls
 is dropped by :meth:`MockProvider.reset`.
@@ -20,6 +25,15 @@ is dropped by :meth:`MockProvider.reset`.
 
 from __future__ import annotations
 
+from omnivia_core.agent_host.conformance import (
+    CaseReport,
+    ConformanceCase,
+    ConformanceCorpus,
+    CorpusError,
+    CorpusReport,
+    ExpectedOutcome,
+    load_corpus,
+)
 from omnivia_core.agent_host.mock import MockProvider, ProviderProfile
 from omnivia_core.agent_host.spi import (
     SPI_VERSION,
@@ -42,7 +56,13 @@ __all__ = [
     "SPI_VERSION_MAXIMUM",
     "SPI_VERSION_MINIMUM",
     "ApprovalKind",
+    "CaseReport",
+    "ConformanceCase",
+    "ConformanceCorpus",
+    "CorpusError",
+    "CorpusReport",
     "Disposition",
+    "ExpectedOutcome",
     "Hook",
     "HookIntent",
     "HookOutcome",
@@ -53,4 +73,5 @@ __all__ = [
     "SpiProvenance",
     "SpiRequest",
     "VersionAxes",
+    "load_corpus",
 ]
