@@ -59,7 +59,11 @@ def _upgrade(path: Path) -> None:
 def test_v06_5_s4_0016_is_one_consecutive_trigger_correction() -> None:
     assert MIGRATION.name == MIGRATION_NAME
     assert MIGRATION.version == PREDECESSOR_VERSION + 1
-    assert [item.version for item in load_migrations()] == list(range(1, 17))
+    # The accepted prefix through 0016 is contiguous. Asserted as a prefix rather
+    # than as the whole catalogue, so a legitimate migration after 0016 is not
+    # turned into a failure of a slice that has no authority over it.
+    versions = [item.version for item in load_migrations()]
+    assert versions[:MIGRATION_VERSION] == list(range(1, MIGRATION_VERSION + 1))
     assert "CREATE TABLE" not in MIGRATION.sql.upper()
     assert "candidate.human_proposed" in MIGRATION.sql
     assert "p.actor_id = a.assertion_actor_id" in MIGRATION.sql
@@ -80,7 +84,10 @@ def test_v06_5_s4_0016_clean_upgrade_integrity_and_fingerprint(
         )
         assert foreign_key_check(connection) == []
         assert integrity_check(connection) == []
-        expected = canonical_schema_fingerprint()
+        # The oracle is the accepted prefix through 0016, not whatever is on disk:
+        # this workspace stops here on purpose.
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            expected = canonical_schema_fingerprint()
         assert fingerprint_schema(connection).matches(expected)
         assert verify_fingerprint(connection, expected).matches(expected)
     finally:
@@ -127,7 +134,9 @@ def test_v06_5_s4_0016_interrupted_apply_rolls_back_and_converges(
     _upgrade(path)
     converged = open_database(path, OpenMode.READ_ONLY)
     try:
-        assert fingerprint_schema(converged).matches(canonical_schema_fingerprint())
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            expected = canonical_schema_fingerprint()
+        assert fingerprint_schema(converged).matches(expected)
     finally:
         converged.close()
 
