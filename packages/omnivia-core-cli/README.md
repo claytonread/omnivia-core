@@ -1,111 +1,165 @@
 # omnivia-core-cli
 
-`omnivia-core-cli` is the `omnivia` CLI distribution in the OmniVia Core
-package topology. It is a Core Service client: it discovers a running service,
-builds contract envelopes, calls, and reports what it is told. It never owns a
-workspace, holds no lease, takes no lock and opens no database.
+`omnivia-core-cli` is the `omnivia` executable in the OmniVia Core package
+topology. It parses one frozen command, calls it on a running Core Service
+through `omnivia_core_client.ServiceClient`, prints the answer, and exits with
+the code that answer maps to.
+
+It owns no state. It does not create or migrate a workspace, holds no lease,
+takes no lock, opens no database, and constructs no transport. The shared
+client owns managed-local attach/start/reconnect. The isolated administrative
+module may stop only a live, identity-corroborated local service.
 
 The compile-time dependency boundary is the one PM ADR-036 defines: this
-surface depends on the public `omnivia-core` contracts, and nothing in
-`omnivia-core` may depend back on it.
+surface depends on the public `omnivia-core` contracts and on
+`omnivia-core-client`, and neither may depend back on it.
 
-## Commands
+## Invocation
 
-### Lifecycle
-
-These work with no flags at all, against the default installation at
-`~/.omnivia`. Pass `--home <dir>` to use another one.
-
-- `omnivia init` — create the workspace this installation's service will own, if
-  there is not one already. Safe to repeat: an already-initialised workspace is
-  reported as such and nothing is changed, and one whose bootstrap was
-  interrupted is finished and reported as changed. It **starts no service** —
-  `init` establishes state, `start` establishes the process.
-- `omnivia start` — start the service if it is not already running, and wait for
-  it to be genuinely ready. Reports `already running` rather than racing when one
-  is up. The service is **launched, never imported**: `omnivia-core-service` is
-  located on `PATH` (or beside the running interpreter) and spawned, which is
-  what ADR-036 admits — *"MCP and CLI may locate or launch the service
-  executable, but communicate only through the application API."*
-- `omnivia stop` — signal the service and wait for **both** the descriptor to be
-  withdrawn and the process to leave. Only the pair makes "stopped" true.
-- `omnivia status` — report what a live call answered.
-
-`status` **dials**, and that is the whole point of it. The descriptor is written
-once at startup and never rewritten, so `ready: true` freezes there: a service
-killed hard leaves a file still claiming health. Reading that file is not a
-status check.
-
-### First run
-
-Two commands on a machine that has never run Core:
-
-```console
-$ omnivia init
-initialised
-workspace: ws-a74255f1-5631-497d-9401-5f1309e7355c
-workspace root: /Users/you/.omnivia/workspace
-installation state: /Users/you/.omnivia/installation-state
-format: 1
-start it with: omnivia --home /Users/you/.omnivia start
-
-$ omnivia start
-started (pid 4711)
-endpoint: unix:///Users/you/.omnivia/run/s.sock
-workspace: ws-a74255f1-5631-497d-9401-5f1309e7355c
-service instance: svc-0ad78ec9-8d7e-4f0c-8668-250923a547dc
-state: ready
-writable: yes
-pid: 4711
+```text
+omnivia --installation-state ABSOLUTE_PATH --workspace-id ID [--timeout-ms N] <group> <leaf> [options]
 ```
 
-`init` **does not do the initialising**, for the same reason `start` does not do
-the starting. Creating a workspace means writing a manifest, creating a database
-file and holding the sole exclusive connection to it while the ownership
-substrate and every migration are applied — none of which this CLI may do. It
-launches `omnivia-core-service --init`, which owns that path (R004-10), and reads
-the one versioned JSON document it answers with.
+`--installation-state` and `--workspace-id` are **required on every command**,
+including the probes. There is no default installation, no ambient home
+directory and no environment fallback: the two values that decide which service
+is called are always stated by the caller. `--installation-state` must be
+absolute — a relative path is refused rather than resolved against the working
+directory, because a trust anchor that means different directories from
+different shells is not one.
 
-It is **non-destructive and refuses rather than guesses**. Three cases are
-declined with the reason and nothing is written:
+`--timeout-ms` is the whole-call budget, covering the connection and the call,
+default `10000`. One deadline is built before connecting and reused for the
+call, so a slow connect spends the caller's budget rather than being given a
+fresh one.
 
-- an existing `workspace.json` this build cannot read or cannot open for writing;
-- a workspace directory holding something else — no manifest, but not empty;
-- an `installation-state` directory that is not one of ours.
+The parser is built from the frozen surface and from nothing else. Every command
+is exactly two segments, and there is no alias, no prefix abbreviation and no
+path written anywhere but `surface.py` — so a command that is not below cannot
+be reached, and cannot be added without adding it to the frozen surface first.
 
-A fourth refusal covers a workspace a running service already owns: stop it
-first. A fifth covers a workspace whose database and manifest name different
-workspaces — most likely a manifest that was lost while its database survived —
-which is declined naming the workspace the database holds, so the right manifest
-can be put back. Nothing here ever deletes, truncates or overwrites.
+## Service administration
 
-**A refusal leaves the tree as it found it**, which is stronger than "nothing is
-overwritten" and is the property to rely on when scripting `init`: repeating it
-after a refusal is as safe as repeating it after a success, because a declined
-run writes nothing for the next one to trip over. A directory a file manager has
-visited is not "something else": a `.DS_Store` or a `Thumbs.db` is discounted,
-while anything a person put there is still refused.
+The administrative commands are explicitly namespaced and do not change the
+20-command application surface or the 3-probe surface:
 
-`omnivia start` against a home with no workspace refuses and names `omnivia
-init`. It creates nothing on the way to that refusal — not the run directory, not
-the installation-state tree — so a mistyped `--home` leaves no half-installation
-behind.
+- `service start` attaches to the selected service or uses the shared managed
+  local launcher and waits for a live readiness answer.
+- `service status` dials without starting and reports only a live answer.
+- `service stop` dials first, corroborates the published process identity,
+  requests graceful shutdown, then waits for both descriptor withdrawal and
+  process exit. It never removes the descriptor itself.
 
-### Calling
+Each accepts `--json` and emits one version-2 lifecycle adapter document. The
+optional `safe_status` is encoded as `CoreSafeStatusV1`; it carries no endpoint,
+pid, path, service-instance identity, credential, exception, or launcher output.
+Its target is derived from the explicitly selected installation-state and
+workspace id, with opaque references that reveal neither local path nor endpoint.
 
-- `omnivia --runtime-state <dir> discover` — show the advertised service, if any.
-  Answers from the published descriptor alone; it dials nothing, so it will
-  report a crashed service as ready. Use `status` to find out if one is alive.
-- `omnivia --runtime-state <dir> health|readiness` — call `core.health` /
-  `core.readiness` on the running service over the installation-local OVC1
-  endpoint and render what it answers. Pass `--json` to print the request
-  envelope instead of sending it.
-- `omnivia --runtime-state <dir> workspace show` — call `workspace.inspect` on
-  the running service over the installation-local OVC1 endpoint and render the
-  workspace descriptor.
+## The 20 application commands
 
-A command that dials exits non-zero when the service cannot be reached. None of
-them reports on a service it did not contact.
+Each reaches exactly one operation of the frozen `OPERATION_CATALOGUE`, one to
+one, checked at import. Each declares the purpose it calls under.
+
+| Command | Operation | Purpose |
+| --- | --- | --- |
+| `workspace list` | `workspace.list` | `workspace_inspection` |
+| `workspace create` | `workspace.create` | `workspace_administration` |
+| `workspace inspect` | `workspace.inspect` | `workspace_inspection` |
+| `memory create` | `memory.create` | `memory_authoring` |
+| `memory get` | `memory.get` | `knowledge_retrieval` |
+| `memory list` | `memory.list` | `knowledge_retrieval` |
+| `memory search` | `memory.search` | `knowledge_retrieval` |
+| `import start` | `import.start` | `content_ingestion` |
+| `job get` | `job.get` | `job_observation` |
+| `job cancel` | `job.cancel` | `job_control` |
+| `job retry` | `job.retry` | `job_control` |
+| `job events` | `job.events` | `job_observation` |
+| `evidence search` | `evidence.search` | `knowledge_retrieval` |
+| `knowledge search` | `knowledge.search` | `knowledge_retrieval` |
+| `governance propose` | `knowledge.propose` | `knowledge_governance` |
+| `governance approve` | `candidate.approve` | `knowledge_governance` |
+| `governance reject` | `candidate.reject` | `knowledge_governance` |
+| `governance supersede` | `record.supersede` | `knowledge_governance` |
+| `graph traverse` | `graph.traverse` | `knowledge_retrieval` |
+| `context-pack build` | `context_pack.build` | `knowledge_retrieval` |
+
+Options on every application command:
+
+- `--input-json JSON_OBJECT` — the operation's input document, default `{}`.
+  Exactly one JSON object: a duplicated member name, `NaN`, an infinity, an
+  array and a scalar are each refused. The document is never echoed in a
+  diagnostic.
+- `--principal ID` — the principal to claim. A claim, not a grant: the service
+  decides authority from its own grant and refuses one it did not give.
+- `--idempotency-key KEY` — make this mutation replay-safe.
+- `--record-version VERSION` — guard this mutation with the version it expects.
+- `--json` — emit the canonical response envelope instead of the human view.
+
+`--idempotency-key` and `--record-version` are held to the catalogue's posture
+for the named operation, read off the frozen entry and checked **before the
+connection**: one that is required and absent, or supplied where the operation
+does not honour it, is a usage error at exit 2 rather than a request sent for
+the service to reject.
+
+## The 3 service probes
+
+| Command | Probe |
+| --- | --- |
+| `service health` | `service.health` |
+| `service readiness` | `service.readiness` |
+| `service discover` | `service.discover` |
+
+A probe is not a catalogue operation: it carries no purpose, no scope and no
+capability, and it takes no input. It goes to the transport the connected client
+already composed — there is no second discovery and no second endpoint. A probe
+takes `--json` and nothing else.
+
+A `degraded` or `fail` answer exits **0**. The probe was answered, the
+answer is printed in full, and what it means is the caller's to decide.
+
+## Output
+
+Two modes, and whenever stdout carries an answer it contains exactly one
+document followed by one newline and no other byte.
+
+| | human (default) | `--json` |
+| --- | --- | --- |
+| application success | the `result` document, indented, on stdout | the whole canonical response envelope on stdout |
+| application error | `code: message` on stderr | the whole canonical envelope, error branch included, on stdout |
+| probe | the probe result, indented, on stdout | the canonical probe result on stdout |
+
+Local diagnostics are one fixed sentence each, on stderr, and carry nothing from
+an exception, an input document, a path, a workspace or a peer. The service's
+own `code` and `message` are printed for an application error because those are
+the answer rather than a diagnostic about it.
+
+## Frozen exits
+
+`EXIT_CODES` covers `FROZEN_ERROR_CODES` exactly, checked at import, so no error
+the service is allowed to return can reach a caller without a defined exit. An
+unrecognised code — a service one minor version ahead naming something this
+build has not heard of — exits 1 rather than 0.
+
+| Exit | Meaning | Frozen error codes |
+| --- | --- | --- |
+| 0 | successful application result, or an answered probe | — |
+| 1 | unrecoverable, unreachable, or unrecognised | `internal_non_recoverable` |
+| 2 | usage, or a call refused locally and never sent | `invalid_request` |
+| 3 | authentication, authorization or purpose | `authentication_required`, `authorization_denied`, `workspace_not_granted`, `capability_not_granted`, `invalid_purpose` |
+| 4 | version or migration | `workspace_migration_required`, `incompatible_version`, `upgrade_required` |
+| 5 | conflict or precondition | `conflict`, `mutation_precondition_failed`, `idempotency_conflict`, `workspace_busy`, `bootstrap_in_progress`, `workspace_lease_unavailable` |
+| 6 | out of time | `deadline_exceeded`, `cancelled` |
+| 7 | temporarily unavailable | `projection_unavailable`, `stale_projection`, `rate_limited`, `dependency_unavailable`, `internal_recoverable` |
+| 8 | not found, or over a limit | `not_found`, `size_limit_exceeded`, `token_limit_exceeded` |
+
+## Modules
+
+```text
+surface.py   the frozen commands, probes and exit codes -- data, no behaviour
+dispatch.py  one command -> one call on an already-connected ServiceClient
+main.py      the executable: parse, connect, dispatch, print, exit
+```
 
 ## Dependency direction
 
@@ -115,20 +169,5 @@ omnivia-core-cli  -->  omnivia-core-client  -->  omnivia-core
 
 - `omnivia-core-cli` depends on `omnivia-core` and on `omnivia-core-client`.
 - `omnivia-core` must never depend on or import `omnivia_core_cli`.
-- `omnivia-core-cli` must never depend on or import `omnivia_core_runtime`.
-
-## Status
-
-The calling subcommands are local IPC only: a `pipe://` endpoint is refused
-rather than dialled, so `health`, `readiness` and `workspace show` do not work
-on Windows yet. `discover` reads the descriptor and is unaffected.
-
-The lifecycle commands are **exercised on POSIX only**. The Windows paths are
-written to be correct and are not claimed to be tested: `os.kill(pid, SIGTERM)`
-there calls `TerminateProcess`, which runs no handler and would leave a stale
-descriptor, so `stop` sends `CTRL_BREAK_EVENT` to a process started in its own
-group instead. No host in this lane can bind a named pipe to check any of it.
-
-The product operation catalogue remains out of scope here, per the B9/B10
-completion record: `workspace.inspect` and the three service-lifecycle
-operations are what this CLI can reach.
+- `omnivia-core-cli` must never depend on or import `omnivia_core_runtime` or
+  `omnivia_core_mcp`.

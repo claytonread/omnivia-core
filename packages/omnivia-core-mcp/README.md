@@ -7,21 +7,43 @@ Built on the official Model Context Protocol Python SDK v2 (owner resolution
 004, R004-05). There is no bespoke JSON-RPC or MCP stack in this package, and
 no FastMCP dependency — the official SDK is the sole MCP framework dependency.
 
+## Trusted configuration
+
+`omnivia_core_mcp.configuration` implements the immutable
+`omnivia.mcp-config.v1` model and its explicit-path reader. The reader admits at
+most 65,536 bytes, rejects duplicate or unknown fields, follows no symlink, and
+requires a regular owner-private file whose identity stays unchanged throughout
+the bounded read. Configuration supplies only an opaque credential reference;
+it is never a credential store.
+
+Owner-private is proved from the open descriptor on both platform families.
+POSIX checks the owner and the group/other mode bits. Windows converts the
+descriptor to a handle and proves, through `advapi32` alone, that the file's
+owner SID is this process's token user and that the DACL is present and grants
+no other principal; an unrecognised access-allowed ACE form or any API
+inconsistency refuses the file. The server reads this document before opening
+stdio and uses it as the only source of principal, workspace, allowed purposes,
+service location, and (for remote mode) credential reference.
+
 ## Running it
 
 ```bash
-omnivia-core-mcp             # uses the fixed ~/.omnivia convention
-omnivia-core-mcp --home /path/to/installation
+omnivia-core-mcp --config /absolute/path/to/omnivia-mcp.json
 ```
 
-On startup the server resolves the installation, then invokes
-`omnivia-core-service --managed-start` as a subprocess. It attaches to a
-compatible service if one is ready, has exactly one started if none is, and
-waits for live readiness before advertising any tool.
+There is no default configuration path, environment lookup, or `--home`
+fallback. A managed-local document names an absolute `installation_state`; the
+server delegates the whole attach/start/reconnect decision to the shared
+`connect_managed_local` client operation. Only that client operation may invoke
+`omnivia-core-service --managed-start`, and only when no descriptor is
+published. The MCP package owns no launcher, path convention, or service argv;
+it requires a live connection before advertising any tool.
 
-There is **no environment variable** for the home directory, and there will not
-be one (R004-11): an environment lookup is an unrestricted filesystem path
-arriving under another name. Only an explicit `--home` overrides the convention.
+Remote `service_client` mode names an HTTPS origin and an opaque credential
+reference. The console entry point has no ambient credential resolver and
+therefore refuses remote mode. An embedding host may inject its trusted resolver
+into `connect`; the resulting credential is origin-bound, cached only by the
+shared client cache, and cleared on failed startup and session shutdown.
 
 If the workspace has not been initialised, the server refuses with an
 instruction to run `omnivia init` and **creates nothing**.
@@ -123,12 +145,19 @@ sealed relations were written through the accepted fenced Runtime writers in
 `tests/_mcp_v06_3_fixture.py` — the only place in this package's tests that
 imports the runtime at all.
 
-**The transport dependency is closed.** Owner resolution 005 R005-01 moved
-`LocalIpcTransport` into `omnivia-core-client`, and `server._default_transport_factory`
-constructs it. A tool call now travels an OVC1 frame over the installation-local
-socket and answers with the service's own result.
-`packages/omnivia-core-mcp/tests/test_mcp_stdio_end_to_end.py` proves it against a
-service the test starts; no stand-in transport remains anywhere in this package.
+**The shared-client integration is closed.** `server.connect` composes
+`ServiceClient` for both managed-local and remote mode. The shared client owns
+descriptor discovery, transport selection, version negotiation, liveness,
+framing, and credential presentation; this package has no transport factory or
+dial loop of its own. Every call carries the configuration's principal claim and
+selected workspace, the manifest's purpose, and the catalogue's scopes and
+capability requirement. Reserved authority arguments are refused before the
+client is called, and response correlation is checked before any result is
+published.
 
-This package still holds no dial loop of its own and still must never depend on or
-import `omnivia-core-cli`. `server.TransportFactory` survives as a test seam.
+`packages/omnivia-core-mcp/tests/test_mcp_stdio_end_to_end.py` proves the complete
+managed-local path against a service the test starts. The authority suite proves
+both service modes through real `ServiceClient` instances with recording
+transports, including purpose and argument refusals, remote credential cleanup,
+workspace agreement, and response correlation. This package still must never
+depend on or import `omnivia-core-cli`.

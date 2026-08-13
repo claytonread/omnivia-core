@@ -51,7 +51,7 @@ from omnivia_core.contracts.v1 import (
 
 pytestmark = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
-    reason="the local IPC transport dials AF_UNIX; Windows pipes are a successor",
+    reason="these socket cases require AF_UNIX; pipe cases have their own suite",
 )
 
 WORKSPACE_ID = "ws-local-ipc-01"

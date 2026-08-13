@@ -14,25 +14,17 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
-from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.service.application import (
-    ApplicationDispatcher,
     ProductionApplicationSurface,
-    build_application_registry,
-    build_governance_application_dispatcher,
     build_installation_application_dispatcher,
-    build_job_application_dispatcher,
-    build_memory_application_dispatcher,
     compose_production_application_surface,
-    local_owner_session,
 )
-from omnivia_core_runtime.service.authorization import Grant, ServiceBinding
+from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
-from omnivia_core_runtime.service.handlers.memory import HmacContinuationTokenCodec
+from omnivia_core_runtime.service.main import _build_production_application_surface
 from omnivia_core_runtime.service.operations import (
     APPLICATION_OPERATIONS,
     SERVICE_OPERATIONS,
-    server_capability_snapshot,
 )
 from test_v06_5_s2_memory_migration import _apply_through
 
@@ -44,8 +36,7 @@ CORPUS = (
     / "contracts/application/v1/fixtures/application-wire-adapter-conformance-v1.json"
 )
 OPERATION_TRACEABILITY = (
-    REPO_ROOT
-    / "tests/fixtures/service_conformance/operation-traceability-v1.json"
+    REPO_ROOT / "tests/fixtures/service_conformance/operation-traceability-v1.json"
 )
 ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
@@ -75,65 +66,16 @@ def surface(tmp_path: Path) -> Iterator[ProductionApplicationSurface]:
         ),
         owned,
     )
-    reads_registry = build_application_registry()
-    reads = ApplicationDispatcher(
-        registry=reads_registry,
-        session=local_owner_session(
-            principal_id=principal,
-            installation_id=s0.INSTALLATION_ID,
-            workspace_id=m1.WORKSPACE_ID,
-            operations=reads_registry.operations,
-        ),
-        binding=ServiceBinding(
-            installation_id=s0.INSTALLATION_ID, workspace_id=m1.WORKSPACE_ID
-        ),
-        supported_capabilities=server_capability_snapshot(reads_registry),
-        transport="local-ovc1",
-        probe=probe,
-        record=None,
-        service=owned,
-    )
-    memory = build_memory_application_dispatcher(
-        service=owned,
-        principal_id=principal,
-        installation_id=s0.INSTALLATION_ID,
-        workspace_id=m1.WORKSPACE_ID,
-        fallback=reads,
-        clock=FakeClock(),
-        allocate_identifier=lambda prefix: f"{prefix}-s5",
-        token_codec=HmacContinuationTokenCodec(b"s5-memory-token-secret"),
-    )
-    jobs = build_job_application_dispatcher(
-        service=owned,
-        principal_id=principal,
-        installation_id=s0.INSTALLATION_ID,
-        workspace_id=m1.WORKSPACE_ID,
-        fallback=memory,
-        clock=FakeClock(),
-        allocate_identifier=lambda prefix: f"{prefix}-s5",
-        token_codec=HmacContinuationTokenCodec(b"s5-job-token-secret"),
-    )
-    governance = build_governance_application_dispatcher(
-        service=owned,
-        principal_id=principal,
-        installation_id=s0.INSTALLATION_ID,
-        workspace_id=m1.WORKSPACE_ID,
-        fallback=jobs,
-        clock=FakeClock(),
-        allocate_identifier=lambda prefix: f"{prefix}-s5",
-    )
+    started = SimpleNamespace(**vars(owned), workspace_id=m1.WORKSPACE_ID)
     installation = build_installation_application_dispatcher(
         service=_InstallationService(),  # type: ignore[arg-type]
         principal_id=principal,
-        fallback=governance,
+        fallback=probe,
     )
-    yield compose_production_application_surface(
-        installation=installation,
-        reads=reads,
-        memory=memory,
-        jobs=jobs,
-        governance=governance,
+    yield _build_production_application_surface(
+        started=started,  # type: ignore[arg-type]
         probe=probe,
+        installation=installation,
     )
     owned.connection.close()
 
@@ -191,6 +133,39 @@ def test_v06_5_s5_every_handler_is_production_callable(
     )
 
 
+def test_v06_5_s5_live_entry_owns_installation_and_routes_exact_surface() -> None:
+    """The serving path, not only a fixture, builds the qualified surface."""
+    from omnivia_core_runtime.service import main as service_main
+
+    tree = ast.parse(inspect.getsource(service_main))
+    serve = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "serve"
+    )
+    calls = {
+        node.func.id
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {
+        "InstallationAuthorityCoordinator",
+        "_build_production_application_surface",
+        "_router_for",
+    } <= calls
+    routed = next(
+        node
+        for node in ast.walk(serve)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_router_for"
+    )
+    assert isinstance(routed.args[1], ast.Name)
+    assert routed.args[1].id == "application"
+    assert "installation_authority" in ast.unparse(serve)
+
+
 def test_v06_5_s5_no_stub_skip_xfail_or_schema_only_execution(
     surface: ProductionApplicationSurface,
 ) -> None:
@@ -209,7 +184,9 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     document = _document(OPERATION_TRACEABILITY)
     names = tuple(item["contract"]["name"] for item in document["operations"])
     assert names == tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert all(set(item["adapters"]) == set(ADAPTERS) for item in document["operations"])
+    assert all(
+        set(item["adapters"]) == set(ADAPTERS) for item in document["operations"]
+    )
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS

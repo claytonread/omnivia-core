@@ -27,6 +27,7 @@ from omnivia_core_client import (
     Deadline,
     DeadlineExceededError,
     DiscoveredEndpoint,
+    EndpointUnavailableError,
     OperationCancelledError,
     ProtocolError,
     TransportError,
@@ -1621,7 +1622,7 @@ def test_transport_probe_failure_is_fixed_payload_free_and_unchained(
     [
         (DeadlineExceededError, DeadlineExceededError),
         (OperationCancelledError, OperationCancelledError),
-        (RuntimeError, TransportError),
+        (RuntimeError, EndpointUnavailableError),
     ],
     ids=("expired", "cancelled", "unreachable"),
 )

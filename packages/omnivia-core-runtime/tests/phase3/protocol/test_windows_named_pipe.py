@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from omnivia_core_client import Deadline, LocalIpcTransport
 from omnivia_core_runtime.service.ovc1 import MAGIC, decode_frame, encode_frame
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
@@ -23,6 +24,8 @@ from omnivia_core_runtime.service.windows_pipe import (
     WindowsPipeError,
     open_pipe_client,
 )
+
+from omnivia_core.contracts.v1 import ServiceProbeRequest
 
 OBSERVED_AT = "2026-08-02T00:00:00Z"
 
@@ -288,6 +291,20 @@ def test_raw_pipe_partial_writes_start_with_ovc1_and_route_probe() -> None:
             assert decode_frame(response)["status"] == "pass"
         finally:
             channel.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires a real Windows named pipe")
+def test_shared_client_reaches_the_real_runtime_named_pipe() -> None:
+    """The hosted Windows row exercises the public client, not Runtime's client half."""
+    endpoint = _endpoint()
+    with LocalSocketServer(router=_router(), endpoint=endpoint, timeout=1.0):
+        result = LocalIpcTransport(endpoint.url).probe(
+            ServiceProbeRequest(probe=PROBE_HEALTH),
+            deadline=Deadline.after(5.0),
+        )
+
+    assert result.probe == PROBE_HEALTH
+    assert result.status == "pass"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires a real Windows named pipe")

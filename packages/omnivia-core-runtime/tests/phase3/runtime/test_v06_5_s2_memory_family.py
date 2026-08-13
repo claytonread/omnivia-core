@@ -69,6 +69,7 @@ from test_v06_5_s2_memory_migration import (
     TRANSITIONS,
     _apply_through,
 )
+from v06_5_c1_evidence import semantic_execution
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -257,7 +258,7 @@ def _router(dispatcher: ApplicationDispatcher) -> DocumentRouter:
     )
 
 
-def _transport_call(
+def _unrecorded_transport_call(
     adapter: str,
     dispatcher: ApplicationDispatcher,
     request: RequestEnvelope,
@@ -325,6 +326,28 @@ def _transport_call(
         return decode_response(json.loads(response_body))
     finally:
         server.stop()
+
+
+def _transport_call(
+    adapter: str,
+    dispatcher: ApplicationDispatcher,
+    request: RequestEnvelope,
+    *,
+    http_session: AuthenticatedSession | None = None,
+    case_id: str | None = None,
+) -> ResponseEnvelope:
+    return semantic_execution(
+        case_id=case_id,
+        adapter=adapter,
+        route=dispatcher,
+        request=request,
+        invoke=lambda: _unrecorded_transport_call(
+            adapter,
+            dispatcher,
+            request,
+            http_session=http_session,
+        ),
+    )
 
 
 def _seed_candidate(
@@ -2108,7 +2131,12 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                 request_id=f"req-{adapter}-create-primary",
                 idempotency_key=f"idem-{adapter}-create-primary",
             )
-            primary_response = _transport_call(adapter, dispatcher, primary_request)
+            primary_response = _transport_call(
+                adapter,
+                dispatcher,
+                primary_request,
+                case_id="memory.create/primary-success",
+            )
             assert isinstance(primary_response, SuccessResponseEnvelope)
             primary_audit = primary_response.metadata.audit_reference
             assert primary_audit is not None
@@ -2125,6 +2153,7 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                         request_id=f"req-{adapter}-create-replay",
                     ),
                 ),
+                case_id="memory.create/honest-replay",
             )
             assert isinstance(replay_response, SuccessResponseEnvelope)
             assert replay_response.result == primary_response.result
@@ -2145,6 +2174,7 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                     ),
                     input=_memory_input("conflicting claim"),
                 ),
+                case_id="memory.create/idempotency-conflict",
             )
             assert isinstance(conflict_response, ErrorResponseEnvelope)
             assert conflict_response.error.code == ERROR_CODE_IDEMPOTENCY_CONFLICT
@@ -2176,6 +2206,7 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                     },
                     request_id=f"req-{adapter}-get-primary",
                 ),
+                case_id="memory.get/primary-success",
             )
             assert isinstance(get_response, SuccessResponseEnvelope)
             assert get_response.result["record"]["content"] == {"fact": "primary"}
@@ -2190,6 +2221,7 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                     {"view": "candidates", "limit": 1},
                     request_id=f"req-{adapter}-list-primary",
                 ),
+                case_id="memory.list/primary-success",
             )
             assert isinstance(first_page, SuccessResponseEnvelope)
             assert len(first_page.result["records"]) == 1
@@ -2209,6 +2241,7 @@ def test_v06_5_s2_mutation_audit_reference_reaches_all_adapters(
                     },
                     request_id=f"req-{adapter}-list-page-2",
                 ),
+                case_id="memory.list/page-2",
             )
             assert isinstance(second_page, SuccessResponseEnvelope)
             assert len(second_page.result["records"]) == 1

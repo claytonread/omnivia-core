@@ -620,6 +620,7 @@ def test_v06_5_c1_evidence_search_primary_and_page_2_reach_every_real_adapter(
                     request_id=f"req-evidence-c1-{adapter}-1",
                     input={"query": "doc", "limit": 1},
                 ),
+                case_id="evidence.search/primary-success",
             )
         ).result
     )
@@ -639,6 +640,7 @@ def test_v06_5_c1_evidence_search_primary_and_page_2_reach_every_real_adapter(
                         "page": {"continuation_token": token},
                     },
                 ),
+                case_id="evidence.search/page-2",
             )
         ).result
     )
@@ -1332,16 +1334,23 @@ def test_lb_v3_the_startup_builds_and_materialises_before_the_transport_starts(
         for node in ast.walk(serve)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    starts = min(
+    server_starts = [
         node.lineno
         for node in ast.walk(serve)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "start"
-    )
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "server"
+    ]
 
     assert where["build_search_projection"] < where["open_search_projection"]
-    assert where["open_search_projection"] < where["LocalSocketServer"] < starts
+    assert len(server_starts) == 1
+    assert (
+        where["open_search_projection"]
+        < where["LocalSocketServer"]
+        < server_starts[0]
+    )
 
     # And the build is handed the service's own three facts, not anything reconstructed.
     build_call = next(

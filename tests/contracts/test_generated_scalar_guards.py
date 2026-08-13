@@ -85,8 +85,27 @@ def _patterned_definitions() -> dict[str, dict[str, Any]]:
     return found
 
 
+def _enum_definitions() -> dict[str, dict[str, Any]]:
+    """Every ``type: string`` ``$defs`` entry declaring a closed ``enum``, by name.
+
+    The second population the same emitter rule covers: a patterned definition gets
+    its pattern guard, an enum definition gets its membership guard, and both are
+    discovered here rather than listed, for the same reason.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for stem in SOURCE_SCHEMAS:
+        document = json.loads(
+            (SCHEMAS_DIR / f"{stem}.schema.json").read_text(encoding="utf-8")
+        )
+        for name, body in document.get("$defs", {}).items():
+            if body.get("type") == "string" and isinstance(body.get("enum"), list):
+                found[name] = body
+    return found
+
+
 DEFINITIONS = _patterned_definitions()
 DEFINITION_IDS = sorted(DEFINITIONS)
+ENUM_DEFINITIONS = _enum_definitions()
 
 
 def _corpus() -> list[str]:
@@ -214,6 +233,10 @@ def test_the_guard_count_matches_the_definition_count_in_both_languages() -> Non
     """56 of 56, twice. A hand-maintained table emitting two would pass every
     per-definition test above only by being extended to 56 entries, which is the
     point: the rule is what makes the count follow the schema for free.
+
+    TypeScript carries the enum-membership guards on top, by the same rule and
+    discovered the same way, so the emitted set has to be exactly the two
+    populations the schemas declare -- no third guard from anywhere else.
     """
     python = [name for name in generated.__all__ if name.startswith("is_")]
     typescript = re.findall(
@@ -221,8 +244,8 @@ def test_the_guard_count_matches_the_definition_count_in_both_languages() -> Non
         TYPESCRIPT_PATH.read_text(encoding="utf-8"),
     )
     assert len(python) == len(DEFINITIONS)
-    assert len(typescript) == len(DEFINITIONS)
-    assert {f"is{name}" for name in DEFINITIONS} == set(typescript)
+    assert len(typescript) == len(DEFINITIONS) + len(ENUM_DEFINITIONS)
+    assert {f"is{name}" for name in [*DEFINITIONS, *ENUM_DEFINITIONS]} == set(typescript)
 
 
 # --------------------------------------------------------------------------

@@ -3,17 +3,21 @@
 A stdio MCP server that gives an AI host read-only access to one local OmniVia
 Core workspace, over the official Model Context Protocol Python SDK v2.
 
-**Three modules, three separable decisions:**
+**Three MCP modules, three separable decisions:**
+
+- :mod:`~omnivia_core_mcp.configuration` -- the bounded, provenance-checked
+  ``omnivia.mcp-config.v1`` authority document. It accepts an explicit path and
+  no ambient configuration source.
 
 - :mod:`~omnivia_core_mcp.manifest` -- the curated, versioned exposure allow-list
   (R004-06) and the tool schemas projected from the public operation contracts.
   Adding a line here is the whole act of exposing an operation; nothing
   enumerates the catalogue.
-- :mod:`~omnivia_core_mcp.managed_start` -- resolving the installation and asking
-  `omnivia-core-service --managed-start` to make a service exist (R004-07). A
-  subprocess and a JSON document; no second launcher.
 - :mod:`~omnivia_core_mcp.server` -- the SDK server, the stdio session, and the
-  seam where the client-owned `ClientTransport` is constructed.
+  seam where the client-owned `ClientTransport` is constructed. Managed-local
+  startup is delegated whole to
+  :func:`~omnivia_core_client.connect_managed_local`; this package owns no
+  launcher, installation layout, or service argv.
 
 **The dependency boundary (ADR-036, R004-05).** This distribution depends on the
 public ``omnivia-core`` contracts, on ``omnivia-core-client`` for service calls,
@@ -35,6 +39,23 @@ distribution still holds no transport implementation of its own.
 
 from __future__ import annotations
 
+from omnivia_core_mcp.configuration import (
+    CONFIGURATION_FORMAT,
+    MAXIMUM_CONFIGURATION_BYTES,
+    McpConfiguration,
+    McpConfigurationError,
+    parse_configuration,
+    read_configuration,
+)
+
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = [
+    "CONFIGURATION_FORMAT",
+    "MAXIMUM_CONFIGURATION_BYTES",
+    "McpConfiguration",
+    "McpConfigurationError",
+    "__version__",
+    "parse_configuration",
+    "read_configuration",
+]

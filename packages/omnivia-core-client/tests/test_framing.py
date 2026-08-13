@@ -586,7 +586,17 @@ def test_a_received_frame_past_the_maximum_is_refused_after_it_parses() -> None:
 
 
 def test_deeply_nested_json_is_refused_before_it_takes_the_parser_down() -> None:
-    depth = 5000
+    """The parser's own recursion guard, not the canonical depth bound.
+
+    Which of the two guards a deep document reaches first is a CPython detail,
+    not a contract: 3.11 stops `json.loads` at `sys.getrecursionlimit()` while
+    3.12 raised that ceiling far higher, so a document deep enough to fail on
+    one version parses on the other and is then refused for having no canonical
+    form. The 64-level bound is pinned by the two tests above. This one pins the
+    other half -- that the parser refuses rather than dies -- so the depth is far
+    past any interpreter's ceiling instead of just past one's.
+    """
+    depth = 100_000
     body = b'{"a":' + b"[" * depth + b"]" * depth + b"}"
     with pytest.raises(ProtocolError, match="nests too deeply to parse"):
         decode_frame(_frame(body))
@@ -806,7 +816,14 @@ def _rendered(error: BaseException) -> str:
             id="too-deep",
         ),
         pytest.param(
-            (b'{"a":' + b"[" * 5000 + b"]" * 5000 + b',"' + SECRET.encode() + b'":1}'),
+            (
+                b'{"a":'
+                + b"[" * 100_000
+                + b"]" * 100_000
+                + b',"'
+                + SECRET.encode()
+                + b'":1}'
+            ),
             id="past-parser-depth",
         ),
     ],

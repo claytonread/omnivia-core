@@ -240,6 +240,183 @@
       },
       "required": ["probe", "status", "server_version", "api_version", "observed_at"],
       "unevaluatedProperties": false
+    },
+    "CoreTargetKind": {
+      "title": "CoreTargetKind",
+      "description": "Closed vocabulary naming how a Core target is reached: `local` for a same-host instance, `private_remote` for an instance reached over a private, self-hosted network, `cloud` for a hosted multi-tenant instance. Closed to exactly these three; an unknown kind fails closed rather than being guessed at.",
+      "type": "string",
+      "enum": ["local", "private_remote", "cloud"]
+    },
+    "CoreTargetManagement": {
+      "title": "CoreTargetManagement",
+      "description": "Closed vocabulary naming who owns a Core target's process lifecycle: `locally_managed` when this client started and owns the instance, `externally_managed` when some other process or operator owns it. Closed to exactly these two; an unknown value fails closed. A lifecycle action such as `start`/`stop`/`restart` is only ever safe to offer for a `locally_managed` target, since only the owner of a process may start or stop it.",
+      "type": "string",
+      "enum": ["locally_managed", "externally_managed"]
+    },
+    "CoreTargetV1": {
+      "title": "CoreTargetV1",
+      "description": "The provider-neutral identity of one Core target a client may select and address: what kind of instance it is, which workspace it serves, who manages its process lifecycle, and an opaque reference to its endpoint profile. Deliberately carries no dialable endpoint, credential, process identity, or filesystem path of its own; resolving `endpoint_profile_ref` to a concrete transport address is a separate, authenticated step this descriptor does not perform.",
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version this target descriptor is published at."
+        },
+        "target_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable, caller-opaque identifier of this target. Never a workspace, service instance, or installation identifier -- selecting a target is a separate concept from any of those."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Human-readable name for this target.",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetKind",
+          "description": "How this target is reached."
+        },
+        "workspace_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this target serves."
+        },
+        "management": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetManagement",
+          "description": "Who owns this target's process lifecycle."
+        },
+        "endpoint_profile_ref": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Opaque reference to this target's endpoint profile. Never a dialable URI, credential, or filesystem path; resolving it to a concrete transport address is a separate, authenticated step this reference does not perform."
+        }
+      },
+      "required": [
+        "contract_version",
+        "target_ref",
+        "display_name",
+        "kind",
+        "workspace_ref",
+        "management",
+        "endpoint_profile_ref"
+      ],
+      "unevaluatedProperties": false
+    },
+    "CoreLifecycleState": {
+      "title": "CoreLifecycleState",
+      "description": "Closed, normalized vocabulary for a target's lifecycle phase, deliberately narrower than a provider's raw lifecycle codes so a safe status may publish it pre-authentication. `failed` is a real service failure -- the process reached a terminal error rather than a requested stop -- and is distinct from `stopped`, which is the ordinary not-running phase; neither carries a reason, because a safe status may not publish one. Closed to exactly these values; an unknown value fails closed.",
+      "type": "string",
+      "enum": ["starting", "running", "stopping", "stopped", "failed", "unknown"]
+    },
+    "CoreReadinessState": {
+      "title": "CoreReadinessState",
+      "description": "Closed, normalized vocabulary for whether a target is ready to serve requests now. Closed to exactly these values; an unknown value fails closed.",
+      "type": "string",
+      "enum": ["ready", "not_ready", "unknown"]
+    },
+    "CoreCompatibilityState": {
+      "title": "CoreCompatibilityState",
+      "description": "Closed, normalized vocabulary mirroring `compatibility.schema.json`'s `x-omnivia-compatibility-statuses`, restated here as a closed enum because a safe status is published pre-authentication and must fail closed on a value it does not recognize rather than forward an unrecognized open code to that surface.",
+      "type": "string",
+      "enum": ["compatible", "compatible_with_deprecations", "upgrade_required", "incompatible", "unknown"]
+    },
+    "CoreConnectionState": {
+      "title": "CoreConnectionState",
+      "description": "Closed, normalized vocabulary for a target's transport connection state. `authentication_required` is the normalized state of a target that is reachable but will not serve this caller until it authenticates -- distinct from `disconnected`, which says nothing about why. The matching `authentication_required` `CoreSafeWarningCode` stays the actionable advisory a caller surfaces; this field is the state. Closed to exactly these values; an unknown value fails closed.",
+      "type": "string",
+      "enum": [
+        "connected",
+        "connecting",
+        "disconnected",
+        "unreachable",
+        "authentication_required",
+        "unknown"
+      ]
+    },
+    "CoreSafeWarningCode": {
+      "title": "CoreSafeWarningCode",
+      "description": "Closed vocabulary of non-fatal advisories a safe status may attach. Deliberately a closed enum rather than `common.schema.json`'s open `OpenCode`: a safe status is published pre-authentication and must never carry a free-form reason or an unrecognized code a caller cannot reason about.",
+      "type": "string",
+      "enum": [
+        "endpoint_unreachable",
+        "authentication_required",
+        "version_incompatible",
+        "upgrade_required",
+        "workspace_format_incompatible",
+        "degraded"
+      ]
+    },
+    "CoreSafeAction": {
+      "title": "CoreSafeAction",
+      "description": "Closed vocabulary of actions a caller may be permitted to attempt against a target, given only what a safe status may say pre-authentication. `start`/`stop`/`restart` are process-lifecycle actions and must only be offered for a `locally_managed` `local` target (see `CoreSafeStatusV1.permitted_actions`); `reconnect` and `open` are safe to offer for any target.",
+      "type": "string",
+      "enum": ["start", "stop", "restart", "reconnect", "open"]
+    },
+    "CoreSafeStatusV1": {
+      "title": "CoreSafeStatusV1",
+      "description": "A Core target's status, narrowed to values safe to publish before authentication or to any caller regardless of authority. It carries no dialable endpoint, process identity, filesystem path, credential, token, callback, account, entitlement, vault reference, stack trace, raw exception, or free-form reason: every advisory is one of the closed `CoreSafeWarningCode` values, and every offered action is one of the closed `CoreSafeAction` values.",
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Contract version this status is published at."
+        },
+        "target": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreTargetV1",
+          "description": "The target this status describes."
+        },
+        "lifecycle_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreLifecycleState",
+          "description": "Normalized lifecycle phase."
+        },
+        "readiness_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreReadinessState",
+          "description": "Normalized readiness to serve requests."
+        },
+        "compatibility_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreCompatibilityState",
+          "description": "Normalized version compatibility posture."
+        },
+        "connection_state": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreConnectionState",
+          "description": "Normalized transport connection state."
+        },
+        "server_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Concrete server build version, when safe to disclose and known."
+        },
+        "protocol_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ContractVersion",
+          "description": "Wire protocol version this target is speaking, when known."
+        },
+        "warning_codes": {
+          "type": "array",
+          "description": "Non-fatal advisories, each a closed `CoreSafeWarningCode`. No two entries may repeat the same code.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreSafeWarningCode"
+          },
+          "uniqueItems": true,
+          "maxItems": 32
+        },
+        "permitted_actions": {
+          "type": "array",
+          "description": "Actions the caller may attempt against this target, each a closed `CoreSafeAction`. `start`/`stop`/`restart` are present only when `target.management` is `locally_managed` and `target.kind` is `local`. No two entries may repeat the same action.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/service.schema.json#/$defs/CoreSafeAction"
+          },
+          "uniqueItems": true,
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "contract_version",
+        "target",
+        "lifecycle_state",
+        "readiness_state",
+        "compatibility_state",
+        "connection_state",
+        "warning_codes",
+        "permitted_actions"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

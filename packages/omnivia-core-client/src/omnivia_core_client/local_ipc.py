@@ -35,9 +35,11 @@ identity, and no diagnostic, field or docstring in this module states or implies
 that the peer was authenticated. The deferral recorded for that gap is
 ``LOCAL-IPC-PEER-IDENTITY-DEFERRED``.
 
-Local IPC only. A ``pipe://`` endpoint is refused rather than half-supported:
-the Windows named-pipe client is a successor, and answering a Windows caller
-with a socket error would misreport why.
+Both accepted local transports are selected here: ``unix://`` uses the POSIX
+stream socket below and ``pipe://`` uses the raw Win32 byte-stream client in
+:mod:`omnivia_core_client.windows_pipe`.  Both carry the same OVC1 frame and
+return through the same public codec, so callers have one local transport rather
+than platform-specific glue.
 """
 
 from __future__ import annotations
@@ -69,6 +71,7 @@ from omnivia_core_client.framing import (
     encode_frame,
 )
 from omnivia_core_client.transport import enforce_send_preconditions
+from omnivia_core_client.windows_pipe import PIPE_SCHEME, open_pipe_channel
 
 __all__ = [
     "LOCAL_IPC_SCHEME",
@@ -101,8 +104,7 @@ def socket_path_for(endpoint_uri: str) -> str:
     """
     if not endpoint_uri.startswith(LOCAL_IPC_SCHEME):
         raise TransportError(
-            "this transport dials installation-local "
-            f"{LOCAL_IPC_SCHEME} endpoints only"
+            f"this transport dials installation-local {LOCAL_IPC_SCHEME} endpoints only"
         )
     path = endpoint_uri[len(LOCAL_IPC_SCHEME) :]
     if not path:
@@ -159,7 +161,9 @@ def _raise_not_a_probe_result() -> NoReturn:
 def _connect(path: str, timeout: float) -> socket.socket:
     """One fresh connected stream socket, or the declared transport failure."""
     if not hasattr(socket, "AF_UNIX"):  # pragma: no cover - POSIX-only suite
-        raise TransportError("local socket endpoints are not supported on this platform")
+        raise TransportError(
+            "local socket endpoints are not supported on this platform"
+        )
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     timed_out = False
     try:
@@ -300,6 +304,27 @@ class LocalIpcTransport:
             deadline=deadline, cancellation=cancellation, operation=operation
         )
         frame = encode_frame(document)
+        if self.endpoint_uri.startswith(PIPE_SCHEME):
+            channel = open_pipe_channel(
+                self.endpoint_uri,
+                deadline=deadline,
+                cancellation=cancellation,
+                operation=operation,
+            )
+            try:
+                channel.write(
+                    frame,
+                    deadline=deadline,
+                    cancellation=cancellation,
+                    operation=operation,
+                )
+                return channel.read_document(
+                    deadline=deadline,
+                    cancellation=cancellation,
+                    operation=operation,
+                )
+            finally:
+                channel.close()
         connection = _connect(socket_path_for(self.endpoint_uri), remaining)
         try:
             connection.settimeout(deadline.assert_not_expired(operation=operation))

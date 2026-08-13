@@ -14,7 +14,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from omnivia_core_cli.client import build_request
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
@@ -41,7 +40,12 @@ from omnivia_core_runtime.service.transport import (
 )
 
 from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    ClientIdentity,
     ErrorResponseEnvelope,
+    PrincipalClaim,
+    RequestEnvelope,
+    RequestMetadata,
     SuccessResponseEnvelope,
     codec,
 )
@@ -136,11 +140,27 @@ def transport(request: pytest.FixtureRequest, socket_dir: Path) -> Iterator[Tran
 def request_for(
     operation: str, *, workspace: str = WORKSPACE, principal: str | None = None
 ):
-    return build_request(
-        operation,
-        workspace_id=workspace,
-        request_id=f"req-{operation}",
-        principal=principal,
+    """Build one public-contract request without importing a sibling adapter."""
+    request_id = f"req-{operation}"
+    return RequestEnvelope(
+        operation=operation,
+        metadata=RequestMetadata(
+            request_id=request_id,
+            correlation_id=request_id,
+            trace_id=request_id,
+            api_version=CONTRACT_VERSION,
+            client=ClientIdentity(id="transport-conformance", version="0.1.0"),
+            workspace_id=workspace,
+            scopes=(),
+            purpose="transport_conformance",
+            required_capabilities=(),
+            principal_claim=(
+                None
+                if principal is None
+                else PrincipalClaim(claimed_principal_id=principal)
+            ),
+        ),
+        input={},
     )
 
 
@@ -361,7 +381,9 @@ def test_every_accepted_socket_path_length_really_binds(socket_dir: Path) -> Non
             )
             longest_accepted = length
 
-    assert longest_accepted >= shortest, "nothing was accepted; the sweep proves nothing"
+    assert longest_accepted >= shortest, (
+        "nothing was accepted; the sweep proves nothing"
+    )
     assert refused, "nothing was refused; the sweep never reached the cap"
     assert refused[0] == longest_accepted + 1
 

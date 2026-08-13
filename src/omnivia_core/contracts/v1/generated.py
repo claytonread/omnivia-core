@@ -188,6 +188,16 @@ __all__ = [
     "ContextPackUncertainty",
     "ContractDecodeError",
     "ContractVersion",
+    "CoreCompatibilityState",
+    "CoreConnectionState",
+    "CoreLifecycleState",
+    "CoreReadinessState",
+    "CoreSafeAction",
+    "CoreSafeStatusV1",
+    "CoreSafeWarningCode",
+    "CoreTargetKind",
+    "CoreTargetManagement",
+    "CoreTargetV1",
     "CorrelationId",
     "Deprecation",
     "DurationMs",
@@ -514,7 +524,7 @@ def _encode_json_object(value: Mapping[str, Any]) -> dict[str, Any]:
 
 # --- contract identity -----------------------------------------------------
 
-CONTRACT_VERSION: Final = "1.2"
+CONTRACT_VERSION: Final = "1.3"
 SCHEMA_BASE_URI: Final = "https://contracts.omnivia.dev/application/v1/"
 
 # --- frozen vocabulary -----------------------------------------------------
@@ -2314,6 +2324,64 @@ IPC uses an absolute `.sock` Unix-domain socket URI or a safe Windows named-pipe
 userinfo, direct-storage schemes, credential-bearing queries, fragments and unapproved transports
 are forbidden. This pattern is the single authority for the policy: every generated binding
 compiles it directly, so no runtime adds acceptance rules of its own.
+"""
+
+CoreTargetKind: TypeAlias = str
+"""Closed vocabulary naming how a Core target is reached: `local` for a same-host instance,
+`private_remote` for an instance reached over a private, self-hosted network, `cloud` for a
+hosted multi-tenant instance. Closed to exactly these three; an unknown kind fails closed rather
+than being guessed at.
+"""
+
+CoreTargetManagement: TypeAlias = str
+"""Closed vocabulary naming who owns a Core target's process lifecycle: `locally_managed` when this
+client started and owns the instance, `externally_managed` when some other process or operator
+owns it. Closed to exactly these two; an unknown value fails closed. A lifecycle action such as
+`start`/`stop`/`restart` is only ever safe to offer for a `locally_managed` target, since only
+the owner of a process may start or stop it.
+"""
+
+CoreLifecycleState: TypeAlias = str
+"""Closed, normalized vocabulary for a target's lifecycle phase, deliberately narrower than a
+provider's raw lifecycle codes so a safe status may publish it pre-authentication. `failed` is a
+real service failure -- the process reached a terminal error rather than a requested stop -- and
+is distinct from `stopped`, which is the ordinary not-running phase; neither carries a reason,
+because a safe status may not publish one. Closed to exactly these values; an unknown value fails
+closed.
+"""
+
+CoreReadinessState: TypeAlias = str
+"""Closed, normalized vocabulary for whether a target is ready to serve requests now. Closed to
+exactly these values; an unknown value fails closed.
+"""
+
+CoreCompatibilityState: TypeAlias = str
+"""Closed, normalized vocabulary mirroring `compatibility.schema.json`'s `x-omnivia-compatibility-
+statuses`, restated here as a closed enum because a safe status is published pre-authentication
+and must fail closed on a value it does not recognize rather than forward an unrecognized open
+code to that surface.
+"""
+
+CoreConnectionState: TypeAlias = str
+"""Closed, normalized vocabulary for a target's transport connection state.
+`authentication_required` is the normalized state of a target that is reachable but will not
+serve this caller until it authenticates -- distinct from `disconnected`, which says nothing
+about why. The matching `authentication_required` `CoreSafeWarningCode` stays the actionable
+advisory a caller surfaces; this field is the state. Closed to exactly these values; an unknown
+value fails closed.
+"""
+
+CoreSafeWarningCode: TypeAlias = str
+"""Closed vocabulary of non-fatal advisories a safe status may attach. Deliberately a closed enum
+rather than `common.schema.json`'s open `OpenCode`: a safe status is published pre-authentication
+and must never carry a free-form reason or an unrecognized code a caller cannot reason about.
+"""
+
+CoreSafeAction: TypeAlias = str
+"""Closed vocabulary of actions a caller may be permitted to attempt against a target, given only
+what a safe status may say pre-authentication. `start`/`stop`/`restart` are process-lifecycle
+actions and must only be offered for a `locally_managed` `local` target (see
+`CoreSafeStatusV1.permitted_actions`); `reconnect` and `open` are safe to offer for any target.
 """
 
 WorkspaceStatus: TypeAlias = str
@@ -4944,6 +5012,84 @@ class ServiceProcessEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class CoreTargetV1:
+    """The provider-neutral identity of one Core target a client may select and address: what
+    kind of instance it is, which workspace it serves, who manages its process lifecycle, and
+    an opaque reference to its endpoint profile. Deliberately carries no dialable endpoint,
+    credential, process identity, or filesystem path of its own; resolving
+    `endpoint_profile_ref` to a concrete transport address is a separate, authenticated step
+    this descriptor does not perform.
+    """
+
+    contract_version: ContractVersion
+    target_ref: Identifier
+    display_name: str
+    kind: CoreTargetKind
+    workspace_ref: WorkspaceId
+    management: CoreTargetManagement
+    endpoint_profile_ref: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["contract_version"] = self.contract_version
+        wire["target_ref"] = self.target_ref
+        wire["display_name"] = self.display_name
+        wire["kind"] = self.kind
+        wire["workspace_ref"] = self.workspace_ref
+        wire["management"] = self.management
+        wire["endpoint_profile_ref"] = self.endpoint_profile_ref
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CoreTargetV1") -> CoreTargetV1:
+        """Decode a wire payload into a CoreTargetV1.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_contract_version = _decode_str(
+            _require_field(mapping, "contract_version", path),
+            f"{path}.contract_version",
+        )
+        field_target_ref = _decode_str(
+            _require_field(mapping, "target_ref", path),
+            f"{path}.target_ref",
+        )
+        field_display_name = _decode_str(
+            _require_field(mapping, "display_name", path),
+            f"{path}.display_name",
+        )
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_workspace_ref = _decode_str(
+            _require_field(mapping, "workspace_ref", path),
+            f"{path}.workspace_ref",
+        )
+        field_management = _decode_str(
+            _require_field(mapping, "management", path),
+            f"{path}.management",
+        )
+        field_endpoint_profile_ref = _decode_str(
+            _require_field(mapping, "endpoint_profile_ref", path),
+            f"{path}.endpoint_profile_ref",
+        )
+        return cls(
+            contract_version=field_contract_version,
+            target_ref=field_target_ref,
+            display_name=field_display_name,
+            kind=field_kind,
+            workspace_ref=field_workspace_ref,
+            management=field_management,
+            endpoint_profile_ref=field_endpoint_profile_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GrantedAuthority:
     """Server-produced, validated authority actually applied to a request. This is the only
     authority statement a client may trust.
@@ -7055,6 +7201,126 @@ class ServiceEndpointDescriptor:
             fencing_generation=field_fencing_generation,
             published_at=field_published_at,
             process=field_process,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CoreSafeStatusV1:
+    """A Core target's status, narrowed to values safe to publish before authentication or to
+    any caller regardless of authority. It carries no dialable endpoint, process identity,
+    filesystem path, credential, token, callback, account, entitlement, vault reference,
+    stack trace, raw exception, or free-form reason: every advisory is one of the closed
+    `CoreSafeWarningCode` values, and every offered action is one of the closed
+    `CoreSafeAction` values.
+    """
+
+    contract_version: ContractVersion
+    target: CoreTargetV1
+    lifecycle_state: CoreLifecycleState
+    readiness_state: CoreReadinessState
+    compatibility_state: CoreCompatibilityState
+    connection_state: CoreConnectionState
+    warning_codes: tuple[CoreSafeWarningCode, ...]
+    permitted_actions: tuple[CoreSafeAction, ...]
+    server_version: ReleaseVersion | None = None
+    protocol_version: ContractVersion | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["contract_version"] = self.contract_version
+        wire["target"] = self.target.to_wire()
+        wire["lifecycle_state"] = self.lifecycle_state
+        wire["readiness_state"] = self.readiness_state
+        wire["compatibility_state"] = self.compatibility_state
+        wire["connection_state"] = self.connection_state
+        if self.server_version is not None:
+            wire["server_version"] = self.server_version
+        if self.protocol_version is not None:
+            wire["protocol_version"] = self.protocol_version
+        wire["warning_codes"] = list(self.warning_codes)
+        wire["permitted_actions"] = list(self.permitted_actions)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CoreSafeStatusV1") -> CoreSafeStatusV1:
+        """Decode a wire payload into a CoreSafeStatusV1.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_contract_version = _decode_str(
+            _require_field(mapping, "contract_version", path),
+            f"{path}.contract_version",
+        )
+        field_target = CoreTargetV1.from_wire(
+            _require_field(mapping, "target", path),
+            f"{path}.target",
+        )
+        field_lifecycle_state = _decode_str(
+            _require_field(mapping, "lifecycle_state", path),
+            f"{path}.lifecycle_state",
+        )
+        field_readiness_state = _decode_str(
+            _require_field(mapping, "readiness_state", path),
+            f"{path}.readiness_state",
+        )
+        field_compatibility_state = _decode_str(
+            _require_field(mapping, "compatibility_state", path),
+            f"{path}.compatibility_state",
+        )
+        field_connection_state = _decode_str(
+            _require_field(mapping, "connection_state", path),
+            f"{path}.connection_state",
+        )
+        field_server_version: ReleaseVersion | None = None
+        if "server_version" in mapping:
+            raw_server_version = mapping["server_version"]
+            if raw_server_version is None:
+                raise ContractDecodeError(
+                    f"{path}.server_version: null is not a valid value"
+                )
+            field_server_version = _decode_str(raw_server_version, f"{path}.server_version")
+        field_protocol_version: ContractVersion | None = None
+        if "protocol_version" in mapping:
+            raw_protocol_version = mapping["protocol_version"]
+            if raw_protocol_version is None:
+                raise ContractDecodeError(
+                    f"{path}.protocol_version: null is not a valid value"
+                )
+            field_protocol_version = _decode_str(raw_protocol_version, f"{path}.protocol_version")
+        field_warning_codes_items = _decode_sequence(
+            _require_field(mapping, "warning_codes", path),
+            f"{path}.warning_codes",
+        )
+        field_warning_codes = tuple(
+            _decode_str(item, f"{path}.warning_codes[{index}]")
+            for index, item in enumerate(field_warning_codes_items)
+        )
+        field_permitted_actions_items = _decode_sequence(
+            _require_field(mapping, "permitted_actions", path),
+            f"{path}.permitted_actions",
+        )
+        field_permitted_actions = tuple(
+            _decode_str(item, f"{path}.permitted_actions[{index}]")
+            for index, item in enumerate(field_permitted_actions_items)
+        )
+        return cls(
+            contract_version=field_contract_version,
+            target=field_target,
+            lifecycle_state=field_lifecycle_state,
+            readiness_state=field_readiness_state,
+            compatibility_state=field_compatibility_state,
+            connection_state=field_connection_state,
+            server_version=field_server_version,
+            protocol_version=field_protocol_version,
+            warning_codes=field_warning_codes,
+            permitted_actions=field_permitted_actions,
         )
 
 

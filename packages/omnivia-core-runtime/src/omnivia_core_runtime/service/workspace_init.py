@@ -84,6 +84,21 @@ The fourth is the filesystem: both `create_directories()` and
 `blobs/`, `indexes/` and the whole installation-state tree gave that same answer
 until `_absent_directories` started counting them.
 
+**The filesystem is qualified first, on both entry points, and that is a repair.**
+`runner.py` refuses to serve a workspace on a remote or unrecognised filesystem --
+ADR-037 requires it, because direct writable operation needs lock semantics an
+NFS/SMB/SSHFS/WebDAV mount does not provide -- but it refuses at *start*, and both
+entry points here could create a manifest, a layout, a database, an installation
+tree and a lock on such a mount long before anything reached that refusal. So the
+same `ownership.locks.qualify_filesystem` gate runs before any of it, with the same
+refused and qualified lists rather than a second copy of them, and the answer is
+`UNQUALIFIED_FILESYSTEM` rather than a guess at one of the existing six names.
+
+The qualification is taken against the nearest existing ancestor of the workspace
+root: the root itself usually does not exist yet, and a gate that created it -- or
+that left a lock probe inside a tree it was about to refuse -- would be the defect
+it exists to close.
+
 **This starts no service.** `init` establishes state; `start` or MCP managed start
 establishes the process.
 """
@@ -101,7 +116,11 @@ from typing import Any, Final
 
 from omnivia_core.workspace.compatibility import evaluate_compatibility
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
-from omnivia_core_runtime.ownership.locks import LockRole, create_lock
+from omnivia_core_runtime.ownership.locks import (
+    LockRole,
+    create_lock,
+    qualify_filesystem,
+)
 from omnivia_core_runtime.storage.backup import (
     ATTEMPTS_DIR,
     BACKUPS_DIR,
@@ -157,7 +176,16 @@ from omnivia_core_runtime.workspace.manifest_store import (
 #: accepted value to restore, and this packet is the *first* publication of 1.0
 #: rather than a change to it. The control above is what makes that first
 #: publication binding.
-WORKSPACE_INIT_VERSION: Final = "1.0"
+#:
+#: **1.1 widens that vocabulary by exactly one code, and widening it is why the
+#: version moved.** `UNQUALIFIED_FILESYSTEM` is new; every 1.0 status and refusal
+#: keeps its exact string, and no case moved from one string to another. So a 1.0
+#: reader that branches on the six it knows still reads every document 1.0 could
+#: produce, and meets an unknown `refusal` only in the state 1.0 had no name for --
+#: the additive direction rather than a wire break, which is why this is 1.1 and not
+#: 2.0. `test_the_published_vocabulary_widened_additively_from_1_0` is the control:
+#: it pins 1.0's six codes as a subset, by value, independently of the enum.
+WORKSPACE_INIT_VERSION: Final = "1.1"
 
 #: The workspace format a new workspace is created in. Mirrors
 #: `bootstrap_generation_one`'s own default, and
@@ -265,6 +293,17 @@ class WorkspaceInitRefusal(str, Enum):
     database disagree about which workspace this is, and a write failure means the
     filesystem said no.
 
+    `UNQUALIFIED_FILESYSTEM` is the seventh and is none of those. It means the
+    location itself cannot host a directly writable workspace -- a remote mount with
+    no reliable cross-host locking, or a filesystem this build has not qualified --
+    which is a fact about the *volume* rather than about anything on it, and which
+    `runner.py` refuses on at start. It is deliberately not `UNRELATED_DIRECTORY`
+    (nobody else's data is there; an empty NFS export is refused too), not
+    `WRITE_FAILURE` (nothing was attempted, let alone refused, and the remedy is a
+    different location or one networked Core Service rather than free space), and
+    not `UNRECOGNISED_INSTALLATION_STATE` (it is the workspace root that is
+    unqualified). It is the code `WORKSPACE_INIT_VERSION` 1.1 adds; see there.
+
     `WORKSPACE_IDENTITY_MISMATCH` is the newest and was carved out of
     `WRITE_FAILURE`, which is where it used to surface. Two reasons, and the second
     is the one that mattered: nothing failed to write, so a name meaning "the
@@ -292,13 +331,14 @@ class WorkspaceInitRefusal(str, Enum):
     wire. The strings are what `WORKSPACE_INIT_VERSION` declares
     compatibility-controlled from 1.0 onward, and
     `test_a_refusal_code_never_depends_on_its_declaration_position` enforces the
-    literal-value rule over this source. Reorder these six freely; rewrite one of
+    literal-value rule over this source. Reorder these seven freely; rewrite one of
     the strings and the contract has broken.
     """
 
     INCOMPATIBLE_MANIFEST = "incompatible_manifest"
     UNRELATED_DIRECTORY = "unrelated_directory"
     UNRECOGNISED_INSTALLATION_STATE = "unrecognised_installation_state"
+    UNQUALIFIED_FILESYSTEM = "unqualified_filesystem"
     WORKSPACE_IDENTITY_MISMATCH = "workspace_identity_mismatch"
     WORKSPACE_BUSY = "workspace_busy"
     WRITE_FAILURE = "write_failure"
@@ -358,6 +398,17 @@ def initialise_workspace(
     substrate out of the database rather than inferring it from the manifest file
     existing.
     """
+    qualification = qualify_filesystem(workspace_root)
+    if not qualification.writable:
+        return WorkspaceInitResult(
+            status=WorkspaceInitStatus.REFUSED,
+            refusal=WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM,
+            reason=(
+                f"{workspace_root} cannot hold a directly writable workspace: "
+                f"{qualification.reason}. Nothing was written"
+            ),
+        )
+
     unrecognised = _unrecognised_installation_state(installation_root)
     if unrecognised is not None:
         return WorkspaceInitResult(
@@ -413,6 +464,17 @@ def initialise_allocated_workspace(
     derived ``workspace_root`` before filesystem work began.  A retry either
     finishes that exact target or refuses; it cannot select a replacement.
     """
+    qualification = qualify_filesystem(workspace_root)
+    if not qualification.writable:
+        return WorkspaceInitResult(
+            status=WorkspaceInitStatus.REFUSED,
+            refusal=WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM,
+            reason="the allocated target is not on a qualified local filesystem",
+            workspace_id=target_workspace_id,
+            workspace_root=workspace_root,
+            installation_root=installation_root,
+        )
+
     unrecognised = _unrecognised_installation_state(installation_root)
     if unrecognised is not None:
         return WorkspaceInitResult(

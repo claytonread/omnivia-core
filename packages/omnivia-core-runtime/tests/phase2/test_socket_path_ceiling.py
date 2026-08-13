@@ -206,21 +206,28 @@ def test_a_real_bind_agrees_with_the_ceiling_at_both_boundaries(
         assert _kernel_binds(over), "the roomier platform lost its headroom"
 
 
-def test_the_cli_restates_the_runtime_ceiling_exactly() -> None:
-    """The CLI's copy of the number, checked from the side allowed to see both.
+def test_the_runtime_is_the_only_endpoint_ceiling_authority() -> None:
+    """The V06-6 client and CLI do not restate the runtime's transport limit.
 
-    `omnivia-core-cli` may not import `omnivia_core_runtime` -- ADR-036, enforced by
-    `scripts/check-package-boundaries.py` -- so it restates the ceiling to refuse an
-    over-long `--home` with the reason instead of an opaque failure from the process
-    it spawned. A restated constant is only safe while something fails when the two
-    drift, and this is that something. It lives here because the boundary applies to
-    package *source*, not to tests, so the runtime's suite can import the CLI while
-    the CLI's cannot import the runtime.
+    The removed legacy CLI lifecycle module used to duplicate this number because
+    it validated and launched the endpoint itself. Managed startup now lives in the
+    shared client: it supplies the explicit endpoint to the runtime, whose transport
+    validates it before binding. Keeping the obsolete cross-package equality test
+    would require recreating a second authority solely to satisfy the test.
 
-    Drift is not hypothetical: the CLI's copy read 104 and was checked against the
-    endpoint, which made it 11 to 17 bytes looser than the runtime's and admitted
-    exactly the paths that then failed to bind.
+    Scan both consumer packages instead. Any future restatement must either use this
+    exact authority across the package boundary (and justify that boundary change) or
+    add an explicit parity gate; it cannot silently revive the drift-prone constant.
     """
-    from omnivia_core_cli.lifecycle import MAX_ENDPOINT_PATH_BYTES as cli_ceiling
-
-    assert cli_ceiling == MAX_ENDPOINT_PATH_BYTES
+    repository = Path(__file__).resolve().parents[4]
+    consumer_sources = (
+        repository / "packages" / "omnivia-core-client" / "src",
+        repository / "packages" / "omnivia-core-cli" / "src",
+    )
+    findings = [
+        path.relative_to(repository).as_posix()
+        for root in consumer_sources
+        for path in root.rglob("*.py")
+        if "MAX_ENDPOINT_PATH_BYTES" in path.read_text(encoding="utf-8")
+    ]
+    assert findings == []

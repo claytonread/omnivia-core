@@ -1,741 +1,797 @@
-"""The `omnivia` CLI (B10).
+"""The `omnivia` executable: parse one frozen command, call it, print the answer.
 
-A Core Service client and nothing more. It discovers a service, builds contract
-envelopes and reports what it is told. It holds no lease, takes no lock and opens no
-database.
+A thin shell over three modules that already own everything this one does.
+:mod:`omnivia_core_cli.surface` says which commands exist and what each frozen
+error code exits with, :mod:`omnivia_core_cli.dispatch` turns one command into
+one call, and :class:`~omnivia_core_client.ServiceClient` finds the service and
+carries the call. Nothing here discovers an endpoint, reads a descriptor,
+chooses a transport or knows what a workspace is made of. Managed-local startup
+is delegated whole to the shared client package.
 
-Every subcommand but `discover` *calls* a service rather than printing the
-envelope it would have sent. `workspace show` reaches the authorised
-application path: `workspace.inspect`, under the fixed local-owner session the
-service constructs for itself at startup, over the installation-local OVC1
-endpoint. `health` and `readiness` reach the service-lifecycle operations
-`core.health` and `core.readiness` over that same endpoint, through that same
-call path. `discover` answers from the published descriptor alone, which is the
-whole of what it claims to report.
+*The parser is the surface, and nothing else.* Every command path is built from
+`APPLICATION_COMMANDS` and `PROBE_COMMANDS`, two segments each, in declared
+order, with no alias, no abbreviation and no path written down here -- so there
+is no `init`, `start`, `stop`, `status`, `health`, `readiness`, `workspace show`
+or `core.*` command to reach, and none can be added without adding it to the
+frozen surface first.
 
-A command that cannot reach the service fails, and says so on stderr with a
-non-zero exit. None of these report on a service they did not dial: `health`
-and `readiness` printed their own request envelope and exited 0 for a service
-that was never contacted, which is a success-shaped answer that proves nothing
-and which a launcher polling readiness would believe.
+*Local refusals happen before the connection.* The catalogue states, per
+operation, whether an idempotency key and a record version are required,
+optional or not honoured at all. A call that would violate either posture is
+refused as a usage error -- exit 2, before a socket is opened -- rather than
+sent for the service to reject.
 
-`init`, `start`, `stop` and `status` make the service usable without the desktop
-application, which is what shipping Core open source and driving it over MCP
-requires. `init` is the first of the four in every sense: before R004-10 no
-shipped command created a workspace, so `omnivia start` on a fresh machine had
-nothing to start and the service refused an unbootstrapped directory outright.
-It does no bootstrapping of its own -- the workspace is made by
-`omnivia-core-service --init`, where an exclusive database open is legal -- and
-it starts nothing, because `init` establishes state and `start` establishes the
-process. They stay inside the same boundary as everything else here: the
-console script `omnivia-core-service` is *launched* and the service is signalled
-by pid, never imported, and every question about its state is asked by dialling
-it. ADR-036 admits exactly that division -- locate or launch the executable,
-communicate only through the application API.
+*Diagnostics carry nothing.* Every local failure prints one fixed sentence to
+stderr and never the exception's text, the input document, the path, the
+workspace, or anything a peer said. The service's own `code` and `message` are
+printed for an application error, because those are the answer rather than a
+diagnostic about it. Nothing local is ever written to stdout: a successful call
+puts exactly one document and one newline there and no other byte.
 
-`start` does not do the starting. R004-08 puts managed start in the service
-package so the CLI and the MCP adapter share one implementation of discovery, the
-bootstrap mutex, spawn, readiness and failed-child cleanup, and this command
-reaches it by launching `omnivia-core-service --managed-start` and reading the one
-versioned JSON document it answers with. That removed the accepted duplicate-spawn
-race: two `start` commands running together used to both spawn, with the loser
-refused by the lifetime storage lock; now the loser waits for the mutex holder and
-attaches to the service it started.
-
-`status` is the one that has to be careful. The descriptor is written once, at
-startup, and never rewritten, so its `ready` and `lifecycle_state` fields freeze
-at their startup values and a service that was killed leaves a file still saying
-`ready: true`. `status` therefore ignores those two fields entirely and reports
-what a live `core.readiness` call answered, which is read from the running
-service's own lifecycle object.
-
-Two claims it states and one it does not. It states the purpose
-`workspace_inspection`, and it states the scope and capability requirement the
-operation's frozen catalogue entry obliges a caller to declare -- read off that
-entry rather than written down here, so the two ends of the call cannot drift.
-It claims no principal at all: this path's principal is fixed by
-installation-local service configuration, a claim can only ever narrow, and
-there is nothing here worth narrowing to. Reaching the endpoint is not a
-verification of who is calling, and nothing this module prints says otherwise.
+Standard library, the public contracts, the shared client, and the two CLI
+modules above. The runtime, the MCP adapter, storage, subprocesses, sockets and
+concrete transports are all out of reach from here.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
-import time
-import uuid
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final, NoReturn
+
+from omnivia_core_client import (
+    MAXIMUM_DURATION_MS,
+    ClientError,
+    CompatibilityError,
+    CredentialError,
+    Deadline,
+    DeadlineExceededError,
+    EndpointUnavailableError,
+    InstallationServiceConfig,
+    ManagedStartError,
+    OperationCancelledError,
+    ServiceClient,
+    connect_managed_local,
+    stop_managed_local,
+)
 
 from omnivia_core.contracts.v1 import (
-    CapabilityRequirement,
-    ServiceEndpointDescriptor,
+    ContractSemanticError,
+    CoreSafeStatusV1,
+    CoreTargetV1,
+    ResponseEnvelope,
+    ServiceProbeResult,
     codec,
+    encode_core_safe_status,
+    encode_service_probe_result,
     get_operation_metadata,
 )
-from omnivia_core_cli.client import build_request, encode, read_descriptor
-from omnivia_core_cli.lifecycle import (
-    IDENTITY_DIFFERENT,
-    IDENTITY_UNREADABLE,
-    STOP_TIMEOUT_SECONDS,
-    Installation,
-    LifecycleError,
-    descriptor_is_gone,
-    home_directory,
-    process_identity,
-    process_is_gone,
-    request_init,
-    request_managed_start,
-    request_stop,
+from omnivia_core_cli.dispatch import (
+    DispatchError,
+    dispatch_application,
+    dispatch_probe,
+)
+from omnivia_core_cli.safe_status import (
+    degraded_status,
+    incompatible_status,
+    live_status,
+    resolve_local_target,
+    stopped_status,
+    unreachable_status,
+)
+from omnivia_core_cli.surface import (
+    APPLICATION_COMMANDS,
+    LIFECYCLE_COMMANDS,
+    PROBE_COMMANDS,
+    ApplicationCommand,
+    LifecycleCommand,
+    exit_code_for,
 )
 
-#: The whole-call budget for one `workspace show`, covering discovery's live probe
-#: and the request itself. A local call that has not answered in this long is not
+__all__ = ["build_parser", "main"]
+
+#: The whole-call budget when the caller states none: discovery's live probe and
+#: the call itself. A local call that has not answered in ten seconds is not
 #: about to.
-CALL_TIMEOUT_SECONDS = 10.0
+DEFAULT_TIMEOUT_MS: Final = 10_000
 
-#: The service-lifecycle operation `status` and the two lifecycle commands dial.
-#: Its handler reads the running service's live `lifecycle.state`, so what comes
-#: back is the current `ServiceState` -- one of the nine names
-#: `service/lifecycle.py` defines -- and not the value frozen into the descriptor
-#: at startup.
-READINESS_OPERATION = "core.readiness"
+#: The empty input document. Read-only so the one instance shared by every
+#: invocation cannot be mutated by anything downstream.
+_EMPTY_INPUT: Final[Mapping[str, Any]] = MappingProxyType({})
 
-#: The one application operation this CLI can call, and the one purpose it may
-#: claim. Both are literals here and neither is an argument: a caller-selected
-#: operation or purpose is exactly what this path must not have. The scope and
-#: the capability are *not* literals -- see `_inspect_claims`.
-WORKSPACE_INSPECT_OPERATION = "workspace.inspect"
-WORKSPACE_INSPECTION_PURPOSE = "workspace_inspection"
+#: The `Namespace` attribute the leaf parser stores its frozen command on. The
+#: command object itself, not its name: nothing here re-derives a path.
+_COMMAND: Final = "command"
 
+#: Every local diagnostic this module can print, one fixed sentence each. None
+#: is built from an argument, a document, an exception or a peer's words.
+_MANAGED_START_FAILED: Final = "the managed service could not be started"
+_OUT_OF_TIME: Final = "the call ran out of time, or was cancelled"
+_NOT_AUTHENTICATED: Final = "the service did not accept this client's credential"
+_INCOMPATIBLE: Final = "this client and the service could not agree on a version"
+_REFUSED_LOCALLY: Final = "the call was refused here and never sent"
+_NO_ANSWER: Final = "the call did not complete"
 
-def _inspect_claims() -> tuple[tuple[str, ...], tuple[CapabilityRequirement, ...]]:
-    """The scopes and capability requirement `workspace.inspect` obliges a caller to state.
+#: The one thing a malformed `--input-json` is told, and all it is told. The
+#: document is never echoed: it is the caller's own payload and may hold
+#: anything.
+_BAD_INPUT: Final = (
+    "must be exactly one JSON object, with unique member names and finite numbers"
+)
+_BAD_ARGUMENTS: Final = "the command arguments are not valid"
 
-    Read off the frozen catalogue entry rather than transcribed. Writing
-    `("workspace:read",)` and `"workspace.read" v1.0` down here would be a second
-    copy of a fact the catalogue already holds, free to drift from it, and the
-    drift would surface as a refusal whose cause is two files away. The service
-    builds its own session from the same entry, so both ends of this call read
-    one source.
+#: Version of the small lifecycle adapter document emitted by
+#: ``start|stop|status --json``. This is intentionally not the managed-start
+#: document: the latter is a service-owned launcher protocol, while this one is
+#: the stable, least-privilege view adapters such as the Core status menu consume.
+#:
+#: **Version 2 removed `service` and `reason`.** Both were this installation's
+#: internals -- a workspace id, a service instance id, the runtime's raw state
+#: name and its raw `unmet` list; a free-form sentence naming directories,
+#: endpoints, pids and the launcher's own words -- published to a surface that
+#: has authenticated nothing. What replaced them is a required `code` from the
+#: closed set below and an optional `safe_status`, which is `CoreSafeStatusV1`
+#: and is rendered only by the contract encoder.
+LIFECYCLE_ADAPTER_VERSION = 2
+
+#: Every `code` this adapter may publish, and the whole of what a machine caller
+#: learns about *why*. Closed and bounded on purpose: a caller can branch on
+#: these, a UI can phrase them in its own words, and neither ever receives a
+#: string this process assembled from a path, an endpoint, a launcher result or
+#: an exception. `internal_error` is the fail-closed landing place for a code
+#: this module did not declare -- publishing an undeclared one is the defect the
+#: set exists to prevent.
+LIFECYCLE_CODE_FRAMES: Final[
+    Mapping[str, tuple[str | None, str, bool]]
+] = MappingProxyType(
+    {
+        "start_started": ("start", "started", True),
+        "start_attached": ("start", "attached", True),
+        "start_workspace_missing": ("start", "failed", False),
+        "start_incompatible_service": ("start", "failed", False),
+        "start_timeout": ("start", "failed", False),
+        "start_spawn_failed": ("start", "failed", False),
+        "start_not_ready": ("start", "failed", False),
+        "start_failed": ("start", "failed", False),
+        "stop_stopped": ("stop", "stopped", True),
+        "stop_not_running": ("stop", "not_running", True),
+        "stop_service_unreachable": ("stop", "failed", False),
+        "stop_no_process": ("stop", "failed", False),
+        "stop_identity_mismatch": ("stop", "failed", False),
+        "stop_timeout": ("stop", "failed", False),
+        "stop_process_lingering": ("stop", "failed", False),
+        "status_running": ("status", "running", True),
+        "status_not_running": ("status", "not_running", False),
+        "status_unreachable": ("status", "failed", False),
+        "status_incompatible": ("status", "failed", False),
+        "internal_error": (None, "failed", False),
+    }
+)
+LIFECYCLE_CODES: Final = frozenset(LIFECYCLE_CODE_FRAMES)
+
+def _write_lifecycle_document(
+    action: str,
+    *,
+    ok: bool,
+    outcome: str,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
+) -> None:
+    """Write the one machine-readable lifecycle adapter document.
+
+    The safe status goes through `encode_core_safe_status` and through nothing
+    else, so a status that does not satisfy the contract's cross-field
+    invariants -- an action offered for a target that may not be acted on, a
+    version disagreement -- is omitted rather than published. Omission is the
+    fail-closed answer: a caller that receives no `safe_status` offers no
+    actions, while a caller that receives an invalid one might.
     """
-    entry = get_operation_metadata(WORKSPACE_INSPECT_OPERATION)
-    required = entry.required_capability
+    frame = LIFECYCLE_CODE_FRAMES.get(code)
+    if frame is None or (
+        (frame[0] is not None and frame[0] != action)
+        or frame[1] != outcome
+        or frame[2] != ok
+    ):
+        code = "internal_error"
+        outcome = "failed"
+        ok = False
+
+    document: dict[str, Any] = {
+        "lifecycle_adapter_version": LIFECYCLE_ADAPTER_VERSION,
+        "action": action,
+        "ok": ok,
+        "outcome": outcome,
+        "code": code,
+    }
+    if safe_status is not None:
+        try:
+            document["safe_status"] = encode_core_safe_status(safe_status)
+        except ContractSemanticError:
+            pass
+    sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+
+
+def _finish_lifecycle(
+    action: str,
+    *,
+    json_output: bool,
+    returncode: int,
+    outcome: str,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
+    human_stdout: str | None = None,
+    human_stderr: str | None = None,
+) -> int:
+    """Render one lifecycle result without mixing JSON and human prose."""
+    if json_output:
+        _write_lifecycle_document(
+            action,
+            ok=returncode == 0,
+            outcome=outcome,
+            code=code,
+            safe_status=safe_status,
+        )
+    else:
+        if human_stdout:
+            sys.stdout.write(human_stdout)
+        if human_stderr:
+            sys.stderr.write(human_stderr)
+    return returncode
+
+
+def _selected_target(
+    installation_state: Path, workspace_id: str, *, json_output: bool
+) -> CoreTargetV1 | None:
+    """The one target this command addresses, or None if it cannot be formed.
+
+    Resolved only when a machine document will be written: the human paths
+    publish no target, and reading a manifest they will not use is work for
+    nothing.
+    """
     return (
-        tuple(entry.scope.required_scopes),
-        (
-            CapabilityRequirement(
-                id=required.id,
-                minimum_version=required.minimum_version,
-                required=required.required,
-            ),
-        ),
+        resolve_local_target(installation_state, workspace_id)
+        if json_output
+        else None
     )
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """An argparse parser whose usage refusals never quote caller input."""
+
+    def error(self, message: str) -> NoReturn:
+        """Print static usage and one fixed sentence, discarding `message`."""
+        del message
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {_BAD_ARGUMENTS}\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    """The whole public command surface, built from the frozen one.
+
+    Deterministic: the groups appear in the order their commands are declared,
+    each leaf is reached by exactly the two segments the surface names, and no
+    alias or prefix abbreviation reaches any of them. Calling this twice
+    produces the same parser, and it opens nothing and reads nothing.
+    """
+    parser = _ArgumentParser(
         prog="omnivia",
-        description="Talk to a running OmniVia Core Service. Never owns a workspace.",
+        description="Call one operation on a running OmniVia Core service.",
+        allow_abbrev=False,
     )
     parser.add_argument(
-        "--runtime-state",
-        default=None,
-        type=Path,
-        help=(
-            "installation runtime directory holding service.json. Defaults to the "
-            "single directory under <home>/installation-state/runtime"
-        ),
+        "--installation-state",
+        required=True,
+        metavar="ABSOLUTE_PATH",
+        type=_absolute_path,
+        help="the installation state root whose service is to be called",
     )
     parser.add_argument(
-        "--home",
-        default=None,
-        type=Path,
+        "--workspace-id",
+        required=True,
+        metavar="ID",
+        help="the workspace whose service is to be called",
+    )
+    parser.add_argument(
+        "--timeout-ms",
+        default=DEFAULT_TIMEOUT_MS,
+        metavar="MILLISECONDS",
+        type=_duration_ms,
         help=(
-            "installation root holding workspace/, installation-state/ and run/. "
-            "Defaults to ~/.omnivia"
+            "whole-call budget in milliseconds, covering the connection and the "
+            f"call (default {DEFAULT_TIMEOUT_MS})"
         ),
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("discover", help="show the discovered service, if any")
-    subparsers.add_parser(
-        "init",
-        help=(
-            "create the workspace for this installation if there is not one "
-            "already. Starts no service"
-        ),
-    )
-    subparsers.add_parser(
-        "start", help="start the service for this installation and wait until it is ready"
-    )
-    subparsers.add_parser("stop", help="ask the running service to stop, and wait for it")
-    subparsers.add_parser(
-        "status", help="dial the service and report the lifecycle state it answers with"
-    )
+    groups = parser.add_subparsers(dest="group", required=True)
+    built: dict[str, Any] = {}
 
-    for name, help_text in (
-        ("health", "ask the service whether it is alive"),
-        ("readiness", "ask the service whether it is writable-ready"),
-    ):
-        sub = subparsers.add_parser(name, help=help_text)
-        sub.add_argument("--principal", default=None)
-        sub.add_argument("--json", action="store_true", help="emit the request envelope")
+    def leaves(group: str) -> Any:
+        """The leaf subparsers of one group, creating the group on first use."""
+        if group not in built:
+            built[group] = groups.add_parser(group, allow_abbrev=False).add_subparsers(
+                dest="leaf", required=True
+            )
+        return built[group]
 
-    workspace = subparsers.add_parser("workspace", help="ask about the served workspace")
-    workspace_actions = workspace.add_subparsers(dest="action", required=True)
-    workspace_actions.add_parser(
-        "show", help="call workspace.inspect and render the workspace descriptor"
-    )
+    for application in APPLICATION_COMMANDS:
+        group, leaf_name = application.path
+        leaf = leaves(group).add_parser(
+            leaf_name, allow_abbrev=False, help=application.operation
+        )
+        leaf.add_argument(
+            "--input-json",
+            default=_EMPTY_INPUT,
+            metavar="JSON_OBJECT",
+            type=_input_object,
+            help="the operation's input document (default {})",
+        )
+        leaf.add_argument("--principal", default=None, help="the principal to claim")
+        leaf.add_argument(
+            "--idempotency-key", default=None, help="make this mutation replay-safe"
+        )
+        leaf.add_argument(
+            "--record-version",
+            default=None,
+            help="guard this mutation with the record version it expects",
+        )
+        leaf.add_argument(
+            "--json", action="store_true", help="emit the canonical response envelope"
+        )
+        leaf.set_defaults(**{_COMMAND: application})
+
+    for probe in PROBE_COMMANDS:
+        group, leaf_name = probe.path
+        leaf = leaves(group).add_parser(leaf_name, allow_abbrev=False, help=probe.probe)
+        leaf.add_argument(
+            "--json", action="store_true", help="emit the canonical probe result"
+        )
+        leaf.set_defaults(**{_COMMAND: probe})
+
+    for lifecycle in LIFECYCLE_COMMANDS:
+        group, leaf_name = lifecycle.path
+        leaf = leaves(group).add_parser(
+            leaf_name, allow_abbrev=False, help=f"{lifecycle.action} this service"
+        )
+        leaf.add_argument(
+            "--json", action="store_true", help="emit the safe lifecycle document"
+        )
+        leaf.set_defaults(**{_COMMAND: lifecycle})
 
     return parser
 
 
-def _dial(
-    runtime_state: Path,
-    service: ServiceEndpointDescriptor,
-    operation: str,
-    *,
-    principal: str | None = None,
-    scopes: tuple[str, ...] = (),
-    purpose: str = "cli",
-    required_capabilities: tuple[CapabilityRequirement, ...] = (),
-    quiet: bool = False,
-) -> dict[str, Any] | None:
-    """Call one operation on the discovered service and return its result, or None.
-
-    Split out of `_call` when the lifecycle commands arrived, because they need
-    the same dialling and a different rendering: `status` reports a lifecycle
-    state in prose, and `start` and `stop` use a successful call as *evidence* --
-    that a service is really there -- and print nothing from it at all. A second
-    copy of the discovery checks below is a second set of them to keep in step
-    with these, which is the failure this split exists to avoid.
-
-    `quiet` suppresses the diagnostics, and it has exactly one caller: `start`
-    asking "is one already running?" before it spawns. There, a descriptor that
-    fails its checks is the ordinary case rather than a failure, and reporting it
-    on stderr would put an error in front of a user whose command then succeeded.
-
-    Every subcommand that dials goes through here. The claims differ per
-    operation -- `workspace.inspect` states a scope, a capability and a purpose
-    its catalogue entry obliges, the service-lifecycle operations state none --
-    but the dialling does not, and a second copy of it is a second set of
-    discovery checks to keep in step with these.
-
-    `service` is the descriptor `read_descriptor` already located under
-    `--runtime-state`, and it is the authority for what gets dialled. Discovery
-    re-derives its own path from an installation root, so the two can name
-    different files -- a symlinked `--runtime-state` is enough to separate them.
-    When they do, discovery's provenance, mode, scheme and liveness checks land
-    on one descriptor while the call would go to the other, which is exactly the
-    gap those checks exist to close. So the root is derived from the *resolved*
-    path, and the descriptor discovery validated must equal the one that was
-    read, or nothing is called at all.
-
-    The client is imported here rather than at module scope, and the reason is
-    not style. `discover` answers from the published descriptor alone and must
-    keep answering where this distribution is installed without
-    `omnivia-core-client`; a module-scope import would make
-    `omnivia_core_cli.main` unimportable there and take `discover` and `--help`
-    down with it. `LocalIpcTransport` is in that same import because owner
-    resolution 005 R005-01 moved it into the client package: the CLI constructs
-    the client-owned transport and no longer ships one of its own.
-    """
-    from omnivia_core_client import (
-        ClientError,
-        Deadline,
-        LocalIpcTransport,
-        discover_endpoint,
-    )
-
-    def refuse(reason: str) -> None:
-        if not quiet:
-            sys.stderr.write(reason + "\n")
-
-    deadline = Deadline.after(CALL_TIMEOUT_SECONDS)
-    transport = LocalIpcTransport(endpoint_uri=service.endpoint_uri)
-
-    try:
-        # Discovery is not a formality standing between the descriptor and the
-        # call. It checks the file's provenance and the mode of the directories
-        # above it, refuses an endpoint that is not this platform's local IPC,
-        # negotiates all three versions, and proves the descriptor describes the
-        # process that is actually listening -- before anything is asked of it.
-        discovered = discover_endpoint(
-            runtime_state.resolve().parent.parent,
-            service.workspace_id,
-            transport=transport,
-            deadline=deadline,
-        )
-    except (ClientError, ValueError, OSError):
-        # The diagnostic is discarded rather than rendered: the client's failures
-        # are payload-free by construction, but a `ValueError` from the public
-        # decoder is a statement about a document and can quote it.
-        # Worded without "verified" on purpose. What failed is a check on the
-        # advertised descriptor -- its provenance, its versions, its liveness --
-        # and the vocabulary of identity verification has no business on this
-        # path, in either direction.
-        refuse("the advertised service did not pass its discovery checks")
-        return None
-    if discovered is None:
-        refuse("no service is advertised; start omnivia-core-service first")
-        return None
-    if discovered.descriptor != service:
-        # Two descriptors, so the checks above were applied to a file this call
-        # would not have used. Refuse rather than pick one.
-        refuse("the advertised service did not pass its discovery checks")
-        return None
-
-    request = build_request(
-        operation,
-        workspace_id=discovered.descriptor.workspace_id,
-        request_id=f"cli-{uuid.uuid4()}",
-        principal=principal,
-        scopes=scopes,
-        purpose=purpose,
-        required_capabilities=required_capabilities,
-    )
-    try:
-        response = transport.call(request, deadline=deadline)
-    except ClientError:
-        refuse("the service did not answer")
-        return None
-
-    if response.metadata.correlation_id != request.metadata.correlation_id:
-        # The answer correlates to a different request. On a strictly unary
-        # connection that should be impossible, which is the reason to say so
-        # rather than to render it: an answer that does not correlate is not this
-        # call's answer, whatever it contains.
-        refuse("the service answered a different request")
-        return None
-
-    error = getattr(response, "error", None)
-    if error is not None:
-        # Only the service's own code and message. Echoing any part of the
-        # request back would put a caller-supplied value on the refusal surface,
-        # which is the one thing a refusal must not carry.
-        refuse(f"{error.code}: {error.message}")
-        return None
-
-    # Returned as the wire form the public codec produces, not as the decoded
-    # envelope's attributes. The decoded object holds read-only mapping views that
-    # `json` cannot serialise, and reaching past them field by field would be this
-    # CLI's own second opinion about the shape of a contract result.
-    result = codec.encode_response(response)["result"]
-    return dict(result) if isinstance(result, dict) else {}
-
-
-def _call(
-    runtime_state: Path,
-    service: ServiceEndpointDescriptor,
-    operation: str,
-    *,
-    principal: str | None = None,
-    scopes: tuple[str, ...] = (),
-    purpose: str = "cli",
-    required_capabilities: tuple[CapabilityRequirement, ...] = (),
+def main(
+    argv: list[str] | None = None, *, connected_client: ServiceClient | None = None
 ) -> int:
-    """Dial one operation and render its whole result as JSON."""
-    result = _dial(
-        runtime_state,
-        service,
-        operation,
-        principal=principal,
-        scopes=scopes,
-        purpose=purpose,
-        required_capabilities=required_capabilities,
-    )
-    if result is None:
-        return 1
-    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
-    return 0
+    """Run one command and return the process exit status.
 
+    `connected_client` is an injection seam for tests and embedders that already
+    hold a connected :class:`~omnivia_core_client.ServiceClient`. The console
+    script passes none, and then the client is connected here from the
+    installation state root and workspace the caller named -- through
+    :meth:`ServiceClient.connect` and nothing else, so no descriptor is read and
+    no transport or launcher is constructed on this path.
 
-def _live_service(
-    runtime_state: Path | None, *, quiet: bool
-) -> tuple[ServiceEndpointDescriptor, dict[str, Any]] | None:
-    """The advertised service and its live readiness answer, or None if there is none.
-
-    Both halves, because either alone is a wrong answer. The descriptor is written
-    once at startup and never rewritten, so a file claiming `ready: true` survives
-    the process that wrote it and reading it alone reports a killed service as
-    healthy. Dialling alone cannot be done at all -- the endpoint to dial is in
-    the file.
+    One :class:`~omnivia_core_client.Deadline` is built before the connection
+    and reused for the call, because the budget the caller stated is for the
+    whole invocation: a call that gets a fresh deadline after a slow connect
+    would run for longer than was asked for.
     """
-    if runtime_state is None:
-        return None
-    service = read_descriptor(runtime_state)
-    if service is None:
-        return None
-    answer = _dial(runtime_state, service, READINESS_OPERATION, quiet=quiet)
-    return None if answer is None else (service, answer)
-
-
-def _describe(service: ServiceEndpointDescriptor, answer: dict[str, Any]) -> str:
-    """One running service, as the facts a caller acts on.
-
-    `state` and `ready` come from the live answer, never from the descriptor's own
-    frozen `lifecycle_state` and `ready` fields. The state is one of the nine
-    `ServiceState` names the runtime defines; no second vocabulary is invented here.
-    """
-    unmet = answer.get("unmet") or []
-    lines = [
-        f"endpoint: {service.endpoint_uri}",
-        f"workspace: {service.workspace_id}",
-        f"service instance: {service.service_instance_id}",
-        f"state: {answer.get('state')}",
-        f"writable: {'yes' if answer.get('ready') else 'no'}",
-    ]
-    if service.process is not None:
-        lines.append(f"pid: {service.process.pid}")
-    if unmet:
-        lines.append(f"unmet: {', '.join(str(name) for name in unmet)}")
-    return "".join(line + "\n" for line in lines)
-
-
-def _init(installation: Installation) -> int:
-    """Ask the shared bootstrap path for a workspace, and report what it answered.
-
-    **This command does not do the initialising.** R004-10 puts workspace bootstrap
-    in the service package, where an exclusive database open is legal, so the whole
-    of `init` is: launch `omnivia-core-service --init`, read its one JSON document,
-    and put it into words. Nothing here opens a database, writes a manifest or takes
-    a lock.
-
-    Three outcomes, and the middle one matters as much as the first: `initialised`
-    when a workspace was made, `already initialised` when one was there and nothing
-    changed, and a refusal naming what it declined to overwrite. Repeating this
-    command is safe, which is what makes it usable as a first step in a script that
-    does not know whether it has run before.
-
-    It prints where the workspace is and what it is called, and nothing else. There
-    is no service yet to describe -- `start` is the next command, not a step this
-    one takes.
-    """
+    parser = build_parser()
+    client: ServiceClient | None
     try:
-        result = request_init(installation)
-    except LifecycleError as refusal:
-        sys.stderr.write(f"{refusal}\n")
-        return 1
+        arguments = parser.parse_args(argv)
+        command = getattr(arguments, _COMMAND)
+        if isinstance(command, ApplicationCommand):
+            _check_mutation_metadata(parser, command, arguments)
+    except SystemExit as requested:
+        # argparse exits rather than returning, and this function is declared to
+        # return a status. Both are the same number.
+        return requested.code if isinstance(requested.code, int) else 0
 
-    status = result.get("status")
-    workspace = result.get("workspace")
-    if status in ("initialised", "already_initialised") and isinstance(workspace, dict):
-        headline = "initialised" if status == "initialised" else "already initialised"
-        sys.stdout.write(
-            headline
-            + "\n"
-            + f"workspace: {workspace.get('workspace_id')}\n"
-            + f"workspace root: {workspace.get('workspace_root')}\n"
-            + f"installation state: {workspace.get('installation_state')}\n"
-            + f"format: {workspace.get('workspace_format_version')}\n"
-            + f"start it with: omnivia --home {installation.home} start\n"
-        )
-        return 0
+    if isinstance(command, LifecycleCommand):
+        return _run_lifecycle(arguments, command, connected_client=connected_client)
 
-    sys.stderr.write(
-        f"{result.get('reason') or 'the workspace could not be initialised'}\n"
-    )
-    return 1
-
-
-def _start(installation: Installation) -> int:
-    """Ask the shared managed-start path for a service, and report what it answered.
-
-    **This command no longer does the starting.** R004-08 makes managed start a
-    service-owned path so that the CLI and the MCP adapter run one implementation
-    rather than two, and R004-09 makes it the first production caller of
-    `coordinated_startup`. So the whole of `start` is now: launch
-    `omnivia-core-service --managed-start`, read its one JSON document, and put it
-    into words. Discovery, compatibility, the bootstrap mutex, the recheck, the
-    spawn, the readiness wait and the failed-child cleanup all happen behind that
-    subprocess -- and the boundary is unchanged, because a subprocess is a
-    subprocess whether it serves or arbitrates.
-
-    What a user sees is deliberately the same as before. `already running` when one
-    is up, `started (pid N)` when one was made, the same five-line description, and
-    on a failure the started process's own words. The one thing that is different is
-    what happens when two `start` commands race: the accepted duplicate spawn is
-    gone, because the launcher that loses the mutex waits for the winner and then
-    attaches to the service the winner started.
-
-    The description's `state` and `writable` come from the launcher's live
-    `core.readiness` answer, not from the descriptor's frozen fields, for the same
-    reason `status` does not trust them.
-    """
     try:
-        result = request_managed_start(
-            installation, endpoint_uri=installation.endpoint_uri
-        )
-    except LifecycleError as refusal:
-        sys.stderr.write(f"{refusal}\n")
-        return 1
-
-    status = result.get("status")
-    service = result.get("service")
-    if status in ("attached", "started") and isinstance(service, dict):
-        headline = "already running" if status == "attached" else "started"
-        pid = service.get("pid")
-        if status == "started" and pid is not None:
-            headline = f"started (pid {pid})"
-        sys.stdout.write(headline + "\n" + _describe_service(service))
-        return 0
-
-    sys.stderr.write(f"{result.get('reason') or 'the service could not be started'}\n")
-    child_output = result.get("child_output")
-    if isinstance(child_output, str) and child_output.strip():
-        sys.stderr.write(child_output.rstrip("\n") + "\n")
-    return 1
-
-
-def _describe_service(service: dict[str, Any]) -> str:
-    """One running service, rendered from the managed-start result.
-
-    The same five-to-seven lines `_describe` renders from a descriptor and a live
-    readiness answer, because they are the same facts: the launcher already dialled
-    `core.readiness` and put the answer in the result, so dialling again here would
-    be a second opinion about a service this command did not start and cannot
-    improve on.
-    """
-    unmet = service.get("unmet") or []
-    lines = [
-        f"endpoint: {service.get('endpoint_uri')}",
-        f"workspace: {service.get('workspace_id')}",
-        f"service instance: {service.get('service_instance_id')}",
-        f"state: {service.get('state')}",
-        f"writable: {'yes' if service.get('ready') else 'no'}",
-    ]
-    if service.get("pid") is not None:
-        lines.append(f"pid: {service['pid']}")
-    if unmet:
-        lines.append(f"unmet: {', '.join(str(name) for name in unmet)}")
-    return "".join(line + "\n" for line in lines)
-
-
-def _stop(runtime_state: Path) -> int:
-    """Signal the running service and wait for it to withdraw its own descriptor.
-
-    **The identity check comes before the signal, and it is two checks.** A pid on
-    its own is not enough -- pids are recycled, ADR-037 says so, and
-    `service/bootstrap.py` says so again -- so signalling one read out of a file
-    can hit a process that has nothing to do with Core.
-
-    1. The service is dialled first. A live `core.readiness` answer that passed
-       discovery's workspace and service-instance agreement establishes that the
-       descriptor is *current*: a service that died left a file no live instance
-       will vouch for, and that is the case in which its pid is stale.
-    2. The published `start_time` is then compared against a reading taken now, so
-       the window between the dial and the signal is covered too.
-
-    **The residual ceiling, stated rather than papered over.** Neither check binds
-    the process that answered on the socket to the pid in the file: this CLI holds
-    no primitive that can ask a local socket which process is behind it, and
-    acquiring one is a recorded deferral, not this lane's work. What is true is
-    that the descriptor is published by the process it describes, that a live
-    instance vouched for it, and that the pid's start time still matches. What is
-    not established is the socket-to-pid link itself. `boot_id` is not compared
-    either, for the reason `process_identity` gives.
-
-    On a host that can offer no start-time reading -- Windows -- the second check
-    is skipped and said to be skipped, rather than being quietly reported as a
-    match.
-    """
-    service = read_descriptor(runtime_state)
-    if service is None:
-        # Symmetric with `start` finding one already running: asking for a state
-        # the system is already in is not a failure.
-        sys.stdout.write("not running\n")
-        return 0
-
-    if _dial(runtime_state, service, READINESS_OPERATION) is None:
-        sys.stderr.write(
-            f"a descriptor is advertised at {runtime_state} but the service it "
-            "names is not answering; nothing was signalled. It is left in place: "
-            "cleanup belongs to the instance that published it, and the next "
-            "start replaces it\n"
-        )
-        return 1
-
-    process = service.process
-    if process is None:
-        sys.stderr.write(
-            "the advertised descriptor names no process, so there is nothing to "
-            "signal\n"
-        )
-        return 1
-
-    identity = process_identity(process)
-    if identity == IDENTITY_DIFFERENT:
-        sys.stderr.write(
-            f"pid {process.pid} is not the process that published this "
-            "descriptor; nothing was signalled\n"
-        )
-        return 1
-    if identity == IDENTITY_UNREADABLE:  # pragma: no cover - Windows only
-        sys.stderr.write(
-            "note: this host offers no process start-time reading, so the pid "
-            "was not corroborated against the published one\n"
-        )
-
-    request_stop(process.pid)
-    deadline = time.monotonic() + STOP_TIMEOUT_SECONDS
-    if not descriptor_is_gone(runtime_state, deadline):
-        sys.stderr.write(
-            f"the service was asked to stop but had not withdrawn its descriptor "
-            f"after {STOP_TIMEOUT_SECONDS:.0f}s\n"
-        )
-        return 1
-    # Two events, in this order, and only both of them make "stopped" true. The
-    # withdrawn descriptor proves the unwind ran; the process is still shutting
-    # down after it. Reporting success here would let a caller start a
-    # replacement into a lock the old process has not yet dropped.
-    if not process_is_gone(process.pid, deadline):
-        sys.stderr.write(
-            f"the service withdrew its descriptor but pid {process.pid} was still "
-            f"running after {STOP_TIMEOUT_SECONDS:.0f}s\n"
-        )
-        return 1
-    sys.stdout.write("stopped\n")
-    return 0
-
-
-def _status(runtime_state: Path) -> int:
-    """Report what a live call answered, never what the file claims."""
-    running = _live_service(runtime_state, quiet=False)
-    if running is None:
-        sys.stdout.write("not running\n")
-        return 1
-    sys.stdout.write("running\n" + _describe(*running))
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    installation = Installation(home_directory(args.home))
-
-    if args.command == "init":
-        # Before the `--runtime-state` resolution below, and not subject to it:
-        # nothing is advertised yet on a machine where this is the first command
-        # run, and refusing here for want of a runtime directory would make the
-        # command that creates the workspace require a service to already exist.
-        return _init(installation)
-
-    if args.command == "start":
-        # `--runtime-state` is not passed on. The managed-start path derives the one
-        # runtime directory from the installation root and the workspace the
-        # manifest names, which is the path a service actually publishes to; the
-        # flag only ever selected which descriptor this command *polled*, and
-        # pointing it elsewhere never changed where the started service wrote.
-        return _start(installation)
-
-    runtime_state = args.runtime_state
-    if runtime_state is None:
-        try:
-            runtime_state = installation.runtime_state()
-        except LifecycleError as refusal:
-            # Nothing is advertised anywhere under this installation, which the
-            # two lifecycle queries answer in their own vocabulary rather than as
-            # a path error.
-            if args.command == "stop":
-                sys.stdout.write("not running\n")
-                return 0
-            if args.command == "status":
-                sys.stdout.write("not running\n")
-                sys.stderr.write(f"{refusal}\n")
-                return 1
-            sys.stderr.write(f"{refusal}\n")
-            return 1
-
-    if args.command == "status":
-        return _status(runtime_state)
-    if args.command == "stop":
-        return _stop(runtime_state)
-
-    service = read_descriptor(runtime_state)
-
-    if args.command == "discover":
-        if service is None:
-            sys.stdout.write("no service is advertised\n")
-            return 1
-        sys.stdout.write(
-            json.dumps(
-                {
-                    # The output key stays `endpoint`: the value moved to
-                    # `endpoint_uri` in the published document, what it means to a
-                    # caller of this command did not, and renaming it would break
-                    # every script reading this JSON for no gain.
-                    "endpoint": service.endpoint_uri,
-                    "workspace_id": service.workspace_id,
-                    "service_instance_id": service.service_instance_id,
-                    "fencing_generation": service.fencing_generation,
-                    # `advertised_ready`, not `ready`. The descriptor is published
-                    # once at startup and never rewritten, so this is what the
-                    # service claimed when it started and not what is true now: a
-                    # service killed hard leaves the file behind still saying true.
-                    # A caller reading a bare `ready` gets exactly the false
-                    # liveness signal `status` exists to avoid, and it would get it
-                    # silently. `observation` names the source in the same breath,
-                    # so a script has to opt into believing a stale claim rather
-                    # than doing it by default.
-                    "advertised_ready": service.ready,
-                    "observation": "published-descriptor",
-                },
-                indent=2,
-                sort_keys=True,
+        deadline = Deadline.after_ms(arguments.timeout_ms)
+        client = connected_client
+        if client is None:
+            managed = connect_managed_local(
+                InstallationServiceConfig(
+                    installation_state=arguments.installation_state,
+                    workspace_id=arguments.workspace_id,
+                ),
+                deadline=deadline,
             )
-            + "\n"
+            client = managed.client
+        if isinstance(command, ApplicationCommand):
+            return _report_application(
+                dispatch_application(
+                    client,
+                    command,
+                    payload=arguments.input_json,
+                    deadline=deadline,
+                    principal=arguments.principal,
+                    idempotency_key=arguments.idempotency_key,
+                    record_version=arguments.record_version,
+                ),
+                as_json=arguments.json,
+            )
+        return _report_probe(
+            dispatch_probe(client, command, deadline=deadline), as_json=arguments.json
         )
-        return 0
+    except (DeadlineExceededError, OperationCancelledError):
+        return _refuse(_OUT_OF_TIME, 6)
+    except CredentialError:
+        return _refuse(_NOT_AUTHENTICATED, 3)
+    except CompatibilityError:
+        return _refuse(_INCOMPATIBLE, 4)
+    except ManagedStartError:
+        return _refuse(_MANAGED_START_FAILED, 1)
+    except (ValueError, TypeError):
+        # An argument or a request this build would not put on the wire,
+        # including the contracts' own `ContractDecodeError`, which is a
+        # `ValueError` and can quote the document that produced it.
+        return _refuse(_REFUSED_LOCALLY, 2)
+    except (ClientError, DispatchError, OSError):
+        return _refuse(_NO_ANSWER, 1)
 
-    if service is None:
-        sys.stderr.write("no service is advertised; start omnivia-core-service first\n")
-        return 1
 
-    if args.command == "workspace":
-        # The descriptor read above supplies the endpoint to dial and the
-        # workspace to name. Neither is chosen here and neither comes from an
-        # argument: this CLI cannot ask about a workspace other than the one the
-        # endpoint it found was launched to serve.
-        scopes, required_capabilities = _inspect_claims()
-        return _call(
-            runtime_state,
-            service,
-            WORKSPACE_INSPECT_OPERATION,
-            scopes=scopes,
-            purpose=WORKSPACE_INSPECTION_PURPOSE,
-            required_capabilities=required_capabilities,
-        )
-
-    if args.json:
-        # The one path that still prints instead of calling, and it is now the
-        # opt-in the flag always advertised rather than the default. What comes
-        # out is the envelope this CLI *would* send: a request, not an answer,
-        # and no evidence whatsoever about the service.
-        request = build_request(
-            f"core.{args.command}",
-            workspace_id=service.workspace_id,
-            request_id=f"cli-{uuid.uuid4()}",
-            principal=args.principal,
-        )
-        sys.stdout.write(encode(request) + "\n")
-        return 0
-
-    # `health` and `readiness` are the service-lifecycle operations, and they
-    # state no scope, no capability and no purpose beyond the default: they are
-    # dispatched against the service's own grant rather than the catalogue, so
-    # there is no frozen entry obliging a caller to declare anything. Printing
-    # the envelope here instead of sending it -- which is what this branch used
-    # to do unconditionally -- answered "alive" and "ready" with exit 0 for a
-    # service that was never dialled, and a launcher polling readiness would act
-    # on it.
-    return _call(
-        runtime_state,
-        service,
-        f"core.{args.command}",
-        principal=args.principal,
+def _safe_live_status(
+    target: CoreTargetV1 | None,
+    client: ServiceClient,
+    readiness: ServiceProbeResult,
+) -> CoreSafeStatusV1 | None:
+    """Project a live readiness answer through the accepted safe contract."""
+    if target is None:
+        return None
+    return live_status(
+        target,
+        state=client.descriptor.lifecycle_state,
+        ready=readiness.status == "pass",
+        server_version=readiness.server_version,
+        protocol_version=client.descriptor.protocol_version,
     )
+
+
+def _readiness(client: ServiceClient, deadline: Deadline) -> ServiceProbeResult:
+    command = next(
+        probe for probe in PROBE_COMMANDS if probe.probe == "service.readiness"
+    )
+    return dispatch_probe(client, command, deadline=deadline)
+
+
+def _run_lifecycle(
+    arguments: argparse.Namespace,
+    command: LifecycleCommand,
+    *,
+    connected_client: ServiceClient | None,
+) -> int:
+    """Run one explicit ``service`` administration command.
+
+    Application and probe counts remain exactly 20 and 3.  These three commands
+    are a separate administrative class and always address the explicit
+    installation-state/workspace pair supplied to the root parser.
+    """
+    action = command.action
+    json_output = bool(arguments.json)
+    target = _selected_target(
+        arguments.installation_state,
+        arguments.workspace_id,
+        json_output=json_output,
+    )
+    config = InstallationServiceConfig(
+        installation_state=arguments.installation_state,
+        workspace_id=arguments.workspace_id,
+    )
+    deadline = Deadline.after_ms(arguments.timeout_ms)
+
+    if action == "stop":
+        result = stop_managed_local(config, deadline=deadline)
+        status = result.status
+        returncode = 0 if status in {"stopped", "not_running"} else 1
+        code = {
+            "stopped": "stop_stopped",
+            "not_running": "stop_not_running",
+            "unreachable": "stop_service_unreachable",
+            "no_process": "stop_no_process",
+            "identity_mismatch": "stop_identity_mismatch",
+            "timeout": "stop_timeout",
+            "process_lingering": "stop_process_lingering",
+        }.get(status, "internal_error")
+        if target is None:
+            safe = None
+        elif status in {"stopped", "not_running"}:
+            safe = stopped_status(target)
+        elif status == "unreachable":
+            safe = unreachable_status(target, may_start=True)
+        elif status in {"timeout", "process_lingering"}:
+            safe = degraded_status(target, lifecycle_state="stopping")
+        else:
+            safe = degraded_status(target, lifecycle_state="running")
+        human = {
+            "stopped": "stopped\n",
+            "not_running": "not running\n",
+        }.get(status)
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=returncode,
+            outcome=status if returncode == 0 else "failed",
+            code=code,
+            safe_status=safe,
+            human_stdout=human,
+            human_stderr=None if human is not None else "the service was not stopped\n",
+        )
+
+    client: ServiceClient | None
+    try:
+        if action == "start":
+            managed = connect_managed_local(config, deadline=deadline)
+            client = managed.client
+            outcome = managed.status
+        else:
+            client = connected_client
+            if client is None:
+                client = ServiceClient.connect(config, deadline=deadline)
+            if client is None:
+                return _finish_lifecycle(
+                    action,
+                    json_output=json_output,
+                    returncode=1,
+                    outcome="not_running",
+                    code="status_not_running",
+                    safe_status=stopped_status(target) if target is not None else None,
+                    human_stdout="not running\n",
+                )
+            outcome = "running"
+        assert client is not None
+        readiness = _readiness(client, deadline)
+    except CompatibilityError:
+        code = "start_incompatible_service" if action == "start" else "status_incompatible"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=incompatible_status(target) if target is not None else None,
+            human_stderr="the service is incompatible\n",
+        )
+    except EndpointUnavailableError:
+        code = "start_failed" if action == "start" else "status_unreachable"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr="the service is unreachable\n",
+        )
+    except (DeadlineExceededError, OperationCancelledError):
+        code = "start_timeout" if action == "start" else "status_unreachable"
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code=code,
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr=_OUT_OF_TIME + "\n",
+        )
+    except (ManagedStartError, ClientError, DispatchError, OSError):
+        return _finish_lifecycle(
+            action,
+            json_output=json_output,
+            returncode=1,
+            outcome="failed",
+            code="start_failed" if action == "start" else "status_unreachable",
+            safe_status=(
+                unreachable_status(target, may_start=True)
+                if target is not None
+                else None
+            ),
+            human_stderr=_NO_ANSWER + "\n",
+        )
+
+    return _finish_lifecycle(
+        action,
+        json_output=json_output,
+        returncode=0,
+        outcome=outcome,
+        code=(
+            "status_running"
+            if action == "status"
+            else "start_attached" if outcome == "attached" else "start_started"
+        ),
+        safe_status=_safe_live_status(target, client, readiness),
+        human_stdout=(
+            "running\n"
+            if action == "status"
+            else "already running\n" if outcome == "attached" else "started\n"
+        ),
+    )
+
+
+def _check_mutation_metadata(
+    parser: argparse.ArgumentParser,
+    command: ApplicationCommand,
+    arguments: argparse.Namespace,
+) -> None:
+    """Hold `--idempotency-key` and `--record-version` to the catalogue's postures.
+
+    Read off the frozen entry for this operation, never transcribed, and checked
+    before the connection: a mutation that requires a key and was given none is
+    not replay-safe, and one given a key it does not honour is unsafe while
+    looking guarded. Both are the caller's mistake, so both are usage errors --
+    exit 2 -- rather than a request sent for the service to refuse.
+    """
+    entry = get_operation_metadata(command.operation)
+    for flag, posture, supported, supplied in (
+        (
+            "--idempotency-key",
+            entry.idempotency.required,
+            entry.idempotency.supports_idempotency_key,
+            arguments.idempotency_key,
+        ),
+        (
+            "--record-version",
+            entry.precondition.required,
+            entry.precondition.supports_mutation_precondition,
+            arguments.record_version,
+        ),
+    ):
+        if posture and supplied is None:
+            parser.error(f"{flag} is required for this command")
+        if not supported and supplied is not None:
+            parser.error(f"{flag} is not accepted by this command")
+
+
+def _absolute_path(value: str) -> Path:
+    """`value` as an absolute path, refusing a relative one.
+
+    Relative is refused rather than resolved against the working directory: the
+    installation state root is the trust anchor for everything discovery then
+    checks, and one that means different directories from different shells is
+    not an anchor.
+    """
+    path = Path(value)
+    if not path.is_absolute():
+        raise argparse.ArgumentTypeError("must be an absolute path")
+    return path
+
+
+def _duration_ms(value: str) -> int:
+    """`value` as a contract `DurationMs`: whole milliseconds in `[0, 86400000]`.
+
+    The same domain :meth:`Deadline.after_ms` accepts, checked here so the
+    refusal is a usage error naming the flag rather than an exception from the
+    middle of the call.
+    """
+    try:
+        milliseconds = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "must be a whole number of milliseconds"
+        ) from None
+    if not 0 <= milliseconds <= MAXIMUM_DURATION_MS:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number of milliseconds in [0, {MAXIMUM_DURATION_MS}]"
+        )
+    return milliseconds
+
+
+def _input_object(value: str) -> Mapping[str, Any]:
+    """`value` as exactly one JSON object, or a usage error that quotes nothing.
+
+    Four refusals, all of them things a later stage could not detect or could
+    not report safely. A duplicated member name is gone once the parser has
+    built a mapping, so it is refused during the parse. `NaN` and the
+    infinities are not JSON, in either the literal form Python's parser accepts
+    or the overflowing-decimal form it produces silently, and neither survives
+    canonical encoding. An array or a scalar is well-formed JSON and not an
+    operation input.
+
+    The document never appears in the diagnostic, and the parser's own message
+    is discarded rather than chained: an input document is the caller's payload
+    and may hold a secret, a principal or a record's contents, and a usage error
+    is exactly what ends up in a shell history or a CI log.
+    """
+    try:
+        document = json.loads(
+            value,
+            object_pairs_hook=_unique_members,
+            parse_constant=_reject_constant,
+            parse_float=_finite_float,
+        )
+    except (ValueError, RecursionError):
+        raise argparse.ArgumentTypeError(_BAD_INPUT) from None
+    if not isinstance(document, dict):
+        raise argparse.ArgumentTypeError(_BAD_INPUT)
+    return document
+
+
+def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """The object `pairs` describe, refusing any name given twice."""
+    members = dict(pairs)
+    if len(members) != len(pairs):
+        raise ValueError(_BAD_INPUT)
+    return members
+
+
+def _reject_constant(name: str) -> NoReturn:
+    """Refuse the `NaN`, `Infinity` and `-Infinity` literals Python would accept."""
+    raise ValueError(_BAD_INPUT)
+
+
+def _finite_float(text: str) -> float:
+    """`text` as a float, refusing one that overflows to an infinity."""
+    number = float(text)
+    if not math.isfinite(number):
+        raise ValueError(_BAD_INPUT)
+    return number
+
+
+def _report_application(response: ResponseEnvelope, *, as_json: bool) -> int:
+    """Print one response and return the status its outcome maps to.
+
+    The wire mapping is what gets printed in both modes, never the decoded
+    envelope's attributes: those are read-only views `json` cannot serialise,
+    and reaching past them field by field would be this CLI's second opinion
+    about the shape of a contract result.
+    """
+    wire = codec.encode_response(response)
+    error = codec.response_error(response)
+    if as_json:
+        # The whole envelope, error branch included: an error response is an
+        # answer, and a caller reading JSON asked for the document rather than
+        # for this CLI's summary of it.
+        sys.stdout.write(codec.to_canonical_json(wire) + "\n")
+        return 0 if error is None else exit_code_for(error.code)
+    if error is not None:
+        # The service's own code and message, and nothing of the request: a
+        # refusal must not carry a caller-supplied value back out.
+        sys.stderr.write(f"{error.code}: {error.message}\n")
+        return exit_code_for(error.code)
+    sys.stdout.write(json.dumps(wire["result"], indent=2, sort_keys=True) + "\n")
+    return 0
+
+
+def _report_probe(result: ServiceProbeResult, *, as_json: bool) -> int:
+    """Print one probe result whole, and exit 0 because it answered.
+
+    A `degraded` or `unhealthy` status is not this command's failure: the probe
+    was answered, the answer is printed in full, and what it means is the
+    caller's to decide.
+    """
+    wire = encode_service_probe_result(result)
+    document = (
+        codec.to_canonical_json(wire)
+        if as_json
+        else json.dumps(dict(wire), indent=2, sort_keys=True)
+    )
+    sys.stdout.write(document + "\n")
+    return 0
+
+
+def _refuse(diagnostic: str, status: int) -> int:
+    """Write one fixed sentence to stderr and return `status`. Never stdout."""
+    sys.stderr.write(diagnostic + "\n")
+    return status
 
 
 if __name__ == "__main__":

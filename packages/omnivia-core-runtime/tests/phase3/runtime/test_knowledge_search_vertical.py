@@ -1636,6 +1636,7 @@ def test_v06_5_c1_governed_search_primary_and_page_2_reach_every_real_adapter(
                     payload,
                     request_id=f"req-governed-c1-{operation}-{adapter}-1",
                 ),
+                case_id=f"{operation}/primary-success",
             )
         ).result
     )
@@ -1652,6 +1653,7 @@ def test_v06_5_c1_governed_search_primary_and_page_2_reach_every_real_adapter(
                     {**payload, "page": {"continuation_token": token}},
                     request_id=f"req-governed-c1-{operation}-{adapter}-2",
                 ),
+                case_id=f"{operation}/page-2",
             )
         ).result
     )

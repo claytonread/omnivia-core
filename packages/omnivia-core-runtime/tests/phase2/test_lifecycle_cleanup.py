@@ -20,7 +20,12 @@ from omnivia_core_runtime.ownership.identity import (
     ProcessEvidence,
     ServiceInstanceIdentity,
 )
-from omnivia_core_runtime.ownership.lease import acquire_lease
+from omnivia_core_runtime.ownership.lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
+    LeaseHeld,
+    acquire_lease,
+    read_lease,
+)
 from omnivia_core_runtime.service.bootstrap import (
     StartupOutcome,
     _endpoint_answers,
@@ -37,7 +42,12 @@ from omnivia_core_runtime.service.lifecycle import (
     ServiceLifecycle,
     ServiceState,
 )
-from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.service.runner import (
+    LEASE_RENEWAL_DEADLINE_SECONDS,
+    LEASE_RENEWAL_INTERVAL_SECONDS,
+    ServiceRunner,
+    ServiceSettings,
+)
 from omnivia_core_runtime.service.transport import endpoint_for_path
 from omnivia_core_runtime.service.versions import (
     API_VERSION,
@@ -1007,3 +1017,221 @@ def test_endpoint_answers_fails_closed_on_a_malformed_claimed_local_endpoint() -
 def test_endpoint_answers_trusts_the_pid_for_anything_naming_no_local_scheme() -> None:
     """Only a *claimed* local scheme is checked; anything else defers to the pid."""
     assert _endpoint_answers("not-a-url-at-all")
+
+
+# --- HANDOFF-CORE-001: the lease a live service keeps current ------------------
+#
+# `heartbeat()` shipped with no production caller. A served instance therefore read
+# as stale one TTL after acquisition while it still held the lifetime storage lock
+# and the sole exclusive connection -- the one state ADR-037 invariant 8 exists to
+# investigate rather than trust. These four pin the renewal seam that closes it:
+# when it writes, what it writes, how it fails, and that failing changes nothing
+# about how it lets go.
+
+
+def test_the_renewal_interval_and_deadline_sit_under_the_ttl() -> None:
+    """The three constants as one ordering, asserted rather than assumed.
+
+    Every test below is written against this ordering, and each one alone would
+    still pass if the constants collapsed onto each other -- a deadline equal to
+    the TTL, say, which stops the instance exactly when its lease dies rather than
+    before. The margins are the design: two renewals may be lost and the heartbeat
+    is still current, and an instance that cannot renew stops while its lease is
+    still demonstrably current rather than after it is not.
+    """
+    assert LEASE_RENEWAL_INTERVAL_SECONDS < LEASE_RENEWAL_DEADLINE_SECONDS
+    assert LEASE_RENEWAL_DEADLINE_SECONDS < DEFAULT_LEASE_TTL_SECONDS
+    assert LEASE_RENEWAL_INTERVAL_SECONDS == pytest.approx(10.0)
+    assert LEASE_RENEWAL_DEADLINE_SECONDS == pytest.approx(20.0)
+
+
+def test_the_lease_is_renewed_on_its_interval_and_the_stored_heartbeat_moves(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """Renewal is due on the interval, not on every poll, and it reaches the row.
+
+    The stored `heartbeat_monotonic` is read back from the database rather than
+    trusted from the return value, because the defect was never about what the
+    runner believed: a takeover decision reads the lease row, so a renewal that
+    updated only in-process state would leave the same stale row behind.
+
+    The loop at the end is the defect itself. It runs past three TTLs of simulated
+    time -- the window in which the old build read as expired -- and the lease is
+    current at every step.
+    """
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        assert runner.connection is not None
+        acquired = read_lease(runner.connection)
+        assert acquired is not None and acquired.heartbeat_monotonic is not None
+
+        # Inside the interval there is nothing to do, and nothing is written. This
+        # is what keeps a 250ms poll from being a 250ms write.
+        clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS - 0.5)
+        assert runner.renew_lease_if_due() is False
+        unchanged = read_lease(runner.connection)
+        assert unchanged is not None
+        assert unchanged.heartbeat_monotonic == acquired.heartbeat_monotonic
+
+        # On the interval: one write, and the stored reading is this clock's now.
+        clock.advance_monotonic(0.5)
+        assert runner.renew_lease_if_due() is True
+        renewed = read_lease(runner.connection)
+        assert renewed is not None
+        assert renewed.heartbeat_monotonic == clock.monotonic()
+        assert renewed.heartbeat_monotonic > acquired.heartbeat_monotonic
+
+        # The regression, over three TTLs of simulated time.
+        for _ in range(int(DEFAULT_LEASE_TTL_SECONDS * 3 / LEASE_RENEWAL_INTERVAL_SECONDS)):
+            clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+            assert runner.renew_lease_if_due() is True
+            current = read_lease(runner.connection)
+            assert current is not None
+            assert not current.is_expired(clock), (
+                "a served instance renewing on its interval must never read as stale"
+            )
+    finally:
+        runner.stop()
+
+
+def test_a_transient_renewal_failure_is_retried_until_the_deadline_then_raises(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Contention is survivable; running out of margin is not.
+
+    The exclusive connection is shared with the serving thread, so a `BEGIN
+    IMMEDIATE` can lose a race it wins 250ms later -- failing closed on the first
+    one would stop healthy services. The margin is bounded: `age` is measured from
+    the last heartbeat this instance actually *wrote*, so repeated failures keep
+    growing it rather than resetting it, and the deadline arrives.
+
+    The final assertion is the point of putting the deadline under the TTL: at the
+    moment the instance gives up, its lease is still current, so it stops while it
+    can still prove ownership rather than after it cannot.
+    """
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    try:
+        assert runner.connection is not None
+        before = read_lease(runner.connection)
+        assert before is not None
+
+        def contended(*_args: object, **_kwargs: object) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(
+            "omnivia_core_runtime.service.runner.heartbeat", contended
+        )
+
+        # Due, attempted, failed -- and tolerated, because there is margin left.
+        clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+        assert runner.renew_lease_if_due() is False
+        clock.advance_monotonic(LEASE_RENEWAL_DEADLINE_SECONDS / 4)
+        assert runner.renew_lease_if_due() is False
+
+        # Still nothing written: a tolerated failure is not a silent success.
+        during = read_lease(runner.connection)
+        assert during is not None
+        assert during.heartbeat_monotonic == before.heartbeat_monotonic
+
+        # At the deadline the margin is gone and the failure is the caller's.
+        clock.advance_monotonic(
+            LEASE_RENEWAL_DEADLINE_SECONDS - LEASE_RENEWAL_DEADLINE_SECONDS / 4
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            runner.renew_lease_if_due()
+
+        expired = read_lease(runner.connection)
+        assert expired is not None
+        assert not expired.is_expired(clock), (
+            "the instance must stop while its lease is still demonstrably current"
+        )
+    finally:
+        runner.stop()
+
+
+def test_a_lease_held_by_another_instance_stops_this_one_at_once(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """`LeaseHeld` spends no margin, and the real authority check is what raises it.
+
+    The identity is replaced rather than the heartbeat mocked, so this exercises
+    `heartbeat()`'s own ownership check: the lease row names somebody else, which is
+    positive evidence that this instance no longer owns the workspace. Nothing about
+    that improves by waiting, so it must not be tolerated the way contention is --
+    and the clock here is well inside the deadline that would have tolerated it.
+    """
+    _workspace, _installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    mine = runner.identity
+    assert mine is not None
+    try:
+        runner.identity = replace(mine, service_instance_id="svc-somebody-else")
+        clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+        assert LEASE_RENEWAL_INTERVAL_SECONDS < LEASE_RENEWAL_DEADLINE_SECONDS, (
+            "the point of this test is that margin remained and was not spent"
+        )
+        with pytest.raises(LeaseHeld):
+            runner.renew_lease_if_due()
+    finally:
+        # Restored so the unwind releases the lease it actually holds.
+        runner.identity = mine
+        runner.stop()
+
+
+def test_a_renewed_lease_is_still_released_exactly_once_in_reverse_order(
+    served: tuple[WorkspaceLayout, InstallationLayout, ServiceSettings],
+) -> None:
+    """Renewal changes what the lease says, never how it is let go.
+
+    Renewal writes to the same row the release marks, so the risk is a shutdown
+    that releases twice, releases in a different order, or leaves the row `held`
+    because the renewal moved something the release keyed on. The order asserted
+    here is the same tuple `test_stop_releases_everything_in_reverse_order` pins
+    for a service that never renewed.
+    """
+    workspace, installation, settings = served
+    clock = FakeClock()
+    runner = ServiceRunner(settings, clock=clock)
+    assert runner.start().ready
+    assert runner.connection is not None
+
+    clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+    assert runner.renew_lease_if_due() is True
+    clock.advance_monotonic(LEASE_RENEWAL_INTERVAL_SECONDS)
+    assert runner.renew_lease_if_due() is True
+    renewed = read_lease(runner.connection)
+    assert renewed is not None
+
+    stopped = runner.stop()
+    assert stopped.state == ServiceState.STOPPED.value
+    assert stopped.released == (
+        "discovery_descriptor",
+        "mutation_guard",
+        "workspace_lease",
+        "exclusive_connection",
+        "lifetime_storage_lock",
+    )
+    assert stopped.released.count("workspace_lease") == 1
+
+    # Read on a fresh connection: the runner's own was closed by the unwind above.
+    after = open_database(workspace.database_path, OpenMode.READ_ONLY)
+    try:
+        final = read_lease(after)
+    finally:
+        after.close()
+    assert final is not None
+    assert final.lifecycle == "released"
+    assert final.shutdown_state == "clean"
+    # The release records how the lease ended without rewriting what renewal wrote.
+    assert final.heartbeat_monotonic == renewed.heartbeat_monotonic
+    assert final.fencing_generation == renewed.fencing_generation
+    assert discover(installation.runtime_for(WORKSPACE_ID)) is None

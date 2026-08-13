@@ -31,14 +31,17 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+from omnivia_core_runtime.ownership import locks as locks_module
 from omnivia_core_runtime.service.workspace_init import (
     WORKSPACE_FORMAT_VERSION,
     WORKSPACE_INIT_VERSION,
     WorkspaceInitRefusal,
     WorkspaceInitResult,
     WorkspaceInitStatus,
+    initialise_allocated_workspace,
     initialise_workspace,
 )
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
@@ -846,6 +849,159 @@ def test_an_unrecognised_installation_state_is_refused_and_left_alone(
     assert not (tmp_path / "workspace").exists()
 
 
+# ---------------------------------------------------------------------------
+# The filesystem is qualified before anything is created
+# ---------------------------------------------------------------------------
+
+
+def _init_allocated(home: Path) -> WorkspaceInitResult:
+    """`initialise_allocated_workspace` over the same deterministic layout."""
+    return initialise_allocated_workspace(
+        workspace_root=home / "workspace",
+        installation_root=home / "installation-state",
+        target_workspace_id="ws-allocated-0001",
+        display_name="Allocated",
+    )
+
+
+#: Both entry points, every time.
+#:
+#: `runner.py` has always refused to serve a workspace on a remote or unrecognised
+#: filesystem, and both of these could create a manifest, a layout, a database, a
+#: lock and an installation tree on one long before anything reached that refusal.
+#: A gate on the entry point a test happened to name would have left the other
+#: exactly as it was, which is how this pair of defects existed at once.
+INIT_ENTRY_POINTS = [_init, _init_allocated]
+INIT_ENTRY_POINT_IDS = ["initialise_workspace", "initialise_allocated_workspace"]
+
+
+@pytest.mark.parametrize("bootstrap", INIT_ENTRY_POINTS, ids=INIT_ENTRY_POINT_IDS)
+@pytest.mark.parametrize(
+    "filesystem", ["nfs", "nfs4", "smbfs", "cifs", "fuse.sshfs", "afpfs", "webdav"]
+)
+def test_a_remote_filesystem_is_refused_before_anything_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bootstrap: Any,
+    filesystem: str,
+) -> None:
+    """ADR-037: a remote mount has no reliable cross-host lock semantics.
+
+    The refusal is the one `qualify_filesystem` already decides -- patched at
+    `detect_filesystem`, so the refused list, the qualified list and the verdict are
+    the production ones and only the answer to "what is this volume" is faked. A
+    second copy of those lists here would be the thing this shares them to avoid.
+
+    `== {}` rather than `== before` is deliberate: on an empty home the digest proves
+    not merely that nothing existing moved but that nothing was created at all --
+    not the workspace root, not `locks/`, not the lock file every *later* refusal
+    legitimately leaves behind.
+    """
+    monkeypatch.setattr(locks_module, "detect_filesystem", lambda path: filesystem)
+    before = _digest(tmp_path)
+
+    result = bootstrap(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM
+    assert _digest(tmp_path) == before == {}
+    assert not (tmp_path / "workspace").exists()
+    assert not (tmp_path / "installation-state").exists()
+
+
+@pytest.mark.parametrize("bootstrap", INIT_ENTRY_POINTS, ids=INIT_ENTRY_POINT_IDS)
+@pytest.mark.parametrize("filesystem", ["unknown", "", "reiserfs", "exfat", "refs"])
+def test_an_unqualified_filesystem_is_refused_before_anything_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bootstrap: Any,
+    filesystem: str,
+) -> None:
+    """Default-deny, which is the half a list of remote names cannot cover.
+
+    "We did not recognise it" is not evidence that locking works, and the empty
+    string is the case that says so most plainly: a probe that could not identify
+    the volume at all has to refuse rather than fall through to a default.
+    """
+    monkeypatch.setattr(locks_module, "detect_filesystem", lambda path: filesystem)
+
+    result = bootstrap(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM
+    assert _digest(tmp_path) == {}
+
+
+@pytest.mark.parametrize("bootstrap", INIT_ENTRY_POINTS, ids=INIT_ENTRY_POINT_IDS)
+def test_the_filesystem_refusal_quotes_nothing_a_user_put_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bootstrap: Any
+) -> None:
+    """The reason is structural: a filesystem type, not the contents of a volume.
+
+    A refusal decided over somebody's directory is exactly where a message built by
+    listing that directory would carry their filenames off the machine -- this one
+    is published on stdout as a machine-readable document. The workspace root is
+    given content the other refusals *do* enumerate, so a reason assembled the way
+    `UNRELATED_DIRECTORY`'s is would fail here.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "client-passwords.kdbx").write_bytes(b"secret")
+    monkeypatch.setattr(locks_module, "detect_filesystem", lambda path: "nfs")
+    before = _digest(tmp_path)
+
+    result = bootstrap(tmp_path)
+    document = json.dumps(result.to_dict())
+
+    assert result.refusal is WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM
+    assert "client-passwords" not in document
+    assert "secret" not in document
+    assert _digest(tmp_path) == before
+
+
+def test_the_local_filesystem_refusal_still_names_the_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Structural is not the same as empty, on the entry point a person reads.
+
+    `--init` prints this document to a user at a terminal, and "we will not
+    initialise here" without "because it is an NFS mount" is a refusal nobody can
+    act on. The allocated entry point deliberately says less -- its result crosses
+    a service boundary and its siblings name no paths and no volumes either -- so
+    what is shared between them is the machine-readable code, not the sentence.
+    """
+    monkeypatch.setattr(locks_module, "detect_filesystem", lambda path: "nfs")
+
+    result = _init(tmp_path)
+
+    assert result.refusal is WorkspaceInitRefusal.UNQUALIFIED_FILESYSTEM
+    assert "nfs" in result.reason
+    assert "networked Core Service" in result.reason, "the remedy is named"
+
+
+def test_a_workspace_root_that_does_not_exist_yet_still_qualifies(
+    tmp_path: Path,
+) -> None:
+    """The gate refuses unqualified filesystems, not workspaces that are not there.
+
+    `detect_filesystem` used to answer for `path` or `path.parent` and nothing
+    further up, and a workspace root is created with `parents=True` -- so a gate
+    reading a target several levels below anything that exists would get `"unknown"`
+    and default-deny every fresh workspace on a perfectly ordinary local disk. The
+    real, unpatched qualification is used here for that reason: faking it would make
+    this test pass over the bug.
+    """
+    deep = tmp_path / "not" / "created" / "yet" / "workspace"
+    assert not deep.parent.exists()
+
+    result = initialise_workspace(
+        workspace_root=deep, installation_root=tmp_path / "installation-state"
+    )
+
+    assert result.status is WorkspaceInitStatus.INITIALISED, result.reason
+    assert _substrate(WorkspaceLayout(root=deep)) is not None
+
+
 @pytest.mark.parametrize("litter", [".DS_Store", "Thumbs.db", "._workspace.json"])
 def test_a_file_manager_visiting_the_home_does_not_make_it_somebody_elses(
     tmp_path: Path, litter: str
@@ -1094,7 +1250,7 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
         "reason",
         "workspace",
     }
-    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.0"
+    assert document["workspace_init_version"] == WORKSPACE_INIT_VERSION == "1.1"
     workspace = document["workspace"]
     assert isinstance(workspace, dict)
     assert set(workspace) == {
@@ -1118,6 +1274,12 @@ def test_the_result_identifies_the_workspace_and_carries_no_secret(
 #: Member *names* are the keys only so a failure names which code moved. What is
 #: contractual is the values: an out-of-repo adapter branches on
 #: `"unrelated_directory"` and never sees the identifier beside it.
+#:
+#: **Kept after 1.1 shipped, and kept frozen.** It is what makes "additive" a
+#: measured claim rather than a sentence in a docstring: 1.1's fixture below is
+#: compared against it as a superset, so a later packet that renames one of these
+#: six or moves a case between them fails here even though the 1.1 fixture beside
+#: it would have been edited to agree.
 WORKSPACE_INIT_WIRE_1_0 = {
     "status": {
         "INITIALISED": "initialised",
@@ -1134,9 +1296,47 @@ WORKSPACE_INIT_WIRE_1_0 = {
     },
 }
 
+#: The whole wire vocabulary of `workspace_init_version` 1.1, on the same terms.
+#:
+#: One code more than 1.0 and not one character different anywhere else.
+#: `unqualified_filesystem` is the state 1.0 had no name for: a workspace root on a
+#: remote or unrecognised filesystem, which `runner.py` has always refused to serve
+#: and which both init entry points now refuse to create anything on.
+WORKSPACE_INIT_WIRE_1_1 = {
+    "status": dict(WORKSPACE_INIT_WIRE_1_0["status"]),
+    "refusal": {
+        **WORKSPACE_INIT_WIRE_1_0["refusal"],
+        "UNQUALIFIED_FILESYSTEM": "unqualified_filesystem",
+    },
+}
+
+
+def test_the_published_vocabulary_widened_additively_from_1_0() -> None:
+    """The 1.0 -> 1.1 compatibility claim, as an assertion rather than a comment.
+
+    Additive means two things and both are checked. Every 1.0 code still exists with
+    the *same* string, so a 1.0 reader branching on the six it knows still reads
+    every document 1.0 could produce; and what 1.1 adds is exactly one refusal, so
+    "one code more" cannot quietly become five.
+
+    The version moved because the closed vocabulary widened. A reader that treats an
+    unknown `refusal` as fatal is the case this bump exists to warn, and the bump is
+    a minor one because the codes it already understands are untouched.
+    """
+    assert WORKSPACE_INIT_VERSION == "1.1"
+    assert WORKSPACE_INIT_WIRE_1_1["status"] == WORKSPACE_INIT_WIRE_1_0["status"]
+    for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
+        assert WORKSPACE_INIT_WIRE_1_1["refusal"][name] == wire, (
+            f"{name} changed its wire value; that is a break, not a widening"
+        )
+    added = set(WORKSPACE_INIT_WIRE_1_1["refusal"]) - set(
+        WORKSPACE_INIT_WIRE_1_0["refusal"]
+    )
+    assert added == {"UNQUALIFIED_FILESYSTEM"}
+
 
 def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
-    """R006-07: the published vocabulary of 1.0, by exact serialised value.
+    """R006-07: the published vocabulary of 1.1, by exact serialised value.
 
     Two hops are checked, because a value can be right in the enum and wrong on
     the wire. First the enums against the fixture above, by dict equality in both
@@ -1150,17 +1350,17 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
     code compared it to `WorkspaceInitRefusal.X.value` and to `WORKSPACE_INIT_VERSION`,
     both of which move with the mutation.
 
-    `1.0` is asserted as a literal for the same reason.
+    `1.1` is asserted as a literal for the same reason.
     """
-    assert WORKSPACE_INIT_VERSION == "1.0"
+    assert WORKSPACE_INIT_VERSION == "1.1"
     assert {
         member.name: member.value for member in WorkspaceInitStatus
-    } == WORKSPACE_INIT_WIRE_1_0["status"]
+    } == WORKSPACE_INIT_WIRE_1_1["status"]
     assert {
         member.name: member.value for member in WorkspaceInitRefusal
-    } == WORKSPACE_INIT_WIRE_1_0["refusal"]
+    } == WORKSPACE_INIT_WIRE_1_1["refusal"]
 
-    for name, wire in WORKSPACE_INIT_WIRE_1_0["refusal"].items():
+    for name, wire in WORKSPACE_INIT_WIRE_1_1["refusal"].items():
         document = WorkspaceInitResult(
             status=WorkspaceInitStatus.REFUSED,
             reason="pinning the wire value",
@@ -1168,7 +1368,7 @@ def test_every_published_code_serialises_to_its_pinned_wire_value() -> None:
         ).to_dict()
         assert document["refusal"] == wire
         assert document["status"] == "refused"
-        assert document["workspace_init_version"] == "1.0"
+        assert document["workspace_init_version"] == "1.1"
 
 
 def test_a_refusal_code_never_depends_on_its_declaration_position() -> None:

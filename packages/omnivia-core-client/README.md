@@ -172,7 +172,117 @@ implementation derives its remaining time at the moment it is about to wait.
 `enforce_send_preconditions()` is the shared precondition every implementation
 calls before writing its first byte: cancellation first, then the deadline.
 
-**No concrete transport ships in this package.**
+Two concrete transports satisfy it, both in this package: `LocalIpcTransport`
+over the installation-local `unix://` endpoint on POSIX or `pipe://` endpoint on
+Windows, and `HttpTransport` over an authenticated HTTP v1 endpoint.
+
+`LocalIpcTransport` carries the same raw OVC1 byte stream over both platform
+mechanisms. The Windows client uses overlapped `WaitNamedPipeW`/`CreateFileW`,
+`ReadFile` and `WriteFile` calls with one absolute call deadline; it asks for
+duplex access, which preserves the Runtime listener's creating-user boundary,
+and retries only the unavoidable wait/create busy race. Native APIs are loaded
+lazily, so importing the package remains safe on POSIX. Neither local mechanism
+claims cryptographic peer identity; it establishes only that this process could
+open the operating-system-protected endpoint.
+
+### `credentials` — a name for a credential, bound to one endpoint origin
+
+**This package holds no credential source and adds none.** There is no token
+format, issuer, store, broker, keychain or account database here, and nothing
+reads an environment variable, an argument vector, a configuration file or a
+file beside anything. Resolution is a callable the host injects.
+
+- `CredentialReference` is a **name, not a secret** — the thing a descriptor, a
+  configuration file or a log may legitimately carry. The grammar is an
+  allowlist: 1–256 characters, opening with a letter or digit and continuing
+  with letters, digits, `.`, `_` or `-`. That alone refuses control characters,
+  whitespace, `@` and `:` in the userinfo position, `?`/`&`/`=`/`#` from a
+  query, a `%` escape, and `/` or `\` from a path. Two further rules close what
+  the character set leaves open: no `..` anywhere, and nothing shaped like a
+  compact JWS (`ey…` plus two dot-separated segments) — a token pasted where the
+  *name* of a token belongs.
+- `Credential` is the **secret**, and it is opaque by construction. `repr()` and
+  `str()` are both a fixed `<credential redacted>`, so an f-string, a `%r`, a
+  `pprint` and a structured log are all safe by default; `reveal()` is the only
+  way to the material and is named so that reading it shows up in a diff. The
+  accepted secret is 1–4096 visible ASCII characters with no space, which is
+  what an `Authorization` field value may carry — so `\r\n` in a secret is a
+  refusal here rather than header injection at a socket.
+- `CredentialCache` is the only caller of the resolver, keyed by
+  **`(origin, reference)`**. The origin must be a normalized origin — lowercase
+  scheme and host, explicit port, IPv6 in brackets. **A credential resolved for
+  one origin is never presented to another**, and that is a property of the key
+  rather than a rule a caller has to remember. Entries expire after
+  `ttl_seconds` (60 s by default; `0` caches nothing) and `clear()` drops them
+  all, which is what a process calls at shutdown.
+
+The resolver is handed the reference and the origin, and answers with a
+`Credential` or `None`. Four typed outcomes and no fifth, all under
+`CredentialError`:
+
+| outcome | raised when |
+| --- | --- |
+| `CredentialMissingError` | the resolver answered `None` |
+| `CredentialDeniedError` | the resolver raised `CredentialDeniedError` — the one it raises on purpose |
+| `CredentialUnavailableError` | the resolver raised anything else |
+| `CredentialInvalidError` | a reference outside the grammar, or an answer that is not a usable `Credential` |
+
+**Nothing a resolver does escapes the seam.** Every message above is a fixed
+sentence written in `errors.py`, built from no reference, no origin, no store
+location and no resolver diagnostic, and raised *after* the handler ends — so
+`args`, `__cause__` and `__context__` are all clean. The tests assert the
+absence of both links against a deliberately hostile resolver, not merely that
+the default traceback rendering hides them.
+
+### `http_transport` — the authenticated HTTP v1 transport
+
+`HttpTransport` dials the two routes the runtime's HTTP adapter serves,
+`POST /v1/application` and `POST /v1/probe`, and satisfies `ClientTransport`.
+
+- **The endpoint** is scheme, host and port and nothing else.
+  `parse_http_endpoint()` refuses anything in the `userinfo` position, a query,
+  a fragment and a path past `/` — a credential must never travel in a URL, and
+  the way to guarantee that is to refuse a URL with a place to put one. Parsing
+  is `urllib.parse.urlsplit`, not a hand-written splitter. Scheme, host and
+  effective port are normalized, including bracketed IPv6, so one endpoint has
+  exactly one origin.
+- **Cleartext `http://` reaches a loopback IP literal and nothing else**,
+  decided by `ipaddress`. `localhost` is refused rather than resolved: a policy
+  an `/etc/hosts` line can move is not a policy. Every other endpoint is
+  `https://` with `ssl.create_default_context()` — certificate verification and
+  hostname checking on. **There is no argument, field, environment read or code
+  path that turns either off.**
+- **The credential** is resolved per call against this endpoint's normalized
+  origin and reaches exactly one place: the `Authorization: Bearer` header of
+  the request being sent. Not the URL, not a field of the transport, not a
+  diagnostic, not a log — this module has no logger — and not any exception it
+  raises. It is sent on every `/v1/application` request and on the
+  `service.discover` probe, which the server authenticates; `service.health` and
+  `service.readiness` are the accepted unauthenticated pair and carry none.
+- **The exchange is unary**: one connection per call, `Connection: close`,
+  `Content-Type: application/json`, a canonical-JSON body, and no retry. **No
+  OVC1 frame travels over HTTP** — the body is bare canonical JSON, which is what
+  the server reads. The eight-byte header is put in front of a *received* body
+  locally, purely to reach `decode_frame()`, so one canonical-JSON admission
+  policy governs both transports in both directions. Redirects are not followed,
+  and not because they are checked for: `http.client` follows nothing.
+- **HTTP 200 is the only status that carries an answer**, and both answers it can
+  carry — a success envelope and a typed application *error* envelope — are
+  returned normally. Any other status is a `TransportError` naming the number
+  and nothing else; it is deliberately not translated into a credential outcome,
+  because 401 and 403 are the server's own gate and a client that guessed would
+  be publishing a security decision it does not hold.
+- The whole-call deadline is enforced before the first byte and re-checked
+  before every blocking wait, so a slow connect cannot buy the response read a
+  fresh budget. Timeouts are `DeadlineExceededError`, unreachable peers and
+  mid-response drops are `TransportError`, and a malformed status line, media
+  type, `Content-Length` or body is a `ProtocolError`.
+
+`http`, `ssl`, `urllib` and `ipaddress` are pinned by
+`tests/test_package_isolation.py` to this one module by name, exactly as
+`socket` is pinned to `local_ipc`. A third-party HTTP client stays forbidden
+everywhere: the point was never that this package cannot speak HTTP, it is that
+it has exactly one dependency.
 
 ### `compatibility` — what this build can talk to
 
@@ -248,14 +358,115 @@ only: it never overrides a live identity mismatch and is not process authority.
 Cancellation is checked before the probe is sent, and the same deadline/token are
 passed unchanged to the transport.
 
-This is candidate-level discovery through an injected transport. It does not ship a
-socket, named-pipe, or HTTP transport and does not claim integrated discovery over a
-real local endpoint.
+The two halves are also available on their own, and `discover_endpoint()` is
+composed of them rather than beside them: `read_local_descriptor()` performs the
+file half — the provenance-checked read, the payload-free decode, the workspace
+agreement and the locality rule — and `probe_live_descriptor()` performs the live
+half over an injected transport, holding the answer to the same admission and
+deciding no identity of its own. They exist because the high-level client needs
+the endpoint URI before it can build a transport, and because an explicitly
+configured endpoint has no file at all; neither weakens `discover_endpoint()`,
+which still applies every check to the file it vouches for.
+
+This is candidate-level discovery through an injected transport. `discovery` itself
+ships no transport: it is handed one, and the two this package provides —
+`LocalIpcTransport` and `HttpTransport` — are constructed by the caller, not by it.
+It does not claim integrated discovery over a real local endpoint by itself;
+the caller supplies `LocalIpcTransport`, which now covers the accepted local
+mechanism on both POSIX and Windows.
+
+### `service_client` — the high-level client
+
+`ServiceClient.connect()` is the one place the pieces above are put in order.
+Every caller that dials a Core service used to assemble that order itself — read
+`service.json`, pick a transport from the scheme it found, dial discovery with
+it, compare the two descriptors, then call — and the CLI and MCP already differed
+on some of those steps. **Nothing here is a new mechanism**: there is no framing,
+contract decoding, credential resolution, transport, retry or process launch in
+this module, only the composition and the refusals the composition can make.
+
+Two configurations, and the difference is who says where the service is.
+
+- `InstallationServiceConfig(installation_state, workspace_id)` — the
+  *installation* says. The published descriptor is read through
+  `read_local_descriptor()`, with the provenance, locality and identity rules of
+  `discovery` intact, and the local transport is built from the endpoint it
+  publishes. **A caller never reads `service.json`, never handles a socket path
+  or pipe name, and never chooses a transport**; the same configuration reaches
+  `unix://` on POSIX and `pipe://` on Windows because `LocalIpcTransport` carries
+  both.
+- `HttpServiceConfig(endpoint_uri, credential_reference, credentials)` — the
+  *caller* says, so there is no file to check against and the service's own
+  `service.discover` answer is what gets negotiated. **The configuration takes
+  the name of a credential and never a secret**: a `Credential` handed to
+  `credential_reference` is refused, and the secret is resolved per call through
+  the injected `CredentialCache`. **Unverified TLS is not configurable either**,
+  and not by default but by construction — the endpoint is an `HttpEndpoint`, so
+  `https` is verified and cleartext reaches a loopback IP literal or nothing.
+
+Both are frozen and validated where they are written, so a mistyped root, an
+inadmissible `WorkspaceId`, a URL with a place to put a credential, or a secret
+in the reference field is a refusal at the point that can be fixed rather than at
+the first call.
+
+`connect()` returns `None` when an installation has published no descriptor —
+absence is an ordinary state, exactly as it is for `discover_endpoint()`, not an
+exception every caller has to catch to ask a question. The local path reads the
+descriptor twice on purpose: once for the endpoint URI the transport needs and
+once inside `discover_endpoint()`, which must apply its checks to the file it
+vouches for rather than to one handed in. Publication is atomic, so the two reads
+can legitimately see different files, and a client dialling the first while
+discovery approved the second would carry an approval for an endpoint it is not
+talking to; the descriptors must be equal or nothing is returned.
+
+What comes back is frozen and carries the three things that mean something
+together: the composed `transport`, the `descriptor` the endpoint answered with
+(which is where the `workspace_id` for a request comes from), and the
+`negotiated` versions in force. `client.call(request, deadline=…,
+cancellation=…)` forwards to the transport unchanged — the same whole-call
+`Deadline` and the same `CancellationToken`, not copied or re-derived — and
+returns the response envelope, including a typed application error, because a
+peer that answered with one has answered. There is nothing to close: both
+transports open one connection per call, and the credential cache belongs to the
+host that injected it.
+
+Diagnostics are fixed sentences. No endpoint, path, workspace identifier,
+credential reference or secret appears in any message raised here, and the two
+refusals this module owns are raised outside every handler, so neither
+`__cause__` nor `__context__` survives to carry a transport's own words.
+
+### `managed_local` — reaching a service, having one started if there is none
+
+`connect_managed_local(config, deadline=…)` takes the same
+`InstallationServiceConfig` as `ServiceClient.connect` and the caller's own
+`Deadline`, and returns a `ManagedServiceConnection`: the connected client, and
+`status` of `"attached"` or `"started"`. Attaching is the ordinary case and
+costs one connect. Only an *absent* service reaches the rest — and then the
+installation layout must authorise a start (the state root has to be the
+`installation-state` the convention derives from its own parent, holding an
+initialised workspace), the `omnivia-core-service --managed-start` program is
+located and run once, its bounded versioned result is read, and the same
+`Deadline` object is used to reconnect. A launcher that reports success while
+nothing is reachable is a failure.
+
+This is the one place in the repository that locates or runs a service process;
+the CLI and the MCP server hold no launcher, no path convention and no argv, and
+their packages' own tests assert that. Nothing here creates a workspace, reads an
+environment variable, or takes a timeout beside the caller's deadline.
+
+Every refusal is `ManagedStartError` carrying one fixed sentence — *the managed
+service could not be started* — with `__cause__` and `__context__` both `None`.
+The launcher's `reason`, its `failure` class, the descriptor it reports, the
+child's output, the executable and installation paths, the endpoint and every
+caught exception's text are all untrusted diagnostic material, and none of them
+crosses this boundary. An adapter that can say something more useful — that
+`omnivia init` is the command to create a workspace — adds that itself.
 
 ### `errors` — the typed failures
 
 `ClientError` and, under it, `ProtocolError`, `TransportError`,
-`CompatibilityError`, `DeadlineExceededError`, and `OperationCancelledError`.
+`CompatibilityError`, `DeadlineExceededError`, `OperationCancelledError`,
+`ManagedStartError`, and `CredentialError` with its four outcomes above.
 
 Diagnostics are built from structural facts only — byte counts, offsets, JSON
 value kinds, version strings, field names — and never from payload content, so
@@ -274,13 +485,10 @@ traceback rendering hides them.
 
 None of the following exists in this package, and no caller may assume it:
 
-- **a Windows named-pipe transport** — `LocalIpcTransport` dials `unix://`
-  endpoints and refuses `pipe://` explicitly rather than half-supporting it;
-- **HTTP transport**;
 - **retry, backoff, or idempotent replay**;
-- **managed service startup** — launching or supervising a service;
-- **the high-level client** — the object that would put the above together and
-  execute an operation end to end.
+- **supervision** — nothing here restarts, stops, monitors or holds a lease on a
+  service. `managed_local` asks the service program to make one exist, once, and
+  a service started that way outlives the process that asked for it.
 
 Each arrives in its own packet and will satisfy the contracts above rather than
 change them.

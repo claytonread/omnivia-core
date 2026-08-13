@@ -7,11 +7,15 @@ type to everything above them without any of them importing the others or
 inheriting from a shared parent that would end up owning behaviour none of them
 share.
 
-**No concrete transport ships in P1a.** This module defines the contract and
-the one precondition every implementation must enforce, and stops there. There
-is no local socket transport, no HTTP transport, no connection pooling, no
-multiplexing, no retry, and no managed startup here; those arrive in their own
-packets, and each will satisfy this protocol rather than change it.
+**No concrete transport lives in this module.** It defines the contract and the
+one precondition every implementation must enforce, and stops there. The two
+that ship are elsewhere in this package and neither is imported here:
+:class:`~omnivia_core_client.local_ipc.LocalIpcTransport` over the
+installation-local endpoint, and
+:class:`~omnivia_core_client.http_transport.HttpTransport` over an authenticated
+HTTP v1 endpoint. Connection pooling, multiplexing, retry, the Windows named
+pipe, and managed startup are still absent; those arrive in their own packets,
+and each will satisfy this protocol rather than change it.
 
 Two calls, deliberately kept apart:
 

@@ -62,15 +62,15 @@ jobs:
         # `omnivia-core-client` obeys that same rule one edge further down: it is
         # as unpublished as `omnivia-core`, and `omnivia-core-cli` declares it, so
         # the CLI install below resolves against the index and fails unless the
-        # client precedes it. Packet section 17b.2. No suite this job runs imports
-        # the client; it is installed so the line after it can succeed.
+        # client precedes it. Packet section 17b.2. The named-pipe parity suite
+        # below also imports the shared client directly.
         #
         # Every argument is quoted so the one line with shell metacharacters
         # (`[`, `]`, `>`, `<`) is a literal in bash, zsh and PowerShell alike; the
         # matrix runs the same script on all three default hosted shells.
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "jsonschema[format]>=4.25,<5" pytest
+          python -m pip install "build>=1.2,<2" "hatchling>=1.26,<2" "jsonschema[format]>=4.25,<5" pytest
           python -m pip install -e .
           python -m pip install -e "services/omnivia-memory[dev]"
           python -m pip install -e packages/omnivia-core-runtime
@@ -81,8 +81,48 @@ jobs:
       - name: Run Phase 2 acceptance suite
         run: python -m pytest packages/omnivia-core-runtime/tests/phase2 -q -rs
 
+      - name: Run Windows named-pipe client parity
+        # Deterministic Runtime cases run everywhere. The real pipe cases state
+        # their platform requirement explicitly and execute in the Windows row,
+        # including a public LocalIpcTransport call against the real listener.
+        run: python -m pytest packages/omnivia-core-runtime/tests/phase3/protocol/test_windows_named_pipe.py -q -rs
+
+      - name: Qualify isolated-wheel MCP and CLI executables
+        # Cross-platform by construction: this Python driver creates two clean
+        # environments, installs wheels only, and invokes the actual console
+        # entry points through this row's native shell. There is no skip path.
+        run: python scripts/check-v06-6-executables.py
+
+      - name: Build and qualify Standard distribution candidate
+        # One platform candidate per matrix row. The builder uses the reviewed
+        # dependency constraints, installs only from its wheelhouse, drives the
+        # installed CLI/service/MCP journey, and records the unsigned state
+        # explicitly rather than implying release signing happened here.
+        run: python scripts/build-standard-candidate.py --output standard-candidate
+
+      - name: Retain Standard candidate evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: omnivia-standard-${{ runner.os }}-${{ runner.arch }}
+          path: standard-candidate
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assert this platform's lock case actually ran
         # The whole point of the matrix. `msvcrt` byte-range locking has exactly one
         # dedicated case and it has never executed on any machine, so a silent skip
         # here would leave the Windows row green while proving nothing.
         run: python scripts/check-platform-lock-coverage.py
+
+      - name: Build and test the macOS status menu companion
+        # Keep the protected three-row matrix and its exact check names intact.
+        # The package imports AppKit, so only the existing macOS row can build
+        # it; the same command is a deliberate no-op on Linux and Windows.
+        shell: bash
+        run: |
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            swift build --package-path apps/core-status-menu-macos
+            swift test --package-path apps/core-status-menu-macos
+          else
+            echo "skipped: the status menu companion requires macOS AppKit"
+          fi

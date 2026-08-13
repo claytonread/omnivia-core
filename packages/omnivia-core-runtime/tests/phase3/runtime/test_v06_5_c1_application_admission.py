@@ -19,6 +19,7 @@ from omnivia_core_runtime.service.application import (
     ProductionApplicationSurface,
 )
 from omnivia_core_runtime.service.authorization import AuthenticatedSession
+from omnivia_core_runtime.service.operations import ApplicationOperationRegistry
 
 from omnivia_core.contracts.v1 import (
     DEFAULT_RETRY_CLASSIFICATION,
@@ -94,6 +95,10 @@ class _NoSessionRoute:
     def session(self) -> AuthenticatedSession:
         return self.route.session
 
+    @property
+    def registry(self) -> ApplicationOperationRegistry:
+        return self.route.registry
+
     def dispatch(self, request: RequestEnvelope) -> ResponseEnvelope:
         return self.route.dispatch_without_session(request)
 
@@ -144,7 +149,12 @@ def test_v06_5_c1_server_admission_refusals_cross_every_real_adapter(
 ) -> None:
     route = surface._routes["candidate.approve"]
     dispatcher = _route_with(route, admission=admission)
-    response = s2._transport_call(adapter, dispatcher, _candidate_request(code))
+    response = s2._transport_call(
+        adapter,
+        dispatcher,
+        _candidate_request(code),
+        case_id=f"error/{code}",
+    )
 
     assert isinstance(response, ErrorResponseEnvelope), response
     assert response.error.code == code
@@ -152,9 +162,7 @@ def test_v06_5_c1_server_admission_refusals_cross_every_real_adapter(
 
 
 @pytest.mark.parametrize("adapter", ADAPTERS)
-@pytest.mark.parametrize(
-    "code", (ERROR_CODE_DEADLINE_EXCEEDED, ERROR_CODE_CANCELLED)
-)
+@pytest.mark.parametrize("code", (ERROR_CODE_DEADLINE_EXCEEDED, ERROR_CODE_CANCELLED))
 def test_v06_5_c1_request_lifecycle_refusals_cross_every_real_adapter(
     surface: ProductionApplicationSurface, adapter: str, code: str
 ) -> None:
@@ -168,7 +176,10 @@ def test_v06_5_c1_request_lifecycle_refusals_cross_every_real_adapter(
             cancelled_request_ids=frozenset({request.metadata.request_id})
         )
     response = s2._transport_call(
-        adapter, _route_with(route, admission=admission), request
+        adapter,
+        _route_with(route, admission=admission),
+        request,
+        case_id=f"error/{code}",
     )
 
     assert isinstance(response, ErrorResponseEnvelope), response
@@ -203,7 +214,11 @@ def test_v06_5_c1_authorization_refusals_cross_every_real_adapter(
         session = replace(session, purposes=frozenset())
     dispatcher = _route_with(route, session=session)
     response = s2._transport_call(
-        adapter, dispatcher, request, http_session=transport_session
+        adapter,
+        dispatcher,
+        request,
+        http_session=transport_session,
+        case_id=f"error/{code}",
     )
 
     assert isinstance(response, ErrorResponseEnvelope), response
@@ -222,6 +237,7 @@ def test_v06_5_c1_authentication_refusal_crosses_every_real_adapter(
         no_session,
         _candidate_request(ERROR_CODE_AUTHENTICATION_REQUIRED),
         http_session=route.session,
+        case_id="error/authentication_required",
     )
 
     assert isinstance(response, ErrorResponseEnvelope), response

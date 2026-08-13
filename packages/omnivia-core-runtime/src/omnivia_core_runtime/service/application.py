@@ -590,7 +590,7 @@ def build_application_registry(
 
 
 InstallationOperationHandler: TypeAlias = Callable[
-    [InstallationOperationContext], Mapping[str, Any]
+    [InstallationOperationContext], Mapping[str, Any] | AuditedOperationResult
 ]
 
 
