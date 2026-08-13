@@ -349,8 +349,8 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
   "omnivia_core_runtime.service.runner" \
   "omnivia_core_runtime.service.transport"
 # The MCP distribution is no longer a skeleton: owner resolution 004 Packet C
-# gave it a curated exposure manifest, a managed-start adapter and a stdio server.
-# All three are named because each exercises a different declared edge, and the
+# gave it a curated exposure manifest and a stdio server. Both are named because
+# each exercises a different declared edge, and the
 # reason this check exists is that the *previous* MCP adapter imported
 # `omnivia_core_cli` -- a sibling the approved topology does not permit -- and
 # installed cleanly anyway because only the top-level package was imported.
@@ -362,7 +362,6 @@ install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
   "omnivia_core_mcp.configuration" \
   "omnivia_core_mcp.generated_schema_projection" \
   "omnivia_core_mcp.manifest" \
-  "omnivia_core_mcp.managed_start" \
   "omnivia_core_mcp.server"
 
 # --- the advertised tool document does not depend on how Core was installed ----
@@ -433,7 +432,6 @@ echo
 # Importing it from a venv that installed only `omnivia-core-cli` is precisely the
 # proof that the CLI's own metadata pulled it in.
 install_and_import "venv-cli" "omnivia-core-cli" "omnivia_core_cli" \
-  "omnivia_core_cli.client" \
   "omnivia_core_cli.main" \
   "omnivia_core_client"
 # The client's whole surface is operational: every module below is imported by a
@@ -446,6 +444,8 @@ install_and_import "venv-client" "omnivia-core-client" "omnivia_core_client" \
   "omnivia_core_client.errors" \
   "omnivia_core_client.framing" \
   "omnivia_core_client.local_ipc" \
+  "omnivia_core_client.managed_local" \
+  "omnivia_core_client.service_client" \
   "omnivia_core_client.transport"
 
 echo "--- venv-core: documented public API and packaged resources (isolated cwd, PYTHONPATH unset) ---"

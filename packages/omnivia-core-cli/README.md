@@ -5,11 +5,11 @@ topology. It parses one frozen command, calls it on a running Core Service
 through `omnivia_core_client.ServiceClient`, prints the answer, and exits with
 the code that answer maps to.
 
-It owns no state. It does not create, migrate, launch, supervise or stop
-anything; it holds no lease, takes no lock, opens no database, reads no
-descriptor, and constructs no transport. `ServiceClient` is the only way it
-reaches a service, and a service it cannot reach is a failure rather than
-something to report on.
+It owns no state. It does not create, migrate, supervise or stop anything; it
+holds no lease, takes no lock, opens no database, reads no descriptor, and
+constructs no transport. The shared client is the only way it reaches a service
+and owns the complete managed-local attach/start/reconnect decision. The CLI
+holds no launcher, path convention or service argv.
 
 The compile-time dependency boundary is the one PM ADR-036 defines: this
 surface depends on the public `omnivia-core` contracts and on

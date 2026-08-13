@@ -31,6 +31,7 @@ __all__ = [
     "CredentialMissingError",
     "CredentialUnavailableError",
     "DeadlineExceededError",
+    "ManagedStartError",
     "OperationCancelledError",
     "ProtocolError",
     "TransportError",
@@ -94,6 +95,15 @@ class OperationCancelledError(ClientError):
     Distinct from :class:`DeadlineExceededError` on purpose: a cancelled call
     was abandoned by the caller and a timed-out one was abandoned by the clock,
     and reporting either as the other misattributes the cause.
+    """
+
+
+class ManagedStartError(ClientError):
+    """The managed-local service could not be made ready.
+
+    The message is deliberately fixed.  The launcher result, executable path,
+    installation path, endpoint, and child output are all untrusted diagnostic
+    material and never cross this client boundary.
     """
 
 

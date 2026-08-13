@@ -9,10 +9,10 @@ out both a bespoke stack and FastMCP.
 claims fd 0 and 1, serves the wire from private duplicates and points fd 1 at
 stderr for the duration, so a stray `print` in any handler -- or in a child
 process that inherits the descriptors -- misses the wire instead of tearing a
-frame. The managed-start subprocess is captured as well, so its output is
-contained twice over. No guard of this package's own would be better than the
-transport's own claim on the descriptor, and a second one would be a second thing
-to get wrong.
+frame. A service the shared client starts on this server's behalf has its output
+captured there as well, so it is contained twice over. No guard of this package's
+own would be better than the transport's own claim on the descriptor, and a
+second one would be a second thing to get wrong.
 
 **Everything is decided before the transport opens.** The configuration is read,
 the service is connected, and the workspace is agreed before `stdio_server()` is
@@ -67,7 +67,9 @@ from omnivia_core_client import (
     Deadline,
     HttpServiceConfig,
     InstallationServiceConfig,
+    ManagedStartError,
     ServiceClient,
+    connect_managed_local,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -86,11 +88,6 @@ from omnivia_core_mcp.configuration import (
     McpConfiguration,
     McpConfigurationError,
     read_configuration,
-)
-from omnivia_core_mcp.managed_start import (
-    Installation,
-    ManagedStartError,
-    ensure_service,
 )
 from omnivia_core_mcp.manifest import (
     ExposedOperation,
@@ -127,6 +124,14 @@ CALL_TIMEOUT_SECONDS: Final = 30.0
 
 #: Budget for one connect, including the live probe behind it.
 CONNECT_TIMEOUT_SECONDS: Final = 30.0
+
+#: Budget for reaching a managed-local service, which is a different question
+#: from reaching one that is already up: it covers the probe, a service being
+#: started, whatever recovery or migration that service does before it reports
+#: ready, and the probe again. Thirty seconds is a connect budget and would
+#: expire in the middle of a cold start, leaving a service running that this
+#: process has just refused to talk to.
+MANAGED_START_TIMEOUT_SECONDS: Final = 180.0
 
 #: Argument names a tool call may never carry, whatever a schema says.
 #:
@@ -178,12 +183,18 @@ _AMBIGUOUS_WORKSPACE: Final = (
 _WORKSPACE_MISMATCH: Final = (
     "the connected service does not serve the selected workspace"
 )
-_NO_LOCAL_SERVICE: Final = (
-    "no local service is published for this configuration and this "
-    "installation state is not one this server may start a service for"
-)
+#: The one thing a failed managed start is told, whatever failed. The shared
+#: client collapses every cause -- an unrecognised installation layout, no
+#: workspace, no service program, a launcher that would not answer or answered
+#: with something unreadable, a start that never became reachable -- into one
+#: payload-free refusal, and this is that refusal in this server's vocabulary
+#: plus the instruction only an adapter can give. Naming which of the causes it
+#: was would mean reporting a path, a launcher field or a child's output.
 _MANAGED_START_UNREACHABLE: Final = (
-    "the managed service did not become reachable for this configuration"
+    "the managed service could not be started for this configuration. If this "
+    "installation has no workspace yet, run `omnivia init` to create one and "
+    "start this server again: this server starts an existing workspace and "
+    "creates none"
 )
 _NO_CREDENTIAL_RESOLVER: Final = (
     "remote service mode requires an injected trusted credential resolver"
@@ -265,21 +276,25 @@ def connect(
 def _connect_managed_local(
     configuration: McpConfiguration, workspace_id: str
 ) -> tuple[ServiceClient, str]:
-    """Connect to what the installation publishes, having one started if it must.
+    """Hand the whole of managed-local startup to the shared client.
 
-    Discovery, the transport choice and the liveness probe are all
-    :class:`~omnivia_core_client.ServiceClient`'s, and starting a service is the
-    service package's own `--managed-start`. Nothing between them is
-    reimplemented here: an absent descriptor is `None` from `connect`, which is
-    the ordinary "nothing is running" state rather than a failure.
+    Two lines of this adapter's own: the configuration says which installation
+    and which workspace, and a budget says how long the whole of it may take.
+    Everything else -- the descriptor read, the transport choice, the liveness
+    probe, whether the layout authorises a start at all, locating and running the
+    service program, reading its bounded result, and reconnecting afterwards --
+    is :func:`~omnivia_core_client.connect_managed_local`'s, in the one package
+    that owns it. There is no launcher, no path convention, no argv and no
+    process control in this package, which is what
+    `packages/omnivia-core-runtime/tests/phase2/test_service_and_adapters.py`
+    asserts by reading this file.
 
-    **A start is authorised by the installation layout, not by the request for
-    one.** `--managed-start` is invoked only when the configured state root is
-    the one :class:`~omnivia_core_mcp.managed_start.Installation` derives from
-    its own parent -- i.e. this is a whole installation this server understands
-    -- so a configuration pointing at a bare state directory somewhere else gets
-    a refusal instead of a service started against a root nobody sanctioned.
-    Then exactly one start, one reconnect, and a live client required.
+    Its refusal is already a fixed payload-free sentence, and it is still
+    translated rather than re-raised: what reaches a host on stderr is this
+    server's own vocabulary about its own startup, with one instruction added
+    that this adapter can give and the shared client deliberately cannot -- the
+    client does not know that `omnivia init` is the command, and must not carry
+    a CLI's name.
     """
     state = configuration.installation_state
     if state is None:  # pragma: no cover - the configuration model forbids it
@@ -287,22 +302,14 @@ def _connect_managed_local(
     service_config = InstallationServiceConfig(
         installation_state=state, workspace_id=workspace_id
     )
-    client = ServiceClient.connect(
-        service_config, deadline=Deadline.after(CONNECT_TIMEOUT_SECONDS)
-    )
-    if client is not None:
-        return client, "attached"
-
-    installation = Installation(home=state.parent)
-    if installation.installation_state != state:
-        raise StartupError(_NO_LOCAL_SERVICE)
-    attachment = ensure_service(installation)
-    client = ServiceClient.connect(
-        service_config, deadline=Deadline.after(CONNECT_TIMEOUT_SECONDS)
-    )
-    if client is None:
-        raise StartupError(_MANAGED_START_UNREACHABLE)
-    return client, attachment.status
+    deadline = Deadline.after(MANAGED_START_TIMEOUT_SECONDS)
+    try:
+        connected = connect_managed_local(service_config, deadline=deadline)
+    except ManagedStartError:
+        pass
+    else:
+        return connected.client, connected.status
+    raise StartupError(_MANAGED_START_UNREACHABLE)
 
 
 def _connect_service_client(

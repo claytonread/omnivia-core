@@ -5,7 +5,8 @@ A thin shell over three modules that already own everything this one does.
 error code exits with, :mod:`omnivia_core_cli.dispatch` turns one command into
 one call, and :class:`~omnivia_core_client.ServiceClient` finds the service and
 carries the call. Nothing here discovers an endpoint, reads a descriptor,
-chooses a transport, launches anything, or knows what a workspace is made of.
+chooses a transport or knows what a workspace is made of. Managed-local startup
+is delegated whole to the shared client package.
 
 *The parser is the surface, and nothing else.* Every command path is built from
 `APPLICATION_COMMANDS` and `PROBE_COMMANDS`, two segments each, in declared
@@ -51,8 +52,10 @@ from omnivia_core_client import (
     Deadline,
     DeadlineExceededError,
     InstallationServiceConfig,
+    ManagedStartError,
     OperationCancelledError,
     ServiceClient,
+    connect_managed_local,
 )
 
 from omnivia_core.contracts.v1 import (
@@ -91,7 +94,7 @@ _COMMAND: Final = "command"
 
 #: Every local diagnostic this module can print, one fixed sentence each. None
 #: is built from an argument, a document, an exception or a peer's words.
-_NO_SERVICE: Final = "no service is available for this workspace"
+_MANAGED_START_FAILED: Final = "the managed service could not be started"
 _OUT_OF_TIME: Final = "the call ran out of time, or was cancelled"
 _NOT_AUTHENTICATED: Final = "the service did not accept this client's credential"
 _INCOMPATIBLE: Final = "this client and the service could not agree on a version"
@@ -212,7 +215,7 @@ def main(
     script passes none, and then the client is connected here from the
     installation state root and workspace the caller named -- through
     :meth:`ServiceClient.connect` and nothing else, so no descriptor is read and
-    no transport is constructed on this path.
+    no transport or launcher is constructed on this path.
 
     One :class:`~omnivia_core_client.Deadline` is built before the connection
     and reused for the call, because the budget the caller stated is for the
@@ -234,17 +237,14 @@ def main(
         deadline = Deadline.after_ms(arguments.timeout_ms)
         client = connected_client
         if client is None:
-            client = ServiceClient.connect(
+            managed = connect_managed_local(
                 InstallationServiceConfig(
                     installation_state=arguments.installation_state,
                     workspace_id=arguments.workspace_id,
                 ),
                 deadline=deadline,
             )
-            if client is None:
-                # An installation that has published no descriptor. Ordinary,
-                # and still not an answer to the question that was asked.
-                return _refuse(_NO_SERVICE, 1)
+            client = managed.client
         if isinstance(command, ApplicationCommand):
             return _report_application(
                 dispatch_application(
@@ -267,6 +267,8 @@ def main(
         return _refuse(_NOT_AUTHENTICATED, 3)
     except CompatibilityError:
         return _refuse(_INCOMPATIBLE, 4)
+    except ManagedStartError:
+        return _refuse(_MANAGED_START_FAILED, 1)
     except (ValueError, TypeError):
         # An argument or a request this build would not put on the wire,
         # including the contracts' own `ContractDecodeError`, which is a

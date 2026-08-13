@@ -34,6 +34,8 @@ from omnivia_core_client import (
     Deadline,
     HttpServiceConfig,
     InstallationServiceConfig,
+    ManagedServiceConnection,
+    ManagedStartError,
     NegotiatedEndpoint,
     ServiceClient,
     TransportError,
@@ -555,94 +557,64 @@ class ConnectRecorder:
         return self.answers.pop(0)
 
 
-def install(monkeypatch: pytest.MonkeyPatch, recorder: ConnectRecorder) -> list[Any]:
-    """Put `recorder` behind `ServiceClient.connect` and count managed starts."""
-    started: list[Any] = []
-
-    def ensure(installation: Any, **_kwargs: Any) -> Any:
-        started.append(installation)
-        return server.Installation and _Attachment("started")
-
-    monkeypatch.setattr(server.ServiceClient, "connect", classmethod(recorder))
-    monkeypatch.setattr(server, "ensure_service", ensure)
-    return started
-
-
-@dataclass(frozen=True)
-class _Attachment:
-    status: str
-
-
-def test_a_published_service_is_used_without_a_managed_start(
+def test_managed_local_delegates_the_whole_startup_to_the_shared_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The service is already there, so nothing is started. One connect, no argv."""
-    recorder = ConnectRecorder([client(RecordingTransport())])
-    started = install(monkeypatch, recorder)
+    """The adapter supplies configuration and one deadline, and owns no launcher."""
+    expected = client(RecordingTransport())
+    seen: list[tuple[Any, Deadline]] = []
+
+    def managed(config: Any, *, deadline: Deadline, **_kwargs: Any) -> Any:
+        seen.append((config, deadline))
+        return ManagedServiceConnection(client=expected, status="attached")
+
+    monkeypatch.setattr(server, "connect_managed_local", managed)
 
     connected = server.connect(configuration())
 
-    assert started == []
-    assert len(recorder.configs) == 1
-    assert isinstance(recorder.configs[0], InstallationServiceConfig)
-    assert recorder.configs[0].installation_state == STATE
-    assert recorder.configs[0].workspace_id == WORKSPACE
+    assert len(seen) == 1
+    assert isinstance(seen[0][0], InstallationServiceConfig)
+    assert seen[0][0].installation_state == STATE
+    assert seen[0][0].workspace_id == WORKSPACE
+    assert isinstance(seen[0][1], Deadline)
     assert connected.status == "attached"
-    assert isinstance(connected.client, ServiceClient)
+    assert connected.client is expected
 
 
-def test_managed_start_runs_once_after_an_absent_first_connect(
+def test_managed_local_preserves_the_shared_client_start_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Absent is an ordinary state: `connect` answers `None`, then one start.
-
-    Exactly one start, then one reconnect through the shared client. The status
-    comes from the launcher's own answer rather than from having called it.
-    """
-    recorder = ConnectRecorder([None, client(RecordingTransport())])
-    started = install(monkeypatch, recorder)
+    expected = client(RecordingTransport())
+    monkeypatch.setattr(
+        server,
+        "connect_managed_local",
+        lambda _config, **_kwargs: ManagedServiceConnection(
+            client=expected, status="started"
+        ),
+    )
 
     connected = server.connect(configuration())
 
-    assert len(started) == 1
-    assert started[0].home == STATE.parent
-    assert len(recorder.configs) == 2
-    assert recorder.configs[0] == recorder.configs[1]
     assert connected.status == "started"
+    assert connected.client is expected
 
 
-def test_a_state_root_outside_an_installation_refuses_instead_of_starting(
+def test_a_shared_managed_start_failure_becomes_a_fixed_startup_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An absent service must not become a service started against another root.
+    def fail(_config: Any, **_kwargs: Any) -> Any:
+        raise ManagedStartError("contains " + ENDPOINT + " and " + str(STATE))
 
-    The configured root is not the `installation-state` an `Installation` derives
-    from its own parent, so this is not a whole installation this server
-    understands -- and starting a service for it would bind an endpoint and take
-    a workspace lease somewhere nobody sanctioned.
-    """
-    recorder = ConnectRecorder([None])
-    started = install(monkeypatch, recorder)
-
-    with pytest.raises(server.StartupError) as refusal:
-        server.connect(configuration(installation_state="/srv/somebody-elses-state"))
-
-    assert started == []
-    assert len(recorder.configs) == 1
-    assert "/srv/somebody-elses-state" not in str(refusal.value)
-
-
-def test_a_managed_start_that_never_becomes_reachable_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorder = ConnectRecorder([None, None])
-    started = install(monkeypatch, recorder)
-
-    with pytest.raises(server.StartupError, match="did not become reachable"):
+    monkeypatch.setattr(server, "connect_managed_local", fail)
+    with pytest.raises(server.StartupError, match="could not be started") as refusal:
         server.connect(configuration())
+    assert ENDPOINT not in str(refusal.value)
+    assert str(STATE) not in str(refusal.value)
 
-    assert len(started) == 1
-    assert len(recorder.configs) == 2
+
+def install(monkeypatch: pytest.MonkeyPatch, recorder: ConnectRecorder) -> None:
+    """Put `recorder` behind remote-mode `ServiceClient.connect`."""
+    monkeypatch.setattr(server.ServiceClient, "connect", classmethod(recorder))
 
 
 # --- startup: the remote service client -----------------------------------------

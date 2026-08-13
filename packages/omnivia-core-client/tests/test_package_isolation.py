@@ -36,6 +36,7 @@ ALLOWED_IMPORTS = frozenset(
         "collections",
         "ctypes",
         "dataclasses",
+        "hashlib",
         "http",
         "ipaddress",
         "json",
@@ -45,9 +46,12 @@ ALLOWED_IMPORTS = frozenset(
         "os",
         "pathlib",
         "re",
+        "shutil",
         "socket",
         "ssl",
         "stat",
+        "subprocess",
+        "sys",
         "threading",
         "time",
         "typing",
@@ -123,9 +127,7 @@ FORBIDDEN_IMPORTS = (
     "pydantic",
     "requests",
     "shlex",
-    "shutil",
     "sqlite3",
-    "subprocess",
     "urllib3",
 )
 
@@ -159,6 +161,7 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "framing.py",
         "http_transport.py",
         "local_ipc.py",
+        "managed_local.py",
         "service_client.py",
         "transport.py",
         "windows_pipe.py",
@@ -249,6 +252,15 @@ def test_the_high_level_client_only_composes_what_this_package_already_has() -> 
         "pathlib",
         "typing",
     }, sorted(roots)
+
+
+def test_only_managed_local_may_locate_or_start_a_process() -> None:
+    """Process ownership is one named client module, never an adapter leak."""
+    for imported in ("hashlib", "shutil", "subprocess", "sys"):
+        importers = sorted(
+            path.name for path in MODULES if imported in _imported_roots(path)
+        )
+        assert importers == ["managed_local.py"], imported
 
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_IMPORTS)
@@ -384,18 +396,20 @@ def test_the_typing_marker_ships() -> None:
 
 
 def test_the_readme_marks_the_unimplemented_surfaces() -> None:
-    """What is still absent, after the high-level client landed.
+    """What is still absent, after managed-local startup landed.
 
     ``local socket`` left this list when R005-01 landed the local transport;
-    HTTP, the Windows named pipe and now the high-level client have left it too.
-    Retry and managed startup remain their own packets.
+    HTTP, the Windows named pipe, the high-level client and now managed startup
+    have left it too. Retry is still its own packet, and supervision is a
+    boundary rather than a packet: ``managed_local`` asks for a service to exist
+    and never restarts, stops, monitors or leases one.
     """
     readme = (PACKAGE_ROOT / "README.md").read_text(encoding="utf-8")
     not_implemented = readme.split("## Not implemented yet", 1)
     assert len(not_implemented) == 2, "README must state what is not implemented yet"
     for surface in (
         "retry",
-        "managed service startup",
+        "supervision",
     ):
         assert surface in not_implemented[1], surface
 
@@ -414,3 +428,4 @@ def test_the_readme_no_longer_claims_shipped_surfaces_are_absent() -> None:
     assert "named-pipe" not in absent
     assert "high-level" not in absent
     assert "service client" not in absent
+    assert "managed service startup" not in absent

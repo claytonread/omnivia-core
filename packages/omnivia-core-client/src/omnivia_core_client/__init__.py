@@ -31,9 +31,10 @@ library.
   two configurations it connects from: :class:`InstallationServiceConfig` for
   whatever an installation publishes, :class:`HttpServiceConfig` for an
   explicitly named HTTP service
+- :mod:`~omnivia_core_client.managed_local` -- one managed-local connect/start/
+  reconnect path shared by the CLI and MCP adapters
 
-**What is not here yet**, and must not be assumed: retry or backoff, and managed
-service startup. Each arrives in its own packet.
+**What is not here yet**, and must not be assumed: retry or backoff.
 
 :class:`LocalIpcTransport` and :class:`HttpTransport` are the two concrete
 transports, and both live here -- the first by owner resolution 005 R005-01, the
@@ -95,6 +96,7 @@ from omnivia_core_client.errors import (
     CredentialMissingError,
     CredentialUnavailableError,
     DeadlineExceededError,
+    ManagedStartError,
     OperationCancelledError,
     ProtocolError,
     TransportError,
@@ -122,6 +124,13 @@ from omnivia_core_client.local_ipc import (
     LocalIpcTransport,
     socket_path_for,
 )
+from omnivia_core_client.managed_local import (
+    MANAGED_START_RESULT_MAXIMUM_BYTES,
+    MANAGED_START_VERSION,
+    SERVICE_EXECUTABLE,
+    ManagedServiceConnection,
+    connect_managed_local,
+)
 from omnivia_core_client.service_client import (
     HttpServiceConfig,
     InstallationServiceConfig,
@@ -147,6 +156,8 @@ __all__ = [
     "LOCAL_IPC_SCHEME",
     "MAGIC",
     "MAGIC_HEX",
+    "MANAGED_START_RESULT_MAXIMUM_BYTES",
+    "MANAGED_START_VERSION",
     "MAXIMUM_CREDENTIAL_CHARACTERS",
     "MAXIMUM_DESCRIPTOR_BYTES",
     "MAXIMUM_DURATION_MS",
@@ -155,6 +166,7 @@ __all__ = [
     "MAXIMUM_REFERENCE_CHARACTERS",
     "MAXIMUM_TIMEOUT_SECONDS",
     "PIPE_SCHEME",
+    "SERVICE_EXECUTABLE",
     "SUPPORTED_DESCRIPTOR_VERSION",
     "SUPPORTED_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",
@@ -179,6 +191,8 @@ __all__ = [
     "HttpTransport",
     "InstallationServiceConfig",
     "LocalIpcTransport",
+    "ManagedServiceConnection",
+    "ManagedStartError",
     "MonotonicClock",
     "NegotiatedEndpoint",
     "OperationCancelledError",
@@ -188,6 +202,7 @@ __all__ = [
     "TransportError",
     "__version__",
     "canonical_json_bytes",
+    "connect_managed_local",
     "decode_frame",
     "descriptor_path",
     "discover_endpoint",

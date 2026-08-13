@@ -33,9 +33,11 @@ omnivia-core-mcp --config /absolute/path/to/omnivia-mcp.json
 
 There is no default configuration path, environment lookup, or `--home`
 fallback. A managed-local document names an absolute `installation_state`; the
-server first asks the shared `ServiceClient` to connect and, only when no
-descriptor is published, invokes `omnivia-core-service --managed-start` once.
-It then reconnects and requires live readiness before advertising any tool.
+server delegates the whole attach/start/reconnect decision to the shared
+`connect_managed_local` client operation. Only that client operation may invoke
+`omnivia-core-service --managed-start`, and only when no descriptor is
+published. The MCP package owns no launcher, path convention, or service argv;
+it requires a live connection before advertising any tool.
 
 Remote `service_client` mode names an HTTPS origin and an opaque credential
 reference. The console entry point has no ambient credential resolver and

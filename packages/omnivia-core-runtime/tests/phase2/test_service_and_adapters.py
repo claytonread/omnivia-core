@@ -10,7 +10,6 @@ test pins the absence of the catalogue so nobody mistakes it for done.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -20,8 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from omnivia_core_cli.client import build_request
-from omnivia_core_runtime.ownership.discovery import discover, is_compatible, publish
+from omnivia_core_runtime.ownership.discovery import discover
 from omnivia_core_runtime.service.authorization import (
     AuthorizationDenied,
     Grant,
@@ -44,7 +42,6 @@ from omnivia_core_runtime.service.transport import (
 )
 from omnivia_core_runtime.service.versions import (
     API_VERSION,
-    PROTOCOL_VERSION,
     SERVER_VERSION,
     supported_api_versions,
     supported_workspace_versions,
@@ -55,15 +52,17 @@ from omnivia_core_runtime.storage.legacy import migrate_legacy_database
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
 from omnivia_core.contracts.v1 import (
+    CONTRACT_VERSION,
+    ClientIdentity,
     ErrorResponseEnvelope,
-    ServiceEndpointDescriptor,
-    ServiceProcessEvidence,
+    PrincipalClaim,
+    RequestEnvelope,
+    RequestMetadata,
     SuccessResponseEnvelope,
 )
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 
 from .conftest import SERVICE_INSTANCE, WORKSPACE_ID
-from .harness import child_environment
 
 REPO = Path(__file__).resolve().parents[4]
 WORKSPACE = "ws-dispatch-0001"
@@ -81,14 +80,29 @@ def grant(
     )
 
 
-def request_for(operation: str, *, workspace: str = WORKSPACE, principal: str | None = None):
-    from omnivia_core_cli.client import build_request
-
-    return build_request(
-        operation,
-        workspace_id=workspace,
-        request_id="req-1",
-        principal=principal,
+def request_for(
+    operation: str, *, workspace: str = WORKSPACE, principal: str | None = None
+):
+    """One public-contract probe request; no adapter helper is imported here."""
+    return RequestEnvelope(
+        operation=operation,
+        metadata=RequestMetadata(
+            request_id="req-1",
+            correlation_id="req-1",
+            trace_id="req-1",
+            api_version=CONTRACT_VERSION,
+            client=ClientIdentity(id="runtime-acceptance", version="0.1.0"),
+            workspace_id=workspace,
+            scopes=(),
+            purpose="runtime_acceptance",
+            required_capabilities=(),
+            principal_claim=(
+                None
+                if principal is None
+                else PrincipalClaim(claimed_principal_id=principal)
+            ),
+        ),
+        input={},
     )
 
 
@@ -99,9 +113,7 @@ def claiming(operation: str, api_version: object, *, workspace: str = WORKSPACE)
     point is to vary the one thing a client controls and a server must not trust.
     """
     request = request_for(operation, workspace=workspace)
-    return replace(
-        request, metadata=replace(request.metadata, api_version=api_version)
-    )
+    return replace(request, metadata=replace(request.metadata, api_version=api_version))
 
 
 class FakeService:
@@ -340,9 +352,7 @@ def test_an_ungranted_workspace_is_denied() -> None:
 def test_a_client_cannot_name_its_own_principal() -> None:
     """A claimed principal that differs from the grant is a denial, not an override."""
     dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
-    response = dispatcher.dispatch(
-        request_for("core.health", principal="someone-else")
-    )
+    response = dispatcher.dispatch(request_for("core.health", principal="someone-else"))
     assert isinstance(response, ErrorResponseEnvelope)
     assert response.error.code == "core.principal_mismatch"
 
@@ -420,8 +430,9 @@ def test_cli_and_mcp_cannot_own_a_lease_or_open_storage() -> None:
 
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             called = {
-                node.func.id if isinstance(node.func, ast.Name) else
-                (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else (node.func.attr if isinstance(node.func, ast.Attribute) else "")
                 for node in ast.walk(tree)
                 if isinstance(node, ast.Call)
             }
@@ -432,9 +443,7 @@ def test_cli_and_mcp_cannot_own_a_lease_or_open_storage() -> None:
 #: Every distribution `omnivia-core-mcp` is permitted to depend on, and the whole
 #: of it. R004-05 states this list: the public Core contracts, the client for all
 #: service calls, and the official MCP SDK as the sole MCP framework dependency.
-MCP_ALLOWED_DEPENDENCIES = frozenset(
-    {"omnivia-core", "omnivia-core-client", "mcp"}
-)
+MCP_ALLOWED_DEPENDENCIES = frozenset({"omnivia-core", "omnivia-core-client", "mcp"})
 
 #: There was a `MCP_FORBIDDEN_DEPENDENCIES` set here, and it was dead code that
 #: read as a guard. It was disjoint from the allow-list above and the closed
@@ -476,9 +485,9 @@ def _mcp_manifest() -> dict[str, Any]:
     import omnivia_core_mcp
 
     return tomllib.loads(
-        (
-            Path(omnivia_core_mcp.__file__).parents[2] / "pyproject.toml"
-        ).read_text(encoding="utf-8")
+        (Path(omnivia_core_mcp.__file__).parents[2] / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
     )
 
 
@@ -512,7 +521,6 @@ def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
         "configuration.py",
         "generated_schema_projection.py",
         "manifest.py",
-        "managed_start.py",
         "server.py",
     }, f"unexpected modules: {sorted(shipped)}"
 
@@ -526,44 +534,43 @@ def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
     }
 
 
-def test_the_cli_and_mcp_derive_the_same_installation_layout(tmp_path: Path) -> None:
-    """One `~/.omnivia` convention, restated in two adapters, compared here.
+def test_only_the_shared_client_owns_the_layout_and_the_launcher() -> None:
+    """One `~/.omnivia` convention and one launcher invocation, in one module.
 
-    ADR-036 forbids `omnivia-core-mcp` importing `omnivia-core-cli`, so the layout
-    exists twice by design. A restated fact is only safe while something fails
-    when the two copies drift, and this is that something -- it lives on the
-    runtime's side because that is the side allowed to import both.
+    This replaces a field-by-field comparison of two copies. ADR-036 forbids
+    `omnivia-core-mcp` importing `omnivia-core-cli`, so each adapter used to
+    restate the layout and the argv, and the only thing keeping them in step was
+    an assertion here that they were equal -- which fails the moment somebody
+    changes both, and says nothing about a third copy. Both copies are gone:
+    `omnivia_core_client.managed_local` is the sole implementation, and what is
+    asserted now is that neither adapter has one.
 
-    The drift this prevents is not hypothetical. The CLI restated the runtime's
-    socket-path ceiling and the two ran 11 to 15 bytes apart until Packet D fixed
-    it. Here the consequence would be worse than a bad error message: a CLI-started
-    service and an MCP-started one would bind different sockets under different
-    workspace roots, and the "one authoritative writable service per workspace"
-    guarantee would be quietly false.
+    It lives on the runtime's side for the same reason the comparison did --
+    this is the side allowed to import all three -- and it reads the adapters'
+    source rather than their behaviour, because a launcher that is only reached
+    on a cold-start path would not show up in a behavioural test.
+
+    Three ways an adapter could regain process control, all of them refused: the
+    imports that run a process, the argv that names the launcher's mode, and the
+    name of the program itself. The last two are matched as text, so a
+    re-implementation that shelled out through some other module would still be
+    caught by the flag it had to pass. Swept over every module of both
+    distributions rather than the two entry points, because the module that grew
+    a launcher would be a new one.
     """
-    from omnivia_core_cli import lifecycle as cli_lifecycle
-    from omnivia_core_mcp import managed_start as mcp_managed_start
+    from omnivia_core_client import managed_local
 
-    cli = cli_lifecycle.Installation(home=tmp_path)
-    mcp = mcp_managed_start.Installation(home=tmp_path)
+    shared = imported_modules(Path(managed_local.__file__))
+    assert {"subprocess", "shutil"} <= shared
 
-    for attribute in (
-        "workspace_root",
-        "installation_state",
-        "run_directory",
-        "socket_path",
-        "log_path",
-        "endpoint_uri",
-    ):
-        assert getattr(cli, attribute) == getattr(mcp, attribute), attribute
-
-    assert (
-        cli_lifecycle.DEFAULT_HOME_DIRECTORY
-        == mcp_managed_start.DEFAULT_HOME_DIRECTORY
-    )
-    assert cli_lifecycle.SERVICE_EXECUTABLE == mcp_managed_start.SERVICE_EXECUTABLE
-    assert cli_lifecycle.MANIFEST_NAME == mcp_managed_start.MANIFEST_NAME
-    assert cli_lifecycle.home_directory() == mcp_managed_start.home_directory()
+    for package in ("omnivia-core-cli", "omnivia-core-mcp"):
+        for adapter in (REPO / "packages" / package / "src").rglob("*.py"):
+            imports = imported_modules(adapter)
+            assert "subprocess" not in imports, adapter
+            assert "shutil" not in imports, adapter
+            source = adapter.read_text(encoding="utf-8")
+            assert "--managed-start" not in source, adapter
+            assert "omnivia-core-service" not in source, adapter
 
 
 def test_the_mcp_distribution_declares_only_allow_listed_dependencies() -> None:
@@ -626,229 +633,6 @@ def test_the_dependency_allow_list_admits_no_spelling_of_a_name_outside_it() -> 
     assert _requirement_name("mcp>=2,<3") == "mcp"
 
 
-def test_the_cli_reports_no_service_rather_than_crashing(tmp_path: Path) -> None:
-    from omnivia_core_cli.main import main
-
-    code = main(["--runtime-state", str(tmp_path), "discover"])
-    assert code == 1
-
-
-def cli_descriptor(
-    *, endpoint: str = "unix:///tmp/omnivia-cli.sock", generation: int = 7
-) -> ServiceEndpointDescriptor:
-    """What a running service advertises, in the shape it advertises it."""
-    return ServiceEndpointDescriptor(
-        descriptor_version=API_VERSION,
-        workspace_id=WORKSPACE_ID,
-        service_instance_id=SERVICE_INSTANCE,
-        installation_id="inst-cli",
-        endpoint_uri=endpoint,
-        protocol_version=PROTOCOL_VERSION,
-        server_version=SERVER_VERSION,
-        supported_api_versions=supported_api_versions(),
-        supported_workspace_versions=supported_workspace_versions("1"),
-        workspace_format_version=workspace_contract_version("1"),
-        ready=True,
-        lifecycle_state="ready",
-        fencing_generation=generation,
-        published_at="2026-08-04T00:00:00Z",
-        process=ServiceProcessEvidence(pid=4242, start_time="100", boot_id="boot-a"),
-    )
-
-
-def test_the_cli_reads_the_descriptor_the_runtime_publishes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The CLI's reader and the Runtime's writer must agree on one document.
-
-    Every CLI discovery case above this one runs against an empty runtime
-    directory and asserts the "no service is advertised" branch, so when the
-    published document moved to the public `ServiceEndpointDescriptor` shape the
-    CLI began reporting every live service as absent and every suite in the
-    repository stayed green. A reader test that never sees a real descriptor is
-    not a test of the reader, which is why the descriptor here is written by the
-    real `publish()` rather than assembled as a fixture document.
-    """
-    from omnivia_core_cli.client import read_descriptor
-    from omnivia_core_cli.main import main
-
-    runtime = tmp_path / "runtime" / WORKSPACE_ID
-    publish(runtime, cli_descriptor())
-
-    service = read_descriptor(runtime)
-    assert service is not None, "the CLI reported a published service as absent"
-    assert service.endpoint_uri == "unix:///tmp/omnivia-cli.sock"
-    assert service.workspace_id == WORKSPACE_ID
-    assert service.service_instance_id == SERVICE_INSTANCE
-    assert service.fencing_generation == 7
-    assert service.ready is True
-
-    # And what the user is actually shown, not just what the reader returns.
-    # Still exact equality on the whole document: the point of this half is that
-    # a key cannot appear, vanish or change meaning without a reader noticing.
-    #
-    # `advertised_ready` and `observation` are owner resolution 004 R004-13. The
-    # descriptor is published once at startup and never rewritten, so its
-    # readiness is a startup claim rather than a fact about now -- a service
-    # killed hard leaves this file behind still saying true. A bare `ready` key
-    # handed that stale claim to any script that read it, which is the same trap
-    # `status` exists to avoid. The key names what it is, and `observation` names
-    # where it came from.
-    assert main(["--runtime-state", str(runtime), "discover"]) == 0
-    assert json.loads(capsys.readouterr().out) == {
-        "endpoint": "unix:///tmp/omnivia-cli.sock",
-        "workspace_id": WORKSPACE_ID,
-        "service_instance_id": SERVICE_INSTANCE,
-        "fencing_generation": 7,
-        "advertised_ready": True,
-        "observation": "published-descriptor",
-    }
-
-    # The descriptor's other consumer: the workspace a request is addressed to.
-    # `--json` is what emits the request envelope. Bare `health` now dials the
-    # endpoint the descriptor names, and this descriptor names a socket nothing
-    # is listening on -- so it would fail here, which is a statement about a
-    # service that was never started rather than about the reader this test is
-    # for. The claim below is unchanged: the workspace id the runtime published
-    # is the one the CLI addresses its request to.
-    assert main(["--runtime-state", str(runtime), "health", "--json"]) == 0
-    request = json.loads(capsys.readouterr().out)
-    assert request["metadata"]["workspace_id"] == WORKSPACE_ID
-
-
-@pytest.mark.parametrize(
-    "document",
-    [
-        "{not json",
-        '{"workspace_id": "x"}',
-        "[]",
-        json.dumps(
-            {
-                "endpoint": "unix:///tmp/omnivia-cli.sock",
-                "workspace_id": WORKSPACE_ID,
-                "service_instance_id": SERVICE_INSTANCE,
-                "fencing_generation": 1,
-                "api_version": "1.0",
-                "readiness": "ready",
-            }
-        ),
-    ],
-    ids=["garbage", "incomplete", "not-an-object", "the-legacy-shape"],
-)
-def test_the_cli_reports_an_unreadable_descriptor_as_absent(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], document: str
-) -> None:
-    """Failure semantics are unchanged, including for the shape this replaces.
-
-    The legacy document is in this list deliberately. One left behind by an older
-    service is not a descriptor this build can read, and the answer to it is the
-    same "no service is advertised" as to any other unreadable file -- not a
-    crash, and not a shim that decodes both shapes.
-    """
-    from omnivia_core_cli.client import read_descriptor
-    from omnivia_core_cli.main import main
-
-    runtime = tmp_path / "runtime" / WORKSPACE_ID
-    runtime.mkdir(parents=True)
-    (runtime / "service.json").write_text(document, encoding="utf-8")
-
-    assert read_descriptor(runtime) is None
-    assert main(["--runtime-state", str(runtime), "discover"]) == 1
-    assert "no service is advertised" in capsys.readouterr().out
-
-
-def test_the_cli_builds_a_contract_valid_request(tmp_path: Path) -> None:
-    """The CLI cannot invent a shape the service would reject."""
-
-    from omnivia_core_cli.client import build_request, encode
-
-    from omnivia_core.contracts.v1 import codec
-
-    request = build_request(
-        "core.health", workspace_id=WORKSPACE, request_id="cli-1", principal="local-user"
-    )
-    wire = encode(request)
-    decoded = codec.decode_request(json.loads(wire))
-    assert decoded.operation == "core.health"
-    assert decoded.metadata.workspace_id == WORKSPACE
-    assert decoded.metadata.client.id == "omnivia-cli"
-
-
-def test_the_cli_claims_an_api_version_the_service_advertises() -> None:
-    """The version stamped on every CLI request must be one this build serves.
-
-    It was the literal `"1.0"`, transcribed once and then left behind when the
-    contract moved to 1.2 — the same defect the Runtime's own `API_VERSION` already
-    carried and fixed by deriving. Nothing on the request path validates the field,
-    so the stale claim was never refused: it was accepted, dispatched, and then used
-    to build the response's whole version envelope, so the service reported its
-    supported window as `[1.0, 1.0]` while the descriptor beside it advertised
-    `[1.2, 1.2]`.
-
-    `is_compatible` is the one comparison in the tree that reads a claimed API
-    version against a service's advertised window, and it is asserted here rather
-    than an equality against `CONTRACT_VERSION`: what has to be true is that the
-    claim falls inside what the service supports, which stays the right question if
-    that window ever widens beyond one version.
-    """
-    claimed = build_request(
-        "core.health", workspace_id=WORKSPACE, request_id="cli-api-version"
-    ).metadata.api_version
-
-    assert is_compatible(
-        cli_descriptor(),
-        api_version=claimed,
-        workspace_format_version=workspace_contract_version("1"),
-    ), (
-        f"the CLI claims api_version {claimed!r}, which is outside the "
-        f"{supported_api_versions()} this build advertises"
-    )
-
-
-def test_the_cli_and_the_dispatcher_agree_on_the_envelope(tmp_path: Path) -> None:
-    """One contract, both sides: the client's request dispatches unchanged."""
-    from omnivia_core_cli.client import build_request
-
-    request = build_request(
-        "core.health", workspace_id=WORKSPACE, request_id="cli-2", principal="local-user"
-    )
-    dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
-    response = dispatcher.dispatch(request)
-    assert isinstance(response, SuccessResponseEnvelope)
-    assert response.metadata.request_id == "cli-2"
-
-
-def test_the_cli_runs_as_a_process(tmp_path: Path) -> None:
-    """A real invocation, so the entry point is proven rather than assumed."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "omnivia_core_cli.main",
-            "--runtime-state",
-            str(tmp_path),
-            "discover",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=child_environment(
-            {
-                "PYTHONPATH": ":".join(
-                    [
-                        str(REPO / "src"),
-                        str(REPO / "packages" / "omnivia-core-cli" / "src"),
-                        str(REPO / "packages" / "omnivia-core-mcp" / "src"),
-                    ]
-                )
-            }
-        ),
-        check=False,
-    )
-    assert result.returncode == 1
-    assert "no service is advertised" in result.stdout
-
-
 # SB-06 regression
 def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
     tmp_path: Path, phase0_source: Path
@@ -860,8 +644,6 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
     a dead pid, and nothing ever listened on the endpoint it advertised.
     """
     import signal
-    import subprocess
-    import sys
     import tempfile
     import time
 
@@ -925,9 +707,7 @@ def test_sb06_the_entry_point_serves_until_signalled_and_dies_cleanly(
 
         # And something is actually listening there, speaking the real contract.
         response = LocalSocketTransport(endpoint=endpoint).call(
-            build_request(
-                "core.health", workspace_id=WORKSPACE_ID, request_id="req-entrypoint"
-            )
+            request_for("core.health", workspace=WORKSPACE_ID)
         )
         assert isinstance(response, SuccessResponseEnvelope), response
         assert response.result["status"] == "alive"
@@ -966,7 +746,11 @@ def test_endpoint_to_serve_accepts_the_platforms_own_scheme(tmp_path: Path) -> N
 def test_endpoint_to_serve_rejects_the_other_platforms_scheme() -> None:
     """A `unix://` endpoint on Windows, or a `pipe://` endpoint on POSIX, parses
     fine but names a mechanism this process cannot open."""
-    other = "pipe://omnivia-deadbeef" if LOCAL_SCHEME.value == "unix" else "unix:///tmp/s.sock"
+    other = (
+        "pipe://omnivia-deadbeef"
+        if LOCAL_SCHEME.value == "unix"
+        else "unix:///tmp/s.sock"
+    )
     assert _endpoint_to_serve(other) is None
 
 
@@ -980,7 +764,11 @@ def test_main_refuses_a_mismatched_scheme_before_touching_the_workspace(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Refused before startup runs -- not after a lock or lease was taken."""
-    other = "pipe://omnivia-deadbeef" if LOCAL_SCHEME.value == "unix" else "unix:///tmp/s.sock"
+    other = (
+        "pipe://omnivia-deadbeef"
+        if LOCAL_SCHEME.value == "unix"
+        else "unix:///tmp/s.sock"
+    )
     code = service_main(
         [
             "--workspace",
@@ -993,7 +781,9 @@ def test_main_refuses_a_mismatched_scheme_before_touching_the_workspace(
     )
     assert code == 2
     assert "refusing to serve" in capsys.readouterr().err
-    assert not (tmp_path / "workspace").exists(), "nothing was touched before the refusal"
+    assert not (tmp_path / "workspace").exists(), (
+        "nothing was touched before the refusal"
+    )
 
 
 def test_main_check_only_bypasses_endpoint_validation(tmp_path: Path) -> None:
@@ -1106,7 +896,9 @@ def test_srb02_a_transport_that_cannot_start_publishes_no_readiness(
     # The lifetime lock must be free for a successor.
     from omnivia_core_runtime.ownership.locks import LockRole, create_lock
 
-    successor = create_lock(workspace.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE)
+    successor = create_lock(
+        workspace.locks_path / "storage.lock", LockRole.LIFETIME_STORAGE
+    )
     assert successor.acquire(), "the storage lock was not released"
     successor.release()
 
@@ -1206,7 +998,7 @@ def test_a_response_and_the_published_descriptor_cannot_disagree(
 
 # SRB-02 regression
 def test_srb02_readiness_is_never_visible_before_the_endpoint_accepts(
-   tmp_path: Path, migrated
+    tmp_path: Path, migrated
 ) -> None:
     """Discovery is the signal a launcher acts on, so it must not precede the socket.
 

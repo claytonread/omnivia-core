@@ -92,7 +92,7 @@ PROBE = ["service", "health"]
 #: Every local diagnostic `main` can print, restated here rather than imported:
 #: a test that read the module's own constants would pass unchanged if one were
 #: replaced by an f-string quoting the endpoint, the workspace or the exception.
-NO_SERVICE = "no service is available for this workspace"
+MANAGED_START_FAILED = "the managed service could not be started"
 OUT_OF_TIME = "the call ran out of time, or was cancelled"
 NOT_AUTHENTICATED = "the service did not accept this client's credential"
 INCOMPATIBLE = "this client and the service could not agree on a version"
@@ -286,15 +286,15 @@ def test_the_deadline_the_connection_got_is_the_one_the_call_gets(
     assert carried(transport)[0][1] is seen[0]
 
 
-def test_a_workspace_with_no_service_says_so_and_exits_one(
+def test_a_workspace_that_cannot_be_started_says_so_and_exits_one(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """An installation that published no descriptor: ordinary, and not an answer."""
+    """Managed-local startup failures use one payload-free diagnostic."""
     monkeypatch.setattr(ServiceClient, "connect", lambda config, **_kwargs: None)
     assert main([*BASE, *APPLICATION]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert only_document(captured.err) == NO_SERVICE
+    assert only_document(captured.err) == MANAGED_START_FAILED
 
 
 # --------------------------------------------------------------------------

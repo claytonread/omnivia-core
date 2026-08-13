@@ -435,11 +435,38 @@ credential reference or secret appears in any message raised here, and the two
 refusals this module owns are raised outside every handler, so neither
 `__cause__` nor `__context__` survives to carry a transport's own words.
 
+### `managed_local` — reaching a service, having one started if there is none
+
+`connect_managed_local(config, deadline=…)` takes the same
+`InstallationServiceConfig` as `ServiceClient.connect` and the caller's own
+`Deadline`, and returns a `ManagedServiceConnection`: the connected client, and
+`status` of `"attached"` or `"started"`. Attaching is the ordinary case and
+costs one connect. Only an *absent* service reaches the rest — and then the
+installation layout must authorise a start (the state root has to be the
+`installation-state` the convention derives from its own parent, holding an
+initialised workspace), the `omnivia-core-service --managed-start` program is
+located and run once, its bounded versioned result is read, and the same
+`Deadline` object is used to reconnect. A launcher that reports success while
+nothing is reachable is a failure.
+
+This is the one place in the repository that locates or runs a service process;
+the CLI and the MCP server hold no launcher, no path convention and no argv, and
+their packages' own tests assert that. Nothing here creates a workspace, reads an
+environment variable, or takes a timeout beside the caller's deadline.
+
+Every refusal is `ManagedStartError` carrying one fixed sentence — *the managed
+service could not be started* — with `__cause__` and `__context__` both `None`.
+The launcher's `reason`, its `failure` class, the descriptor it reports, the
+child's output, the executable and installation paths, the endpoint and every
+caught exception's text are all untrusted diagnostic material, and none of them
+crosses this boundary. An adapter that can say something more useful — that
+`omnivia init` is the command to create a workspace — adds that itself.
+
 ### `errors` — the typed failures
 
 `ClientError` and, under it, `ProtocolError`, `TransportError`,
-`CompatibilityError`, `DeadlineExceededError`, `OperationCancelledError`, and
-`CredentialError` with its four outcomes above.
+`CompatibilityError`, `DeadlineExceededError`, `OperationCancelledError`,
+`ManagedStartError`, and `CredentialError` with its four outcomes above.
 
 Diagnostics are built from structural facts only — byte counts, offsets, JSON
 value kinds, version strings, field names — and never from payload content, so
@@ -459,7 +486,9 @@ traceback rendering hides them.
 None of the following exists in this package, and no caller may assume it:
 
 - **retry, backoff, or idempotent replay**;
-- **managed service startup** — launching or supervising a service.
+- **supervision** — nothing here restarts, stops, monitors or holds a lease on a
+  service. `managed_local` asks the service program to make one exist, once, and
+  a service started that way outlives the process that asked for it.
 
 Each arrives in its own packet and will satisfy the contracts above rather than
 change them.
