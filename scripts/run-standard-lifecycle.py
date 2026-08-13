@@ -3,9 +3,10 @@
 
 This script is launched by the Standard candidate's clean virtual environment.
 It deliberately uses the installed Core and Runtime distributions rather than a
-repository import path.  Its retained result is bounded to booleans and counts:
-workspace paths, source bytes, attempt identifiers, and other machine-local
-values never enter candidate evidence.
+repository import path.  Its retained result is bounded to booleans, counts,
+content-inventory digests, and the fixed attempt identifier this script chooses
+itself: workspace paths, source bytes, and other machine-local values never
+enter candidate evidence.
 """
 
 from __future__ import annotations
@@ -245,9 +246,44 @@ def qualify(root: Path) -> dict[str, object]:
         live.close()
     _assert(live_unchanged, "recovery downgraded the live workspace")
 
+    # Which mechanism recovered the workspace, and which logical database it
+    # produced.  A boolean says a restore happened; a rollback decision needs to
+    # know it was the online backup API rather than a file copy, and that the
+    # restored database is the same content the backup was verified against.
+    # Every value below is read from the run that just passed its assertions.
+    backup = result.backup
+    identity = {
+        "algorithm": "sha256",
+        "scope": "database content inventory",
+        "source": backup.source_inventory.content_checksum,
+        "backup": backup.backup_inventory.content_checksum,
+        "restored": recovered_inventory.content_checksum,
+    }
+
     return {
         "format": "omnivia.standard-lifecycle-result.v1",
         "verdict": "pass",
+        "backup_restore": {
+            "mechanism": "sqlite3.Connection.backup",
+            "mechanism_description": "SQLite online backup API",
+            "create_procedure": (
+                "omnivia_core_runtime.storage.backup.create_verified_backup"
+            ),
+            "verify_procedure": "omnivia_core_runtime.storage.backup.verify_backup",
+            "restore_procedure": (
+                "omnivia_core_runtime.storage.legacy.rollback_migration"
+            ),
+            "attempt_id": backup.attempt_id,
+            "identity": identity,
+            "backup_matches_source": identity["backup"] == identity["source"],
+            "restored_matches_backup": identity["restored"] == identity["backup"],
+            "verification_status": "verified" if backup.verified else "unverified",
+            "restore_status": (
+                "restored"
+                if identity["restored"] == identity["backup"]
+                else "not_restored"
+            ),
+        },
         "upgrade": {
             "phase0_to_workspace_format_1": "pass",
             "verified_backup_before_migration": True,

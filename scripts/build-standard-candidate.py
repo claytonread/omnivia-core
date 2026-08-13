@@ -92,6 +92,19 @@ METADATA_FILES: Final = (
     "NOTICE.txt",
 )
 MAX_LICENSE_BYTES: Final = 4 * 1024 * 1024
+#: The three required matrix rows and the moving runner selector each one uses.
+#: The selector names a row; it does not identify the OS that row actually ran
+#: on, which is what `_host_identity` records.
+MATRIX_RUNNERS: Final = {
+    "linux": "ubuntu-latest",
+    "darwin": "macos-latest",
+    "windows": "windows-latest",
+}
+#: Host identity keys that must be non-empty, and the value used for an optional
+#: product fact the running host does not report.  Optional keys are always
+#: present and never inferred from another value: absent means empty string.
+REQUIRED_HOST_FACTS: Final = ("system", "machine", "kernel_release", "kernel_version")
+ABSENT_FACT: Final = ""
 
 
 class CandidateError(RuntimeError):
@@ -134,6 +147,76 @@ def _digest_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _product_identity() -> dict[str, str]:
+    """The OS product name, version and build, as far as the stdlib reports them.
+
+    Each branch reads exactly one stdlib source and names it, so a reader can
+    tell where a value came from and what its absence means.  Nothing is
+    inferred: a host whose product facts the stdlib cannot read records them
+    empty rather than deriving them from the kernel.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        # `mac_ver` reports the product version only; macOS build numbers are not
+        # in the standard library, so the build stays empty rather than invented.
+        release, _version_info, _machine = platform.mac_ver()
+        return {
+            "source": "mac_ver",
+            "name": "macOS" if release else ABSENT_FACT,
+            "version": release,
+            "build": ABSENT_FACT,
+        }
+    if system == "Windows":
+        # `win32_ver` splits the two apart: `release` is the marketing release
+        # ("10"), `version` the full `10.0.<build>` string that carries the build.
+        release, version, _service_pack, _kind = platform.win32_ver()
+        return {
+            "source": "win32_ver",
+            "name": "Windows" if release or version else ABSENT_FACT,
+            "version": release,
+            "build": version,
+        }
+    try:
+        os_release = platform.freedesktop_os_release()
+    except OSError:
+        return dict.fromkeys(("source", "name", "version", "build"), ABSENT_FACT)
+    return {
+        "source": "freedesktop_os_release",
+        "name": os_release.get("NAME", ABSENT_FACT),
+        "version": os_release.get("VERSION_ID", ABSENT_FACT),
+        "build": os_release.get("BUILD_ID", ABSENT_FACT),
+    }
+
+
+def _host_identity() -> dict[str, Any]:
+    """The exact OS identity of the host this candidate was built and qualified on.
+
+    A matrix row selected by `ubuntu-latest` is a moving target: the row that
+    passed says nothing about which OS it passed on once the selector moves.  A
+    rollback or compatibility decision needs the OS that actually ran, so every
+    value here is read from the running host through `platform`/`sysconfig`.
+
+    The four facts in `REQUIRED_HOST_FACTS` must be non-empty; a row that cannot
+    name its own OS, kernel and architecture is not evidence about that OS, so
+    the candidate fails closed rather than recording a blank identity.
+    """
+    identity: dict[str, Any] = {
+        "system": platform.system().lower(),
+        "machine": platform.machine().lower(),
+        "kernel_release": platform.release(),
+        "kernel_version": platform.version(),
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "sysconfig_platform": sysconfig.get_platform(),
+        "platform_description": platform.platform(),
+        "product": _product_identity(),
+    }
+    missing = sorted(field for field in REQUIRED_HOST_FACTS if not identity[field])
+    if missing:
+        raise CandidateError(f"the build host did not report its identity: {missing}")
+    return identity
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -616,9 +699,12 @@ def _write_metadata(
         }
         for package in packages
     ]
-    platform_id = platform.system().lower()
-    machine = platform.machine().lower()
-    python_version = platform.python_version()
+    host = _host_identity()
+    # Read from the identity rather than calling `platform` a second time, so the
+    # matrix row, the SBOM namespace and the provenance record cannot disagree.
+    platform_id = host["system"]
+    machine = host["machine"]
+    python_version = host["python_version"]
     candidate_key = _digest_bytes(
         "\n".join(str(entry["sha256"]) for entry in wheel_entries).encode()
     )
@@ -673,11 +759,12 @@ def _write_metadata(
         },
         "builder": {
             "python": python_version,
-            "implementation": platform.python_implementation(),
+            "implementation": host["python_implementation"],
             "system": platform_id,
             "machine": machine,
-            "sysconfig_platform": sysconfig.get_platform(),
+            "sysconfig_platform": host["sysconfig_platform"],
         },
+        "host": host,
         "dependency_resolution": {
             "constraints": "scripts/mcp-wheelhouse-constraints.txt",
             "constraints_sha256": _digest_file(CONSTRAINTS),
@@ -693,11 +780,7 @@ def _write_metadata(
     _write_json(metadata / "build-provenance.json", provenance)
 
     matrix_rows = []
-    for system, runner in (
-        ("linux", "ubuntu-latest"),
-        ("darwin", "macos-latest"),
-        ("windows", "windows-latest"),
-    ):
+    for system, runner in MATRIX_RUNNERS.items():
         matrix_rows.append(
             {
                 "system": system,
@@ -718,6 +801,10 @@ def _write_metadata(
             "system": platform_id,
             "machine": machine,
             "python": python_version,
+            # The selector that chose this row, kept beside the identity of the
+            # OS it actually ran on: the selector moves, the identity does not.
+            "runner": MATRIX_RUNNERS.get(platform_id, ABSENT_FACT),
+            "host": host,
             "journey": "pass",
             "versions": compatibility_versions,
         },

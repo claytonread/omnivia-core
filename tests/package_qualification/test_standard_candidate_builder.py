@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import platform
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +22,15 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "phase2-platform.yml"
 
 def _module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("standard_candidate_builder", BUILDER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _lifecycle_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("standard_lifecycle", LIFECYCLE)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -574,3 +586,164 @@ def test_the_builder_gate_requires_the_same_evidence_the_journey_retains() -> No
         assert f'"{config_format}"' in source
     for tool in module.HOST_TOOLS:
         assert f'"{tool}"' in source
+
+
+_HOST_FACTS = {
+    "system",
+    "machine",
+    "kernel_release",
+    "kernel_version",
+    "python_implementation",
+    "python_version",
+    "sysconfig_platform",
+    "platform_description",
+    "product",
+}
+
+
+def test_host_identity_names_the_exact_os_the_candidate_ran_on() -> None:
+    """A `*-latest` selector moves; the OS a row proves must be recorded exactly."""
+    module = _module()
+
+    identity = module._host_identity()
+
+    assert set(identity) == _HOST_FACTS
+    assert identity["system"] == platform.system().lower()
+    assert identity["machine"] == platform.machine().lower()
+    assert identity["kernel_release"] == platform.release()
+    assert identity["kernel_version"] == platform.version()
+    for fact in module.REQUIRED_HOST_FACTS:
+        assert isinstance(identity[fact], str) and identity[fact]
+    # Optional product facts keep a stable shape: every key present, an absent
+    # value empty rather than inferred from the kernel or omitted.
+    assert set(identity["product"]) == {"source", "name", "version", "build"}
+    assert all(isinstance(value, str) for value in identity["product"].values())
+
+
+@pytest.mark.parametrize(
+    ("attribute", "fact"),
+    [
+        ("system", "system"),
+        ("machine", "machine"),
+        ("release", "kernel_release"),
+        ("version", "kernel_version"),
+    ],
+)
+def test_host_identity_fails_closed_without_a_required_os_fact(
+    attribute: str, fact: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(module.platform, attribute, lambda: "")
+
+    with pytest.raises(module.CandidateError) as excinfo:
+        module._host_identity()
+
+    assert str(excinfo.value) == (
+        f"the build host did not report its identity: ['{fact}']"
+    )
+
+
+def _first_party_packages(builder: ModuleType) -> tuple[object, ...]:
+    return tuple(
+        builder.WheelPackage(
+            name=name,
+            normalized_name=name,
+            version="0.1.0",
+            filename=f"{name.replace('-', '_')}-0.1.0-py3-none-any.whl",
+            sha256=f"{index:064d}",
+            size=1024,
+            requires_python=">=3.11",
+            requires_dist=(),
+            declared_license="MIT",
+            license_members=(),
+        )
+        for index, (name, _path) in enumerate(builder.FIRST_PARTY_PROJECTS)
+    )
+
+
+def _journey() -> dict[str, object]:
+    return {
+        "versions": {
+            "workspace_contract": "1",
+            "protocol": "1",
+            "api": {"minimum": "1", "maximum": "1"},
+        },
+        "workspace": {"format": "1"},
+    }
+
+
+def test_provenance_and_the_current_matrix_row_carry_the_same_host_identity(
+    tmp_path: Path,
+) -> None:
+    builder = _module()
+    builder._write_metadata(
+        tmp_path,
+        builder.SourceState("rev", 0, "1970-01-01T00:00:00Z", False),
+        _first_party_packages(builder),
+        [],
+        _journey(),
+        {},
+        [],
+    )
+    metadata = tmp_path / builder.METADATA_DIRECTORY
+    provenance = json.loads(
+        (metadata / "build-provenance.json").read_text(encoding="utf-8")
+    )
+    matrix = json.loads(
+        (metadata / "compatibility-matrix.json").read_text(encoding="utf-8")
+    )
+
+    assert set(provenance["host"]) == _HOST_FACTS
+    # The row and the provenance record must not be able to disagree about which
+    # OS produced this candidate.
+    assert matrix["current"]["host"] == provenance["host"]
+    assert matrix["current"]["system"] == provenance["host"]["system"]
+    assert matrix["current"]["machine"] == provenance["host"]["machine"]
+    # The moving selector is retained beside the identity, not instead of it.
+    assert matrix["current"]["runner"] == builder.MATRIX_RUNNERS.get(
+        provenance["host"]["system"], ""
+    )
+    assert [row["runner"] for row in matrix["rows"]] == [
+        "ubuntu-latest",
+        "macos-latest",
+        "windows-latest",
+    ]
+
+
+def test_lifecycle_records_the_backup_mechanism_and_a_computed_restore_identity(
+    tmp_path: Path,
+) -> None:
+    """Booleans prove a restore happened; a rollback decision needs which and what.
+
+    The mechanism must be named, and the restored database must be tied to the
+    verified backup by a content digest computed from this run -- a hard-coded
+    digest would be a literal in the script, which the final assertion rejects.
+    """
+    result = _lifecycle_module().qualify(tmp_path)
+
+    evidence = result["backup_restore"]
+    assert evidence["mechanism"] == "sqlite3.Connection.backup"
+    assert evidence["mechanism_description"] == "SQLite online backup API"
+    assert evidence["create_procedure"].endswith("create_verified_backup")
+    assert evidence["verify_procedure"].endswith("verify_backup")
+    assert evidence["restore_procedure"].endswith("rollback_migration")
+    assert evidence["attempt_id"] == "standard-lifecycle-upgrade"
+    assert evidence["verification_status"] == "verified"
+    assert evidence["restore_status"] == "restored"
+    assert evidence["backup_matches_source"] is True
+    assert evidence["restored_matches_backup"] is True
+
+    identity = evidence["identity"]
+    assert identity["algorithm"] == "sha256"
+    assert identity["scope"] == "database content inventory"
+    digests = {identity["source"], identity["backup"], identity["restored"]}
+    assert len(digests) == 1
+    digest = digests.pop()
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert digest not in LIFECYCLE.read_text(encoding="utf-8")
+
+    # The identity is logical, so it can be published: no machine-local path and
+    # no secret rides along with it.
+    assert result["private_paths_recorded"] is False
+    assert result["secrets_recorded"] is False
+    assert str(tmp_path) not in json.dumps(result)
