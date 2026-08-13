@@ -767,6 +767,9 @@ def verify_checksums(output: Path) -> None:
 
 
 def build_candidate(output: Path, *, allow_dirty: bool = False) -> None:
+    # Offline qualification runs pip from a temporary directory, so every path
+    # handed to a subprocess must be absolute before any cwd changes.
+    output = output.resolve()
     source = _source_state(allow_dirty=allow_dirty)
     _empty_output(output)
     wheelhouse = output / WHEEL_DIRECTORY

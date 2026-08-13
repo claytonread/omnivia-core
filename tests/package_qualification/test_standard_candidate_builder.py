@@ -166,6 +166,46 @@ def test_builder_has_no_skip_or_xfail_path() -> None:
     assert not {"skip", "skipif", "xfail", "importorskip"} & attributes
 
 
+def test_relative_output_is_absolute_before_the_offline_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = _module()
+    seen: dict[str, Path] = {}
+
+    class Captured(Exception):
+        pass
+
+    def _qualify(wheelhouse: Path, evidence: Path, temporary: Path) -> None:
+        seen["wheelhouse"] = wheelhouse
+        seen["evidence"] = evidence
+        raise Captured
+
+    monkeypatch.setattr(
+        builder,
+        "_source_state",
+        lambda *, allow_dirty: builder.SourceState(
+            "rev", 0, "1970-01-01T00:00:00Z", False
+        ),
+    )
+    monkeypatch.setattr(builder, "_build_wheels", lambda wheelhouse, source: None)
+    monkeypatch.setattr(builder, "_inspect_closure", lambda wheelhouse: ())
+    monkeypatch.setattr(
+        builder, "_extract_licenses", lambda wheelhouse, packages, license_root: []
+    )
+    monkeypatch.setattr(builder, "_offline_qualification", _qualify)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(Captured):
+        builder.build_candidate(Path("standard-candidate"))
+
+    # A relative --find-links would be resolved against the temporary install
+    # directory instead of the candidate, so pip would never see the wheels.
+    assert seen["wheelhouse"].is_absolute()
+    assert seen["evidence"].is_absolute()
+    assert seen["wheelhouse"] == Path.cwd() / "standard-candidate" / "wheels"
+    assert seen["wheelhouse"].is_dir()
+
+
 def test_existing_required_matrix_runs_and_retains_the_candidate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert workflow.count(
