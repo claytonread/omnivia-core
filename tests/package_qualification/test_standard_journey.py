@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from mcp.shared.exceptions import MCPError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JOURNEY = REPO_ROOT / "scripts" / "run-standard-journey.py"
@@ -95,13 +96,77 @@ def test_exception_class_names_handles_a_plain_exception() -> None:
     assert module._exception_class_names(RuntimeError("boom")) == ["RuntimeError"]
 
 
+def test_mcp_error_codes_reads_a_direct_mcp_error() -> None:
+    module = _module()
+    error = MCPError(-32602, "/Users/someone/secret leaked", {"token": "sk-1234"})
+    assert module._mcp_error_codes(error) == [-32602]
+
+
+def test_mcp_error_codes_reads_nested_exception_group_leaves() -> None:
+    module = _module()
+    nested = BaseExceptionGroup(
+        "inner",
+        [MCPError(-32000, "leaked-content"), ValueError("/private/workspace")],
+    )
+    outer = BaseExceptionGroup(
+        "outer", [nested, MCPError(-32601, "password=hunter2"), RuntimeError("boom")]
+    )
+    assert module._mcp_error_codes(outer) == [-32601, -32000]
+
+
+def test_mcp_error_codes_sorts_and_deduplicates_deterministically() -> None:
+    module = _module()
+    first = BaseExceptionGroup(
+        "g", [MCPError(-32000, "a"), MCPError(1, "b"), MCPError(-32000, "c")]
+    )
+    second = BaseExceptionGroup(
+        "g", [MCPError(1, "c"), MCPError(-32000, "b"), MCPError(1, "a")]
+    )
+    assert module._mcp_error_codes(first) == [-32000, 1]
+    assert module._mcp_error_codes(first) == module._mcp_error_codes(second)
+
+
+def test_mcp_error_codes_is_empty_without_an_mcp_error() -> None:
+    module = _module()
+    assert module._mcp_error_codes(RuntimeError("boom")) == []
+
+
+def test_mcp_failure_message_reports_codes_without_mcp_message_or_data() -> None:
+    module = _module()
+    error = BaseExceptionGroup(
+        "task group failure",
+        [
+            MCPError(
+                -32602,
+                "/Users/someone/secret-workspace leaked-content",
+                {"api-key": "sk-1234", "command": "omnivia-core-mcp --config"},
+            )
+        ],
+    )
+    message = module._mcp_failure_message("initialize", error, True)
+    assert message == (
+        "MCP standalone session did not complete: stage=initialize "
+        "errors=['MCPError'] codes=[-32602] server_diagnostic=true"
+    )
+    for secret in (
+        "secret-workspace",
+        "leaked-content",
+        "api-key",
+        "sk-1234",
+        "omnivia-core-mcp",
+        "--config",
+        "/Users",
+    ):
+        assert secret not in message
+
+
 def test_mcp_failure_message_is_safe_and_deterministic() -> None:
     module = _module()
     error = RuntimeError("/Users/someone/secret-workspace api-key=sk-1234 leaked-content")
     message = module._mcp_failure_message("knowledge_search", error, True)
     assert message == (
         "MCP standalone session did not complete: stage=knowledge_search "
-        "errors=['RuntimeError'] server_diagnostic=true"
+        "errors=['RuntimeError'] codes=[] server_diagnostic=true"
     )
     assert "secret-workspace" not in message
     assert "api-key" not in message
@@ -138,13 +203,54 @@ def test_mcp_journey_reports_stage_and_error_class_without_leaking_details(
     message = str(excinfo.value)
     assert message == (
         "MCP standalone session did not complete: stage=context_pack_build "
-        "errors=['ValueError'] server_diagnostic=true"
+        "errors=['ValueError'] codes=[] server_diagnostic=true"
     )
     assert "password" not in message
     assert "hunter2" not in message
     assert "leaked content" not in message
     assert "/private/workspace" not in message
     assert excinfo.value.__cause__ is not None
+
+
+def test_mcp_journey_reports_nested_mcp_error_codes_without_leaking_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    async def _failing_session(executable, config, diagnostic, stage):
+        stage[0] = "initialize"
+        diagnostic.write("raw mcp server stderr with secret token sk-1234\n")
+        diagnostic.flush()
+        raise BaseExceptionGroup(
+            "task group failure",
+            [
+                BaseExceptionGroup(
+                    "inner",
+                    [MCPError(-32603, "/private/workspace password=hunter2")],
+                ),
+                MCPError(-32000, "leaked content", {"path": "/private/workspace"}),
+            ],
+        )
+
+    monkeypatch.setattr(module, "_mcp_session", _failing_session)
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._mcp_journey(Path("unused-executable"), Path("unused-config"))
+
+    message = str(excinfo.value)
+    assert message == (
+        "MCP standalone session did not complete: stage=initialize "
+        "errors=['MCPError'] codes=[-32603, -32000] server_diagnostic=true"
+    )
+    for secret in (
+        "password",
+        "hunter2",
+        "leaked content",
+        "/private/workspace",
+        "raw mcp server stderr",
+        "sk-1234",
+    ):
+        assert secret not in message
 
 
 def test_mcp_journey_removes_its_temporary_diagnostic_file(

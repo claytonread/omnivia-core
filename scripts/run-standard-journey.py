@@ -34,6 +34,7 @@ from typing import Any, Final, TextIO
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import MCPError
 
 TIMEOUT_SECONDS: Final = 60
 QUERY_TOKEN: Final = "omnivia-standalone-journey-token"
@@ -250,24 +251,45 @@ def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) 
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
-def _exception_class_names(error: BaseException) -> list[str]:
-    """Sorted, unique class names, flattening nested BaseExceptionGroup leaves."""
-    names: set[str] = set()
+def _exception_leaves(error: BaseException) -> list[BaseException]:
+    """Every non-group exception, flattening nested BaseExceptionGroup leaves."""
+    leaves: list[BaseException] = []
     pending: list[BaseException] = [error]
     while pending:
         current = pending.pop()
         if isinstance(current, BaseExceptionGroup):
             pending.extend(current.exceptions)
         else:
-            names.add(type(current).__name__)
-    return sorted(names)
+            leaves.append(current)
+    return leaves
+
+
+def _exception_class_names(error: BaseException) -> list[str]:
+    """Sorted, unique class names, flattening nested BaseExceptionGroup leaves."""
+    return sorted({type(leaf).__name__ for leaf in _exception_leaves(error)})
+
+
+def _mcp_error_codes(error: BaseException) -> list[int]:
+    """Sorted, unique JSON-RPC codes from MCPError leaves.
+
+    Only the numeric code is read.  The MCP message and data carry server text
+    and are never inspected, so the reported failure stays free of workspace
+    content, paths and credentials.
+    """
+    codes: set[int] = set()
+    for leaf in _exception_leaves(error):
+        if isinstance(leaf, MCPError) and isinstance(leaf.code, int):
+            codes.add(int(leaf.code))
+    return sorted(codes)
 
 
 def _mcp_failure_message(stage: str, error: BaseException, server_diagnostic: bool) -> str:
     classes = _exception_class_names(error)
+    codes = _mcp_error_codes(error)
     return (
         f"MCP standalone session did not complete: stage={stage} "
-        f"errors={classes} server_diagnostic={'true' if server_diagnostic else 'false'}"
+        f"errors={classes} codes={codes} "
+        f"server_diagnostic={'true' if server_diagnostic else 'false'}"
     )
 
 
