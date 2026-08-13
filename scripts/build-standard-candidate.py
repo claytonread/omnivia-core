@@ -280,15 +280,37 @@ def inspect_wheel(path: Path) -> WheelPackage:
     )
 
 
+# The only environment marker the reviewed closure needs today. Anything else
+# is rejected rather than silently ignored, so an unreviewed marker can never
+# make it into the resolved closure unnoticed.
+_SUPPORTED_MARKER: Final = 'platform_system == "Windows"'
+
+
+def _marker_applies(marker: str) -> bool:
+    if marker != _SUPPORTED_MARKER:
+        raise CandidateError(f"unsupported dependency constraint marker: {marker!r}")
+    return platform.system() == "Windows"
+
+
 def _constraint_versions(path: Path) -> dict[str, str]:
     constraints: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        name, separator, version = line.partition("==")
+        requirement, marker_separator, marker = line.partition(";")
+        requirement = requirement.strip()
+        marker = marker.strip()
+        marker_applies = True
+        if marker_separator:
+            if not marker:
+                raise CandidateError("unsupported dependency constraint marker: ''")
+            marker_applies = _marker_applies(marker)
+        name, separator, version = requirement.partition("==")
         if not separator or not name or not version:
             raise CandidateError("the dependency constraints must contain exact pins only")
+        if not marker_applies:
+            continue
         normalized = _normalized(name)
         if normalized in constraints:
             raise CandidateError(f"duplicate dependency constraint for {normalized}")

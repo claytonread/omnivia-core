@@ -8,10 +8,14 @@
 # in-tree, and the only versions `scripts/check-package-builds.sh` will accept.
 #
 # The closure is `omnivia-core-mcp`'s declared `mcp>=2,<3` and its transitive
-# requirements. It is identical on macOS/arm64 and Linux/x86_64 at these
-# versions, which is why one file serves both; the wheels themselves differ per
-# platform, so hashes are recorded as run-time evidence by the gate rather than
-# pinned here.
+# requirements. The unmarked pins below are the common closure, resolved
+# identically on macOS/arm64 and Linux/x86_64 at these versions. Windows
+# resolves one additional package the other platforms do not: `click`
+# declares `Requires-Dist: colorama; platform_system == "Windows"`. That
+# addition is pinned below with an explicit platform marker rather than
+# silently dropped, so the closure stays exact per platform. The wheels
+# themselves still differ per platform, so hashes are recorded as run-time
+# evidence by the gate rather than pinned here.
 #
 # Regenerate deliberately -- a drift is a dependency change somebody must review,
 # and the gate fails until this file is updated to match:
@@ -20,13 +24,16 @@
 #     --platform manylinux2014_x86_64 --python-version 3.11 --abi cp311 \
 #     --dest <tmp> "mcp>=2,<3"
 #
-# then rewrite the pins below from the downloaded wheel filenames.
+# then rewrite the common pins below from the downloaded wheel filenames. Run
+# the resolver under a Windows interpreter to confirm the marker-gated pin;
+# pip's cross-target `--platform` option alone does not evaluate Windows markers.
 
 annotated-types==0.8.0
 anyio==4.14.2
 attrs==26.1.0
 cffi==2.1.1
 click==8.4.2
+colorama==0.4.6; platform_system == "Windows"
 cryptography==50.0.0
 h11==0.16.0
 httpcore2==2.9.1

@@ -206,6 +206,74 @@ def test_relative_output_is_absolute_before_the_offline_install(
     assert seen["wheelhouse"].is_dir()
 
 
+def test_windows_platform_includes_the_marker_gated_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = _module()
+    monkeypatch.setattr(builder.platform, "system", lambda: "Windows")
+
+    result = builder._constraint_versions(builder.CONSTRAINTS)
+
+    assert result["colorama"] == "0.4.6"
+
+
+def test_non_windows_platform_excludes_the_marker_gated_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = _module()
+    monkeypatch.setattr(builder.platform, "system", lambda: "Linux")
+
+    result = builder._constraint_versions(builder.CONSTRAINTS)
+
+    assert "colorama" not in result
+
+
+def test_unsupported_marker_fails_closed(tmp_path: Path) -> None:
+    builder = _module()
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text(
+        'pywin32==306; sys_platform == "win32"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(builder.CandidateError, match="unsupported dependency constraint marker"):
+        builder._constraint_versions(constraints)
+
+
+def test_malformed_marker_fails_closed(tmp_path: Path) -> None:
+    builder = _module()
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("colorama==0.4.6; platform_system\n", encoding="utf-8")
+
+    with pytest.raises(builder.CandidateError, match="unsupported dependency constraint marker"):
+        builder._constraint_versions(constraints)
+
+
+def test_inactive_marker_cannot_hide_a_non_exact_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builder = _module()
+    monkeypatch.setattr(builder.platform, "system", lambda: "Linux")
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text(
+        'colorama>=0.4.6; platform_system == "Windows"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(builder.CandidateError, match="exact pins only"):
+        builder._constraint_versions(constraints)
+
+
+def test_ordinary_exact_pins_still_parse(tmp_path: Path) -> None:
+    builder = _module()
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text(
+        "# comment\n\nannotated-types==0.8.0\nAnyIO==4.14.2\n", encoding="utf-8"
+    )
+
+    result = builder._constraint_versions(constraints)
+
+    assert result == {"annotated-types": "0.8.0", "anyio": "4.14.2"}
+
+
 def test_existing_required_matrix_runs_and_retains_the_candidate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert workflow.count(
