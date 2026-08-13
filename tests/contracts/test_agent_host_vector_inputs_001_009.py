@@ -50,7 +50,8 @@ CORPUS_FILE = (
 
 CASES = load_corpus(CORPUS_FILE).cases
 BY_ID = {case.id: case for case in CASES}
-SCOPED = [BY_ID[case_id] for case_id in SUPPORTED_CASE_IDS]
+SLICE_IDS = tuple(f"SPI-V-{index:03d}" for index in range(1, 10))
+SCOPED = [BY_ID[case_id] for case_id in SLICE_IDS]
 
 #: Names and spellings that would mean the recipe module reached for a fixed
 #: answer: the answer DTO, the answer vocabulary, and the four answer fields.
@@ -77,11 +78,12 @@ def _case(case_id: str) -> ConformanceCase:
 
 
 def test_the_slice_covers_exactly_the_first_nine_cases() -> None:
-    assert SUPPORTED_CASE_IDS == tuple(f"SPI-V-{index:03d}" for index in range(1, 10))
-    assert [case.id for case in SCOPED] == list(SUPPORTED_CASE_IDS)
+    assert SLICE_IDS == tuple(f"SPI-V-{index:03d}" for index in range(1, 10))
+    assert SUPPORTED_CASE_IDS[: len(SLICE_IDS)] == SLICE_IDS
+    assert [case.id for case in SCOPED] == list(SLICE_IDS)
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_a_scenario_is_a_real_provider_and_a_real_request(case_id: str) -> None:
     scenario = prepare_vector(_case(case_id))
     assert isinstance(scenario, VectorScenario)
@@ -93,7 +95,7 @@ def test_a_scenario_is_a_real_provider_and_a_real_request(case_id: str) -> None:
     assert scenario.provider.selected_spi_version is not None
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_every_scenario_executes_and_returns_an_outcome(case_id: str) -> None:
     scenario = prepare_vector(_case(case_id))
     before = len(scenario.provider.journal)
@@ -103,7 +105,7 @@ def test_every_scenario_executes_and_returns_an_outcome(case_id: str) -> None:
     assert len(scenario.provider.journal) == before + 1
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_a_scenario_records_the_preconditions_it_drove(case_id: str) -> None:
     scenario = prepare_vector(_case(case_id))
     assert isinstance(scenario.setup, tuple)
@@ -113,7 +115,7 @@ def test_a_scenario_records_the_preconditions_it_drove(case_id: str) -> None:
     assert len(scenario.provider.journal) == len(scenario.setup)
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_preparing_the_same_case_twice_builds_the_same_scenario(case_id: str) -> None:
     first = prepare_vector(_case(case_id))
     second = prepare_vector(_case(case_id))
@@ -123,7 +125,7 @@ def test_preparing_the_same_case_twice_builds_the_same_scenario(case_id: str) ->
 
 
 @pytest.mark.parametrize(
-    "case_id", [case_id for case_id in SUPPORTED_CASE_IDS if case_id != "SPI-V-003"]
+    "case_id", [case_id for case_id in SLICE_IDS if case_id != "SPI-V-003"]
 )
 def test_a_case_that_needs_state_drove_more_than_negotiation(case_id: str) -> None:
     assert len(prepare_vector(_case(case_id)).setup) > 1
@@ -136,7 +138,7 @@ def test_a_case_needing_no_state_drove_negotiation_only() -> None:
 # --- the recipe used the corpus fields -------------------------------------------
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_the_request_carries_the_cases_own_identity(case_id: str) -> None:
     case = _case(case_id)
     request = prepare_vector(case).request
@@ -150,11 +152,13 @@ def test_the_request_carries_the_cases_own_identity(case_id: str) -> None:
     assert request.granted_capabilities == case.given["granted_capabilities"]
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_the_request_carries_the_cases_own_position_and_key(case_id: str) -> None:
     case = _case(case_id)
     request = prepare_vector(case).request
-    assert request.provenance.sequence == case.given.get("sequence", 0)
+    assert request.provenance.sequence == case.given.get(
+        "sequence", vector_inputs.DEFAULT_SEQUENCE
+    )
     assert request.idempotency_key == case.given.get("idempotency_key")
     if case.hook in RUN_LEVEL_HOOKS:
         assert request.turn_ordinal is None
@@ -182,7 +186,7 @@ def test_a_deadline_the_case_states_is_the_one_used() -> None:
     assert prepare_vector(case).request.deadline_ms == 900
 
 
-@pytest.mark.parametrize("case_id", SUPPORTED_CASE_IDS)
+@pytest.mark.parametrize("case_id", SLICE_IDS)
 def test_moving_a_corpus_field_moves_the_request(case_id: str) -> None:
     """The values are read, not restated: change one and the request changes."""
     case = _case(case_id)
@@ -194,7 +198,7 @@ def test_moving_a_corpus_field_moves_the_request(case_id: str) -> None:
 # --- fail-closed -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("case_id", ["SPI-V-010", "SPI-V-030", "SPI-V-042"])
+@pytest.mark.parametrize("case_id", ["SPI-V-025", "SPI-V-030", "SPI-V-042"])
 def test_a_case_outside_the_slice_is_refused(case_id: str) -> None:
     with pytest.raises(VectorInputError, match="outside"):
         prepare_vector(_case(case_id))
