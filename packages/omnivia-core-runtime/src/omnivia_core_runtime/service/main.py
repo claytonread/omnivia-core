@@ -6,12 +6,14 @@ application surface is the exact frozen 20-operation catalogue, composed from
 five separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
-**One console script, three kinds of process.** `--managed-start` (R004-08) does
+**One console script, four kinds of process.** `--managed-start` (R004-08) does
 not serve: it arbitrates through the bootstrap mutex, starts an independent service
 when one is needed, waits for that service to answer a live readiness call, prints
 a versioned result document and exits. `--init` (R004-10) does not serve either: it
 creates the workspace a service can then own, prints its own versioned result, and
-starts nothing. Every other mode here belongs to a process that *is* the service.
+starts nothing. `--capture-source` briefly becomes the fenced workspace owner, commits
+one already-local file as immutable evidence, prints a redacted result, and exits.
+Every other mode here belongs to a process that *is* the service.
 The CLI and, later, the MCP adapter reach both shared paths by launching this
 script -- never by importing the runtime -- so there is one implementation of
 workspace bootstrap and one of process control, rather than one per adapter.
@@ -68,6 +70,11 @@ from omnivia_core_runtime.service.operations import (
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.service.source_capture import (
+    SourceCaptureRefused,
+    SourceCaptureResult,
+    capture_local_source,
+)
 from omnivia_core_runtime.service.transport import (
     LOCAL_SCHEME,
     LocalEndpoint,
@@ -285,6 +292,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--capture-source",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "do not serve; while holding normal workspace ownership, capture one "
+            "already-local regular file as immutable evidence and print a redacted "
+            "versioned result. Requires --source-id. The source path is never "
+            "persisted or returned"
+        ),
+    )
+    parser.add_argument(
+        "--source-id",
+        default=None,
+        help="stable source identity for --capture-source",
+    )
+    parser.add_argument(
+        "--media-type",
+        default="text/plain",
+        help="captured source media type (default: text/plain)",
+    )
+    parser.add_argument(
         "--managed-start-log",
         default=None,
         type=Path,
@@ -391,6 +420,44 @@ def _managed_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _capture_source(args: argparse.Namespace) -> int:
+    """Run the service-owned local capture path with a redacted output contract."""
+    if args.source_id is None:
+        reason = "--capture-source needs --source-id"
+        result = SourceCaptureResult(
+            status="refused",
+            workspace_id=None,
+            source_id="",
+            reason=reason,
+        )
+        sys.stdout.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
+        sys.stderr.write(reason + "\n")
+        return 2
+    try:
+        result = capture_local_source(
+            workspace_root=args.workspace,
+            installation_root=args.installation_state,
+            source_path=args.capture_source,
+            source_id=args.source_id,
+            media_type=args.media_type,
+            core_version=args.core_version,
+        )
+    except SourceCaptureRefused as refused:
+        result = SourceCaptureResult(
+            status="refused",
+            workspace_id=None,
+            source_id=args.source_id,
+            media_type=args.media_type,
+            reason=str(refused),
+        )
+    sys.stdout.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
+    sys.stdout.flush()
+    if not result.accepted:
+        sys.stderr.write(result.reason + "\n")
+        return 1
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -434,6 +501,11 @@ def main(
         # exists. This process serves nothing, owns nothing beyond the bootstrap
         # itself, and starts nothing.
         return _init(args)
+
+    if args.capture_source is not None:
+        # A bounded maintenance process: it owns and fences the workspace exactly
+        # like the server, publishes no endpoint and exits after one append.
+        return _capture_source(args)
 
     if args.managed_start:
         # This process serves nothing and owns nothing. It arbitrates, may start an

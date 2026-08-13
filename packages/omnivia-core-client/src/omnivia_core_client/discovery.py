@@ -51,6 +51,7 @@ from omnivia_core_client.errors import (
     CredentialMissingError,
     CredentialUnavailableError,
     DeadlineExceededError,
+    EndpointUnavailableError,
     OperationCancelledError,
     ProtocolError,
     TransportError,
@@ -163,7 +164,7 @@ def _raise_endpoint_locality() -> NoReturn:
 
 
 def _raise_live_transport() -> NoReturn:
-    raise TransportError("live discovery call did not complete")
+    raise EndpointUnavailableError("live discovery call did not complete")
 
 
 def _raise_live_deadline() -> NoReturn:

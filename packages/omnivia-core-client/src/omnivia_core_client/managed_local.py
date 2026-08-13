@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Final, NoReturn
 
 from omnivia_core_client.deadline import Deadline
-from omnivia_core_client.errors import ManagedStartError
+from omnivia_core_client.errors import EndpointUnavailableError, ManagedStartError
 from omnivia_core_client.service_client import InstallationServiceConfig, ServiceClient
 
 __all__ = [
@@ -172,9 +172,11 @@ def connect_managed_local(
 
     Attaching is the ordinary case and costs one connect: an installation already
     publishing a live compatible descriptor comes back as ``attached`` and nothing
-    is launched. Only an *absent* service -- ``None`` from
-    :meth:`ServiceClient.connect`, which is a state rather than a failure --
-    reaches the rest of this function.
+    is launched. An absent descriptor and a provenance-checked descriptor whose
+    endpoint cannot answer both reach the launcher. The latter is the crash path:
+    the launcher owns process-evidence validation and compare-and-clean under its
+    startup mutex, so it may retire that dead instance safely. Every other descriptor
+    refusal still fails closed here.
 
     **A start is authorised by the layout, not by the request for one.** The state
     root the caller named must be the ``installation-state`` this convention
@@ -189,7 +191,13 @@ def connect_managed_local(
     reachable is a failure here, because what was asked for is a service that can
     be called rather than a process that exists.
     """
-    attached = ServiceClient.connect(config, deadline=deadline)
+    try:
+        attached = ServiceClient.connect(config, deadline=deadline)
+    except EndpointUnavailableError:
+        # A killed service cannot remove its descriptor. Do not delete it here:
+        # the Runtime launcher validates process evidence and cleans only the dead
+        # instance under the installation's startup mutex.
+        attached = None
     if attached is not None:
         return ManagedServiceConnection(client=attached, status=_ATTACHED)
 

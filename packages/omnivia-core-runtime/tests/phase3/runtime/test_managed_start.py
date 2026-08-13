@@ -614,26 +614,56 @@ def test_the_service_not_the_launcher_owns_the_writable_workspace_lease(
 # --- R004-09: production integration evidence ---
 
 
-def test_the_cli_start_reaches_the_service_through_the_shared_managed_start_path(
+def test_the_cli_call_reaches_the_service_through_the_shared_managed_start_path(
     home: Path,
 ) -> None:
-    """`omnivia start` is the entry point; the launcher beneath it is the caller.
+    """A CLI probe is the entry point; the launcher beneath it starts as needed.
 
     Run as a subprocess, which is the only arrangement in which "the CLI imports no
     runtime" is proven rather than asserted. What this adds to the CLI's own suite
     is the middle process: a managed-start launcher really is what started the
     service, and the CLI really did not spawn one itself.
     """
+    # This module's legacy-migration fixture predates the shared client's
+    # owner-private descriptor provenance rule. A real ``--init`` installation
+    # creates these directories privately; reproduce that current precondition
+    # before crossing the installed client boundary.
+    for directory in (
+        home / "installation-state",
+        home / "installation-state" / "runtime",
+        _runtime_directory(home),
+    ):
+        directory.chmod(0o700)
     started = subprocess.run(
-        [sys.executable, "-m", "omnivia_core_cli.main", "--home", str(home), "start"],
+        [
+            sys.executable,
+            "-m",
+            "omnivia_core_cli.main",
+            "--installation-state",
+            str(home / "installation-state"),
+            "--workspace-id",
+            WORKSPACE_ID,
+            "service",
+            "health",
+            "--json",
+        ],
         capture_output=True,
         text=True,
         timeout=240,
         check=False,
     )
-    assert started.returncode == 0, started.stderr
-    assert "started" in started.stdout
-    assert WORKSPACE_ID in started.stdout
+    log_path = home / "run" / "service.log"
+    diagnostic = (
+        log_path.read_text(encoding="utf-8", errors="replace")
+        if log_path.is_file()
+        else "service log absent"
+    )
+    assert started.returncode == 0, f"{started.stderr}\n{diagnostic}"
+    first_result = json.loads(started.stdout)
+    assert first_result["status"] == "pass"
+    descriptor = _descriptor_document(home)
+    assert descriptor is not None
+    assert descriptor["workspace_id"] == WORKSPACE_ID
     (pid,) = _service_pids(home)
 
     # The launcher wrote the service's own output where the CLI's convention says
@@ -641,12 +671,23 @@ def test_the_cli_start_reaches_the_service_through_the_shared_managed_start_path
     assert (home / "run" / "service.log").is_file()
 
     again = subprocess.run(
-        [sys.executable, "-m", "omnivia_core_cli.main", "--home", str(home), "start"],
+        [
+            sys.executable,
+            "-m",
+            "omnivia_core_cli.main",
+            "--installation-state",
+            str(home / "installation-state"),
+            "--workspace-id",
+            WORKSPACE_ID,
+            "service",
+            "health",
+            "--json",
+        ],
         capture_output=True,
         text=True,
         timeout=240,
         check=False,
     )
     assert again.returncode == 0, again.stderr
-    assert "already running" in again.stdout
+    assert json.loads(again.stdout)["status"] == "pass"
     assert _service_pids(home) == [pid]

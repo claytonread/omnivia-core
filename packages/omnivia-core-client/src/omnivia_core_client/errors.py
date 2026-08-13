@@ -31,6 +31,7 @@ __all__ = [
     "CredentialMissingError",
     "CredentialUnavailableError",
     "DeadlineExceededError",
+    "EndpointUnavailableError",
     "ManagedStartError",
     "OperationCancelledError",
     "ProtocolError",
@@ -67,6 +68,15 @@ class TransportError(ClientError):
     that arrived and was malformed is a :class:`ProtocolError`; a peer that
     answered correctly with an application error is not an exception at all,
     but an error response envelope.
+    """
+
+
+class EndpointUnavailableError(TransportError):
+    """A provenance-checked endpoint could not be reached for live discovery.
+
+    Narrower than :class:`TransportError` so managed-local startup can recover a
+    descriptor left by a killed service without treating a malformed, non-local,
+    incompatible or identity-mismatched descriptor as absence.
     """
 
 

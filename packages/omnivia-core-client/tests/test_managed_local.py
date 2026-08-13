@@ -11,9 +11,11 @@ from typing import Any, cast
 import pytest
 from omnivia_core_client import (
     Deadline,
+    EndpointUnavailableError,
     InstallationServiceConfig,
     ManagedStartError,
     ServiceClient,
+    TransportError,
     connect_managed_local,
     managed_local,
 )
@@ -147,6 +149,59 @@ def test_start_and_reconnect_reuse_the_exact_deadline(
             25.0,
         )
     ]
+
+
+def test_unreachable_published_service_reaches_the_runtime_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed owner leaves a valid descriptor; the launcher cleans it safely."""
+    initialise(tmp_path)
+    expected = client()
+    seen: list[tuple[InstallationServiceConfig, Deadline]] = []
+    attempts = iter([EndpointUnavailableError("unreachable"), expected])
+
+    def connect(
+        _cls: type[ServiceClient],
+        service_config: InstallationServiceConfig,
+        *,
+        deadline: Deadline,
+        **_kwargs: Any,
+    ) -> ServiceClient | None:
+        seen.append((service_config, deadline))
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(ServiceClient, "connect", classmethod(connect))
+    seen_launches = launcher(monkeypatch)
+    deadline = Deadline.after(30)
+
+    connected = connect_managed_local(config(tmp_path), deadline=deadline)
+
+    assert connected.client is expected
+    assert connected.status == "started"
+    assert seen == [(config(tmp_path), deadline), (config(tmp_path), deadline)]
+    assert len(seen_launches) == 1
+
+
+def test_untrusted_descriptor_transport_refusal_does_not_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path)
+
+    def refuse(*_args: Any, **_kwargs: Any) -> ServiceClient | None:
+        raise TransportError("descriptor provenance check failed")
+
+    monkeypatch.setattr(ServiceClient, "connect", classmethod(refuse))
+    monkeypatch.setattr(
+        managed_local,
+        "_invoke",
+        lambda *_args, **_kwargs: pytest.fail("an untrusted descriptor reached launch"),
+    )
+
+    with pytest.raises(TransportError, match="provenance"):
+        connect_managed_local(config(tmp_path), deadline=Deadline.after(30))
 
 
 def test_launcher_attached_status_survives_a_startup_race(
