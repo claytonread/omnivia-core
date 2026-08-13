@@ -10,10 +10,15 @@
 # The closure is `omnivia-core-mcp`'s declared `mcp>=2,<3` and its transitive
 # requirements. The unmarked pins below are the common closure, resolved
 # identically on macOS/arm64 and Linux/x86_64 at these versions. Windows
-# resolves one additional package the other platforms do not: `click`
-# declares `Requires-Dist: colorama; platform_system == "Windows"`. That
-# addition is pinned below with an explicit platform marker rather than
-# silently dropped, so the closure stays exact per platform. The wheels
+# resolves two additional packages the other platforms do not:
+#
+#   - `click` declares `Requires-Dist: colorama; platform_system == "Windows"`.
+#   - `mcp` declares `Requires-Dist: pywin32>=311; sys_platform == "win32"`.
+#     An evidence-based CPython 3.11 win_amd64 wheel resolution selected
+#     `pywin32-312-cp311-cp311-win_amd64.whl`, so 312 is the reviewed pin.
+#
+# Both additions are pinned below with their exact declared marker rather
+# than silently dropped, so the closure stays exact per platform. The wheels
 # themselves still differ per platform, so hashes are recorded as run-time
 # evidence by the gate rather than pinned here.
 #
@@ -49,6 +54,7 @@ pydantic-core==2.46.4
 pydantic==2.13.4
 pyjwt==2.13.0
 python-multipart==0.0.32
+pywin32==312; sys_platform == "win32"
 referencing==0.37.0
 rpds-py==2026.6.3
 sse-starlette==3.4.8

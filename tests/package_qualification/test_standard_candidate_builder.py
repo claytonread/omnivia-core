@@ -228,11 +228,46 @@ def test_non_windows_platform_excludes_the_marker_gated_pin(
     assert "colorama" not in result
 
 
+def test_closure_mismatch_message_reports_sorted_missing_and_unexpected() -> None:
+    builder = _module()
+
+    message = builder._closure_mismatch_message(
+        {"colorama", "click", "pywin32"}, {"click", "requests"}
+    )
+
+    assert message == (
+        "the resolved third-party closure differs from the reviewed constraints "
+        "(missing=['colorama', 'pywin32'], unexpected=['requests'])"
+    )
+
+
+def test_windows_sys_platform_includes_the_pywin32_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = _module()
+    monkeypatch.setattr(builder.sys, "platform", "win32")
+
+    result = builder._constraint_versions(builder.CONSTRAINTS)
+
+    assert result["pywin32"] == "312"
+
+
+def test_non_windows_sys_platform_excludes_the_pywin32_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = _module()
+    monkeypatch.setattr(builder.sys, "platform", "linux")
+
+    result = builder._constraint_versions(builder.CONSTRAINTS)
+
+    assert "pywin32" not in result
+
+
 def test_unsupported_marker_fails_closed(tmp_path: Path) -> None:
     builder = _module()
     constraints = tmp_path / "constraints.txt"
     constraints.write_text(
-        'pywin32==306; sys_platform == "win32"\n', encoding="utf-8"
+        'pywin32==306; python_version < "3.12"\n', encoding="utf-8"
     )
 
     with pytest.raises(builder.CandidateError, match="unsupported dependency constraint marker"):

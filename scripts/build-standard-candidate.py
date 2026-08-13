@@ -280,16 +280,20 @@ def inspect_wheel(path: Path) -> WheelPackage:
     )
 
 
-# The only environment marker the reviewed closure needs today. Anything else
+# The only environment markers the reviewed closure needs today. Anything else
 # is rejected rather than silently ignored, so an unreviewed marker can never
 # make it into the resolved closure unnoticed.
-_SUPPORTED_MARKER: Final = 'platform_system == "Windows"'
+_SUPPORTED_MARKERS: Final = {
+    'platform_system == "Windows"': lambda: platform.system() == "Windows",
+    'sys_platform == "win32"': lambda: sys.platform == "win32",
+}
 
 
 def _marker_applies(marker: str) -> bool:
-    if marker != _SUPPORTED_MARKER:
+    predicate = _SUPPORTED_MARKERS.get(marker)
+    if predicate is None:
         raise CandidateError(f"unsupported dependency constraint marker: {marker!r}")
-    return platform.system() == "Windows"
+    return predicate()
 
 
 def _constraint_versions(path: Path) -> dict[str, str]:
@@ -318,6 +322,15 @@ def _constraint_versions(path: Path) -> dict[str, str]:
     return constraints
 
 
+def _closure_mismatch_message(expected: set[str], actual: set[str]) -> str:
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    return (
+        "the resolved third-party closure differs from the reviewed constraints "
+        f"(missing={missing}, unexpected={unexpected})"
+    )
+
+
 def _inspect_closure(wheelhouse: Path) -> tuple[WheelPackage, ...]:
     packages = tuple(sorted((inspect_wheel(path) for path in wheelhouse.glob("*.whl")), key=lambda item: item.normalized_name))
     by_name = {package.normalized_name: package for package in packages}
@@ -328,10 +341,9 @@ def _inspect_closure(wheelhouse: Path) -> tuple[WheelPackage, ...]:
         raise CandidateError("the wheelhouse omits a Standard-profile distribution")
     constraints = _constraint_versions(CONSTRAINTS)
     third_party = set(by_name) - normalized_first_party
-    if third_party != set(constraints):
-        raise CandidateError(
-            "the resolved third-party closure differs from the reviewed constraints"
-        )
+    expected = set(constraints)
+    if third_party != expected:
+        raise CandidateError(_closure_mismatch_message(expected, third_party))
     for name, expected_version in constraints.items():
         if by_name[name].version != expected_version:
             raise CandidateError(
