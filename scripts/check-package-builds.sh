@@ -359,6 +359,7 @@ install_and_import "venv-runtime" "omnivia-core-runtime" "omnivia_core_runtime" 
 # is ever exercised at wheel level, which is verbatim the failure the comment
 # above says this exists to catch.
 install_and_import "venv-mcp" "omnivia-core-mcp" "omnivia_core_mcp" \
+  "omnivia_core_mcp.configuration" \
   "omnivia_core_mcp.generated_schema_projection" \
   "omnivia_core_mcp.manifest" \
   "omnivia_core_mcp.managed_start" \

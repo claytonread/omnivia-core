@@ -509,6 +509,7 @@ def test_the_mcp_distribution_ships_the_approved_packet_c_surface() -> None:
     }
     assert shipped == {
         "__init__.py",
+        "configuration.py",
         "generated_schema_projection.py",
         "manifest.py",
         "managed_start.py",

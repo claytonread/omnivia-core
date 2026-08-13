@@ -3,7 +3,11 @@
 A stdio MCP server that gives an AI host read-only access to one local OmniVia
 Core workspace, over the official Model Context Protocol Python SDK v2.
 
-**Three modules, three separable decisions:**
+**Four modules, four separable decisions:**
+
+- :mod:`~omnivia_core_mcp.configuration` -- the bounded, provenance-checked
+  ``omnivia.mcp-config.v1`` authority document. It accepts an explicit path and
+  no ambient configuration source.
 
 - :mod:`~omnivia_core_mcp.manifest` -- the curated, versioned exposure allow-list
   (R004-06) and the tool schemas projected from the public operation contracts.
@@ -35,6 +39,23 @@ distribution still holds no transport implementation of its own.
 
 from __future__ import annotations
 
+from omnivia_core_mcp.configuration import (
+    CONFIGURATION_FORMAT,
+    MAXIMUM_CONFIGURATION_BYTES,
+    McpConfiguration,
+    McpConfigurationError,
+    parse_configuration,
+    read_configuration,
+)
+
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = [
+    "CONFIGURATION_FORMAT",
+    "MAXIMUM_CONFIGURATION_BYTES",
+    "McpConfiguration",
+    "McpConfigurationError",
+    "__version__",
+    "parse_configuration",
+    "read_configuration",
+]

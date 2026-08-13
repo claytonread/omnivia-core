@@ -7,6 +7,23 @@ Built on the official Model Context Protocol Python SDK v2 (owner resolution
 004, R004-05). There is no bespoke JSON-RPC or MCP stack in this package, and
 no FastMCP dependency — the official SDK is the sole MCP framework dependency.
 
+## Trusted configuration (V06-6 checkpoint A)
+
+`omnivia_core_mcp.configuration` implements the immutable
+`omnivia.mcp-config.v1` model and its explicit-path reader. The reader admits at
+most 65,536 bytes, rejects duplicate or unknown fields, follows no symlink, and
+requires a regular owner-private file whose identity stays unchanged throughout
+the bounded read. Configuration supplies only an opaque credential reference;
+it is never a credential store.
+
+Owner-private is proved from the open descriptor on both platform families.
+POSIX checks the owner and the group/other mode bits. Windows converts the
+descriptor to a handle and proves, through `advapi32` alone, that the file's
+owner SID is this process's token user and that the DACL is present and grants
+no other principal; an unrecognised access-allowed ACE form or any API
+inconsistency refuses the file. The server does not consume this model yet;
+server-mode and authority integration follows.
+
 ## Running it
 
 ```bash
