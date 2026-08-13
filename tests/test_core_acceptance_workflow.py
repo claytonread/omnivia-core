@@ -293,6 +293,7 @@ PERFORMANCE_LOCAL_INSTALLS = (
 PHASE2_JOB = "phase2-platform"
 PHASE2_INSTALL_STEP = "Install Python tooling and local packages"
 PHASE2_MATRIX = "[ubuntu-latest, macos-latest, windows-latest]"
+V06_6_EXECUTABLE_CHECK = REPO_ROOT / "scripts" / "check-v06-6-executables.py"
 
 # A workflow-shaped fixture for the helper meta-test. Every commented directive
 # here must be invisible to the helpers; every uncommented one must be found.
@@ -819,6 +820,14 @@ def test_phase2_workflow_keeps_every_platform_row_and_stays_fail_closed() -> Non
         _step(steps, "Assert this platform's lock case actually ran")
     )
     assert (REPO_ROOT / "scripts" / "check-platform-lock-coverage.py").is_file()
+
+    # V06-6 requires the installed MCP and CLI console scripts to be invoked in
+    # every row. An editable install or import check is explicitly insufficient.
+    executable_step = _step(steps, "Qualify isolated-wheel MCP and CLI executables")
+    assert _commands(executable_step) == (
+        "python scripts/check-v06-6-executables.py",
+    )
+    assert V06_6_EXECUTABLE_CHECK.is_file()
 
 
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "check-package-builds.sh"
