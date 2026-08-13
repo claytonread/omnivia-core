@@ -816,7 +816,14 @@ def _rendered(error: BaseException) -> str:
             id="too-deep",
         ),
         pytest.param(
-            (b'{"a":' + b"[" * 5000 + b"]" * 5000 + b',"' + SECRET.encode() + b'":1}'),
+            (
+                b'{"a":'
+                + b"[" * 100_000
+                + b"]" * 100_000
+                + b',"'
+                + SECRET.encode()
+                + b'":1}'
+            ),
             id="past-parser-depth",
         ),
     ],
