@@ -36,6 +36,50 @@ once at startup and never rewritten, so `ready: true` freezes there: a service
 killed hard leaves a file still claiming health. Reading that file is not a
 status check.
 
+### The lifecycle adapter (`--json`)
+
+`start`, `stop` and `status` each take `--json` and then write **one** document
+to stdout and nothing else — no prose, no diagnostics, no second line. Human
+stderr, human stdout and the exit codes are unchanged by the flag; `--json`
+replaces the human rendering, it does not annotate it.
+
+```console
+$ omnivia status --json
+{"action":"status","code":"status_running","lifecycle_adapter_version":2,"ok":true,
+ "outcome":"running","safe_status":{ ... }}
+```
+
+- `lifecycle_adapter_version` — **2**. Version 1 published a `service` object and
+  a free-form `reason`; both are gone.
+- `action`, `ok`, `outcome` — unchanged from version 1.
+- `code` — required, and one of a closed set (`LIFECYCLE_CODES` in `main.py`).
+  This is the whole of what a machine caller learns about *why*. An undeclared
+  code is published as `internal_error` rather than as itself.
+- `safe_status` — optional, and a `CoreSafeStatusV1` rendered only by
+  `encode_core_safe_status`. Absent when no valid target can be formed, and
+  absent rather than invalid when the contract would refuse it.
+
+**The consumer is the least-privileged one Core has.** A menu-bar process reading
+this has authenticated nothing, so the document carries no endpoint, no pid, no
+path, no service-instance identity, no credential, no raw exception and no
+launcher output. The target is published as `Local Core` plus two opaque digests
+— `target_ref` and `endpoint_profile_ref` — which are stable for one installation
+and reveal neither the home directory nor the endpoint. Two aliases of one home
+(a symlink and its target) converge on one target rather than presenting as two
+authorities over one writable workspace.
+
+The workspace identity comes from the portable `workspace/workspace.json`, read
+boundedly and never written. No database is opened. A manifest that is missing,
+over-long, unparseable, at another manifest version or carrying a malformed id
+resolves no target at all, and the document then carries its `code` and no
+`safe_status` — an identity is not guessed.
+
+`permitted_actions` offers only what this CLI actually performs, and only where
+it is safe: `stop` when a live service answered, `start` when nothing is running
+or when the attach-first start path would recover the situation, and nothing at
+all when ownership is uncertain or an incompatible service owns the workspace.
+`restart`, `open` and `reconnect` are never advertised.
+
 ### First run
 
 Two commands on a machine that has never run Core:

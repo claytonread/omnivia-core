@@ -67,12 +67,16 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from omnivia_core.contracts.v1 import (
     CapabilityRequirement,
+    ContractSemanticError,
+    CoreSafeStatusV1,
+    CoreTargetV1,
     ServiceEndpointDescriptor,
     codec,
+    encode_core_safe_status,
     get_operation_metadata,
 )
 from omnivia_core_cli.client import build_request, encode, read_descriptor
@@ -89,6 +93,14 @@ from omnivia_core_cli.lifecycle import (
     request_init,
     request_managed_start,
     request_stop,
+)
+from omnivia_core_cli.safe_status import (
+    degraded_status,
+    incompatible_status,
+    live_status,
+    resolve_local_target,
+    stopped_status,
+    unreachable_status,
 )
 
 #: The whole-call budget for one `workspace show`, covering discovery's live probe
@@ -114,54 +126,57 @@ WORKSPACE_INSPECTION_PURPOSE = "workspace_inspection"
 #: ``start|stop|status --json``. This is intentionally not the managed-start
 #: document: the latter is a service-owned launcher protocol, while this one is
 #: the stable, least-privilege view adapters such as the Core status menu consume.
-LIFECYCLE_ADAPTER_VERSION = 1
+#:
+#: **Version 2 removed `service` and `reason`.** Both were this installation's
+#: internals -- a workspace id, a service instance id, the runtime's raw state
+#: name and its raw `unmet` list; a free-form sentence naming directories,
+#: endpoints, pids and the launcher's own words -- published to a surface that
+#: has authenticated nothing. What replaced them is a required `code` from the
+#: closed set below and an optional `safe_status`, which is `CoreSafeStatusV1`
+#: and is rendered only by the contract encoder.
+LIFECYCLE_ADAPTER_VERSION = 2
 
-
-def _service_snapshot(
-    *,
-    workspace_id: Any,
-    service_instance_id: Any,
-    state: Any,
-    ready: Any,
-    unmet: Any,
-) -> dict[str, Any]:
-    """Return only the live service facts a lifecycle adapter needs.
-
-    Endpoint and process identity remain internal lifecycle details. In
-    particular, publishing a pid here would encourage UI adapters to infer
-    ownership or offer unsafe process controls instead of using ``stop``.
-    """
-    return {
-        "workspace_id": workspace_id if isinstance(workspace_id, str) else None,
-        "service_instance_id": (
-            service_instance_id if isinstance(service_instance_id, str) else None
-        ),
-        "state": state if isinstance(state, str) else None,
-        "ready": ready is True,
-        "unmet": [str(item) for item in unmet] if isinstance(unmet, list) else [],
+#: Every `code` this adapter may publish, and the whole of what a machine caller
+#: learns about *why*. Closed and bounded on purpose: a caller can branch on
+#: these, a UI can phrase them in its own words, and neither ever receives a
+#: string this process assembled from a path, an endpoint, a launcher result or
+#: an exception. `internal_error` is the fail-closed landing place for a code
+#: this module did not declare -- publishing an undeclared one is the defect the
+#: set exists to prevent.
+LIFECYCLE_CODES: Final = frozenset(
+    {
+        "start_started",
+        "start_attached",
+        "start_workspace_missing",
+        "start_incompatible_service",
+        "start_timeout",
+        "start_spawn_failed",
+        "start_not_ready",
+        "start_failed",
+        "stop_stopped",
+        "stop_not_running",
+        "stop_service_unreachable",
+        "stop_no_process",
+        "stop_identity_mismatch",
+        "stop_timeout",
+        "stop_process_lingering",
+        "status_running",
+        "status_not_running",
+        "internal_error",
     }
+)
 
-
-def _managed_service_snapshot(service: dict[str, Any]) -> dict[str, Any]:
-    return _service_snapshot(
-        workspace_id=service.get("workspace_id"),
-        service_instance_id=service.get("service_instance_id"),
-        state=service.get("state"),
-        ready=service.get("ready"),
-        unmet=service.get("unmet"),
-    )
-
-
-def _live_service_snapshot(
-    service: ServiceEndpointDescriptor, answer: dict[str, Any]
-) -> dict[str, Any]:
-    return _service_snapshot(
-        workspace_id=service.workspace_id,
-        service_instance_id=service.service_instance_id,
-        state=answer.get("state"),
-        ready=answer.get("ready"),
-        unmet=answer.get("unmet"),
-    )
+#: The launcher's five closed failure classes, as this adapter's own codes. The
+#: mapping is deliberate rather than a passthrough: `ManagedStartFailure` is a
+#: service-owned vocabulary free to grow, and a sixth class arriving from a newer
+#: runtime must land on `start_failed` rather than be published unrecognised.
+_MANAGED_START_FAILURE_CODES: Final = {
+    "missing_workspace": "start_workspace_missing",
+    "incompatible_service": "start_incompatible_service",
+    "timeout": "start_timeout",
+    "spawn_failure": "start_spawn_failed",
+    "readiness_failure": "start_not_ready",
+}
 
 
 def _write_lifecycle_document(
@@ -169,20 +184,30 @@ def _write_lifecycle_document(
     *,
     ok: bool,
     outcome: str,
-    service: dict[str, Any] | None = None,
-    reason: str | None = None,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
 ) -> None:
-    """Write the one machine-readable lifecycle adapter document."""
+    """Write the one machine-readable lifecycle adapter document.
+
+    The safe status goes through `encode_core_safe_status` and through nothing
+    else, so a status that does not satisfy the contract's cross-field
+    invariants -- an action offered for a target that may not be acted on, a
+    version disagreement -- is omitted rather than published. Omission is the
+    fail-closed answer: a caller that receives no `safe_status` offers no
+    actions, while a caller that receives an invalid one might.
+    """
     document: dict[str, Any] = {
         "lifecycle_adapter_version": LIFECYCLE_ADAPTER_VERSION,
         "action": action,
         "ok": ok,
         "outcome": outcome,
+        "code": code if code in LIFECYCLE_CODES else "internal_error",
     }
-    if service is not None:
-        document["service"] = service
-    if reason:
-        document["reason"] = reason
+    if safe_status is not None:
+        try:
+            document["safe_status"] = encode_core_safe_status(safe_status)
+        except ContractSemanticError:
+            pass
     sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
 
 
@@ -192,8 +217,8 @@ def _finish_lifecycle(
     json_output: bool,
     returncode: int,
     outcome: str,
-    service: dict[str, Any] | None = None,
-    reason: str | None = None,
+    code: str,
+    safe_status: CoreSafeStatusV1 | None = None,
     human_stdout: str | None = None,
     human_stderr: str | None = None,
 ) -> int:
@@ -203,8 +228,8 @@ def _finish_lifecycle(
             action,
             ok=returncode == 0,
             outcome=outcome,
-            service=service,
-            reason=reason,
+            code=code,
+            safe_status=safe_status,
         )
     else:
         if human_stdout:
@@ -212,6 +237,16 @@ def _finish_lifecycle(
         if human_stderr:
             sys.stderr.write(human_stderr)
     return returncode
+
+
+def _selected_target(installation: Installation, *, json_output: bool) -> CoreTargetV1 | None:
+    """The one target this command addresses, or None if it cannot be formed.
+
+    Resolved only when a machine document will be written: the human paths
+    publish no target, and reading a manifest they will not use is work for
+    nothing.
+    """
+    return resolve_local_target(installation) if json_output else None
 
 
 def _inspect_claims() -> tuple[tuple[str, ...], tuple[CapabilityRequirement, ...]]:
@@ -572,17 +607,24 @@ def _start(installation: Installation, *, json_output: bool = False) -> int:
     `core.readiness` answer, not from the descriptor's frozen fields, for the same
     reason `status` does not trust them.
     """
+    target = _selected_target(installation, json_output=json_output)
     try:
         result = request_managed_start(
             installation, endpoint_uri=installation.endpoint_uri
         )
     except LifecycleError as refusal:
+        # A refusal raised on this side: an over-long endpoint, or no manifest at
+        # all. Start is still the safe offer -- it is the attach-first path, so
+        # repeating it starts nothing that is already there.
         return _finish_lifecycle(
             "start",
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=str(refusal),
+            code="start_failed",
+            safe_status=(
+                unreachable_status(target, may_start=True) if target is not None else None
+            ),
             human_stderr=f"{refusal}\n",
         )
 
@@ -598,21 +640,44 @@ def _start(installation: Installation, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=0,
             outcome=status,
-            service=_managed_service_snapshot(service),
+            code="start_attached" if status == "attached" else "start_started",
+            safe_status=(
+                live_status(
+                    target,
+                    state=service.get("state"),
+                    ready=service.get("ready"),
+                    server_version=service.get("server_version"),
+                    protocol_version=service.get("protocol_version"),
+                )
+                if target is not None
+                else None
+            ),
             human_stdout=headline + "\n" + _describe_service(service),
         )
 
+    code = _MANAGED_START_FAILURE_CODES.get(
+        str(result.get("failure")), "start_failed"
+    )
     reason = str(result.get("reason") or "the service could not be started")
     child_output = result.get("child_output")
     human_stderr = reason + "\n"
     if isinstance(child_output, str) and child_output.strip():
         human_stderr += child_output.rstrip("\n") + "\n"
+    if target is None:
+        safe_status = None
+    elif code == "start_incompatible_service":
+        # Somebody else's authoritative service owns this workspace. Not ours to
+        # stop, and the launcher already refused to start a second one.
+        safe_status = incompatible_status(target)
+    else:
+        safe_status = unreachable_status(target, may_start=True)
     return _finish_lifecycle(
         "start",
         json_output=json_output,
         returncode=1,
         outcome="failed",
-        reason=reason,
+        code=code,
+        safe_status=safe_status,
         human_stderr=human_stderr,
     )
 
@@ -641,7 +706,9 @@ def _describe_service(service: dict[str, Any]) -> str:
     return "".join(line + "\n" for line in lines)
 
 
-def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
+def _stop(
+    installation: Installation, runtime_state: Path, *, json_output: bool = False
+) -> int:
     """Signal the running service and wait for it to withdraw its own descriptor.
 
     **The identity check comes before the signal, and it is two checks.** A pid on
@@ -669,6 +736,7 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
     is skipped and said to be skipped, rather than being quietly reported as a
     match.
     """
+    target = _selected_target(installation, json_output=json_output)
     service = read_descriptor(runtime_state)
     if service is None:
         # Symmetric with `start` finding one already running: asking for a state
@@ -678,6 +746,8 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=0,
             outcome="not_running",
+            code="stop_not_running",
+            safe_status=stopped_status(target) if target is not None else None,
             human_stdout="not running\n",
         )
 
@@ -695,7 +765,13 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=reason,
+            code="stop_service_unreachable",
+            # `start` recovers from exactly this -- a descriptor left by a service
+            # that is gone -- so start is safe to offer and stop is not: nothing
+            # was established to stop.
+            safe_status=(
+                unreachable_status(target, may_start=True) if target is not None else None
+            ),
             human_stderr=reason + "\n",
         )
 
@@ -710,22 +786,31 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=reason,
+            code="stop_no_process",
+            # Something live answered, so a start would be starting a second one,
+            # and no ownership was established, so a stop has nothing to signal.
+            # Neither action is offered.
+            safe_status=(
+                degraded_status(target, lifecycle_state="running")
+                if target is not None
+                else None
+            ),
             human_stderr=reason + "\n",
         )
 
     identity = process_identity(process)
     if identity == IDENTITY_DIFFERENT:
-        reason = (
-            "the advertised process is not the process that published this "
-            "descriptor; nothing was signalled"
-        )
         return _finish_lifecycle(
             "stop",
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=reason,
+            code="stop_identity_mismatch",
+            safe_status=(
+                degraded_status(target, lifecycle_state="running")
+                if target is not None
+                else None
+            ),
             human_stderr=(
                 f"pid {process.pid} is not the process that published this "
                 "descriptor; nothing was signalled\n"
@@ -749,7 +834,14 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=reason,
+            code="stop_timeout",
+            # The stop was accepted and has not completed. The requested action is
+            # already under way, so nothing is offered.
+            safe_status=(
+                degraded_status(target, lifecycle_state="stopping")
+                if target is not None
+                else None
+            ),
             human_stderr=reason + "\n",
         )
     # Two events, in this order, and only both of them make "stopped" true. The
@@ -766,7 +858,12 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=1,
             outcome="failed",
-            reason=reason,
+            code="stop_process_lingering",
+            safe_status=(
+                degraded_status(target, lifecycle_state="stopping")
+                if target is not None
+                else None
+            ),
             human_stderr=(
                 f"the service withdrew its descriptor but pid {process.pid} was still "
                 f"running after {STOP_TIMEOUT_SECONDS:.0f}s\n"
@@ -777,12 +874,17 @@ def _stop(runtime_state: Path, *, json_output: bool = False) -> int:
         json_output=json_output,
         returncode=0,
         outcome="stopped",
+        code="stop_stopped",
+        safe_status=stopped_status(target) if target is not None else None,
         human_stdout="stopped\n",
     )
 
 
-def _status(runtime_state: Path, *, json_output: bool = False) -> int:
+def _status(
+    installation: Installation, runtime_state: Path, *, json_output: bool = False
+) -> int:
     """Report what a live call answered, never what the file claims."""
+    target = _selected_target(installation, json_output=json_output)
     running = _live_service(runtime_state, quiet=json_output)
     if running is None:
         return _finish_lifecycle(
@@ -790,23 +892,29 @@ def _status(runtime_state: Path, *, json_output: bool = False) -> int:
             json_output=json_output,
             returncode=1,
             outcome="not_running",
+            code="status_not_running",
+            safe_status=stopped_status(target) if target is not None else None,
             human_stdout="not running\n",
         )
-    if json_output:
-        service, answer = running
-        return _finish_lifecycle(
-            "status",
-            json_output=True,
-            returncode=0,
-            outcome="running",
-            service=_live_service_snapshot(service, answer),
-        )
+    service, answer = running
     return _finish_lifecycle(
         "status",
-        json_output=False,
+        json_output=json_output,
         returncode=0,
         outcome="running",
-        human_stdout="running\n" + _describe(*running),
+        code="status_running",
+        safe_status=(
+            live_status(
+                target,
+                state=answer.get("state"),
+                ready=answer.get("ready"),
+                server_version=service.server_version,
+                protocol_version=service.protocol_version,
+            )
+            if target is not None
+            else None
+        ),
+        human_stdout="running\n" + _describe(service, answer),
     )
 
 
@@ -838,12 +946,16 @@ def main(argv: list[str] | None = None) -> int:
             # Nothing is advertised anywhere under this installation, which the
             # two lifecycle queries answer in their own vocabulary rather than as
             # a path error.
+            target = _selected_target(installation, json_output=json_output)
+            stopped = stopped_status(target) if target is not None else None
             if args.command == "stop":
                 return _finish_lifecycle(
                     "stop",
                     json_output=json_output,
                     returncode=0,
                     outcome="not_running",
+                    code="stop_not_running",
+                    safe_status=stopped,
                     human_stdout="not running\n",
                 )
             if args.command == "status":
@@ -852,7 +964,8 @@ def main(argv: list[str] | None = None) -> int:
                     json_output=json_output,
                     returncode=1,
                     outcome="not_running",
-                    reason=str(refusal),
+                    code="status_not_running",
+                    safe_status=stopped,
                     human_stdout="not running\n",
                     human_stderr=f"{refusal}\n",
                 )
@@ -860,9 +973,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command == "status":
-        return _status(runtime_state, json_output=json_output)
+        return _status(installation, runtime_state, json_output=json_output)
     if args.command == "stop":
-        return _stop(runtime_state, json_output=json_output)
+        return _stop(installation, runtime_state, json_output=json_output)
 
     service = read_descriptor(runtime_state)
 
