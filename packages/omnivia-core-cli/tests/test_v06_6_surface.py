@@ -161,3 +161,15 @@ def test_the_surface_imports_neither_the_runtime_nor_the_mcp_adapter() -> None:
     ]
     assert not [line for line in imports if "omnivia_core_runtime" in line]
     assert not [line for line in imports if "omnivia_core_mcp" in line]
+
+
+def test_the_production_package_contains_only_the_frozen_cli_modules() -> None:
+    """Deleted lifecycle and request-printing modules cannot silently return."""
+    package = Path(surface.__file__).parent
+    assert {path.name for path in package.iterdir() if path.is_file()} == {
+        "__init__.py",
+        "dispatch.py",
+        "main.py",
+        "py.typed",
+        "surface.py",
+    }
