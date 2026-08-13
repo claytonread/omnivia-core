@@ -372,6 +372,29 @@ def test_the_adapter_document_publishes_only_a_declared_code(tmp_path: Path) -> 
     }
 
 
+def test_the_adapter_document_refuses_a_declared_code_in_the_wrong_frame() -> None:
+    """A known code is not sufficient when its action/outcome/success frame drifts."""
+    from omnivia_core_cli import main as cli_main
+
+    buffer = io.StringIO()
+    original = cli_main.sys.stdout
+    cli_main.sys.stdout = buffer
+    try:
+        cli_main._write_lifecycle_document(
+            "status", ok=True, outcome="running", code="stop_stopped"
+        )
+    finally:
+        cli_main.sys.stdout = original
+
+    assert json.loads(buffer.getvalue()) == {
+        "lifecycle_adapter_version": 2,
+        "action": "status",
+        "ok": False,
+        "outcome": "failed",
+        "code": "internal_error",
+    }
+
+
 def test_a_status_the_contract_refuses_is_omitted_rather_than_published(
     tmp_path: Path,
 ) -> None:

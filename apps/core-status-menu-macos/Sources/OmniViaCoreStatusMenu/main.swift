@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let configuration: CompanionConfiguration
+    private let singleton: CompanionSingleton
     private let coordinator: LifecycleCoordinator
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -16,8 +17,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
     private let logItem = NSMenuItem(title: "Show Service Log", action: #selector(showServiceLog), keyEquivalent: "l")
     private var pollTimer: Timer?
 
-    init(configuration: CompanionConfiguration) {
+    init(configuration: CompanionConfiguration, singleton: CompanionSingleton) {
         self.configuration = configuration
+        self.singleton = singleton
         let runner: LifecycleRunning
         do {
             let executable = try CLIResolver().resolve(override: configuration.cliOverride)
@@ -38,6 +40,9 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         coordinator.onChange = { [weak self] snapshot in
             self?.render(snapshot)
         }
+        singleton.startListening { [weak self] in
+            self?.coordinator.refresh()
+        }
         render(.checking)
         coordinator.refresh()
 
@@ -55,6 +60,7 @@ final class StatusMenuAppDelegate: NSObject, NSApplicationDelegate {
         // deliberately performs no Core lifecycle command.
         pollTimer?.invalidate()
         coordinator.companionWillTerminate()
+        singleton.close()
     }
 
     private func configureMenu() {
@@ -158,17 +164,27 @@ do {
     // an async entry point just to satisfy the isolation checker.
     try MainActor.assumeIsolated {
         let configuration = try CompanionConfiguration.parse(arguments: CommandLine.arguments)
+        let singleton: CompanionSingleton
+        switch try CompanionSingleton.acquire(installationState: configuration.installationState) {
+        case .forwarded:
+            return
+        case let .primary(acquired):
+            singleton = acquired
+        }
         let application = NSApplication.shared
-        let delegate = StatusMenuAppDelegate(configuration: configuration)
+        let delegate = StatusMenuAppDelegate(configuration: configuration, singleton: singleton)
         application.setActivationPolicy(.accessory)
         application.delegate = delegate
         application.run()
     }
-} catch {
+} catch is CompanionConfigurationError {
     // One fixed usage line. Even the companion's own argument errors echo the
     // words they were given, and this process writes none of those back.
     FileHandle.standardError.write(
         Data("usage: omnivia-core-status-menu [--cli <absolute path>] --installation-state <absolute path> --workspace-id <id>\n".utf8)
     )
     Darwin.exit(2)
+} catch {
+    FileHandle.standardError.write(Data("OmniVia Core status menu is unavailable\n".utf8))
+    Darwin.exit(1)
 }

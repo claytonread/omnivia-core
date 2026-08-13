@@ -1334,16 +1334,23 @@ def test_lb_v3_the_startup_builds_and_materialises_before_the_transport_starts(
         for node in ast.walk(serve)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    starts = min(
+    server_starts = [
         node.lineno
         for node in ast.walk(serve)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "start"
-    )
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "server"
+    ]
 
     assert where["build_search_projection"] < where["open_search_projection"]
-    assert where["open_search_projection"] < where["LocalSocketServer"] < starts
+    assert len(server_starts) == 1
+    assert (
+        where["open_search_projection"]
+        < where["LocalSocketServer"]
+        < server_starts[0]
+    )
 
     # And the build is handed the service's own three facts, not anything reconstructed.
     build_call = next(

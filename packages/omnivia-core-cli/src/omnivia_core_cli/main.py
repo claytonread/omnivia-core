@@ -146,30 +146,33 @@ LIFECYCLE_ADAPTER_VERSION = 2
 #: an exception. `internal_error` is the fail-closed landing place for a code
 #: this module did not declare -- publishing an undeclared one is the defect the
 #: set exists to prevent.
-LIFECYCLE_CODES: Final = frozenset(
+LIFECYCLE_CODE_FRAMES: Final[
+    Mapping[str, tuple[str | None, str, bool]]
+] = MappingProxyType(
     {
-        "start_started",
-        "start_attached",
-        "start_workspace_missing",
-        "start_incompatible_service",
-        "start_timeout",
-        "start_spawn_failed",
-        "start_not_ready",
-        "start_failed",
-        "stop_stopped",
-        "stop_not_running",
-        "stop_service_unreachable",
-        "stop_no_process",
-        "stop_identity_mismatch",
-        "stop_timeout",
-        "stop_process_lingering",
-        "status_running",
-        "status_not_running",
-        "status_unreachable",
-        "status_incompatible",
-        "internal_error",
+        "start_started": ("start", "started", True),
+        "start_attached": ("start", "attached", True),
+        "start_workspace_missing": ("start", "failed", False),
+        "start_incompatible_service": ("start", "failed", False),
+        "start_timeout": ("start", "failed", False),
+        "start_spawn_failed": ("start", "failed", False),
+        "start_not_ready": ("start", "failed", False),
+        "start_failed": ("start", "failed", False),
+        "stop_stopped": ("stop", "stopped", True),
+        "stop_not_running": ("stop", "not_running", True),
+        "stop_service_unreachable": ("stop", "failed", False),
+        "stop_no_process": ("stop", "failed", False),
+        "stop_identity_mismatch": ("stop", "failed", False),
+        "stop_timeout": ("stop", "failed", False),
+        "stop_process_lingering": ("stop", "failed", False),
+        "status_running": ("status", "running", True),
+        "status_not_running": ("status", "not_running", False),
+        "status_unreachable": ("status", "failed", False),
+        "status_incompatible": ("status", "failed", False),
+        "internal_error": (None, "failed", False),
     }
 )
+LIFECYCLE_CODES: Final = frozenset(LIFECYCLE_CODE_FRAMES)
 
 def _write_lifecycle_document(
     action: str,
@@ -188,12 +191,22 @@ def _write_lifecycle_document(
     fail-closed answer: a caller that receives no `safe_status` offers no
     actions, while a caller that receives an invalid one might.
     """
+    frame = LIFECYCLE_CODE_FRAMES.get(code)
+    if frame is None or (
+        (frame[0] is not None and frame[0] != action)
+        or frame[1] != outcome
+        or frame[2] != ok
+    ):
+        code = "internal_error"
+        outcome = "failed"
+        ok = False
+
     document: dict[str, Any] = {
         "lifecycle_adapter_version": LIFECYCLE_ADAPTER_VERSION,
         "action": action,
         "ok": ok,
         "outcome": outcome,
-        "code": code if code in LIFECYCLE_CODES else "internal_error",
+        "code": code,
     }
     if safe_status is not None:
         try:

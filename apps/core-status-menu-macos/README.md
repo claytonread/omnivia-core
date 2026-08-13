@@ -22,6 +22,20 @@ swift test --package-path apps/core-status-menu-macos
 swift build --package-path apps/core-status-menu-macos
 ```
 
+Build a deterministic unsigned qualification bundle from the release executable:
+
+```bash
+python scripts/build-core-companion-app.py \
+  --executable /absolute/path/to/omnivia-core-status-menu \
+  --output /absolute/path/to/new-candidate-directory \
+  --version 0.6.5
+```
+
+The result is explicitly `qualification_only` until signed and notarized by the
+production release process. The app does not embed the Core runtime or CLI; it
+continues to address the explicit shared installation and Workspace supplied at
+launch.
+
 Run the development executable with an explicit Core selection and the fixed
 `omnivia` executable lookup:
 
@@ -66,6 +80,11 @@ packaging verification.
 - Quitting the status menu leaves the Core Service unchanged.
 
 ## Lifecycle adapter version 2
+
+The companion uses an owner-only per-installation lock and Unix activation
+socket. A second launch forwards the fixed `refresh` intent and exits; it cannot
+send an arbitrary action or payload. Quitting the companion releases that lock
+and removes the socket without issuing a Core lifecycle command.
 
 The companion reads `"lifecycle_adapter_version": 2` and nothing else: version 1
 published a raw `service` object and a free-form `reason`, and a version 1
