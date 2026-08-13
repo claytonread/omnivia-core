@@ -19,6 +19,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -39,6 +40,18 @@ from mcp.shared.exceptions import MCPError
 TIMEOUT_SECONDS: Final = 60
 QUERY_TOKEN: Final = "omnivia-standalone-journey-token"
 PRINCIPAL: Final = "local-user"
+
+#: `whoami /user` reports the SID in this form, mixed into a CSV row.
+_SID_RE: Final = re.compile(r"S-1-[0-9-]+")
+
+#: Fixed, because the tools that fail here quote the configuration path, the SID
+#: and their own environment, and this journey retains only a redacted transcript.
+_RESTRICTION_FAILED: Final = "could not restrict the MCP configuration to its owner"
+
+# A module-level platform flag rather than `os.name` at each site: the Windows
+# branch has to be exercised from a POSIX host, and a test that mutates `os.name`
+# globally changes far more than the restriction under test.
+_IS_WINDOWS = os.name == "nt"
 
 
 class JourneyError(RuntimeError):
@@ -227,6 +240,79 @@ def _cli(
     return _run(arguments)
 
 
+def _system32(program: str) -> str:
+    """An absolute path to a Windows system tool.
+
+    Resolving through `PATH` would let any directory earlier on it supply the
+    program that sets the configuration's ACL, which is the wrong way round for a
+    restriction.  `SystemRoot` is where these live and is not always `C:\\Windows`.
+    """
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
+
+
+def _windows_owner_only(path: Path) -> bool:
+    """Reduce `path` to an owner-only DACL, reporting whether every step held.
+
+    `os.chmod` is close to a no-op on Windows -- it toggles the read-only
+    attribute and nothing else -- so the written configuration carries whatever
+    the inherited DACL grants, which on a shared machine is every local user, and
+    the installed MCP server refuses to read it.
+
+    The three invocations mirror this repository's runtime implementation.
+    `/setowner` first, because the reader compares the object's owner against its
+    own `TokenUser` and ownership comes from the token, not the DACL: an elevated
+    administrator creates objects owned by `BUILTIN\\Administrators`.  `/reset`
+    then drops the *explicit* entries, which `/inheritance:r` does not touch.
+    `/grant:r` with `/inheritance:r` drops the inherited ones, marks the DACL
+    protected so a permissive parent cannot re-supply them, and leaves one allow
+    ACE naming this process's own SID -- the SID `whoami /user` reports, not an
+    account name, which is a second lookup that can resolve to another principal.
+
+    Short-circuits at the first failing step: a partly applied sequence is not a
+    restriction, and the caller fails closed on the `False`.
+    """
+    identity = _run(
+        [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"], timeout=15
+    )
+    found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
+    if found is None:
+        return False
+    sid = found.group()
+    return all(
+        _run(
+            [_system32("icacls.exe"), str(path), *arguments, "/q"], timeout=60
+        ).returncode
+        == 0
+        for arguments in (
+            ("/setowner", f"*{sid}"),
+            ("/reset",),
+            ("/inheritance:r", "/grant:r", f"*{sid}:F"),
+        )
+    )
+
+
+def _restrict(path: Path) -> None:
+    """Owner-only access, in whatever form this platform has one.
+
+    Fails closed.  A configuration naming the installation state and readable by
+    every local user is worse than no journey at all, and the MCP server would
+    refuse it anyway.
+    """
+    if not _IS_WINDOWS:
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        return
+    # Suppressed rather than caught and re-raised: raising inside a handler keeps
+    # the original on `__cause__`/`__context__`, and its text quotes the
+    # configuration path, the SID and the tool's own command line, which every
+    # traceback renderer then prints.  The raise below runs with the handler
+    # already unwound, so the fixed message is the whole of the failure.
+    restricted = False
+    with contextlib.suppress(OSError, subprocess.SubprocessError, UnicodeError):
+        restricted = _windows_owner_only(path)
+    if not restricted:
+        raise JourneyError(_RESTRICTION_FAILED)
+
+
 def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) -> None:
     path.write_text(
         json.dumps(
@@ -247,8 +333,7 @@ def _write_mcp_configuration(path: Path, installation: Path, workspace_id: str) 
         ),
         encoding="utf-8",
     )
-    if os.name != "nt":
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    _restrict(path)
 
 
 def _exception_leaves(error: BaseException) -> list[BaseException]:

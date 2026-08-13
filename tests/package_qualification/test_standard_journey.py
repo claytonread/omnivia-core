@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -70,6 +72,179 @@ def test_journey_has_no_skip_or_xfail_path() -> None:
         node.attr for node in ast.walk(_tree()) if isinstance(node, ast.Attribute)
     }
     assert not {"skip", "skipif", "xfail", "importorskip"} & attributes
+
+
+def _windows(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, *results: tuple[int, str]
+) -> list[list[str]]:
+    """Run the restriction as Windows, returning the commands it issued.
+
+    `_IS_WINDOWS` is the seam rather than `os.name`, which is global and would
+    change every other platform decision in the process running these tests.
+    """
+    commands: list[list[str]] = []
+    pending = list(results)
+
+    def _fake_run(arguments, *, input_text=None, timeout=None):
+        commands.append(list(arguments))
+        code, stdout = pending.pop(0)
+        return subprocess.CompletedProcess(list(arguments), code, stdout, "")
+
+    monkeypatch.setattr(module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(module, "_run", _fake_run)
+    monkeypatch.setenv("SystemRoot", "D:\\Windows")
+    return commands
+
+
+def _system32(program: str) -> str:
+    return str(Path("D:\\Windows", "System32", program))
+
+
+def _whoami_row() -> str:
+    return '"host\\user","S-1-5-21-1111111111-2222222222-3333333333-1001"\n'
+
+
+def test_windows_restriction_issues_the_established_icacls_sequence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    commands = _windows(
+        module, monkeypatch, (0, _whoami_row()), (0, ""), (0, ""), (0, "")
+    )
+    config = tmp_path / "omnivia-mcp.json"
+    config.write_text("{}", encoding="utf-8")
+
+    module._restrict(config)
+
+    sid = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+    icacls = _system32("icacls.exe")
+    assert commands == [
+        [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+        [icacls, str(config), "/setowner", f"*{sid}", "/q"],
+        [icacls, str(config), "/reset", "/q"],
+        [icacls, str(config), "/inheritance:r", "/grant:r", f"*{sid}:F", "/q"],
+    ]
+
+
+def test_writing_the_mcp_configuration_restricts_it_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    commands = _windows(
+        module, monkeypatch, (0, _whoami_row()), (0, ""), (0, ""), (0, "")
+    )
+    config = tmp_path / "omnivia-mcp.json"
+
+    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
+
+    document = json.loads(config.read_text(encoding="utf-8"))
+    assert document["format"] == "omnivia.mcp-config.v1"
+    assert [command[0] for command in commands] == [
+        _system32("whoami.exe"),
+        _system32("icacls.exe"),
+        _system32("icacls.exe"),
+        _system32("icacls.exe"),
+    ]
+
+
+def test_windows_restriction_fails_closed_when_the_sid_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    commands = _windows(module, monkeypatch, (1, ""))
+    config = tmp_path / "omnivia-mcp.json"
+    config.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._restrict(config)
+
+    assert str(excinfo.value) == module._RESTRICTION_FAILED
+    assert len(commands) == 1
+
+
+def test_windows_restriction_fails_closed_when_a_step_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    commands = _windows(module, monkeypatch, (0, _whoami_row()), (0, ""), (5, ""))
+    config = tmp_path / "omnivia-mcp.json"
+    config.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._restrict(config)
+
+    assert str(excinfo.value) == module._RESTRICTION_FAILED
+    # Stopped at the refused `/reset`; the grant that would have followed a
+    # successful sequence never ran.
+    assert len(commands) == 3
+
+
+def test_windows_restriction_failure_reports_a_fixed_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    config = tmp_path / "secret-workspace" / "omnivia-mcp.json"
+    config.parent.mkdir()
+    config.write_text("{}", encoding="utf-8")
+
+    def _leaking_run(arguments, *, input_text=None, timeout=None):
+        raise OSError(
+            f"{arguments!r} failed for {config} as "
+            "S-1-5-21-4444444444 with api-key=sk-1234"
+        )
+
+    monkeypatch.setattr(module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(module, "_run", _leaking_run)
+    monkeypatch.setenv("SystemRoot", "D:\\Windows")
+
+    with pytest.raises(module.JourneyError) as excinfo:
+        module._restrict(config)
+
+    error = excinfo.value
+    assert str(error) == "could not restrict the MCP configuration to its owner"
+    # The caught OSError must be unreachable, not merely unquoted: a chained
+    # exception keeps its text on `__cause__`/`__context__`, and every traceback
+    # renderer prints those.
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    surfaces = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(error.__cause__),
+        repr(error.__context__),
+    )
+    for secret in (
+        str(config),
+        "secret-workspace",
+        "S-1-5-21-4444444444",
+        "icacls",
+        "whoami",
+        "D:\\Windows",
+        "api-key",
+        "sk-1234",
+    ):
+        for surface in surfaces:
+            assert secret not in surface
+
+
+def test_the_posix_configuration_is_written_owner_read_write_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _module()
+    modes: list[int] = []
+    commands: list[list[str]] = []
+    monkeypatch.setattr(module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(module, "_run", lambda arguments, **_: commands.append(list(arguments)))
+    # Recorded rather than read back from the filesystem: a Windows host cannot
+    # store `0o600`, and the mode this asks for is what the assertion is about.
+    monkeypatch.setattr(Path, "chmod", lambda self, mode: modes.append(mode))
+    config = tmp_path / "omnivia-mcp.json"
+
+    module._write_mcp_configuration(config, tmp_path / "installation-state", "ws-1")
+
+    assert modes == [0o600]
+    assert commands == []
 
 
 def test_exception_class_names_flattens_nested_exception_groups() -> None:
