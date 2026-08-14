@@ -776,8 +776,11 @@ def decode_knowledge_search_input(
 def _validate_record_valid_at_canonical_resolution_time(
     temporal: RecordTemporalMetadata, resolution_instant: datetime, label: str
 ) -> None:
-    """Raise unless `temporal`'s `valid_from`/`valid_until` window (either bound may be
-    absent and unbounded on that side) actually contains `resolution_instant`."""
+    """Raise unless `temporal`'s half-open `[valid_from, valid_until)` window (either bound
+    may be absent and unbounded on that side) actually contains `resolution_instant`:
+    `valid_from` is inclusive, `valid_until` is exclusive, matching governed storage's own
+    `[valid_from_us, valid_to_us)` select -- a version valid only *until* the resolution
+    instant is not the version this closure serves."""
     if temporal.valid_from is not None:
         valid_from = _parse_timestamp(
             _require_str(temporal.valid_from, f"{label}.valid_from"), f"{label}.valid_from"
@@ -791,10 +794,11 @@ def _validate_record_valid_at_canonical_resolution_time(
         valid_until = _parse_timestamp(
             _require_str(temporal.valid_until, f"{label}.valid_until"), f"{label}.valid_until"
         )
-        if resolution_instant > valid_until:
+        if resolution_instant >= valid_until:
             raise ContractSemanticError(
                 f"{label} is no longer valid at the canonical-resolution time: "
-                f"valid_until {temporal.valid_until!r} is before the resolution instant"
+                f"valid_until {temporal.valid_until!r} is at or before the resolution instant "
+                "(valid_until is exclusive)"
             )
 
 
@@ -911,9 +915,11 @@ def _validate_record_under_current_canonical_view(
     - `authority_level` is exactly :data:`KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL`. An
       `accepted`-but-not-yet-canonical version is not citable knowledge;
     - a `reviewer` is present. Canonical knowledge is reviewed knowledge;
-    - the record's `valid_from`/`valid_until` window contains `resolution_instant`
+    - the record's `valid_from`/`valid_until` window contains `resolution_instant` on a
+      half-open basis -- `valid_from` inclusive, `valid_until` exclusive
       (:func:`_validate_record_valid_at_canonical_resolution_time`). A version whose
-      validity had not begun, or had already ended, was not the canonical answer then.
+      validity had not begun, or had already ended (including one valid only *until* the
+      resolution instant), was not the canonical answer then.
 
     `view_label` names the view in the failure message, so a Context Pack partition failure
     reads as what it is rather than as a `knowledge.search` view leak.
@@ -969,8 +975,9 @@ def validate_knowledge_search_result(
     resolved view is `current_canonical` (absent, or explicitly named -- always allowed,
     never gated on `authorized_views`), every returned record must be exactly
     `l2`/`accepted`/`current`, carry authority_level exactly
-    :data:`KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL`, carry a reviewer, and be valid (its
-    `valid_from`/`valid_until` window must contain) `canonical_resolution_time`. When the
+    :data:`KNOWLEDGE_SEARCH_CANONICAL_AUTHORITY_LEVEL`, carry a reviewer, and be valid at
+    `canonical_resolution_time` under the half-open `valid_from`/`valid_until` window
+    (`valid_from` inclusive, `valid_until` exclusive). When the
     resolved view is `candidates`, it must be present in `authorized_views`, and every
     returned record must be exactly `l1`/`candidate`/`current`, carry authority_level
     exactly `proposed`, and carry no reviewer. When the resolved view is `history`, it must
@@ -3806,7 +3813,8 @@ def _validate_selected_evidence(
       the other rules here reads a single instant off the `temporal` envelope, and the audit
       trail and its nested source retrievals are a second and third independent set that
       would otherwise be free to record acts that had not happened when the pack resolved;
-    - its validity window, where it has one, contains that instant
+    - its validity window, where it has one, contains that instant on a half-open basis --
+      `valid_from` inclusive, `valid_until` exclusive
       (:func:`_validate_record_valid_at_canonical_resolution_time` -- the same rule governed
       records are held to, since "valid then" means the same thing for both);
     - it had not been superseded at or before that instant.

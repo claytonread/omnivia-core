@@ -364,8 +364,12 @@ def test_v06_5_s3_0015_clean_upgrade_integrity_fingerprint_and_guards(
         )
         assert foreign_key_check(connection) == []
         assert integrity_check(connection) == []
-        assert_guards_intact(connection)
+        # Both oracles are taken from the accepted prefix through 0015. The guard
+        # expectation is derived from whatever migrations are on disk, so read
+        # outside this block it would demand the triggers of every *later*
+        # migration from a workspace that deliberately stops here.
         with m1.migration_catalogue_through(MIGRATION_VERSION):
+            assert_guards_intact(connection)
             expected = canonical_schema_fingerprint()
         assert verify_fingerprint(connection, expected).matches(expected)
     finally:

@@ -738,7 +738,7 @@ def test_the_probe_stands_in_for_nothing_and_is_told_only_a_config_path(
 
 
 def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
-    live_config: Path,
+    live_service: fixture.GovernedService, live_config: Path
 ) -> None:
     """R004-07: stdout is protocol-only, proved against a server trying to break it.
 
@@ -746,18 +746,30 @@ def test_the_stdio_stream_carries_only_protocol_even_under_contamination(
     call -- six of them now. If any reached the wire the session below would fail
     to parse a frame; instead every call completes and the strings are nowhere in
     what the client received.
+
+    A failing call quotes the whole answer and the service's own state, because
+    the two ways this can fail are not distinguishable from the tool name. The
+    claim here is about the *stream*, so an erroring call is only evidence
+    against it if the call reached a service that was answering at all -- and
+    this is the last test in the module to use the shared service, which is
+    exactly where "the service stopped answering everyone" arrives disguised as
+    "one tool returned an error".
     """
     contaminated = session(live_config, "--contaminate")
     assert contaminated["tools"] == [tool.model_dump(mode="json") for tool in tools()]
     for name in ARGUMENTS:
-        assert contaminated["calls"][name]["is_error"] is False, name
+        assert contaminated["calls"][name]["is_error"] is False, (
+            name,
+            contaminated["calls"][name],
+            live_service.diagnosis(),
+        )
     serialised = json.dumps(contaminated)
     assert "CONTAMINATION-FROM-A-HANDLER" not in serialised
     assert "CONTAMINATION-VIA-PRINT" not in serialised
 
 
 def test_every_byte_the_server_writes_to_stdout_is_valid_protocol(
-    live_config: Path,
+    live_service: fixture.GovernedService, live_config: Path
 ) -> None:
     """Read the raw pipe, not the parsed session: every line must be JSON-RPC.
 
@@ -803,16 +815,35 @@ def test_every_byte_the_server_writes_to_stdout_is_valid_protocol(
         )
         + "\n"
     )
-    completed = subprocess.run(
-        [sys.executable, str(PROBE), "--config", str(live_config), "--contaminate"],
-        input=request,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(PROBE), "--config", str(live_config), "--contaminate"],
+            input=request,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as hang:
+        # Deliberately below `server.connect`'s own
+        # `MANAGED_START_TIMEOUT_SECONDS`, so a probe that cannot reach the
+        # service is killed here rather than allowed to spend its whole startup
+        # budget three times over: this is a hang guard, and the run it guards
+        # has a job timeout of its own. That makes the *expiry* uninformative on
+        # its own -- it fires before the probe can refuse in its own words --
+        # which is why the service's state is attached rather than the guard
+        # relaxed. "Still running, still advertising ready, answering nobody" and
+        # "stopped, and here is the sentence it stopped with" are different
+        # causes, and a bare `TimeoutExpired` names neither.
+        raise AssertionError(
+            f"the probe never finished; it wrote {hang.stderr!r}; "
+            f"{live_service.diagnosis()}"
+        ) from hang
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
-    assert lines, f"the server wrote nothing; stderr was {completed.stderr!r}"
+    assert lines, (
+        f"the server wrote nothing; stderr was {completed.stderr!r}; "
+        f"{live_service.diagnosis()}"
+    )
     for line in lines:
         message = json.loads(line)  # a non-protocol line fails here
         assert message["jsonrpc"] == "2.0", line

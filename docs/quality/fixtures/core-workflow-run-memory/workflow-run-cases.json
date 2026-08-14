@@ -1,0 +1,792 @@
+{
+  "fixture_id": "core-workflow-run-memory-v1",
+  "schema_version": "1",
+  "status": "preparation_only",
+  "authority": {
+    "pm_base_commit": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+    "core_checkpoint_commit": "0278d3cb1da3199dd116ed0710a7459599e142df",
+    "architecture_document": "docs/specs/omnivia-core-architecture-spec-v0.6-2026-07-29.md",
+    "boundary_document": "docs/tasks/2026-08-03-omnivia-core-workflow-run-memory-boundary-preparation.md",
+    "operation_catalogue_source": "src/omnivia_core/contracts/v1/generated.py#OPERATION_CATALOGUE",
+    "error_code_source": "src/omnivia_core/contracts/v1/generated.py#FROZEN_ERROR_CODES"
+  },
+  "safety": {
+    "synthetic_identifiers_only": true,
+    "network_dependency": false,
+    "executable_payloads": false,
+    "credentials_or_key_material": false,
+    "private_or_customer_content": false,
+    "live_urls": false,
+    "expected_outcomes_are_fail_closed": true
+  },
+  "cases": [
+    {
+      "case_id": "RUN-V-01",
+      "title": "Run-authored observation is proposed-only and never canonical",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-13", "RUN-R-22"],
+      "provisional_dependencies": ["RUN-P-01"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0001",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0001:node.001:d1a1"
+      },
+      "stimulus": "A workflow run submits a candidate observation carrying run-derived provenance and one workflow_run source reference.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": true,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "MemoryCreateInput carries no authority-level, governance-state, currentness, record-id or supersession field, so the result is candidate-only at L1."
+      }
+    },
+    {
+      "case_id": "RUN-V-02",
+      "title": "Run cannot approve its own candidate",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-12", "RUN-R-22"],
+      "provisional_dependencies": ["RUN-P-01", "RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.002",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0001",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "candidate.approve",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write", "memory.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0001:node.002:d2b7"
+      },
+      "stimulus": "The same run that produced a candidate attempts to promote it to governed canonical knowledge.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "capability_not_granted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "candidate.approve requires knowledge.govern, which is excluded from the default agent-actor grant."
+      }
+    },
+    {
+      "case_id": "RUN-V-03",
+      "title": "Run cannot supersede an existing governed record",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-12", "RUN-R-22"],
+      "provisional_dependencies": ["RUN-P-01", "RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0002",
+        "task_node_id": "node.011",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0002",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "record.supersede",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write", "memory.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0002:node.011:d3c2"
+      },
+      "stimulus": "A run concludes that a current canonical record is stale and attempts to supersede it directly.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "capability_not_granted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Supersession is a governance decision. The run may only submit a contesting candidate through memory.create."
+      }
+    },
+    {
+      "case_id": "RUN-V-04",
+      "title": "Run cannot reach an installation-scoped operation",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-08", "RUN-R-12"],
+      "provisional_dependencies": ["RUN-P-01", "RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0002",
+        "task_node_id": "node.012",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0002",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "workspace.create",
+        "granted_capabilities": ["memory.write", "memory.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0002:node.012:d4e9"
+      },
+      "stimulus": "A run attempts to create a new workspace to hold its own scratch output.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "capability_not_granted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "workspace.create is installation-scoped and carries no workspace_id; the default run grant is workspace-scoped only."
+      }
+    },
+    {
+      "case_id": "RUN-V-05",
+      "title": "Runtime approval alone produces no Core effect",
+      "category": "approval",
+      "requirements": ["RUN-R-11", "RUN-R-18"],
+      "provisional_dependencies": ["RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0003",
+        "task_node_id": "node.021",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0003",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "stimulus": "A human operator approves a proposed tool call inside the workflow runtime. No Core operation is invoked.",
+      "expected": {
+        "disposition": "no_op",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": false,
+        "fail_closed": true,
+        "notes": "A runtime approval is a run-local control decision. It is not a governance decision and generates no Core audit record."
+      }
+    },
+    {
+      "case_id": "RUN-V-06",
+      "title": "Run proposal into the governed layer is denied under the default grant",
+      "category": "approval",
+      "requirements": ["RUN-R-12", "RUN-R-13"],
+      "provisional_dependencies": ["RUN-P-01", "RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0003",
+        "task_node_id": "node.022",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0003",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "knowledge.propose",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write", "memory.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0003:node.022:d5f4"
+      },
+      "stimulus": "A run attempts the second ingress path named in architecture section 14 rather than the candidate path.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "capability_not_granted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "knowledge.propose is bound to knowledge.govern in the frozen catalogue. Provisional until the governance operation mapping is resolved."
+      }
+    },
+    {
+      "case_id": "RUN-V-07",
+      "title": "Validated human governor accepts a run-produced candidate",
+      "category": "approval",
+      "requirements": ["RUN-R-11", "RUN-R-21"],
+      "provisional_dependencies": ["RUN-P-02", "RUN-P-04"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0004",
+        "caller_principal_kind": "human",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "candidate.approve",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["knowledge.govern", "memory.read"],
+        "purpose": "governance.review",
+        "idempotency_key": "gov.a8-0001:approve:d6a8"
+      },
+      "stimulus": "A separately authenticated human reviewer approves the candidate produced by RUN-V-01.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": true,
+        "canonical_mutation": true,
+        "mutation_authority": "validated_human_principal",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Canonical knowledge changes only through a validated governance principal. The run supplied the candidate, never the authority."
+      }
+    },
+    {
+      "case_id": "RUN-V-08",
+      "title": "Replayed ingress with identical key and payload is a no-op",
+      "category": "idempotency",
+      "requirements": ["RUN-R-16", "RUN-R-17"],
+      "provisional_dependencies": ["RUN-P-05"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0005",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0001:node.001:d1a1"
+      },
+      "stimulus": "The runtime lost the response to RUN-V-01 and retries the identical request with the identical derived key.",
+      "expected": {
+        "disposition": "no_op",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "The original result is returned. No second candidate is created, because memory.create is marked not safe to retry without a key."
+      }
+    },
+    {
+      "case_id": "RUN-V-09",
+      "title": "Reused key with divergent payload fails closed",
+      "category": "idempotency",
+      "requirements": ["RUN-R-16", "RUN-R-17"],
+      "provisional_dependencies": ["RUN-P-05"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0005",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0001:node.001:d1a1"
+      },
+      "stimulus": "After compaction the run reconstructs a differently worded claim but reuses the stored key rather than recomputing it from the content digest.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "idempotency_conflict",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Detects the failure mode where a key is persisted but the content digest it was derived from is not."
+      }
+    },
+    {
+      "case_id": "RUN-V-10",
+      "title": "Whole-run replay against unchanged Core state adds nothing",
+      "category": "replay",
+      "requirements": ["RUN-R-17", "RUN-R-20"],
+      "provisional_dependencies": ["RUN-P-05"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.replay",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0006",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "stimulus": "A completed run is replayed end to end from its recorded task graph against Core state that has not changed since the original execution.",
+      "expected": {
+        "disposition": "no_op",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Every mutating ingress resolves to its original result through the derived key. Read ingress may return newer projection freshness without changing the outcome."
+      }
+    },
+    {
+      "case_id": "RUN-V-11",
+      "title": "Run bound to one workspace cannot address another",
+      "category": "cross_workspace_denial",
+      "requirements": ["RUN-R-08"],
+      "run_context": {
+        "run_id": "run.a8-0004",
+        "task_node_id": "node.031",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0007",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-beta",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0004:node.031:d7c1"
+      },
+      "stimulus": "A run bound to ws.a8-alpha issues a mutating request naming ws.a8-beta.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "workspace_not_granted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Workspace grants come from the validated principal, never from run state."
+      }
+    },
+    {
+      "case_id": "RUN-V-12",
+      "title": "Cross-workspace evidence citation is rejected whole",
+      "category": "cross_workspace_denial",
+      "requirements": ["RUN-R-08", "RUN-R-10"],
+      "run_context": {
+        "run_id": "run.a8-0004",
+        "task_node_id": "node.032",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0007",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0004:node.032:d8d5"
+      },
+      "stimulus": "A run that recalled content from ws.a8-beta earlier in its context submits a ws.a8-alpha candidate citing a ws.a8-beta evidence source.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "invalid_request",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "No partial write. Compacted run context is not an authorization channel, so out-of-workspace evidence must not become in-workspace provenance."
+      }
+    },
+    {
+      "case_id": "RUN-V-13",
+      "title": "Compaction before response does not duplicate a candidate",
+      "category": "compression_invariance",
+      "requirements": ["RUN-R-05", "RUN-R-16"],
+      "provisional_dependencies": ["RUN-P-05"],
+      "run_context": {
+        "run_id": "run.a8-0005",
+        "task_node_id": "node.041",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0008",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0005:node.041:d9f0"
+      },
+      "stimulus": "Context compaction runs while the first attempt is in flight; the recovered run recomputes the key from the surviving run id, task node id and content digest.",
+      "expected": {
+        "disposition": "no_op",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Key derivation must depend only on compaction-invariant fields. This is the load-bearing consequence of run state being lossy."
+      }
+    },
+    {
+      "case_id": "RUN-V-14",
+      "title": "Compaction preserves lineage while discarding prose",
+      "category": "compression_invariance",
+      "requirements": ["RUN-R-04", "RUN-R-05", "RUN-R-07"],
+      "provisional_dependencies": ["RUN-P-02", "RUN-P-03"],
+      "run_context": {
+        "run_id": "run.a8-0005",
+        "task_node_id": "node.042",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0008",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0005:node.042:da31"
+      },
+      "stimulus": "A candidate is submitted after several compaction cycles have discarded the intermediate reasoning transcript.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": true,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Recorded provenance is byte-identical to the uncompacted run: same actor, extractor, model and prompt versions, and the same workflow_run source reference."
+      }
+    },
+    {
+      "case_id": "RUN-V-15",
+      "title": "Cancellation racing an in-flight mutation is resolved by Core",
+      "category": "cancellation_race",
+      "requirements": ["RUN-R-17", "RUN-R-18"],
+      "provisional_dependencies": ["RUN-P-05"],
+      "run_context": {
+        "run_id": "run.a8-0006",
+        "task_node_id": "node.051",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0009",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0006:node.051:db77"
+      },
+      "stimulus": "The run is cancelled by its host while a memory.create request is in flight and the response is never observed.",
+      "expected": {
+        "disposition": "indeterminate_until_reconciled",
+        "core_mutation": null,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": null,
+        "fail_closed": true,
+        "reconciliation_branches": [
+          {
+            "branch_id": "committed_once",
+            "core_mutation": true,
+            "canonical_mutation": false,
+            "core_audit_event": true,
+            "note": "Core had already committed the candidate when the cancellation was observed. Cancelling the run is host-local and does not roll that back; reconciliation replays the derived key and is returned the same committed result."
+          },
+          {
+            "branch_id": "not_committed",
+            "core_mutation": false,
+            "canonical_mutation": false,
+            "core_audit_event": false,
+            "note": "The attempt never committed, so no candidate and no mutation audit entry exist for it. Reconciliation replays the derived key, which creates the candidate exactly once; that reconciling ingress is itself audited."
+          }
+        ],
+        "notes": "The runtime must not assume either outcome, so no Core-effect Boolean is fixed here. Both branches are legitimate and are enumerated instead. Canonical mutation stays false in both: the operation is memory.create under an agent actor, so no branch can carry governance authority."
+      }
+    },
+    {
+      "case_id": "RUN-V-16",
+      "title": "Cancelling a run does not cancel the Core durable job it started",
+      "category": "cancellation_race",
+      "requirements": ["RUN-R-03", "RUN-R-15"],
+      "run_context": {
+        "run_id": "run.a8-0006",
+        "task_node_id": "node.052",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0009",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "job.cancel",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["job.control", "job.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0006:node.052:dc90"
+      },
+      "stimulus": "A cancelled run had previously started an import job. The job continues until an explicit job.cancel is issued by an authorized principal.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": true,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Core durable jobs and workflow runs are separate lifecycles. Losing the run must never orphan or silently abandon a Core job."
+      }
+    },
+    {
+      "case_id": "RUN-V-17",
+      "title": "Accepted outcome traces to its source run and original evidence",
+      "category": "accepted_outcome_traceability",
+      "requirements": ["RUN-R-07", "RUN-R-21"],
+      "provisional_dependencies": ["RUN-P-02", "RUN-P-03"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0004",
+        "caller_principal_kind": "human",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.get",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.read"],
+        "purpose": "governance.review"
+      },
+      "stimulus": "A reviewer reads the record accepted in RUN-V-07 and follows its provenance back to the producing run and the evidence the run drew on.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Provenance yields agent actor, extractor and model and prompt versions, and a workflow_run source reference naming run.a8-0001 and node.001."
+      }
+    },
+    {
+      "case_id": "RUN-V-18",
+      "title": "Deleting run state does not delete or invalidate the Core record",
+      "category": "retention_deletion",
+      "requirements": ["RUN-R-19", "RUN-R-21"],
+      "provisional_dependencies": ["RUN-P-02", "RUN-P-06"],
+      "run_context": {
+        "run_id": "run.a8-0001",
+        "task_node_id": "node.001",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0010",
+        "caller_principal_kind": "human",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.get",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.read"],
+        "purpose": "governance.review"
+      },
+      "stimulus": "Run retention expires and run.a8-0001 is purged from the runtime. The record it produced is read afterwards.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "The workflow_run source reference is preserved and non-dereferenceable. An unresolvable run reference never downgrades, invalidates or hides the record."
+      }
+    },
+    {
+      "case_id": "RUN-V-19",
+      "title": "Runtime handle for an oversized result is not a Core citation",
+      "category": "oversized_result",
+      "requirements": ["RUN-R-09", "RUN-R-10"],
+      "provisional_dependencies": ["RUN-P-06"],
+      "run_context": {
+        "run_id": "run.a8-0007",
+        "task_node_id": "node.061",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0011",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0007:node.061:dd12"
+      },
+      "stimulus": "A run submits a candidate whose only evidence is an opaque runtime handle to an oversized tool result held in run storage.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "invalid_request",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Core never dereferences a runtime handle. Evidence must resolve inside Core, or the candidate must declare an explicit evidence disposition instead."
+      }
+    },
+    {
+      "case_id": "RUN-V-20",
+      "title": "Oversized result becomes evidence only through ingestion",
+      "category": "oversized_result",
+      "requirements": ["RUN-R-10", "RUN-R-15"],
+      "run_context": {
+        "run_id": "run.a8-0007",
+        "task_node_id": "node.062",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0011",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "import.start",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["ingestion.import", "job.read"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0007:node.062:de55"
+      },
+      "stimulus": "The run promotes the oversized result by starting a Core import, then polls the returned durable job handle.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": true,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Promotion produces Core-owned L0 evidence with a Core checksum. The runtime handle remains run-local and confers no access."
+      }
+    },
+    {
+      "case_id": "RUN-V-21",
+      "title": "Run state loss does not erase the Core audit trail",
+      "category": "retention_deletion",
+      "requirements": ["RUN-R-18", "RUN-R-19"],
+      "provisional_dependencies": ["RUN-P-06"],
+      "run_context": {
+        "run_id": "run.a8-0007",
+        "task_node_id": "node.063",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0012",
+        "caller_principal_kind": "human",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "job.get",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["job.read"],
+        "purpose": "governance.review"
+      },
+      "stimulus": "The run that started the RUN-V-20 import is purged. The durable job and its audit linkage are inspected afterwards.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Job history only grows. Run deletion is a runtime retention event and has no cascade into Core jobs, evidence or audit."
+      }
+    },
+    {
+      "case_id": "RUN-V-22",
+      "title": "Run identifier exceeding the frozen identifier bound is rejected",
+      "category": "lineage_bounds",
+      "requirements": ["RUN-R-07"],
+      "provisional_dependencies": ["RUN-P-02", "RUN-P-03"],
+      "run_context": {
+        "run_id": "run.a8-0008",
+        "task_node_id": "node.071",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0013",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "memory.create",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["memory.write"],
+        "purpose": "agent.knowledge_capture",
+        "idempotency_key": "run.a8-0008:node.071:df08"
+      },
+      "boundary_probe": {
+        "field": "assertion.evidence[].source.source_id",
+        "octet_length": 129,
+        "bound_octets": 128,
+        "note": "The over-long value is described rather than embedded, so this fixture stays valid and inert."
+      },
+      "stimulus": "A runtime emits a run identifier one octet longer than the frozen Identifier bound and places it in the workflow_run source reference.",
+      "expected": {
+        "disposition": "rejected",
+        "error_code": "invalid_request",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Run identifiers are runtime-owned but must fit the frozen Identifier shape to be carried as provenance. Truncation is forbidden because it would forge lineage."
+      }
+    },
+    {
+      "case_id": "RUN-V-23",
+      "title": "Permitted read ingress under the default run grant",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-06", "RUN-R-14"],
+      "provisional_dependencies": ["RUN-P-03"],
+      "run_context": {
+        "run_id": "run.a8-0009",
+        "task_node_id": "node.081",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0014",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "ingress": {
+        "operation": "context_pack.build",
+        "requested_workspace_id": "ws.a8-alpha",
+        "granted_capabilities": ["context_pack.build", "memory.read", "evidence.read"],
+        "purpose": "agent.research"
+      },
+      "stimulus": "A run performs before-turn recall by building a Context Pack within its bound workspace.",
+      "expected": {
+        "disposition": "accepted",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": true,
+        "fail_closed": true,
+        "notes": "Recall is read-only and pre-filtered by ACL and purpose. The returned pack is not canonical knowledge, and holding its identifier grants no access to its sources."
+      }
+    },
+    {
+      "case_id": "RUN-V-24",
+      "title": "Core exposes no operation over workflow-run state",
+      "category": "non_mutation",
+      "requirements": ["RUN-R-01", "RUN-R-02", "RUN-R-03"],
+      "run_context": {
+        "run_id": "run.a8-0009",
+        "task_node_id": "node.082",
+        "agent_id": "agent.synthetic.a8",
+        "session_id": "session.a8-0014",
+        "caller_principal_kind": "agent",
+        "bound_workspace_id": "ws.a8-alpha"
+      },
+      "stimulus": "A run seeks to persist its objective, task graph and token budget in Core so that a later run can resume them.",
+      "expected": {
+        "disposition": "no_op",
+        "core_mutation": false,
+        "canonical_mutation": false,
+        "mutation_authority": "none",
+        "core_audit_event": false,
+        "fail_closed": true,
+        "notes": "The frozen 20-operation catalogue contains no create, read, list, cancel or replay operation over run state. Repurposing memory.create for run scaffolding is a boundary violation caught by review, not by Core, and is forbidden by RUN-R-13."
+      }
+    }
+  ]
+}

@@ -65,6 +65,27 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 # OVC1 framing or waiting without a bound.
 UNARY_BOUNDARY_SECONDS = 0.05
 
+#: How many accepts may fail in a row before the accept loop gives up.
+#:
+#: A failed accept is not a failed listener. `ECONNABORTED` -- the peer went away
+#: between the SYN and the accept -- and a transient `EMFILE` both raise from
+#: `accept()` and both leave the listener perfectly able to take the next
+#: connection. Ending the loop on one of them is what leaves the *process* alive
+#: holding the workspace lease and the storage lock, and its endpoint still
+#: advertised ready, with nothing behind it: alive, ready, answering nobody.
+#:
+#: Counted consecutively rather than in total, and cleared by any successful
+#: accept, so a service that meets one bad connect an hour serves forever. Bounded
+#: rather than unbounded because a listener whose descriptor is genuinely gone
+#: fails *every* accept, and retrying that for the life of the process is a hot
+#: loop, not resilience.
+_MAX_CONSECUTIVE_ACCEPT_FAILURES = 8
+
+#: How long to wait between those retries. Long enough that eight of them span a
+#: burst rather than a microsecond, short enough not to make a real client wait.
+#: Waited on the stop event rather than slept, so shutdown never waits one out.
+_ACCEPT_RETRY_PAUSE_SECONDS = 0.2
+
 #: The size of the `sockaddr_un.sun_path` field: 104 bytes on macOS and BSD, 108 on
 #: Linux. The lower bound is used so a workspace that works on Linux is not silently
 #: unservable on macOS. This is an OS limit, not something the runtime can engineer
@@ -744,11 +765,27 @@ class LocalSocketServer:
     def _serve(self) -> None:
         assert self._listener is not None
         assert self._stop is not None
+        failures = 0
         while not self._stop.is_set():
             try:
                 channel = self._listener.accept()
             except OSError:
-                break
+                # Contained the same way a bad client is contained below, and for
+                # the same reason: this is the sole accept loop, so ending it takes
+                # the service's only ear with it while everything else about the
+                # process still says it is serving. See
+                # `_MAX_CONSECUTIVE_ACCEPT_FAILURES` for why the retry is bounded
+                # and why the count is consecutive.
+                failures += 1
+                if failures >= _MAX_CONSECUTIVE_ACCEPT_FAILURES:
+                    break
+                # `wait`, not `sleep`: the pause is on the shutdown signal itself,
+                # so a stop during a retry is answered immediately rather than
+                # after the pause. Closing the listener out from under a blocked
+                # accept is one of the ways this branch is reached.
+                self._stop.wait(_ACCEPT_RETRY_PAUSE_SECONDS)
+                continue
+            failures = 0
             if channel is None:
                 continue
             if self._stop.is_set():

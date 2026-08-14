@@ -488,7 +488,7 @@ def test_stable_workflow_and_job_identity() -> None:
     job = _block(jobs, "core-acceptance")
     assert _entry(job, "name") == "Core acceptance"
     assert _entry(job, "runs-on") == "ubuntu-latest"
-    assert _entry(job, "timeout-minutes") == "30"
+    assert _entry(job, "timeout-minutes") == "60"
     assert _entry(_block(job, "permissions"), "contents") == "read"
 
 
@@ -1003,7 +1003,7 @@ RESOLVER_SCRIPT = "scripts/check-root-facade-resolver.py"
 
 def test_resolver_smoke_step_is_bounded_and_fail_closed() -> None:
     """The resolving install is the one gate step that reaches the network, so it
-    carries its own explicit timeout rather than relying on the job's 30 minutes --
+    carries its own explicit timeout rather than relying on the job's 60 minutes --
     a hung index would otherwise burn the whole budget before failing. It must also
     be a single command with no skip flag and no offline fallback: a step that
     quietly degraded to `--no-deps` or `--no-index` would report a pass for a proof

@@ -1,0 +1,44 @@
+{
+  "manifest_version": "1.1.0",
+  "fixture_id": "core-agent-host-provider-spi",
+  "status": "candidate-preparation-only",
+  "generated_date": "2026-08-03",
+  "pins": {
+    "pm_base_commit": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+    "pm_branch": "agent/core-assurance-a9",
+    "core_checkpoint_commit": "0278d3cb1da3199dd116ed0710a7459599e142df",
+    "core_contract_root": "contracts/application/v1",
+    "pm_repair_base_commit": "740e5f5b121e1c21f6e71b033712ea69d1ad15b1",
+    "lane_a8_candidate_commit": "75d2ff15a21e51e23a18057c51dc8b2818e7cb8a"
+  },
+  "root": "docs/quality/fixtures/core-agent-host-provider-spi",
+  "self_hash_included": false,
+  "checksum_file": "SHA256SUMS",
+  "checksum_file_covers": [
+    "README.md",
+    "provider-spi-cases.json",
+    "schema.json"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 13976,
+      "sha256": "594d8c07f0a10639fbd088a1c84446b06842bddc3d3bd1baef3a5ae87342dd16"
+    },
+    {
+      "path": "SHA256SUMS",
+      "bytes": 244,
+      "sha256": "d98e34ef361e71ca32eff39b4f7f6e9f751e43e678eb1e0126435255b604d85f"
+    },
+    {
+      "path": "provider-spi-cases.json",
+      "bytes": 67119,
+      "sha256": "db8407944a4b9a4bfc19347b1d5784d918dd844deec739529d15632739f26951"
+    },
+    {
+      "path": "schema.json",
+      "bytes": 23011,
+      "sha256": "215ab71f6955841162c53ae9ed03f7a471abf6bd0815312ce4d7d8b50db3d4e3"
+    }
+  ]
+}

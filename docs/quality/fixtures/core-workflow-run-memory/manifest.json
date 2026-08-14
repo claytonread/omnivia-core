@@ -1,0 +1,37 @@
+{
+  "manifest_version": "1",
+  "fixture_id": "core-workflow-run-memory-v1",
+  "status": "preparation_only",
+  "pins": {
+    "pm_base_commit": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+    "pm_branch": "agent/core-assurance-a8",
+    "core_checkpoint_commit": "0278d3cb1da3199dd116ed0710a7459599e142df"
+  },
+  "boundary_document": "docs/tasks/2026-08-03-omnivia-core-workflow-run-memory-boundary-preparation.md",
+  "fixture_root": "docs/quality/fixtures/core-workflow-run-memory",
+  "checksum_file": "SHA256SUMS",
+  "checksum_order": "lexical filename order over README.md, schema.json, workflow-run-cases.json",
+  "self_hash_recorded": false,
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 11197,
+      "sha256": "e774ceb15349cec24a16e3b420b18bb436e73b3ac0603ff8df1a7a87b90fbfea"
+    },
+    {
+      "path": "schema.json",
+      "bytes": 21144,
+      "sha256": "d630bfb898ceab00f58f00d8ada3ddb25b08c7c325d4eb3d9f4d7e6a2d58bb01"
+    },
+    {
+      "path": "workflow-run-cases.json",
+      "bytes": 32968,
+      "sha256": "b6f5603061580ff1fae86176b08a89df99e473b3f9d612b1b9dea038941151db"
+    },
+    {
+      "path": "SHA256SUMS",
+      "bytes": 244,
+      "sha256": "be184e34495591d1e978c60ed11d74c8781a1316a5871f71b6aa5e1a8d78aea6"
+    }
+  ]
+}

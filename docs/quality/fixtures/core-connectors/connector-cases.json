@@ -1,0 +1,2877 @@
+{
+  "$schema": "./schema.json",
+  "schema_version": "1",
+  "corpus_id": "core-connectors-v1",
+  "lane": "A6",
+  "status": "preparation_only",
+  "inert": true,
+  "authority": {
+    "pm_checkpoint": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+    "core_checkpoint": "0278d3cb1da3199dd116ed0710a7459599e142df",
+    "architecture_source": "docs/specs/omnivia-core-architecture-spec-v0.6-2026-07-29.md",
+    "completion_authority": "docs/tasks/2026-08-02-omnivia-core-v0.6-completion-plan.md",
+    "candidate_document": "docs/tasks/2026-08-03-omnivia-core-connector-sdk-incremental-sync-contract.md"
+  },
+  "boundaries": {
+    "sdk_opens_storage_connection": false,
+    "sdk_resolves_credentials_directly": false,
+    "sdk_owns_durable_run_state": false,
+    "sdk_owns_deletion_authority": false,
+    "sdk_schedules_its_own_execution": false,
+    "sdk_writes_back_to_source": false,
+    "sdk_changes_operation_catalogue": false,
+    "sdk_reserves_migration_number": false,
+    "corpus_authorizes_product_writes": false,
+    "corpus_contains_live_endpoints": false,
+    "corpus_claims_connector_process_sandbox": false,
+    "corpus_claims_remote_completeness_proof": false,
+    "corpus_claims_information_flow_enforcement": false
+  },
+  "cursor_contract": {
+    "host_interprets_opaque_payload": false,
+    "successor_witness": "monotonic_unsigned_integer",
+    "successor_lineage": "canonical_full_parent_cursor_state_digest",
+    "host_check_scope": "connector_attested_lineage_and_witness",
+    "residual_risk_bounded_by": "deterministic_replay_and_idempotent_upsert_for_duplication_and_corruption_only",
+    "witness_is_connector_attested": true,
+    "max_opaque_payload_bytes": 4096,
+    "opaque_payload_encoding": "base64url_no_padding",
+    "resolved_secret_comparison": "exact_match_against_host_resolved_material_and_declared_encodings",
+    "credential_shape_scan_is_proof": false,
+    "host_verifiable_properties": "state_chain_integrity_rollback_refusal_and_reordering_refusal",
+    "no_skipped_evidence_is_host_verifiable": false,
+    "no_skipped_evidence_classification": "connector_specific_conformance_provisional_under_CON-P09",
+    "predecessor_digest_algorithm": "sha256",
+    "predecessor_digest_domain_tag": "omnivia.connector.cursor-state.v2",
+    "predecessor_digest_preimage": "frame(domain_tag) || frame(workspace_id_ascii) || frame(connector_id_ascii) || frame(decimal(state_version)) || frame(payload_base64url_ascii) || frame(decimal(witness_seq)) || frame(predecessor_digest_raw_32_or_empty)",
+    "predecessor_digest_computed_by": "host_only",
+    "migration_input": "whole_cursor_state",
+    "migration_preserves_witness": "exact_equality",
+    "migration_preserves_predecessor_digest": "byte_identical_including_absence",
+    "migration_state_version_direction": "strictly_increasing",
+    "cursor_non_disclosure_enforced_in_process": false,
+    "cursor_non_disclosure_status": "defence_in_depth_pending_CON-P09_credential_broker_boundary",
+    "predecessor_digest_framing": "u32be_length_prefixed_fields_in_fixed_order",
+    "predecessor_digest_field_order": "domain_tag_workspace_id_connector_id_state_version_payload_witness_seq_predecessor_digest",
+    "predecessor_digest_text_encoding": "ascii_domain_bindings_decimals_and_base64url_payload",
+    "predecessor_digest_binary_encoding": "present_digest_is_raw_32_bytes",
+    "predecessor_digest_genesis": "null_predecessor_encoded_as_zero_length_final_field",
+    "cursor_bindings": "frozen_workspace_id_and_connector_id"
+  },
+  "requirements": [
+    {
+      "id": "CON-R01",
+      "title": "Versioned SPI identity",
+      "statement": "Every connector declares a stable connector id and an SPI version with independent major and minor parts, and the host negotiates compatibility before any poll.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.1 Semantic and wire compatibility"
+      ]
+    },
+    {
+      "id": "CON-R02",
+      "title": "Discovery",
+      "statement": "A connector exposes a side-effect-free discovery call returning declared capabilities, identity-stability mode, supported limits and the source scopes it can enumerate.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.7 Capability model"
+      ]
+    },
+    {
+      "id": "CON-R03",
+      "title": "Initial synchronization",
+      "statement": "Initial synchronization enumerates the authorized source scope as an ordered sequence of bounded batches terminating in a durable cursor.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion"
+      ]
+    },
+    {
+      "id": "CON-R04",
+      "title": "Incremental synchronization",
+      "statement": "Incremental synchronization accepts a prior cursor and returns only observations at or after that cursor, together with a successor cursor carrying a provider-neutral monotonic witness (an unsigned integer) and the host-computed SHA-256 digest of the complete four-field parent CursorState under its frozen workspace and connector bindings. The canonical digest includes, in order, state_version, payload, witness_seq and the parent's own predecessor_digest; therefore a successor cannot be reparented to a differently linked state. From the digest and witness the host verifies state-chain integrity alone: that the successor names the exact state the host presented, and that the witness does not regress. That refuses rollback and reordering of the persisted chain. It establishes nothing about the remote source: it does not prove source-side ordering, and it does not prove that the returned window omitted no observation. Window completeness is CON-R35.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion"
+      ]
+    },
+    {
+      "id": "CON-R05",
+      "title": "Cursor state versioning and migration",
+      "statement": "Cursor migration takes the whole cursor state, not the payload alone, and returns a whole cursor state: migrate_cursor(cursor: CursorState) -> CursorState. It is pure, performs no source access and no credential resolution, and must satisfy four host-checkable obligations: the state version strictly increases and lands in the connector's supported set; the witness is preserved by exact equality, because migration is a re-encoding and not progress; the predecessor digest is preserved byte-identically, including the absent case; and the migrated payload is within the declared encoding and byte bound. A migration that cannot run declares a full resynchronization; a migration whose output violates an obligation is refused as an invalid state. Neither silently loses observations.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a717 Backup, migration and portability"
+      ]
+    },
+    {
+      "id": "CON-R06",
+      "title": "Cancellation",
+      "statement": "Cancellation is cooperative and observable at every batch boundary; a cancelled poll commits nothing beyond the last committed batch and leaves the persisted cursor unchanged.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.5 Long-running operations"
+      ]
+    },
+    {
+      "id": "CON-R07",
+      "title": "Health",
+      "statement": "A connector exposes a bounded, side-effect-free health probe returning typed reachability, authorization and quota status without source content or secret material.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a718 Observability"
+      ]
+    },
+    {
+      "id": "CON-R08",
+      "title": "Source-native identity",
+      "statement": "Every observation carries the source system kind and a source-native identifier that is stable across the source's own rename and move operations wherever the source provides one.",
+      "architecture_refs": [
+        "spec \u00a73.1 L0 Evidence",
+        "spec \u00a78 Ingestion"
+      ]
+    },
+    {
+      "id": "CON-R09",
+      "title": "Content checksum",
+      "statement": "Every content-bearing observation carries an algorithm-qualified content checksum computed over the exact bytes the connector will hand to the coordinator.",
+      "architecture_refs": [
+        "spec \u00a73.1 L0 Evidence",
+        "spec \u00a717 Backup, migration and portability"
+      ]
+    },
+    {
+      "id": "CON-R10",
+      "title": "Rename semantics",
+      "statement": "Under stable source-native identity a rename is a locator change on the same identity and must never be emitted as a deletion followed by a creation.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a73.1 L0 Evidence"
+      ]
+    },
+    {
+      "id": "CON-R11",
+      "title": "Deletion detection",
+      "statement": "Deletion is asserted only from an explicit source deletion signal or from an explicitly authorized reconciliation sweep over a complete scope; absence from an incremental window is never deletion.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a73.4 L2 Governed records"
+      ]
+    },
+    {
+      "id": "CON-R12",
+      "title": "Tombstone semantics",
+      "statement": "A tombstone is an appended provenance observation with an actor and a time; it never removes evidence rows, prior versions or history.",
+      "architecture_refs": [
+        "spec \u00a72 Architectural principles",
+        "spec \u00a73.1 L0 Evidence"
+      ]
+    },
+    {
+      "id": "CON-R13",
+      "title": "ACL mapping",
+      "statement": "Source permissions map to explicit permission-label attach, withdraw and correct events; a label is never withdrawn by omission from a later batch.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a710 Retrieval",
+        "spec \u00a716 Security"
+      ]
+    },
+    {
+      "id": "CON-R14",
+      "title": "Provenance mapping",
+      "statement": "Every observation carries connector id, connector version, run identity, attempt ordinal and source timestamps so that provenance survives retry, dead-lettering and replay.",
+      "architecture_refs": [
+        "spec \u00a73.1 L0 Evidence",
+        "spec \u00a718 Observability"
+      ]
+    },
+    {
+      "id": "CON-R15",
+      "title": "Run and attempt ownership",
+      "statement": "The ingestion coordinator alone creates durable runs and attempts; a connector never creates, mutates or terminates a durable job.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.5 Long-running operations"
+      ]
+    },
+    {
+      "id": "CON-R16",
+      "title": "Checkpoint ownership",
+      "statement": "Connector cursor state is persisted only as a coordinator-owned durable job checkpoint payload; the connector holds no durable state of its own.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a74.4 Contract layers"
+      ]
+    },
+    {
+      "id": "CON-R17",
+      "title": "Retry classification",
+      "statement": "Every connector failure carries a typed retry classification distinguishing retry-after-delay, retry-after-precondition-refresh and non-retryable outcomes.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.4 Error taxonomy"
+      ]
+    },
+    {
+      "id": "CON-R18",
+      "title": "Dead letters",
+      "statement": "A per-item failure that exhausts its attempt budget becomes a replayable dead-letter record and does not fail the enclosing run.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a718 Observability"
+      ]
+    },
+    {
+      "id": "CON-R19",
+      "title": "Replay and resume determinism",
+      "statement": "Given an identical cursor, identical connector version and identical source state, a poll returns an identical observation set in an identical order.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.8 Conformance"
+      ]
+    },
+    {
+      "id": "CON-R20",
+      "title": "Limits",
+      "statement": "Batch item count, per-item metadata bytes, per-item content bytes, per-run bytes, request rate and poll deadline are host-declared ceilings that the host verifies independently of connector self-reporting.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.6 Pagination, streaming and limits",
+        "spec \u00a716 Security"
+      ]
+    },
+    {
+      "id": "CON-R21",
+      "title": "Opaque credential handles",
+      "statement": "A connector receives an opaque, non-parseable credential handle and obtains short-lived material only through a host-supplied resolver scoped to a single poll invocation.",
+      "architecture_refs": [
+        "spec \u00a716 Security"
+      ]
+    },
+    {
+      "id": "CON-R22",
+      "title": "No storage connection in the host-supplied context",
+      "statement": "The connector context exposes no workspace database connection, no blob store handle and no filesystem path into the workspace, and all authoritative persistence is performed by the coordinator. This is an API ownership boundary, not a sandbox: it does not constrain what connector code can reach through platform APIs, which is gated by CON-P09.",
+      "architecture_refs": [
+        "spec \u00a74 Component architecture",
+        "spec \u00a75.1 Bootstrap mutex and workspace service lease"
+      ]
+    },
+    {
+      "id": "CON-R23",
+      "title": "Secret non-disclosure obligation and its unenforced status",
+      "statement": "Connector logs, health output, error payloads, dead-letter records and cursor state must never carry credential material. This is an obligation on connector code, not a property the host enforces today. Every available control is defence in depth: the bounded, alphabet-restricted cursor payload limits capacity per poll, exact comparison against the material the host resolved in that run catches verbatim and declared-encoding copies, and redaction scanners cover logs, errors and dead letters. None of them is information-flow enforcement, because a connector that sees raw credential material and controls arbitrary cursor bytes can encode that material in a form no scan decides. Enforcement requires a capability or credential-broker boundary that denies connector code the raw secret, which is provisional under CON-P09.",
+      "architecture_refs": [
+        "spec \u00a716 Security",
+        "spec \u00a718 Observability"
+      ]
+    },
+    {
+      "id": "CON-R24",
+      "title": "Packaging and dependency direction",
+      "statement": "A connector package depends only on the published Core SDK contracts and never on runtime, protocol, Desktop or commercial-module packages.",
+      "architecture_refs": [
+        "spec \u00a719.10 Dependency direction",
+        "spec \u00a719.13 Core SDK"
+      ]
+    },
+    {
+      "id": "CON-R25",
+      "title": "Fake connector",
+      "statement": "A first-party deterministic fake connector replays a scripted scenario without network, credentials or filesystem access and is the reference implementation of the SPI.",
+      "architecture_refs": [
+        "spec \u00a712.8 Conformance"
+      ]
+    },
+    {
+      "id": "CON-R26",
+      "title": "Conformance kit",
+      "statement": "A shared conformance kit executes this corpus against any connector implementation and reports per-case pass, fail or declared-not-applicable with a recorded reason.",
+      "architecture_refs": [
+        "spec \u00a712.8 Conformance",
+        "spec \u00a721 Acceptance gates"
+      ]
+    },
+    {
+      "id": "CON-R27",
+      "title": "Out-of-order observation handling",
+      "statement": "An observation older than the recorded current interpretation is recorded as an appended fact and never silently discarded, and never changes the current interpretation by arrival order alone.",
+      "architecture_refs": [
+        "spec \u00a77 Temporal model",
+        "spec \u00a73.4 L2 Governed records"
+      ]
+    },
+    {
+      "id": "CON-R28",
+      "title": "Fencing and takeover safety",
+      "statement": "A batch commits only while the producing service still holds the current fencing generation; a batch produced by a superseded service is discarded whole.",
+      "architecture_refs": [
+        "spec \u00a75.1 Bootstrap mutex, workspace service lease and fencing",
+        "spec \u00a75.1.1 Fencing enforcement boundary"
+      ]
+    },
+    {
+      "id": "CON-R29",
+      "title": "Duplicate collapse and upsert",
+      "statement": "Repeated observations of one identity collapse to a single upsert keyed by workspace, connector, source kind, source-native identifier and content checksum.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a73.1 L0 Evidence"
+      ]
+    },
+    {
+      "id": "CON-R30",
+      "title": "Hostile input handling",
+      "statement": "Hostile source metadata is rejected or neutralized before persistence, under the same identifier, control-character, byte-ceiling and path-safety posture as accepted evidence storage.",
+      "architecture_refs": [
+        "spec \u00a716 Security",
+        "spec \u00a78 Ingestion"
+      ]
+    },
+    {
+      "id": "CON-R31",
+      "title": "Deterministic state machine",
+      "statement": "A sync session moves through a total, explicitly enumerated state machine with no implicit transitions and no terminal state reachable without a recorded cause.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.5 Long-running operations"
+      ]
+    },
+    {
+      "id": "CON-R32",
+      "title": "Observability without content leakage",
+      "statement": "Connector and parser health, run and attempt states, retry and dead-letter counts are exported as bounded-cardinality signals carrying no source text and no secrets.",
+      "architecture_refs": [
+        "spec \u00a718 Observability"
+      ]
+    },
+    {
+      "id": "CON-R33",
+      "title": "No source write-back",
+      "statement": "The SPI defines no operation that mutates the source system; bidirectional synchronization is out of scope.",
+      "architecture_refs": [
+        "spec \u00a722 Explicit non-goals",
+        "completion plan \u00a78 Scope explicitly deferred"
+      ]
+    },
+    {
+      "id": "CON-R34",
+      "title": "No scheduled-execution expansion",
+      "statement": "Polls are invoked by the coordinator only; a connector declares no timer, no cron expression and no self-initiated execution.",
+      "architecture_refs": [
+        "spec \u00a722 Explicit non-goals",
+        "completion plan \u00a78 Scope explicitly deferred"
+      ]
+    },
+    {
+      "id": "CON-R35",
+      "title": "Window completeness is a connector conformance obligation",
+      "statement": "A connector must return every observation in the window its cursor advances across. No host-side check of the cursor establishes this: the payload is opaque by decision, the witness is connector-attested, and a connector that omits observations while advancing a well-formed, correctly chained cursor is indistinguishable from one that had nothing to report. Completeness is therefore demonstrated only against a source whose expected observation set is known independently of the connector: the first-party deterministic fake in the conformance kit, and per-connector conformance evidence for any real source. It is classified as connector-specific conformance and is provisional under CON-P08 for real sources and CON-P09 for the trust posture under which such evidence is accepted.",
+      "architecture_refs": [
+        "spec \u00a78 Ingestion",
+        "spec \u00a712.8 Conformance",
+        "spec \u00a721 Acceptance gates"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "CON-D01",
+      "title": "Connector is a pure producer",
+      "decision": "The SPI is a pure observation producer. It returns typed batches and never persists anything.",
+      "rationale": "Keeps the single authoritative writer and the fenced connection wholly inside the coordinator and preserves the accepted component order SourceConnector -> IngestionCoordinator -> EvidenceRepository.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D02",
+      "title": "Cursor is opaque to the host, ordered by a witness, stored as a job checkpoint",
+      "decision": "A cursor is a bounded opaque payload plus an integer state version, a provider-neutral monotonic witness (unsigned integer) and the digest of the complete four-field parent CursorState it succeeds. The digest is computed by the host alone as SHA-256 over a fixed sequence of unsigned-32-bit-big-endian length-prefixed fields: domain tag, frozen workspace id, frozen connector id, shortest-decimal state version, exact base64url payload text, shortest-decimal witness and the parent's predecessor digest as 32 raw bytes or the zero-length genesis value. The coordinator persists the cursor as a durable job checkpoint payload and never interprets the payload; it verifies only that the successor names the exact state the host presented and carries a witness that does not regress.",
+      "rationale": "Reuses the accepted checkpoint facts already present at the Core checkpoint instead of inventing connector-owned durable state, and makes the chain check performable without interpreting bytes the host has declared opaque. Including all four parent fields and both frozen bindings means that changing the parent version, payload, witness, predecessor, workspace or connector changes the digest; a differently parented, foreign or replayed cursor therefore fails the chain. The check is bounded on purpose: it refuses rollback, reparenting and reordering of the persisted chain. It does not bound omission, which is CON-D17.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P01",
+        "CON-P02"
+      ]
+    },
+    {
+      "id": "CON-D03",
+      "title": "Absence is never deletion",
+      "decision": "An identity missing from an incremental window produces no deletion. Deletion requires an explicit source signal or an authorized full-scope reconciliation sweep.",
+      "rationale": "An incremental window is a filter, not a census; treating absence as deletion would let a truncated or rate-limited poll erase evidence.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D04",
+      "title": "Tombstone is appended provenance",
+      "decision": "Tombstoning appends a provenance observation with an actor and a time. It removes no row and no prior version.",
+      "rationale": "Matches the accepted evidence model where tombstone status is derived from the provenance stream rather than stored as a mutable flag.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D05",
+      "title": "Identity stability is declared, never inferred",
+      "decision": "A connector declares identity_stability as source_native or locator_derived at discovery. The host applies rename semantics only under source_native.",
+      "rationale": "Sources without stable identifiers cannot distinguish rename from delete-and-create; guessing would silently fabricate or destroy identity.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D06",
+      "title": "ACL withdrawal must be explicit",
+      "decision": "Permission labels change only through attach, withdraw and correct events. Omission from a later batch changes nothing.",
+      "rationale": "Pre-retrieval ACL enforcement must fail closed on stale grants and must not widen or narrow access as a side effect of batch shape. The event shape is decided; the concrete label vocabulary a connector may emit is not, which is why this decision is provisional on CON-P04.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P04"
+      ]
+    },
+    {
+      "id": "CON-D07",
+      "title": "Credentials are host-resolved through opaque handles",
+      "decision": "The connector holds only an opaque handle. Material is obtained through a host resolver and is valid for one poll invocation. Once resolved, the material is an ordinary value in the connector's process, so its non-disclosure is an obligation on connector code rather than a property of the handle.",
+      "rationale": "Keeps encrypted credential storage and its rotation policy entirely outside connector packages and outside connector-authored state. The handle bounds standing access and blast radius across polls; it does not bound what connector code does with material it has already resolved, which is CON-D18.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P06"
+      ]
+    },
+    {
+      "id": "CON-D08",
+      "title": "SPI compatibility negotiation",
+      "decision": "The host rejects an unknown required SPI major and tolerates unknown optional additive minor fields.",
+      "rationale": "Mirrors the accepted application wire-compatibility rule so connector evolution cannot turn an additive change into a production break.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D09",
+      "title": "Fenced whole-batch commit",
+      "decision": "A batch and its successor cursor commit in one fenced transaction, or neither commits.",
+      "rationale": "Removes the crash window between committed evidence and an advanced cursor and makes takeover discard safe rather than lossy.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D10",
+      "title": "Per-item dead letters do not fail the run",
+      "decision": "An item that exhausts its attempt budget is dead-lettered with typed cause and remains replayable; the run continues.",
+      "rationale": "A single unparseable or oversized source item must not block an entire source from synchronizing.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P01"
+      ]
+    },
+    {
+      "id": "CON-D11",
+      "title": "Host-verified limits",
+      "decision": "Ceilings are host-declared, passed into the poll and independently verified by the host on the returned batch.",
+      "rationale": "A connector is untrusted input; self-reported compliance is not a control.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D12",
+      "title": "Connector packages depend only on published contracts",
+      "decision": "Connectors ship as separate packages depending on the Core SDK contracts. Importing runtime, protocol or module packages is a packaging failure.",
+      "rationale": "Preserves the accepted dependency direction in which nothing points from omnivia-core into runtime or client packages.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D13",
+      "title": "Scenario-driven conformance with a first-party fake",
+      "decision": "Conformance is driven by this corpus against a first-party deterministic fake connector and any third-party implementation.",
+      "rationale": "Gives one executable definition of correct behaviour before any real source adapter exists.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D14",
+      "title": "Out-of-order observations are recorded, not discarded",
+      "decision": "An observation older than the recorded interpretation is appended with its own source time and flagged out-of-order; current interpretation is resolved temporally, never by arrival order.",
+      "rationale": "Preserves the accepted valid-time and transaction-time separation and keeps late-arriving history reconstructable.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P03"
+      ]
+    },
+    {
+      "id": "CON-D15",
+      "title": "Pull-only invocation",
+      "decision": "The SPI exposes no scheduling surface. Every poll is initiated by the coordinator.",
+      "rationale": "Scheduled execution expansion is explicitly deferred scope and would create a second execution owner.",
+      "provisional": false,
+      "depends_on": []
+    },
+    {
+      "id": "CON-D16",
+      "title": "Cursor migration is a whole-state, witness- and lineage-preserving operation",
+      "decision": "migrate_cursor takes and returns a whole CursorState. The host accepts the output only if the state version strictly increases into the supported set, the witness is exactly equal to the input witness, the predecessor digest is byte-identical to the input predecessor digest including when both are absent, and the migrated payload satisfies the encoding and byte bound. The host then recomputes the canonical full-state successor-lineage digest over all four migrated fields plus the frozen workspace and connector bindings, and records the pre-migration and post-migration digest pair with the checkpoint.",
+      "rationale": "The superseded signature did not place the witness and predecessor digest inside the migration operation, so exact whole-state preservation was not expressible. Passing the whole state makes preservation expressible, and fixing SHA-256, every encoded field, field order, length framing, genesis value and frozen bindings makes the successor-lineage digest interoperable and reparenting-resistant. Recording both full-state digests keeps the chain auditable across the version change instead of introducing an unexplained break in it. The binding to a checkpoint kind is CON-P02 and the archive treatment is CON-P07, so the operation is frozen but its persistence and portability are not.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P02",
+        "CON-P07"
+      ]
+    },
+    {
+      "id": "CON-D17",
+      "title": "The cursor check establishes state-chain integrity, never remote completeness",
+      "decision": "The host cursor check establishes exactly three things: that a successor names the state the host presented, that the witness does not regress, and that the persisted chain is therefore not rolled back or reordered. It establishes nothing about the source. A connector that omits observations while returning a well-formed, correctly chained, forward-witnessed successor is accepted, and the omitted observations are lost, not merely re-observed later. No-skipped-evidence is classified as connector-specific conformance under CON-R35.",
+      "rationale": "The earlier framing claimed that deterministic replay and idempotent upsert bounded a false witness to re-observation cost. That is wrong. Replay resumes from the advanced cursor, so evidence the cursor skipped past is never re-observed by any subsequent poll; idempotency deduplicates what does arrive and says nothing about what did not. Replay and idempotency bound duplication and corruption only. Stating this exactly is what keeps CON-D02 honest, and it moves the real control into conformance evidence and the trust posture CON-P09 selects.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P08",
+        "CON-P09"
+      ]
+    },
+    {
+      "id": "CON-D18",
+      "title": "Cursor and log non-disclosure is defence in depth until a credential broker exists",
+      "decision": "Encoding bounds, exact comparison against host-resolved material and redaction scanners are defence in depth. They are not information-flow enforcement and are not recorded as proof that no secret left the process. Enforceable non-disclosure requires a capability or credential-broker boundary under which connector code never holds raw secret material, and that boundary is not decided here.",
+      "rationale": "A connector that sees the raw secret and authors arbitrary cursor bytes can encode the secret in a form no scan decides, so scanning cannot enforce non-disclosure in an in-process connector however good the scanner is. Only removing the connector's access to the raw material changes that, which is a credential-store question (CON-P06) and an execution-posture question (CON-P09) together. Until both resolve, the honest posture is a stated residual rather than a claimed control.",
+      "provisional": true,
+      "depends_on": [
+        "CON-P06",
+        "CON-P09"
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "CON-P01",
+      "title": "Durable import job and dead-letter contract",
+      "owner": "Codex V06-2 import vertical lane",
+      "required_resolution": "Freeze the import.start job kind, its attempt budget, its checkpoint kind vocabulary and whether dead letters are a job-scoped or an evidence-scoped record.",
+      "blocking_effect": "Cursor checkpoint naming, dead-letter placement and attempt-budget defaults cannot be frozen; the SPI shape around them is stable but their persistence binding is not.",
+      "affects": [
+        "CON-D02",
+        "CON-D10",
+        "CON-R16",
+        "CON-R18",
+        "CON-C004",
+        "CON-C038",
+        "CON-C039",
+        "CON-C040"
+      ]
+    },
+    {
+      "id": "CON-P02",
+      "title": "Job checkpoint kind vocabulary",
+      "owner": "Codex V06-1 M4 durable-job lane",
+      "required_resolution": "Confirm that the accepted checkpoint_kind text column admits a connector cursor kind, and fix its exact spelling.",
+      "blocking_effect": "The exact checkpoint_kind literal used for connector cursors is provisional; no schema change is requested, only a reserved value. The migrated cursor and its recorded pre-migration and post-migration digest pair are persisted under the same reserved kind.",
+      "affects": [
+        "CON-D02",
+        "CON-D16",
+        "CON-R16",
+        "CON-C007",
+        "CON-C008",
+        "CON-C026",
+        "CON-C052"
+      ]
+    },
+    {
+      "id": "CON-P03",
+      "title": "Temporal resolution order for late observations",
+      "owner": "Codex V06-1 M3 governed-truth lane",
+      "required_resolution": "Confirm the tiebreak order among source event time, observed time and recorded time when two observations of one identity carry equal source times.",
+      "blocking_effect": "Deterministic tiebreak for equal-timestamp observations is asserted but not yet authoritative.",
+      "affects": [
+        "CON-D14",
+        "CON-R27",
+        "CON-C023",
+        "CON-C024"
+      ]
+    },
+    {
+      "id": "CON-P04",
+      "title": "Permission-label vocabulary for imported ACLs",
+      "owner": "Codex retrieval and ACL lane with A1 security lane input",
+      "required_resolution": "Fix the closed permission-label vocabulary that a connector may emit and the refusal behaviour for an unmapped source grant.",
+      "blocking_effect": "ACL mapping cases assert structure and fail-closed behaviour but not the concrete label set.",
+      "affects": [
+        "CON-D06",
+        "CON-R13",
+        "CON-C020",
+        "CON-C021",
+        "CON-C022"
+      ]
+    },
+    {
+      "id": "CON-P05",
+      "title": "Connector observability field registry",
+      "owner": "A2 observability and redaction lane",
+      "required_resolution": "Register connector health, retry and dead-letter signal names, their cardinality bounds and their prohibited fields.",
+      "blocking_effect": "Health and telemetry cases assert redaction and boundedness but not final field names.",
+      "affects": [
+        "CON-R07",
+        "CON-R32",
+        "CON-C041",
+        "CON-C030"
+      ]
+    },
+    {
+      "id": "CON-P06",
+      "title": "Credential store abstraction",
+      "owner": "A10 workspace-encryption decision lane",
+      "required_resolution": "Select the credential store abstraction, handle format and rotation semantics that back the opaque handle, and decide whether the store can broker source access so that connector code never holds raw material.",
+      "blocking_effect": "Handle opacity and single-invocation scope are decided; handle issuance, rotation and revocation are not. Whether a broker can remove the connector's access to raw material \u2014 the only thing that would make non-disclosure enforceable rather than defence in depth \u2014 is undecided here and jointly with CON-P09.",
+      "affects": [
+        "CON-D07",
+        "CON-D18",
+        "CON-R21",
+        "CON-C029",
+        "CON-C030",
+        "CON-C031"
+      ]
+    },
+    {
+      "id": "CON-P07",
+      "title": "Connector state in the logical workspace archive",
+      "owner": "A4 logical workspace archive lane",
+      "required_resolution": "Decide whether connector cursor state is exported, excluded and re-derived, or exported only as opaque bytes with a compatibility note.",
+      "blocking_effect": "Cursor portability across devices and restores is undecided; the resync path exists either way. If cursor state is exported, the exported form must carry the state version, witness and predecessor digest together, because a payload exported without its sidecars cannot be migrated or chained on restore.",
+      "affects": [
+        "CON-R05",
+        "CON-D16",
+        "CON-C008",
+        "CON-C052"
+      ]
+    },
+    {
+      "id": "CON-P08",
+      "title": "Vertical packet for the first real source connector",
+      "owner": "Codex V06-8 connector lane",
+      "required_resolution": "Select the first real source, its authorized scope, its capability and purpose grants, its hostile-input control set, and the per-connector evidence by which window completeness is demonstrated for a source whose expected observation set the host cannot know independently.",
+      "blocking_effect": "No concrete source adapter, no network egress posture and no SSRF control binding may be frozen from this lane. Window completeness against a real source has no host-side check and no conformance answer until this resolves; against the deterministic fake it is checkable today because the corpus fixes the expected observation set.",
+      "affects": [
+        "CON-R02",
+        "CON-R30",
+        "CON-R35",
+        "CON-D17",
+        "CON-C002",
+        "CON-C037",
+        "CON-C058"
+      ]
+    },
+    {
+      "id": "CON-P09",
+      "title": "Connector execution isolation and package trust gate",
+      "owner": "A1 security lane with Codex V06-8 packaging input",
+      "required_resolution": "Decide whether third-party connector code runs in-process under packaging and review trust only, or under a named isolation mechanism such as a separate process with restricted filesystem and network capabilities and a credential broker that denies connector code raw secret material; and fix the qualification evidence a connector package must present before installation, including the completeness evidence required by CON-R35.",
+      "blocking_effect": "Removing storage handles from the connector context is an API ownership boundary, not a sandbox. Until this resolves: no isolation property may be claimed beyond the host-supplied surface, the dependency direction and the single-writer lease invariant; secret non-disclosure in logs, errors, dead letters and cursors is defence in depth and not enforcement; and no-skipped-evidence has no host-side check. The corpus asserts no process sandbox, no information-flow enforcement and no remote completeness proof. Blocks any isolation, non-disclosure or completeness claim in the implementation packet.",
+      "affects": [
+        "CON-R22",
+        "CON-R23",
+        "CON-R24",
+        "CON-R32",
+        "CON-R35",
+        "CON-D17",
+        "CON-D18",
+        "CON-C030",
+        "CON-C032",
+        "CON-C033",
+        "CON-C046",
+        "CON-C058"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "CON-C001",
+      "family": "discovery",
+      "title": "Discovery declares capabilities and identity stability",
+      "vector": "Host calls discovery before any poll on a freshly registered connector.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Discovery is side-effect free and requires no credential resolution."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R01",
+        "CON-R02",
+        "CON-R08"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "Discovery returns connector id, SPI version, identity stability, declared limits and enumerable scopes.",
+        "Discovery performs no source mutation and requests no credential material.",
+        "Discovery result is byte-identical across repeated calls for one connector version."
+      ]
+    },
+    {
+      "id": "CON-C002",
+      "family": "discovery",
+      "title": "Discovery requiring an ungranted capability is refused",
+      "vector": "Connector declares a required capability the authenticated principal has not been granted.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Required capability is absent from the granted intersection."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "capability_not_granted",
+      "requirements": [
+        "CON-R02"
+      ],
+      "decisions": [
+        "CON-D08"
+      ],
+      "assertions": [
+        "Registration fails closed before any poll is scheduled.",
+        "Recalled content and connector-declared metadata never expand the granted capability set."
+      ]
+    },
+    {
+      "id": "CON-C003",
+      "family": "initial_sync",
+      "title": "Initial synchronization terminates in a durable cursor",
+      "vector": "Full enumeration of a small authorized scope across two bounded batches.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": null,
+        "cursor_opaque": null,
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000000000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          },
+          {
+            "source_native_id": "rec-0002",
+            "source_locator": "fake://scope-a/rec-0002",
+            "content_checksum": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000000100000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R03",
+        "CON-R08",
+        "CON-R09",
+        "CON-R14"
+      ],
+      "decisions": [
+        "CON-D01",
+        "CON-D09"
+      ],
+      "assertions": [
+        "Both observations are committed with source-native identity and checksum.",
+        "A successor cursor is persisted in the same fenced transaction as the last batch.",
+        "The connector wrote nothing itself."
+      ]
+    },
+    {
+      "id": "CON-C004",
+      "family": "initial_sync",
+      "title": "Interrupted initial synchronization resumes from the last committed checkpoint",
+      "vector": "Process stops after the first batch commits and before the second batch is produced.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-batch-1-committed",
+        "notes": "Resume uses the coordinator-owned checkpoint, not connector memory."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R03",
+        "CON-R16",
+        "CON-R19"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D09"
+      ],
+      "assertions": [
+        "Resume reads the cursor from the durable job checkpoint.",
+        "Already committed observations are not duplicated.",
+        "The connector holds no in-process state that resume depends on."
+      ]
+    },
+    {
+      "id": "CON-C005",
+      "family": "incremental_sync",
+      "title": "Unchanged source yields an empty batch and an unchanged cursor",
+      "vector": "Incremental poll against a source with no changes since the prior cursor.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-stable-00",
+        "cursor_witness_seq": 7,
+        "successor_witness_seq": 7,
+        "observations": []
+      },
+      "expected_outcome": "no_change",
+      "expected_error": null,
+      "requirements": [
+        "CON-R04",
+        "CON-R19"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "An empty batch is a normal successful outcome, not an error.",
+        "No evidence, provenance or permission-label event is written.",
+        "The persisted cursor is unchanged or advanced only to an equal position."
+      ]
+    },
+    {
+      "id": "CON-C006",
+      "family": "cursor_state",
+      "title": "Successor cursor with a regressing witness is refused",
+      "vector": "Connector returns a successor cursor whose declared monotonic witness is lower than the witness of the cursor it was given, while correctly declaring the canonical full-state digest of that cursor as its predecessor.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "cursor_witness_seq": 9,
+        "successor_witness_seq": 4,
+        "cursor_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "successor_predecessor_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "notes": "The successor names the presented state correctly; only the witness regresses. Digest values here are synthetic placeholders: cccc... stands for the host-computed digest of the presented cursor state and aaaa... for the state that cursor itself succeeded."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_cursor_not_monotonic",
+      "requirements": [
+        "CON-R04",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D11",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The host compares the declared unsigned-integer witnesses and the host-computed predecessor digest, and never decodes, parses or orders the opaque payload.",
+        "The batch is discarded whole and the persisted cursor is unchanged.",
+        "What this refusal establishes is state-chain integrity: the persisted chain cannot be rolled back or reordered. It is not a source-ordering proof and not a completeness proof.",
+        "A connector that reports a forward but false witness passes this check. That is not bounded by replay or idempotency, which bound duplication and corruption only; it is classified under CON-R35 and demonstrated by CON-C058."
+      ]
+    },
+    {
+      "id": "CON-C007",
+      "family": "cursor_state",
+      "title": "Forward cursor state migration over the whole cursor state succeeds",
+      "vector": "Persisted cursor is at state version 1 and the installed connector is at state version 2. The host calls migrate_cursor with the whole CursorState and checks the whole returned CursorState.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.1",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-v1-position-9",
+        "cursor_witness_seq": 9,
+        "cursor_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "migrated_state_version": 2,
+        "migrated_cursor_opaque": "cursor-v02-position-09",
+        "migrated_witness_seq": 9,
+        "migrated_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "notes": "Positive migration vector. The payload is re-encoded, the witness and the predecessor digest are carried through unchanged, and the state version increases by one."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R05",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D16"
+      ],
+      "assertions": [
+        "migrate_cursor receives the whole CursorState and returns a whole CursorState, so the witness and the predecessor digest are inside the function's scope rather than sidecars it cannot reach.",
+        "Migration is pure: it performs no source access, resolves no credential, and migrating the same input twice returns byte-identical output.",
+        "The migrated witness equals the input witness exactly. Migration is a re-encoding, not progress, so an unchanged witness is the only accepted value and any other value is refused by CON-C052.",
+        "The migrated predecessor digest is byte-identical to the input predecessor digest, including the case where both are absent; a rewritten digest is refused by CON-C053.",
+        "The migrated state version strictly increases and lands in the connector's supported set, and the migrated payload satisfies the unpadded base64url alphabet and the 4096-byte bound.",
+        "The host recomputes the canonical full-state successor-lineage digest over all four migrated fields plus the frozen bindings and records the pre-migration and post-migration digest pair with the checkpoint, so the chain stays auditable across the version change. That the migrated payload denotes the same source position remains connector-attested and is not established here."
+      ]
+    },
+    {
+      "id": "CON-C008",
+      "family": "cursor_state",
+      "title": "Unmigratable cursor declares a full resynchronization",
+      "vector": "Persisted cursor carries a state version the installed connector cannot migrate, for example after a package downgrade.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 7,
+        "cursor_opaque": "cursor-v07-unknown",
+        "notes": "Installed connector supports state versions 1 and 2 only."
+      },
+      "expected_outcome": "resync_required",
+      "expected_error": "connector_cursor_unmigratable",
+      "requirements": [
+        "CON-R05",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02"
+      ],
+      "assertions": [
+        "The outcome is an explicit resynchronization declaration, never a silent reset to the beginning and never a silent skip.",
+        "Existing evidence is preserved and re-observed rather than deleted.",
+        "The declaration is recorded with the run so the operator can see why a full pass occurred."
+      ]
+    },
+    {
+      "id": "CON-C009",
+      "family": "cursor_state",
+      "title": "Cursor issued by a different connector identity is refused",
+      "vector": "A cursor recorded for connector A is presented to connector B.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-issued-by-fake-recordset",
+        "cursor_witness_seq": 9,
+        "cursor_predecessor_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "notes": "The payload is well-formed unpadded base64url, so the encoding check passes and the case exercises the binding failure rather than an encoding failure. Its recorded digest was computed under a different connector id."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_cursor_foreign",
+      "requirements": [
+        "CON-R04",
+        "CON-R16"
+      ],
+      "decisions": [
+        "CON-D02"
+      ],
+      "assertions": [
+        "The payload passes the encoding and byte-bound check first; the refusal is a binding refusal and is reported as one, not as a malformed payload.",
+        "Cursor binding to workspace and connector id is verified before the payload is handed to the connector.",
+        "Because the host computes the predecessor digest over the workspace id and connector id it owns, a cursor recorded under a different connector cannot produce a matching digest, so binding is enforced by the same chain check rather than by a separate trusted field.",
+        "No poll is executed and no state is advanced."
+      ]
+    },
+    {
+      "id": "CON-C010",
+      "family": "incremental_sync",
+      "title": "Cursor replay is deterministic",
+      "vector": "The same cursor is replayed twice against an unchanged source and connector version.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "notes": "Two polls, identical inputs."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R19",
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D13"
+      ],
+      "assertions": [
+        "Both polls return the same observation identities in the same order.",
+        "The second commit produces no additional evidence version."
+      ]
+    },
+    {
+      "id": "CON-C011",
+      "family": "duplicate_upsert",
+      "title": "Duplicate identity within one batch collapses to one upsert",
+      "vector": "One batch contains the same source-native identifier and checksum twice.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000000000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          },
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000000000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "Exactly one evidence upsert results.",
+        "Collapse is performed by the coordinator, not left to the connector."
+      ]
+    },
+    {
+      "id": "CON-C012",
+      "family": "duplicate_upsert",
+      "title": "Re-observation with an unchanged checksum creates no new version",
+      "vector": "An already ingested identity is observed again with an identical content checksum.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000600000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "no_change",
+      "expected_error": null,
+      "requirements": [
+        "CON-R09",
+        "CON-R14",
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "No new evidence version is created.",
+        "A re-observation provenance event is appended so the later sighting remains explainable."
+      ]
+    },
+    {
+      "id": "CON-C013",
+      "family": "duplicate_upsert",
+      "title": "Changed checksum creates a new version and preserves the prior one",
+      "vector": "An already ingested identity is observed with different content.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "media_type": "text/plain",
+            "observed_at_us": 1785001200000000,
+            "source_version": "v2",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R09",
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "The prior evidence version remains retrievable.",
+        "The new version links to the same source-native identity."
+      ]
+    },
+    {
+      "id": "CON-C014",
+      "family": "rename",
+      "title": "Rename under stable identity is a locator change",
+      "vector": "Source locator changes while the source-native identifier is unchanged.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/renamed-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785001800000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R10",
+        "CON-R08"
+      ],
+      "decisions": [
+        "CON-D05"
+      ],
+      "assertions": [
+        "No tombstone and no new identity are created.",
+        "The locator change is recorded as an appended provenance fact.",
+        "Prior citations against the identity remain resolvable."
+      ]
+    },
+    {
+      "id": "CON-C015",
+      "family": "rename",
+      "title": "Rename under locator-derived identity is declared, not guessed",
+      "vector": "A source without stable identifiers reports a moved item.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "locator_derived",
+        "observations": [
+          {
+            "source_native_id": "loc-b-0001",
+            "source_locator": "fake://scope-b/moved-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785002400000000,
+            "source_version": null,
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "deferred_to_reconciliation",
+      "expected_error": "connector_identity_unstable",
+      "requirements": [
+        "CON-R08",
+        "CON-R10",
+        "CON-R11"
+      ],
+      "decisions": [
+        "CON-D03",
+        "CON-D05"
+      ],
+      "assertions": [
+        "The new locator is ingested as a distinct identity.",
+        "The old identity is not tombstoned by inference.",
+        "The pair is queued for an explicit reconciliation decision rather than resolved silently."
+      ]
+    },
+    {
+      "id": "CON-C016",
+      "family": "delete_tombstone",
+      "title": "Explicit source deletion produces a tombstone provenance event",
+      "vector": "Source reports an explicit deletion for a known identity.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0002",
+            "source_locator": "fake://scope-a/rec-0002",
+            "content_checksum": null,
+            "media_type": null,
+            "observed_at_us": 1785003000000000,
+            "source_version": "v2",
+            "permission_labels": [],
+            "deletion_signal": "explicit_delete",
+            "metadata_bytes": 96
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R11",
+        "CON-R12",
+        "CON-R14"
+      ],
+      "decisions": [
+        "CON-D04"
+      ],
+      "assertions": [
+        "A tombstone provenance event is appended with actor and time.",
+        "No evidence row, blob or prior version is removed.",
+        "Historical reconstruction before the tombstone still returns the prior state."
+      ]
+    },
+    {
+      "id": "CON-C017",
+      "family": "delete_tombstone",
+      "title": "Absence from an incremental window is not deletion",
+      "vector": "A known identity does not appear in an incremental batch.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "observations": [],
+        "notes": "Known identity rec-0001 is simply outside the window."
+      },
+      "expected_outcome": "no_change",
+      "expected_error": null,
+      "requirements": [
+        "CON-R11"
+      ],
+      "decisions": [
+        "CON-D03"
+      ],
+      "assertions": [
+        "No tombstone is written.",
+        "The identity remains current and retrievable.",
+        "A truncated, rate-limited or cancelled poll therefore cannot erase evidence."
+      ]
+    },
+    {
+      "id": "CON-C018",
+      "family": "delete_tombstone",
+      "title": "Authorized reconciliation sweep proposes tombstones",
+      "vector": "An explicitly authorized full-scope sweep finds a known identity absent from a complete enumeration.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Sweep declares complete scope coverage and carries an explicit reconciliation authorization."
+      },
+      "expected_outcome": "deferred_to_reconciliation",
+      "expected_error": null,
+      "requirements": [
+        "CON-R11",
+        "CON-R12"
+      ],
+      "decisions": [
+        "CON-D03",
+        "CON-D04"
+      ],
+      "assertions": [
+        "A sweep without a declared complete scope produces no tombstone proposal.",
+        "The proposal names the sweep run so the deletion is explainable.",
+        "The connector does not itself decide the deletion."
+      ]
+    },
+    {
+      "id": "CON-C019",
+      "family": "delete_tombstone",
+      "title": "Reappearance after tombstone is appended, not rewritten",
+      "vector": "A tombstoned identity is observed again as present.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0002",
+            "source_locator": "fake://scope-a/rec-0002",
+            "content_checksum": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            "media_type": "text/plain",
+            "observed_at_us": 1785003600000000,
+            "source_version": "v3",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R12",
+        "CON-R27"
+      ],
+      "decisions": [
+        "CON-D04",
+        "CON-D14"
+      ],
+      "assertions": [
+        "A new presence observation is appended after the tombstone event.",
+        "The tombstone event is not deleted or edited.",
+        "The interval during which the identity was tombstoned remains reconstructable."
+      ]
+    },
+    {
+      "id": "CON-C020",
+      "family": "acl",
+      "title": "Added source grant attaches a permission label",
+      "vector": "Source adds a grant to an already ingested identity.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785004200000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member",
+              "workspace.reviewer"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 160
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R13"
+      ],
+      "decisions": [
+        "CON-D06"
+      ],
+      "assertions": [
+        "An attach event is appended for the new label.",
+        "Existing labels are untouched.",
+        "Retrieval applies the new label before ranking, not after."
+      ]
+    },
+    {
+      "id": "CON-C021",
+      "family": "acl",
+      "title": "Revoked source grant requires an explicit withdrawal",
+      "vector": "Source revokes a grant; the connector emits the identity with the label omitted.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "media_type": "text/plain",
+            "observed_at_us": 1785004800000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "deferred_to_reconciliation",
+      "expected_error": null,
+      "requirements": [
+        "CON-R13"
+      ],
+      "decisions": [
+        "CON-D06"
+      ],
+      "assertions": [
+        "Omission alone withdraws nothing; the reviewer label remains attached.",
+        "The connector must emit an explicit withdrawal to remove a grant.",
+        "A connector that cannot express withdrawal declares that limitation at discovery."
+      ]
+    },
+    {
+      "id": "CON-C022",
+      "family": "acl",
+      "title": "Unmappable source grant fails closed",
+      "vector": "Source grant has no label in the accepted vocabulary.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Grant maps to no accepted permission label."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "invalid_request",
+      "requirements": [
+        "CON-R13",
+        "CON-R30"
+      ],
+      "decisions": [
+        "CON-D06"
+      ],
+      "assertions": [
+        "The observation is refused rather than ingested with a widened or dropped label.",
+        "The refusal names the unmapped grant without echoing source content."
+      ]
+    },
+    {
+      "id": "CON-C023",
+      "family": "ordering",
+      "title": "Late observation is recorded without changing the current interpretation",
+      "vector": "An observation with an older source time arrives after a newer one.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "observations": [
+          {
+            "source_native_id": "rec-0001",
+            "source_locator": "fake://scope-a/rec-0001",
+            "content_checksum": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "media_type": "text/plain",
+            "observed_at_us": 1785000300000000,
+            "source_version": "v0",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 128
+          }
+        ]
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R27"
+      ],
+      "decisions": [
+        "CON-D14"
+      ],
+      "assertions": [
+        "The late observation is appended with its own source time and an out-of-order marker.",
+        "The current interpretation still resolves to the newer version.",
+        "Nothing is discarded on arrival order alone."
+      ]
+    },
+    {
+      "id": "CON-C024",
+      "family": "ordering",
+      "title": "Equal source times resolve by a deterministic tiebreak",
+      "vector": "Two observations of one identity carry identical source timestamps.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Two observations, equal observed_at_us, differing source_version."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R19",
+        "CON-R27"
+      ],
+      "decisions": [
+        "CON-D14"
+      ],
+      "assertions": [
+        "Resolution is deterministic and independent of batch arrival order.",
+        "Repeating the poll yields the same current interpretation.",
+        "The concrete tiebreak order remains provisional under CON-P03."
+      ]
+    },
+    {
+      "id": "CON-C025",
+      "family": "crash_recovery",
+      "title": "Crash between batch production and commit loses nothing and duplicates nothing",
+      "vector": "Service stops after a batch is produced in memory but before the transaction commits.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "notes": "Uncommitted batch is discarded on restart."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R19",
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D09"
+      ],
+      "assertions": [
+        "Restart re-polls from the last committed cursor.",
+        "The re-produced batch upserts to the same result with no duplicate evidence version."
+      ]
+    },
+    {
+      "id": "CON-C026",
+      "family": "crash_recovery",
+      "title": "Evidence and successor cursor commit atomically",
+      "vector": "Attempted commit of batch evidence without its successor cursor, and the reverse.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Both half-commits are exercised."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "internal_non_recoverable",
+      "requirements": [
+        "CON-R16",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D09"
+      ],
+      "assertions": [
+        "No state exists in which evidence is committed and the cursor is not, or the cursor is advanced and the evidence is not.",
+        "The atomicity is enforced by the coordinator transaction, not by connector discipline."
+      ]
+    },
+    {
+      "id": "CON-C027",
+      "family": "fencing_takeover",
+      "title": "Stale fencing generation discards the whole batch",
+      "vector": "The producing service loses the workspace lease before its batch commits.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Fencing generation at commit differs from the generation at poll start."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "workspace_lease_unavailable",
+      "requirements": [
+        "CON-R28"
+      ],
+      "decisions": [
+        "CON-D09"
+      ],
+      "assertions": [
+        "No partial write survives the refusal.",
+        "The persisted cursor is unchanged, so the successor service re-polls the same window safely.",
+        "Refusal happens inside the committing transaction."
+      ]
+    },
+    {
+      "id": "CON-C028",
+      "family": "fencing_takeover",
+      "title": "Superseded service cannot commit after takeover",
+      "vector": "A new service takes the lease while an old service is mid-poll.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Old service attempts to commit after takeover completes."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "workspace_lease_unavailable",
+      "requirements": [
+        "CON-R15",
+        "CON-R28"
+      ],
+      "decisions": [
+        "CON-D09"
+      ],
+      "assertions": [
+        "Only the current lease holder can commit ingestion state.",
+        "The new service resumes from the last committed cursor without operator intervention.",
+        "Connector polling is side-effect free with respect to the source, so the discarded work is safely repeatable."
+      ]
+    },
+    {
+      "id": "CON-C029",
+      "family": "credentials",
+      "title": "Credential handle is opaque and non-derivable",
+      "vector": "Connector inspects, parses or persists the credential handle.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Handle is a synthetic opaque token carrying no material."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R21",
+        "CON-R23"
+      ],
+      "decisions": [
+        "CON-D07"
+      ],
+      "assertions": [
+        "The handle carries no secret and no structure the connector may rely on.",
+        "The handle alone grants no source access without the host resolver.",
+        "Handle values in fixtures and logs are synthetic and inert.",
+        "Handle format, issuance, rotation and revocation remain provisional under CON-P06."
+      ]
+    },
+    {
+      "id": "CON-C030",
+      "family": "credentials",
+      "title": "Verbatim resolved credential in a log, error or cursor is caught; the general case is not",
+      "vector": "Connector places the material the host resolved for this poll into a log line, an error payload and a cursor payload, first verbatim and then transformed by an encoding the host did not declare.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Six attempts: three egress paths, each in a verbatim form and a transformed form. Only the verbatim and declared-encoding forms are caught."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_secret_exposed",
+      "requirements": [
+        "CON-R21",
+        "CON-R23",
+        "CON-R32"
+      ],
+      "decisions": [
+        "CON-D07",
+        "CON-D18"
+      ],
+      "assertions": [
+        "The verbatim and declared-encoding forms are refused before persistence: the host compares the bounded payload for exact occurrence of the material it resolved during this run, which is decidable because the host knows exactly what it handed out.",
+        "A cursor payload is refused before persistence unless it is within the declared byte bound and the declared encoding alphabet; anything else is rejected without being interpreted.",
+        "The transformed form is not caught. A connector that sees raw material and authors arbitrary cursor bytes can encode it in a form no scan decides, so this case is evidence of defence in depth, never of non-disclosure.",
+        "Generic credential-shape scanners run over logs, errors and dead letters, and their silence is never recorded as proof that no secret is present. No result of this case may be reported as information-flow enforcement, and the corpus asserts corpus_claims_information_flow_enforcement false.",
+        "Enforceable non-disclosure requires a capability or credential-broker boundary under which connector code never holds the raw secret. That boundary is provisional under CON-P06 and CON-P09, and until it exists the residual is stated rather than closed.",
+        "The concrete signal names for this failure remain provisional under CON-P05."
+      ]
+    },
+    {
+      "id": "CON-C031",
+      "family": "credentials",
+      "title": "Resolved credential does not outlive the poll invocation",
+      "vector": "Connector retains resolved material in instance state across two polls.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Second poll is issued with a revoked handle."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "authorization_denied",
+      "requirements": [
+        "CON-R21"
+      ],
+      "decisions": [
+        "CON-D07"
+      ],
+      "assertions": [
+        "Material is scoped to one poll invocation and is invalidated at its end.",
+        "A revoked handle fails the next poll rather than succeeding from cached material."
+      ]
+    },
+    {
+      "id": "CON-C032",
+      "family": "storage_boundary",
+      "title": "Connector context exposes no storage handle and the corpus claims no more than that",
+      "vector": "Static inspection of the connector context type surface, plus an explicit check that no isolation claim exceeds the surface.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Type-surface assertion, executed without a workspace."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R22",
+        "CON-R24"
+      ],
+      "decisions": [
+        "CON-D01",
+        "CON-D12"
+      ],
+      "assertions": [
+        "The context exposes no database connection, no blob store handle and no workspace filesystem path.",
+        "The connector package imports no runtime storage module.",
+        "The conformance kit runs this case with no workspace present at all.",
+        "The case proves an API ownership boundary and nothing more: it does not show that connector code is unable to open files, databases or sockets through platform APIs, and any stronger isolation claim is gated on CON-P09."
+      ]
+    },
+    {
+      "id": "CON-C033",
+      "family": "storage_boundary",
+      "title": "Second authoritative workspace connection fails closed",
+      "vector": "Connector attempts to become a second authoritative writer on the workspace database by a path it constructs itself.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Attempted second authoritative connection."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_storage_access_denied",
+      "requirements": [
+        "CON-R22",
+        "CON-R28"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "The attempt is refused by the accepted bootstrap mutex and single-writer lease invariant, and is reported as a conformance failure.",
+        "The single-writer lease invariant is never weakened by a connector.",
+        "Fencing protects the supported authoritative mutation path. It does not stop connector code from touching unrelated files, databases or network services, so this case is evidence of write-path integrity, not of containment; containment is gated on CON-P09."
+      ]
+    },
+    {
+      "id": "CON-C034",
+      "family": "limits",
+      "title": "Batch exceeding the declared item ceiling is refused",
+      "vector": "Connector returns more items than the host-declared batch ceiling.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "limits": {
+          "max_batch_items": 100,
+          "max_item_metadata_bytes": 65536,
+          "max_run_bytes": 1073741824,
+          "poll_deadline_ms": 30000
+        },
+        "notes": "Returned batch declares 101 items."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "size_limit_exceeded",
+      "requirements": [
+        "CON-R20"
+      ],
+      "decisions": [
+        "CON-D11"
+      ],
+      "assertions": [
+        "The host counts the batch itself rather than trusting a declared count.",
+        "The whole batch is discarded and the cursor is unchanged."
+      ]
+    },
+    {
+      "id": "CON-C035",
+      "family": "limits",
+      "title": "Oversized item metadata is dead-lettered and the run continues",
+      "vector": "One item exceeds the per-item metadata byte ceiling.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "limits": {
+          "max_batch_items": 100,
+          "max_item_metadata_bytes": 65536,
+          "max_run_bytes": 1073741824,
+          "poll_deadline_ms": 30000
+        },
+        "observations": [
+          {
+            "source_native_id": "rec-0009",
+            "source_locator": "fake://scope-a/rec-0009",
+            "content_checksum": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            "media_type": "text/plain",
+            "observed_at_us": 1785005400000000,
+            "source_version": "v1",
+            "permission_labels": [
+              "workspace.member"
+            ],
+            "deletion_signal": "none",
+            "metadata_bytes": 131072
+          }
+        ]
+      },
+      "expected_outcome": "dead_lettered",
+      "expected_error": "size_limit_exceeded",
+      "requirements": [
+        "CON-R18",
+        "CON-R20"
+      ],
+      "decisions": [
+        "CON-D10",
+        "CON-D11"
+      ],
+      "assertions": [
+        "Only the offending item is dead-lettered.",
+        "The remaining items in the batch commit normally.",
+        "The dead-letter record carries typed cause and identity but no source content."
+      ]
+    },
+    {
+      "id": "CON-C036",
+      "family": "limits",
+      "title": "Poll deadline expiry leaves the cursor unchanged",
+      "vector": "Connector exceeds the poll deadline before producing a committable batch.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "limits": {
+          "max_batch_items": 100,
+          "max_item_metadata_bytes": 65536,
+          "max_run_bytes": 1073741824,
+          "poll_deadline_ms": 30000
+        },
+        "notes": "Deadline enforced by the host, not by the connector."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "deadline_exceeded",
+      "requirements": [
+        "CON-R06",
+        "CON-R20"
+      ],
+      "decisions": [
+        "CON-D11"
+      ],
+      "assertions": [
+        "The poll is abandoned and classified retry-after-delay.",
+        "The persisted cursor is unchanged.",
+        "Batches already committed within the run are retained."
+      ]
+    },
+    {
+      "id": "CON-C037",
+      "family": "hostile_input",
+      "title": "Hostile source metadata is rejected before persistence",
+      "vector": "Source metadata contains control characters, an embedded NUL escape, a traversal-shaped locator and deeply nested metadata.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "All hostile values are described here as inert text classifications, not embedded payloads. Vectors are: an identifier containing a C0 control character; an identifier containing a JSON-escaped NUL; a locator whose path segments include parent-directory references; and a metadata object nested beyond the accepted depth ceiling."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "invalid_request",
+      "requirements": [
+        "CON-R30",
+        "CON-R08"
+      ],
+      "decisions": [
+        "CON-D11"
+      ],
+      "assertions": [
+        "Each vector is refused at the coordinator boundary before any write.",
+        "Identifier validation matches the accepted printable, bounded, NUL-free posture already enforced in storage.",
+        "A traversal-shaped locator is stored as opaque text and never used as a filesystem path.",
+        "The refusal message echoes no source content."
+      ]
+    },
+    {
+      "id": "CON-C038",
+      "family": "retry_dead_letter",
+      "title": "Retryable transport failure increments the attempt",
+      "vector": "Source returns a transient failure classified retry-after-delay.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Transient failure on the first attempt."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": "internal_recoverable",
+      "requirements": [
+        "CON-R17",
+        "CON-R15"
+      ],
+      "decisions": [
+        "CON-D10"
+      ],
+      "assertions": [
+        "A new attempt ordinal is recorded by the coordinator.",
+        "The cursor is unchanged between attempts.",
+        "Attempt budget defaults remain provisional under CON-P01."
+      ]
+    },
+    {
+      "id": "CON-C039",
+      "family": "retry_dead_letter",
+      "title": "Exhausted item attempts become a replayable dead letter",
+      "vector": "One item fails non-retryably after its attempt budget is exhausted.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Item-scoped failure, run-scoped success."
+      },
+      "expected_outcome": "dead_lettered",
+      "expected_error": "non_retryable",
+      "requirements": [
+        "CON-R17",
+        "CON-R18"
+      ],
+      "decisions": [
+        "CON-D10"
+      ],
+      "assertions": [
+        "The run reaches a successful terminal state despite the dead letter.",
+        "The dead-letter record identifies the source-native identity and typed cause.",
+        "Whether the record is job-scoped or evidence-scoped remains provisional under CON-P01."
+      ]
+    },
+    {
+      "id": "CON-C040",
+      "family": "retry_dead_letter",
+      "title": "Dead-letter replay succeeds without duplication",
+      "vector": "A dead-lettered item is replayed after the underlying cause is removed.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Replay is targeted at one dead-lettered identity."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R18",
+        "CON-R19",
+        "CON-R29"
+      ],
+      "decisions": [
+        "CON-D10"
+      ],
+      "assertions": [
+        "Replay produces exactly one evidence version for the identity.",
+        "The dead-letter record is resolved rather than deleted.",
+        "Replay does not rewind the run cursor."
+      ]
+    },
+    {
+      "id": "CON-C041",
+      "family": "health",
+      "title": "Health probe is bounded, side-effect free and secret-free",
+      "vector": "Health probe against reachable, unauthorized and rate-limited sources.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Three probe outcomes are exercised."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R07",
+        "CON-R23",
+        "CON-R32"
+      ],
+      "decisions": [
+        "CON-D01"
+      ],
+      "assertions": [
+        "Each outcome is a typed status, not free text.",
+        "No probe mutates the source or advances a cursor.",
+        "Probe output contains no source content, no credential material and no unbounded label.",
+        "Final signal names remain provisional under CON-P05."
+      ]
+    },
+    {
+      "id": "CON-C042",
+      "family": "cancellation",
+      "title": "Cancellation mid-poll commits nothing further",
+      "vector": "Job cancellation is requested while a batch is being produced.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "notes": "Cancellation observed at the next batch boundary."
+      },
+      "expected_outcome": "cancelled",
+      "expected_error": null,
+      "requirements": [
+        "CON-R06",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D09"
+      ],
+      "assertions": [
+        "The in-flight batch is discarded.",
+        "The persisted cursor equals the last committed position.",
+        "The job reaches the cancelled terminal state with a recorded reason."
+      ]
+    },
+    {
+      "id": "CON-C043",
+      "family": "cancellation",
+      "title": "Cancellation after a commit boundary retains committed work",
+      "vector": "Cancellation arrives immediately after a batch commits.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Commit precedes the cancellation observation."
+      },
+      "expected_outcome": "cancelled",
+      "expected_error": null,
+      "requirements": [
+        "CON-R06",
+        "CON-R16"
+      ],
+      "decisions": [
+        "CON-D09"
+      ],
+      "assertions": [
+        "Committed evidence and its successor cursor are retained.",
+        "Resuming later continues from that cursor without re-ingesting the committed batch."
+      ]
+    },
+    {
+      "id": "CON-C044",
+      "family": "packaging_compatibility",
+      "title": "Unknown required SPI major is rejected",
+      "vector": "Connector declares SPI major 2 against a host supporting major 1.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "2.0",
+        "identity_stability": "source_native",
+        "notes": "Host supports major 1 only."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "incompatible_version",
+      "requirements": [
+        "CON-R01"
+      ],
+      "decisions": [
+        "CON-D08"
+      ],
+      "assertions": [
+        "Registration is refused before any poll.",
+        "The refusal names the supported major range."
+      ]
+    },
+    {
+      "id": "CON-C045",
+      "family": "packaging_compatibility",
+      "title": "Additive optional minor field is tolerated",
+      "vector": "Connector at SPI 1.1 returns an optional field unknown to a host at SPI 1.0.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.1",
+        "identity_stability": "source_native",
+        "notes": "Unknown optional field present on each observation."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R01"
+      ],
+      "decisions": [
+        "CON-D08"
+      ],
+      "assertions": [
+        "The unknown optional field is ignored, not rejected, in production posture.",
+        "Strict rejection applies only under an explicitly version-pinned conformance run."
+      ]
+    },
+    {
+      "id": "CON-C046",
+      "family": "packaging_compatibility",
+      "title": "Connector importing runtime internals fails packaging",
+      "vector": "Connector package declares or performs an import of a runtime storage module.",
+      "input": {
+        "connector_id": "fake.filesystem",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Dependency-direction assertion executed as a packaging check."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_storage_access_denied",
+      "requirements": [
+        "CON-R24",
+        "CON-R22"
+      ],
+      "decisions": [
+        "CON-D12"
+      ],
+      "assertions": [
+        "The check inspects declared dependencies and the imported module graph.",
+        "No dependency points from a connector into runtime, protocol, Desktop or commercial-module packages.",
+        "A static packaging check binds what a package declares and imports, not what installed code may do at run time; the trust and qualification gate for installing third-party connector packages is CON-P09."
+      ]
+    },
+    {
+      "id": "CON-C047",
+      "family": "provenance",
+      "title": "Provenance survives retry, dead-lettering and replay",
+      "vector": "One identity passes through a retried attempt, a dead letter and a successful replay.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Three provenance-bearing stages for one identity."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R14",
+        "CON-R18",
+        "CON-R19"
+      ],
+      "decisions": [
+        "CON-D10"
+      ],
+      "assertions": [
+        "Every stage appends provenance naming connector id, connector version, run and attempt.",
+        "The final evidence version can be traced back to the exact run and attempt that produced it.",
+        "No provenance event is rewritten or removed."
+      ]
+    },
+    {
+      "id": "CON-C048",
+      "family": "scope_boundary",
+      "title": "SPI exposes no source write-back",
+      "vector": "Search of the SPI surface for any source-mutating operation.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Surface assertion, no execution."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_source_writeback_denied",
+      "requirements": [
+        "CON-R33"
+      ],
+      "decisions": [
+        "CON-D15"
+      ],
+      "assertions": [
+        "No SPI operation creates, updates or deletes anything in the source system.",
+        "Bidirectional synchronization remains explicitly deferred scope."
+      ]
+    },
+    {
+      "id": "CON-C049",
+      "family": "scope_boundary",
+      "title": "Connector-declared scheduling is refused",
+      "vector": "Connector declares a polling interval or timer at discovery.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Discovery payload carries a self-scheduling declaration."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_scheduling_denied",
+      "requirements": [
+        "CON-R34",
+        "CON-R15"
+      ],
+      "decisions": [
+        "CON-D15"
+      ],
+      "assertions": [
+        "Registration is refused; the coordinator remains the only execution owner.",
+        "A connector may declare a recommended minimum interval as advisory metadata only if the host explicitly supports it, and it never initiates execution."
+      ]
+    },
+    {
+      "id": "CON-C050",
+      "family": "discovery",
+      "title": "Fake connector is deterministic and dependency-free",
+      "vector": "The first-party fake connector replays a scripted scenario twice in a process with no network, no credentials and no workspace.",
+      "input": {
+        "connector_id": "fake.threadstore",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Scenario is supplied entirely by this corpus."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R25",
+        "CON-R19",
+        "CON-R22"
+      ],
+      "decisions": [
+        "CON-D13",
+        "CON-D01"
+      ],
+      "assertions": [
+        "Both replays produce identical observation sequences and identical successor cursors.",
+        "The fake performs no network access, resolves no credential and touches no workspace path.",
+        "The fake is the reference implementation against which the SPI surface is judged complete."
+      ]
+    },
+    {
+      "id": "CON-C051",
+      "family": "packaging_compatibility",
+      "title": "Conformance kit records declared-not-applicable with a reason",
+      "vector": "A connector that cannot express ACL withdrawal runs the full corpus.",
+      "input": {
+        "connector_id": "fake.threadstore",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "notes": "Discovery declares the ACL-withdrawal limitation."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R26",
+        "CON-R13",
+        "CON-R02"
+      ],
+      "decisions": [
+        "CON-D13",
+        "CON-D06"
+      ],
+      "assertions": [
+        "Every case reports pass, fail or declared-not-applicable; no case is silently skipped.",
+        "A declared-not-applicable result requires a discovery-declared limitation and a recorded reason.",
+        "An undeclared limitation is reported as a failure, not as not-applicable."
+      ]
+    },
+    {
+      "id": "CON-C052",
+      "family": "cursor_state",
+      "title": "Migration that changes the witness is refused",
+      "vector": "migrate_cursor returns a state whose payload and state version are well formed but whose witness has moved forward, so the migration claims progress it did not make.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.1",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-v1-position-9",
+        "cursor_witness_seq": 9,
+        "cursor_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "migrated_state_version": 2,
+        "migrated_cursor_opaque": "cursor-v02-position-14",
+        "migrated_witness_seq": 14,
+        "migrated_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "notes": "Negative migration vector. Input witness 9, output witness 14."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R05",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D16",
+        "CON-D11"
+      ],
+      "assertions": [
+        "The host requires exact equality between the input and output witness and refuses any other value, including a forward one.",
+        "A forward witness is refused here even though a forward witness is accepted from a poll, because migration is a re-encoding of a known position and not an observation of new source state.",
+        "The persisted cursor is unchanged, no poll is executed and the run records the refusal rather than resynchronizing silently.",
+        "Accepting this output would let a package upgrade advance the chain past unobserved source state with no batch and no evidence, which is the CON-C058 loss reached through migration instead of polling."
+      ]
+    },
+    {
+      "id": "CON-C053",
+      "family": "cursor_state",
+      "title": "Migration that rewrites the predecessor digest is refused",
+      "vector": "migrate_cursor returns a state whose witness and state version are correct but whose predecessor digest differs from the input predecessor digest.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.1",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-v1-position-9",
+        "cursor_witness_seq": 9,
+        "cursor_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "migrated_state_version": 2,
+        "migrated_cursor_opaque": "cursor-v02-position-09",
+        "migrated_witness_seq": 9,
+        "migrated_predecessor_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "notes": "Negative migration vector. The connector substitutes a predecessor of its own choosing. Dropping the digest to absent when the input carried one fails the same check."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R05",
+        "CON-R16"
+      ],
+      "decisions": [
+        "CON-D16",
+        "CON-D02"
+      ],
+      "assertions": [
+        "The host requires byte-identical carry-through of the predecessor digest, and treats absent-to-present and present-to-absent as failures of the same obligation.",
+        "The connector never authors lineage. The host digest binds all four parent CursorState fields plus the frozen workspace and connector ids, so a connector-supplied digest that does not match the exact state and bindings the host recorded is rejected on sight.",
+        "The persisted cursor is unchanged and the chain is not extended.",
+        "Accepting this output would let migration silently re-parent the chain, which would defeat the rollback and reordering refusal that is the whole of what the cursor check establishes."
+      ]
+    },
+    {
+      "id": "CON-C054",
+      "family": "cursor_state",
+      "title": "Cursor payload outside the base64url alphabet is refused before any binding check",
+      "vector": "Connector returns a successor cursor whose payload contains a character outside the unpadded base64url alphabet, such as a dot, a plus or a slash.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": null,
+        "declared_payload_encoding_violation": "non_alphabet_character",
+        "notes": "The offending payload is named as a classification rather than embedded, matching the CON-C037 posture; the corpus schema would itself reject an embedded invalid payload."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R05",
+        "CON-R30"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D11"
+      ],
+      "assertions": [
+        "The alphabet check is decidable without interpreting the payload and runs before the binding, lineage and witness checks.",
+        "The refusal is reported as an encoding failure, not as a foreign or non-monotonic cursor, so the diagnosis names the real defect.",
+        "Nothing is persisted and the previous cursor is retained."
+      ]
+    },
+    {
+      "id": "CON-C055",
+      "family": "cursor_state",
+      "title": "Padded cursor payload is refused",
+      "vector": "Connector returns a successor cursor whose payload carries base64 padding characters.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": null,
+        "declared_payload_encoding_violation": "padding_character",
+        "notes": "The declared encoding is base64url with no padding. A padded payload is a distinct failure from a non-alphabet character and is exercised separately."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R05",
+        "CON-R30"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D11"
+      ],
+      "assertions": [
+        "The padding character is not in the accepted alphabet, so a padded payload is refused even though it would decode under a padded variant.",
+        "One encoding is declared and only that encoding is accepted; the host does not attempt to normalize or strip padding on the connector's behalf.",
+        "Nothing is persisted and the previous cursor is retained."
+      ]
+    },
+    {
+      "id": "CON-C056",
+      "family": "cursor_state",
+      "title": "Cursor payload of an undecodable length is refused",
+      "vector": "Connector returns a successor cursor whose payload uses only alphabet characters but whose length leaves one residual character, a length no unpadded base64url string can have.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": null,
+        "declared_payload_encoding_violation": "undecodable_length",
+        "notes": "Length modulo four equals one. Alphabet alone does not make a payload well formed, so length is checked as part of the encoding."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R05",
+        "CON-R30"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D11"
+      ],
+      "assertions": [
+        "The encoding check covers length groups as well as the alphabet, so a payload that could never decode is refused rather than stored as opaque bytes.",
+        "The check remains decidable without decoding: it inspects the length and the character set only.",
+        "Nothing is persisted and the previous cursor is retained."
+      ]
+    },
+    {
+      "id": "CON-C057",
+      "family": "cursor_state",
+      "title": "Cursor payload above the byte bound is refused",
+      "vector": "Connector returns a successor cursor whose payload is one byte over the normative 4096-byte bound.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": null,
+        "declared_payload_bytes": 4097,
+        "notes": "The size is declared as a number rather than embedded so the corpus stays small and inert. The bound is the same 4096 bytes fixed by cursor_contract."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "size_limit_exceeded",
+      "requirements": [
+        "CON-R05",
+        "CON-R20"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D11"
+      ],
+      "assertions": [
+        "The host measures the payload itself rather than trusting a declared length, consistent with the host-verified limits decision.",
+        "The bound is enforced on the exact bytes returned, so the capacity a cursor can carry per poll is bounded without interpreting it.",
+        "The batch is discarded whole and the persisted cursor is unchanged.",
+        "The bound limits how much a single cursor can carry. It does not establish that what it carries is not secret, which is CON-C030 and CON-D18."
+      ]
+    },
+    {
+      "id": "CON-C058",
+      "family": "incremental_sync",
+      "title": "A forward witness with correct lineage does not establish that no observation was skipped",
+      "vector": "The connector is handed the cursor at witness 9 and returns an empty batch with a successor at witness 100 that correctly names the canonical full-state digest of the presented state as its predecessor, while the scripted source holds 91 observations inside the window the cursor advances across.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "cursor_state_version": 1,
+        "cursor_opaque": "cursor-position-09",
+        "cursor_witness_seq": 9,
+        "successor_witness_seq": 100,
+        "cursor_predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "successor_predecessor_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "observations": [],
+        "notes": "The completeness counterexample, retained unchanged in outcome. Every host-checkable property holds: the encoding is valid, the canonical full-state lineage digest names the presented state, and the witness moves forward."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R04",
+        "CON-R19",
+        "CON-R35"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The host accepts this batch and advances the cursor to witness 100. Every property the host is able to check is satisfied, so acceptance is the correct and expected result of the host check.",
+        "The 91 observations are lost, not deferred. The persisted cursor now sits past them, so no later poll, replay, resume or takeover re-observes them.",
+        "Deterministic replay and idempotent checksum-keyed upsert bound duplication and corruption. They do not bound omission, and no result of this case may be reported as though they did.",
+        "The conformance kit detects the omission only because this corpus fixes the fake connector's expected observation set. Against a source whose contents the host cannot know independently there is no equivalent check, so detection does not generalize.",
+        "The obligation the connector violated is CON-R35, classified as connector-specific conformance and provisional under CON-P08 for real sources and CON-P09 for the trust posture under which such evidence is accepted.",
+        "The corpus asserts corpus_claims_remote_completeness_proof false, so no packet, release note or acceptance may cite the cursor check as evidence that a connector skipped nothing."
+      ]
+    },
+    {
+      "id": "CON-C059",
+      "family": "cursor_state",
+      "title": "Canonical full-state lineage forms a recomputable multi-generation chain",
+      "vector": "Four synthetic CursorStates form three successive links from genesis. Each successor predecessor_digest equals the independently recomputed digest of the complete prior state under the same frozen workspace and connector bindings.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "lineage_changed_field": "none",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 1,
+            "payload": "Z2VuZXNpcy0w",
+            "witness_seq": 0,
+            "predecessor_digest": null,
+            "expected_digest": "1291d543cae5c7aa08c694f434887a2e2623cc77b6f74e3a1917e08fefc03289"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 1,
+            "payload": "cG9zaXRpb24tMQ",
+            "witness_seq": 1,
+            "predecessor_digest": "1291d543cae5c7aa08c694f434887a2e2623cc77b6f74e3a1917e08fefc03289",
+            "expected_digest": "ea3f3ba43cf7c1097e8c940ef4b8224496491852d5b16f9929d95614edeed3a6"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 1,
+            "payload": "cG9zaXRpb24tMg",
+            "witness_seq": 2,
+            "predecessor_digest": "ea3f3ba43cf7c1097e8c940ef4b8224496491852d5b16f9929d95614edeed3a6",
+            "expected_digest": "2a06abc5e5fc4974c304fa71201ff1c89d19c6c276d973a38f50183d9551508d"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 1,
+            "payload": "cG9zaXRpb24tMw",
+            "witness_seq": 3,
+            "predecessor_digest": "2a06abc5e5fc4974c304fa71201ff1c89d19c6c276d973a38f50183d9551508d",
+            "expected_digest": "ad87b71cb72a8627e2d3aef3317e9cf163d5c59ee0cf891d80d669377cb73eaf"
+          }
+        ],
+        "notes": "Golden positive vectors. The first state is genesis and encodes its null predecessor as a zero-length final field; each later state carries the prior expected_digest as 32 raw predecessor bytes."
+      },
+      "expected_outcome": "accepted",
+      "expected_error": null,
+      "requirements": [
+        "CON-R04",
+        "CON-R16",
+        "CON-R19"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "Every expected_digest is SHA-256 over the exact seven u32be-length-prefixed fields in the frozen order and is independently recomputable from the displayed inputs.",
+        "The genesis null predecessor is encoded only as a zero-length final field; no text sentinel, omitted frame or repeated-character placeholder participates in the golden digest.",
+        "For each of the three successor links, the child predecessor_digest is byte-identical to the raw 32-byte expected_digest of the complete parent state.",
+        "The same frozen workspace id and connector id are used for every link; neither binding can be substituted between generations.",
+        "All three links are accepted and preserve the existing witness non-regression rule."
+      ]
+    },
+    {
+      "id": "CON-C060",
+      "family": "cursor_state",
+      "title": "Changing only the parent state version changes the lineage digest",
+      "vector": "The actual parent differs from the claimed parent only in state_version. The successor repeats the baseline digest instead of the recomputed digest of the actual parent.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "state_version",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 3,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "88e68f8dd5d751acada395043515c2527f33c2bc7633a11c0f645e9212da8482"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R04",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly state_version; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The batch is refused as an invalid lineage state, no observation is committed and the persisted parent remains unchanged.",
+        "Removing this field or binding from the preimage would make this mutation a false pass and is a conformance failure."
+      ]
+    },
+    {
+      "id": "CON-C061",
+      "family": "cursor_state",
+      "title": "Changing only the parent payload changes the lineage digest",
+      "vector": "The actual parent differs from the claimed parent only in its exact base64url payload text. The successor repeats the baseline digest.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "payload",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRlLTI",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "4b22d88c4cfa617a1fe9ad807a1baacd6755bf34e3441c92f163122c0ede9f78"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R04",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly payload; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The batch is refused as an invalid lineage state, no observation is committed and the persisted parent remains unchanged.",
+        "Removing this field or binding from the preimage would make this mutation a false pass and is a conformance failure."
+      ]
+    },
+    {
+      "id": "CON-C062",
+      "family": "cursor_state",
+      "title": "Changing only the parent witness changes the lineage digest",
+      "vector": "The actual parent differs from the claimed parent only in witness_seq. The successor repeats the baseline digest.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "witness_seq",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 43,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "fa4d34ebafdd3916929efe65de08d5dcab646421c5c01dd218052342f2a1a889"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R04",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly witness_seq; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The batch is refused as an invalid lineage state, no observation is committed and the persisted parent remains unchanged.",
+        "Removing this field or binding from the preimage would make this mutation a false pass and is a conformance failure."
+      ]
+    },
+    {
+      "id": "CON-C063",
+      "family": "cursor_state",
+      "title": "Changing only the parent predecessor digest is reparenting and is refused",
+      "vector": "Two parent CursorStates are byte-identical except that one carries the predecessor digest aaaa... and the other bbbb.... The successor repeats the digest of the aaaa... parent while the actual parent is the bbbb... state.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "predecessor_digest",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "expected_digest": "0c0602ee9a9917cc7d92773ef2bae9e6c8a5a3da806a7caa37b5bb22b0a559f3"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_state_invalid",
+      "requirements": [
+        "CON-R04",
+        "CON-R16",
+        "CON-R31"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly predecessor_digest; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The batch is refused as an invalid lineage state, no observation is committed and the persisted parent remains unchanged.",
+        "This is the required aaaa... versus bbbb... differential counterexample: including the parent predecessor_digest prevents silent reparenting."
+      ]
+    },
+    {
+      "id": "CON-C064",
+      "family": "cursor_state",
+      "title": "Changing only the frozen workspace binding changes the lineage digest",
+      "vector": "The actual parent state is unchanged but its frozen workspace binding is workspace-beta rather than workspace-alpha. The successor repeats the workspace-alpha digest.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "workspace_id",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-beta",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "084b948735e866e8f46c610aaec70e1e9078e5448b195590a66b5475700a630c"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_cursor_foreign",
+      "requirements": [
+        "CON-R04",
+        "CON-R16"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly workspace_id; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The mismatch is reported as a foreign-cursor binding refusal before polling.",
+        "Removing this field or binding from the preimage would make this mutation a false pass and is a conformance failure."
+      ]
+    },
+    {
+      "id": "CON-C065",
+      "family": "cursor_state",
+      "title": "Changing only the frozen connector binding changes the lineage digest",
+      "vector": "The actual parent state is unchanged but its frozen connector binding is fake.filesystem rather than fake.recordset. The successor repeats the fake.recordset digest.",
+      "input": {
+        "connector_id": "fake.recordset",
+        "spi_version": "1.0",
+        "identity_stability": "source_native",
+        "successor_predecessor_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595",
+        "lineage_changed_field": "connector_id",
+        "lineage_digest_vectors": [
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.recordset",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "0959b84d9707bbca6bf000035aee5b0a728cdff58698751dd21838a2c375e595"
+          },
+          {
+            "workspace_id": "workspace-alpha",
+            "connector_id": "fake.filesystem",
+            "state_version": 2,
+            "payload": "cGFyZW50LXN0YXRl",
+            "witness_seq": 42,
+            "predecessor_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "expected_digest": "11462fce853723a4c1f7b70b28f9ca93b4cdeca33eca362794fb5c88fb2035c2"
+          }
+        ],
+        "notes": "Negative canonical-digest differential vector; all values are synthetic and inert."
+      },
+      "expected_outcome": "refused",
+      "expected_error": "connector_cursor_foreign",
+      "requirements": [
+        "CON-R04",
+        "CON-R16"
+      ],
+      "decisions": [
+        "CON-D02",
+        "CON-D17"
+      ],
+      "assertions": [
+        "The two displayed vectors differ in exactly connector_id; all other parent-state fields and bindings are byte-identical.",
+        "Independent canonical recomputation produces the two different displayed expected_digest values.",
+        "The successor declaration carries the baseline expected_digest while the host recomputes the second vector from the actual parent, so the lineage comparison fails.",
+        "The mismatch is reported as a foreign-cursor binding refusal before polling.",
+        "Removing this field or binding from the preimage would make this mutation a false pass and is a conformance failure."
+      ]
+    }
+  ]
+}

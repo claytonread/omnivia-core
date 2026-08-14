@@ -1,0 +1,34 @@
+{
+  "lane": "A6",
+  "corpus_id": "core-connectors-v1",
+  "schema_version": "1",
+  "status": "preparation_only",
+  "pm_checkpoint": "a28d2c51493a1fcdd527ef1539d1b598164adf86",
+  "core_checkpoint": "0278d3cb1da3199dd116ed0710a7459599e142df",
+  "candidate_document": "docs/tasks/2026-08-03-omnivia-core-connector-sdk-incremental-sync-contract.md",
+  "hash_algorithm": "sha256",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 13615,
+      "sha256": "f6cce438505871712d6d9b1984e7875cd1af9ec83492600cfb1095d8e032d084"
+    },
+    {
+      "path": "connector-cases.json",
+      "bytes": 130244,
+      "sha256": "1ee69e0403076be2a062d865be437957339e81ae581a0ddef16bcfb2f1416d41"
+    },
+    {
+      "path": "schema.json",
+      "bytes": 32561,
+      "sha256": "3faee5d833e3e3f0f06a0c53286d5885c8eeaffb60e538901866d099d1af0559"
+    }
+  ],
+  "checksum_file": {
+    "path": "SHA256SUMS",
+    "bytes": 241,
+    "sha256": "2dcee89819a474272962bb72d8b5677e6a8f88059a69c1cf3989ee6abbec201a"
+  },
+  "self_hashed": false,
+  "notes": "manifest.json is intentionally absent from SHA256SUMS and does not hash itself. Verify by recomputing every listed byte count and digest, then running shasum -a 256 -c SHA256SUMS from this directory."
+}

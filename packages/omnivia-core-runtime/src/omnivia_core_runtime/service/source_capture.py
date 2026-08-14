@@ -124,8 +124,8 @@ def _read_source(path: Path) -> bytes:
     return content
 
 
-def _blob_path(runner: ServiceRunner, digest: str) -> Path:
-    return runner.layout.blobs_path / "sha256" / digest.removeprefix("sha256:")
+def _blob_path(blobs_root: Path, digest: str) -> Path:
+    return blobs_root / "sha256" / digest.removeprefix("sha256:")
 
 
 def _verify_published_blob(path: Path, content: bytes) -> None:
@@ -134,9 +134,15 @@ def _verify_published_blob(path: Path, content: bytes) -> None:
         raise SourceCaptureRefused("the content-addressed blob does not verify")
 
 
-def _publish_blob(runner: ServiceRunner, digest: str, content: bytes) -> Path:
-    """Publish bytes before the database may refer to them."""
-    target = _blob_path(runner, digest)
+def publish_blob(blobs_root: Path, digest: str, content: bytes) -> Path:
+    """Publish bytes before the database may refer to them.
+
+    Takes the blob root rather than a runner so every path that captures
+    content-addressed bytes -- local capture and connector synchronisation
+    alike -- writes them through this exact atomic-rename-and-fsync sequence
+    instead of a second copy of it.
+    """
+    target = _blob_path(blobs_root, digest)
     directory = target.parent
     if not directory.exists():
         directory.mkdir(mode=0o700, parents=False)
@@ -396,7 +402,7 @@ def capture_local_source(
             length=len(content),
             media_type=media_type,
         )
-        _publish_blob(runner, digest, content)
+        publish_blob(runner.layout.blobs_path, digest, content)
         if existing is not None:
             return existing
         return _append_capture(
@@ -416,4 +422,5 @@ __all__ = [
     "SourceCaptureRefused",
     "SourceCaptureResult",
     "capture_local_source",
+    "publish_blob",
 ]

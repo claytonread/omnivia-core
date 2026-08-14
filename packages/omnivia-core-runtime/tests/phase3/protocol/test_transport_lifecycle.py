@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import socket
 import tempfile
@@ -10,6 +11,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from omnivia_core_runtime.ownership.identity import (
@@ -32,6 +34,7 @@ from omnivia_core_runtime.service.ovc1 import (
 from omnivia_core_runtime.service.probes import PROBE_HEALTH, ServiceFacts
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
 from omnivia_core_runtime.service.transport import (
+    _MAX_CONSECUTIVE_ACCEPT_FAILURES,
     EndpointProbe,
     EndpointScheme,
     LocalEndpoint,
@@ -741,3 +744,163 @@ def test_live_endpoint_refusal_is_fixed_and_non_disclosing(socket_path: Path) ->
         _assert_transport_error_is_non_disclosing(caught.value, secret)
     finally:
         live.stop()
+
+
+def _flaky_listener(server: LocalSocketServer, failures: int) -> threading.Event:
+    """Make the running server's next `failures` accepts raise, then behave.
+
+    `ECONNABORTED` because that is the real one: a peer that connected and went
+    away again before the service got round to accepting it. The listener is
+    untouched -- the same object serves the client below -- so what the tests
+    either side of this exercise is the accept *loop*'s reaction and nothing else.
+    """
+    listener = server._listener
+    assert listener is not None
+    remaining = iter(range(failures))
+    exhausted = threading.Event()
+    real_accept = listener.accept
+
+    def flaky_accept() -> Any:
+        if next(remaining, None) is None:
+            exhausted.set()
+            return real_accept()
+        raise OSError(errno.ECONNABORTED, "software caused connection abort")
+
+    listener.accept = flaky_accept  # type: ignore[method-assign]
+    return exhausted
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_a_transient_accept_failure_leaves_the_service_answering(
+    socket_path: Path,
+) -> None:
+    """R004: an `accept()` that raises must not take the sole accept loop with it.
+
+    The loop used to `break` on any `OSError`, which is not a shutdown: the thread
+    ended while the process kept the workspace lease and the storage lock and kept
+    advertising the endpoint as ready. Every later client then connected to a name
+    nobody was accepting on and waited out its own timeout -- alive, ready,
+    answering nobody, which is exactly what a hosted run reported as two MCP
+    sessions that timed out against a service still running.
+
+    So the assertion is not that the loop survived; it is that a *client* is
+    served afterwards, over the same endpoint, by the same listener.
+    """
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+        timeout=5.0,
+    )
+    server.start()
+    try:
+        exhausted = _flaky_listener(server, failures=1)
+        deadline = time.monotonic() + 5.0
+        while not exhausted.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert exhausted.is_set(), "the accept loop stopped at the first failure"
+
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(5.0)
+        client.connect(str(socket_path))
+        try:
+            client.sendall(encode_frame({"probe": PROBE_HEALTH}))
+            header = client.recv(HEADER_BYTES)
+            assert len(header) == HEADER_BYTES
+            body = b""
+            length = int.from_bytes(header[len(MAGIC) :], "big")
+            while len(body) < length:
+                body += client.recv(length - len(body))
+            assert decode_frame(header + body)["status"] == "pass"
+        finally:
+            client.close()
+    finally:
+        server.stop()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_a_listener_that_never_accepts_again_is_given_up_on_not_spun_on(
+    socket_path: Path,
+) -> None:
+    """The other half of the retry: it is bounded.
+
+    A descriptor that is genuinely gone fails every accept, so the retry above has
+    to end somewhere -- otherwise the fix for a deaf service is a thread burning a
+    core until the process exits. The bound is consecutive failures, and this pins
+    it: exactly `_MAX_CONSECUTIVE_ACCEPT_FAILURES` attempts, then the thread ends.
+
+    `stop()` still has to complete promptly on that already-ended thread, unlink
+    the endpoint and raise nothing.
+    """
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+        timeout=5.0,
+    )
+    server.start()
+    try:
+        attempts = 0
+        listener = server._listener
+        assert listener is not None
+
+        def always_fails() -> Any:
+            nonlocal attempts
+            attempts += 1
+            raise OSError(errno.EBADF, "bad file descriptor")
+
+        listener.accept = always_fails  # type: ignore[method-assign]
+        thread = server._thread
+        assert thread is not None
+        thread.join(timeout=10.0)
+        assert not thread.is_alive(), "a dead listener was retried without bound"
+        assert attempts == _MAX_CONSECUTIVE_ACCEPT_FAILURES
+    finally:
+        started = time.monotonic()
+        server.stop()
+        assert time.monotonic() - started < 1.0
+    assert not socket_path.exists()
+
+
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="requires a real Unix socket"
+)
+def test_shutdown_still_terminates_a_serve_thread_that_is_mid_retry(
+    socket_path: Path,
+) -> None:
+    """A stop asked for between two retries is answered, not queued behind them.
+
+    The retry pauses on the stop event rather than sleeping, and this is what that
+    buys: `stop()` here lands inside the retry window -- the loop has failed once
+    and is waiting to try again -- and the serving thread has to end on that
+    signal, not after working through the rest of its attempts. A retry that
+    slept would make every shutdown wait out a pause it has no reason to.
+    """
+    endpoint = LocalEndpoint(EndpointScheme.UNIX, str(socket_path))
+    server = LocalSocketServer(
+        router=_router_for(ProbeFactsRunner(), RecordingDispatcher()),  # type: ignore[arg-type]
+        endpoint=endpoint,
+        timeout=5.0,
+    )
+    server.start()
+    listener = server._listener
+    assert listener is not None
+    retrying = threading.Event()
+
+    def always_fails() -> Any:
+        retrying.set()
+        raise OSError(errno.ECONNABORTED, "software caused connection abort")
+
+    listener.accept = always_fails  # type: ignore[method-assign]
+    thread = server._thread
+    assert thread is not None
+    assert retrying.wait(timeout=5.0), "the accept loop never reached a retry"
+
+    server.stop()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive(), "shutdown did not reach a retrying accept loop"
+    assert not socket_path.exists()

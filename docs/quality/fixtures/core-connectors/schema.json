@@ -1,0 +1,1211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnivia.invalid/schemas/quality/core-connectors-v1.schema.json",
+  "title": "OmniVia Core Connector SDK and incremental-sync preparation corpus",
+  "description": "Validates the preparation envelope, requirement/decision/dependency registers and case vocabulary of connector-cases.json. This is not a product operation-input schema and authorizes no product behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "corpus_id",
+    "lane",
+    "status",
+    "inert",
+    "authority",
+    "boundaries",
+    "cursor_contract",
+    "requirements",
+    "decisions",
+    "dependencies",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./schema.json"
+    },
+    "schema_version": {
+      "const": "1"
+    },
+    "corpus_id": {
+      "const": "core-connectors-v1"
+    },
+    "lane": {
+      "const": "A6"
+    },
+    "status": {
+      "const": "preparation_only"
+    },
+    "inert": {
+      "const": true
+    },
+    "authority": {
+      "$ref": "#/$defs/authority"
+    },
+    "boundaries": {
+      "$ref": "#/$defs/boundaries"
+    },
+    "cursor_contract": {
+      "$ref": "#/$defs/cursor_contract"
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/decision"
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/dependency"
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "$defs": {
+    "sha1_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cursor_payload": {
+      "$comment": "Unpadded base64url exactly: the alphabet excludes '.', '+', '/' and '='; the length groups admit only 0, 2 or 3 residual characters, so a padded or undecodable-length payload fails here rather than reaching a binding check. Bounded to the normative 4096 bytes.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$"
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+    },
+    "prose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    },
+    "short_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "requirement_id": {
+      "type": "string",
+      "pattern": "^CON-R[0-9]{2}$"
+    },
+    "decision_id": {
+      "type": "string",
+      "pattern": "^CON-D[0-9]{2}$"
+    },
+    "dependency_id": {
+      "type": "string",
+      "pattern": "^CON-P[0-9]{2}$"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^CON-C[0-9]{3}$"
+    },
+    "any_con_id": {
+      "type": "string",
+      "pattern": "^CON-(R[0-9]{2}|D[0-9]{2}|P[0-9]{2}|C[0-9]{3})$"
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pm_checkpoint",
+        "core_checkpoint",
+        "architecture_source",
+        "completion_authority",
+        "candidate_document"
+      ],
+      "properties": {
+        "pm_checkpoint": {
+          "$ref": "#/$defs/sha1_hex"
+        },
+        "core_checkpoint": {
+          "$ref": "#/$defs/sha1_hex"
+        },
+        "architecture_source": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "completion_authority": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "candidate_document": {
+          "$ref": "#/$defs/repo_path"
+        }
+      }
+    },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sdk_opens_storage_connection",
+        "sdk_resolves_credentials_directly",
+        "sdk_owns_durable_run_state",
+        "sdk_owns_deletion_authority",
+        "sdk_schedules_its_own_execution",
+        "sdk_writes_back_to_source",
+        "sdk_changes_operation_catalogue",
+        "sdk_reserves_migration_number",
+        "corpus_authorizes_product_writes",
+        "corpus_contains_live_endpoints",
+        "corpus_claims_connector_process_sandbox",
+        "corpus_claims_remote_completeness_proof",
+        "corpus_claims_information_flow_enforcement"
+      ],
+      "properties": {
+        "sdk_opens_storage_connection": {
+          "const": false
+        },
+        "sdk_resolves_credentials_directly": {
+          "const": false
+        },
+        "sdk_owns_durable_run_state": {
+          "const": false
+        },
+        "sdk_owns_deletion_authority": {
+          "const": false
+        },
+        "sdk_schedules_its_own_execution": {
+          "const": false
+        },
+        "sdk_writes_back_to_source": {
+          "const": false
+        },
+        "sdk_changes_operation_catalogue": {
+          "const": false
+        },
+        "sdk_reserves_migration_number": {
+          "const": false
+        },
+        "corpus_authorizes_product_writes": {
+          "const": false
+        },
+        "corpus_contains_live_endpoints": {
+          "const": false
+        },
+        "corpus_claims_connector_process_sandbox": {
+          "const": false
+        },
+        "corpus_claims_remote_completeness_proof": {
+          "const": false
+        },
+        "corpus_claims_information_flow_enforcement": {
+          "const": false
+        }
+      }
+    },
+    "cursor_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fixes exactly what the host may check about a connector-authored cursor without interpreting its opaque payload, the digest algorithm and preimage that make lineage checkable, the obligations a cursor migration must satisfy, and the limits of the non-disclosure posture. Every value is a const so a contradicting claim is a schema failure rather than prose drift.",
+      "required": [
+        "host_interprets_opaque_payload",
+        "successor_witness",
+        "successor_lineage",
+        "host_check_scope",
+        "residual_risk_bounded_by",
+        "witness_is_connector_attested",
+        "max_opaque_payload_bytes",
+        "opaque_payload_encoding",
+        "resolved_secret_comparison",
+        "credential_shape_scan_is_proof",
+        "host_verifiable_properties",
+        "no_skipped_evidence_is_host_verifiable",
+        "no_skipped_evidence_classification",
+        "predecessor_digest_algorithm",
+        "predecessor_digest_domain_tag",
+        "predecessor_digest_preimage",
+        "predecessor_digest_computed_by",
+        "migration_input",
+        "migration_preserves_witness",
+        "migration_preserves_predecessor_digest",
+        "migration_state_version_direction",
+        "cursor_non_disclosure_enforced_in_process",
+        "cursor_non_disclosure_status",
+        "predecessor_digest_framing",
+        "predecessor_digest_field_order",
+        "predecessor_digest_text_encoding",
+        "predecessor_digest_binary_encoding",
+        "predecessor_digest_genesis",
+        "cursor_bindings"
+      ],
+      "properties": {
+        "host_interprets_opaque_payload": {
+          "const": false
+        },
+        "successor_witness": {
+          "const": "monotonic_unsigned_integer"
+        },
+        "successor_lineage": {
+          "const": "canonical_full_parent_cursor_state_digest"
+        },
+        "host_check_scope": {
+          "const": "connector_attested_lineage_and_witness"
+        },
+        "residual_risk_bounded_by": {
+          "const": "deterministic_replay_and_idempotent_upsert_for_duplication_and_corruption_only"
+        },
+        "witness_is_connector_attested": {
+          "const": true
+        },
+        "max_opaque_payload_bytes": {
+          "const": 4096
+        },
+        "opaque_payload_encoding": {
+          "const": "base64url_no_padding"
+        },
+        "resolved_secret_comparison": {
+          "const": "exact_match_against_host_resolved_material_and_declared_encodings"
+        },
+        "credential_shape_scan_is_proof": {
+          "const": false
+        },
+        "host_verifiable_properties": {
+          "const": "state_chain_integrity_rollback_refusal_and_reordering_refusal"
+        },
+        "no_skipped_evidence_is_host_verifiable": {
+          "const": false
+        },
+        "no_skipped_evidence_classification": {
+          "const": "connector_specific_conformance_provisional_under_CON-P09"
+        },
+        "predecessor_digest_algorithm": {
+          "const": "sha256"
+        },
+        "predecessor_digest_domain_tag": {
+          "const": "omnivia.connector.cursor-state.v2"
+        },
+        "predecessor_digest_preimage": {
+          "const": "frame(domain_tag) || frame(workspace_id_ascii) || frame(connector_id_ascii) || frame(decimal(state_version)) || frame(payload_base64url_ascii) || frame(decimal(witness_seq)) || frame(predecessor_digest_raw_32_or_empty)"
+        },
+        "predecessor_digest_computed_by": {
+          "const": "host_only"
+        },
+        "migration_input": {
+          "const": "whole_cursor_state"
+        },
+        "migration_preserves_witness": {
+          "const": "exact_equality"
+        },
+        "migration_preserves_predecessor_digest": {
+          "const": "byte_identical_including_absence"
+        },
+        "migration_state_version_direction": {
+          "const": "strictly_increasing"
+        },
+        "cursor_non_disclosure_enforced_in_process": {
+          "const": false
+        },
+        "cursor_non_disclosure_status": {
+          "const": "defence_in_depth_pending_CON-P09_credential_broker_boundary"
+        },
+        "predecessor_digest_framing": {
+          "const": "u32be_length_prefixed_fields_in_fixed_order"
+        },
+        "predecessor_digest_field_order": {
+          "const": "domain_tag_workspace_id_connector_id_state_version_payload_witness_seq_predecessor_digest"
+        },
+        "predecessor_digest_text_encoding": {
+          "const": "ascii_domain_bindings_decimals_and_base64url_payload"
+        },
+        "predecessor_digest_binary_encoding": {
+          "const": "present_digest_is_raw_32_bytes"
+        },
+        "predecessor_digest_genesis": {
+          "const": "null_predecessor_encoded_as_zero_length_final_field"
+        },
+        "cursor_bindings": {
+          "const": "frozen_workspace_id_and_connector_id"
+        }
+      }
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "statement",
+        "architecture_refs"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/requirement_id"
+        },
+        "title": {
+          "$ref": "#/$defs/short_text"
+        },
+        "statement": {
+          "$ref": "#/$defs/prose"
+        },
+        "architecture_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/short_text"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "decision",
+        "rationale",
+        "provisional",
+        "depends_on"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/decision_id"
+        },
+        "title": {
+          "$ref": "#/$defs/short_text"
+        },
+        "decision": {
+          "$ref": "#/$defs/prose"
+        },
+        "rationale": {
+          "$ref": "#/$defs/prose"
+        },
+        "provisional": {
+          "type": "boolean"
+        },
+        "depends_on": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/dependency_id"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "A decision that names any provisional dependency is provisional.",
+          "if": {
+            "required": [
+              "depends_on"
+            ],
+            "properties": {
+              "depends_on": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "provisional": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A provisional decision must name the dependency it is provisional on.",
+          "if": {
+            "required": [
+              "provisional"
+            ],
+            "properties": {
+              "provisional": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "depends_on": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "owner",
+        "required_resolution",
+        "blocking_effect",
+        "affects"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/dependency_id"
+        },
+        "title": {
+          "$ref": "#/$defs/short_text"
+        },
+        "owner": {
+          "$ref": "#/$defs/short_text"
+        },
+        "required_resolution": {
+          "$ref": "#/$defs/prose"
+        },
+        "blocking_effect": {
+          "$ref": "#/$defs/prose"
+        },
+        "affects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/any_con_id"
+          }
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_native_id",
+        "source_locator",
+        "content_checksum",
+        "media_type",
+        "observed_at_us",
+        "source_version",
+        "permission_labels",
+        "deletion_signal",
+        "metadata_bytes"
+      ],
+      "properties": {
+        "source_native_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+        },
+        "source_locator": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^fake://[A-Za-z0-9._/-]{1,120}$"
+        },
+        "content_checksum": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "media_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-z]+/[a-z0-9.+-]+$"
+        },
+        "observed_at_us": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "source_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$"
+        },
+        "permission_labels": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
+          }
+        },
+        "deletion_signal": {
+          "enum": [
+            "none",
+            "explicit_delete",
+            "absent_from_window"
+          ]
+        },
+        "metadata_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_batch_items",
+        "max_item_metadata_bytes",
+        "max_run_bytes",
+        "poll_deadline_ms"
+      ],
+      "properties": {
+        "max_batch_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "max_item_metadata_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_run_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 137438953472
+        },
+        "poll_deadline_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
+        }
+      }
+    },
+    "case_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connector_id",
+        "spi_version",
+        "identity_stability"
+      ],
+      "properties": {
+        "connector_id": {
+          "enum": [
+            "fake.filesystem",
+            "fake.recordset",
+            "fake.threadstore"
+          ]
+        },
+        "spi_version": {
+          "type": "string",
+          "pattern": "^[0-9]{1,2}\\.[0-9]{1,2}$"
+        },
+        "identity_stability": {
+          "enum": [
+            "source_native",
+            "locator_derived"
+          ]
+        },
+        "cursor_state_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cursor_opaque": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/cursor_payload"
+            }
+          ]
+        },
+        "cursor_witness_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "successor_witness_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "cursor_predecessor_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256_hex"
+            }
+          ]
+        },
+        "successor_predecessor_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256_hex"
+            }
+          ]
+        },
+        "migrated_state_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 64
+        },
+        "migrated_cursor_opaque": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/cursor_payload"
+            }
+          ]
+        },
+        "migrated_witness_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "migrated_predecessor_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256_hex"
+            }
+          ]
+        },
+        "declared_payload_bytes": {
+          "$comment": "Declared size of the payload the connector returned. Sizes above the 4096-byte bound are stated as a number rather than embedded, so the corpus stays small and inert.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "declared_payload_encoding_violation": {
+          "$comment": "Named inertly rather than embedded, matching the hostile-input posture used by CON-C037.",
+          "enum": [
+            "none",
+            "non_alphabet_character",
+            "padding_character",
+            "undecodable_length"
+          ]
+        },
+        "observations": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "notes": {
+          "$ref": "#/$defs/prose"
+        },
+        "lineage_changed_field": {
+          "enum": [
+            "none",
+            "state_version",
+            "payload",
+            "witness_seq",
+            "predecessor_digest",
+            "workspace_id",
+            "connector_id"
+          ]
+        },
+        "lineage_digest_vectors": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/lineage_digest_vector"
+          }
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "family",
+        "title",
+        "vector",
+        "input",
+        "expected_outcome",
+        "expected_error",
+        "requirements",
+        "decisions",
+        "assertions"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/case_id"
+        },
+        "family": {
+          "enum": [
+            "discovery",
+            "initial_sync",
+            "incremental_sync",
+            "cursor_state",
+            "duplicate_upsert",
+            "rename",
+            "delete_tombstone",
+            "acl",
+            "provenance",
+            "ordering",
+            "crash_recovery",
+            "fencing_takeover",
+            "credentials",
+            "storage_boundary",
+            "limits",
+            "hostile_input",
+            "retry_dead_letter",
+            "health",
+            "cancellation",
+            "packaging_compatibility",
+            "scope_boundary"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/short_text"
+        },
+        "vector": {
+          "$ref": "#/$defs/prose"
+        },
+        "input": {
+          "$ref": "#/$defs/case_input"
+        },
+        "expected_outcome": {
+          "enum": [
+            "accepted",
+            "refused",
+            "no_change",
+            "deferred_to_reconciliation",
+            "dead_lettered",
+            "resync_required",
+            "cancelled"
+          ]
+        },
+        "expected_error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "enum": [
+                "invalid_request",
+                "authorization_denied",
+                "capability_not_granted",
+                "deadline_exceeded",
+                "size_limit_exceeded",
+                "incompatible_version",
+                "not_found",
+                "rate_limited",
+                "non_retryable",
+                "internal_recoverable",
+                "internal_non_recoverable",
+                "dependency_unavailable",
+                "mutation_precondition_failed",
+                "workspace_lease_unavailable",
+                "connector_cursor_not_monotonic",
+                "connector_cursor_unmigratable",
+                "connector_cursor_foreign",
+                "connector_identity_unstable",
+                "connector_state_invalid",
+                "connector_secret_exposed",
+                "connector_storage_access_denied",
+                "connector_scheduling_denied",
+                "connector_source_writeback_denied"
+              ]
+            }
+          ]
+        },
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/requirement_id"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/decision_id"
+          }
+        },
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/prose"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "A monotonicity refusal must state both witnesses it compared.",
+          "if": {
+            "required": [
+              "expected_error"
+            ],
+            "properties": {
+              "expected_error": {
+                "const": "connector_cursor_not_monotonic"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "input": {
+                "required": [
+                  "cursor_witness_seq",
+                  "successor_witness_seq"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An unmigratable-cursor refusal must state the persisted state version it could not migrate.",
+          "if": {
+            "required": [
+              "expected_error"
+            ],
+            "properties": {
+              "expected_error": {
+                "const": "connector_cursor_unmigratable"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "input": {
+                "required": [
+                  "cursor_state_version"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A migration vector is a cursor_state case and must state the whole input state and the whole migration output, so witness and lineage preservation are checkable rather than assumed.",
+          "if": {
+            "required": [
+              "input"
+            ],
+            "properties": {
+              "input": {
+                "required": [
+                  "migrated_state_version"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "family": {
+                "const": "cursor_state"
+              },
+              "input": {
+                "required": [
+                  "cursor_state_version",
+                  "cursor_witness_seq",
+                  "cursor_opaque",
+                  "migrated_cursor_opaque",
+                  "migrated_witness_seq"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A refused migration vector fails either because the connector cannot migrate the version or because the migration output violates its obligations. No other error may be claimed.",
+          "if": {
+            "required": [
+              "input",
+              "expected_outcome"
+            ],
+            "properties": {
+              "input": {
+                "required": [
+                  "migrated_state_version"
+                ]
+              },
+              "expected_outcome": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "expected_error": {
+                "enum": [
+                  "connector_cursor_unmigratable",
+                  "connector_state_invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "An encoding violation is refused on the encoding alone, before any binding, lineage or witness check is reached.",
+          "if": {
+            "required": [
+              "input"
+            ],
+            "properties": {
+              "input": {
+                "required": [
+                  "declared_payload_encoding_violation"
+                ],
+                "properties": {
+                  "declared_payload_encoding_violation": {
+                    "enum": [
+                      "non_alphabet_character",
+                      "padding_character",
+                      "undecodable_length"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "expected_outcome": {
+                "const": "refused"
+              },
+              "expected_error": {
+                "const": "connector_state_invalid"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A payload above the normative byte bound is a size refusal, decidable without interpreting the payload.",
+          "if": {
+            "required": [
+              "input"
+            ],
+            "properties": {
+              "input": {
+                "required": [
+                  "declared_payload_bytes"
+                ],
+                "properties": {
+                  "declared_payload_bytes": {
+                    "exclusiveMinimum": 4096
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "expected_outcome": {
+                "const": "refused"
+              },
+              "expected_error": {
+                "const": "size_limit_exceeded"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A positive lineage chain carries at least three golden vectors and is accepted.",
+          "if": {
+            "properties": {
+              "input": {
+                "required": [
+                  "lineage_changed_field"
+                ],
+                "properties": {
+                  "lineage_changed_field": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "family": {
+                "const": "cursor_state"
+              },
+              "input": {
+                "required": [
+                  "lineage_digest_vectors"
+                ],
+                "properties": {
+                  "lineage_digest_vectors": {
+                    "minItems": 3
+                  }
+                }
+              },
+              "expected_outcome": {
+                "const": "accepted"
+              },
+              "expected_error": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A one-field or one-binding lineage mutation carries exactly two vectors and is refused.",
+          "if": {
+            "properties": {
+              "input": {
+                "required": [
+                  "lineage_changed_field"
+                ],
+                "properties": {
+                  "lineage_changed_field": {
+                    "enum": [
+                      "state_version",
+                      "payload",
+                      "witness_seq",
+                      "predecessor_digest",
+                      "workspace_id",
+                      "connector_id"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "family": {
+                "const": "cursor_state"
+              },
+              "input": {
+                "required": [
+                  "lineage_digest_vectors",
+                  "successor_predecessor_digest"
+                ],
+                "properties": {
+                  "lineage_digest_vectors": {
+                    "minItems": 2,
+                    "maxItems": 2
+                  }
+                }
+              },
+              "expected_outcome": {
+                "const": "refused"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "workspace_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "lineage_digest_vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "connector_id",
+        "state_version",
+        "payload",
+        "witness_seq",
+        "predecessor_digest",
+        "expected_digest"
+      ],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/workspace_id"
+        },
+        "connector_id": {
+          "enum": [
+            "fake.filesystem",
+            "fake.recordset",
+            "fake.threadstore"
+          ]
+        },
+        "state_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "payload": {
+          "$ref": "#/$defs/cursor_payload"
+        },
+        "witness_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "predecessor_digest": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256_hex"
+            }
+          ]
+        },
+        "expected_digest": {
+          "$ref": "#/$defs/sha256_hex"
+        }
+      }
+    }
+  }
+}

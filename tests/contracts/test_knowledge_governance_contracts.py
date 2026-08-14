@@ -2254,6 +2254,22 @@ def test_knowledge_search_rejects_record_no_longer_valid_at_resolution_time() ->
         sem_knowledge.validate_knowledge_search_result(result, _knowledge_search_request(), "ws-1", T1, set())
 
 
+def test_knowledge_search_rejects_record_valid_until_the_resolution_time_exactly() -> None:
+    """`valid_until` is exclusive, matching governed storage's own `[valid_from_us,
+    valid_to_us)` select: a version valid only *until* the resolution instant is not the
+    version knowledge.search serves at it."""
+    record = _canonical_knowledge_record_wire(valid_until=T1)
+    result = _knowledge_search_result([record])
+    with pytest.raises(ContractSemanticError, match="no longer valid"):
+        sem_knowledge.validate_knowledge_search_result(result, _knowledge_search_request(), "ws-1", T1, set())
+
+
+def test_knowledge_search_accepts_record_valid_until_strictly_after_the_resolution_time() -> None:
+    record = _canonical_knowledge_record_wire(valid_until=T1)
+    result = _knowledge_search_result([record])
+    sem_knowledge.validate_knowledge_search_result(result, _knowledge_search_request(), "ws-1", T0, set())
+
+
 def test_knowledge_search_accepts_record_within_validity_window() -> None:
     record = _canonical_knowledge_record_wire(valid_from=T0, valid_until=T1)
     result = _knowledge_search_result([record])
@@ -7351,6 +7367,24 @@ def test_context_pack_rejects_evidence_no_longer_valid() -> None:
         _validate_pack(result)
 
 
+def test_context_pack_rejects_evidence_valid_until_the_resolution_time_exactly() -> None:
+    """`valid_until` is exclusive here too: the same half-open rule `records`,
+    `context_models`, and `knowledge.search` all apply."""
+    result = _pack(evidence=[_pack_evidence_wire(temporal=_temporal_wire(valid_until=T1))])
+    with pytest.raises(ContractSemanticError, match="no longer valid"):
+        _validate_pack(result)
+
+
+def test_context_pack_accepts_evidence_valid_until_strictly_after_the_resolution_time() -> None:
+    result = _pack(evidence=[_pack_evidence_wire(temporal=_temporal_wire(valid_until=T2))])
+    _validate_pack(result)
+
+
+def test_context_pack_accepts_evidence_valid_from_at_the_resolution_time_exactly() -> None:
+    result = _pack(evidence=[_pack_evidence_wire(temporal=_temporal_wire(valid_from=T1))])
+    _validate_pack(result)
+
+
 def test_context_pack_rejects_evidence_superseded_by_the_resolution_time() -> None:
     result = _pack(evidence=[_pack_evidence_wire(temporal=_temporal_wire(superseded_at=T1))])
     with pytest.raises(ContractSemanticError, match="superseded at"):
@@ -7835,14 +7869,14 @@ def test_context_pack_accepts_a_wholly_future_proposed_validity_window() -> None
 
 @pytest.mark.parametrize(
     "valid_until,accepted",
-    [(T2, True), (T1, True), (T0, False)],
-    ids=["valid-past-the-instant", "still-valid-at-the-instant", "expired-before-it"],
+    [(T2, True), (T1, False), (T0, False)],
+    ids=["valid-past-the-instant", "expired-at-the-instant", "expired-before-it"],
 )
 def test_context_pack_current_record_validity_upper_boundary(
     valid_until: str, accepted: bool
 ) -> None:
-    """`valid_until` is inclusive: a version valid *until* the resolution instant was still
-    the answer at it, and one valid past it plainly was too.
+    """`valid_until` is exclusive: a version valid only *until* the resolution instant was no
+    longer the answer at it, and one valid past it plainly was.
 
     The `T2` case is the one that keeps the closure honest about direction. `valid_until` is
     a validity bound, not an act, so the resolution-time closure deliberately does not bound
@@ -8092,6 +8126,28 @@ def test_context_pack_context_models_partition_holds_the_same_canonical_bar(
         _validate_pack(result)
 
 
+def test_context_pack_context_models_partition_requires_validity_at_the_resolution_time() -> None:
+    with pytest.raises(ContractSemanticError, match="not yet valid"):
+        _validate_pack(
+            _pack(context_models=[_pack_context_model_wire(temporal=_temporal_wire(valid_from=T2))])
+        )
+    with pytest.raises(ContractSemanticError, match="no longer valid"):
+        _validate_pack(
+            _pack(context_models=[_pack_context_model_wire(temporal=_temporal_wire(valid_until=T1))])
+        )
+
+
+def test_context_pack_context_models_partition_enforces_half_open_boundaries() -> None:
+    """The half-open window's accepted edge: `valid_from` at the resolution instant is still
+    in force, and a `valid_until` strictly after it is too."""
+    _validate_pack(
+        _pack(context_models=[_pack_context_model_wire(temporal=_temporal_wire(valid_from=T1))])
+    )
+    _validate_pack(
+        _pack(context_models=[_pack_context_model_wire(temporal=_temporal_wire(valid_until=T2))])
+    )
+
+
 def _current_record_superseded_at(partition: str, superseded_at: str) -> dict[str, Any]:
     """A record shaped for a *current* partition that nonetheless states when it was
     superseded, built by patching the instant onto the partition's own canonical wire so
@@ -8153,6 +8209,16 @@ def test_context_pack_history_partition_requires_supersession_by_the_resolution_
     result = _pack(history=[_pack_history_wire(superseded_at=T2)])
     with pytest.raises(ContractSemanticError, match="after the"):
         _validate_pack(result)
+
+
+def test_context_pack_history_partition_is_unaffected_by_the_valid_until_boundary() -> None:
+    """History has no validity-containment requirement at all
+    (`_validate_record_under_history_view` deliberately does not apply it), so a
+    `valid_until` equal to the resolution instant -- rejected in every partition containment
+    applies to -- has no bearing on a version's eligibility as history."""
+    record = _pack_history_wire()
+    record["provenance"]["temporal"]["valid_until"] = T1
+    _validate_pack(_pack(history=[record]))
 
 
 def test_context_pack_rejects_a_record_from_another_workspace() -> None:
