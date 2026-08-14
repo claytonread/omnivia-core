@@ -5248,12 +5248,13 @@ export interface ContextPackBuildResult {
    * `provenance_history[].evidence[].source.retrieved_at`. Equality passes and only a strictly
    * later instant is refused, and the refusal is a refusal rather than a repair: provenance is
    * append-only, so an out-of-range instant is never dropped or truncated to make the artifact
-   * selectable. Its validity must contain the resolution instant inclusively --
-   * `temporal.valid_from` no later than it and `temporal.valid_until` no earlier than it, both
-   * boundaries accepted at equality. `temporal.superseded_at` must be absent or strictly after
-   * the resolution instant: supersession is exclusive where the closure is inclusive, because
-   * an artifact replaced *at* the instant a pack resolved was already not the live one, so
-   * equality is rejected here rather than accepted.
+   * selectable. Its validity must contain the resolution instant on a half-open `[valid_from,
+   * valid_until)` window -- `temporal.valid_from` no later than it, inclusive of equality, and
+   * `temporal.valid_until` strictly later than it; a `valid_until` exactly at the resolution
+   * instant is refused, not accepted. `temporal.superseded_at` must be absent or strictly
+   * after the resolution instant: supersession is exclusive where the closure is inclusive,
+   * because an artifact replaced *at* the instant a pack resolved was already not the live
+   * one, so equality is rejected here rather than accepted.
    */
   readonly evidence: readonly EvidenceArtifact[];
   /**
@@ -5267,16 +5268,17 @@ export interface ContextPackBuildResult {
    * every `provenance.assertion.evidence[].source.retrieved_at`, and
    * `provenance.extraction.extracted_at`. Equality passes and only a strictly later instant is
    * refused, and the refusal is a refusal rather than a repair. Its validity must contain the
-   * resolution instant inclusively -- `provenance.temporal.valid_from` no later than it and
-   * `provenance.temporal.valid_until` no earlier than it, both boundaries accepted at
-   * equality; a version whose validity begins only afterwards was not yet in force, and one
-   * that expired before it was no longer the answer. The version must be current and
-   * unsuperseded at that instant: `currentness` exactly `current`, and
-   * `provenance.temporal.superseded_at` absent outright, irrespective of timestamp. Not merely
-   * absent at or before the resolution instant: a current version records no supersession at
-   * all, so a `superseded_at` strictly after the resolution instant is refused exactly as one
-   * at or before it is. A version that states when it was replaced belongs to `history`,
-   * whichever side of the resolution instant that statement falls on.
+   * resolution instant on a half-open `[valid_from, valid_until)` window --
+   * `provenance.temporal.valid_from` no later than it, inclusive of equality, and
+   * `provenance.temporal.valid_until` strictly later than it, so a `valid_until` exactly at
+   * the resolution instant is refused; a version whose validity begins only afterwards was not
+   * yet in force, and one whose validity ends at or before it was no longer the answer. The
+   * version must be current and unsuperseded at that instant: `currentness` exactly `current`,
+   * and `provenance.temporal.superseded_at` absent outright, irrespective of timestamp. Not
+   * merely absent at or before the resolution instant: a current version records no
+   * supersession at all, so a `superseded_at` strictly after the resolution instant is refused
+   * exactly as one at or before it is. A version that states when it was replaced belongs to
+   * `history`, whichever side of the resolution instant that statement falls on.
    * `provenance.assertion.proposed_valid_from`/`proposed_valid_until` are deliberately not
    * bounded by any of this -- a proposed effective date is a claim about the future rather
    * than an act that had to have happened, and a record valid now may propose taking effect
@@ -5308,12 +5310,13 @@ export interface ContextPackBuildResult {
    * by record identifier then version. May be empty. Held to exactly the same current rules
    * `records` states, at L3 rather than L2: the same complete resolution-time closure over the
    * same nested provenance paths, inclusive at equality and refused rather than repaired past
-   * it; the same inclusive validity containment of the resolution instant at both boundaries;
-   * and the same requirement to be current and unsuperseded at that instant, with
-   * `provenance.temporal.superseded_at` absent outright, irrespective of timestamp -- a value
-   * strictly after the resolution instant is refused exactly as one at or before it is. Only
-   * the governance layer differs -- `layer` exactly `l3` -- and a context model is otherwise
-   * no more selectable than an L2 record would be under the same temporal facts.
+   * it; the same half-open validity containment of the resolution instant -- `valid_from`
+   * inclusive, `valid_until` exclusive; and the same requirement to be current and
+   * unsuperseded at that instant, with `provenance.temporal.superseded_at` absent outright,
+   * irrespective of timestamp -- a value strictly after the resolution instant is refused
+   * exactly as one at or before it is. Only the governance layer differs -- `layer` exactly
+   * `l3` -- and a context model is otherwise no more selectable than an L2 record would be
+   * under the same temporal facts.
    */
   readonly context_models: readonly GovernedRecord[];
   /**
