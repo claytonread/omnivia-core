@@ -23,6 +23,13 @@ in :mod:`omnivia_core.agent_host.vector_inputs` are not: they are the runner's
 own half of the lane, and an adapter author runs the corpus rather than
 assembling one call at a time.
 
+The lifecycle layer in :mod:`omnivia_core.agent_host.lifecycle_conformance` is
+re-exported to the same depth and no further: its generated sequences, its
+executor and the value objects an adapter author reads a run back out of. The
+generators, the derived hook sets and the family names stay behind the module,
+because selecting or extending a family is the boundary layer's job and naming
+the module at the call site says which of the two jobs is being done.
+
 The mock is re-exported because developing against it is the point of it
 shipping at all. It holds no durable state: everything it keeps between calls
 is dropped by :meth:`MockProvider.reset`.
@@ -48,6 +55,16 @@ from omnivia_core.agent_host.conformance_runner import (
     run_corpus,
     run_corpus_file,
 )
+from omnivia_core.agent_host.lifecycle_conformance import (
+    LIFECYCLE_SEQUENCES,
+    LifecycleSequence,
+    LifecycleSequenceError,
+    LifecycleStep,
+    SequenceResult,
+    StepResult,
+    run_lifecycle_sequences,
+    run_sequence,
+)
 from omnivia_core.agent_host.mock import MockProvider, ProviderProfile
 from omnivia_core.agent_host.spi import (
     SPI_VERSION,
@@ -66,6 +83,7 @@ from omnivia_core.agent_host.spi import (
 )
 
 __all__ = [
+    "LIFECYCLE_SEQUENCES",
     "SPI_VERSION",
     "SPI_VERSION_MAXIMUM",
     "SPI_VERSION_MINIMUM",
@@ -82,17 +100,24 @@ __all__ = [
     "Hook",
     "HookIntent",
     "HookOutcome",
+    "LifecycleSequence",
+    "LifecycleSequenceError",
+    "LifecycleStep",
     "Mismatch",
     "MockProvider",
     "ProviderProfile",
     "Reason",
+    "SequenceResult",
     "SpiContractError",
     "SpiProvenance",
     "SpiRequest",
+    "StepResult",
     "VersionAxes",
     "compare_case",
     "execute_case",
     "load_corpus",
     "run_corpus",
     "run_corpus_file",
+    "run_lifecycle_sequences",
+    "run_sequence",
 ]
