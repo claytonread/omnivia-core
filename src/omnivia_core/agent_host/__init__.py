@@ -30,6 +30,13 @@ generators, the derived hook sets and the family names stay behind the module,
 because selecting or extending a family is the boundary layer's job and naming
 the module at the call site says which of the two jobs is being done.
 
+The boundary layer in :mod:`omnivia_core.agent_host.boundary_conformance` is
+re-exported more narrowly still: its one entry point and the report an adapter
+author reads a verdict out of. Its observation type, its evaluator and the
+invariant definitions it derives from the frozen contract stay behind the module,
+because constructing an observation is how a violation is *synthesised* rather
+than run, which is the boundary layer's own job.
+
 The mock is re-exported because developing against it is the point of it
 shipping at all. It holds no durable state: everything it keeps between calls
 is dropped by :meth:`MockProvider.reset`.
@@ -37,6 +44,13 @@ is dropped by :meth:`MockProvider.reset`.
 
 from __future__ import annotations
 
+from omnivia_core.agent_host.boundary_conformance import (
+    BoundaryConformanceError,
+    BoundaryReport,
+    BoundaryViolation,
+    InvariantResult,
+    run_boundary_conformance,
+)
 from omnivia_core.agent_host.conformance import (
     CaseReport,
     ConformanceCase,
@@ -88,6 +102,9 @@ __all__ = [
     "SPI_VERSION_MAXIMUM",
     "SPI_VERSION_MINIMUM",
     "ApprovalKind",
+    "BoundaryConformanceError",
+    "BoundaryReport",
+    "BoundaryViolation",
     "CaseComparison",
     "CaseReport",
     "ConformanceCase",
@@ -100,6 +117,7 @@ __all__ = [
     "Hook",
     "HookIntent",
     "HookOutcome",
+    "InvariantResult",
     "LifecycleSequence",
     "LifecycleSequenceError",
     "LifecycleStep",
@@ -116,6 +134,7 @@ __all__ = [
     "compare_case",
     "execute_case",
     "load_corpus",
+    "run_boundary_conformance",
     "run_corpus",
     "run_corpus_file",
     "run_lifecycle_sequences",
