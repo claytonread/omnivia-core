@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omnivia.pm/schemas/core-workflow-run-memory/v1/workflow-run-cases.schema.json",
+  "title": "OmniVia Core Workflow Run memory boundary cases",
+  "description": "Strict schema for the inert preparation fixture in workflow-run-cases.json. Every reference is internal; the schema resolves and validates offline.",
+  "type": "object",
+  "required": ["fixture_id", "schema_version", "status", "authority", "safety", "cases"],
+  "properties": {
+    "fixture_id": { "const": "core-workflow-run-memory-v1" },
+    "schema_version": { "const": "1" },
+    "status": { "const": "preparation_only" },
+    "authority": { "$ref": "#/$defs/Authority" },
+    "safety": { "$ref": "#/$defs/Safety" },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/Case" }
+    }
+  },
+  "unevaluatedProperties": false,
+  "$defs": {
+    "CommitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "RepoRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/#-]*$"
+    },
+    "Identifier": {
+      "description": "Mirrors the frozen application contract Identifier shape and bound.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "DotCode": {
+      "description": "Mirrors the frozen open dot-namespaced code shape used for purpose and capability tokens.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$"
+    },
+    "CaseId": {
+      "type": "string",
+      "pattern": "^RUN-V-[0-9]{2}$"
+    },
+    "RequirementId": {
+      "type": "string",
+      "pattern": "^RUN-R-[0-9]{2}$"
+    },
+    "DependencyId": {
+      "type": "string",
+      "pattern": "^RUN-P-[0-9]{2}$"
+    },
+    "OperationName": {
+      "description": "The frozen 20-operation application catalogue. Closed here on purpose: a preparation fixture must not invent an operation.",
+      "enum": [
+        "candidate.approve",
+        "candidate.reject",
+        "context_pack.build",
+        "evidence.search",
+        "graph.traverse",
+        "import.start",
+        "job.cancel",
+        "job.events",
+        "job.get",
+        "job.retry",
+        "knowledge.propose",
+        "knowledge.search",
+        "memory.create",
+        "memory.get",
+        "memory.list",
+        "memory.search",
+        "record.supersede",
+        "workspace.create",
+        "workspace.inspect",
+        "workspace.list"
+      ]
+    },
+    "ErrorCode": {
+      "description": "The frozen error taxonomy. The product contract treats ErrorCode as an open patterned string so compatible minor releases can add codes; this fixture closes it so no expected outcome can name a code that does not exist today.",
+      "enum": [
+        "authentication_required",
+        "authorization_denied",
+        "workspace_not_granted",
+        "capability_not_granted",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "conflict",
+        "mutation_precondition_failed",
+        "idempotency_conflict",
+        "workspace_busy",
+        "bootstrap_in_progress",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "incompatible_version",
+        "upgrade_required",
+        "projection_unavailable",
+        "stale_projection",
+        "rate_limited",
+        "size_limit_exceeded",
+        "token_limit_exceeded",
+        "deadline_exceeded",
+        "cancelled",
+        "dependency_unavailable",
+        "internal_recoverable",
+        "internal_non_recoverable"
+      ]
+    },
+    "Authority": {
+      "type": "object",
+      "required": [
+        "pm_base_commit",
+        "core_checkpoint_commit",
+        "architecture_document",
+        "boundary_document",
+        "operation_catalogue_source",
+        "error_code_source"
+      ],
+      "properties": {
+        "pm_base_commit": { "$ref": "#/$defs/CommitSha" },
+        "core_checkpoint_commit": { "$ref": "#/$defs/CommitSha" },
+        "architecture_document": { "$ref": "#/$defs/RepoRelativePath" },
+        "boundary_document": { "$ref": "#/$defs/RepoRelativePath" },
+        "operation_catalogue_source": { "$ref": "#/$defs/RepoRelativePath" },
+        "error_code_source": { "$ref": "#/$defs/RepoRelativePath" }
+      },
+      "unevaluatedProperties": false
+    },
+    "Safety": {
+      "description": "Every flag is asserted, and every flag must hold. Prohibited-content classification is machine-checkable against these constants.",
+      "type": "object",
+      "required": [
+        "synthetic_identifiers_only",
+        "network_dependency",
+        "executable_payloads",
+        "credentials_or_key_material",
+        "private_or_customer_content",
+        "live_urls",
+        "expected_outcomes_are_fail_closed"
+      ],
+      "properties": {
+        "synthetic_identifiers_only": { "const": true },
+        "network_dependency": { "const": false },
+        "executable_payloads": { "const": false },
+        "credentials_or_key_material": { "const": false },
+        "private_or_customer_content": { "const": false },
+        "live_urls": { "const": false },
+        "expected_outcomes_are_fail_closed": { "const": true }
+      },
+      "unevaluatedProperties": false
+    },
+    "RunContext": {
+      "description": "Run-owned identity. Every field here is runtime-owned and opaque to Core except bound_workspace_id, which Core validates.",
+      "type": "object",
+      "required": [
+        "run_id",
+        "task_node_id",
+        "agent_id",
+        "session_id",
+        "caller_principal_kind",
+        "bound_workspace_id"
+      ],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/Identifier" },
+        "task_node_id": { "$ref": "#/$defs/Identifier" },
+        "agent_id": { "$ref": "#/$defs/Identifier" },
+        "session_id": { "$ref": "#/$defs/Identifier" },
+        "caller_principal_kind": { "enum": ["agent", "human"] },
+        "bound_workspace_id": { "$ref": "#/$defs/Identifier" }
+      },
+      "unevaluatedProperties": false
+    },
+    "Ingress": {
+      "description": "One application-contract request the run makes into Core. Absent when a case is entirely run-local.",
+      "type": "object",
+      "required": ["operation", "granted_capabilities", "purpose"],
+      "properties": {
+        "operation": { "$ref": "#/$defs/OperationName" },
+        "requested_workspace_id": { "$ref": "#/$defs/Identifier" },
+        "granted_capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/DotCode" }
+        },
+        "purpose": { "$ref": "#/$defs/DotCode" },
+        "idempotency_key": { "$ref": "#/$defs/Identifier" }
+      },
+      "unevaluatedProperties": false
+    },
+    "BoundaryProbe": {
+      "description": "Describes an out-of-bounds value instead of embedding one, so the fixture stays valid and inert.",
+      "type": "object",
+      "required": ["field", "octet_length", "bound_octets", "note"],
+      "properties": {
+        "field": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "octet_length": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "bound_octets": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "note": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "unevaluatedProperties": false
+    },
+    "ReconciliationBranch": {
+      "description": "One legitimate outcome an indeterminate case resolves to. Cancellation never rolls back a Core effect that already committed; reconciliation only observes which outcome occurred.",
+      "type": "object",
+      "required": ["branch_id", "core_mutation", "canonical_mutation", "core_audit_event", "note"],
+      "properties": {
+        "branch_id": { "enum": ["committed_once", "not_committed"] },
+        "core_mutation": { "type": "boolean" },
+        "canonical_mutation": { "type": "boolean" },
+        "core_audit_event": { "type": "boolean" },
+        "note": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "allOf": [
+        {
+          "description": "The committed-once branch is a Core mutation that the cancellation does not undo, and Core audited it.",
+          "if": {
+            "properties": { "branch_id": { "const": "committed_once" } },
+            "required": ["branch_id"]
+          },
+          "then": {
+            "properties": {
+              "core_mutation": { "const": true },
+              "core_audit_event": { "const": true }
+            }
+          }
+        },
+        {
+          "description": "The not-committed branch left no Core effect and therefore no mutation audit entry for this attempt.",
+          "if": {
+            "properties": { "branch_id": { "const": "not_committed" } },
+            "required": ["branch_id"]
+          },
+          "then": {
+            "properties": {
+              "core_mutation": { "const": false },
+              "core_audit_event": { "const": false }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Expected": {
+      "type": "object",
+      "required": [
+        "disposition",
+        "core_mutation",
+        "canonical_mutation",
+        "mutation_authority",
+        "core_audit_event",
+        "fail_closed",
+        "notes"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": ["accepted", "rejected", "no_op", "indeterminate_until_reconciled"]
+        },
+        "error_code": { "$ref": "#/$defs/ErrorCode" },
+        "core_mutation": { "type": ["boolean", "null"] },
+        "canonical_mutation": { "type": "boolean" },
+        "mutation_authority": { "enum": ["none", "validated_human_principal"] },
+        "core_audit_event": { "type": ["boolean", "null"] },
+        "fail_closed": { "const": true },
+        "notes": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "reconciliation_branches": {
+          "description": "Both legitimate outcomes, exactly once each. Required for, and only for, an indeterminate disposition.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ReconciliationBranch" },
+          "allOf": [
+            {
+              "contains": {
+                "properties": { "branch_id": { "const": "committed_once" } },
+                "required": ["branch_id"]
+              }
+            },
+            {
+              "contains": {
+                "properties": { "branch_id": { "const": "not_committed" } },
+                "required": ["branch_id"]
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "A rejection must name its error code; anything else must not carry one.",
+          "if": {
+            "properties": { "disposition": { "const": "rejected" } },
+            "required": ["disposition"]
+          },
+          "then": { "required": ["error_code"] },
+          "else": { "properties": { "error_code": false } }
+        },
+        {
+          "description": "An indeterminate case must not fix a Core-effect Boolean. It reports null and enumerates both legitimate reconciliation branches instead. Canonical mutation stays determinate, because no branch of a cancellation race can carry governance authority.",
+          "if": {
+            "properties": {
+              "disposition": { "const": "indeterminate_until_reconciled" }
+            },
+            "required": ["disposition"]
+          },
+          "then": {
+            "required": ["reconciliation_branches"],
+            "properties": {
+              "core_mutation": { "type": "null" },
+              "core_audit_event": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "core_mutation": { "type": "boolean" },
+              "core_audit_event": { "type": "boolean" },
+              "reconciliation_branches": false
+            }
+          }
+        },
+        {
+          "description": "Canonical knowledge may change only under a validated human governance principal.",
+          "if": {
+            "properties": { "canonical_mutation": { "const": true } },
+            "required": ["canonical_mutation"]
+          },
+          "then": {
+            "properties": {
+              "mutation_authority": { "const": "validated_human_principal" },
+              "core_mutation": { "const": true }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Case": {
+      "type": "object",
+      "required": ["case_id", "title", "category", "requirements", "run_context", "stimulus", "expected"],
+      "properties": {
+        "case_id": { "$ref": "#/$defs/CaseId" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "category": {
+          "enum": [
+            "non_mutation",
+            "approval",
+            "idempotency",
+            "replay",
+            "cross_workspace_denial",
+            "compression_invariance",
+            "cancellation_race",
+            "accepted_outcome_traceability",
+            "retention_deletion",
+            "oversized_result",
+            "lineage_bounds"
+          ]
+        },
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/RequirementId" }
+        },
+        "provisional_dependencies": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/DependencyId" }
+        },
+        "run_context": { "$ref": "#/$defs/RunContext" },
+        "ingress": { "$ref": "#/$defs/Ingress" },
+        "boundary_probe": { "$ref": "#/$defs/BoundaryProbe" },
+        "stimulus": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "expected": { "$ref": "#/$defs/Expected" }
+      },
+      "allOf": [
+        {
+          "description": "The load-bearing invariant: an agent-actor run can never mutate canonical knowledge.",
+          "if": {
+            "properties": {
+              "run_context": {
+                "properties": { "caller_principal_kind": { "const": "agent" } },
+                "required": ["caller_principal_kind"]
+              }
+            },
+            "required": ["run_context"]
+          },
+          "then": {
+            "properties": {
+              "expected": {
+                "properties": {
+                  "canonical_mutation": { "const": false },
+                  "mutation_authority": { "const": "none" },
+                  "reconciliation_branches": {
+                    "items": {
+                      "properties": { "canonical_mutation": { "const": false } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-01 (the knowledge.propose capability mapping) is unresolved, so a case exercising RUN-R-12 or RUN-R-13 must declare it.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-12", "RUN-R-13"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-01" } }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-02 (workflow_run as a registered SourceKind) is unresolved, so a case exercising RUN-R-07 or RUN-R-21 must declare it.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-07", "RUN-R-21"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-02" } }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-03 (whether run, session and agent identity ever become envelope metadata) is unresolved, so a case exercising RUN-R-06 or RUN-R-07 must declare it.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-06", "RUN-R-07"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-03" } }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-04 (the governance operation mapping) is unresolved, so a case exercising RUN-R-11 or RUN-R-12 must declare it.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-11", "RUN-R-12"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-04" } }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-05 (the canonical form and digest algorithm for idempotency-key derivation) is unresolved, so a case exercising RUN-R-16 or RUN-R-17 must declare it. This is the load-bearing case: idempotency and cancellation expectations must not read as frozen.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-16", "RUN-R-17"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-05" } }
+            }
+          }
+        },
+        {
+          "description": "RUN-P-06 (retention and deletion policy for runtime-held oversized results) is unresolved, so a case exercising RUN-R-09 or RUN-R-19 must declare it.",
+          "if": {
+            "properties": {
+              "requirements": { "contains": { "enum": ["RUN-R-09", "RUN-R-19"] } }
+            },
+            "required": ["requirements"]
+          },
+          "then": {
+            "required": ["provisional_dependencies"],
+            "properties": {
+              "provisional_dependencies": { "contains": { "const": "RUN-P-06" } }
+            }
+          }
+        },
+        {
+          "description": "A mutating operation must carry an idempotency key; a read must not.",
+          "if": {
+            "properties": {
+              "ingress": {
+                "properties": {
+                  "operation": {
+                    "enum": [
+                      "candidate.approve",
+                      "candidate.reject",
+                      "import.start",
+                      "job.cancel",
+                      "job.retry",
+                      "knowledge.propose",
+                      "memory.create",
+                      "record.supersede",
+                      "workspace.create"
+                    ]
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["ingress"]
+          },
+          "then": {
+            "properties": { "ingress": { "required": ["idempotency_key"] } }
+          },
+          "else": {
+            "properties": {
+              "ingress": { "properties": { "idempotency_key": false } }
+            }
+          }
+        },
+        {
+          "description": "Only the installation-scoped operations may omit a workspace id.",
+          "if": {
+            "properties": {
+              "ingress": {
+                "properties": {
+                  "operation": {
+                    "not": { "enum": ["workspace.create", "workspace.list"] }
+                  }
+                },
+                "required": ["operation"]
+              }
+            },
+            "required": ["ingress"]
+          },
+          "then": {
+            "properties": { "ingress": { "required": ["requested_workspace_id"] } }
+          },
+          "else": {
+            "properties": {
+              "ingress": { "properties": { "requested_workspace_id": false } }
+            }
+          }
+        },
+        {
+          "description": "A run-local case has no Core ingress and therefore no Core effect.",
+          "if": { "not": { "required": ["ingress"] } },
+          "then": {
+            "properties": {
+              "expected": {
+                "properties": {
+                  "core_mutation": { "const": false },
+                  "canonical_mutation": { "const": false }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}
