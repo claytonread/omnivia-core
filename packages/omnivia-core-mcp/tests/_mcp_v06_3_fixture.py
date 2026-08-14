@@ -843,11 +843,37 @@ class GovernedService:
     server reads that descriptor through `omnivia-core-client`, so the test
     hands over a directory rather than an endpoint: nothing on the MCP side is
     told where the socket is.
+
+    `process` and `log` are here so a failing assertion can say what became of
+    the service rather than only that a call did not succeed. Every test in the
+    module shares this one process, so "the tool answered with an error" and
+    "the service this module started is no longer answering anyone" are the same
+    observation over the wire, and only the two fields below can tell them apart.
     """
 
     endpoint_uri: str
     workspace_id: str
     installation_state: Path
+    process: subprocess.Popen[bytes]
+    log: Path
+
+    def diagnosis(self) -> str:
+        """What the service is doing now, and everything it has ever written.
+
+        For an assertion message. A service that stopped says so in its own
+        words on the way out -- a lease it could no longer show current, an
+        endpoint it refused to bind -- and a service that is still running while
+        answering nobody is a different failure with a different cause. Reading
+        both here is what makes a hosted failure diagnosable from the log
+        instead of only reproducible.
+        """
+        state = (
+            "still running"
+            if self.process.poll() is None
+            else f"exited with {self.process.returncode}"
+        )
+        said = self.log.read_text(encoding="utf-8", errors="replace")
+        return f"the service is {state}; it wrote {said!r}"
 
 
 @contextmanager
@@ -867,33 +893,57 @@ def serving() -> Iterator[GovernedService]:
     built = build(root)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
 
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "omnivia_core_runtime.service.main",
-            "--workspace",
-            str(built.workspace.root),
-            "--installation-state",
-            str(built.installation.root),
-            "--endpoint",
-            endpoint.url,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    # A file, not two pipes, and for the same two reasons `managed_start._spawn`
+    # gives its own child one. Nothing here reads a pipe: the service outlives
+    # every call in the module, so a `PIPE` nobody drains is a write that blocks
+    # the whole process once the kernel buffer fills -- and a blocked service
+    # still holds the workspace lease and the storage lock, so a later
+    # `connect` cannot start a replacement either and spends its entire
+    # `MANAGED_START_TIMEOUT_SECONDS` budget failing to. `process.wait()` below
+    # is the same hazard at teardown, where the standard library documents it.
+    # The second reason is the one that made this failure unreadable in CI: the
+    # service's own diagnostic -- the sentence it writes when it stops -- went
+    # into a pipe that was closed unread, so a hosted run could say a call had
+    # failed and never say why.
+    log_path = root / "service.log"
+    with log_path.open("wb") as log:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "omnivia_core_runtime.service.main",
+                "--workspace",
+                str(built.workspace.root),
+                "--installation-state",
+                str(built.installation.root),
+                "--endpoint",
+                endpoint.url,
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    service = GovernedService(
+        endpoint.url,
+        built.workspace_id,
+        built.installation.root,
+        process,
+        log_path,
     )
     try:
         deadline = time.monotonic() + 60
         found = None
         while time.monotonic() < deadline:
-            assert process.poll() is None, "the service exited instead of serving"
+            assert process.poll() is None, (
+                f"the service exited instead of serving: {service.diagnosis()}"
+            )
             found = discover(built.installation.runtime_for(built.workspace_id))
             if found is not None and found.ready:
                 break
             time.sleep(0.05)
-        assert found is not None and found.ready, "the service never became ready"
-        yield GovernedService(endpoint.url, built.workspace_id, built.installation.root)
+        assert found is not None and found.ready, (
+            f"the service never became ready: {service.diagnosis()}"
+        )
+        yield service
     finally:
         if process.poll() is None:
             process.send_signal(signal.SIGTERM)

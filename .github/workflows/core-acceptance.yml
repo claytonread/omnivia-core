@@ -37,7 +37,10 @@ jobs:
     # rulesets reference this exact string.
     name: Core acceptance
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45 left no margin: a full suite that took 40m05s left 78 seconds for the
+    # benchmarks, Ruff, mypy, Swift and the diff checks that follow it, so the
+    # gate reported a timeout for work that had passed.
+    timeout-minutes: 60
     permissions:
       contents: read
 
