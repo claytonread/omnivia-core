@@ -20,7 +20,8 @@ control, or a proof that a connector reported everything in the window its
 cursor advanced across. `CON-C058` demonstrates the last one concretely: the
 host accepts a properly chained forward cursor, and the omission is found by
 comparing against the *corpus-fixed* expected observation set of the fake --
-detection that has no equivalent against a real source (`CON-P08`, `CON-P09`).
+detection that a real adapter must supply independently under the accepted
+`CON-P08` / `CON-P09` posture.
 """
 
 from __future__ import annotations
@@ -119,6 +120,7 @@ SDK_MODULE_NAMES: Final[tuple[str, ...]] = (
     "__init__",
     "conformance",
     "fake",
+    "filesystem",
     "host",
     "models",
     "protocols",

@@ -20,17 +20,207 @@ from hashlib import sha256
 from typing import Final
 
 from omnivia_core.connector import (
+    ConnectorContractError,
     ConnectorCursor,
     ConnectorFailure,
     DeadLetter,
     HealthState,
     SourceHealth,
 )
+from omnivia_core.connector.spi import (
+    ERROR_CONNECTOR_STATE_INVALID,
+    ConnectorRefused,
+    CursorBinding,
+    CursorRecord,
+    CursorState,
+)
 from omnivia_core.contracts.v1 import to_canonical_json
 
 #: The checkpoint kind that carries a connector cursor. Other kinds may share
 #: the table; this is the only one this module reads or writes.
 CURSOR_CHECKPOINT_KIND: Final = "connector.cursor"
+
+#: The exact key set a legacy two-field `ConnectorCursor` checkpoint document
+#: carries. A four-field SPI `CursorRecord` document never matches this set
+#: (it carries `binding` and `state`, not `state_version` and `token` at the
+#: top level), which is what lets one checkpoint kind hold both shapes and a
+#: reader tell them apart deterministically rather than by guessing.
+_LEGACY_CURSOR_KEYS: Final[frozenset[str]] = frozenset({"state_version", "token"})
+_SPI_CURSOR_KEYS: Final[frozenset[str]] = frozenset({"binding", "state"})
+_SPI_CURSOR_KEYS_WITH_MIGRATION: Final[frozenset[str]] = frozenset(
+    {"binding", "state", "migration_evidence"}
+)
+_SPI_BINDING_KEYS: Final[frozenset[str]] = frozenset({"workspace_id", "connector_id"})
+_SPI_STATE_KEYS: Final[frozenset[str]] = frozenset(
+    {"state_version", "payload", "witness_seq", "predecessor_digest"}
+)
+_SPI_MIGRATION_KEYS: Final[frozenset[str]] = frozenset(
+    {"before_digest", "after_digest"}
+)
+
+
+def _spi_state_to_wire(state: CursorState) -> dict[str, object]:
+    return {
+        "state_version": state.state_version,
+        "payload": state.payload.decode("ascii"),
+        "witness_seq": state.witness_seq,
+        "predecessor_digest": (
+            None if state.predecessor_digest is None else state.predecessor_digest.hex()
+        ),
+    }
+
+
+def _spi_state_from_wire(document: dict[str, object]) -> CursorState:
+    if frozenset(document) != _SPI_STATE_KEYS:
+        raise ValueError("SPI state has an unexpected shape")
+    state_version = document["state_version"]
+    payload = document["payload"]
+    witness_seq = document["witness_seq"]
+    predecessor = document["predecessor_digest"]
+    if (
+        not isinstance(state_version, int)
+        or isinstance(state_version, bool)
+        or not isinstance(payload, str)
+        or not isinstance(witness_seq, int)
+        or isinstance(witness_seq, bool)
+        or (predecessor is not None and not isinstance(predecessor, str))
+    ):
+        raise ValueError("SPI state fields have invalid types")
+    encoded_payload = payload.encode("ascii")
+    predecessor_bytes: bytes | None = None
+    if predecessor is not None:
+        if len(predecessor) != 64 or any(character not in "0123456789abcdef" for character in predecessor):
+            raise ValueError("SPI predecessor digest is not lowercase SHA-256 hex")
+        predecessor_bytes = bytes.fromhex(predecessor)
+    return CursorState(
+        state_version=state_version,
+        payload=encoded_payload,
+        witness_seq=witness_seq,
+        predecessor_digest=predecessor_bytes,
+    )
+
+
+def write_spi_cursor_checkpoint(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    attempt_number: int,
+    record: CursorRecord,
+    created_at_us: int,
+    migration_evidence: dict[str, str] | None = None,
+) -> int:
+    """Commit one SPI `CursorRecord` -- binding, and all four state fields.
+
+    Shares `omnivia_job_checkpoints` and `CURSOR_CHECKPOINT_KIND` with the
+    legacy two-field cursor rather than a table of its own: the resumable
+    cursor has no table by design (module docstring), and a second one would
+    just be a second copy of the same history.
+    """
+    sequence = next_checkpoint_sequence(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    document: dict[str, object] = {
+        "binding": {
+            "workspace_id": record.binding.workspace_id,
+            "connector_id": record.binding.connector_id,
+        },
+        "state": _spi_state_to_wire(record.state),
+    }
+    if migration_evidence is not None:
+        document["migration_evidence"] = migration_evidence
+    payload = to_canonical_json(document)
+    connection.execute(
+        "INSERT INTO omnivia_job_checkpoints "
+        "(workspace_id, job_id, checkpoint_sequence, attempt_number, created_at_us, "
+        "checkpoint_kind, checkpoint_json, checkpoint_digest) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            workspace_id,
+            run_id,
+            sequence,
+            attempt_number,
+            created_at_us,
+            CURSOR_CHECKPOINT_KIND,
+            payload,
+            _digest(payload),
+        ),
+    )
+    return sequence
+
+
+def read_spi_resume_cursor(
+    connection: sqlite3.Connection, *, workspace_id: str, connector_id: str
+) -> CursorRecord | None:
+    """The last SPI `CursorRecord` this connector durably committed, if any.
+
+    A legacy two-field checkpoint under the same connector id reads back as
+    `None` here -- restored without an SPI cursor, which is an explicit resync
+    rather than a guess at reinterpreting the older shape (candidate's
+    unmigratable/restored-without-cursor rule).
+    """
+    row = connection.execute(
+        "SELECT c.checkpoint_json, c.checkpoint_digest "
+        "FROM omnivia_connector_sync_runs r "
+        "JOIN omnivia_job_checkpoints c "
+        "  ON c.workspace_id = r.workspace_id AND c.job_id = r.run_id "
+        "WHERE r.workspace_id = ? AND r.connector_id = ? AND c.checkpoint_kind = ? "
+        "ORDER BY r.sync_sequence DESC, c.checkpoint_sequence DESC LIMIT 1",
+        (workspace_id, connector_id, CURSOR_CHECKPOINT_KIND),
+    ).fetchone()
+    if row is None:
+        return None
+    payload = str(row[0])
+    if str(row[1]) != _digest(payload):
+        raise ConnectorRefused(
+            ERROR_CONNECTOR_STATE_INVALID, "persisted cursor checkpoint digest does not verify"
+        )
+    try:
+        document = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise ConnectorRefused(
+            ERROR_CONNECTOR_STATE_INVALID, "persisted cursor checkpoint is not JSON"
+        ) from error
+    if isinstance(document, dict) and frozenset(document) == _LEGACY_CURSOR_KEYS:
+        return None
+    try:
+        if not isinstance(document, dict) or frozenset(document) not in {
+            _SPI_CURSOR_KEYS,
+            _SPI_CURSOR_KEYS_WITH_MIGRATION,
+        }:
+            raise ValueError("SPI checkpoint has an unexpected shape")
+        binding = document["binding"]
+        state = document["state"]
+        if (
+            not isinstance(binding, dict)
+            or frozenset(binding) != _SPI_BINDING_KEYS
+            or not all(isinstance(binding[key], str) for key in _SPI_BINDING_KEYS)
+            or not isinstance(state, dict)
+        ):
+            raise ValueError("SPI checkpoint binding or state has an invalid shape")
+        migration = document.get("migration_evidence")
+        if migration is not None and (
+            not isinstance(migration, dict)
+            or frozenset(migration) != _SPI_MIGRATION_KEYS
+            or not all(
+                isinstance(migration[key], str)
+                and len(migration[key]) == 64
+                and all(character in "0123456789abcdef" for character in migration[key])
+                for key in _SPI_MIGRATION_KEYS
+            )
+        ):
+            raise ValueError("SPI migration evidence has an invalid shape")
+        return CursorRecord(
+            binding=CursorBinding(
+                workspace_id=binding["workspace_id"],
+                connector_id=binding["connector_id"],
+            ),
+            state=_spi_state_from_wire(state),
+        )
+    except (ConnectorContractError, KeyError, TypeError, UnicodeEncodeError, ValueError) as error:
+        raise ConnectorRefused(
+            ERROR_CONNECTOR_STATE_INVALID, "persisted SPI cursor checkpoint is malformed"
+        ) from error
 
 
 def _digest(document: str) -> str:
@@ -313,8 +503,10 @@ __all__ = [
     "read_last_state_version",
     "read_latest_health",
     "read_resume_cursor",
+    "read_spi_resume_cursor",
     "record_dead_letter",
     "record_health",
     "register_sync_run",
     "write_cursor_checkpoint",
+    "write_spi_cursor_checkpoint",
 ]

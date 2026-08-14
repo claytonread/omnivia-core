@@ -330,6 +330,7 @@ def admit_observation(document: Mapping[str, Any]) -> Observation:
             permission_labels=tuple(sorted(labels)),
             deletion_signal=signal,
             metadata_json=metadata_json,
+            source_event_at_us=document.get("source_event_at_us"),
         )
     except (ConnectorContractError, TypeError, ValueError):
         contract_error = True
@@ -560,6 +561,12 @@ def validate_batch(
             raise ConnectorRefused(ERROR_CODE_INVALID_REQUEST, "source_locator")
         if metadata_depth(observation.metadata_json) > MAX_METADATA_DEPTH:
             raise ConnectorRefused(ERROR_CODE_INVALID_REQUEST, "metadata_json")
+        if observation.content is not None:
+            if observation.content_checksum is None:
+                raise ConnectorRefused(ERROR_CODE_INVALID_REQUEST, "content_checksum")
+            actual = "sha256:" + hashlib.sha256(observation.content).hexdigest()
+            if actual != observation.content_checksum:
+                raise ConnectorRefused(ERROR_CODE_INVALID_REQUEST, "content_checksum")
         if accepted_permission_labels is not None:
             unmapped = set(observation.permission_labels) - accepted_permission_labels
             if unmapped:
@@ -672,7 +679,8 @@ def poll_context_surface_defects() -> tuple[str, ...]:
     Empty means the context hands a connector no connection, no blob store
     handle, no workspace path, no scheduling and no write-back. It does *not*
     mean connector code cannot open files, databases or sockets through platform
-    APIs; any stronger claim is gated on `CON-P09`.
+    APIs; any stronger claim is deliberately excluded by the accepted
+    `CON-P09` v0.6 posture.
     """
     defects: list[str] = []
     for name in dir(PollContext):

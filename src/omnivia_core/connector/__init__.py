@@ -11,19 +11,23 @@ other way round. Bidirectional synchronisation back to a source is out of
 scope by decision, not by omission: nothing here writes to a source.
 
 Two connector surfaces live here and they are not the same surface. The
-runtime-foundation `SourceConnector` (`health` / `fetch` / `content`) is what
-`IngestionCoordinator` drives today. The accepted A6 SPI --
+runtime-foundation `SourceConnector` (`health` / `fetch` / `content`) remains a
+compatibility surface. The accepted A6 SPI --
 `describe` / `migrate_cursor` / `probe` / `poll` -- ships as
 `SourceConnectorSpi` in `omnivia_core.connector.spi`, with its host-side checks
 in `.host`, a deterministic reference implementation in `.fake` and the
 corpus-driven conformance kit in `.conformance`. Those four modules are not
 re-exported from here: they are a larger surface than most callers of the
 contract want, and importing them by name says which of the two connector
-worlds a call site is in.
+worlds a call site is in. `FilesystemSourceConnector` in `.filesystem` is the
+exception: it is a single first-party `SourceConnectorSpi` implementation, not
+a slice of the contract surface, so it is exported deliberately and driven by
+`IngestionCoordinator.synchronise_spi`.
 """
 
 from __future__ import annotations
 
+from omnivia_core.connector.filesystem import FilesystemSourceConnector
 from omnivia_core.connector.models import (
     CHECKSUM_PATTERN,
     IDENTIFIER_PATTERN,
@@ -69,6 +73,7 @@ __all__ = [
     "ConnectorError",
     "ConnectorFailure",
     "DeadLetter",
+    "FilesystemSourceConnector",
     "HealthState",
     "SourceBatch",
     "SourceChange",
