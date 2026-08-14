@@ -37,6 +37,14 @@ invariant definitions it derives from the frozen contract stay behind the module
 because constructing an observation is how a violation is *synthesised* rather
 than run, which is the boundary layer's own job.
 
+The compatibility layer in
+:mod:`omnivia_core.agent_host.compatibility_conformance` is re-exported at the
+same depth as the boundary layer: its one entry point, the report an adapter
+author reads a verdict out of, and the mismatch it reads a failure out of. The
+section 7 matrix, its row and result types and its executor stay behind the
+module, because building a row is how a matrix violation is *synthesised*
+rather than run.
+
 The mock is re-exported because developing against it is the point of it
 shipping at all. It holds no durable state: everything it keeps between calls
 is dropped by :meth:`MockProvider.reset`.
@@ -50,6 +58,12 @@ from omnivia_core.agent_host.boundary_conformance import (
     BoundaryViolation,
     InvariantResult,
     run_boundary_conformance,
+)
+from omnivia_core.agent_host.compatibility_conformance import (
+    CompatibilityConformanceError,
+    CompatibilityMismatch,
+    CompatibilityReport,
+    run_compatibility_conformance,
 )
 from omnivia_core.agent_host.conformance import (
     CaseReport,
@@ -107,6 +121,9 @@ __all__ = [
     "BoundaryViolation",
     "CaseComparison",
     "CaseReport",
+    "CompatibilityConformanceError",
+    "CompatibilityMismatch",
+    "CompatibilityReport",
     "ConformanceCase",
     "ConformanceCorpus",
     "ConformanceRunError",
@@ -135,6 +152,7 @@ __all__ = [
     "execute_case",
     "load_corpus",
     "run_boundary_conformance",
+    "run_compatibility_conformance",
     "run_corpus",
     "run_corpus_file",
     "run_lifecycle_sequences",
