@@ -1,10 +1,12 @@
 """Service-owned coordination of one connector synchronisation run (V06-8).
 
-This is a maintenance path, not an application operation: it adds nothing to the
-frozen catalogue, is never reachable over a transport, and runs only while this
-process holds the workspace lease, the mutation guard and the current fencing
-generation. What it does is drive a `SourceConnector` through a durable run and
-leave behind facts the next run can restart from.
+This module owns two local coordination paths. The retained three-operation
+`SourceConnector` compatibility path is maintenance-only and records
+`system.connector_sync`. The production four-operation `SourceConnectorSpi`
+path records the frozen `import.start` operation. Neither is directly reachable
+over a transport, and both run only while this process holds the workspace
+lease, mutation guard and current fencing generation. Each leaves durable facts
+the next run can restart from.
 
 Four properties are load-bearing, and each one is a consequence of an ordering
 choice rather than of a check:
@@ -96,7 +98,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from omnivia_core.connector import (
     IDENTIFIER_PATTERN,
@@ -117,8 +119,27 @@ from omnivia_core.connector import (
     SourceHealth,
     SyncOutcome,
 )
+from omnivia_core.connector.filesystem import FilesystemSourceConnector
+from omnivia_core.connector.host import (
+    run_cursor_migration,
+    validate_batch,
+    validate_registration,
+)
+from omnivia_core.connector.spi import (
+    ERROR_CONNECTOR_CURSOR_FOREIGN,
+    ConnectorRefused,
+    CredentialHandle,
+    CursorBinding,
+    CursorRecord,
+    CursorState,
+    Deadline,
+    PollContext,
+    SourceConnectorSpi,
+)
 from omnivia_core.contracts.v1 import to_canonical_json
 from omnivia_core.contracts.v1.generated import (
+    ERROR_CODE_AUTHORIZATION_DENIED,
+    ERROR_CODE_CANCELLED,
     RETRY_CLASS_NON_RETRYABLE,
     RETRY_CLASS_RETRYABLE,
     RETRY_CLASS_RETRYABLE_AFTER_DELAY,
@@ -152,11 +173,48 @@ _SERVICE_ACTOR_KIND: Final = "service"
 _MAX_ITEM_ATTEMPTS: Final = 3
 _MAX_RUN_ATTEMPTS: Final = 8
 
+#: The frozen operation `synchronise_spi` records a run under. Unlike
+#: `RUN_OPERATION`, this one *is* a member of the frozen application
+#: catalogue (`import.start`): the SPI bridge is the production entry point
+#: the accepted candidate names, not a service-local maintenance label.
+SPI_RUN_OPERATION: Final = "import.start"
+
+#: The durable attempt ceiling for an SPI-driven run. Exactly three, fixed by
+#: the checkpoint packet -- not the runtime foundation's `_MAX_RUN_ATTEMPTS`.
+SPI_MAX_RUN_ATTEMPTS: Final = 3
+
+#: The only permission labels an SPI batch may carry through to a durable ACL.
+#: Closed: a label outside this set is refused before anything is persisted,
+#: by `validate_batch`'s `accepted_permission_labels` check.
+SPI_ACCEPTED_PERMISSION_LABELS: Final[frozenset[str]] = frozenset(
+    {"workspace.member", "workspace.reviewer"}
+)
+
+#: The complete telemetry vocabulary for connector coordination in v0.6. The
+#: durable tables remain the source of truth; these names constrain any adapter
+#: that projects that evidence into metrics or traces.
+SPI_TELEMETRY_SIGNALS: Final[frozenset[str]] = frozenset(
+    {"connector.health", "connector.retry", "connector.dead_letter"}
+)
+
+#: Attempts recorded on every SPI dead letter. The SPI has no per-item retry
+#: loop in the coordinator -- a connector's `poll` already reports
+#: `ItemFailure` as its final word on one item for one batch -- so this is the
+#: fixed final count the durable column carries, matching the run's own
+#: attempt ceiling.
+_SPI_DEAD_LETTER_ATTEMPTS: Final = 3
+
 #: Per-run ceilings. Generous enough that no honest source meets them in a pass
 #: and small enough that a dishonest one cannot run forever.
 _MAX_BATCHES_PER_RUN: Final = 1024
 _MAX_CHANGES_PER_RUN: Final = 100_000
 _MAX_CONTENT_BYTES_PER_RUN: Final = 1024 * 1024 * 1024
+
+#: The only `SourceConnectorSpi` implementations production v0.6 posture will
+#: execute. There is no generic third-party registry or install path: a
+#: connector outside this tuple is refused in `synchronise_spi` before any
+#: durable row -- run, audit event or job -- is created.
+BUILTIN_SPI_CONNECTOR_TYPES: Final = (FilesystemSourceConnector,)
 
 #: Everything a durable message must not contain. Control characters first
 #: because a column that accepts them still has no use for them, then the shapes
@@ -237,8 +295,32 @@ def _declared_bytes(batch: SourceBatch) -> int:
     )
 
 
+def _spi_declared_bytes(observations: Sequence[Any]) -> int:
+    """What one SPI batch's observations declare they will cost.
+
+    An SPI observation carries its content inline rather than behind a later
+    `content()` call, so the declared cost is simply the bytes already in
+    hand -- deletions and any observation without content contribute nothing.
+    """
+    return sum(len(o.content) for o in observations if o.content is not None)
+
+
 def _refusal(code: str, message: str, retry_class: str) -> ConnectorFailure:
     return ConnectorFailure(code=code, message=message, retry_class=retry_class)
+
+
+def _refuse_credential(handle: CredentialHandle) -> bytes:
+    """The SPI bridge's `resolve_credential`. This bridge grants none, ever.
+
+    A connector that calls it finds that out immediately as an
+    `authorization_denied` refusal, rather than by silently never being handed
+    material -- proving the filesystem connector never calls it is exactly
+    what makes that connector's zero-credential posture a checked fact.
+    """
+    del handle
+    raise ConnectorRefused(
+        ERROR_CODE_AUTHORIZATION_DENIED, "this bridge resolves no credential material"
+    )
 
 
 def _failure_of(error: Exception) -> ConnectorFailure:
@@ -446,6 +528,743 @@ class IngestionCoordinator:
             failure=failure,
             **totals,
         )
+
+    # --- the SPI bridge ---------------------------------------------------
+
+    def synchronise_spi(
+        self,
+        connector: SourceConnectorSpi,
+        *,
+        granted_capabilities: frozenset[str] = frozenset(),
+        granted_scopes: tuple[str, ...] = (),
+        cancelled: Cancellation | None = None,
+    ) -> SyncOutcome:
+        """Drive one four-operation `SourceConnectorSpi` through a durable run.
+
+        `describe` and `validate_registration` run before anything durable is
+        created (`CON-C049`/`CON-C048` posture): a connector that declares a
+        scheduling interval, an unsupported SPI major, or a required
+        capability this run was not granted never gets a run at all. Genesis
+        for a connector's first poll is host-owned and deterministic -- an
+        empty payload, witness zero, no predecessor -- because nothing about
+        a connector that has never run could tell the host what else to pick.
+        The credential resolver handed to `PollContext` always refuses: this
+        bridge grants no credential access, so a connector that calls it finds
+        that out immediately rather than by having material silently withheld.
+        """
+        is_cancelled: Cancellation = cancelled or (lambda: False)
+        if type(connector) not in BUILTIN_SPI_CONNECTOR_TYPES:
+            raise IngestionRefused(
+                "synchronise_spi executes only the built-in first-party "
+                "SourceConnectorSpi implementations; there is no third-party "
+                "registry or install path"
+            )
+        descriptor = connector.describe()
+        validate_registration(descriptor, granted_capabilities=granted_capabilities)
+        bound = self._bind_spi(connector, descriptor)
+        record, migration_evidence = self._resume_spi_record(connector, bound, descriptor)
+        run = self._start_spi_run(bound)
+
+        totals = {
+            "ingested": 0,
+            "unchanged": 0,
+            "relabelled": 0,
+            "restored": 0,
+            "renamed": 0,
+            "deleted": 0,
+        }
+        dead_lettered = 0
+        state = "succeeded"
+        failure: ConnectorFailure | None = None
+        outcome_cursor: ConnectorCursor | None = None
+        truncated = False
+        run_batches = run_changes = run_content_bytes = 0
+
+        health = self._observe_spi_health(connector, bound, descriptor)
+        if health is HealthState.UNAVAILABLE:
+            state = "failed"
+            failure = _refusal(
+                "source_unavailable",
+                "the connector reports its source as unavailable",
+                RETRY_CLASS_RETRYABLE_AFTER_DELAY,
+            )
+
+        ctx = self._spi_poll_context(bound, descriptor, run, granted_scopes, is_cancelled)
+
+        if failure is None and is_cancelled():
+            state = "cancelled"
+
+        if failure is None and state != "cancelled":
+            try:
+                iterator = connector.poll(ctx, record.state if record is not None else None)
+                for spi_batch in iterator:
+                    if is_cancelled():
+                        state = "cancelled"
+                        break
+                    if run_batches >= self.max_batches_per_run:
+                        truncated = True
+                        break
+                    declared = _spi_declared_bytes(spi_batch.observations)
+                    change_count = len(spi_batch.observations)
+                    if (
+                        change_count > self.max_changes_per_run
+                        or declared > self.max_content_bytes_per_run
+                    ):
+                        failure = _refusal(
+                            CONTRACT_VIOLATION,
+                            "the batch declares more work than a whole run is "
+                            "permitted to do",
+                            RETRY_CLASS_NON_RETRYABLE,
+                        )
+                        state = "failed"
+                        break
+                    if (
+                        run_changes + change_count > self.max_changes_per_run
+                        or run_content_bytes + declared > self.max_content_bytes_per_run
+                    ):
+                        # Not admitted, not committed: the next run meets this
+                        # same batch with a whole budget.
+                        truncated = True
+                        break
+                    verdict_failure, verdict = self._admit_spi_batch(
+                        spi_batch, ctx, record, bound, descriptor
+                    )
+                    if verdict_failure is not None:
+                        failure = verdict_failure
+                        state = "failed"
+                        break
+                    assert verdict is not None
+                    if is_cancelled():
+                        state = "cancelled"
+                        break
+                    self._publish_spi_batch(verdict, is_cancelled)
+                    if is_cancelled():
+                        state = "cancelled"
+                        break
+                    counts, letters = self._commit_spi_batch(
+                        run, verdict, bound, migration_evidence
+                    )
+                    migration_evidence = None
+                    for key, value in counts.items():
+                        totals[key] += value
+                    dead_lettered += letters
+                    record = verdict.successor
+                    outcome_cursor = ConnectorCursor(
+                        state_version=verdict.successor.state.state_version,
+                        token=verdict.successor.state.payload.decode("ascii"),
+                    )
+                    run_batches += 1
+                    run_changes += change_count
+                    run_content_bytes += declared
+            except ConnectorRefused as error:
+                if error.error == ERROR_CODE_CANCELLED:
+                    state = "cancelled"
+                else:
+                    failure = _refusal(
+                        error.error,
+                        _message(error.detail, error.error),
+                        RETRY_CLASS_NON_RETRYABLE,
+                    )
+                    state = "failed"
+            except Exception as error:  # noqa: BLE001 -- a connector fault is a run
+                # outcome to classify, never a service crash.
+                failure = _failure_of(error)
+                state = "failed"
+
+        self._finish_run(run, state, failure)
+        return SyncOutcome(
+            run_id=run.run_id,
+            state=state,
+            dead_lettered=dead_lettered,
+            truncated=truncated,
+            cursor=outcome_cursor,
+            failure=failure,
+            **totals,
+        )
+
+    def _bind_spi(self, connector: SourceConnectorSpi, descriptor: Any) -> _Bound:
+        del connector
+        return self._bind_identity(
+            connector_id=descriptor.connector_id, source_kind=descriptor.connector_id,
+            state_version=1,
+        )
+
+    def _bind_identity(
+        self, *, connector_id: object, source_kind: object, state_version: object
+    ) -> _Bound:
+        if (
+            not isinstance(connector_id, str)
+            or len(connector_id) > MAX_TOKEN_LENGTH
+            or IDENTIFIER_PATTERN.fullmatch(connector_id) is None
+        ):
+            raise IngestionRefused(
+                "connector_id is outside the accepted identifier domain"
+            )
+        if (
+            not isinstance(state_version, int)
+            or isinstance(state_version, bool)
+            or state_version < 0
+        ):
+            raise IngestionRefused(
+                "state_version is outside the accepted non-negative integer domain"
+            )
+        return _Bound(
+            connector_id=connector_id,
+            source_kind=str(source_kind)[:MAX_TOKEN_LENGTH] or "spi",
+            state_version=state_version,
+        )
+
+    def _start_spi_run(self, bound: _Bound) -> _Run:
+        connector_id = bound.connector_id
+        sequence = connector_state.next_sync_sequence(
+            self.connection, workspace_id=self.workspace_id, connector_id=connector_id
+        )
+        at_us = _now_us(self.clock)
+        seed = (self.workspace_id, connector_id, str(sequence), "spi")
+        run = _Run(
+            run_id=_identity("job-spi", *seed),
+            audit_ref=_identity("aud-spi", *seed),
+            connector_id=connector_id,
+            source_kind=bound.source_kind,
+            sync_sequence=sequence,
+            started_at_us=at_us,
+        )
+        payload = to_canonical_json(
+            {"connector_id": connector_id, "sync_sequence": sequence}
+        )
+        moment = _iso(at_us)
+        with self._fenced():
+            self.connection.execute(
+                "INSERT INTO omnivia_application_audit_events "
+                "(audit_ref, workspace_id, principal_id, operation, purpose, "
+                "request_id, correlation_id, trace_id, granted_authority_json, "
+                "outcome_class, error_code, recorded_at_us) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 'succeeded', NULL, ?)",
+                (
+                    run.audit_ref,
+                    self.workspace_id,
+                    _SERVICE_ACTOR,
+                    SPI_RUN_OPERATION,
+                    "ingestion.sync",
+                    _identity("req-spi", *seed),
+                    _identity("cor-spi", *seed),
+                    _identity("trc-spi", *seed),
+                    at_us,
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO omnivia_durable_jobs "
+                "(job_id, job_type, state, payload_json, created_at, updated_at, "
+                "fencing_generation, claimed_by_service_instance) "
+                "VALUES (?, ?, 'claimed', ?, ?, ?, ?, ?)",
+                (
+                    run.run_id,
+                    RUN_JOB_TYPE,
+                    payload,
+                    moment,
+                    moment,
+                    self.fencing_generation,
+                    self.identity.service_instance_id,
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO omnivia_job_application_metadata "
+                "(workspace_id, job_id, job_kind, originating_operation, audit_ref, "
+                "created_at_us, terminal_result_kind, supports_checkpoint_resume, "
+                "max_attempts) VALUES (?, ?, ?, ?, ?, ?, NULL, 1, ?)",
+                (
+                    self.workspace_id,
+                    run.run_id,
+                    RUN_JOB_TYPE,
+                    SPI_RUN_OPERATION,
+                    run.audit_ref,
+                    at_us,
+                    SPI_MAX_RUN_ATTEMPTS,
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO omnivia_job_attempts "
+                "(workspace_id, job_id, attempt_number, started_at_us, state) "
+                "VALUES (?, ?, 1, ?, 'running')",
+                (self.workspace_id, run.run_id, at_us),
+            )
+            self.connection.execute(
+                "INSERT INTO omnivia_job_events "
+                "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+                "VALUES (?, ?, 0, ?, 'running', 'connector synchronisation started')",
+                (self.workspace_id, run.run_id, at_us),
+            )
+            connector_state.register_sync_run(
+                self.connection,
+                workspace_id=self.workspace_id,
+                connector_id=connector_id,
+                sync_sequence=sequence,
+                run_id=run.run_id,
+                source_kind=bound.source_kind,
+                state_version=bound.state_version,
+                started_at_us=at_us,
+            )
+        return run
+
+    def _resume_spi_record(
+        self, connector: SourceConnectorSpi, bound: _Bound, descriptor: Any
+    ) -> tuple[CursorRecord | None, dict[str, str] | None]:
+        """The record to resume from, migrated forward if needed, or `None`.
+
+        `None` is genesis, chosen deterministically by the host rather than by
+        the connector: an empty payload, witness zero, no predecessor. A
+        supported state version needs no migration. An unsupported one is
+        migrated whole via `run_cursor_migration`; a connector that refuses
+        with `connector_cursor_unmigratable` or a migration that itself fails
+        validation is an explicit resync. A persisted record this connector's
+        binding does not own is instead refused as `connector_cursor_foreign`;
+        silently treating a foreign record as genesis would hide corruption.
+        """
+        binding = CursorBinding(
+            workspace_id=self.workspace_id, connector_id=bound.connector_id
+        )
+        existing = connector_state.read_spi_resume_cursor(
+            self.connection, workspace_id=self.workspace_id, connector_id=bound.connector_id
+        )
+        if existing is None:
+            return None, None
+        if existing.binding != binding:
+            raise ConnectorRefused(
+                ERROR_CONNECTOR_CURSOR_FOREIGN,
+                "the persisted cursor was frozen under a different workspace or connector",
+            )
+        # `supported_state_versions` is validated strictly ascending and
+        # non-empty, so its last entry is the newest. A persisted state that
+        # is merely a nominally-supported but older version is still migrated
+        # forward -- "supported" is not "current" -- so the run always
+        # operates on the newest state the connector understands.
+        newest = descriptor.supported_state_versions[-1]
+        if existing.state.state_version == newest:
+            return existing, None
+        outcome = run_cursor_migration(
+            connector, existing, supported_state_versions=descriptor.supported_state_versions
+        )
+        if outcome.outcome != "accepted":
+            return None, None
+        assert outcome.audit is not None
+        migrated = CursorRecord(binding=binding, state=outcome.audit.after)
+        migration_evidence = {
+            "before_digest": outcome.audit.predecessor_digest_before.hex(),
+            "after_digest": outcome.audit.predecessor_digest_after.hex(),
+        }
+        return migrated, migration_evidence
+
+    def _spi_poll_context(
+        self,
+        bound: _Bound,
+        descriptor: Any,
+        run: _Run,
+        granted_scopes: tuple[str, ...],
+        is_cancelled: Cancellation,
+    ) -> PollContext:
+        deadline_us = _now_us(self.clock) + descriptor.declared_limits.poll_deadline_ms * 1000
+        return PollContext(
+            workspace_id=self.workspace_id,
+            run_id=run.run_id,
+            attempt_ordinal=1,
+            granted_scopes=granted_scopes,
+            credential_handle=CredentialHandle(reference="unused"),
+            resolve_credential=_refuse_credential,
+            limits=descriptor.declared_limits,
+            deadline=Deadline(expires_at_us=deadline_us),
+            cancellation=is_cancelled,
+        )
+
+    def _observe_spi_health(
+        self, connector: SourceConnectorSpi, bound: _Bound, descriptor: Any
+    ) -> HealthState:
+        ctx = self._spi_poll_context(bound, descriptor, self._probe_run(bound), (), lambda: False)
+        try:
+            reported = connector.probe(ctx)
+        except Exception as error:  # noqa: BLE001 -- the probe's own fault is the
+            # observation, and must not end the process.
+            health = SourceHealth(
+                state=HealthState.UNAVAILABLE,
+                detail=_message(str(error), f"probe raised {type(error).__name__}"),
+            )
+        else:
+            if not isinstance(reported, SourceHealth):
+                health = SourceHealth(
+                    state=HealthState.UNAVAILABLE,
+                    detail="the connector did not report a HealthStatus",
+                )
+            else:
+                health = SourceHealth(state=reported.state, detail=_redact(reported.detail))
+        with self._fenced():
+            connector_state.record_health(
+                self.connection,
+                workspace_id=self.workspace_id,
+                connector_id=bound.connector_id,
+                health=health,
+                observed_at_us=self._not_before(
+                    0,
+                    "SELECT COALESCE(MAX(observed_at_us), 0) "
+                    "FROM omnivia_connector_health_events "
+                    "WHERE workspace_id = ? AND connector_id = ?",
+                    (self.workspace_id, bound.connector_id),
+                ),
+            )
+        return health.state
+
+    def _probe_run(self, bound: _Bound) -> _Run:
+        """A synthetic run identity for the probe's `PollContext` only.
+
+        `probe` is documented side-effect free and advances no cursor, so this
+        never becomes a durable job -- it exists only to give the context a
+        well-formed `run_id`.
+        """
+        return _Run(
+            run_id=_identity("probe", self.workspace_id, bound.connector_id),
+            audit_ref="",
+            connector_id=bound.connector_id,
+            source_kind=bound.source_kind,
+            sync_sequence=0,
+            started_at_us=_now_us(self.clock),
+        )
+
+    def _admit_spi_batch(
+        self,
+        spi_batch: Any,
+        ctx: PollContext,
+        record: CursorRecord | None,
+        bound: _Bound,
+        descriptor: Any,
+    ) -> tuple[ConnectorFailure | None, Any]:
+        binding = CursorBinding(
+            workspace_id=self.workspace_id, connector_id=bound.connector_id
+        )
+        # Host-owned deterministic genesis: an empty payload, witness zero, no
+        # predecessor. Chosen here rather than by the connector, because
+        # nothing about a connector that has never run could tell the host
+        # what else to pick.
+        effective = record or CursorRecord(
+            binding=binding,
+            state=CursorState(state_version=descriptor.supported_state_versions[0],
+                               payload=b"", witness_seq=0),
+        )
+        try:
+            verdict = validate_batch(
+                spi_batch,
+                ctx,
+                effective,
+                descriptor=descriptor,
+                now_us=_now_us(self.clock),
+                accepted_permission_labels=SPI_ACCEPTED_PERMISSION_LABELS,
+            )
+        except ConnectorRefused as error:
+            return (
+                _refusal(error.error, _message(error.detail, error.error), RETRY_CLASS_NON_RETRYABLE),
+                None,
+            )
+        return None, verdict
+
+    def _publish_spi_batch(self, verdict: Any, is_cancelled: Cancellation) -> None:
+        """Publish every admitted content blob before the fenced transaction.
+
+        Publication is content-addressed and idempotent. A crash can therefore
+        leave an unreferenced blob, but never a committed database row naming
+        bytes that were not already durable in the blob store.
+        """
+        for observation in verdict.observations:
+            if observation.deleted:
+                continue
+            if is_cancelled():
+                raise ConnectorRefused(
+                    ERROR_CODE_CANCELLED, "poll was cancelled before blob publication"
+                )
+            if observation.content is None:
+                raise ConnectorRefused(
+                    "connector_contract_violation",
+                    "a non-deletion observation supplied no content",
+                )
+            assert observation.content_checksum is not None
+            publish_blob(
+                self.blobs_root,
+                observation.content_checksum,
+                observation.content,
+            )
+
+    def _commit_spi_batch(
+        self,
+        run: _Run,
+        verdict: Any,
+        bound: _Bound,
+        migration_evidence: dict[str, str] | None,
+    ) -> tuple[dict[str, int], int]:
+        counts = {
+            "ingested": 0,
+            "unchanged": 0,
+            "relabelled": 0,
+            "restored": 0,
+            "renamed": 0,
+            "deleted": 0,
+        }
+        recorded = 0
+        with self._fenced():
+            at_us = self._not_before(
+                run.started_at_us,
+                "SELECT COALESCE(MAX(created_at_us), -1) + 1 "
+                "FROM omnivia_job_checkpoints "
+                "WHERE workspace_id = ? AND job_id = ?",
+                (self.workspace_id, run.run_id),
+            )
+            # Deterministic ordering before durable append: source-event time,
+            # then a stable append ordinal -- `source_native_id`, which is
+            # immutable per identity -- as the tie-break. `at_us` is uniform
+            # across one batch, so it cannot itself break a tie; the sort
+            # below is what makes the durable append order independent of
+            # whatever order the connector happened to enumerate in.
+            ordered_observations = sorted(
+                verdict.observations,
+                key=lambda o: (
+                    o.source_event_at_us
+                    if o.source_event_at_us is not None
+                    else o.observed_at_us,
+                    o.observed_at_us,
+                    o.source_native_id,
+                ),
+            )
+            for observation in ordered_observations:
+                counts[self._apply_spi_observation(run, bound, observation, at_us)] += 1
+            for item_failure in verdict.item_failures:
+                letter = DeadLetter(
+                    native_id=item_failure.source_native_id,
+                    failure=ConnectorFailure(
+                        code=item_failure.error
+                        if TOKEN_PATTERN.fullmatch(item_failure.error)
+                        else "connector_fault",
+                        message=_message(item_failure.detail, f"connector reported {item_failure.error}"),
+                        retry_class=item_failure.retry_class,
+                    ),
+                    attempts=_SPI_DEAD_LETTER_ATTEMPTS,
+                )
+                if (
+                    connector_state.record_dead_letter(
+                        self.connection,
+                        workspace_id=self.workspace_id,
+                        connector_id=bound.connector_id,
+                        run_id=run.run_id,
+                        dead_letter=letter,
+                        recorded_at_us=at_us,
+                    )
+                    is not None
+                ):
+                    recorded += 1
+            connector_state.write_spi_cursor_checkpoint(
+                self.connection,
+                workspace_id=self.workspace_id,
+                run_id=run.run_id,
+                attempt_number=1,
+                record=verdict.successor,
+                created_at_us=at_us,
+                migration_evidence=migration_evidence,
+            )
+        return counts, recorded
+
+    def _apply_spi_observation(
+        self, run: _Run, bound: _Bound, observation: Any, at_us: int
+    ) -> str:
+        if observation.deleted:
+            return self._apply_spi_deletion(run, bound, observation, at_us)
+        return self._apply_spi_capture(run, bound, observation, at_us)
+
+    def _apply_spi_capture(
+        self, run: _Run, bound: _Bound, observation: Any, at_us: int
+    ) -> str:
+        digest = observation.content_checksum
+        assert digest is not None
+        seed = (self.workspace_id, bound.connector_id, observation.source_native_id, digest)
+        evidence_id = _identity("evd", *seed)
+        if self._row_exists(
+            "SELECT 1 FROM omnivia_evidence_artifacts WHERE evidence_id = ?",
+            (evidence_id,),
+        ):
+            return self._reconcile_spi_known(run, bound, observation, evidence_id, at_us)
+
+        if observation.content is None:
+            # A non-deletion with no content is a connector fault, not an
+            # empty artifact: treating it as `b""` would materialise a
+            # checksum-matching empty blob for bytes that were never
+            # supplied. Fail closed instead.
+            raise IngestionRefused(
+                f"observation {observation.source_native_id!r} has no content "
+                "for a non-deletion capture"
+            )
+        content = observation.content
+        metadata = to_canonical_json(
+            {
+                "connector_id": bound.connector_id,
+                "native_id": observation.source_native_id,
+                "locator": observation.source_locator,
+                "source_version": observation.source_version,
+            }
+        )
+        metadata_digest = f"sha256:{sha256(metadata.encode('utf-8')).hexdigest()}"
+        staged_ref = _identity("stg", *seed)
+
+        if not self._row_exists(
+            "SELECT 1 FROM omnivia_blob_objects WHERE workspace_id = ? "
+            "AND content_digest = ?",
+            (self.workspace_id, digest),
+        ):
+            self.connection.execute(
+                "INSERT INTO omnivia_blob_objects (workspace_id, content_digest, "
+                "content_length_bytes, created_at_us, verified_at_us) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (self.workspace_id, digest, len(content), at_us, at_us),
+            )
+        self.connection.execute(
+            "INSERT INTO omnivia_blob_integrity_events "
+            "(integrity_event_id, workspace_id, content_digest, integrity_sequence, "
+            "outcome, observed_digest, observed_length_bytes, expected_length_bytes, "
+            "inventory_id, checked_at_us) "
+            "VALUES (?, ?, ?, ?, 'verified', ?, ?, ?, NULL, ?)",
+            (
+                _identity("bie", *seed),
+                self.workspace_id,
+                digest,
+                self._next(
+                    "SELECT COALESCE(MAX(integrity_sequence), 0) + 1 "
+                    "FROM omnivia_blob_integrity_events "
+                    "WHERE workspace_id = ? AND content_digest = ?",
+                    (self.workspace_id, digest),
+                ),
+                digest,
+                len(content),
+                len(content),
+                at_us,
+            ),
+        )
+        if not self._row_exists(
+            "SELECT 1 FROM omnivia_staged_sources WHERE staged_source_ref = ?",
+            (staged_ref,),
+        ):
+            self.connection.execute(
+                "INSERT INTO omnivia_staged_sources "
+                "(staged_source_ref, workspace_id, source_kind, declared_checksum, "
+                "content_length_bytes, media_type, source_version, computed_checksum, "
+                "original_metadata_json, original_metadata_digest, staging_outcome, "
+                "blob_workspace_id, blob_content_digest, recorded_at_us) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?, ?)",
+                (
+                    staged_ref,
+                    self.workspace_id,
+                    bound.source_kind,
+                    digest,
+                    len(content),
+                    observation.media_type,
+                    observation.source_version,
+                    digest,
+                    metadata,
+                    metadata_digest,
+                    self.workspace_id,
+                    digest,
+                    at_us,
+                ),
+            )
+        self.connection.execute(
+            "INSERT INTO omnivia_evidence_artifacts "
+            "(evidence_id, workspace_id, source_kind, source_native_id, "
+            "source_locator, source_retrieved_at_us, event_at_us, observed_at_us, "
+            "ingested_at_us, recorded_at_us, content_checksum, blob_content_digest, "
+            "media_type, original_metadata_json, original_metadata_digest, "
+            "sensitivity, parser_status, ingestion_status, staged_source_ref, "
+            "import_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "'private', 'not_parsed', 'ingested', ?, ?)",
+            (
+                evidence_id,
+                self.workspace_id,
+                bound.source_kind,
+                observation.source_native_id,
+                observation.source_locator,
+                at_us,
+                observation.source_event_at_us,
+                observation.observed_at_us or at_us,
+                at_us,
+                at_us,
+                digest,
+                digest,
+                observation.media_type,
+                metadata,
+                metadata_digest,
+                staged_ref,
+                run.run_id,
+            ),
+        )
+        self._append_provenance(
+            prefix="prv",
+            seed=seed,
+            evidence_id=evidence_id,
+            source_kind=bound.source_kind,
+            native_id=observation.source_native_id,
+            action="source.ingested",
+            at_us=at_us,
+            ingestion_status="ingested",
+            tombstoned=0,
+        )
+        self._reconcile_labels(evidence_id, observation.permission_labels, at_us)
+        return "ingested"
+
+    def _reconcile_spi_known(
+        self, run: _Run, bound: _Bound, observation: Any, evidence_id: str, at_us: int
+    ) -> str:
+        verdict = "unchanged"
+        if not self._is_present(evidence_id):
+            self._append_provenance(
+                prefix="prvi",
+                seed=(
+                    self.workspace_id,
+                    bound.connector_id,
+                    observation.source_native_id,
+                    evidence_id,
+                ),
+                evidence_id=evidence_id,
+                source_kind=bound.source_kind,
+                native_id=observation.source_native_id,
+                action="source.ingested",
+                at_us=at_us,
+                ingestion_status="ingested",
+                tombstoned=0,
+            )
+            verdict = "restored"
+        relabelled = self._reconcile_labels(
+            evidence_id, observation.permission_labels, at_us
+        )
+        if relabelled and verdict == "unchanged":
+            verdict = "relabelled"
+        return verdict
+
+    def _apply_spi_deletion(
+        self, run: _Run, bound: _Bound, observation: Any, at_us: int
+    ) -> str:
+        known = self._latest_evidence(bound.connector_id, observation.source_native_id)
+        if known is None:
+            return "unchanged"
+        evidence_id, source_kind = known
+        if not self._is_present(evidence_id):
+            return "unchanged"
+        self._append_provenance(
+            prefix="prvd",
+            seed=(
+                self.workspace_id,
+                bound.connector_id,
+                observation.source_native_id,
+                evidence_id,
+            ),
+            evidence_id=evidence_id,
+            source_kind=source_kind,
+            native_id=observation.source_native_id,
+            action="source.deleted",
+            at_us=at_us,
+            ingestion_status="tombstoned",
+            tombstoned=1,
+        )
+        return "deleted"
 
     # --- the connector boundary -----------------------------------------------
 

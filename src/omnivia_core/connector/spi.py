@@ -22,7 +22,8 @@ What a connector is handed is `PollContext`, and its whole surface is listed in
 one place below so the storage-boundary assertion has something exact to check.
 That assertion is an API ownership boundary and nothing more: it decides what
 the host hands a connector, not what connector code can reach through platform
-APIs (candidate section 7.2, gated on `CON-P09`).
+APIs (candidate section 7.2, deliberately excluded by the accepted `CON-P09`
+v0.6 posture).
 """
 
 from __future__ import annotations
@@ -123,6 +124,12 @@ MAX_UNSIGNED: Final = 2**63 - 1
 
 #: The normative cursor payload bound (`cursor_contract.max_opaque_payload_bytes`).
 MAX_CURSOR_PAYLOAD_BYTES: Final = 4096
+
+#: The largest inline `Observation.content` a connector may attach. Bounded
+#: because content travels through the same in-memory batch as everything
+#: else; a connector with more to say sends it as its own dead-lettered item
+#: rather than as an unbounded field.
+MAX_OBSERVATION_CONTENT_BYTES: Final = 1_048_576
 
 #: Unpadded base64url. Alphabet *and* length group, so the check stays decidable
 #: without decoding: a length of 4n+1 is one no unpadded base64url string can have.
@@ -584,6 +591,8 @@ class Observation:
     permission_labels: tuple[str, ...] = ()
     deletion_signal: DeletionSignal = DeletionSignal.NONE
     metadata_json: str = ""
+    content: bytes | None = None
+    source_event_at_us: int | None = None
 
     def __post_init__(self) -> None:
         _require_ascii_identifier("source_native_id", self.source_native_id)
@@ -595,6 +604,15 @@ class Observation:
         )
         _require_unsigned("observed_at_us", self.observed_at_us)
         _require_unsigned("metadata_bytes", self.metadata_bytes)
+        _require(
+            self.source_event_at_us is None
+            or (
+                isinstance(self.source_event_at_us, int)
+                and not isinstance(self.source_event_at_us, bool)
+                and 0 <= self.source_event_at_us <= MAX_UNSIGNED
+            ),
+            "source_event_at_us must be absent or an unsigned integer",
+        )
         _require(
             isinstance(self.deletion_signal, DeletionSignal),
             "deletion_signal must be a DeletionSignal",
@@ -634,6 +652,18 @@ class Observation:
         _require(
             isinstance(self.metadata_json, str) and "\x00" not in self.metadata_json,
             "metadata_json is outside the accepted domain",
+        )
+        _require(
+            self.content is None
+            or (
+                isinstance(self.content, bytes)
+                and len(self.content) <= MAX_OBSERVATION_CONTENT_BYTES
+            ),
+            f"content must be absent or at most {MAX_OBSERVATION_CONTENT_BYTES} bytes",
+        )
+        _require(
+            self.content is None or self.deletion_signal is not DeletionSignal.EXPLICIT_DELETE,
+            "a deletion carries no content",
         )
 
     @property
@@ -803,6 +833,7 @@ __all__ = [
     "HOST_SPI_VERSION",
     "MAX_CURSOR_PAYLOAD_BYTES",
     "MAX_METADATA_DEPTH",
+    "MAX_OBSERVATION_CONTENT_BYTES",
     "MAX_UNSIGNED",
     "POLL_CONTEXT_FORBIDDEN_MEMBERS",
     "REUSED_FROZEN_ERROR_CODES",

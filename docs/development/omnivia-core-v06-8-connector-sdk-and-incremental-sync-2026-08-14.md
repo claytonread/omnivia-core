@@ -2,14 +2,12 @@
 
 - **Date:** 2026-08-14
 - **Slice:** V06-8, architecture specification section 8
-- **Status:** Foundation implemented, **plus accepted packet A6-N1** — the
-  four-operation `describe` / `migrate_cursor` / `probe` / `poll` SPI, its
-  host-side checks, a deterministic fake and the corpus-driven conformance kit
-  over all 65 cases. The V06-8 A6 lane is still **not** complete: no real source
-  adapter exists, and the coordinator still drives the three-method protocol
-  rather than the new SPI. Accepted A6 scope that is still absent is listed
-  under [Remaining A6 scope](#remaining-a6-scope) — that section, not this one,
-  is the answer to "is the lane done".
+- **Status:** Complete for the approved CON-P01–P09 v0.6 boundary. The
+  four-operation `describe` / `migrate_cursor` / `probe` / `poll` SPI, host
+  checks, deterministic fake, 65-case corpus, first-party read-only filesystem
+  adapter and fenced runtime coordinator bridge are implemented. The accepted
+  boundary remains intentionally narrow: built-in connectors only, no
+  credentials, no network connector, no scheduler and no sandbox claim.
 
 ## Why this document exists
 
@@ -37,7 +35,7 @@ plausible and wrong conclusions available:
 | The accepted A6 case corpus | `omnivia-pm`, copied here byte-for-byte | `docs/quality/fixtures/core-connectors/` |
 | Durable connector state | `omnivia-core-runtime` | `storage/migration_files/0017_connector_sync_state.sql`, `storage/connectors.py` |
 | Run coordination | `omnivia-core-runtime` | `service/ingestion_coordinator.py` |
-| Connector implementations | **Nobody, here** | out of repository |
+| First-party local filesystem adapter | `omnivia-core` | `src/omnivia_core/connector/filesystem.py` |
 
 `omnivia_core.connector` is standard library plus this distribution's own
 contract package, and nothing else. It has no storage, no scheduling, no
@@ -337,14 +335,16 @@ fail-closed in every direction:
   it is committed, which is the case the first two rules cannot help with,
   because by the time such a cursor is durable the damage is permanent.
 
-## Packet A6-N1: the four-operation SPI
+## Packet A6-N1 and the completed four-operation SPI stream
 
 The accepted contract is A6-R3, and the accepted packet is its section 11.
-What that packet authorised, and what now exists, is the SPI surface and its
-DTOs, the host-side cursor and batch checks, a first-party deterministic fake,
-the corpus-driven conformance kit, and the packaging assertion. It explicitly
-excluded a real source adapter, any migration, any operation handler, network
-egress, a credential store and a scheduler. None of those was added.
+That packet first authorised the SPI surface and its DTOs, host-side cursor and
+batch checks, a deterministic fake, corpus-driven conformance and packaging
+assertions. The later approved CON-P01–P09 mapping now also authorises and this
+stream implements one real adapter and one host bridge: the bounded,
+read-only, local `FilesystemSourceConnector` driven by
+`IngestionCoordinator.synchronise_spi`. Network egress, credential storage,
+third-party installation, scheduling and sandbox claims remain excluded.
 
 ### Two connector surfaces
 
@@ -357,7 +357,7 @@ They are not the same surface and neither is deprecated by the other.
 | Operations | `health`, `fetch`, `content` | `describe`, `migrate_cursor`, `probe`, `poll` |
 | Cursor | `ConnectorCursor` (version, token) | `CursorState` (version, payload, witness, predecessor) |
 | Item | `SourceChange` | `Observation` |
-| Driven by | `IngestionCoordinator` | the conformance kit |
+| Driven by | `IngestionCoordinator.synchronise` | `IngestionCoordinator.synchronise_spi` and the conformance kit |
 
 The A6 names were *not* given to the existing types. A `CursorState` accepts
 values a `ConnectorCursor` refuses and the reverse, so one name over both would
@@ -375,7 +375,7 @@ base64url text as ASCII bytes, at most 4096 of them, checked for alphabet *and*
 length group — a length of 4n+1 is one no unpadded base64url string can have.
 The predecessor is absent or exactly 32 bytes; there is no other genesis.
 
-The host, and only the host, computes SHA-256 over seven `u32be`
+The host-owned canonical routine computes SHA-256 over seven `u32be`
 length-prefixed fields in one fixed order: domain tag
 `omnivia.connector.cursor-state.v2`, frozen workspace id, frozen connector id,
 then all four parent fields including the parent's own predecessor digest.
@@ -435,8 +435,8 @@ written in terms of the parsed value could be consulted.
 
 ### What A6-N1 does not establish
 
-Three claims are gated on `CON-P09` and are not made here, in code, in tests or
-in this document:
+Three claims are deliberately excluded by the accepted `CON-P09` posture and
+are not made here, in code, in tests or in this document:
 
 - **No sandbox.** Withholding storage handles is an API ownership boundary. It
   decides what the host hands a connector, not what connector code can reach
@@ -451,9 +451,10 @@ in this document:
   100, while 91 observations sit inside the window. Every host-checkable
   property holds, so the host accepts and the cursor advances past all 91. The
   kit detects the omission by comparing against the fake's expected observation
-  set, which this corpus fixes independently — detection that has no equivalent
-  against a real source until `CON-P08` and `CON-P09` resolve. Those 91 are
-  lost, not deferred.
+  set, which this corpus fixes independently. The approved `CON-P08` local
+  filesystem adapter has its own direct tree-enumeration oracle; an arbitrary
+  future remote source would need equivalent connector-specific evidence.
+  Without it, those 91 observations are lost, not deferred.
 
 ### The conformance kit
 
@@ -479,55 +480,61 @@ Assertions are bound to behaviour rather than to the corpus's own expectations.
 lineage cases to fail; a kit that echoed each case's `expected_outcome` would
 stay green through that.
 
-## Remaining A6 scope
+## Accepted CON-P01–P09 resolution and completion boundary
 
-These are accepted V06-8 A6 obligations that are still **not** discharged. They
-are outstanding work, not non-goals — the section below is for the things that
-are deliberately never coming.
+The nine former provisional dependencies are resolved for v0.6 as follows.
 
-- **No real source adapter.** Gated on `CON-P08`, which must select the first
-  source, its authorized scope, its capability and purpose grants, its
-  hostile-input control set and the evidence by which window completeness is
-  demonstrated for a source the host cannot enumerate. Nothing in this packet
-  may be read as choosing one.
-- **The coordinator does not drive the new SPI.** `IngestionCoordinator` still
-  calls `health` / `fetch` / `content` and still persists `ConnectorCursor`
-  tokens. The witness, the canonical lineage digest and the batch validator
-  exist and are tested, and nothing durable is yet written through them. Wiring
-  them into the fenced commit path — including the reserved `checkpoint_kind`
-  spelling — is a later packet and depends on `CON-P01` and `CON-P02`.
-- **The corpus is not packaged into the wheel.** It lives under
-  `docs/quality/fixtures/core-connectors/` and `load_corpus` takes the directory
-  as an argument. A consumer in another repository has to supply the bytes. The
-  kit verifies the recorded digests on load, so a drifted copy is refused rather
-  than silently used.
-- **JSON Schema validation of the corpus lives in the test, not the kit.**
-  `omnivia-core` declares no third-party dependency, and a loader that imported
-  `jsonschema` would put it on the import path of every consumer of the public
-  connector contract. `load_corpus` does digest, identifier and closure
-  validation with the standard library; `tests/contracts/test_a6_corpus.py` runs
-  `Draft202012Validator`.
-- **Nine provisional dependencies are still open.** `CON-P01` and `CON-P04`
-  block a final freeze of the contract, because they change what a connector is
-  required to emit. `CON-P09` blocks any isolation, non-disclosure or
-  completeness claim.
+1. SPI runs use the frozen `import.start` operation and `ingestion.import` job
+   kind. Run and item attempt ceilings are three. Dead letters are scoped to the
+   connector and run.
+2. Cursor checkpoints use `checkpoint_kind = connector.cursor` and persist the
+   frozen workspace/connector binding plus all four `CursorState` fields.
+3. Durable admission orders observations by source event time when present,
+   observed time, the batch's recorded time, and a stable immutable identity as
+   the final tie-break. The filesystem adapter supplies file modification time
+   as both its source event and observation time.
+4. The permission vocabulary is closed to `workspace.member` and
+   `workspace.reviewer`. There is no caller parameter that can widen or replace
+   it; unmapped labels fail before artifact publication.
+5. Connector telemetry names are closed to `connector.health`,
+   `connector.retry` and `connector.dead_letter`. Durable text is bounded and
+   redacted; content, paths, native identifiers, credentials, cursor bytes and
+   raw principals are not telemetry payloads.
+6. v0.6 has no credential store, credential broker or credential-dependent
+   connector. The SPI context resolver always refuses, and the filesystem
+   adapter never calls it.
+7. Logical workspace archives, when introduced, exclude connector cursors and
+   credentials; restoring one starts connector resynchronisation. Verified
+   SQLite backups are a distinct physical recovery mechanism and include the
+   complete database snapshot.
+8. The first adapter is the read-only local filesystem adapter. Its independent
+   tests enumerate the source tree directly and cover creation, replay,
+   deletion, restart completeness, hostile paths, symlinks, file changes,
+   encoding, media types and all size bounds. It has no network or credential
+   path and follows no symlink.
+9. Production execution accepts only the built-in first-party adapter type.
+   There is no third-party registry or installation path and no sandbox or
+   containment claim.
+
+The conformance corpus remains supplied as repository fixture data rather than
+wheel payload, and JSON Schema validation remains a test dependency. Those are
+packaging choices, not incomplete runtime obligations: `load_corpus` performs
+standard-library digest, identifier and closure validation and refuses drift.
 
 ## Non-goals, stated so they are not read as gaps
 
 - **Bidirectional synchronisation is out of scope by decision.** Nothing writes
   to a source, and no part of this slice is a partial step toward it.
-- **No connector implementation ships here.** Not a filesystem one, not a cloud
-  one. Both connector protocols are structural: an implementation inherits
-  nothing and registers nowhere. `FakeSourceConnector` is a scripted test double
-  with no source behind it; it is the reference the SPI surface is judged
-  against, not an adapter.
-- **No new application operation.** The frozen 20-operation catalogue is
-  unchanged. `system.connector_sync` is a durable audit and metadata label for a
-  service-initiated maintenance run — the same family as the existing
-  `system.recovery` — and is not dispatchable over any transport.
+- **No cloud or third-party connector ships here.** The one production adapter
+  is the built-in local filesystem adapter. `FakeSourceConnector` remains a
+  scripted conformance double, not a production adapter.
+- **No new application operation.** The frozen catalogue is unchanged. The SPI
+  bridge records existing `import.start`; the retained compatibility path still
+  uses its internal `system.connector_sync` maintenance label.
 - **No scheduler.** Something has to decide when to call
   `IngestionCoordinator.synchronise`. That decision is not made here.
-- **No credential store.** A connector arrives already able to reach its source.
+- **No credential store or broker.** No credential-dependent connector is
+  admitted in v0.6.
 
 ## Residuals
 
@@ -537,11 +544,12 @@ are deliberately never coming.
   introduced by a phrase no rule anticipates. A connector must still not put
   credentials in messages. What the filter does guarantee is that the failure
   path most likely to leak one — an exception quoting a request — no longer does.
-- **One attempt per run.** A failed run is resumed by the *next* run, which
+- **One executed attempt per run.** A failed run is resumed by the *next* run, which
   starts from the last durable checkpoint, so continuity is carried by the cursor
   rather than by multi-attempt retries within one job. The job family's
-  multi-attempt machinery is available and unused; the metadata reserves
-  `max_attempts = 8`. A crashed run also leaves its job `claimed` and its attempt
+  multi-attempt machinery is available and unused; SPI metadata reserves
+  `max_attempts = 3`. The retained compatibility path still reserves eight. A
+  crashed run also leaves its job `claimed` and its attempt
   `running` until the existing stranded-job recovery reaches it.
 - **A rename always fetches content.** Because capture runs first
   unconditionally, a pure move re-reads bytes it already holds. The publish is a
@@ -562,11 +570,11 @@ are deliberately never coming.
   Failing it is the honest outcome — see Limits — but the failure repeats every
   run until the connector pages more finely or the ceiling is raised. Nothing
   raises it automatically, and nothing alerts on the repetition.
-- **A connector can silently lose evidence and pass every host check.** This is
-  the largest open risk in the accepted contract and A6-N1 does not close it —
-  it demonstrates it. See `CON-C058` above. Detection exists against the
-  first-party fake because this corpus fixes its expected observation set, and
-  has no equivalent against a real source until `CON-P08` and `CON-P09` resolve.
+- **A connector can silently lose evidence and pass every host check.** See
+  `CON-C058`: an opaque cursor cannot prove a remote window was complete. The
+  filesystem adapter closes this for its own bounded source with independent
+  tree-enumeration tests. Any future remote adapter must supply its own
+  independent completeness evidence; the host does not infer it.
 - **Seventeen conformance cases are declared-not-applicable.** Each names a
   discovery-declared limitation and a reason, and none is silently skipped. They
   are cases whose vector is a durable fact a connector does not own; a kit that
