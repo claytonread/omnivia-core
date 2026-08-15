@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/frontier.schema.json",
+  "title": "Q1 noncanonical frontier",
+  "description": "Evaluated frontier for one operation/query coordinate: sorted unique authorized external IDs, count, and digests binding to the policy input and policy decision it was evaluated under. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "frontier_digest",
+    "operation",
+    "query_coordinate",
+    "authorized_external_ids",
+    "authorized_count",
+    "policy_input_digest",
+    "policy_decision_digest",
+    "policy_epoch"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/frontier.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "frontier_digest": { "$ref": "#/$defs/sha256_ref" },
+    "operation": {
+      "type": "string",
+      "enum": ["evidence.search", "memory.search", "knowledge.search"]
+    },
+    "query_coordinate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query_id", "k"],
+      "properties": {
+        "query_id": { "$ref": "#/$defs/sha256_ref" },
+        "k": { "type": "integer", "enum": [1, 10, 50] }
+      }
+    },
+    "authorized_external_ids": {
+      "type": "array",
+      "description": "Sorted, deduplicated authorized external record IDs.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/external_record_id" }
+    },
+    "authorized_count": { "$ref": "#/$defs/safe_count" },
+    "policy_input_digest": { "$ref": "#/$defs/sha256_ref" },
+    "policy_decision_digest": { "$ref": "#/$defs/sha256_ref" },
+    "policy_epoch": { "$ref": "#/$defs/safe_count" }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "external_record_id": {
+      "type": "string",
+      "pattern": "^q1-record-(?:evidence|memory|knowledge)-[0-9]{6}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

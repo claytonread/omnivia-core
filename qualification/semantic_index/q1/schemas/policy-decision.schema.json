@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/policy-decision.schema.json",
+  "title": "Q1 noncanonical policy decision",
+  "description": "Deterministic policy evaluator output: applicable ordered rule IDs, matched denies/allows, mandatory gate results, disposition, and evaluator/version digest. Binds to its policy input by digest. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "policy_decision_id",
+    "policy_input_id",
+    "applicable_rule_ids",
+    "matched_allow_rule_ids",
+    "matched_deny_rule_ids",
+    "mandatory_gate_results",
+    "disposition",
+    "evaluator_id",
+    "evaluator_version_digest"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/policy-decision.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "policy_decision_id": { "$ref": "#/$defs/sha256_ref" },
+    "policy_input_id": { "$ref": "#/$defs/sha256_ref" },
+    "applicable_rule_ids": {
+      "type": "array",
+      "description": "Ordered, deduplicated rule IDs applicable to this decision.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "matched_allow_rule_ids": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "matched_deny_rule_ids": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "mandatory_gate_results": {
+      "type": "array",
+      "description": "Ordered, deduplicated mandatory gate outcomes evaluated for this decision.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate_result" }
+    },
+    "disposition": { "type": "string", "enum": ["allow", "deny"] },
+    "evaluator_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "evaluator_version_digest": { "$ref": "#/$defs/sha256_ref" }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gate_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "passed"],
+      "properties": {
+        "gate_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "passed": { "type": "boolean" }
+      }
+    }
+  }
+}

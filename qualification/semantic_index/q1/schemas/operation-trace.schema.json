@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/operation-trace.schema.json",
+  "title": "Q1 noncanonical operation trace",
+  "description": "One recorded mutation in the Q1 operation log: ordinal, operation ID/digest, mutation kind, ordered affected IDs, outcome, watermark, visibility barrier and replay binding. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "operation_trace_id",
+    "ordinal",
+    "operation_id",
+    "operation_digest",
+    "mutation",
+    "affected_ids",
+    "expected_outcome",
+    "watermark_microseconds",
+    "visibility_barrier",
+    "replay_binding"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/operation-trace.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "operation_trace_id": { "$ref": "#/$defs/sha256_ref" },
+    "ordinal": { "$ref": "#/$defs/safe_count" },
+    "operation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "operation_digest": { "$ref": "#/$defs/sha256_ref" },
+    "mutation": {
+      "type": "string",
+      "enum": ["insert", "upsert", "delete", "attach", "withdraw", "tombstone"]
+    },
+    "affected_ids": {
+      "type": "array",
+      "description": "Ordered, deduplicated record IDs affected by this mutation.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/external_record_id" }
+    },
+    "expected_outcome": { "type": "string", "enum": ["applied", "rejected", "noop"] },
+    "watermark_microseconds": { "$ref": "#/$defs/safe_count" },
+    "visibility_barrier": { "$ref": "#/$defs/safe_count" },
+    "replay_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_operation_trace_digest", "replay_of_ordinal", "expected_outcome"],
+      "properties": {
+        "source_operation_trace_digest": { "$ref": "#/$defs/sha256_ref" },
+        "replay_of_ordinal": { "$ref": "#/$defs/safe_count" },
+        "expected_outcome": { "type": "string", "enum": ["applied", "rejected", "noop"] }
+      }
+    }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "external_record_id": {
+      "type": "string",
+      "pattern": "^q1-record-(?:evidence|memory|knowledge)-[0-9]{6}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  }
+}

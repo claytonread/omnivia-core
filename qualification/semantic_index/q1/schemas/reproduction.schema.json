@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/reproduction.schema.json",
+  "title": "Q1 noncanonical reproduction record",
+  "description": "Exact reproduction of one qualification run: command as an argument array, environment/platform identity, interpreter/tool versions, input/output hashes, exit code and stdout/stderr hashes. Paths are repo-relative only: no home, temp, private, or absolute paths, and no credentials or endpoints. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "reproduction_id",
+    "command",
+    "working_directory",
+    "environment",
+    "interpreter_versions",
+    "input_hashes",
+    "output_hashes",
+    "exit_code",
+    "stdout_hash",
+    "stderr_hash"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/reproduction.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "reproduction_id": { "$ref": "#/$defs/sha256_ref" },
+    "command": {
+      "type": "array",
+      "description": "Argument vector, program first, exactly as invoked. No shell string form.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command_argument" }
+    },
+    "working_directory": { "$ref": "#/$defs/repo_relative_path" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform_id", "os", "arch"],
+      "properties": {
+        "platform_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "os": { "type": "string", "enum": ["linux", "macos", "windows"] },
+        "arch": { "type": "string", "enum": ["x86_64", "arm64"] }
+      }
+    },
+    "interpreter_versions": {
+      "type": "object",
+      "description": "Complete set of interpreter/tool versions this reproduction depended on, keyed by tool name.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9._-]*$": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "input_hashes": {
+      "type": "array",
+      "description": "Ordered, deduplicated input path/hash bindings.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path_hash" }
+    },
+    "output_hashes": {
+      "type": "array",
+      "description": "Ordered, deduplicated output path/hash bindings.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path_hash" }
+    },
+    "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "stdout_hash": { "$ref": "#/$defs/sha256_ref" },
+    "stderr_hash": { "$ref": "#/$defs/sha256_ref" }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "repo_relative_path": {
+      "type": "string",
+      "description": "Repo-relative path only: no leading slash, no home (~), no parent traversal (..).",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!~)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_][A-Za-z0-9_./-]*$"
+    },
+    "command_argument": {
+      "type": "string",
+      "description": "One shell-free argument containing no absolute/private path, network location or credential-bearing assignment.",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+      "allOf": [
+        { "not": { "pattern": "^(?:/|~|[A-Za-z]:[\\\\/])" } },
+        { "not": { "pattern": "(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)" } },
+        { "not": { "pattern": "://" } },
+        { "not": { "pattern": "(?:[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][_-]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ee][Nn][Dd][Pp][Oo][Ii][Nn][Tt]|[Uu][Rr][Ll])=" } }
+      ]
+    },
+    "path_hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "hash"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repo_relative_path" },
+        "hash": { "$ref": "#/$defs/sha256_ref" }
+      }
+    }
+  }
+}

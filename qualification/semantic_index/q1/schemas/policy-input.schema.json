@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/policy-input.schema.json",
+  "title": "Q1 noncanonical policy input",
+  "description": "Complete trusted-source input for one pre-engine Q1 frontier evaluation: policy identity/epoch, source digests, operation, authority, request workspace/purpose/scope/(V,T), capabilities and every resource value including sensitivity, label history and governance. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "policy_input_id",
+    "fixture_policy_schema_id",
+    "policy_set_id",
+    "policy_epoch",
+    "expected_policy_epoch",
+    "policy_digest",
+    "source_digests",
+    "operation",
+    "authority",
+    "request",
+    "resources"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/policy-input.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "policy_input_id": { "$ref": "#/$defs/sha256_ref" },
+    "fixture_policy_schema_id": { "const": "omnivia.semantic-index.fixture-policy.v1" },
+    "policy_set_id": { "const": "q1.synthetic.current-canonical.v1" },
+    "policy_epoch": { "$ref": "#/$defs/safe_count" },
+    "expected_policy_epoch": { "$ref": "#/$defs/safe_count" },
+    "policy_digest": { "$ref": "#/$defs/sha256_ref" },
+    "source_digests": {
+      "type": "object",
+      "description": "Exact digests of the complete authority value, frozen operation catalogue and complete ordered resource array.",
+      "additionalProperties": false,
+      "required": ["authority", "operation_catalogue", "resources"],
+      "properties": {
+        "authority": { "$ref": "#/$defs/sha256_ref" },
+        "operation_catalogue": { "$ref": "#/$defs/sha256_ref" },
+        "resources": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "operation": {
+      "type": "string",
+      "enum": ["evidence.search", "memory.search", "knowledge.search"]
+    },
+    "authority": { "$ref": "#/$defs/authority" },
+    "request": { "$ref": "#/$defs/request" },
+    "resources": {
+      "type": "array",
+      "description": "Complete ordered trusted-source resource values evaluated into the frontier.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/evidence_resource" },
+          { "$ref": "#/$defs/governed_resource" },
+          { "$ref": "#/$defs/relation_resource" }
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "evidence.search" } }, "required": ["operation"] },
+      "then": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "effective_capabilities": {
+                "contains": { "$ref": "#/$defs/evidence_capability" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "memory.search" } }, "required": ["operation"] },
+      "then": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "effective_capabilities": {
+                "contains": { "$ref": "#/$defs/memory_capability" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "knowledge.search" } }, "required": ["operation"] },
+      "then": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "effective_capabilities": {
+                "contains": { "$ref": "#/$defs/knowledge_capability" }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "positive_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "external_record_id": {
+      "type": "string",
+      "pattern": "^q1-record-(?:evidence|memory|knowledge)-[0-9]{6}$"
+    },
+    "permission_label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "capability_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability_id", "version"],
+      "properties": {
+        "capability_id": {
+          "type": "string",
+          "enum": ["evidence.read", "knowledge.read", "memory.read"]
+        },
+        "version": { "type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$" }
+      }
+    },
+    "evidence_capability": {
+      "required": ["capability_id"],
+      "properties": { "capability_id": { "const": "evidence.read" } }
+    },
+    "memory_capability": {
+      "required": ["capability_id"],
+      "properties": { "capability_id": { "const": "memory.read" } }
+    },
+    "knowledge_capability": {
+      "required": ["capability_id"],
+      "properties": { "capability_id": { "const": "knowledge.read" } }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal_id",
+        "role_ids",
+        "workspace_grant",
+        "effective_capabilities",
+        "clearance"
+      ],
+      "properties": {
+        "principal_id": {
+          "type": "string",
+          "enum": [
+            "principal.other_workspace",
+            "principal.reader_internal",
+            "principal.reader_public",
+            "principal.restricted",
+            "principal.reviewer_confidential"
+          ]
+        },
+        "role_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["reader", "reviewer"] }
+        },
+        "workspace_grant": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workspace_id", "scopes"],
+          "properties": {
+            "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "scopes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "contains": { "const": "memory:read" }
+            }
+          }
+        },
+        "effective_capabilities": {
+          "type": "array",
+          "minItems": 0,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability_binding" }
+        },
+        "clearance": {
+          "type": "string",
+          "enum": ["public", "internal", "confidential", "restricted"]
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "workspace_id", "scopes", "purpose", "v_us", "t_us"],
+      "properties": {
+        "request_id": { "$ref": "#/$defs/sha256_ref" },
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "contains": { "const": "memory:read" }
+        },
+        "purpose": { "const": "user_initiated" },
+        "v_us": { "$ref": "#/$defs/safe_count" },
+        "t_us": { "$ref": "#/$defs/safe_count" }
+      }
+    },
+    "label_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "sequence", "label", "action"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sequence": { "$ref": "#/$defs/positive_count" },
+        "label": { "$ref": "#/$defs/permission_label" },
+        "action": { "type": "string", "enum": ["attached", "withdrawn", "corrected"] }
+      }
+    },
+    "label_events": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/label_event" }
+    },
+    "provenance_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "sequence", "action", "tombstoned_observation"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sequence": { "$ref": "#/$defs/positive_count" },
+        "action": { "type": "string", "enum": ["created", "restored", "tombstoned"] },
+        "tombstoned_observation": {
+          "oneOf": [
+            { "type": "null" },
+            { "const": 1 }
+          ]
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "disposition", "displaced"],
+      "properties": {
+        "layer": { "type": "string", "enum": ["governed", "staged"] },
+        "disposition": { "type": "string", "enum": ["accepted", "corrected", "rejected"] },
+        "displaced": { "type": "boolean" }
+      }
+    },
+    "evidence_resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "kind",
+        "workspace_id",
+        "sensitivity",
+        "recorded_at_us",
+        "label_events",
+        "label_events_digest",
+        "provenance_events",
+        "provenance_events_digest"
+      ],
+      "properties": {
+        "record_id": { "$ref": "#/$defs/external_record_id" },
+        "kind": { "const": "evidence" },
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sensitivity": { "type": "string", "enum": ["public", "internal", "confidential", "restricted"] },
+        "recorded_at_us": { "$ref": "#/$defs/safe_count" },
+        "label_events": { "$ref": "#/$defs/label_events" },
+        "label_events_digest": { "$ref": "#/$defs/sha256_ref" },
+        "provenance_events": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/provenance_event" }
+        },
+        "provenance_events_digest": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "governed_resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "kind",
+        "workspace_id",
+        "sensitivity",
+        "recorded_at_us",
+        "label_events",
+        "label_events_digest",
+        "valid_from_us",
+        "valid_to_us",
+        "governance",
+        "supporting_evidence_ids"
+      ],
+      "properties": {
+        "record_id": { "$ref": "#/$defs/external_record_id" },
+        "kind": { "type": "string", "enum": ["memory", "knowledge"] },
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sensitivity": { "type": "string", "enum": ["public", "internal", "confidential", "restricted"] },
+        "recorded_at_us": { "$ref": "#/$defs/safe_count" },
+        "label_events": { "$ref": "#/$defs/label_events" },
+        "label_events_digest": { "$ref": "#/$defs/sha256_ref" },
+        "valid_from_us": { "$ref": "#/$defs/safe_count" },
+        "valid_to_us": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/safe_count" }
+          ]
+        },
+        "governance": { "$ref": "#/$defs/governance" },
+        "supporting_evidence_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/external_record_id" }
+        }
+      }
+    },
+    "relation_resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "kind",
+        "workspace_id",
+        "sensitivity",
+        "recorded_at_us",
+        "label_events",
+        "label_events_digest",
+        "valid_from_us",
+        "valid_to_us",
+        "governance",
+        "supporting_evidence_ids",
+        "endpoint_ids"
+      ],
+      "properties": {
+        "record_id": { "$ref": "#/$defs/external_record_id" },
+        "kind": { "const": "relation" },
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sensitivity": { "type": "string", "enum": ["public", "internal", "confidential", "restricted"] },
+        "recorded_at_us": { "$ref": "#/$defs/safe_count" },
+        "label_events": { "$ref": "#/$defs/label_events" },
+        "label_events_digest": { "$ref": "#/$defs/sha256_ref" },
+        "valid_from_us": { "$ref": "#/$defs/safe_count" },
+        "valid_to_us": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/safe_count" }
+          ]
+        },
+        "governance": { "$ref": "#/$defs/governance" },
+        "supporting_evidence_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/external_record_id" }
+        },
+        "endpoint_ids": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/external_record_id" }
+        }
+      }
+    }
+  }
+}

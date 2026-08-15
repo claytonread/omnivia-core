@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/campaign.schema.json",
+  "title": "Q1 noncanonical campaign manifest",
+  "description": "Frozen synthetic campaign manifest: authority hashes, harness commits, owner, creation timestamp and admitted platform rows for one Q1-A qualification campaign run. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "campaign_id",
+    "q0_decision_hash",
+    "authority_hashes",
+    "harness_commits",
+    "schema_commits",
+    "owner",
+    "created_at",
+    "admitted_platforms"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/campaign.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "campaign_id": { "$ref": "#/$defs/sha256_ref" },
+    "q0_decision_hash": { "$ref": "#/$defs/sha256_ref" },
+    "authority_hashes": {
+      "type": "object",
+      "description": "Complete set of authority digests this campaign was admitted under, keyed by authority name.",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9._-]*$": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "harness_commits": {
+      "type": "array",
+      "description": "Ordered, deduplicated harness commit SHAs this campaign was built from.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+    },
+    "schema_commits": {
+      "type": "array",
+      "description": "Ordered, deduplicated schema commit SHAs this campaign was admitted under.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+    },
+    "owner": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "created_at": { "$ref": "#/$defs/timestamp" },
+    "admitted_platforms": {
+      "type": "array",
+      "description": "Ordered, deduplicated inventory of platform rows admitted into this campaign's matrix.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/admitted_platform_row" }
+    }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "admitted_platform_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform_id", "os", "arch", "admitted_at", "result_hash"],
+      "properties": {
+        "platform_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "os": { "type": "string", "enum": ["linux", "macos", "windows"] },
+        "arch": { "type": "string", "enum": ["x86_64", "arm64"] },
+        "admitted_at": { "$ref": "#/$defs/timestamp" },
+        "result_hash": { "$ref": "#/$defs/sha256_ref" }
+      }
+    }
+  }
+}

@@ -43,7 +43,7 @@ packages = ["src/omnivia_core"]
 # bare run actually collects against every test file on disk, so a tree added
 # outside this list fails rather than disappearing.
 [tool.pytest.ini_options]
-testpaths = ["services", "tests", "packages", "baseline/tests", "benchmarks/tests"]
+testpaths = ["services", "tests", "packages", "baseline/tests", "benchmarks/tests", "qualification/semantic_index/q1/tests"]
 pythonpath = ["src"]
 
 # Ruff resolves the *nearest* `[tool.ruff]` above each file, so this section is

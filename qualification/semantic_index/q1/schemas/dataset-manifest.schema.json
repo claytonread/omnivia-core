@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/dataset-manifest.schema.json",
+  "title": "Q1 noncanonical dataset manifest",
+  "description": "Manifest describing one generated Q1-A dataset: profile, root seed and generator versions, counts, ordered partitions and their child hashes. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "dataset_manifest_id",
+    "profile_id",
+    "root_seed",
+    "generator_version",
+    "runtime_versions",
+    "active_record_count",
+    "setup_record_count",
+    "partition_count",
+    "query_count",
+    "total_byte_length",
+    "partitions",
+    "artifact_hashes"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/dataset-manifest.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "dataset_manifest_id": { "$ref": "#/$defs/sha256_ref" },
+    "profile_id": { "const": "q1.synthetic-768-cosine-v1" },
+    "root_seed": { "const": "omnivia-core-semantic-index-qualification-2026-08-02-v1" },
+    "generator_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "runtime_versions": {
+      "type": "array",
+      "description": "Ordered, deduplicated runtime/tool identities and distribution hashes used to generate this dataset.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/runtime_version" }
+    },
+    "active_record_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "setup_record_count": { "$ref": "#/$defs/safe_count" },
+    "partition_count": { "$ref": "#/$defs/positive_count" },
+    "query_count": { "$ref": "#/$defs/positive_count" },
+    "total_byte_length": { "$ref": "#/$defs/safe_count" },
+    "partitions": {
+      "type": "array",
+      "description": "Ordered, deduplicated partitions in emission order; each binds to its child hash.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/partition" }
+    },
+    "artifact_hashes": {
+      "type": "array",
+      "description": "Complete ordered artifact path/hash inventory for the dataset.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path_hash" }
+    }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "positive_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "repo_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!~)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_][A-Za-z0-9_./-]*$"
+    },
+    "runtime_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "distribution_hash"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "distribution_hash": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "path_hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "hash"],
+      "properties": {
+        "path": { "$ref": "#/$defs/repo_relative_path" },
+        "hash": { "$ref": "#/$defs/sha256_ref" }
+      }
+    },
+    "partition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partition_index", "record_count", "byte_length", "child_hash"],
+      "properties": {
+        "partition_index": { "$ref": "#/$defs/safe_count" },
+        "record_count": { "$ref": "#/$defs/safe_count" },
+        "byte_length": { "$ref": "#/$defs/safe_count" },
+        "child_hash": { "$ref": "#/$defs/sha256_ref" }
+      }
+    }
+  }
+}
