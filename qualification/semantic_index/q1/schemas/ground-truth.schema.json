@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/ground-truth.schema.json",
+  "title": "Q1 noncanonical ground truth",
+  "description": "Ground-truth record for one checkpoint/query/filter/k coordinate: eligible frontier digest, ordered ranked IDs and numeric scores, both oracle implementation identities/digests, and their exact agreement. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "ground_truth_id",
+    "checkpoint_id",
+    "query_id",
+    "filter_id",
+    "filter",
+    "k",
+    "eligible_count",
+    "eligible_frontier_digest",
+    "ranked_ids",
+    "scores",
+    "oracle_a",
+    "oracle_b",
+    "exact_agreement"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/ground-truth.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "ground_truth_id": { "$ref": "#/$defs/sha256_ref" },
+    "checkpoint_id": { "$ref": "#/$defs/sha256_ref" },
+    "query_id": { "$ref": "#/$defs/sha256_ref" },
+    "filter_id": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/sha256_ref" }
+      ]
+    },
+    "filter": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/filter_spec" }
+      ]
+    },
+    "k": { "type": "integer", "enum": [1, 10, 50] },
+    "eligible_count": { "$ref": "#/$defs/safe_count" },
+    "eligible_frontier_digest": { "$ref": "#/$defs/sha256_ref" },
+    "ranked_ids": {
+      "type": "array",
+      "description": "Ordered, deduplicated ranked record IDs, best match first.",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/external_record_id" }
+    },
+    "scores": {
+      "type": "array",
+      "description": "Ordered numeric scores, positionally aligned with ranked_ids.",
+      "minItems": 0,
+      "items": { "type": "number", "minimum": -1.0, "maximum": 1.0 }
+    },
+    "oracle_a": { "$ref": "#/$defs/oracle_identity" },
+    "oracle_b": { "$ref": "#/$defs/oracle_identity" },
+    "exact_agreement": { "const": true }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "external_record_id": {
+      "type": "string",
+      "pattern": "^q1-record-(?:evidence|memory|knowledge)-[0-9]{6}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "filter_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "oracle_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implementation_id", "version_digest"],
+      "properties": {
+        "implementation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "version_digest": { "$ref": "#/$defs/sha256_ref" }
+      }
+    }
+  }
+}

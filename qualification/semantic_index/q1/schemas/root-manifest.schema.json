@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/root-manifest.schema.json",
+  "title": "Q1 noncanonical root manifest",
+  "description": "Exact ordered inventory of every child artifact type/path/hash/byte length rolled into one Q1-A qualification run, its aggregate digest, and reviewer attestations. Noncanonical qualification input only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "noncanonical",
+    "aggregate_digest",
+    "children",
+    "reviewer_attestations"
+  ],
+  "properties": {
+    "schema_id": { "const": "https://schemas.omnivia.dev/qualification/semantic-index/q1/v1/root-manifest.schema.json" },
+    "schema_version": { "const": "1.0" },
+    "noncanonical": { "const": true },
+    "aggregate_digest": { "$ref": "#/$defs/sha256_ref" },
+    "children": {
+      "type": "array",
+      "description": "Ordered, deduplicated inventory of every child artifact bound into this root manifest.",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/child_entry" },
+      "allOf": [
+        { "contains": { "properties": { "child_type": { "const": "campaign" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "dataset_manifest" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "policy_input" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "policy_decision" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "frontier" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "ground_truth" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "operation_trace" } }, "required": ["child_type"] } },
+        { "contains": { "properties": { "child_type": { "const": "reproduction" } }, "required": ["child_type"] } }
+      ]
+    },
+    "reviewer_attestations": {
+      "type": "array",
+      "description": "Ordered, deduplicated reviewer attestations over this root manifest.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reviewer_attestation" }
+    }
+  },
+  "$defs": {
+    "sha256_ref": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "safe_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "repo_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!~)(?!.*\\.\\.)[A-Za-z0-9_][A-Za-z0-9_./-]*$"
+    },
+    "child_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child_type", "path", "hash", "byte_length"],
+      "properties": {
+        "child_type": {
+          "type": "string",
+          "enum": [
+            "campaign",
+            "dataset_manifest",
+            "policy_input",
+            "policy_decision",
+            "frontier",
+            "ground_truth",
+            "operation_trace",
+            "reproduction"
+          ]
+        },
+        "path": { "$ref": "#/$defs/repo_relative_path" },
+        "hash": { "$ref": "#/$defs/sha256_ref" },
+        "byte_length": { "$ref": "#/$defs/safe_count" }
+      }
+    },
+    "reviewer_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer_id", "attestation_digest", "attested_at"],
+      "properties": {
+        "reviewer_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "attestation_digest": { "$ref": "#/$defs/sha256_ref" },
+        "attested_at": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}
