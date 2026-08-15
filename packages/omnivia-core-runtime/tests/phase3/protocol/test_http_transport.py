@@ -93,7 +93,7 @@ class CountingDispatch:
         if self.fail:
             return failure(
                 request,
-                "core.operation_not_implemented",
+                "internal_non_recoverable",
                 "this runtime implements no product operations yet",
                 principal=PRINCIPAL,
             )
@@ -334,7 +334,7 @@ def test_a_typed_application_error_is_also_http_200(serving: _Serving) -> None:
 
     assert status == 200
     document = json.loads(body)
-    assert document["error"]["code"] == "core.operation_not_implemented"
+    assert document["error"]["code"] == "internal_non_recoverable"
     assert "result" not in document
 
 

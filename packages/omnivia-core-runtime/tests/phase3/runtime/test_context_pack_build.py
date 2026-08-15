@@ -1825,7 +1825,7 @@ def test_context_pack_build_is_absent_from_every_probe_seam(owned: m2.Owned) -> 
     )
     assert CONTEXT_PACK_BUILD_OPERATION not in probe.grant.operations
     assert refused(probe.dispatch(request_for(build_input()))).error.code == (
-        "core.operation_not_implemented"
+        "internal_non_recoverable"
     )
 
 

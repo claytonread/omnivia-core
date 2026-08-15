@@ -25,6 +25,7 @@ from omnivia_core.contracts.v1 import (
     COMPATIBILITY_STATUS_COMPATIBLE,
     COMPATIBILITY_STATUS_INCOMPATIBLE,
     DEFAULT_RETRY_CLASSIFICATION,
+    ERROR_CODE_INTERNAL_NON_RECOVERABLE,
     OPERATION_CATALOGUE,
     UPGRADE_STATE_NONE,
     UPGRADE_STATE_REQUIRED,
@@ -32,6 +33,7 @@ from omnivia_core.contracts.v1 import (
     CapabilityRef,
     CapabilitySet,
     CompatibilityMetadata,
+    ContractDecodeError,
     ErrorResponseEnvelope,
     GrantedAuthority,
     JobReference,
@@ -46,6 +48,8 @@ from omnivia_core.contracts.v1 import (
     classify_version_compatibility,
     compare_contract_versions,
     get_operation_metadata,
+    validate_error_retry_class,
+    validate_error_value_domain,
 )
 from omnivia_core_runtime.service.versions import (
     API_VERSION,
@@ -63,6 +67,13 @@ SERVICE_OPERATIONS = ("core.health", "core.readiness", "core.discovery")
 #: rather than transcribed, so this set cannot drift from what A2 froze.
 APPLICATION_OPERATIONS: frozenset[str] = frozenset(
     entry.name for entry in OPERATION_CATALOGUE
+)
+
+#: Fixed producer-side fallback. A malformed handler error may contain unbounded
+#: or sensitive text, so neither its values nor the validation diagnostic are
+#: reflected onto the wire.
+_UNSTATABLE_OPERATION_ERROR_MESSAGE = (
+    "the operation failed with an error this transport cannot state"
 )
 
 
@@ -485,6 +496,18 @@ def failure(
     audit_reference: str | None = None,
     job_reference: JobReference | None = None,
 ) -> ResponseEnvelope:
+    error = ApiError(code=code, message=message, retry_class=retry_class)
+    try:
+        validate_error_value_domain(error)
+        validate_error_retry_class(error)
+    except ContractDecodeError:
+        error = ApiError(
+            code=ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+            message=_UNSTATABLE_OPERATION_ERROR_MESSAGE,
+            retry_class=DEFAULT_RETRY_CLASSIFICATION[
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE
+            ],
+        )
     return ErrorResponseEnvelope(
         metadata=response_metadata(
             request,
@@ -493,7 +516,7 @@ def failure(
             audit_reference=audit_reference,
             job_reference=job_reference,
         ),
-        error=ApiError(code=code, message=message, retry_class=retry_class),
+        error=error,
     )
 
 
@@ -515,7 +538,9 @@ def readiness(context: OperationContext) -> Mapping[str, Any]:
     service = context.service
     lifecycle = getattr(service, "lifecycle", None)
     if lifecycle is None:
-        raise OperationError("core.unavailable", "no service is attached")
+        raise OperationError(
+            ERROR_CODE_INTERNAL_NON_RECOVERABLE, "no service is attached"
+        )
     return {
         "ready": lifecycle.state.advertises_writable,
         "state": lifecycle.state.value,

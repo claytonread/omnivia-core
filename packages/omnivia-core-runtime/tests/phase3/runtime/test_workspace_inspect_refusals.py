@@ -16,7 +16,7 @@ prevent.
 The free falsifier for tests 1 to 7, and the reason the shapes below are what they
 are: run any of them against the probe `Dispatcher` -- the tree as it stood before
 this lane -- and it fails, because that path answers `workspace.inspect` with
-`core.operation_not_implemented` and never asks any of these questions.
+`internal_non_recoverable` and never asks any of these questions.
 """
 
 from __future__ import annotations
@@ -814,7 +814,7 @@ def test_7b_the_probe_dispatcher_still_refuses_the_operation_outright() -> None:
     """Reached directly, the probe path answers exactly what it did before this lane."""
     response = refusal(probe_dispatcher().dispatch(request_for()))
 
-    assert response.error.code == "core.operation_not_implemented"
+    assert response.error.code == "internal_non_recoverable"
 
 
 def test_7c_the_production_path_never_delegates_the_operation_to_the_probe() -> None:

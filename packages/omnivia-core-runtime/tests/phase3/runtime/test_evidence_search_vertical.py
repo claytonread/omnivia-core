@@ -849,7 +849,7 @@ def test_7_evidence_search_is_absent_from_every_probe_seam(owned: Owned) -> None
     )
     assert EVIDENCE_SEARCH_OPERATION not in probe.grant.operations
     assert refusal(probe.dispatch(request_for())).error.code == (
-        "core.operation_not_implemented"
+        "internal_non_recoverable"
     )
 
 

@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.dispatch import Dispatcher
-from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
+from omnivia_core_runtime.service.operations import (
+    SERVICE_OPERATIONS,
+    OperationError,
+    OperationRegistry,
+)
 from omnivia_core_runtime.service.ovc1 import MAGIC, OVC1Error
 from omnivia_core_runtime.service.transport import (
     LOCAL_SCHEME,
@@ -206,7 +210,7 @@ def test_an_unimplemented_operation_is_refused_on_every_transport(
 ) -> None:
     response = transport.call(request_for("memory.search"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.operation_not_implemented"
+    assert response.error.code == "internal_non_recoverable"
 
 
 def test_an_ungranted_workspace_is_refused_on_every_transport(
@@ -214,7 +218,7 @@ def test_an_ungranted_workspace_is_refused_on_every_transport(
 ) -> None:
     response = transport.call(request_for("core.health", workspace="ws-elsewhere"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.workspace_not_granted"
+    assert response.error.code == "workspace_not_granted"
 
 
 def test_a_mismatched_principal_is_refused_on_every_transport(
@@ -222,7 +226,45 @@ def test_a_mismatched_principal_is_refused_on_every_transport(
 ) -> None:
     response = transport.call(request_for("core.health", principal="someone-else"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.principal_mismatch"
+    assert response.error.code == "authorization_denied"
+
+
+def test_malformed_handler_errors_fail_closed_before_either_transport_encodes_them(
+    socket_dir: Path,
+) -> None:
+    def dispatcher() -> Dispatcher:
+        registry = OperationRegistry()
+
+        def refuse(_context: object) -> None:
+            raise OperationError(
+                "core.future_error",
+                "sensitive-handler-text:" + "x" * 2100,
+                retry_class="retry.later",
+            )
+
+        registry.register("core.health", refuse)
+        return Dispatcher(
+            registry=registry,
+            grant=Grant(
+                principal="local-user",
+                workspaces=frozenset({WORKSPACE}),
+                operations=frozenset({"core.health"}),
+            ),
+            service=FakeService(),
+        )
+
+    request = request_for("core.health")
+    in_process = InProcessTransport(dispatcher=dispatcher()).call(request)
+    socket_path = socket_dir / "i.sock"
+    with LocalSocketServer(dispatcher=dispatcher(), path=socket_path):
+        over_socket = LocalSocketTransport(path=socket_path).call(request)
+
+    for response in (in_process, over_socket):
+        assert isinstance(response, ErrorResponseEnvelope)
+        assert response.error.code == "internal_non_recoverable"
+        assert response.error.retry_class == "non_retryable"
+        assert "sensitive-handler-text" not in response.error.message
+    assert in_process == over_socket
 
 
 def test_both_transports_agree_on_value_types(socket_dir: Path) -> None:

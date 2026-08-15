@@ -18,6 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import omnivia_core_runtime.service.dispatch as dispatch_module
 import omnivia_core_runtime.service.main as service_main_module
 import pytest
 from omnivia_core_runtime.ownership.discovery import discover
@@ -26,11 +27,16 @@ from omnivia_core_runtime.service.authorization import (
     Grant,
     authorize,
 )
-from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.dispatch import (
+    _WIRE_AUTHORIZATION_CODES,
+    _WIRE_AUTHORIZATION_MESSAGES,
+    Dispatcher,
+)
 from omnivia_core_runtime.service.main import _endpoint_to_serve, _serve_until_stopped
 from omnivia_core_runtime.service.main import main as service_main
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
+    OperationError,
     OperationRegistry,
     build_service_registry,
 )
@@ -54,6 +60,7 @@ from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
 from omnivia_core.contracts.v1 import (
     CONTRACT_VERSION,
+    FROZEN_ERROR_CODES,
     ClientIdentity,
     ErrorResponseEnvelope,
     PrincipalClaim,
@@ -167,15 +174,20 @@ def test_an_unimplemented_operation_is_refused_as_unimplemented() -> None:
     """Not as unauthorised: reporting it that way would mislead a caller.
 
     A client told "not permitted" asks for a wider grant. A client told "not
-    implemented" waits for the operation to exist, which is the truth here.
+    implemented" waits for the operation to exist, which is the truth here. The
+    wire code is the contract's own `internal_non_recoverable` -- a catalogue
+    operation missing from this build's registry is a gap in the build -- and the
+    message, not the code, is what keeps it out of the authorization vocabulary.
     """
     dispatcher = Dispatcher.for_service_operations(
         grant(operations=SERVICE_OPERATIONS + ("memory.search",)), FakeService()
     )
     response = dispatcher.dispatch(request_for("memory.search"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.operation_not_implemented"
-    assert "A2" in response.error.message
+    assert response.error.code == "internal_non_recoverable"
+    assert response.error.code not in ("authorization_denied", "workspace_not_granted")
+    assert "not implemented by this runtime" in response.error.message
+    assert "memory.search" not in response.error.message
 
 
 def test_health_readiness_and_discovery_dispatch_successfully() -> None:
@@ -340,14 +352,15 @@ def test_an_ungranted_operation_is_denied() -> None:
     )
     response = dispatcher.dispatch(request_for("core.readiness"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.operation_not_granted"
+    assert response.error.code == "authorization_denied"
 
 
 def test_an_ungranted_workspace_is_denied() -> None:
     dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
     response = dispatcher.dispatch(request_for("core.health", workspace="ws-elsewhere"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.workspace_not_granted"
+    assert response.error.code == "workspace_not_granted"
+    assert "ws-elsewhere" not in response.error.message
 
 
 def test_a_client_cannot_name_its_own_principal() -> None:
@@ -355,7 +368,9 @@ def test_a_client_cannot_name_its_own_principal() -> None:
     dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
     response = dispatcher.dispatch(request_for("core.health", principal="someone-else"))
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.principal_mismatch"
+    assert response.error.code == "authorization_denied"
+    assert "someone-else" not in response.error.message
+    assert "local-user" not in response.error.message
 
     # The grant's own principal is accepted.
     ok = dispatcher.dispatch(request_for("core.health", principal="local-user"))
@@ -372,6 +387,116 @@ def test_the_grant_is_an_allowlist_not_a_denylist() -> None:
             workspace_id=WORKSPACE,
             operation="core.health",
         )
+
+
+def test_authorize_still_raises_its_legacy_codes_internally() -> None:
+    """The exception vocabulary is unchanged; only the wire boundary translates.
+
+    `authorize` is an in-process seam whose existing callers already map these
+    codes. Translating inside it would move a compatibility problem rather than
+    solve one, so the `core.*` spelling stays here and stops at the dispatcher.
+    """
+    denials = [
+        ("someone-else", WORKSPACE, "core.health", "core.principal_mismatch"),
+        (None, "ws-elsewhere", "core.health", "core.workspace_not_granted"),
+        (None, WORKSPACE, "core.unregistered", "core.operation_not_granted"),
+    ]
+    for principal_claim, workspace_id, operation, expected in denials:
+        with pytest.raises(AuthorizationDenied) as denied:
+            authorize(
+                grant(),
+                principal_claim=principal_claim,
+                workspace_id=workspace_id,
+                operation=operation,
+            )
+        assert denied.value.code == expected
+
+
+def test_every_legacy_denial_code_has_one_canonical_wire_code() -> None:
+    """The translation map is closed over exactly what `authorize` can raise.
+
+    Both directions matter. A code `authorize` raises and the map does not name
+    would fail closed and lose its meaning; a code in the map that nothing raises
+    is dead vocabulary. Every value must also be a frozen v1 `ErrorCode`, which is
+    the whole point of translating at all.
+    """
+    assert set(_WIRE_AUTHORIZATION_CODES) == {
+        "core.principal_mismatch",
+        "core.workspace_not_granted",
+        "core.operation_not_granted",
+    }
+    assert set(_WIRE_AUTHORIZATION_MESSAGES) == set(_WIRE_AUTHORIZATION_CODES)
+    assert _WIRE_AUTHORIZATION_CODES["core.workspace_not_granted"] == (
+        "workspace_not_granted"
+    )
+    assert (
+        _WIRE_AUTHORIZATION_CODES["core.principal_mismatch"] == "authorization_denied"
+    )
+    assert _WIRE_AUTHORIZATION_CODES["core.operation_not_granted"] == (
+        "authorization_denied"
+    )
+    assert set(_WIRE_AUTHORIZATION_CODES.values()) <= set(FROZEN_ERROR_CODES)
+    assert all(
+        len(message) <= 2048 for message in _WIRE_AUTHORIZATION_MESSAGES.values()
+    )
+
+
+def test_an_untranslatable_denial_fails_closed_rather_than_crossing_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy code the map does not name must never reach a response envelope.
+
+    Passing it through would put a value outside `ErrorCode` on the wire, which is
+    precisely what a v1 peer refuses to decode. The refusal it becomes says nothing
+    about the request or the grant, because an unrecognised denial is by definition
+    something this boundary cannot describe.
+    """
+
+    def refuse_with_an_unknown_code(*_args: Any, **_kwargs: Any) -> None:
+        raise AuthorizationDenied(
+            "core.some_future_denial", "grant secret ws-elsewhere"
+        )
+
+    monkeypatch.setattr(dispatch_module, "authorize", refuse_with_an_unknown_code)
+    dispatcher = Dispatcher.for_service_operations(grant(), FakeService())
+    response = dispatcher.dispatch(request_for("core.health"))
+
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert response.error.code == "internal_non_recoverable"
+    assert "core.some_future_denial" not in response.error.message
+    assert "ws-elsewhere" not in response.error.message
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "retry_class"),
+    [
+        ("core.future_error", "secret from an invalid code", "non_retryable"),
+        ("future_error", "secret from an invalid retry class", "retry.later"),
+        ("future_error", "secret:" + "x" * 2048, "non_retryable"),
+    ],
+)
+def test_a_handler_cannot_put_an_invalid_error_value_domain_on_the_wire(
+    code: str, message: str, retry_class: str
+) -> None:
+    registry = OperationRegistry()
+
+    def refuse(_context: Any) -> None:
+        raise OperationError(code, message, retry_class=retry_class)
+
+    registry.register("core.health", refuse)
+    dispatcher = Dispatcher(registry=registry, grant=grant(), service=FakeService())
+    response = dispatcher.dispatch(request_for("core.health"))
+
+    assert isinstance(response, ErrorResponseEnvelope)
+    assert response.error.code == "internal_non_recoverable"
+    assert response.error.retry_class == "non_retryable"
+    assert "secret" not in response.error.message
+
+    # The producer's result is a real wire value, not merely a dataclass that a
+    # client will reject after the transport has already encoded it.
+    from omnivia_core.contracts.v1 import decode_response, encode_response
+
+    assert decode_response(encode_response(response)) == response
 
 
 def test_authorization_never_touches_storage() -> None:
@@ -791,6 +916,7 @@ def test_main_check_only_bypasses_endpoint_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--check-only` reports readiness without ever needing an endpoint."""
+
     def unexpected_wait_loop(*_args: object, **_kwargs: object) -> int:
         raise AssertionError("check-only entered the served lease-renewal loop")
 
@@ -815,6 +941,7 @@ def test_the_service_wait_loop_fails_closed_and_unwinds_once(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A renewal failure stops serving, releases resources, and exits non-zero."""
+
     class KeepRunning:
         def wait(self, *, timeout: float) -> bool:
             assert timeout == 0.25
@@ -841,6 +968,7 @@ def test_the_service_wait_loop_fails_closed_and_unwinds_once(
 
 def test_the_service_wait_loop_stops_cleanly_without_an_extra_renewal() -> None:
     """A requested stop follows the same unwind and retains a successful exit."""
+
     class StopRequested:
         def wait(self, *, timeout: float) -> bool:
             assert timeout == 0.25

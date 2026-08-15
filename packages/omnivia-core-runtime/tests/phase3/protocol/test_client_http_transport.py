@@ -109,7 +109,7 @@ class _CountingDispatch:
         if self.fail:
             return failure(
                 request,
-                "core.operation_not_implemented",
+                "internal_non_recoverable",
                 "this runtime implements no product operations yet",
                 principal=PRINCIPAL,
             )
@@ -293,7 +293,7 @@ def test_an_application_error_envelope_crosses_as_an_answer(serving: _Serving) -
     response = _client(serving).call(_request(), deadline=_deadline())
 
     assert isinstance(response, ErrorResponseEnvelope)
-    assert response.error.code == "core.operation_not_implemented"
+    assert response.error.code == "internal_non_recoverable"
     assert len(serving.dispatch.calls) == 1
 
 

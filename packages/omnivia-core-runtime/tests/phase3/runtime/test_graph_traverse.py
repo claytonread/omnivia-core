@@ -1651,7 +1651,7 @@ def test_the_operation_is_absent_from_every_probe_registration(graph: m2.Owned) 
     )
     assert GRAPH_TRAVERSE_OPERATION not in probe.grant.operations
     assert refused(probe.dispatch(request_for(start("rec-a")))).error.code == (
-        "core.operation_not_implemented"
+        "internal_non_recoverable"
     )
 
 
