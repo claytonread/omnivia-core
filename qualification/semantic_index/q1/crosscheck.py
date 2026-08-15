@@ -42,7 +42,7 @@ NORM_TOLERANCE: Final = 1e-6
 # cosine_similarity is mathematically bounded to [-1, 1]. This only absorbs
 # float64 division/sqrt rounding at the boundary, not a real out-of-range
 # score, which indicates a bug and must still raise.
-SCORE_OVERSHOOT_TOLERANCE: Final = 1e-9
+SCORE_OVERSHOOT_TOLERANCE: Final = 1e-12
 
 RECORD_ID_PATTERN: Final = re.compile(
     r"^q1-record-(?:evidence|memory|knowledge)-[0-9]{6}$"

@@ -288,6 +288,36 @@ def test_clamp_or_reject_score_rejects_negative_gross_overshoot() -> None:
         cc._clamp_or_reject_score(score)
 
 
+def test_score_overshoot_tolerance_is_frozen_at_1e_minus_12() -> None:
+    assert cc.SCORE_OVERSHOOT_TOLERANCE == 1e-12
+
+
+def test_clamp_or_reject_score_clamps_positive_overshoot_at_exact_boundary() -> None:
+    # 1.0 + 1e-12 is exactly the accepted tolerance boundary: not > threshold.
+    score = 1.0 + 1e-12
+    assert cc._clamp_or_reject_score(score) == 1.0
+
+
+def test_clamp_or_reject_score_clamps_negative_overshoot_at_exact_boundary() -> None:
+    score = -1.0 - 1e-12
+    assert cc._clamp_or_reject_score(score) == -1.0
+
+
+def test_clamp_or_reject_score_rejects_positive_overshoot_past_boundary() -> None:
+    # 1.0 + 2e-12 is a full 1e-12 past the boundary float (1.0 + 1e-12), far
+    # beyond float64 rounding noise near 1.0, so it cannot collide with the
+    # boundary case above.
+    score = 1.0 + 2e-12
+    with pytest.raises(cc.CrossCheckError):
+        cc._clamp_or_reject_score(score)
+
+
+def test_clamp_or_reject_score_rejects_negative_overshoot_past_boundary() -> None:
+    score = -1.0 - 2e-12
+    with pytest.raises(cc.CrossCheckError):
+        cc._clamp_or_reject_score(score)
+
+
 def test_clamp_or_reject_score_rejects_nonfinite() -> None:
     with pytest.raises(cc.CrossCheckError):
         cc._clamp_or_reject_score(float("nan"))
