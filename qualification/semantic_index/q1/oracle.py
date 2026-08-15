@@ -37,16 +37,30 @@ _EXTERNAL_ID_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 # Cosine similarity is mathematically bounded to [-1, 1]; binary64 rounding
-# in the dot-product/norm division can overshoot that bound by a few ULPs.
-# Only an overshoot this tiny is clamped -- anything larger fails closed.
-_SCORE_CLAMP_EPSILON: Final[float] = 8.0 * math.ulp(1.0)
+# in the dot-product/norm division can overshoot that bound by a tiny amount.
+# This threshold is a frozen contract constant, not derived from math.ulp.
+# The exact binary64 cutoffs are the results of `1.0 + epsilon` and
+# `-1.0 - epsilon`; values at those cutoffs clamp and values beyond fail.
+_SCORE_CLAMP_EPSILON: Final[float] = 1e-12
+
+# The admitted semantic-index profile is exactly 768 dimensions; every public
+# vector-decoding or scoring entry point rejects any other value.
+_ADMITTED_DIMENSIONS: Final[int] = DEFAULT_DIMENSIONS
+
+# core_l2_unit_v1: query and candidate vectors must already be L2-unit
+# normalized before they reach this oracle. The accepted absolute tolerance
+# on the norm itself is 1e-6; out-of-tolerance vectors fail closed instead of
+# being silently renormalized.
+_CORE_L2_UNIT_TOLERANCE: Final[float] = 1e-6
 
 
 def _require_dimensions(dimensions: object) -> int:
     if isinstance(dimensions, bool) or not isinstance(dimensions, int):
         raise TypeError(f"dimensions must be an int, got {type(dimensions)!r}")
-    if dimensions <= 0:
-        raise ValueError(f"dimensions must be positive, got {dimensions!r}")
+    if dimensions != _ADMITTED_DIMENSIONS:
+        raise ValueError(
+            f"dimensions must be exactly {_ADMITTED_DIMENSIONS}, got {dimensions!r}"
+        )
     return dimensions
 
 
@@ -137,12 +151,16 @@ def _validated_components(values: Sequence[float], name: str) -> tuple[float, ..
     return tuple(validated)
 
 
-def _l2_norm(values: Sequence[float], name: str) -> float:
+def _require_core_l2_unit_norm(values: Sequence[float], name: str) -> float:
+    """Independently validate the core_l2_unit_v1 profile without rescaling."""
     norm = math.sqrt(math.fsum(value * value for value in values))
     if not math.isfinite(norm):
         raise ValueError(f"{name} norm is not finite: {norm!r}")
-    if norm == 0.0:
-        raise ValueError(f"{name} vector has zero norm")
+    if abs(norm - 1.0) > _CORE_L2_UNIT_TOLERANCE:
+        raise ValueError(
+            f"{name} violates core_l2_unit_v1: norm={norm!r} is not within "
+            f"{_CORE_L2_UNIT_TOLERANCE!r} of 1.0"
+        )
     return norm
 
 
@@ -150,11 +168,11 @@ def _bounded_score(score: float) -> float:
     if not math.isfinite(score):
         raise ValueError(f"cosine score is not finite: {score!r}")
     if score > 1.0:
-        if score - 1.0 > _SCORE_CLAMP_EPSILON:
+        if score > 1.0 + _SCORE_CLAMP_EPSILON:
             raise ValueError(f"cosine score out of range: {score!r}")
         return 1.0
     if score < -1.0:
-        if -1.0 - score > _SCORE_CLAMP_EPSILON:
+        if score < -1.0 - _SCORE_CLAMP_EPSILON:
             raise ValueError(f"cosine score out of range: {score!r}")
         return -1.0
     # Ground-truth scores enter RFC 8785 evidence later; make orthogonal
@@ -176,20 +194,17 @@ def _cosine_from_validated(
 
 
 def cosine_similarity(query: Sequence[float], candidate: Sequence[float]) -> float:
-    """Exhaustive binary64 cosine similarity via `math.fsum` accumulation.
+    """Score two admitted 768D core_l2_unit_v1 vectors exhaustively.
 
-    Raises on dimension mismatch, either zero-norm vector, or a resulting
-    score that is non-finite or out of `[-1, 1]` beyond a tiny rounding clamp.
+    Binary64 products and `math.fsum` accumulation are used without
+    renormalizing either vector. Non-768D or non-unit inputs fail closed.
     """
     query_values = _validated_components(query, "query")
     candidate_values = _validated_components(candidate, "candidate")
-    if len(query_values) != len(candidate_values):
-        raise ValueError(
-            f"query has {len(query_values)} dimensions, "
-            f"candidate has {len(candidate_values)}"
-        )
-    query_norm = _l2_norm(query_values, "query")
-    candidate_norm = _l2_norm(candidate_values, "candidate")
+    _require_dimensions(len(query_values))
+    _require_dimensions(len(candidate_values))
+    query_norm = _require_core_l2_unit_norm(query_values, "query")
+    candidate_norm = _require_core_l2_unit_norm(candidate_values, "candidate")
     return _cosine_from_validated(
         query_values, candidate_values, query_norm, candidate_norm
     )
@@ -211,16 +226,18 @@ def score_candidates(
     external ID. `k` larger than the eligible count returns all of them; an
     empty eligible set returns an empty tuple. Never pads.
 
-    Every candidate is validated and decoded before active/eligible filtering;
-    every included candidate is then scored before sorting or truncation. A
-    malformed candidate anywhere in the input therefore fails closed before a
-    result is returned.
+    Every candidate is validated and decoded before active/eligible filtering,
+    including the core_l2_unit_v1 unit-norm check for the query and every
+    candidate regardless of its active/eligible flags; every included
+    candidate is then scored before sorting or truncation. A malformed
+    candidate anywhere in the input therefore fails closed before a result is
+    returned.
     """
     if isinstance(k, bool) or not isinstance(k, int) or k not in K_VALUES:
         raise ValueError(f"k must be one of {K_VALUES}, got {k!r}")
     _require_dimensions(dimensions)
     query = decode_float32_le(query_vector, dimensions)
-    query_norm = _l2_norm(query, "query")
+    query_norm = _require_core_l2_unit_norm(query, "query")
 
     candidate_list = list(candidates)
     seen_ids: set[str] = set()
@@ -234,7 +251,9 @@ def score_candidates(
             raise ValueError(f"duplicate external_id: {candidate.external_id!r}")
         seen_ids.add(candidate.external_id)
         vector = decode_float32_le(candidate.vector, dimensions)
-        vector_norm = _l2_norm(vector, f"candidate {candidate.external_id!r}")
+        vector_norm = _require_core_l2_unit_norm(
+            vector, f"candidate {candidate.external_id!r}"
+        )
         validated_candidates.append((candidate, vector, vector_norm))
 
     scored: list[RankedResult] = []

@@ -37,6 +37,17 @@ def _id(lane: str, index: int) -> str:
     return f"q1-record-{lane}-{index:06d}"
 
 
+def _unit768(index: int, value: float = 1.0) -> list[float]:
+    """A 768-dim vector with `value` at `index` and zeros elsewhere.
+
+    A single non-zero component is exactly L2-unit norm when `value` is
+    +/-1.0, satisfying core_l2_unit_v1 without any float32 rounding risk.
+    """
+    vector = [0.0] * oracle.DEFAULT_DIMENSIONS
+    vector[index] = value
+    return vector
+
+
 def _candidate(
     lane: str,
     index: int,
@@ -57,16 +68,17 @@ def _candidate(
 
 
 def test_decode_float32_le_positive_known_values() -> None:
-    values = [1.0, -2.5, 0.0, 3.25]
-    decoded = oracle.decode_float32_le(_le(values), dimensions=4)
+    values = [1.0, -2.5, 0.0, 3.25] + [0.0] * 764
+    decoded = oracle.decode_float32_le(_le(values))
     assert decoded == tuple(values)
     assert isinstance(decoded, tuple)
 
 
 def test_decode_float32_le_accepts_bytearray_and_memoryview() -> None:
-    payload = _le([1.0, 2.0])
-    assert oracle.decode_float32_le(bytearray(payload), dimensions=2) == (1.0, 2.0)
-    assert oracle.decode_float32_le(memoryview(payload), dimensions=2) == (1.0, 2.0)
+    values = [1.0] * 768
+    payload = _le(values)
+    assert oracle.decode_float32_le(bytearray(payload)) == tuple(values)
+    assert oracle.decode_float32_le(memoryview(payload)) == tuple(values)
 
 
 def test_decode_float32_le_default_dimensions_is_768() -> None:
@@ -77,47 +89,53 @@ def test_decode_float32_le_default_dimensions_is_768() -> None:
 
 
 def test_decode_float32_le_distinguishes_little_from_big_endian() -> None:
-    values = [1.5, -12345.25, 0.0625]  # exact in float32, no round-trip drift
-    little = struct.pack("<3f", *values)
-    big = struct.pack(">3f", *values)
+    # Exact in float32, no round-trip drift.
+    values = [1.5, -12345.25, 0.0625] + [0.0] * 765
+    little = struct.pack("<768f", *values)
+    big = struct.pack(">768f", *values)
     assert little != big
-    decoded_little = oracle.decode_float32_le(little, dimensions=3)
-    decoded_big = oracle.decode_float32_le(big, dimensions=3)
+    decoded_little = oracle.decode_float32_le(little)
+    decoded_big = oracle.decode_float32_le(big)
     assert decoded_little == tuple(values)
     assert decoded_big != decoded_little
 
 
 def test_decode_float32_le_rejects_wrong_byte_length() -> None:
-    payload = _le([1.0, 2.0, 3.0])
+    too_short = _le([1.0] * 767)
+    too_long = _le([1.0] * 769)
     with pytest.raises(ValueError):
-        oracle.decode_float32_le(payload, dimensions=4)
+        oracle.decode_float32_le(too_short)
     with pytest.raises(ValueError):
-        oracle.decode_float32_le(payload, dimensions=2)
+        oracle.decode_float32_le(too_long)
 
 
 def test_decode_float32_le_rejects_non_finite_components() -> None:
-    nan_payload = struct.pack("<2f", float("nan"), 1.0)
-    inf_payload = struct.pack("<2f", float("inf"), 1.0)
+    nan_payload = struct.pack("<768f", float("nan"), *([1.0] * 767))
+    inf_payload = struct.pack("<768f", float("inf"), *([1.0] * 767))
     with pytest.raises(ValueError):
-        oracle.decode_float32_le(nan_payload, dimensions=2)
+        oracle.decode_float32_le(nan_payload)
     with pytest.raises(ValueError):
-        oracle.decode_float32_le(inf_payload, dimensions=2)
+        oracle.decode_float32_le(inf_payload)
 
 
 def test_decode_float32_le_rejects_negative_zero() -> None:
-    payload = struct.pack("<2f", -0.0, 1.0)
+    payload = struct.pack("<768f", -0.0, *([1.0] * 767))
     with pytest.raises(ValueError):
-        oracle.decode_float32_le(payload, dimensions=2)
+        oracle.decode_float32_le(payload)
 
 
 def test_decode_float32_le_rejects_non_bytes_like_payload() -> None:
     for bad in ("not bytes", [1.0, 2.0], 12345, None):
         with pytest.raises(TypeError):
-            oracle.decode_float32_le(bad, dimensions=2)
+            oracle.decode_float32_le(bad)
 
 
-@pytest.mark.parametrize("bad_dimensions", [0, -1, True, False, 1.5, "4", None])
-def test_decode_float32_le_rejects_invalid_dimensions(bad_dimensions: object) -> None:
+@pytest.mark.parametrize(
+    "bad_dimensions",
+    # 2, 512, 767, 769 are valid ints but not the admitted 768 profile.
+    [0, -1, 2, 512, 767, 769, True, False, 1.5, "768", None],
+)
+def test_decode_float32_le_rejects_non_768_dimensions(bad_dimensions: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         oracle.decode_float32_le(b"\x00" * 4, dimensions=bad_dimensions)
 
@@ -126,7 +144,7 @@ def test_decode_float32_le_rejects_invalid_dimensions(bad_dimensions: object) ->
 
 
 def test_candidate_accepts_well_formed_record() -> None:
-    candidate = _candidate("evidence", 1, [1.0, 0.0])
+    candidate = _candidate("evidence", 1, _unit768(0))
     assert candidate.external_id == "q1-record-evidence-000001"
     assert candidate.active is True
     assert candidate.eligible is True
@@ -190,10 +208,10 @@ def test_candidate_rejects_non_bool_flags(bad_flag: object) -> None:
 
 
 def test_cosine_similarity_known_rankings() -> None:
-    query = (1.0, 0.0)
-    identical = (1.0, 0.0)
-    orthogonal = (0.0, 1.0)
-    opposite = (-1.0, 0.0)
+    query = tuple(_unit768(0))
+    identical = tuple(_unit768(0))
+    orthogonal = tuple(_unit768(1))
+    opposite = tuple(_unit768(0, value=-1.0))
     assert oracle.cosine_similarity(query, identical) == pytest.approx(1.0)
     assert oracle.cosine_similarity(query, orthogonal) == pytest.approx(0.0)
     assert oracle.cosine_similarity(query, opposite) == pytest.approx(-1.0)
@@ -201,55 +219,73 @@ def test_cosine_similarity_known_rankings() -> None:
 
 def test_cosine_similarity_rejects_zero_norm_vectors() -> None:
     with pytest.raises(ValueError):
-        oracle.cosine_similarity((0.0, 0.0), (1.0, 0.0))
+        oracle.cosine_similarity(tuple([0.0] * 768), tuple(_unit768(0)))
     with pytest.raises(ValueError):
-        oracle.cosine_similarity((1.0, 0.0), (0.0, 0.0))
+        oracle.cosine_similarity(tuple(_unit768(0)), tuple([0.0] * 768))
 
 
 def test_cosine_similarity_rejects_dimension_mismatch() -> None:
     with pytest.raises(ValueError):
-        oracle.cosine_similarity((1.0, 0.0), (1.0, 0.0, 0.0))
+        oracle.cosine_similarity(tuple(_unit768(0)), tuple([1.0] + [0.0] * 766))
+
+
+@pytest.mark.parametrize("dimensions", [0, 1, 2, 10, 767, 769])
+def test_cosine_similarity_rejects_equal_non_768_dimensions(dimensions: int) -> None:
+    vector = tuple([1.0] + [0.0] * (dimensions - 1)) if dimensions else ()
+    with pytest.raises(ValueError):
+        oracle.cosine_similarity(vector, vector)
+
+
+@pytest.mark.parametrize(
+    "query,candidate",
+    [
+        (_unit768(0, value=0.5), _unit768(0)),
+        (_unit768(0), _unit768(0, value=2.0)),
+    ],
+)
+def test_cosine_similarity_rejects_non_unit_vectors(
+    query: list[float], candidate: list[float]
+) -> None:
+    with pytest.raises(ValueError):
+        oracle.cosine_similarity(query, candidate)
 
 
 def test_cosine_similarity_bounds_are_finite_and_in_range() -> None:
-    score = oracle.cosine_similarity((1.0, 2.0, 3.0), (4.0, 5.0, 6.0))
+    query = tuple(_unit768(0))
+    candidate = tuple([0.6, 0.8] + [0.0] * 766)
+    score = oracle.cosine_similarity(query, candidate)
     assert math.isfinite(score)
     assert -1.0 <= score <= 1.0
 
 
 def test_cosine_similarity_returns_positive_zero() -> None:
-    score = oracle.cosine_similarity((1.0, 0.0), (0.0, -1.0))
+    score = oracle.cosine_similarity(tuple(_unit768(0)), tuple(_unit768(1, value=-1.0)))
     assert score == 0.0
     assert math.copysign(1.0, score) == 1.0
 
 
 @pytest.mark.parametrize(
-    "bad_values",
-    [(float("nan"),), (float("inf"),), (-0.0,), (True,), ("1.0",)],
+    "bad_value",
+    [float("nan"), float("inf"), -0.0, True, "1.0"],
 )
-def test_cosine_similarity_rejects_invalid_components(bad_values: object) -> None:
+def test_cosine_similarity_rejects_invalid_components(bad_value: object) -> None:
+    bad_values: list[object] = [0.0] * 768
+    bad_values[0] = bad_value
     with pytest.raises((TypeError, ValueError)):
-        oracle.cosine_similarity(bad_values, (1.0,))
-
-
-def test_score_clamp_is_bounded_to_a_few_binary64_ulps() -> None:
-    epsilon = 8.0 * math.ulp(1.0)
-    assert oracle._SCORE_CLAMP_EPSILON == epsilon
-    assert oracle._bounded_score(1.0 + epsilon / 2.0) == 1.0
-    assert oracle._bounded_score(-1.0 - epsilon / 2.0) == -1.0
-    with pytest.raises(ValueError):
-        oracle._bounded_score(1.0 + epsilon * 2.0)
-    with pytest.raises(ValueError):
-        oracle._bounded_score(-1.0 - epsilon * 2.0)
+        oracle.cosine_similarity(bad_values, tuple(_unit768(0)))
 
 
 def test_cosine_similarity_matches_fsum_accumulation_not_naive_summation() -> None:
-    # The classic math.fsum example: naive left-to-right float addition of
-    # ten 0.1s does not recover 1.0, but fsum's exact binary64 accumulation
-    # does. query/candidate are chosen so this divergence lands in the dot
-    # product, distinguishing fsum accumulation from naive summation.
-    query = tuple([0.1] * 10)
-    candidate = tuple([1.0] * 10)
+    # Normalize the classic ten-0.1 versus ten-1.0 example into the admitted
+    # 768D profile. Naive accumulation still diverges by one binary64 ULP.
+    query_base = [0.1] * 10
+    candidate_base = [1.0] * 10
+    query_scale = math.sqrt(math.fsum(value * value for value in query_base))
+    candidate_scale = math.sqrt(math.fsum(value * value for value in candidate_base))
+    query = tuple([value / query_scale for value in query_base] + [0.0] * 758)
+    candidate = tuple(
+        [value / candidate_scale for value in candidate_base] + [0.0] * 758
+    )
 
     def naive_score(q: tuple[float, ...], c: tuple[float, ...]) -> float:
         dot = 0.0
@@ -279,134 +315,247 @@ def test_cosine_similarity_matches_fsum_accumulation_not_naive_summation() -> No
     assert actual != naive
 
 
+# --- score overshoot clamp: frozen at exactly 1e-12 --------------------------
+
+
+def test_score_clamp_epsilon_is_frozen_at_1e_minus_12() -> None:
+    assert oracle._SCORE_CLAMP_EPSILON == 1e-12
+
+
+def test_bounded_score_clamps_at_exact_positive_boundary() -> None:
+    boundary = 1.0 + oracle._SCORE_CLAMP_EPSILON
+    assert oracle._bounded_score(1.0) == 1.0
+    assert oracle._bounded_score(boundary) == 1.0
+
+
+def test_bounded_score_rejects_just_above_positive_boundary() -> None:
+    boundary = 1.0 + oracle._SCORE_CLAMP_EPSILON
+    just_over = math.nextafter(boundary, math.inf)
+    with pytest.raises(ValueError):
+        oracle._bounded_score(just_over)
+
+
+def test_bounded_score_clamps_at_exact_negative_boundary() -> None:
+    boundary = -1.0 - oracle._SCORE_CLAMP_EPSILON
+    assert oracle._bounded_score(-1.0) == -1.0
+    assert oracle._bounded_score(boundary) == -1.0
+
+
+def test_bounded_score_rejects_just_below_negative_boundary() -> None:
+    boundary = -1.0 - oracle._SCORE_CLAMP_EPSILON
+    just_under = math.nextafter(boundary, -math.inf)
+    with pytest.raises(ValueError):
+        oracle._bounded_score(just_under)
+
+
+# --- core_l2_unit_v1: independent bounded L2 norm check -----------------------
+
+
+def test_core_l2_unit_tolerance_is_frozen_at_1e_minus_6() -> None:
+    assert oracle._CORE_L2_UNIT_TOLERANCE == 1e-6
+
+
+def test_require_core_l2_unit_norm_accepts_within_tolerance() -> None:
+    tolerance = oracle._CORE_L2_UNIT_TOLERANCE
+    values = _unit768(0, value=1.0 + tolerance / 2.0)
+    norm = oracle._require_core_l2_unit_norm(values, "test")
+    assert norm == pytest.approx(1.0 + tolerance / 2.0)
+
+
+def test_require_core_l2_unit_norm_rejects_outside_tolerance() -> None:
+    tolerance = oracle._CORE_L2_UNIT_TOLERANCE
+    values = _unit768(0, value=1.0 + tolerance * 5.0)
+    with pytest.raises(ValueError):
+        oracle._require_core_l2_unit_norm(values, "test")
+
+
+def test_require_core_l2_unit_norm_rejects_zero_vector() -> None:
+    with pytest.raises(ValueError):
+        oracle._require_core_l2_unit_norm([0.0] * 768, "test")
+
+
+def test_require_core_l2_unit_norm_never_rescales_the_vector() -> None:
+    # The returned norm is the actual measured value, not 1.0 -- proving the
+    # vector itself is never renormalized/rewritten to force unit norm.
+    tolerance = oracle._CORE_L2_UNIT_TOLERANCE
+    values = _unit768(0, value=1.0 + tolerance / 2.0)
+    norm = oracle._require_core_l2_unit_norm(values, "test")
+    assert norm != 1.0
+
+
 # --- score_candidates: filtering, k, ordering --------------------------------
 
 
 def test_score_candidates_filters_inactive_and_ineligible() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     candidates = [
-        _candidate("evidence", 1, [1.0, 0.0], active=False, eligible=True),
-        _candidate("evidence", 2, [1.0, 0.0], active=True, eligible=False),
-        _candidate("evidence", 3, [1.0, 0.0], active=True, eligible=True),
+        _candidate("evidence", 1, _unit768(0), active=False, eligible=True),
+        _candidate("evidence", 2, _unit768(0), active=True, eligible=False),
+        _candidate("evidence", 3, _unit768(0), active=True, eligible=True),
     ]
-    results = oracle.score_candidates(query, candidates, k=10, dimensions=2)
+    results = oracle.score_candidates(query, candidates, k=10)
     assert [r.external_id for r in results] == ["q1-record-evidence-000003"]
 
 
 def test_score_candidates_empty_eligible_set_returns_empty() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     candidates = [
-        _candidate("evidence", 1, [1.0, 0.0], active=False, eligible=True),
-        _candidate("evidence", 2, [1.0, 0.0], active=True, eligible=False),
+        _candidate("evidence", 1, _unit768(0), active=False, eligible=True),
+        _candidate("evidence", 2, _unit768(0), active=True, eligible=False),
     ]
-    results = oracle.score_candidates(query, candidates, k=10, dimensions=2)
+    results = oracle.score_candidates(query, candidates, k=10)
     assert results == ()
 
 
 def test_score_candidates_no_candidates_returns_empty() -> None:
-    query = _le([1.0, 0.0])
-    assert oracle.score_candidates(query, [], k=1, dimensions=2) == ()
+    query = _le(_unit768(0))
+    assert oracle.score_candidates(query, [], k=1) == ()
 
 
 def test_score_candidates_rejects_zero_query_even_for_empty_frontier() -> None:
     with pytest.raises(ValueError):
-        oracle.score_candidates(_le([0.0, 0.0]), [], k=1, dimensions=2)
+        oracle.score_candidates(_le([0.0] * 768), [], k=1)
 
 
 @pytest.mark.parametrize("k", [1, 10, 50])
 def test_score_candidates_exact_k_fewer_candidates_than_k(k: int) -> None:
-    query = _le([1.0, 0.0])
-    candidates = [_candidate("evidence", i, [1.0, 0.0]) for i in range(1, 4)]
-    results = oracle.score_candidates(query, candidates, k=k, dimensions=2)
+    query = _le(_unit768(0))
+    candidates = [_candidate("evidence", i, _unit768(0)) for i in range(1, 4)]
+    results = oracle.score_candidates(query, candidates, k=k)
     assert len(results) == min(3, k)
 
 
 def test_score_candidates_k_truncates_and_never_pads() -> None:
-    query = _le([1.0, 0.0])
-    candidates = [_candidate("evidence", i, [1.0, 0.0]) for i in range(1, 21)]
-    results = oracle.score_candidates(query, candidates, k=10, dimensions=2)
+    query = _le(_unit768(0))
+    candidates = [_candidate("evidence", i, _unit768(0)) for i in range(1, 21)]
+    results = oracle.score_candidates(query, candidates, k=10)
     assert len(results) == 10
 
 
 @pytest.mark.parametrize("bad_k", [0, 2, 5, 100, -1, True, False, 10.0, "10", None])
 def test_score_candidates_rejects_invalid_k(bad_k: object) -> None:
-    query = _le([1.0, 0.0])
-    candidates = [_candidate("evidence", 1, [1.0, 0.0])]
+    query = _le(_unit768(0))
+    candidates = [_candidate("evidence", 1, _unit768(0))]
     with pytest.raises((TypeError, ValueError)):
-        oracle.score_candidates(query, candidates, k=bad_k, dimensions=2)
+        oracle.score_candidates(query, candidates, k=bad_k)
 
 
-@pytest.mark.parametrize("bad_dimensions", [0, -1, True, 1.5, None])
-def test_score_candidates_rejects_invalid_dimensions(bad_dimensions: object) -> None:
-    query = _le([1.0, 0.0])
-    candidates = [_candidate("evidence", 1, [1.0, 0.0])]
+@pytest.mark.parametrize(
+    "bad_dimensions",
+    # 2, 512, 767, 769 are valid ints but not the admitted 768 profile.
+    [0, -1, 2, 512, 767, 769, True, False, 1.5, "768", None],
+)
+def test_score_candidates_rejects_non_768_dimensions(bad_dimensions: object) -> None:
+    query = _le(_unit768(0))
+    candidates = [_candidate("evidence", 1, _unit768(0))]
     with pytest.raises((TypeError, ValueError)):
         oracle.score_candidates(query, candidates, k=1, dimensions=bad_dimensions)
 
 
 def test_score_candidates_rejects_non_candidate_items() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     with pytest.raises(TypeError):
-        oracle.score_candidates(query, [{"external_id": "x"}], k=1, dimensions=2)
+        oracle.score_candidates(query, [{"external_id": "x"}], k=1)
 
 
 def test_score_candidates_rejects_duplicate_external_ids() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     candidates = [
-        _candidate("evidence", 1, [1.0, 0.0]),
-        _candidate("evidence", 1, [0.0, 1.0]),
+        _candidate("evidence", 1, _unit768(0)),
+        _candidate("evidence", 1, _unit768(1)),
     ]
     with pytest.raises(ValueError):
-        oracle.score_candidates(query, candidates, k=10, dimensions=2)
+        oracle.score_candidates(query, candidates, k=10)
 
 
 def test_score_candidates_rejects_dimension_mismatched_candidate_vector() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     bad_candidate = oracle.Candidate(
         external_id=_id("evidence", 1),
-        vector=_le([1.0, 0.0, 0.0]),
+        vector=_le([1.0] * 767),  # wrong length for the fixed 768 profile
         active=True,
         eligible=True,
     )
     with pytest.raises(ValueError):
-        oracle.score_candidates(query, [bad_candidate], k=1, dimensions=2)
+        oracle.score_candidates(query, [bad_candidate], k=1)
 
 
 @pytest.mark.parametrize("active,eligible", [(False, True), (True, False)])
 def test_score_candidates_validates_filtered_candidate_vectors(
     active: bool, eligible: bool
 ) -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     bad_length = oracle.Candidate(
         external_id=_id("evidence", 1),
-        vector=_le([1.0, 0.0, 0.0]),
+        vector=_le([1.0] * 767),
         active=active,
         eligible=eligible,
     )
     with pytest.raises(ValueError):
-        oracle.score_candidates(query, [bad_length], k=1, dimensions=2)
+        oracle.score_candidates(query, [bad_length], k=1)
 
     zero_norm = oracle.Candidate(
         external_id=_id("evidence", 2),
-        vector=_le([0.0, 0.0]),
+        vector=_le([0.0] * 768),
         active=active,
         eligible=eligible,
     )
     with pytest.raises(ValueError):
-        oracle.score_candidates(query, [zero_norm], k=1, dimensions=2)
+        oracle.score_candidates(query, [zero_norm], k=1)
+
+
+# --- core_l2_unit_v1 enforced for query and every candidate, incl. filtered --
+
+
+def test_score_candidates_rejects_non_unit_norm_query() -> None:
+    query = _le(_unit768(0, value=1.5))
+    candidates = [_candidate("evidence", 1, _unit768(0))]
+    with pytest.raises(ValueError):
+        oracle.score_candidates(query, candidates, k=1)
+
+
+@pytest.mark.parametrize(
+    "active,eligible", [(False, True), (True, False), (False, False)]
+)
+def test_score_candidates_rejects_non_unit_norm_candidate_regardless_of_flags(
+    active: bool, eligible: bool
+) -> None:
+    query = _le(_unit768(0))
+    off_norm = oracle.Candidate(
+        external_id=_id("evidence", 1),
+        vector=_le(_unit768(0, value=2.0)),  # norm 2.0, violates core_l2_unit_v1
+        active=active,
+        eligible=eligible,
+    )
+    with pytest.raises(ValueError):
+        oracle.score_candidates(query, [off_norm], k=1)
+
+
+def test_score_candidates_never_renormalizes_a_non_unit_candidate() -> None:
+    # A candidate scaled well outside tolerance must fail closed, not be
+    # silently rescaled back to unit norm and scored anyway.
+    query = _le(_unit768(0))
+    scaled = oracle.Candidate(
+        external_id=_id("evidence", 1),
+        vector=_le(_unit768(0, value=0.5)),  # norm 0.5, violates core_l2_unit_v1
+        active=True,
+        eligible=True,
+    )
+    with pytest.raises(ValueError):
+        oracle.score_candidates(query, [scaled], k=1)
 
 
 # --- ordering: descending score, ties by unsigned UTF-8 external ID ---------
 
 
 def test_score_candidates_orders_descending_by_score() -> None:
-    query = _le([1.0, 0.0])
+    query = _le(_unit768(0))
     candidates = [
-        _candidate("evidence", 1, [0.0, 1.0]),  # orthogonal -> 0.0
-        _candidate("evidence", 2, [1.0, 0.0]),  # identical -> 1.0
-        _candidate("evidence", 3, [-1.0, 0.0]),  # opposite -> -1.0
+        _candidate("evidence", 1, _unit768(1)),  # orthogonal -> 0.0
+        _candidate("evidence", 2, _unit768(0)),  # identical -> 1.0
+        _candidate("evidence", 3, _unit768(0, value=-1.0)),  # opposite -> -1.0
     ]
-    results = oracle.score_candidates(query, candidates, k=10, dimensions=2)
+    results = oracle.score_candidates(query, candidates, k=10)
     scores = [r.score for r in results]
     assert scores == sorted(scores, reverse=True)
     assert [r.external_id for r in results] == [
@@ -417,33 +566,31 @@ def test_score_candidates_orders_descending_by_score() -> None:
 
 
 def test_score_candidates_ties_break_by_unsigned_utf8_external_id() -> None:
-    query = _le([1.0, 0.0])
-    tied_values = [1.0, 0.0]
+    query = _le(_unit768(0))
+    tied_values = _unit768(0)
     candidates_in_order = [
         _candidate("knowledge", 5, tied_values),
         _candidate("evidence", 9, tied_values),
         _candidate("memory", 1, tied_values),
         _candidate("evidence", 2, tied_values),
     ]
-    results = oracle.score_candidates(query, candidates_in_order, k=10, dimensions=2)
+    results = oracle.score_candidates(query, candidates_in_order, k=10)
     ids = [r.external_id for r in results]
     assert ids == sorted(ids, key=lambda v: v.encode("utf-8"))
     assert all(r.score == pytest.approx(1.0) for r in results)
 
 
 def test_score_candidates_tie_order_is_input_order_independent() -> None:
-    query = _le([1.0, 0.0])
-    tied_values = [1.0, 0.0]
+    query = _le(_unit768(0))
+    tied_values = _unit768(0)
     base = [
         _candidate("knowledge", 5, tied_values),
         _candidate("evidence", 9, tied_values),
         _candidate("memory", 1, tied_values),
         _candidate("evidence", 2, tied_values),
     ]
-    forward = oracle.score_candidates(query, base, k=10, dimensions=2)
-    reversed_input = oracle.score_candidates(
-        query, list(reversed(base)), k=10, dimensions=2
-    )
+    forward = oracle.score_candidates(query, base, k=10)
+    reversed_input = oracle.score_candidates(query, list(reversed(base)), k=10)
     assert [r.external_id for r in forward] == [r.external_id for r in reversed_input]
 
 
@@ -455,21 +602,21 @@ def test_score_candidates_scores_every_eligible_candidate_before_truncating() ->
     # tail. A scorer that stops after collecting k good scores would return a
     # top-1 result and never touch the malformed tail; this oracle must fail
     # closed instead, proving it scored every eligible candidate first.
-    query = _le([1.0, 0.0])
-    good = [_candidate("evidence", i, [1.0, 0.0]) for i in range(1, 4)]
+    query = _le(_unit768(0))
+    good = [_candidate("evidence", i, _unit768(0)) for i in range(1, 4)]
     malformed = oracle.Candidate(
         external_id=_id("evidence", 9),
-        vector=_le([1.0, 0.0, 0.0]),  # wrong length for dimensions=2
+        vector=_le([1.0] * 767),  # wrong length for the fixed 768 profile
         active=True,
         eligible=True,
     )
     with pytest.raises(ValueError):
-        oracle.score_candidates(query, [*good, malformed], k=1, dimensions=2)
+        oracle.score_candidates(query, [*good, malformed], k=1)
 
 
 def test_score_candidates_consumes_a_one_shot_iterable_fully() -> None:
-    query = _le([1.0, 0.0])
-    candidates = [_candidate("evidence", i, [1.0, 0.0]) for i in range(1, 21)]
+    query = _le(_unit768(0))
+    candidates = [_candidate("evidence", i, _unit768(0)) for i in range(1, 21)]
     pulled: list[str] = []
 
     def one_shot() -> Any:
@@ -477,7 +624,7 @@ def test_score_candidates_consumes_a_one_shot_iterable_fully() -> None:
             pulled.append(candidate.external_id)
             yield candidate
 
-    results = oracle.score_candidates(query, one_shot(), k=1, dimensions=2)
+    results = oracle.score_candidates(query, one_shot(), k=1)
     assert len(results) == 1
     # Every candidate was pulled from the one-shot generator despite k=1,
     # proving no premature top-k short-circuit on the input iterable.
