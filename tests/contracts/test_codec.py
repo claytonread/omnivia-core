@@ -470,6 +470,98 @@ def test_decode_response_accepts_a_forward_compatible_unknown_error_code() -> No
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("code", ""),
+        ("code", "a" * 129),
+        ("code", "Not_Lower"),
+        ("code", "has space"),
+        ("code", "trailing\n"),
+        ("code", "has-dash"),
+        ("code", "1_leading_digit"),
+        ("retry_class", ""),
+        ("retry_class", "a" * 129),
+        ("retry_class", "Retryable"),
+        ("retry_class", "retryable after delay"),
+        ("retry_class", "retryable\n"),
+        ("retry_class", "retryable.delay"),
+    ],
+)
+def test_decode_response_rejects_an_error_token_outside_the_value_domain(
+    field: str, value: str
+) -> None:
+    error = {
+        "code": "unknown_experimental_code",
+        "message": "boom",
+        "retry_class": "retryable_experimental",
+        field: value,
+    }
+    payload = _error_payload(_minimal_version_wire(), error)
+    with pytest.raises(codec.ContractDecodeError, match=rf"ApiError\.{field}"):
+        codec.decode_response(payload)
+
+
+@pytest.mark.parametrize("retry_after_ms", [-1, 86_400_001])
+def test_decode_response_rejects_an_out_of_range_retry_after_ms(retry_after_ms: int) -> None:
+    error = {
+        "code": "rate_limited",
+        "message": "slow down",
+        "retry_class": "retryable_after_delay",
+        "retry_after_ms": retry_after_ms,
+    }
+    payload = _error_payload(_minimal_version_wire(), error)
+    with pytest.raises(codec.ContractDecodeError, match="ApiError.retry_after_ms"):
+        codec.decode_response(payload)
+
+
+def test_decode_response_rejects_an_over_long_error_message() -> None:
+    error = {
+        "code": "not_found",
+        "message": "x" * 2049,
+        "retry_class": "non_retryable",
+    }
+    payload = _error_payload(_minimal_version_wire(), error)
+    with pytest.raises(codec.ContractDecodeError, match="ApiError.message"):
+        codec.decode_response(payload)
+
+
+@pytest.mark.parametrize("retry_after_ms", [0, 86_400_000])
+def test_decode_response_accepts_retry_after_ms_at_the_boundaries(retry_after_ms: int) -> None:
+    error = {
+        "code": "rate_limited",
+        "message": "slow down",
+        "retry_class": "retryable_after_delay",
+        "retry_after_ms": retry_after_ms,
+    }
+    envelope = codec.decode_response(_error_payload(_minimal_version_wire(), error))
+    decoded_error = codec.response_error(envelope)
+    assert decoded_error is not None
+    assert decoded_error.retry_after_ms == retry_after_ms
+
+
+def test_decode_response_accepts_the_value_domain_boundaries() -> None:
+    """An unknown-but-well-formed error at every inclusive maximum still decodes."""
+    error = {
+        "code": "z" * 128,
+        "message": "x" * 2048,
+        "retry_class": "q" * 128,
+    }
+    envelope = codec.decode_response(_error_payload(_minimal_version_wire(), error))
+    decoded_error = codec.response_error(envelope)
+    assert decoded_error is not None
+    assert decoded_error.code == "z" * 128
+    assert decoded_error.retry_class == "q" * 128
+    assert decoded_error.retry_after_ms is None
+
+
+def test_validate_error_value_domain_does_not_echo_the_offending_value() -> None:
+    error = ApiError(code="Sensitive-Token", message="x", retry_class="non_retryable")
+    with pytest.raises(codec.ContractDecodeError) as excinfo:
+        codec.validate_error_value_domain(error)
+    assert "Sensitive-Token" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
     ("code", "expected_class"),
     [
         ("mutation_precondition_failed", "retryable_after_precondition_refresh"),

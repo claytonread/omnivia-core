@@ -32,6 +32,7 @@ CLI, Platform, Dev, or a validation framework.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -84,6 +85,7 @@ __all__ = [
     "to_canonical_json",
     "to_canonical_json_document",
     "validate_error_retry_class",
+    "validate_error_value_domain",
 ]
 
 
@@ -168,6 +170,10 @@ def decode_response(payload: object) -> ResponseEnvelope:
       the exchange made effective -- validating only the capability set would
       close the widening path on ``effective`` while leaving it open on the very
       field callers act on;
+    - on the error branch, the error's open string and duration values are held
+      to the schema's value domain (:func:`validate_error_value_domain`), so an
+      unbounded message, an out-of-range backoff, or a code that is not a
+      well-formed open token cannot reach a caller;
     - on the error branch, the stated ``retry_class`` is checked against the
       frozen classification for known error codes
       (:func:`validate_error_retry_class`), so a peer cannot smuggle in a
@@ -178,6 +184,7 @@ def decode_response(payload: object) -> ResponseEnvelope:
     validate_version_capability_envelope(metadata.version)
     validate_granted_authority(metadata.authority, metadata.version.capabilities)
     if isinstance(envelope, ErrorResponseEnvelope):
+        validate_error_value_domain(envelope.error)
         validate_error_retry_class(envelope.error)
     return envelope
 
@@ -263,6 +270,46 @@ def is_retryable(retry_class: str) -> bool:
     first (rather than resend as-is) is not retryable either.
     """
     return retry_class in RETRYABLE_RETRY_CLASSES
+
+
+# An ``ErrorCode``/``RetryClass`` open token: 1..128 chars, ``^[a-z][a-z0-9_]*$``.
+# Matched with ``fullmatch``, which anchors both ends without Python's ``$``
+# also accepting a trailing newline -- the case the schema pattern's
+# ``$(?![\s\S])`` tail exists to exclude.
+_OPEN_TOKEN_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,127}")
+_MAX_MESSAGE_LENGTH = 2048
+_MAX_DURATION_MS = 86_400_000
+
+
+def validate_error_value_domain(error: ApiError) -> None:
+    """Raise :class:`ContractDecodeError` if an error's values fall outside the
+    schema's value domain.
+
+    ``from_wire`` is deliberately structural: it checks that ``code`` is a
+    string, not that it is a *well-formed* one. Openness of ``ErrorCode`` and
+    ``RetryClass`` is about unknown vocabulary, not about arbitrary text, so
+    the bounds and pattern still apply to values this build has never seen.
+    Diagnostics name the field and the rule but never echo the value, which is
+    untrusted peer input.
+    """
+    _validate_open_token("code", error.code)
+    _validate_open_token("retry_class", error.retry_class)
+    if len(error.message) > _MAX_MESSAGE_LENGTH:
+        raise ContractDecodeError(
+            f"ApiError.message: exceeds the maximum of {_MAX_MESSAGE_LENGTH} characters"
+        )
+    delay = error.retry_after_ms
+    if delay is not None and not 0 <= delay <= _MAX_DURATION_MS:
+        raise ContractDecodeError(
+            f"ApiError.retry_after_ms: must be between 0 and {_MAX_DURATION_MS}"
+        )
+
+
+def _validate_open_token(field: str, value: str) -> None:
+    if _OPEN_TOKEN_PATTERN.fullmatch(value) is None:
+        raise ContractDecodeError(
+            f"ApiError.{field}: must be 1-128 characters matching ^[a-z][a-z0-9_]*$"
+        )
 
 
 def validate_error_retry_class(error: ApiError) -> None:

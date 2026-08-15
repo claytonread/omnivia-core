@@ -56,6 +56,7 @@ from .codec import (
     to_canonical_json,
     to_canonical_json_document,
     validate_error_retry_class,
+    validate_error_value_domain,
 )
 from .compatibility import (
     CapabilityResolution,
@@ -1308,6 +1309,7 @@ __all__ = [
     "validate_core_target",
     "validate_core_target_authorities",
     "validate_error_retry_class",
+    "validate_error_value_domain",
     "validate_evidence_artifact",
     "validate_evidence_disposition_sources",
     "validate_evidence_search_input",
