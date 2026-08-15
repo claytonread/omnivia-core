@@ -37,6 +37,7 @@ from omnivia_core_client import (
     ProtocolError,
     TransportError,
     encode_frame,
+    local_ipc,
     socket_path_for,
 )
 
@@ -45,6 +46,7 @@ from omnivia_core.contracts.v1 import (
     ClientIdentity,
     RequestEnvelope,
     RequestMetadata,
+    ServiceProbeRequest,
     codec,
     get_operation_metadata,
 )
@@ -385,6 +387,26 @@ def test_a_well_framed_reply_that_is_not_a_response_envelope_is_a_protocol_error
         )
 
 
+def test_a_well_framed_reply_that_is_not_a_probe_result_is_a_protocol_error(
+    scripted_peer: object,
+) -> None:
+    """`probe` admits its answer through the public decoder, exactly as `call` does.
+
+    A reply can be a legal OVC1 frame carrying legal canonical JSON and still not
+    be a probe result. Returning it unchecked hands the caller whatever mapping
+    the peer felt like sending, under a `ServiceProbeResult` annotation -- and
+    `probe` is the call discovery makes *before* anything else is trusted, so it
+    is the last place to relax on what an answer has to be.
+    """
+    peer = scripted_peer(encode_frame({"not": "a probe result"}))  # type: ignore[operator]
+
+    with pytest.raises(ProtocolError, match="probe result"):
+        LocalIpcTransport(endpoint_uri=peer.endpoint_uri).probe(
+            ServiceProbeRequest(probe="service.health"),
+            deadline=Deadline.after(CALL_TIMEOUT),
+        )
+
+
 def test_a_peer_that_answers_nothing_runs_out_of_deadline(scripted_peer: object) -> None:
     peer = scripted_peer(None)  # type: ignore[operator]
 
@@ -507,3 +529,130 @@ def test_a_refused_dial_leaves_no_operating_system_error_on_the_exception() -> N
     assert error.__cause__ is None
     assert str(missing) not in str(error)
     assert str(missing) not in repr(error)
+
+
+# ---------------------------------------------------------------------------
+# The quiet window after the frame, and the bound on the dial
+# ---------------------------------------------------------------------------
+
+
+def test_the_quiet_window_is_clamped_to_what_is_left_of_the_deadline() -> None:
+    """The 50 ms boundary window never spends time the call has not got.
+
+    The window is the *smaller* of the fixed boundary and the remainder, so the
+    check that catches a second frame cannot overrun the budget the caller was
+    promised -- a call with 10 ms left must not wait 50 ms to find out nothing
+    followed. A connected pair, not a listener: this is one socket and one
+    timeout, and there is nothing for a peer to do.
+
+    The deadline runs on a frozen clock, so the remainder is exactly 10 ms
+    however loaded the machine is, and the assertion is on the timeout the
+    transport actually put on the socket rather than on elapsed time.
+    """
+    client, peer = socket.socketpair()
+    with client, peer:
+        local_ipc._ensure_nothing_follows(client, Deadline(clock=lambda: 0.0, end=0.01))
+        window = client.gettimeout()
+
+    assert window == pytest.approx(0.01)
+    assert window < local_ipc._UNARY_BOUNDARY_SECONDS
+
+
+def test_the_quiet_window_peeks_and_leaves_the_byte_where_it_found_it() -> None:
+    """`MSG_PEEK`, so the boundary check reads the stream without consuming it.
+
+    The check exists to *observe* whether anything followed the frame, and a
+    consuming read makes it destructive: the offending byte is gone from the
+    connection, so nothing downstream -- a diagnosis, a drain, a second look --
+    can see what the peer actually sent. That the byte is still there after the
+    refusal is the whole property `MSG_PEEK` is here for, and the only way to
+    tell a peek from a plain `recv(1)` that happened to raise anyway.
+    """
+    client, peer = socket.socketpair()
+    with client, peer:
+        peer.sendall(b"!")
+
+        with pytest.raises(ProtocolError, match="trailing bytes"):
+            local_ipc._ensure_nothing_follows(client, Deadline.after(CALL_TIMEOUT))
+
+        client.settimeout(CALL_TIMEOUT)
+        assert client.recv(1) == b"!"
+
+
+def _recording_socket_class(
+    connect_timeouts: list[float | None], *, fails_with: BaseException | None = None
+) -> type[socket.socket]:
+    """A real socket that records the timeout in force at the moment `connect` ran.
+
+    A subclass, not a mock of `socket`: the descriptor, the connect and the
+    failure are all the operating system's. The one thing it adds is the single
+    observation a returned socket cannot give -- whether the timeout was set
+    *before* the connect or after it came back, which is the difference between
+    a bounded dial and an unbounded one.
+    """
+
+    class RecordingSocket(socket.socket):
+        def connect(self, address: object) -> None:
+            connect_timeouts.append(self.gettimeout())
+            if fails_with is not None:
+                raise fails_with
+            super().connect(address)
+
+    return RecordingSocket
+
+
+def test_the_dial_is_bounded_by_the_deadline_it_was_handed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The timeout is in force *during* the connect, not applied once it returned.
+
+    A connect on a socket with no timeout blocks for as long as the kernel and
+    the peer leave it blocked, and the whole-call budget cannot end it -- the
+    caller waits past a deadline it was told would hold. Asserting the returned
+    socket's timeout would pass whichever side of `connect` the `settimeout`
+    sits on, so what is asserted is what `connect` itself saw.
+
+    The listener is bound and listening but never accepted: an `AF_UNIX` connect
+    completes into the backlog, so this observes a real successful dial without
+    a second thread to synchronise with.
+    """
+    directory = _short_socket_directory()
+    path = str(directory / "s.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    seen: list[float | None] = []
+    try:
+        listener.bind(path)
+        listener.listen(1)
+        monkeypatch.setattr(local_ipc.socket, "socket", _recording_socket_class(seen))
+        local_ipc._connect(path, 0.25).close()
+    finally:
+        listener.close()
+        shutil.rmtree(directory, ignore_errors=True)
+
+    assert seen == [0.25]
+
+
+def test_a_dial_that_times_out_is_a_deadline_and_not_an_unreachable_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`TimeoutError` is an `OSError`, and only handler order tells the two apart.
+
+    Both end the dial, and they mean opposite things to whoever catches them: an
+    endpoint that could not be reached is a service that is not running, while a
+    connect that ran out of budget is a service that may be perfectly healthy and
+    merely slower than this call could afford to wait -- one is a reason to start
+    the service, the other a reason to ask for more time. Dropping the narrower
+    handler, or letting `except OSError` come first, reports every slow dial as a
+    missing service; `DeadlineExceededError` is deliberately not a
+    `TransportError`, so no other test in this file would notice.
+    """
+    monkeypatch.setattr(
+        local_ipc.socket,
+        "socket",
+        _recording_socket_class([], fails_with=TimeoutError()),
+    )
+
+    with pytest.raises(DeadlineExceededError, match="connecting") as raised:
+        local_ipc._connect(str(tmp_path / "absent.sock"), 1.0)
+
+    assert not isinstance(raised.value, TransportError)

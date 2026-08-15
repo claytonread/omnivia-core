@@ -287,7 +287,7 @@ def test_an_error_envelope_from_dispatch_is_returned_unchanged() -> None:
     answer = ErrorResponseEnvelope(
         metadata=success(request, {}).metadata,
         error=ApiError(
-            code="core.not_found", message="nothing here", retry_class="non_retryable"
+            code="not_found", message="nothing here", retry_class="non_retryable"
         ),
     )
 
