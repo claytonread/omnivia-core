@@ -27,7 +27,17 @@ What it enforces:
   number is an allocation, not a file, until the authority advances it;
 * `accepted_commit` is null everywhere, because no entry has been accepted yet;
 * every `.sql` in the migration directory numbered above the accepted
-  predecessor is allocated here.
+  predecessor is allocated here, and no two `.sql` files claim the same number
+  at *any* point in the sequence, including at or below the predecessor;
+* the commit pins are real: `frozen_source_head` is a commit this checkout
+  descends from, and each candidate's `introduced_commit` is a commit that
+  contains that exact migration pathname with the pinned content.
+
+Content is hashed the way the runtime hashes it -- the UTF-8 *text* of the file,
+not its raw bytes. `Migration.checksum` digests
+`path.read_text(encoding="utf-8").encode("utf-8")`, and text mode translates CRLF
+and CR to LF, so a byte-level digest here would call every pinned hash wrong on a
+CRLF checkout while the runtime's own checksums stayed right.
 
 What it deliberately does not do: it does not restate the allocation table. The
 authority is the source of truth for which lane owns which number, and
@@ -43,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -59,6 +70,9 @@ MIGRATION_DIR = (
     / "storage"
     / "migration_files"
 )
+# The migration directory as Git names it: `<commit>:<path>` takes a
+# repository-relative, forward-slashed path on every platform.
+MIGRATION_PATH = MIGRATION_DIR.relative_to(REPO_ROOT).as_posix()
 
 SCHEMA_VERSION = 1
 CANDIDATE = "candidate"
@@ -89,6 +103,43 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
+class GuardError(RuntimeError):
+    """A fact the guard needs -- a file's text, a Git answer -- could not be read.
+
+    Raised rather than absorbed: a guard that quietly skips the check it could not
+    perform reports "passed" for a proof it never attempted. `main()` turns this
+    into a finding and a non-zero exit.
+    """
+
+
+def normalized_digest(data: bytes, label: str) -> str:
+    """SHA-256 of `data` as the runtime hashes it: UTF-8 text with LF newlines.
+
+    `Migration.checksum` digests `read_text(encoding="utf-8").encode("utf-8")`,
+    and text mode translates CRLF and CR to LF. Matching that here is what keeps
+    the pinned hashes correct on a CRLF checkout; on an LF checkout it is the
+    same value a raw-byte digest produced.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GuardError(f"{label}: not valid UTF-8 ({error})") from error
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _file_number(filename: str) -> int | None:
+    """The migration number `NNNN_name.sql` names, or None if it names none."""
+    if not filename.endswith(".sql"):
+        return None
+    prefix, separator, slug = filename[: -len(".sql")].partition("_")
+    if not separator or not slug or len(prefix) != 4:
+        return None
+    if not (prefix.isascii() and prefix.isdigit()):
+        return None
+    return int(prefix)
+
+
 def _is_int(value: object) -> bool:
     """True for a JSON integer. `bool` is excluded: `True == 1` in Python."""
     return isinstance(value, int) and not isinstance(value, bool)
@@ -117,10 +168,10 @@ def _text_field(entry: Mapping[str, Any], name: str, label: str, findings: list[
 
 def _check_naming(filename: str, number: int, label: str, findings: list[str]) -> None:
     """A filename must be `NNNN_name.sql` and `NNNN` must be its own number."""
-    prefix, separator, slug = filename[: -len(".sql")].partition("_")
-    if not separator or not slug or len(prefix) != 4 or not prefix.isdigit():
+    named = _file_number(filename)
+    if named is None:
         findings.append(f"{label}: filename {filename!r} is not of the form NNNN_name.sql")
-    elif int(prefix) != number:
+    elif named != number:
         findings.append(f"{label}: filename {filename!r} does not name migration {number:04d}")
 
 
@@ -218,11 +269,18 @@ def check(text: str, present: Mapping[str, str]) -> list[str]:
         findings.append(f"accepted_predecessor: number must be an integer, got {base!r}")
         return findings
     _text_field(predecessor, "filename", "accepted_predecessor", findings)
-    if isinstance(predecessor["filename"], str) and predecessor["filename"] not in present:
-        findings.append(
-            f"accepted_predecessor: {predecessor['filename']!r} is not in the migration "
-            "directory, so this allocation is anchored to a migration that does not exist"
-        )
+    if isinstance(predecessor["filename"], str):
+        # The anchor is held to the same naming rule as every allocation. Without
+        # it only the filename's *existence* was proved, so raising `number` to 20
+        # while leaving `0017_connector_sync_state.sql` in place moved the base of
+        # the whole check: allocations below the new base are simply dropped, and
+        # the orphan scan below stops asking who owns 0018-0020.
+        _check_naming(predecessor["filename"], base, "accepted_predecessor", findings)
+        if predecessor["filename"] not in present:
+            findings.append(
+                f"accepted_predecessor: {predecessor['filename']!r} is not in the migration "
+                "directory, so this allocation is anchored to a migration that does not exist"
+            )
 
     expected = base + 1
     allocated: dict[str, int] = {}
@@ -267,26 +325,155 @@ def check(text: str, present: Mapping[str, str]) -> list[str]:
         _check_naming(filename, number, label, findings)
         _check_state(entry, filename, label, present, findings)
 
+    # Two independent facts about the directory itself. The collision scan covers
+    # every number, not only those above the predecessor: `load_migrations()`
+    # orders the whole directory, so a second `0009_*.sql` breaks migration just
+    # as thoroughly as a second `0021_*.sql` and the allocation table -- which
+    # starts above the predecessor -- would never mention it.
+    claimants: dict[int, list[str]] = {}
     for filename in sorted(present):
-        prefix = filename.split("_", 1)[0]
-        if not prefix.isdigit():
-            findings.append(f"{filename}: migration file has no ordered numeric prefix")
-            continue
-        if int(prefix) > base and filename not in allocated:
+        number = _file_number(filename)
+        if number is None:
             findings.append(
-                f"{filename}: migration {int(prefix)} is beyond the accepted predecessor "
+                f"{filename}: migration file has no ordered numeric prefix; "
+                "a migration must be named NNNN_name.sql"
+            )
+            continue
+        claimants.setdefault(number, []).append(filename)
+        if number > base and filename not in allocated:
+            findings.append(
+                f"{filename}: migration {number} is beyond the accepted predecessor "
                 f"{base} and is allocated to nobody"
+            )
+
+    for number, names in sorted(claimants.items()):
+        if len(names) > 1:
+            findings.append(
+                f"migration {number:04d} is claimed by more than one file: {', '.join(names)}"
             )
 
     return findings
 
 
 def migration_files(directory: Path = MIGRATION_DIR) -> dict[str, str]:
-    """Each `.sql` filename in `directory` mapped to the SHA-256 of its bytes."""
-    return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(directory.glob("*.sql"))
-    }
+    """Each `.sql` filename in `directory` mapped to its normalized text digest."""
+    present: dict[str, str] = {}
+    for path in sorted(directory.glob("*.sql")):
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            raise GuardError(f"{path.name}: unreadable ({error})") from error
+        present[path.name] = normalized_digest(data, path.name)
+    return present
+
+
+def _authority_text() -> str:
+    """The authority's UTF-8 text, or a `GuardError` naming why it could not be read."""
+    try:
+        data = AUTHORITY.read_bytes()
+    except OSError as error:
+        raise GuardError(f"authority is unreadable ({error})") from error
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GuardError(f"authority is not valid UTF-8 ({error})") from error
+
+
+def _git(arguments: list[str], cwd: Path) -> tuple[int, bytes]:
+    """Run `git` with an argument array -- no shell -- from the repository root."""
+    try:
+        completed = subprocess.run(
+            ["git", *arguments], cwd=cwd, capture_output=True, check=False
+        )
+    except OSError as error:
+        raise GuardError(f"git could not be run: {error}") from error
+    return completed.returncode, completed.stdout
+
+
+def _is_commit(commit: str, cwd: Path) -> bool:
+    code, _ = _git(["rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"], cwd)
+    return code == 0
+
+
+def check_history(text: str, head: str = "HEAD", cwd: Path = REPO_ROOT) -> list[str]:
+    """Every way the authority's commit pins disagree with this repository's history.
+
+    `check()` proves the pins are well-formed 40-character strings, which is a
+    claim about syntax and nothing else: a pin can be perfectly shaped and name a
+    commit that does not exist, does not lead to this checkout, or never carried
+    the migration it is cited for. This is the seam that asks Git, kept out of
+    `check()` so the mutation suite stays pure, offline and free of repository
+    state; `main()` calls both.
+
+    Malformed and non-candidate entries are left alone here -- `check()` reports
+    those, and repeating them would double every finding.
+    """
+    findings: list[str] = []
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        return findings
+    if not isinstance(document, dict):
+        return findings
+
+    if not _is_commit(head, cwd):
+        return [f"history: {head} does not resolve to a commit in {cwd}"]
+
+    frozen = document.get("frozen_source_head")
+    if isinstance(frozen, str) and _COMMIT.match(frozen):
+        if not _is_commit(frozen, cwd):
+            findings.append(
+                f"authority: frozen_source_head {frozen} is not a commit in this repository"
+            )
+        else:
+            # Needs the full history. The acceptance job checks out with
+            # `fetch-depth: 0` (pinned by `test_checkout_fetches_full_history`),
+            # so a shallow clone would fail here rather than pass weakly.
+            ancestry, _ = _git(["merge-base", "--is-ancestor", frozen, head], cwd)
+            if ancestry != 0:
+                findings.append(
+                    f"authority: frozen_source_head {frozen} is not an ancestor of {head}, "
+                    "so this checkout does not descend from the frozen source"
+                )
+
+    entries = document.get("allocations")
+    if not isinstance(entries, list):
+        return findings
+
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or entry.get("state") != CANDIDATE:
+            continue
+        commit = entry.get("introduced_commit")
+        filename = entry.get("filename")
+        digest = entry.get("sha256")
+        if not (isinstance(commit, str) and _COMMIT.match(commit)):
+            continue
+        if not isinstance(filename, str) or not isinstance(digest, str):
+            continue
+        if not _DIGEST.match(digest):
+            continue
+
+        label = f"allocations[{index}]"
+        if not _is_commit(commit, cwd):
+            findings.append(
+                f"{label}: introduced_commit {commit} is not a commit in this repository"
+            )
+            continue
+
+        path = f"{MIGRATION_PATH}/{filename}"
+        code, blob = _git(["cat-file", "blob", f"{commit}:{path}"], cwd)
+        if code != 0:
+            findings.append(f"{label}: commit {commit} does not contain {path}")
+            continue
+
+        actual = normalized_digest(blob, f"{label}: {path} at commit {commit}")
+        if actual != digest:
+            findings.append(
+                f"{label}: {path} at commit {commit} hashes to {actual[:12]}…, "
+                f"the authority pins {digest[:12]}…"
+            )
+
+    return findings
 
 
 def main() -> int:
@@ -300,7 +487,12 @@ def main() -> int:
         )
         return 1
 
-    findings = check(AUTHORITY.read_text(encoding="utf-8"), migration_files())
+    try:
+        text = _authority_text()
+        findings = check(text, migration_files()) + check_history(text)
+    except GuardError as error:
+        findings = [str(error)]
+
     if findings:
         print("Migration allocation check FAILED:\n", file=sys.stderr)
         for finding in findings:

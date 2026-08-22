@@ -64,6 +64,12 @@ SKIP_CONSTRUCTS = frozenset({"skip", "skipif", "importorskip", "xfail"})
 GATE_STEPS = (
     ("Check package boundaries", "python scripts/check-package-boundaries.py"),
     ("Run package boundary tests", "python -m pytest tests/test_package_boundaries.py -q"),
+    # Migration numbers are one global sequence shared by several queued lanes, so
+    # two lanes that each take "the next free number" produce two `0021_*.sql`
+    # files rather than a merge conflict. This is the step that holds the T-0660
+    # allocation authority against the migration directory and its own history;
+    # its fail-closed shape is pinned below.
+    ("Check migration allocations", "python scripts/check-migration-allocations.py"),
     ("Build and install-check all distributions", "PYTHON=python scripts/check-package-builds.sh"),
     ("Check application contracts", "python scripts/check-application-contracts.py"),
     # The MCP exposure manifest's advertised input and output schemas are
@@ -568,6 +574,33 @@ def test_required_commands_run_in_their_own_steps_and_in_order() -> None:
     expected = [name for name, _ in GATE_STEPS] + list(SCOPED_STEPS)
     positions = [order.index(name) for name in expected]
     assert positions == sorted(positions), f"gate steps are out of order: {order}"
+
+
+MIGRATION_ALLOCATION_STEP = "Check migration allocations"
+MIGRATION_ALLOCATION_SCRIPT = "scripts/check-migration-allocations.py"
+
+
+def test_the_migration_allocation_gate_step_is_fail_closed() -> None:
+    """`GATE_STEPS` pins this step's name, command and place in the order. This pins
+    its shape: nothing about it may turn a rejected allocation into a green check.
+
+    Every one of these is a real way a merge gate stops gating while still
+    appearing in the job's step list -- `continue-on-error` reports success for a
+    failed step, an `if:` skips it under some event or condition, and a shell
+    bypass (`|| true`, `|| :`, a trailing `; true`, `set +e`) discards the exit
+    code the step is there to report. The step is also required to be exactly one
+    command, so none of that can arrive beside the check inside the same `run:`.
+    """
+    assert (REPO_ROOT / MIGRATION_ALLOCATION_SCRIPT).is_file()
+
+    step = _step(_steps(), MIGRATION_ALLOCATION_STEP)
+    assert _entry(step, "continue-on-error") is None
+    assert _entry(step, "if") is None
+
+    commands = _commands(step)
+    assert commands == (f"python {MIGRATION_ALLOCATION_SCRIPT}",)
+    for forbidden in ("|| true", "|| :", "; true", "set +e", "continue-on-error", "-k "):
+        assert forbidden not in commands[0], forbidden
 
 
 def test_contract_checkpoint_env_is_supplied_from_repository_vars_and_only_there() -> None:
