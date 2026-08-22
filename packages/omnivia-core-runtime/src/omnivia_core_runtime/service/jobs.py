@@ -359,6 +359,90 @@ def _next_application_number(
     return int(row[0])
 
 
+@dataclass(frozen=True)
+class _ApplicationJobClaim:
+    """Result of claiming one application job inside an open fenced transaction."""
+
+    identifier: str
+    now_us: int
+    attempt_number: int
+
+
+def _claim_application_job_locked(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    clock: Clock,
+    job_id: str | None = None,
+) -> _ApplicationJobClaim | None:
+    """Claim a queued job and append its attempt/event; caller holds the fence."""
+    if job_id is None:
+        row = connection.execute(
+            "SELECT j.job_id FROM omnivia_durable_jobs j "
+            "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+            "WHERE m.workspace_id = ? AND j.state = 'queued' "
+            "ORDER BY j.created_at, j.job_id LIMIT 1",
+            (workspace_id,),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            "SELECT j.job_id FROM omnivia_durable_jobs j "
+            "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+            "WHERE m.workspace_id = ? AND j.job_id = ? AND j.state = 'queued'",
+            (workspace_id, job_id),
+        ).fetchone()
+    if row is None:
+        return None
+    identifier = str(row[0])
+    now_us, moment = _application_timestamp(clock)
+    updated = connection.execute(
+        "UPDATE omnivia_durable_jobs SET state = 'claimed', updated_at = ?, "
+        "claimed_by_service_instance = ?, fencing_generation = ? "
+        "WHERE job_id = ? AND state = 'queued'",
+        (
+            moment,
+            identity.service_instance_id,
+            fencing_generation,
+            identifier,
+        ),
+    )
+    if updated.rowcount != 1:
+        return None
+    attempt = _next_application_number(
+        connection,
+        "omnivia_job_attempts",
+        "attempt_number",
+        workspace_id=workspace_id,
+        job_id=identifier,
+        base=0,
+    )
+    connection.execute(
+        "INSERT INTO omnivia_job_attempts "
+        "(workspace_id, job_id, attempt_number, started_at_us, state) "
+        "VALUES (?, ?, ?, ?, 'running')",
+        (workspace_id, identifier, attempt, now_us),
+    )
+    sequence = _next_application_number(
+        connection,
+        "omnivia_job_events",
+        "sequence",
+        workspace_id=workspace_id,
+        job_id=identifier,
+        base=-1,
+    )
+    connection.execute(
+        "INSERT INTO omnivia_job_events "
+        "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+        "VALUES (?, ?, ?, ?, 'running', 'job execution started')",
+        (workspace_id, identifier, sequence, now_us),
+    )
+    return _ApplicationJobClaim(
+        identifier=identifier, now_us=now_us, attempt_number=attempt
+    )
+
+
 def claim_application_job(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -375,68 +459,18 @@ def claim_application_job(
         workspace_id=workspace_id,
         fencing_generation=fencing_generation,
     ):
-        if job_id is None:
-            row = connection.execute(
-                "SELECT j.job_id FROM omnivia_durable_jobs j "
-                "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
-                "WHERE m.workspace_id = ? AND j.state = 'queued' "
-                "ORDER BY j.created_at, j.job_id LIMIT 1",
-                (workspace_id,),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                "SELECT j.job_id FROM omnivia_durable_jobs j "
-                "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
-                "WHERE m.workspace_id = ? AND j.job_id = ? AND j.state = 'queued'",
-                (workspace_id, job_id),
-            ).fetchone()
-        if row is None:
-            return None
-        identifier = str(row[0])
-        now_us, moment = _application_timestamp(clock)
-        updated = connection.execute(
-            "UPDATE omnivia_durable_jobs SET state = 'claimed', updated_at = ?, "
-            "claimed_by_service_instance = ?, fencing_generation = ? "
-            "WHERE job_id = ? AND state = 'queued'",
-            (
-                moment,
-                identity.service_instance_id,
-                fencing_generation,
-                identifier,
-            ),
-        )
-        if updated.rowcount != 1:
-            return None
-        attempt = _next_application_number(
+        claimed = _claim_application_job_locked(
             connection,
-            "omnivia_job_attempts",
-            "attempt_number",
+            identity,
             workspace_id=workspace_id,
-            job_id=identifier,
-            base=0,
+            fencing_generation=fencing_generation,
+            clock=clock,
+            job_id=job_id,
         )
-        connection.execute(
-            "INSERT INTO omnivia_job_attempts "
-            "(workspace_id, job_id, attempt_number, started_at_us, state) "
-            "VALUES (?, ?, ?, ?, 'running')",
-            (workspace_id, identifier, attempt, now_us),
-        )
-        sequence = _next_application_number(
-            connection,
-            "omnivia_job_events",
-            "sequence",
-            workspace_id=workspace_id,
-            job_id=identifier,
-            base=-1,
-        )
-        connection.execute(
-            "INSERT INTO omnivia_job_events "
-            "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
-            "VALUES (?, ?, ?, ?, 'running', 'job execution started')",
-            (workspace_id, identifier, sequence, now_us),
-        )
+        if claimed is None:
+            return None
     return _application_snapshot(
-        connection, workspace_id=workspace_id, job_id=identifier
+        connection, workspace_id=workspace_id, job_id=claimed.identifier
     )
 
 
@@ -467,7 +501,8 @@ def _terminalize_application_job(
         )
     with transaction:
         current = connection.execute(
-            "SELECT j.state FROM omnivia_durable_jobs j "
+            "SELECT j.state, j.claimed_by_service_instance, j.fencing_generation "
+            "FROM omnivia_durable_jobs j "
             "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
             "WHERE m.workspace_id = ? AND j.job_id = ?",
             (workspace_id, job_id),
@@ -476,6 +511,16 @@ def _terminalize_application_job(
             raise JobError(f"no application job {job_id!r}")
         if str(current[0]) != "claimed":
             raise JobError(f"application job {job_id!r} is not running")
+        if current[1] is None or str(current[1]) != identity.service_instance_id:
+            raise JobError(
+                f"application job {job_id!r} is not claimed by "
+                f"{identity.service_instance_id!r}"
+            )
+        if current[2] is None or int(current[2]) != fencing_generation:
+            raise JobError(
+                f"application job {job_id!r} was claimed under fencing generation "
+                f"{current[2]!r}, not {fencing_generation!r}"
+            )
         now_us, moment = _application_timestamp(clock)
         connection.execute(
             "UPDATE omnivia_durable_jobs SET state = ?, updated_at = ?, "

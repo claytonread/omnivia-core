@@ -1,0 +1,202 @@
+{
+  "approvals": [],
+  "artifacts": [],
+  "audit_reference": "audit-run-0001-admit",
+  "budget": {
+    "budget_snapshot_id": "budget-0001",
+    "consumed_cost_units": 12,
+    "consumed_token_units": 4096,
+    "max_cost_units": 1000,
+    "max_token_units": 200000,
+    "max_wall_clock_ms": 600000,
+    "pinned_at": "2026-08-22T09:00:00Z",
+    "revision": 1,
+    "run_id": "run-0001",
+    "workspace_id": "ws-runtime-1"
+  },
+  "capability_grants": [
+    {
+      "capability_grant_id": "grant-0001",
+      "capability_id": "memory.write",
+      "expires_at": "2026-08-22T10:00:00Z",
+      "granted_at": "2026-08-22T09:00:00Z",
+      "policy_snapshot_id": "policy-0001",
+      "purpose": "customer_onboarding",
+      "run_id": "run-0001",
+      "scopes": [
+        "memory:write"
+      ],
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "cleanup_receipts": [
+    {
+      "audit_reference": "audit-run-0001-cleanup",
+      "cleanup_receipt_id": "cleanup-0001",
+      "outcome": "released",
+      "performed_at": "2026-08-22T09:00:10Z",
+      "reason": "run_terminal",
+      "resource_kind": "capability_grant",
+      "run_id": "run-0001",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "correlations": [
+    {
+      "source_id": "job-77c1",
+      "source_kind": "application_job",
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "source_id": "run_id-rt-101",
+      "source_kind": "agent_lane_ledger",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "created_at": "2026-08-22T09:00:00Z",
+  "definition": {
+    "definition_id": "onboarding.reviewer",
+    "definition_kind": "agent_component",
+    "definition_version": "1.4.0"
+  },
+  "effect_intents": [],
+  "effect_receipts": [
+    {
+      "effect_intent_id": "intent-0001",
+      "effect_receipt_id": "receipt-0001",
+      "external_reference": {
+        "source_id": "job-77c1",
+        "source_kind": "application_job",
+        "workspace_id": "ws-runtime-1"
+      },
+      "observed_at": "2026-08-22T09:00:07Z",
+      "response_digest": "sha256:bc65c0bd675d7735c7da610d6eadd6adbe0ff9d063f900e1a5b77908bf92dcd9",
+      "run_id": "run-0001",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "effect_settlements": [
+    {
+      "audit_reference": "audit-run-0001-settle",
+      "effect_intent_id": "intent-0001",
+      "effect_receipt_id": "receipt-0001",
+      "effect_settlement_id": "settlement-0001",
+      "outcome": "committed",
+      "reason": "receipt_observed",
+      "run_id": "run-0001",
+      "settled_at": "2026-08-22T09:00:08Z",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "events": [
+    {
+      "event_kind": "run_admitted",
+      "occurred_at": "2026-08-22T09:00:00Z",
+      "run_id": "run-0001",
+      "run_status": "admitted",
+      "runtime_event_id": "event-0000",
+      "sequence": 0,
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "event_kind": "step_started",
+      "occurred_at": "2026-08-22T09:00:05Z",
+      "run_id": "run-0001",
+      "run_status": "running",
+      "run_step_id": "step-0001",
+      "runtime_event_id": "event-0001",
+      "sequence": 1,
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "event_kind": "run_finished",
+      "occurred_at": "2026-08-22T09:00:10Z",
+      "run_id": "run-0001",
+      "run_status": "succeeded",
+      "runtime_event_id": "event-0002",
+      "sequence": 2,
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "evidence": [
+    {
+      "authoritative": true,
+      "captured_at": "2026-08-22T09:00:07Z",
+      "content_checksum": "sha256:bc65c0bd675d7735c7da610d6eadd6adbe0ff9d063f900e1a5b77908bf92dcd9",
+      "evidence_item_id": "evidence-0001",
+      "evidence_kind": "capability_response",
+      "retained": true,
+      "run_id": "run-0001",
+      "run_step_id": "step-0001",
+      "source": {
+        "source_id": "attempt-0001",
+        "source_kind": "runtime",
+        "workspace_id": "ws-runtime-1"
+      },
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "authoritative": false,
+      "captured_at": "2026-08-22T09:00:07Z",
+      "content_checksum": "sha256:bcb8e532e6d11cd26c52627e5833631859a091b8f960f0fbacbb43cabdda9baf",
+      "evidence_item_id": "evidence-0002",
+      "evidence_kind": "provider_log",
+      "retained": true,
+      "run_id": "run-0001",
+      "source": {
+        "source_id": "log-line-4412",
+        "source_kind": "external_log",
+        "workspace_id": "ws-runtime-1"
+      },
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "finished_at": "2026-08-22T09:00:10Z",
+  "logical_key": "onboarding-2026-08-22-acme",
+  "originating_operation": "memory.create",
+  "policy": {
+    "audit_reference": "audit-run-0001-admit",
+    "decision_reason": "workspace_default",
+    "discovered_capabilities": [
+      "memory.export",
+      "memory.write"
+    ],
+    "granted_capabilities": [
+      "memory.write"
+    ],
+    "pinned_at": "2026-08-22T09:00:00Z",
+    "policy_snapshot_id": "policy-0001",
+    "revision": 1,
+    "run_id": "run-0001",
+    "workspace_id": "ws-runtime-1"
+  },
+  "run_id": "run-0001",
+  "status": "succeeded",
+  "steps": [
+    {
+      "attempts": [
+        {
+          "attempt_id": "attempt-0001",
+          "attempt_number": 1,
+          "finished_at": "2026-08-22T09:00:09Z",
+          "run_id": "run-0001",
+          "run_step_id": "step-0001",
+          "started_at": "2026-08-22T09:00:05Z",
+          "status": "succeeded",
+          "workspace_id": "ws-runtime-1"
+        }
+      ],
+      "created_at": "2026-08-22T09:00:01Z",
+      "ordinal": 1,
+      "run_id": "run-0001",
+      "run_step_id": "step-0001",
+      "status": "succeeded",
+      "step_kind": "capability_call",
+      "updated_at": "2026-08-22T09:00:09Z",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "updated_at": "2026-08-22T09:00:10Z",
+  "waits": [],
+  "workspace_id": "ws-runtime-1"
+}

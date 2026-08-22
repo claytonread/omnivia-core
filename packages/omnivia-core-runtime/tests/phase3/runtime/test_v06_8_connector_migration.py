@@ -231,7 +231,12 @@ def insert_health(holder: m1.Owned, **overrides: object) -> None:
 def test_0017_is_the_unique_consecutive_successor_to_0016() -> None:
     versions = [m.version for m in load_migrations()]
     assert versions == sorted(versions)
-    assert versions[-2:] == [PREDECESSOR_VERSION, MIGRATION_VERSION]
+    # Asserted as a prefix rather than as the tail of the catalogue, exactly as the
+    # 0016 slice already does. Reading the last two entries made this test a claim
+    # about the head, so a legitimate later migration failed a slice that has no
+    # authority over it.
+    assert versions[:MIGRATION_VERSION] == list(range(1, MIGRATION_VERSION + 1))
+    assert MIGRATION.version == PREDECESSOR_VERSION + 1
     assert MIGRATION.name == MIGRATION_NAME
 
 

@@ -101,6 +101,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "graph",
     "context-pack",
     "compatibility-matrix",
+    "runtime",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -173,6 +174,36 @@ FROZEN_FIXTURE_MAP: dict[str, tuple[str, str, bool, bool]] = {
         "calendar-invalid-timestamp.json",
         "calendar_invalid_timestamp_tolerated",
         False,
+        True,
+    ),
+    "runtime-run-replay": (
+        "runtime-run-replay.json",
+        "runtime_replay_is_logically_idempotent",
+        True,
+        True,
+    ),
+    "runtime-run-cancelled-evidence": (
+        "runtime-run-cancelled-evidence.json",
+        "runtime_cancellation_preserves_evidence",
+        True,
+        True,
+    ),
+    "runtime-unknown-run-status": (
+        "runtime-unknown-run-status.json",
+        "runtime_unknown_run_status_fails_safe",
+        False,
+        True,
+    ),
+    "runtime-effect-receipt-without-intent": (
+        "runtime-effect-receipt-without-intent.json",
+        "runtime_effect_without_intent_rejected",
+        True,
+        True,
+    ),
+    "runtime-resolve-wait": (
+        "runtime-resolve-wait.json",
+        "runtime_resolve_wait_is_not_job_recovery",
+        True,
         True,
     ),
 }
@@ -406,6 +437,37 @@ _ENVELOPE_REFS: dict[str, str] = {
 }
 
 
+def _fixture_target_ref(entry: Mapping[str, Any]) -> tuple[str | None, str]:
+    """Resolve which contract type one manifest entry is an example of.
+
+    Most fixtures are whole wire envelopes and name one in ``envelope``. Some are examples of
+    a single published record instead -- a canonical `Run`, a `ResolveWait` -- which is not an
+    envelope and has no response branch, so such an entry names the type in ``definition`` and
+    is validated against the registry's published reference for it. Exactly one of the two is
+    named: an entry naming both is claiming to be two things at once, and an entry naming
+    neither has nothing to be validated against.
+
+    Returns ``(ref, "")`` when the entry resolves, and ``(None, reason)`` when it does not.
+    """
+    envelope = entry.get("envelope")
+    definition = entry.get("definition")
+    if envelope is not None and definition is not None:
+        return None, "names both an 'envelope' and a 'definition'; a fixture is one or the other"
+    if envelope is not None:
+        # `envelope` is whatever the manifest says, so it need not be a string and need not
+        # even be hashable: a bare `envelope not in _ENVELOPE_REFS` on a list raises rather
+        # than reporting the malformed entry the gate exists to report.
+        if not isinstance(envelope, str) or envelope not in _ENVELOPE_REFS:
+            return None, f"names unknown envelope {envelope!r}"
+        return _ENVELOPE_REFS[envelope], ""
+    if not isinstance(definition, str) or not definition:
+        return None, "names neither an 'envelope' nor a nonempty 'definition'"
+    published = _load_schema(REGISTRY_SCHEMA).get("$defs", {})
+    if definition not in published:
+        return None, f"names {definition!r}, which the registry does not publish"
+    return f"{BASE_URI}{REGISTRY_SCHEMA}.schema.json#/$defs/{definition}", ""
+
+
 def _load_manifest() -> list[dict[str, Any]] | None:
     manifest_path = FIXTURES_DIR / "manifest.json"
     if not manifest_path.is_file():
@@ -506,6 +568,10 @@ def check_fixture_manifest_entries_are_well_formed() -> list[str]:
         if not isinstance(semantic, str) or not semantic:
             findings.append(f"fixture {label!r}: 'semantic' must be a nonempty string")
 
+        _, reason = _fixture_target_ref(entry)
+        if reason:
+            findings.append(f"fixture {label!r}: {reason}")
+
     return findings
 
 
@@ -563,10 +629,10 @@ def check_fixtures_match_declared_schema_validity() -> list[str]:
     for entry in fixtures:
         fixture_id = entry.get("id", "<unknown>")
         file_name = entry.get("file")
-        envelope = entry.get("envelope")
+        target_ref, reason = _fixture_target_ref(entry)
         expected_valid = entry.get("schema_valid")
-        if not isinstance(file_name, str) or envelope not in _ENVELOPE_REFS:
-            findings.append(f"fixture {fixture_id!r}: manifest entry is malformed")
+        if not isinstance(file_name, str) or target_ref is None:
+            findings.append(f"fixture {fixture_id!r}: manifest entry is malformed ({reason})")
             continue
         path = FIXTURES_DIR / file_name
         if not path.is_file():
@@ -574,7 +640,7 @@ def check_fixtures_match_declared_schema_validity() -> list[str]:
         with path.open(encoding="utf-8") as handle:
             document = json.load(handle)
         validator = Draft202012Validator(
-            {"$ref": _ENVELOPE_REFS[envelope]},
+            {"$ref": target_ref},
             registry=registry,
             format_checker=Draft202012Validator.FORMAT_CHECKER,
         )
@@ -604,23 +670,40 @@ def check_fixture_tolerant_decode_matches_declared() -> list[str]:
         return findings
 
     sys.path.insert(0, str(REPO_ROOT / "src"))
-    from omnivia_core.contracts.v1 import codec
+    from omnivia_core.contracts.v1 import codec, generated
 
     for entry in fixtures:
         fixture_id = entry.get("id", "<unknown>")
         file_name = entry.get("file")
         envelope = entry.get("envelope")
+        definition = entry.get("definition")
         expected_tolerant = entry.get("tolerant_decode")
         if not isinstance(file_name, str) or not isinstance(expected_tolerant, bool):
             continue
         if not (FIXTURES_DIR / file_name).is_file():
             continue  # already reported by check_fixture_manifest_is_complete
         document = _fixture_document(file_name)
+        if isinstance(definition, str):
+            # A single-record fixture decodes through the generated type it is an example of,
+            # reached by name rather than by a table kept in step by hand. The decoder is the
+            # same tolerant one the envelope path exercises. The name is resolved and guarded
+            # here rather than trusted: a `definition` naming nothing, or naming a scalar
+            # alias like `AttemptStatus` that has no decoder, is a malformed manifest entry
+            # this check must report -- reaching straight through it would raise
+            # `AttributeError` and take the whole gate down instead.
+            decode = getattr(getattr(generated, definition, None), "from_wire", None)
+            if decode is None:
+                findings.append(
+                    f"fixture {fixture_id!r} ({file_name}): definition {definition!r} names no "
+                    "generated record with a tolerant from_wire decoder"
+                )
+                continue
+        elif envelope == "RequestEnvelope":
+            decode = codec.decode_request
+        else:
+            decode = codec.decode_response
         try:
-            if envelope == "RequestEnvelope":
-                codec.decode_request(document)
-            else:
-                codec.decode_response(document)
+            decode(document)
             actually_tolerant = True
         except codec.ContractDecodeError:
             actually_tolerant = False
@@ -863,7 +946,161 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
             return []
         return [f"{file_name}: expected a calendar-invalid timestamp, {timestamp!r} parsed fine"]
 
+    # --- canonical Agent Runtime records (RT-101) -----------------------------
+    #
+    # Each of these decodes the fixture through the generated `Run`/`ResolveWait` type and
+    # then asks `semantics_runtime` the question the fixture exists to answer, so the fixture
+    # is checked against the validator that ships rather than against a restatement of it.
+    # The two modules are imported here rather than taken as parameters: `codec` and
+    # `compatibility` are arguments because callers substitute them, and nothing substitutes
+    # these.
+    from omnivia_core.contracts.v1 import generated
+    from omnivia_core.contracts.v1 import semantics_runtime as runtime
+
+    def _run(file_name: str) -> Any:
+        return generated.Run.from_wire(_fixture_document(file_name))
+
+    def runtime_replay_is_logically_idempotent(file_name: str) -> list[str]:
+        """A completed run, replayed under its own logical key, is the same run.
+
+        Both halves are asserted: the run validates, and re-admitting the same logical key
+        over the same definition classifies as a replay rather than as new work -- while the
+        same key over a different definition is a conflict, which is what stops one key
+        naming two different pieces of work.
+        """
+        run = _run(file_name)
+        findings: list[str] = []
+        try:
+            runtime.validate_run(run, workspace_id=run.workspace_id)
+        except compatibility.ContractSemanticError as error:
+            findings.append(f"{file_name}: expected a valid canonical run, raised {error}")
+        if runtime.classify_run_replay(run, run) != "replay":
+            findings.append(f"{file_name}: re-admitting the same logical key is not a replay")
+        diverged = generated.Run.from_wire(
+            {
+                **_fixture_document(file_name),
+                "definition": {**_fixture_document(file_name)["definition"], "definition_version": "9.9.9"},
+            }
+        )
+        if runtime.classify_run_replay(run, diverged) != "idempotency_conflict":
+            findings.append(
+                f"{file_name}: the same logical key over a different definition must conflict"
+            )
+        intent = run.effect_intents[0]
+        if runtime.classify_effect_replay(intent, intent) != "replay":
+            findings.append(f"{file_name}: redelivering one effect intent is not a replay")
+        return findings
+
+    def runtime_cancellation_preserves_evidence(file_name: str) -> list[str]:
+        """A cancelled run keeps its record: evidence retained, cleanup stated."""
+        run = _run(file_name)
+        findings: list[str] = []
+        try:
+            runtime.validate_run(run, workspace_id=run.workspace_id)
+        except compatibility.ContractSemanticError as error:
+            findings.append(f"{file_name}: expected a valid cancelled run, raised {error}")
+        if run.status != runtime.RUN_STATUS_CANCELLED:
+            findings.append(f"{file_name}: expected a cancelled run, found {run.status!r}")
+        if not run.evidence:
+            findings.append(f"{file_name}: a cancelled run that executed retains no evidence")
+        if any(not item.retained for item in run.evidence):
+            findings.append(f"{file_name}: cancellation discarded evidence")
+        if not run.cleanup_receipts:
+            findings.append(f"{file_name}: a terminal run states no cleanup receipt")
+        discarded = generated.Run.from_wire(
+            {
+                **_fixture_document(file_name),
+                "evidence": [
+                    {**item, "retained": False} for item in _fixture_document(file_name)["evidence"]
+                ],
+            }
+        )
+        try:
+            runtime.validate_run(discarded, workspace_id=discarded.workspace_id)
+        except compatibility.ContractSemanticError:
+            return findings
+        findings.append(f"{file_name}: discarding a cancelled run's evidence must be refused")
+        return findings
+
+    def runtime_unknown_run_status_fails_safe(file_name: str) -> list[str]:
+        """An unrecognized run status decodes verbatim and grants nothing.
+
+        The fixture is strict-schema invalid by construction -- the vocabulary is closed at
+        the schema -- and still decodes, which is the whole tolerant/strict split. What must
+        never happen is a decision being taken from the unknown value, so every reader is
+        asserted to answer no, and the one function that would let a caller act on a finished
+        run is asserted to refuse.
+        """
+        run = _run(file_name)
+        findings: list[str] = []
+        if run.status in runtime.RUN_STATUSES:
+            findings.append(f"{file_name}: expected a status outside the known vocabulary")
+        if _fixture_document(file_name)["status"] != run.status:
+            findings.append(f"{file_name}: the unknown status was not preserved verbatim")
+        for reader in (
+            runtime.is_known_run_status,
+            runtime.is_terminal_run_status,
+            runtime.is_successful_run_status,
+            runtime.is_waiting_run_status,
+            runtime.permits_new_effect,
+        ):
+            if reader(run.status):
+                findings.append(f"{file_name}: {reader.__name__} must fail safe on {run.status!r}")
+        try:
+            runtime.validate_terminal_run(run, workspace_id=run.workspace_id)
+        except compatibility.ContractSemanticError:
+            return findings
+        findings.append(f"{file_name}: a run in an unknown status must not be treated as finished")
+        return findings
+
+    def runtime_effect_without_intent_rejected(file_name: str) -> list[str]:
+        """A receipt and a settlement naming no declared intent are refused.
+
+        Schema-valid and decodable -- nothing structural is wrong with an array element --
+        and refused semantically, because an effect nobody declared is one nobody authorized
+        and nobody can reconcile.
+        """
+        run = _run(file_name)
+        if run.effect_intents:
+            return [f"{file_name}: expected a run that declared no effect intent"]
+        if not run.effect_receipts or not run.effect_settlements:
+            return [f"{file_name}: expected an orphaned receipt and settlement"]
+        try:
+            runtime.validate_run(run, workspace_id=run.workspace_id)
+        except compatibility.ContractSemanticError:
+            return []
+        return [f"{file_name}: an effect receipt with no matching intent must be refused"]
+
+    def runtime_resolve_wait_is_not_job_recovery(file_name: str) -> list[str]:
+        """`ResolveWait` is a Runtime command, and nothing about it is a job control.
+
+        The positive half is that a well-formed command validates. The negative half is the
+        one that matters for the frozen wire: it names no job, it is not in the operation
+        catalogue, and there is still no `job.resume`.
+        """
+        command = runtime.decode_resolve_wait(_fixture_document(file_name))
+        findings: list[str] = []
+        try:
+            runtime.validate_resolve_wait_shape(command)
+        except compatibility.ContractSemanticError as error:
+            findings.append(f"{file_name}: expected a valid ResolveWait, raised {error}")
+        if any("job" in field for field in _fixture_document(file_name)):
+            findings.append(f"{file_name}: a ResolveWait names no job")
+        operations = {entry.name for entry in generated.OPERATION_CATALOGUE}
+        if "job.resume" in operations:
+            findings.append(f"{file_name}: the catalogue must never publish 'job.resume'")
+        if any(name.startswith("runtime.") for name in operations):
+            findings.append(
+                f"{file_name}: RT-101 publishes no Runtime operation, only Runtime records"
+            )
+        return findings
+
     return {
+        "runtime_replay_is_logically_idempotent": runtime_replay_is_logically_idempotent,
+        "runtime_cancellation_preserves_evidence": runtime_cancellation_preserves_evidence,
+        "runtime_unknown_run_status_fails_safe": runtime_unknown_run_status_fails_safe,
+        "runtime_effect_without_intent_rejected": runtime_effect_without_intent_rejected,
+        "runtime_resolve_wait_is_not_job_recovery": runtime_resolve_wait_is_not_job_recovery,
         "effective_capabilities_match": effective_capabilities_match,
         "capability_denial": capability_denial,
         "incompatible_major_version": incompatible_major_version,

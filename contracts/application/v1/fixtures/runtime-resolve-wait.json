@@ -1,0 +1,10 @@
+{
+  "approval_id": "approval-0001",
+  "reason": "approved",
+  "requested_at": "2026-08-22T09:05:00Z",
+  "resolution": "approval_decision",
+  "resume_digest": "sha256:d8d60479dbf5c0654e7ddc9477b0653be97281482138c1d528e6085322abd8b2",
+  "run_id": "run-0001",
+  "wait_id": "wait-0001",
+  "workspace_id": "ws-runtime-1"
+}

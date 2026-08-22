@@ -1,0 +1,1198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
+  "title": "OmniVia Core Application Contract v1 - canonical Agent Runtime records",
+  "description": "The canonical, workspace-scoped Runtime records: `Run`, `RunStep`, `Attempt`, `Wait`, `Approval`, `CapabilityGrant`, `PolicySnapshot`, `BudgetSnapshot`, `EffectIntent`, `EffectReceipt`, `EffectSettlement`, `RuntimeEvent`, `Artifact`, `EvidenceItem` and `CleanupReceipt`, plus the value types that make them unambiguous and the `ResolveWait` command. Published as its own document rather than as an edit to `jobs.schema.json`: the job family is frozen and load-bearing, and a Runtime record is a statement about an Agent Component or Workflow execution rather than about a scheduler row. Nothing here is a job control, a public operation, a scheduler, a store, or a transport -- `job.retry` remains the single recovery operation on the application wire, there is no `job.resume`, and `ResolveWait` is a Runtime-domain command that resolves one durable `Wait` and never requeues a job. Every string value reuses a canonical scalar declared elsewhere in this contract, so the Runtime domain adds no new wire language of its own. This document declares no root type; it is a definition container only.",
+  "$defs": {
+    "RuntimeSourceKind": {
+      "title": "RuntimeSourceKind",
+      "description": "Which representation an `ExternalReference` names, so a correlated identifier is never read as an identifier of a different domain. `runtime` is the canonical Runtime itself and the only authoritative kind; `application_job` is the durable job substrate a Run is admitted and claimed through; `control_plane_projection` is the read-only control-plane correlation record; `agent_lane_ledger` is the agent-lane PM run ledger, whose `run_id` is a different identifier in a different domain and must never be joined to a canonical `Run.run_id`; `external_log` is any log or trace captured outside this contract. Closed at the schema and tolerant on the wire: an unrecognized kind decodes and is preserved, but it is never authoritative.",
+      "type": "string",
+      "enum": [
+        "runtime",
+        "application_job",
+        "control_plane_projection",
+        "agent_lane_ledger",
+        "external_log"
+      ]
+    },
+    "RunStatus": {
+      "title": "RunStatus",
+      "description": "Where a canonical `Run` stands. A Core-owned vocabulary, deliberately neither the scheduler's `JobState` (which cannot express waiting) nor the control plane's run status (which is not durable): `admitted` is accepted with a policy and budget snapshot pinned but not yet executing, `running` is executing, `waiting` is durably suspended on a `Wait`, `succeeded` completed with every step succeeded, `partially_completed` reached the end with some step not succeeded, `failed` ended on a failure, `cancelled` was stopped by request, and `uncertain` means the outcome of at least one effect is not known and has not been reconciled. Closed at the schema and open on the wire: an unrecognized status decodes and is preserved verbatim, but no semantic decision may be taken from it -- it is never terminal, never successful, never a licence to start a new effect.",
+      "type": "string",
+      "enum": [
+        "admitted",
+        "running",
+        "waiting",
+        "succeeded",
+        "partially_completed",
+        "failed",
+        "cancelled",
+        "uncertain"
+      ]
+    },
+    "RunStepStatus": {
+      "title": "RunStepStatus",
+      "description": "Where one `RunStep` stands. `pending` has not started, `running` is executing an attempt, `waiting` is suspended on a `Wait`, `succeeded`, `failed` and `cancelled` are terminal outcomes, and `skipped` is a step the run deliberately did not execute. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "waiting",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "skipped"
+      ]
+    },
+    "AttemptStatus": {
+      "title": "AttemptStatus",
+      "description": "Where one `Attempt` stands. An attempt exists because execution started, so there is no queued attempt state: waiting to run is a state of the step, not of an execution of it. `uncertain` is an attempt whose effect may or may not have landed; it is not a failure, and reporting it as one would licence a retry that duplicates a committed effect. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["running", "succeeded", "failed", "cancelled", "uncertain"]
+    },
+    "WaitKind": {
+      "title": "WaitKind",
+      "description": "What a durable `Wait` is waiting for: an `approval` decision by a human or role, an `external_signal` delivered from outside the run, or a `timer` reaching its deadline. The kind fixes which resolution may resolve it, so a signal can never be accepted as an approval. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["approval", "external_signal", "timer"]
+    },
+    "WaitStatus": {
+      "title": "WaitStatus",
+      "description": "Where one `Wait` stands: `pending` is unresolved and still holding the run, `resolved` was resolved by exactly one `ResolveWait`, `expired` passed its deadline without one, and `cancelled` was released because the run was cancelled. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["pending", "resolved", "expired", "cancelled"]
+    },
+    "WaitResolution": {
+      "title": "WaitResolution",
+      "description": "How one `ResolveWait` proposes to resolve a `Wait`, paired to the wait's own kind: `approval_decision` resolves an `approval` wait and names the recorded `Approval`, `external_signal` resolves an `external_signal` wait, `timer_expiry` resolves a `timer` wait, and `cancelled` releases any wait because the run was cancelled. Deliberately not a job control: none of these requeues a job, and none of them is `job.retry`. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["approval_decision", "external_signal", "timer_expiry", "cancelled"]
+    },
+    "ApprovalDecision": {
+      "title": "ApprovalDecision",
+      "description": "The decision recorded against an approval request. There are exactly two, because an approval either was or was not given; a request that timed out has no decision at all and is reported by its `Wait` reaching `expired`. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["approved", "rejected"]
+    },
+    "EffectOutcome": {
+      "title": "EffectOutcome",
+      "description": "What an `EffectSettlement` says happened to the effect its intent declared: `committed` is proven by a receipt, `not_committed` is proven not to have happened, and `unknown` is the honest third answer -- the runtime could not establish either. `unknown` is uncertainty, not failure: it must not be reported as a failed effect, and it must not licence a blind retry of a logically identical effect. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["committed", "not_committed", "unknown"]
+    },
+    "CleanupOutcome": {
+      "title": "CleanupOutcome",
+      "description": "What one recorded cleanup achieved: `released` freed the resource, `not_required` found nothing to free, and `failed` could not free it. Cleanup is observable rather than implied, so a failed cleanup is recorded as a receipt rather than left unsaid. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["released", "not_required", "failed"]
+    },
+    "RunDefinitionKind": {
+      "title": "RunDefinitionKind",
+      "description": "Which kind of executable definition a run executes. The two public product terms are `agent_component` and `workflow`; there is no provider, adapter, worker-host or Harness kind here, because none of those is a definition a run executes. Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.",
+      "type": "string",
+      "enum": ["agent_component", "workflow"]
+    },
+    "ExternalReference": {
+      "title": "ExternalReference",
+      "description": "A workspace-scoped, source-qualified pointer at a fact recorded somewhere other than this record. Every correlation states which domain its identifier belongs to, because the same spelling means different things in different domains: an agent-lane ledger `run_id` and a canonical `Run.run_id` are different identifiers that must never be joined. Only a `runtime` reference is authoritative; every other kind is correlation or evidence, never a source of truth, so discovering a fact through one never makes it a fact this run may act on.",
+      "type": "object",
+      "properties": {
+        "source_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeSourceKind",
+          "description": "Which domain `source_id` is an identifier in."
+        },
+        "source_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "The identifier this reference names, in the domain `source_kind` states. Opaque: it is round-tripped verbatim and never parsed, and never rewritten into an identifier of another domain."
+        },
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this correlation is scoped to. A reference is never workspace-free: an identifier without the workspace it was issued in cannot be resolved, and could be resolved against the wrong one."
+        }
+      },
+      "required": ["source_kind", "source_id", "workspace_id"],
+      "unevaluatedProperties": false
+    },
+    "RunDefinitionRef": {
+      "title": "RunDefinitionRef",
+      "description": "The exact executable definition a run was admitted to execute: which kind, which definition, and at which released version. Immutable for the life of the run -- a run does not change what it is running -- so the definition reported on a completed run is the one it was admitted with.",
+      "type": "object",
+      "properties": {
+        "definition_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionKind",
+          "description": "Whether this run executes an Agent Component or a Workflow."
+        },
+        "definition_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable identifier of the definition."
+        },
+        "definition_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "The released version of the definition this run executes."
+        }
+      },
+      "required": ["definition_kind", "definition_id", "definition_version"],
+      "unevaluatedProperties": false
+    },
+    "PolicySnapshot": {
+      "title": "PolicySnapshot",
+      "description": "The immutable policy a run is pinned to at one revision. It states two capability sets and keeps them apart on purpose: `granted_capabilities` is what this run may actually invoke, and `discovered_capabilities` is what the workspace was found to offer. Discovery is not authority -- a capability that appears only in the discovered set authorizes nothing, and an effect naming one is refused. A run's policy may be re-pinned as it proceeds, but only monotonically: revisions move forward and grants may narrow, never widen, so authority a run once held cannot be silently re-granted mid-flight.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this snapshot was pinned in."
+        },
+        "policy_snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this snapshot, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this snapshot is pinned to."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "1-based revision of this run's policy. Strictly increasing within one run.",
+          "minimum": 1
+        },
+        "pinned_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this revision was pinned."
+        },
+        "granted_capabilities": {
+          "type": "array",
+          "description": "The capabilities this run may invoke. May be empty: a run that invokes nothing is granted nothing.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CapabilityId"
+          },
+          "maxItems": 256
+        },
+        "discovered_capabilities": {
+          "type": "array",
+          "description": "The capabilities the workspace was found to offer. Informational only; presence here never authorizes an effect.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CapabilityId"
+          },
+          "maxItems": 256
+        },
+        "decision_reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why the policy resolved as it did, such as `workspace_default` or `operator_narrowed`."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for pinning this revision."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "policy_snapshot_id",
+        "run_id",
+        "revision",
+        "pinned_at",
+        "granted_capabilities",
+        "discovered_capabilities",
+        "decision_reason",
+        "audit_reference"
+      ],
+      "unevaluatedProperties": false
+    },
+    "BudgetSnapshot": {
+      "title": "BudgetSnapshot",
+      "description": "The immutable budget a run is pinned to at one revision: the ceilings admission accepted, and what has been consumed against them so far. Limits are pinned at admission and may narrow but never widen as a run proceeds, and consumption never decreases: a counter that went backwards is a report nobody can audit. Consumption never exceeds its ceiling -- a run that would exceed one stops rather than reporting a number its own limit forbids.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this snapshot was pinned in."
+        },
+        "budget_snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this snapshot, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this snapshot is pinned to."
+        },
+        "revision": {
+          "type": "integer",
+          "description": "1-based revision of this run's budget. Strictly increasing within one run.",
+          "minimum": 1
+        },
+        "pinned_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this revision was pinned."
+        },
+        "max_cost_units": {
+          "type": "integer",
+          "description": "Ceiling on cost units for this run.",
+          "minimum": 0
+        },
+        "consumed_cost_units": {
+          "type": "integer",
+          "description": "Cost units consumed so far. Never greater than `max_cost_units`.",
+          "minimum": 0
+        },
+        "max_token_units": {
+          "type": "integer",
+          "description": "Ceiling on token units for this run.",
+          "minimum": 0
+        },
+        "consumed_token_units": {
+          "type": "integer",
+          "description": "Token units consumed so far. Never greater than `max_token_units`.",
+          "minimum": 0
+        },
+        "max_wall_clock_ms": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/DurationMs",
+          "description": "Ceiling on wall-clock duration for this run, when one applies."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "budget_snapshot_id",
+        "run_id",
+        "revision",
+        "pinned_at",
+        "max_cost_units",
+        "consumed_cost_units",
+        "max_token_units",
+        "consumed_token_units"
+      ],
+      "unevaluatedProperties": false
+    },
+    "CapabilityGrant": {
+      "title": "CapabilityGrant",
+      "description": "One capability issued to one run, for the life of that run. A grant is per-run and backed by the policy revision that issued it: it names the `PolicySnapshot` whose `granted_capabilities` contains it, so a grant can always be traced to the decision that made it and can never outlive a narrowing of that decision. Static manifest wiring is not a grant, and a capability the workspace merely offers is not a grant either.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this grant was issued in."
+        },
+        "capability_grant_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this grant, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this grant was issued to."
+        },
+        "capability_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CapabilityId",
+          "description": "The capability granted."
+        },
+        "policy_snapshot_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The policy revision that issued this grant. Its `granted_capabilities` must contain `capability_id`."
+        },
+        "granted_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this grant was issued."
+        },
+        "expires_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this grant stops being usable, when it is time-bounded."
+        },
+        "scopes": {
+          "type": "array",
+          "description": "Scope tokens narrowing this grant. Scopes narrow; they never widen granted authority.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Scope"
+          },
+          "maxItems": 64
+        },
+        "purpose": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Purpose",
+          "description": "The purpose limitation this grant was issued under."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "capability_grant_id",
+        "run_id",
+        "capability_id",
+        "policy_snapshot_id",
+        "granted_at",
+        "scopes",
+        "purpose"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Attempt": {
+      "title": "Attempt",
+      "description": "One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run, workspace and start instant never change, and an attempt terminalizes exactly once. Within a step, attempts are numbered `1..N` contiguously and never overlap; only a `failed`, `cancelled` or `uncertain` attempt may be followed by another, because a `succeeded` attempt is final. An `uncertain` attempt is the case retrying blindly would corrupt: whether its effect landed is not known, so the next step is reconciliation, not repetition.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this attempt ran in."
+        },
+        "attempt_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this attempt, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this attempt belongs to."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step this attempt is an execution of."
+        },
+        "attempt_number": {
+          "type": "integer",
+          "description": "1-based ordinal of this attempt within its step.",
+          "minimum": 1
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/AttemptStatus",
+          "description": "Status this attempt reached."
+        },
+        "started_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this attempt started."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this attempt finished. Present exactly when the attempt is no longer running."
+        },
+        "failure": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/errors.schema.json#/$defs/ApiError",
+          "description": "The failure this attempt ended with, when it failed. Never present on an `uncertain` attempt: uncertainty is not failure, and giving it an error would licence the retry the uncertainty forbids."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "attempt_id",
+        "run_id",
+        "run_step_id",
+        "attempt_number",
+        "status",
+        "started_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "RunStep": {
+      "title": "RunStep",
+      "description": "One step of a run, with the complete attempt history that executed it. Steps are ordered `1..N` contiguously within a run and never renumbered; the history is append-only, so a correction is a further attempt rather than an edit to a recorded one. A step that is `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is suspended on cannot be resolved.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this step ran in."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this step, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this step belongs to."
+        },
+        "ordinal": {
+          "type": "integer",
+          "description": "1-based position of this step within its run.",
+          "minimum": 1
+        },
+        "step_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what this step does, such as `plan` or `capability_call` or `approval_wait`. Descriptive: it never selects an implementation."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStepStatus",
+          "description": "Status this step currently reports."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this step was created."
+        },
+        "updated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this step was last observed to change."
+        },
+        "attempts": {
+          "type": "array",
+          "description": "Every execution attempt of this step, in ascending attempt number. Empty for a step that never executed.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Attempt"
+          },
+          "maxItems": 256
+        },
+        "wait_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The wait holding this step, present exactly when the step is `waiting`."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "run_step_id",
+        "run_id",
+        "ordinal",
+        "step_kind",
+        "status",
+        "created_at",
+        "updated_at",
+        "attempts"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Wait": {
+      "title": "Wait",
+      "description": "One durable suspension of a run: what it is waiting for, whether it is still waiting, and the digest that binds the state it will resume from. First-class rather than a scheduler detail, because a suspended run is a state the contract must be able to state, and because resuming from a checkpoint nobody can identify is indistinguishable from starting again. Resolved by exactly one `ResolveWait`, which is a Runtime command and not `job.retry`: nothing here requeues a job.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this wait was created in."
+        },
+        "wait_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this wait, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this wait suspends."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step this wait suspends."
+        },
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitKind",
+          "description": "What this wait is waiting for. Fixes which resolution may resolve it."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitStatus",
+          "description": "Where this wait stands."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this wait was created."
+        },
+        "expires_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this wait stops being resolvable, when it is time-bounded."
+        },
+        "resolved_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this wait stopped being pending. Present exactly when the wait is no longer `pending`."
+        },
+        "resolution_reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why this wait stopped being pending, such as `approved` or `deadline_exceeded`."
+        },
+        "approval_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The approval that resolved this wait, present only on a resolved `approval` wait."
+        },
+        "resume_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest binding the state this wait resumes from, so a resolution proves it is resuming the state that was suspended rather than some later one. The same canonical `ContentChecksum` the import contract uses: a value both sides recompute and compare byte for byte, never an opaque server token."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "wait_id",
+        "run_id",
+        "run_step_id",
+        "kind",
+        "status",
+        "created_at",
+        "resume_digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Approval": {
+      "title": "Approval",
+      "description": "The immutable request/decision pair for one approval `Wait`: who was asked, who answered, what they answered, and when. The request half is written when the wait is created and never edited; the decision half is written once and never edited either, so an approval cannot be re-decided, only superseded by a new run. A request with no decision is still pending; a decision is complete or absent, never partial -- a recorded decision always carries its decider, its instant and its audit reference, because a decision nobody can attribute is not an approval.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this approval was requested in."
+        },
+        "approval_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this approval, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this approval belongs to."
+        },
+        "wait_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The wait this approval resolves, or is expected to resolve."
+        },
+        "requested_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the approval was requested."
+        },
+        "approver_role": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The role asked to decide."
+        },
+        "assigned_to": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal the request was assigned to, when it was assigned to one rather than left to the role."
+        },
+        "escalated_to": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal or role the request was escalated to, when it was escalated."
+        },
+        "expires_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the request stops being decidable, when it is time-bounded."
+        },
+        "decision": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ApprovalDecision",
+          "description": "What was decided. Absent while the request is pending."
+        },
+        "decided_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the decision was recorded. Present exactly when `decision` is."
+        },
+        "decided_by": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The principal who decided. Present exactly when `decision` is."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for the decision. Present exactly when `decision` is."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Human-readable note the decider left. Not a stable interface.",
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "workspace_id",
+        "approval_id",
+        "run_id",
+        "wait_id",
+        "requested_at",
+        "approver_role"
+      ],
+      "unevaluatedProperties": false
+    },
+    "EffectIntent": {
+      "title": "EffectIntent",
+      "description": "The record written *before* a run acts on the world: which capability it will invoke, under which grant, with which logically idempotent key, over exactly which request bytes. Nothing may be observed or settled that was not first intended -- a receipt or settlement with no matching intent is an effect nobody authorized and nobody can reconcile. The pairing of `idempotency_key` and `request_digest` is what makes idempotency *logical* rather than accidental: the same key over the same digest is one effect however many times it is delivered, and the same key over a different digest is a conflict rather than a replay.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this intent was declared in."
+        },
+        "effect_intent_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this intent, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run that declared this intent."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step that declared this intent."
+        },
+        "attempt_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The attempt that declared this intent."
+        },
+        "capability_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/CapabilityId",
+          "description": "The capability this effect invokes."
+        },
+        "capability_grant_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The grant authorizing this effect. A capability that was merely discovered is not a grant."
+        },
+        "effect_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what kind of effect this is, such as `record_write` or `message_send`."
+        },
+        "idempotency_key": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/IdempotencyKey",
+          "description": "The stable logical key for this effect. Equal keys with different request digests are an `idempotency_conflict`, exactly as on the application wire."
+        },
+        "request_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest of the exact request bytes this intent will send, so a replay proves it is the same effect rather than asserting it."
+        },
+        "declared_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this intent was declared. No receipt or settlement for this effect may precede it."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "effect_intent_id",
+        "run_id",
+        "run_step_id",
+        "attempt_id",
+        "capability_id",
+        "capability_grant_id",
+        "effect_kind",
+        "idempotency_key",
+        "request_digest",
+        "declared_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "EffectReceipt": {
+      "title": "EffectReceipt",
+      "description": "Evidence that an intended effect was actually observed to execute, bound to the intent that authorized it. A receipt never stands alone: it names its `EffectIntent`, shares that intent's run and workspace, and is never observed before the intent was declared. A provider-side reference may be attached as correlation, but it is an `ExternalReference` and therefore subordinate evidence -- it identifies the effect somewhere else, and never becomes the authority for whether the effect happened here.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this receipt was observed in."
+        },
+        "effect_receipt_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this receipt, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this receipt belongs to."
+        },
+        "effect_intent_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The intent this receipt is evidence for. Required: there is no receipt without an intent."
+        },
+        "observed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the effect was observed to have executed. Never earlier than the intent's `declared_at`."
+        },
+        "response_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest of the exact response bytes observed, so two deliveries of one logical effect can be compared rather than assumed equal."
+        },
+        "external_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference",
+          "description": "Where this effect is identified outside this contract, when it is. Correlation and subordinate evidence only."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "effect_receipt_id",
+        "run_id",
+        "effect_intent_id",
+        "observed_at",
+        "response_digest"
+      ],
+      "unevaluatedProperties": false
+    },
+    "EffectSettlement": {
+      "title": "EffectSettlement",
+      "description": "The final, audited answer to what happened to one intended effect. Like a receipt it never stands alone: it names its intent, shares that intent's run and workspace, and never settles before the intent was declared. A `committed` settlement must name the receipt that proves it -- a claim that an effect landed, with no observation of it landing, is an assertion rather than a settlement. An `unknown` settlement is the honest third answer and is not a failure: it says reconciliation is owed, and a run holding one may not call itself succeeded or failed.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this settlement was recorded in."
+        },
+        "effect_settlement_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this settlement, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this settlement belongs to."
+        },
+        "effect_intent_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The intent this settlement settles. Required: there is no settlement without an intent."
+        },
+        "outcome": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectOutcome",
+          "description": "What the runtime established about the effect."
+        },
+        "effect_receipt_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The receipt proving a `committed` outcome. Present exactly when the outcome is `committed`."
+        },
+        "settled_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this settlement was recorded. Never earlier than the intent's `declared_at`."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming how the outcome was established, such as `receipt_observed` or `provider_unreachable`."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for this settlement."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "effect_settlement_id",
+        "run_id",
+        "effect_intent_id",
+        "outcome",
+        "settled_at",
+        "reason",
+        "audit_reference"
+      ],
+      "unevaluatedProperties": false
+    },
+    "RuntimeEvent": {
+      "title": "RuntimeEvent",
+      "description": "One entry in a run's ordered event stream. Sequences are contiguous from zero and never renumbered, instants never regress, and each entry states the run status in force when it was recorded, so the stream is a readable history rather than a set of notes. Append-only: an event is never edited or removed, and a correction is a further event.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this event was recorded in."
+        },
+        "runtime_event_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this event, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this event belongs to."
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "0-based position of this event within its run's stream.",
+          "minimum": 0
+        },
+        "occurred_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this event occurred. Never earlier than the preceding event's."
+        },
+        "event_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what happened, such as `run_admitted` or `wait_resolved`."
+        },
+        "run_status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStatus",
+          "description": "The run status in force when this event was recorded."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step this event is about, when it is about one."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable event note. Not a stable interface.",
+          "maxLength": 2048
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Optional structured detail."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "runtime_event_id",
+        "run_id",
+        "sequence",
+        "occurred_at",
+        "event_kind",
+        "run_status"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Artifact": {
+      "title": "Artifact",
+      "description": "One content-addressed output a run produced, bound to the run that produced it. Identified by digest rather than by location: the bytes are the identity, so an artifact can be proven unchanged without knowing where it is stored. Carries no filesystem path, URL, bucket, credential or storage option -- where an artifact lives is a storage decision and never a wire fact.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this artifact was produced in."
+        },
+        "artifact_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this artifact, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run that produced this artifact."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step that produced this artifact, when one step did."
+        },
+        "artifact_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what kind of output this is, such as `report` or `transcript`."
+        },
+        "media_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/evidence.schema.json#/$defs/MediaType",
+          "description": "Media type of this artifact's content. The same `MediaType` L0 evidence carries, so one type describes one concept wherever it is reached from."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest of this artifact's content, proving the bytes have not changed since they were produced."
+        },
+        "content_length_bytes": {
+          "type": "integer",
+          "description": "Length of this artifact's content in bytes. Zero is valid: empty output is still output.",
+          "minimum": 0
+        },
+        "produced_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this artifact was produced."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "artifact_id",
+        "run_id",
+        "artifact_kind",
+        "media_type",
+        "content_checksum",
+        "content_length_bytes",
+        "produced_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "EvidenceItem": {
+      "title": "EvidenceItem",
+      "description": "One piece of evidence a run captured, bound to the run that captured it. `authoritative` is the load-bearing field: only evidence the runtime itself recorded may be authoritative, and evidence drawn from an external log, an agent-lane ledger or a control-plane projection is subordinate however complete it looks -- it corroborates the runtime's own record and never replaces it. `retained` states whether the evidence is still held: cancelling a run stops the work, never the record, so a cancelled run's evidence stays retained.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this evidence was captured in."
+        },
+        "evidence_item_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this evidence item, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run that captured this evidence."
+        },
+        "run_step_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The step that captured this evidence, when one step did."
+        },
+        "evidence_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what this evidence is, such as `model_invocation` or `capability_response`."
+        },
+        "source": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference",
+          "description": "Where this evidence came from, qualified by domain. A non-`runtime` source is subordinate evidence and can never be authoritative."
+        },
+        "content_checksum": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "Digest of the captured evidence content, proving it has not been altered since capture."
+        },
+        "artifact_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The artifact holding this evidence's content, when it was stored as one."
+        },
+        "captured_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this evidence was captured."
+        },
+        "authoritative": {
+          "type": "boolean",
+          "description": "True only when the runtime itself recorded this evidence. Evidence from any other source is subordinate and must state false."
+        },
+        "retained": {
+          "type": "boolean",
+          "description": "True while this evidence is still held. Cancelling a run never sets it false."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "evidence_item_id",
+        "run_id",
+        "evidence_kind",
+        "source",
+        "content_checksum",
+        "captured_at",
+        "authoritative",
+        "retained"
+      ],
+      "unevaluatedProperties": false
+    },
+    "CleanupReceipt": {
+      "title": "CleanupReceipt",
+      "description": "The record that cleanup was attempted, and what it achieved. Cleanup is observable rather than assumed: a run that reached a terminal status states what it released, including cleanup that failed. A receipt is written for the attempt, not for the success, so a failed release is visible instead of being indistinguishable from one that never ran.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this cleanup was performed in."
+        },
+        "cleanup_receipt_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this receipt, unique within its workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run this cleanup was performed for."
+        },
+        "resource_kind": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming what was cleaned up, such as `capability_grant` or `staged_content`."
+        },
+        "outcome": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupOutcome",
+          "description": "What this cleanup achieved."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why this outcome was reached, such as `run_terminal` or `resource_locked`."
+        },
+        "performed_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this cleanup was performed."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for this cleanup."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "cleanup_receipt_id",
+        "run_id",
+        "resource_kind",
+        "outcome",
+        "reason",
+        "performed_at",
+        "audit_reference"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Run": {
+      "title": "Run",
+      "description": "One canonical execution of an Agent Component or Workflow, with the complete history that produced it. Workspace-scoped by construction: the run and every record hanging off it state the same `workspace_id`, so no part of a run's history can be read against the wrong workspace. `logical_key` is the run's stable idempotency identity -- two admissions carrying the same logical key are the same run replayed, not two runs -- and it is what makes a replay provable rather than assumed. The aggregate is deliberately complete: a run states its policy, its budget, its grants, its steps, its waits and approvals, its intended and settled effects, its event stream, its artifacts, its evidence and its cleanup, because each of those is a question a reader of a finished run has to be able to answer without a second read. Every one of those arrays is stated, empty when there is nothing in it: a run with no waits and a run that forgot to mention its waits are not two readings a caller should have to tell apart, and `finished_at` is the single optional field, absent exactly while the run has not finished.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace this run belongs to. Every record in this run restates it, and every one must agree."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this run, unique within its workspace. Never joined to an identifier from another domain, however similarly spelled."
+        },
+        "definition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionRef",
+          "description": "The executable definition this run executes."
+        },
+        "status": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStatus",
+          "description": "Where this run stands."
+        },
+        "logical_key": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/IdempotencyKey",
+          "description": "The stable logical identity of the work this run performs. Equal keys over equal definitions are one run replayed; equal keys over different definitions are a conflict."
+        },
+        "originating_operation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/envelopes.schema.json#/$defs/OperationName",
+          "description": "The application operation whose invocation admitted this run."
+        },
+        "audit_reference": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/AuditReference",
+          "description": "Immutable reference to the audit record for this run's admission."
+        },
+        "created_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this run was admitted."
+        },
+        "updated_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this run was last observed to change."
+        },
+        "finished_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this run reached a terminal status, when it has."
+        },
+        "policy": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/PolicySnapshot",
+          "description": "The policy revision currently in force for this run."
+        },
+        "budget": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/BudgetSnapshot",
+          "description": "The budget revision currently in force for this run."
+        },
+        "capability_grants": {
+          "type": "array",
+          "description": "Every capability issued to this run. May be empty: a run that invokes nothing is granted nothing.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CapabilityGrant"
+          },
+          "maxItems": 64
+        },
+        "steps": {
+          "type": "array",
+          "description": "Every step of this run, in ascending ordinal.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStep"
+          },
+          "maxItems": 256
+        },
+        "waits": {
+          "type": "array",
+          "description": "Every durable wait this run has entered, resolved or otherwise.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Wait"
+          },
+          "maxItems": 64
+        },
+        "approvals": {
+          "type": "array",
+          "description": "Every approval requested for this run, decided or otherwise.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Approval"
+          },
+          "maxItems": 64
+        },
+        "effect_intents": {
+          "type": "array",
+          "description": "Every effect this run declared before acting. Nothing observed or settled may be absent from here.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectIntent"
+          },
+          "maxItems": 256
+        },
+        "effect_receipts": {
+          "type": "array",
+          "description": "Every observation that an intended effect executed.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectReceipt"
+          },
+          "maxItems": 256
+        },
+        "effect_settlements": {
+          "type": "array",
+          "description": "Every audited answer to what happened to an intended effect.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectSettlement"
+          },
+          "maxItems": 256
+        },
+        "events": {
+          "type": "array",
+          "description": "This run's ordered event stream, contiguous from sequence zero.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeEvent"
+          },
+          "maxItems": 1000
+        },
+        "artifacts": {
+          "type": "array",
+          "description": "Every output this run produced.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Artifact"
+          },
+          "maxItems": 256
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Every piece of evidence this run captured. Cancelling a run never empties it.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EvidenceItem"
+          },
+          "maxItems": 256
+        },
+        "cleanup_receipts": {
+          "type": "array",
+          "description": "Every cleanup this run performed. A terminal run states at least one, because cleanup is observable rather than assumed.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupReceipt"
+          },
+          "maxItems": 64
+        },
+        "correlations": {
+          "type": "array",
+          "description": "Source-qualified pointers at how this run appears in other domains. Correlation only: none of them is authority over this run's own record.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference"
+          },
+          "maxItems": 16
+        }
+      },
+      "required": [
+        "workspace_id",
+        "run_id",
+        "definition",
+        "status",
+        "logical_key",
+        "originating_operation",
+        "audit_reference",
+        "created_at",
+        "updated_at",
+        "policy",
+        "budget",
+        "capability_grants",
+        "steps",
+        "waits",
+        "approvals",
+        "effect_intents",
+        "effect_receipts",
+        "effect_settlements",
+        "events",
+        "artifacts",
+        "evidence",
+        "cleanup_receipts",
+        "correlations"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ResolveWait": {
+      "title": "ResolveWait",
+      "description": "The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`. Deliberately outside the application job family: it is not `job.retry`, there is no `job.resume`, it is not a `JobControl` member, and it neither requeues a job nor names one -- it carries no `job_id`, and nothing here selects a recovery. It names the wait it resolves, how it resolves it, and the resume digest the wait published, so a resolution proves it is resuming the state that was suspended. The resolution must match the wait's kind: a signal never resolves an approval, and an approval decision never resolves a timer.",
+      "type": "object",
+      "properties": {
+        "workspace_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/WorkspaceId",
+          "description": "Workspace the wait was created in. Stated explicitly: a resolution is never resolved against the wrong workspace."
+        },
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The run whose wait is being resolved."
+        },
+        "wait_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The one wait this command resolves."
+        },
+        "resolution": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitResolution",
+          "description": "How the wait is resolved. Must match the wait's own kind."
+        },
+        "approval_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The recorded approval carrying the decision. Present exactly when `resolution` is `approval_decision`."
+        },
+        "resume_digest": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/jobs.schema.json#/$defs/ContentChecksum",
+          "description": "The digest the wait published. A resolution quoting a different digest is resuming a different state and is refused."
+        },
+        "requested_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When this resolution was requested."
+        },
+        "reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code naming why the wait is being resolved, such as `approved` or `signal_received`. Never an authorization input."
+        }
+      },
+      "required": [
+        "workspace_id",
+        "run_id",
+        "wait_id",
+        "resolution",
+        "resume_digest",
+        "requested_at",
+        "reason"
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

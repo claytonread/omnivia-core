@@ -1,4 +1,4 @@
-"""Tests exercising the thirteen canonical Application Contract v1 fixtures (ADR-038).
+"""Tests exercising the canonical Application Contract v1 fixtures (ADR-038).
 
 These are independent of ``scripts/check-application-contracts.py`` (which
 enforces the same manifest as a repo-wide gate): this module re-validates the
@@ -17,7 +17,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-from omnivia_core.contracts.v1 import codec
+from omnivia_core.contracts.v1 import codec, generated
 from omnivia_core.contracts.v1 import compatibility as compat
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -31,6 +31,19 @@ _ENVELOPE_REFS = {
 }
 
 
+def _target_ref(entry: dict[str, Any]) -> str:
+    """The reference one manifest entry is an example of.
+
+    Most fixtures are whole wire envelopes. A fixture that is an example of a single
+    published record instead -- a canonical `Run`, a `ResolveWait` -- names that type in
+    `definition` and is validated against the registry's published reference for it.
+    """
+    definition = entry.get("definition")
+    if isinstance(definition, str):
+        return f"{BASE_URI}application-v1.schema.json#/$defs/{definition}"
+    return _ENVELOPE_REFS[entry["envelope"]]
+
+
 def _load_manifest() -> list[dict[str, Any]]:
     manifest: dict[str, Any] = json.loads((FIXTURES_DIR / "manifest.json").read_text(encoding="utf-8"))
     fixtures: list[dict[str, Any]] = manifest["fixtures"]
@@ -41,8 +54,20 @@ def _load_fixture(file_name: str) -> Any:
     return json.loads((FIXTURES_DIR / file_name).read_text(encoding="utf-8"))
 
 
+def _decode(entry: dict[str, Any], document: Any) -> Any:
+    """Decode one fixture through the tolerant decoder its manifest entry names."""
+    definition = entry.get("definition")
+    if isinstance(definition, str):
+        return getattr(generated, definition).from_wire(document)
+    if entry["envelope"] == "RequestEnvelope":
+        return codec.decode_request(document)
+    return codec.decode_response(document)
+
+
 def _registry() -> Registry:
-    names = ("common", "compatibility", "errors", "envelopes", "application-v1")
+    names = tuple(
+        sorted(path.name.removesuffix(".schema.json") for path in SCHEMA_DIR.glob("*.schema.json"))
+    )
     documents = [
         json.loads((SCHEMA_DIR / f"{name}.schema.json").read_text(encoding="utf-8")) for name in names
     ]
@@ -59,16 +84,18 @@ MANIFEST = _load_manifest()
 REGISTRY = _registry()
 
 
-def _strict_validator(envelope: str) -> Draft202012Validator:
+def _strict_validator(reference: str) -> Draft202012Validator:
     return Draft202012Validator(
-        {"$ref": _ENVELOPE_REFS[envelope]},
+        {"$ref": reference},
         registry=REGISTRY,
         format_checker=Draft202012Validator.FORMAT_CHECKER,
     )
 
 
-def test_manifest_lists_exactly_thirteen_fixtures() -> None:
-    assert len(MANIFEST) == 13
+def test_manifest_lists_exactly_eighteen_fixtures() -> None:
+    """Thirteen envelope fixtures, plus the five canonical Runtime records RT-101 added."""
+    assert len(MANIFEST) == 18
+    assert sum(1 for entry in MANIFEST if entry.get("definition")) == 5
 
 
 def test_manifest_ids_are_unique() -> None:
@@ -79,7 +106,7 @@ def test_manifest_ids_are_unique() -> None:
 @pytest.mark.parametrize("entry", MANIFEST, ids=lambda entry: entry["id"])
 def test_fixture_matches_declared_schema_validity(entry: dict[str, Any]) -> None:
     document = _load_fixture(entry["file"])
-    errors = list(_strict_validator(entry["envelope"]).iter_errors(document))
+    errors = list(_strict_validator(_target_ref(entry)).iter_errors(document))
     assert (not errors) == entry["schema_valid"]
 
 
@@ -87,10 +114,7 @@ def test_fixture_matches_declared_schema_validity(entry: dict[str, Any]) -> None
 def test_fixture_matches_declared_tolerant_decode(entry: dict[str, Any]) -> None:
     document = _load_fixture(entry["file"])
     try:
-        if entry["envelope"] == "RequestEnvelope":
-            codec.decode_request(document)
-        else:
-            codec.decode_response(document)
+        _decode(entry, document)
         decoded = True
     except codec.ContractDecodeError:
         decoded = False
@@ -104,7 +128,10 @@ def test_fixture_matches_declared_tolerant_decode(entry: dict[str, Any]) -> None
 )
 def test_schema_valid_fixture_round_trips_through_codec(entry: dict[str, Any]) -> None:
     document = _load_fixture(entry["file"])
-    if entry["envelope"] == "RequestEnvelope":
+    if entry.get("definition"):
+        record = _decode(entry, document)
+        assert record.to_wire() == document
+    elif entry["envelope"] == "RequestEnvelope":
         request = codec.decode_request(document)
         assert codec.encode_request(request) == document
     else:
@@ -115,7 +142,7 @@ def test_schema_valid_fixture_round_trips_through_codec(entry: dict[str, Any]) -
 def test_additive_unknown_optional_field_decodes_tolerantly_despite_failing_strict_schema() -> None:
     document = _load_fixture("additive-unknown-optional-field.json")
     assert list(
-        _strict_validator("ResponseEnvelope").iter_errors(document)
+        _strict_validator(_ENVELOPE_REFS["ResponseEnvelope"]).iter_errors(document)
     ), "fixture must be strict-schema invalid"
     envelope = codec.decode_response(document)
     result = codec.response_result(envelope)
@@ -127,7 +154,7 @@ def test_additive_unknown_optional_field_decodes_tolerantly_despite_failing_stri
 def test_both_result_and_error_is_rejected_by_schema_and_codec() -> None:
     document = _load_fixture("both-result-and-error.json")
     assert list(
-        _strict_validator("ResponseEnvelope").iter_errors(document)
+        _strict_validator(_ENVELOPE_REFS["ResponseEnvelope"]).iter_errors(document)
     ), "fixture must be strict-schema invalid"
     with pytest.raises(codec.ContractDecodeError):
         codec.decode_response(document)
@@ -136,7 +163,7 @@ def test_both_result_and_error_is_rejected_by_schema_and_codec() -> None:
 def test_neither_result_nor_error_is_rejected_by_schema_and_codec() -> None:
     document = _load_fixture("neither-result-nor-error.json")
     assert list(
-        _strict_validator("ResponseEnvelope").iter_errors(document)
+        _strict_validator(_ENVELOPE_REFS["ResponseEnvelope"]).iter_errors(document)
     ), "fixture must be strict-schema invalid"
     with pytest.raises(codec.ContractDecodeError):
         codec.decode_response(document)
@@ -145,7 +172,7 @@ def test_neither_result_nor_error_is_rejected_by_schema_and_codec() -> None:
 def test_calendar_invalid_timestamp_fails_strict_schema_but_decodes_tolerantly() -> None:
     document = _load_fixture("calendar-invalid-timestamp.json")
     assert list(
-        _strict_validator("ResponseEnvelope").iter_errors(document)
+        _strict_validator(_ENVELOPE_REFS["ResponseEnvelope"]).iter_errors(document)
     ), "fixture must be strict-schema invalid"
     envelope = codec.decode_response(document)
     assert envelope.metadata.canonical_resolution_time == "2026-02-30T00:00:00Z"

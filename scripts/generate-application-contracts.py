@@ -93,6 +93,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "graph",
     "context-pack",
     "compatibility-matrix",
+    "runtime",
 )
 #: The reference-only registry. It contributes annotations, never definitions.
 REGISTRY_SCHEMA = "application-v1"
