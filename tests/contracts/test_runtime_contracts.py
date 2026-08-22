@@ -1214,12 +1214,47 @@ def test_a_step_and_the_wait_holding_it_name_each_other() -> None:
         runtime.validate_run(Run.from_wire(crossed), workspace_id=WORKSPACE)
 
 
-def test_a_wait_may_not_suspend_a_step_that_is_not_suspended_on_it() -> None:
+def test_a_pending_wait_may_not_suspend_a_step_that_is_not_suspended_on_it() -> None:
     """The other half of the pair: the step exists, and it is holding no wait at all."""
     document = _run_suspended_on_a_wait()
     document = _replace(document, "steps.0.wait_id", _DELETE)
     document = _replace(document, "steps.0.status", "succeeded")
     with pytest.raises(ContractSemanticError, match="not by this wait"):
+        runtime.validate_run(Run.from_wire(document), workspace_id=WORKSPACE)
+
+
+def _run_with_one_resolved_wait() -> dict[str, Any]:
+    """The conformance run, having entered one approval wait and resumed from it.
+
+    The step is `succeeded` and names no wait; the wait is `resolved` and still names the
+    step it once held. This is the ordinary shape of any run that ever waited and carried on,
+    so a repository snapshot of such a run has to assemble into a valid `Run`.
+    """
+    document = _run_suspended_on_a_wait()
+    document = _replace(document, "steps.0.status", "succeeded")
+    document = _replace(document, "steps.0.wait_id", _DELETE)
+    document = _replace(document, "waits.0.status", "resolved")
+    document = _replace(document, "waits.0.resolved_at", "2026-08-22T09:04:00Z")
+    document = _replace(document, "waits.0.resolution_reason", "approved")
+    return document
+
+
+def test_a_resolved_wait_whose_step_resumed_is_an_ordinary_history() -> None:
+    """A run keeps every wait it entered, and the released step is no longer suspended.
+
+    The rule this proves is the one that makes durable wait history representable at all:
+    requiring the step to keep naming a wait that already resolved would mean a run could
+    never record having waited and carried on.
+    """
+    runtime.validate_run(Run.from_wire(_run_with_one_resolved_wait()), workspace_id=WORKSPACE)
+
+
+def test_a_resolved_wait_may_not_still_hold_a_waiting_step() -> None:
+    """The opposite reading, refused from the step's end: only a pending wait suspends."""
+    document = _run_with_one_resolved_wait()
+    document = _replace(document, "steps.0.status", "waiting")
+    document = _replace(document, "steps.0.wait_id", "wait-0001")
+    with pytest.raises(ContractSemanticError, match="no longer holds this step"):
         runtime.validate_run(Run.from_wire(document), workspace_id=WORKSPACE)
 
 
@@ -1240,15 +1275,19 @@ def _approval_document(approval_id: str, wait_id: str) -> dict[str, Any]:
 
 
 def _run_with_two_resolved_waits(first_names: str, second_names: str) -> dict[str, Any]:
-    """A run whose two steps each rest on their own resolved approval wait.
+    """A run whose two steps each entered, and have since resumed from, an approval wait.
 
     Two of everything is the smallest shape in which a wait can name an approval that exists,
     belongs to this run, and was nonetheless requested on the *other* wait -- which is exactly
     what membership alone cannot tell apart.
+
+    Both steps have resumed, because both waits are resolved: a wait that stopped being
+    pending released the step it held, so the step names no wait while the wait keeps naming
+    the step it once suspended. That is what a durable history of resolved waits looks like.
     """
     document = _with_a_second_step(_run_suspended_on_a_wait())
-    document = _replace(document, "steps.1.status", "waiting")
-    document = _replace(document, "steps.1.wait_id", "wait-0002")
+    document = _replace(document, "steps.0.status", "succeeded")
+    document = _replace(document, "steps.0.wait_id", _DELETE)
     first = {
         **document["waits"][0],
         "status": "resolved",

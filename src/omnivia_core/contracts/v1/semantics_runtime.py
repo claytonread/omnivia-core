@@ -1020,8 +1020,8 @@ def validate_run_step(
 
     A `waiting` step names the wait holding it, and no other step does: a suspended step that
     cannot say what it is suspended on cannot be resolved, and a step that is not suspended
-    has nothing to name. Whether the named wait exists is a whole-run question, answered by
-    :func:`validate_run`.
+    has nothing to name. Whether the named wait exists, and whether it is still pending, are
+    whole-run questions, answered by :func:`validate_run`.
     """
     _require_type(step, RunStep, label)
     assert isinstance(step, RunStep)
@@ -1535,12 +1535,19 @@ def validate_run(run: object, *, workspace_id: object, label: str = "run") -> No
 
     - steps are ordered `1..N` contiguously, and every named wait, step and artifact actually
       exists in this run -- including the optional `run_step_id` an event, an artifact or an
-      evidence item may carry -- and the references that come in pairs must agree, so a step
-      and the wait holding it name each other, a wait and the approval it names are the same
-      pairing read from both ends, an approval is requested on a wait that is actually an
-      `approval` wait rather than a timer or a signal, and an effect's attempt is one of the
-      attempts of the very step the effect names, rather than each merely existing somewhere
-      in the run;
+      evidence item may carry -- and the references that come in pairs must agree, so a
+      *pending* wait and the step it suspends name each other, a wait and the approval it
+      names are the same pairing read from both ends, an approval is requested on a wait that
+      is actually an `approval` wait rather than a timer or a signal, and an effect's attempt
+      is one of the attempts of the very step the effect names, rather than each merely
+      existing somewhere in the run;
+    - the step/wait pairing describes the run's *current* suspension and nothing else. A run
+      keeps every wait it ever entered, and a resolved, expired or cancelled wait released
+      its step when it stopped being pending: the step it named has since resumed and names
+      no wait, while the wait keeps naming the step it once held. Requiring the released step
+      to still name it would make a durable history of resolved waits unrepresentable, and
+      the opposite reading -- a waiting step resting on a wait that already resolved -- is
+      refused from the step's end;
     - no effect receipt or settlement exists without its intent;
     - a run holding an `unknown` settlement has not closed -- uncertainty is not failure, so
       a terminal status over an unreconciled effect is a contradiction;
@@ -1615,6 +1622,12 @@ def validate_run(run: object, *, workspace_id: object, label: str = "run") -> No
                     f"{held_by.run_step_id!r}, not this one; a step and the wait holding it "
                     "name each other or neither is suspended on the other"
                 )
+            if held_by.status != WAIT_STATUS_PENDING:
+                raise ContractSemanticError(
+                    f"{step_label}: wait {step.wait_id!r} is {held_by.status!r} and no longer "
+                    "holds this step; only a pending wait suspends a step, and a step that "
+                    "resumed names none"
+                )
     steps_by_id = {step.run_step_id: step for step in steps if isinstance(step, RunStep)}
     step_ids = [step.run_step_id for step in steps if isinstance(step, RunStep)]
     _require_unique(step_ids, f"{label}.steps", "step")
@@ -1661,11 +1674,18 @@ def validate_run(run: object, *, workspace_id: object, label: str = "run") -> No
                 f"{label}.waits[{index}]: run_step_id {wait.run_step_id!r} names no step of "
                 "this run"
             )
-        if suspended.wait_id != wait.wait_id:
+        if wait.status == WAIT_STATUS_PENDING:
+            if suspended.wait_id != wait.wait_id:
+                raise ContractSemanticError(
+                    f"{label}.waits[{index}]: step {wait.run_step_id!r} is held by "
+                    f"{suspended.wait_id!r}, not by this wait; a pending wait and the step it "
+                    "suspends name each other or neither is suspended on the other"
+                )
+        elif suspended.wait_id == wait.wait_id:
             raise ContractSemanticError(
-                f"{label}.waits[{index}]: step {wait.run_step_id!r} is held by "
-                f"{suspended.wait_id!r}, not by this wait; a wait and the step it suspends "
-                "name each other or neither is suspended on the other"
+                f"{label}.waits[{index}]: step {wait.run_step_id!r} still names this "
+                f"{wait.status!r} wait; a wait that stopped being pending no longer holds "
+                "its step, and the step it released has resumed"
             )
         if wait.approval_id is not None:
             recorded = approvals_by_id.get(wait.approval_id)
