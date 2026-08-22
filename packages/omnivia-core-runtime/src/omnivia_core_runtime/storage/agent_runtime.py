@@ -13,15 +13,18 @@ functions run inside a transaction the mutation seam already opened; the Runtime
 records have no such seam yet, and a function that quietly required one would be a
 rule enforced nowhere.
 
-:func:`runtime_writer` is that seam, made explicit. RT-104 has to settle an
+:class:`RuntimeWriter` is that seam, made explicit. RT-104 has to settle an
 idempotency claim and append run history in one transaction -- a command that
 committed its answer and lost its events, or the reverse, is exactly the divergence
 the claim relations exist to prevent -- and it cannot get there by calling the
 standalone functions, because `BEGIN IMMEDIATE` does not nest. So the writes live on
-:class:`RuntimeWriter`, which issues them into a transaction somebody else opened, and
-the standalone functions are thin wrappers that open one first. There is one copy of
-every statement, one fence per composition, and no way to reach the writer without a
-fence: the context manager is what hands it out.
+the writer, which issues them into a transaction somebody else opened, and the
+standalone functions are thin wrappers that open one first. Two functions hand a
+writer out and there is no third: :func:`runtime_writer` for a caller with no
+transaction, which opens the fence itself, and :func:`transaction_local_writer` for
+one already inside a fence somebody else opened -- which is where the mutation seam
+puts RT-104's command. There is one copy of every statement and one fence per
+composition either way.
 
 Two boundary decisions, stated rather than papered over:
 
@@ -222,11 +225,12 @@ class RunSnapshot:
 class RuntimeWriter:
     """Every runtime write, issued into a transaction that is already open.
 
-    Not constructible usefully on its own: :func:`runtime_writer` is what hands one
-    out, and it only does so from inside a `fenced_transaction`. That is the whole
-    point of the type -- the statements live somewhere a composition can reach them
-    without any of them opening a second `BEGIN IMMEDIATE`, and the only route to that
-    somewhere runs through a fence.
+    Not constructible usefully on its own: :func:`runtime_writer` and
+    :func:`transaction_local_writer` are what hand one out, and neither issues a
+    statement outside a fenced transaction -- the first opens one, and the second is
+    for a caller that already holds one. That is the whole point of the type: the
+    statements live somewhere a composition can reach them without any of them
+    opening a second `BEGIN IMMEDIATE`.
 
     The workspace is bound at construction rather than passed per call, because a
     composition is one workspace's work: the two writes RT-104 has to commit together
@@ -465,10 +469,11 @@ class RuntimeWriter:
         byte_length: int | None = None
         if details is not None:
             document, digest, byte_length = _stored_document(details)
-        sequence = self._next_sequence(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM omnivia_runtime_events "
-            "WHERE workspace_id = ? AND run_id = ?",
-            (self.workspace_id, run_id),
+        sequence = (
+            read_run_sequence(
+                self.connection, workspace_id=self.workspace_id, run_id=run_id
+            )
+            + 1
         )
         self.connection.execute(
             "INSERT INTO omnivia_runtime_events "
@@ -616,6 +621,26 @@ class RuntimeWriter:
         return int(row[0])
 
 
+def transaction_local_writer(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> RuntimeWriter:
+    """The runtime writes, for a caller that already holds a fenced transaction.
+
+    The narrow companion to :func:`runtime_writer`, and the only other way to obtain
+    a writer. `runtime_writer` opens the fence itself, which is right for a caller
+    that has no transaction; a caller that already runs inside one -- RT-104's
+    command seam, which settles a mutation's audit, claim and outcome around this --
+    cannot use it, because `BEGIN IMMEDIATE` does not nest.
+
+    This weakens no fencing. It opens no transaction and validates no authority, so
+    everything it issues is issued into whatever transaction the caller opened and is
+    covered by that transaction's entry and pre-commit validation. Calling it outside
+    one is not a way past the guard: the persisted triggers refuse an unguarded
+    insert on every runtime table regardless of which Python object issued it.
+    """
+    return RuntimeWriter(connection, workspace_id)
+
+
 @contextmanager
 def runtime_writer(
     connection: sqlite3.Connection,
@@ -641,7 +666,7 @@ def runtime_writer(
         workspace_id=workspace_id,
         fencing_generation=fencing_generation,
     ):
-        yield RuntimeWriter(connection, workspace_id)
+        yield transaction_local_writer(connection, workspace_id=workspace_id)
 
 
 def admit_run(
@@ -997,6 +1022,31 @@ def read_run_id_by_job(
         (workspace_id, job_id),
     ).fetchone()
     return None if row is None else str(row[0])
+
+
+def read_run_sequence(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> int:
+    """The sequence this run's stream is at, or `-1` when it holds no event yet.
+
+    The aggregate version an optimistic command states its expectation against, and
+    the number :meth:`RuntimeWriter.append_run_event` allocates its successor from --
+    one statement serving both, because a check that read the stream differently from
+    the allocation could pass on a number the trigger would then reject.
+
+    `-1` is the empty stream, which is the same value the migration's own contiguity
+    trigger starts from. A run always opens its stream at sequence zero in the same
+    statement pair that records the run, so `-1` here means this workspace holds no
+    such run rather than a run whose history is missing.
+    """
+    row = connection.execute(
+        "SELECT COALESCE(MAX(sequence), -1) FROM omnivia_runtime_events "
+        "WHERE workspace_id = ? AND run_id = ?",
+        (workspace_id, run_id),
+    ).fetchone()
+    if row is None:  # pragma: no cover - an aggregate always returns one row
+        raise StorageError("a run sequence read returned no row")
+    return int(row[0])
 
 
 def read_run_events(
@@ -1461,10 +1511,12 @@ __all__ = [
     "read_run_evidence",
     "read_run_id_by_job",
     "read_run_id_by_logical_key",
+    "read_run_sequence",
     "read_run_steps",
     "read_run_waits",
     "read_workspace_run_ids",
     "record_step_status",
     "runtime_writer",
     "start_attempt",
+    "transaction_local_writer",
 ]
