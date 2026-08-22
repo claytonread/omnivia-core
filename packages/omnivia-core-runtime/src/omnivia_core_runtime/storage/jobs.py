@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -663,14 +663,32 @@ def _recover_stranded_application_jobs_locked(
     workspace_id: str,
     fencing_generation: int,
     now_us: int,
+    job_ids: Collection[str] | None = None,
 ) -> tuple[_RecoveredApplicationJob, ...]:
-    """Recover stale application claims; caller holds the fenced transaction."""
-    rows = connection.execute(
+    """Recover stale application claims; caller holds the fenced transaction.
+
+    `job_ids` is an exact allowlist. `None` keeps the original behaviour -- every
+    stale claim of this workspace -- while a collection narrows the sweep to those
+    identifiers, which is what a startup pass needs so a job whose run is durably
+    waiting is never swept up by a blanket recovery. Identifiers are bound as
+    parameters, an identifier this workspace does not hold as a stale claim simply
+    matches nothing, and an empty allowlist recovers nothing rather than everything.
+    """
+    query = (
         "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
         "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
         "WHERE m.workspace_id = ? AND j.state = 'claimed' "
-        "AND COALESCE(j.fencing_generation, 0) < ? ORDER BY j.job_id",
-        (workspace_id, fencing_generation),
+        "AND COALESCE(j.fencing_generation, 0) < ?"
+    )
+    parameters: list[object] = [workspace_id, fencing_generation]
+    if job_ids is not None:
+        allowed = tuple(dict.fromkeys(job_ids))
+        if not allowed:
+            return ()
+        query += f" AND j.job_id IN ({', '.join('?' * len(allowed))})"
+        parameters.extend(allowed)
+    rows = connection.execute(
+        f"{query} ORDER BY j.job_id", tuple(parameters)
     ).fetchall()
     recovered: list[_RecoveredApplicationJob] = []
     for raw_job_id, raw_max_attempts in rows:

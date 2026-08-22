@@ -14,7 +14,7 @@ authority here is the existing workspace lease plus its monotonic fencing genera
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Final
@@ -325,8 +325,14 @@ class RuntimeScheduler:
                 },
             )
 
-    def recover_stranded(self) -> tuple[RuntimeRecovery, ...]:
-        """Recover superseded job claims and their exact open runtime attempts."""
+    def recover_stranded(
+        self, *, job_ids: Collection[str] | None = None
+    ) -> tuple[RuntimeRecovery, ...]:
+        """Recover superseded job claims and their exact open runtime attempts.
+
+        ``job_ids`` narrows the sweep to an exact allowlist; ``None`` keeps the
+        default of every superseded claim in this workspace.
+        """
         now_us = self._now_us()
         with fenced_transaction(
             self.connection,
@@ -334,107 +340,117 @@ class RuntimeScheduler:
             workspace_id=self.workspace_id,
             fencing_generation=self.fencing_generation,
         ):
-            recovered = _recover_stranded_application_jobs_locked(
-                self.connection,
-                workspace_id=self.workspace_id,
-                fencing_generation=self.fencing_generation,
-                now_us=now_us,
+            return self.recover_stranded_locked(now_us=now_us, job_ids=job_ids)
+
+    def recover_stranded_locked(
+        self, *, now_us: int, job_ids: Collection[str] | None = None
+    ) -> tuple[RuntimeRecovery, ...]:
+        """The recovery sweep itself; the caller already holds the fenced transaction.
+
+        Split out so a startup pass (RT-109) can classify, adopt and recover in one
+        transaction -- ``BEGIN IMMEDIATE`` does not nest, so such a composition
+        cannot go through :meth:`recover_stranded`.
+        """
+        recovered = _recover_stranded_application_jobs_locked(
+            self.connection,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            now_us=now_us,
+            job_ids=job_ids,
+        )
+        writer = transaction_local_writer(
+            self.connection, workspace_id=self.workspace_id
+        )
+        results: list[RuntimeRecovery] = []
+        for job in recovered:
+            run_id = read_run_id_by_job(
+                self.connection, workspace_id=self.workspace_id, job_id=job.job_id
             )
-            writer = transaction_local_writer(
-                self.connection, workspace_id=self.workspace_id
+            if run_id is None:
+                continue
+            steps = read_run_steps(
+                self.connection, workspace_id=self.workspace_id, run_id=run_id
             )
-            results: list[RuntimeRecovery] = []
-            for job in recovered:
-                run_id = read_run_id_by_job(
-                    self.connection, workspace_id=self.workspace_id, job_id=job.job_id
+            open_attempts = [
+                (step.run_step_id, attempt)
+                for step in steps
+                for attempt in step.attempts
+                if attempt.status == ATTEMPT_STATUS_RUNNING
+            ]
+            if len(open_attempts) != 1:
+                raise RuntimeSchedulingError(
+                    f"run {run_id!r} has {len(open_attempts)} open runtime "
+                    "attempts; expected exactly one to recover"
                 )
-                if run_id is None:
-                    continue
-                steps = read_run_steps(
-                    self.connection, workspace_id=self.workspace_id, run_id=run_id
-                )
-                open_attempts = [
-                    (step.run_step_id, attempt)
-                    for step in steps
-                    for attempt in step.attempts
-                    if attempt.status == ATTEMPT_STATUS_RUNNING
-                ]
-                if len(open_attempts) != 1:
-                    raise RuntimeSchedulingError(
-                        f"run {run_id!r} has {len(open_attempts)} open runtime "
-                        "attempts; expected exactly one to recover"
-                    )
-                run_step_id, attempt = open_attempts[0]
-                writer.finish_attempt(
-                    attempt_id=attempt.attempt_id,
-                    status=ATTEMPT_STATUS_FAILED,
-                    finished_at_us=now_us,
-                    failure=ApiError(
-                        code="internal_recoverable",
-                        message="the previous worker lost its fencing authority",
-                        retry_class="retryable",
-                    ),
-                )
-                runtime_event_id = _lineage_id(
-                    "runtime_event",
-                    self.workspace_id,
-                    run_id,
-                    str(
-                        read_run_sequence(
-                            self.connection,
-                            workspace_id=self.workspace_id,
-                            run_id=run_id,
-                        )
-                        + 1
-                    ),
-                    run_step_id,
-                    job.job_id,
-                )
-                step_status = "pending" if job.requeued else "failed"
-                run_status = RUN_STATUS_RUNNING if job.requeued else RUN_STATUS_FAILED
-                event_kind = (
-                    "attempt_interrupted" if job.requeued else "attempts_exhausted"
-                )
-                writer.record_step_status(
-                    run_step_id=run_step_id,
-                    status=step_status,
-                    observed_at_us=now_us,
-                )
-                writer.append_run_event(
-                    run_id=run_id,
-                    runtime_event_id=runtime_event_id,
-                    occurred_at_us=now_us,
-                    event_kind=event_kind,
-                    run_status=run_status,
-                    run_step_id=run_step_id,
-                    message=(
-                        "runtime scheduler recovered a stranded attempt for retry"
-                        if job.requeued
-                        else "runtime scheduler exhausted attempts for a stranded job"
-                    ),
-                    details={
-                        "workspace_id": self.workspace_id,
-                        "run_id": run_id,
-                        "job_id": job.job_id,
-                        "run_step_id": run_step_id,
-                        "runtime_attempt_id": attempt.attempt_id,
-                        "runtime_attempt_number": attempt.attempt_number,
-                        "application_attempt_number": job.application_attempt_number,
-                        "service_instance_id": self.identity.service_instance_id,
-                        "fencing_generation": self.fencing_generation,
-                        "requeued": job.requeued,
-                    },
-                )
-                results.append(
-                    RuntimeRecovery(
-                        job_id=job.job_id,
+            run_step_id, attempt = open_attempts[0]
+            writer.finish_attempt(
+                attempt_id=attempt.attempt_id,
+                status=ATTEMPT_STATUS_FAILED,
+                finished_at_us=now_us,
+                failure=ApiError(
+                    code="internal_recoverable",
+                    message="the previous worker lost its fencing authority",
+                    retry_class="retryable",
+                ),
+            )
+            runtime_event_id = _lineage_id(
+                "runtime_event",
+                self.workspace_id,
+                run_id,
+                str(
+                    read_run_sequence(
+                        self.connection,
+                        workspace_id=self.workspace_id,
                         run_id=run_id,
-                        run_step_id=run_step_id,
-                        runtime_attempt_id=attempt.attempt_id,
-                        application_attempt_number=job.application_attempt_number,
-                        requeued=job.requeued,
                     )
+                    + 1
+                ),
+                run_step_id,
+                job.job_id,
+            )
+            step_status = "pending" if job.requeued else "failed"
+            run_status = RUN_STATUS_RUNNING if job.requeued else RUN_STATUS_FAILED
+            event_kind = "attempt_interrupted" if job.requeued else "attempts_exhausted"
+            writer.record_step_status(
+                run_step_id=run_step_id,
+                status=step_status,
+                observed_at_us=now_us,
+            )
+            writer.append_run_event(
+                run_id=run_id,
+                runtime_event_id=runtime_event_id,
+                occurred_at_us=now_us,
+                event_kind=event_kind,
+                run_status=run_status,
+                run_step_id=run_step_id,
+                message=(
+                    "runtime scheduler recovered a stranded attempt for retry"
+                    if job.requeued
+                    else "runtime scheduler exhausted attempts for a stranded job"
+                ),
+                details={
+                    "workspace_id": self.workspace_id,
+                    "run_id": run_id,
+                    "job_id": job.job_id,
+                    "run_step_id": run_step_id,
+                    "runtime_attempt_id": attempt.attempt_id,
+                    "runtime_attempt_number": attempt.attempt_number,
+                    "application_attempt_number": job.application_attempt_number,
+                    "service_instance_id": self.identity.service_instance_id,
+                    "fencing_generation": self.fencing_generation,
+                    "requeued": job.requeued,
+                },
+            )
+            results.append(
+                RuntimeRecovery(
+                    job_id=job.job_id,
+                    run_id=run_id,
+                    run_step_id=run_step_id,
+                    runtime_attempt_id=attempt.attempt_id,
+                    application_attempt_number=job.application_attempt_number,
+                    requeued=job.requeued,
                 )
+            )
         return tuple(results)
 
     def _select_claimable(self) -> tuple[str, str, str] | None:
