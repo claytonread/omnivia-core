@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Final
@@ -38,6 +39,13 @@ _RECOVERY_ERROR: Final[dict[str, object]] = {
     "message": "the previous worker lost its fencing authority",
     "retry_class": "retryable",
 }
+
+
+@dataclass(frozen=True)
+class _RecoveredApplicationJob:
+    job_id: str
+    application_attempt_number: int
+    requeued: bool
 
 
 def _timestamp(value: int) -> str:
@@ -649,91 +657,87 @@ def application_job_event_count(
     return int(row[0])
 
 
-def recover_stranded_application_jobs(
+def _recover_stranded_application_jobs_locked(
     connection: sqlite3.Connection,
-    identity: ServiceInstanceIdentity,
     *,
     workspace_id: str,
     fencing_generation: int,
     now_us: int,
-    clock: Clock,
-) -> list[dict[str, object]]:
-    del clock
-    recovered_ids: list[str] = []
-    with fenced_transaction(
-        connection,
-        identity,
-        workspace_id=workspace_id,
-        fencing_generation=fencing_generation,
-    ):
-        rows = connection.execute(
-            "SELECT j.job_id FROM omnivia_durable_jobs j "
-            "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
-            "WHERE m.workspace_id = ? AND j.state = 'claimed' "
-            "AND COALESCE(j.fencing_generation, 0) < ? ORDER BY j.job_id",
-            (workspace_id, fencing_generation),
-        ).fetchall()
-        for (raw_job_id,) in rows:
-            job_id = str(raw_job_id)
-            connection.execute(
-                "UPDATE omnivia_durable_jobs SET state = 'failed', updated_at = ?, "
-                "claimed_by_service_instance = NULL, fencing_generation = ? "
-                "WHERE job_id = ?",
-                (_timestamp(now_us), fencing_generation, job_id),
-            )
-            error_json = _document(_RECOVERY_ERROR)
-            connection.execute(
-                "UPDATE omnivia_job_attempts SET state = 'failed', finished_at_us = ?, "
-                "error_json = ? WHERE workspace_id = ? AND job_id = ? "
-                "AND attempt_number = (SELECT MAX(a.attempt_number) "
-                "FROM omnivia_job_attempts a WHERE a.workspace_id = ? AND a.job_id = ?) "
-                "AND state = 'running'",
-                (now_us, error_json, workspace_id, job_id, workspace_id, job_id),
-            )
-            failed_sequence = _next_number(
-                connection,
-                "omnivia_job_events",
-                "sequence",
-                workspace_id=workspace_id,
-                job_id=job_id,
-                base=-1,
-            )
-            connection.execute(
-                "INSERT INTO omnivia_job_events "
-                "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
-                "VALUES (?, ?, ?, ?, 'failed', 'interrupted attempt failed')",
-                (workspace_id, job_id, failed_sequence, now_us),
-            )
-            attempt_row = connection.execute(
-                "SELECT MAX(attempt_number) FROM omnivia_job_attempts "
-                "WHERE workspace_id = ? AND job_id = ?",
-                (workspace_id, job_id),
-            ).fetchone()
-            assert attempt_row is not None and attempt_row[0] is not None
-            observation = _next_number(
-                connection,
-                "omnivia_job_terminal_observations",
-                "terminal_observation_number",
-                workspace_id=workspace_id,
-                job_id=job_id,
-                base=0,
-            )
-            connection.execute(
-                "INSERT INTO omnivia_job_terminal_observations "
-                "(workspace_id, job_id, terminal_observation_number, attempt_number, "
-                "terminal_state, finished_at_us, error_json, provenance_kind, "
-                "fencing_generation) VALUES "
-                "(?, ?, ?, ?, 'failed', ?, ?, 'service_committed', ?)",
-                (
-                    workspace_id,
-                    job_id,
-                    observation,
-                    int(attempt_row[0]),
-                    now_us,
-                    error_json,
-                    fencing_generation,
-                ),
-            )
+) -> tuple[_RecoveredApplicationJob, ...]:
+    """Recover stale application claims; caller holds the fenced transaction."""
+    rows = connection.execute(
+        "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
+        "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+        "WHERE m.workspace_id = ? AND j.state = 'claimed' "
+        "AND COALESCE(j.fencing_generation, 0) < ? ORDER BY j.job_id",
+        (workspace_id, fencing_generation),
+    ).fetchall()
+    recovered: list[_RecoveredApplicationJob] = []
+    for raw_job_id, raw_max_attempts in rows:
+        job_id = str(raw_job_id)
+        max_attempts = int(raw_max_attempts)
+        connection.execute(
+            "UPDATE omnivia_durable_jobs SET state = 'failed', updated_at = ?, "
+            "claimed_by_service_instance = NULL, fencing_generation = ? "
+            "WHERE job_id = ?",
+            (_timestamp(now_us), fencing_generation, job_id),
+        )
+        error_json = _document(_RECOVERY_ERROR)
+        connection.execute(
+            "UPDATE omnivia_job_attempts SET state = 'failed', finished_at_us = ?, "
+            "error_json = ? WHERE workspace_id = ? AND job_id = ? "
+            "AND attempt_number = (SELECT MAX(a.attempt_number) "
+            "FROM omnivia_job_attempts a WHERE a.workspace_id = ? AND a.job_id = ?) "
+            "AND state = 'running'",
+            (now_us, error_json, workspace_id, job_id, workspace_id, job_id),
+        )
+        failed_sequence = _next_number(
+            connection,
+            "omnivia_job_events",
+            "sequence",
+            workspace_id=workspace_id,
+            job_id=job_id,
+            base=-1,
+        )
+        connection.execute(
+            "INSERT INTO omnivia_job_events "
+            "(workspace_id, job_id, sequence, occurred_at_us, state, message) "
+            "VALUES (?, ?, ?, ?, 'failed', 'interrupted attempt failed')",
+            (workspace_id, job_id, failed_sequence, now_us),
+        )
+        attempt_row = connection.execute(
+            "SELECT MAX(attempt_number) FROM omnivia_job_attempts "
+            "WHERE workspace_id = ? AND job_id = ?",
+            (workspace_id, job_id),
+        ).fetchone()
+        assert attempt_row is not None and attempt_row[0] is not None
+        attempt_number = int(attempt_row[0])
+        observation = _next_number(
+            connection,
+            "omnivia_job_terminal_observations",
+            "terminal_observation_number",
+            workspace_id=workspace_id,
+            job_id=job_id,
+            base=0,
+        )
+        connection.execute(
+            "INSERT INTO omnivia_job_terminal_observations "
+            "(workspace_id, job_id, terminal_observation_number, attempt_number, "
+            "terminal_state, finished_at_us, error_json, provenance_kind, "
+            "fencing_generation) VALUES "
+            "(?, ?, ?, ?, 'failed', ?, ?, 'service_committed', ?)",
+            (
+                workspace_id,
+                job_id,
+                observation,
+                attempt_number,
+                now_us,
+                error_json,
+                fencing_generation,
+            ),
+        )
+        requeued = attempt_number < max_attempts
+        if requeued:
             connection.execute(
                 "UPDATE omnivia_durable_jobs SET state = 'queued' WHERE job_id = ?",
                 (job_id,),
@@ -772,13 +776,44 @@ def recover_stranded_application_jobs(
                 "VALUES (?, ?, ?, ?, 'queued', 'interrupted job recovered')",
                 (workspace_id, job_id, sequence, now_us),
             )
-            recovered_ids.append(job_id)
+        recovered.append(
+            _RecoveredApplicationJob(
+                job_id=job_id,
+                application_attempt_number=attempt_number,
+                requeued=requeued,
+            )
+        )
+    return tuple(recovered)
+
+
+def recover_stranded_application_jobs(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    now_us: int,
+    clock: Clock,
+) -> list[dict[str, object]]:
+    del clock
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ):
+        recovered = _recover_stranded_application_jobs_locked(
+            connection,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+            now_us=now_us,
+        )
     return [
         snapshot
-        for job_id in recovered_ids
+        for job in recovered
         if (
             snapshot := read_application_job_snapshot(
-                connection, workspace_id=workspace_id, job_id=job_id
+                connection, workspace_id=workspace_id, job_id=job.job_id
             )
         )
         is not None
