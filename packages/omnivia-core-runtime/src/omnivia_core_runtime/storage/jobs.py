@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -39,6 +39,13 @@ _RECOVERY_ERROR: Final[dict[str, object]] = {
     "message": "the previous worker lost its fencing authority",
     "retry_class": "retryable",
 }
+
+_STRANDED_APPLICATION_JOBS: Final = (
+    "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
+    "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+    "WHERE m.workspace_id = ? AND j.state = 'claimed' "
+    "AND COALESCE(j.fencing_generation, 0) < ?"
+)
 
 
 @dataclass(frozen=True)
@@ -657,20 +664,68 @@ def application_job_event_count(
     return int(row[0])
 
 
+def _adopt_stale_job_claim_locked(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    job_id: str,
+    service_instance_id: str,
+    fencing_generation: int,
+    now_us: int,
+) -> bool:
+    """Rebind one stale durable-job claim to the current owner; caller holds the fence.
+
+    Only the claim moves. The job stays `claimed`, its running application attempt
+    stays open, and no attempt, event, control or terminal observation is written: a
+    job whose run is suspended on an unresolved durable wait was never interrupted, so
+    there is no interruption to record and nothing to requeue. Reports whether the row
+    it names was in fact a stale claim of this workspace, so a caller that classified
+    it as one and finds it is not can fail closed instead of writing on.
+    """
+    updated = connection.execute(
+        "UPDATE omnivia_durable_jobs SET updated_at = ?, "
+        "claimed_by_service_instance = ?, fencing_generation = ? "
+        "WHERE job_id = ? AND state = 'claimed' "
+        "AND COALESCE(fencing_generation, 0) < ? AND EXISTS ("
+        "SELECT 1 FROM omnivia_job_application_metadata m "
+        "WHERE m.workspace_id = ? AND m.job_id = ?)",
+        (
+            _timestamp(now_us),
+            service_instance_id,
+            fencing_generation,
+            job_id,
+            fencing_generation,
+            workspace_id,
+            job_id,
+        ),
+    )
+    return updated.rowcount == 1
+
+
 def _recover_stranded_application_jobs_locked(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     fencing_generation: int,
     now_us: int,
+    job_ids: Collection[str] | None = None,
 ) -> tuple[_RecoveredApplicationJob, ...]:
-    """Recover stale application claims; caller holds the fenced transaction."""
+    """Recover stale application claims; caller holds the fenced transaction.
+
+    `job_ids` narrows the recovery to an exact allowlist. `None` keeps the whole-queue
+    behaviour every existing caller relies on; a collection recovers only the stale
+    claims it names, and an empty one recovers nothing rather than widening to all.
+    """
+    parameters: tuple[object, ...] = (workspace_id, fencing_generation)
+    predicate = ""
+    if job_ids is not None:
+        allowed = tuple(dict.fromkeys(job_ids))
+        if not allowed:
+            return ()
+        predicate = f" AND j.job_id IN ({', '.join('?' for _ in allowed)})"
+        parameters = (*parameters, *allowed)
     rows = connection.execute(
-        "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
-        "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
-        "WHERE m.workspace_id = ? AND j.state = 'claimed' "
-        "AND COALESCE(j.fencing_generation, 0) < ? ORDER BY j.job_id",
-        (workspace_id, fencing_generation),
+        f"{_STRANDED_APPLICATION_JOBS}{predicate} ORDER BY j.job_id", parameters
     ).fetchall()
     recovered: list[_RecoveredApplicationJob] = []
     for raw_job_id, raw_max_attempts in rows:
