@@ -16,6 +16,7 @@
 #   contracts/application/v1/schemas/graph.schema.json
 #   contracts/application/v1/schemas/context-pack.schema.json
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
+#   contracts/application/v1/schemas/runtime.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
 #
@@ -148,7 +149,13 @@ __all__ = [
     "WORKSPACE_ID_PATTERN",
     "WORKSPACE_STATUS_PATTERN",
     "ApiError",
+    "Approval",
+    "ApprovalDecision",
+    "Artifact",
+    "Attempt",
+    "AttemptStatus",
     "AuditReference",
+    "BudgetSnapshot",
     "CandidateApproveInput",
     "CandidateApproveResult",
     "CandidateAssertion",
@@ -156,10 +163,13 @@ __all__ = [
     "CandidateRejectInput",
     "CandidateRejectResult",
     "CapabilityCompatibilityEntry",
+    "CapabilityGrant",
     "CapabilityId",
     "CapabilityRef",
     "CapabilityRequirement",
     "CapabilitySet",
+    "CleanupOutcome",
+    "CleanupReceipt",
     "ClientIdentity",
     "CompatibilityMatrix",
     "CompatibilityMetadata",
@@ -201,16 +211,22 @@ __all__ = [
     "CorrelationId",
     "Deprecation",
     "DurationMs",
+    "EffectIntent",
+    "EffectOutcome",
+    "EffectReceipt",
+    "EffectSettlement",
     "ErrorCode",
     "ErrorResponseEnvelope",
     "EvidenceArtifact",
     "EvidenceChecksum",
     "EvidenceDisposition",
     "EvidenceId",
+    "EvidenceItem",
     "EvidenceQuery",
     "EvidenceReference",
     "EvidenceSearchInput",
     "EvidenceSearchResult",
+    "ExternalReference",
     "GovernanceLayer",
     "GovernanceRationale",
     "GovernanceState",
@@ -295,6 +311,7 @@ __all__ = [
     "PageLimit",
     "PageMetadata",
     "PartialResult",
+    "PolicySnapshot",
     "PrincipalClaim",
     "ProbeKind",
     "ProbeStatus",
@@ -318,9 +335,18 @@ __all__ = [
     "RequestEnvelope",
     "RequestId",
     "RequestMetadata",
+    "ResolveWait",
     "ResponseEnvelope",
     "ResponseMetadata",
     "RetryClass",
+    "Run",
+    "RunDefinitionKind",
+    "RunDefinitionRef",
+    "RunStatus",
+    "RunStep",
+    "RunStepStatus",
+    "RuntimeEvent",
+    "RuntimeSourceKind",
     "SchemaReference",
     "Scope",
     "ServiceComponentStatus",
@@ -339,6 +365,10 @@ __all__ = [
     "UpgradeState",
     "VersionCapabilityEnvelope",
     "VersionWindow",
+    "Wait",
+    "WaitKind",
+    "WaitResolution",
+    "WaitStatus",
     "Warning",
     "WorkspaceCompatibility",
     "WorkspaceCreateInput",
@@ -2302,6 +2332,98 @@ EvidenceDisposition: TypeAlias = str
 """Open, dot-namespaced code stating whether concrete evidence is actually available for a record,
 such as `available` or `unavailable` or `redacted`. Open by design; an unrecognized value must be
 preserved, not coerced to a known one.
+"""
+
+RuntimeSourceKind: TypeAlias = str
+"""Which representation an `ExternalReference` names, so a correlated identifier is never read as an
+identifier of a different domain. `runtime` is the canonical Runtime itself and the only
+authoritative kind; `application_job` is the durable job substrate a Run is admitted and claimed
+through; `control_plane_projection` is the read-only control-plane correlation record;
+`agent_lane_ledger` is the agent-lane PM run ledger, whose `run_id` is a different identifier in
+a different domain and must never be joined to a canonical `Run.run_id`; `external_log` is any
+log or trace captured outside this contract. Closed at the schema and tolerant on the wire: an
+unrecognized kind decodes and is preserved, but it is never authoritative.
+"""
+
+RunStatus: TypeAlias = str
+"""Where a canonical `Run` stands. A Core-owned vocabulary, deliberately neither the scheduler's
+`JobState` (which cannot express waiting) nor the control plane's run status (which is not
+durable): `admitted` is accepted with a policy and budget snapshot pinned but not yet executing,
+`running` is executing, `waiting` is durably suspended on a `Wait`, `succeeded` completed with
+every step succeeded, `partially_completed` reached the end with some step not succeeded,
+`failed` ended on a failure, `cancelled` was stopped by request, and `uncertain` means the
+outcome of at least one effect is not known and has not been reconciled. Closed at the schema and
+open on the wire: an unrecognized status decodes and is preserved verbatim, but no semantic
+decision may be taken from it -- it is never terminal, never successful, never a licence to start
+a new effect.
+"""
+
+RunStepStatus: TypeAlias = str
+"""Where one `RunStep` stands. `pending` has not started, `running` is executing an attempt,
+`waiting` is suspended on a `Wait`, `succeeded`, `failed` and `cancelled` are terminal outcomes,
+and `skipped` is a step the run deliberately did not execute. Closed at the schema and open on
+the wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+AttemptStatus: TypeAlias = str
+"""Where one `Attempt` stands. An attempt exists because execution started, so there is no queued
+attempt state: waiting to run is a state of the step, not of an execution of it. `uncertain` is
+an attempt whose effect may or may not have landed; it is not a failure, and reporting it as one
+would licence a retry that duplicates a committed effect. Closed at the schema and open on the
+wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+WaitKind: TypeAlias = str
+"""What a durable `Wait` is waiting for: an `approval` decision by a human or role, an
+`external_signal` delivered from outside the run, or a `timer` reaching its deadline. The kind
+fixes which resolution may resolve it, so a signal can never be accepted as an approval. Closed
+at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+WaitStatus: TypeAlias = str
+"""Where one `Wait` stands: `pending` is unresolved and still holding the run, `resolved` was
+resolved by exactly one `ResolveWait`, `expired` passed its deadline without one, and `cancelled`
+was released because the run was cancelled. Closed at the schema and open on the wire, with the
+same fail-safe reading as `RunStatus`.
+"""
+
+WaitResolution: TypeAlias = str
+"""How one `ResolveWait` proposes to resolve a `Wait`, paired to the wait's own kind:
+`approval_decision` resolves an `approval` wait and names the recorded `Approval`,
+`external_signal` resolves an `external_signal` wait, `timer_expiry` resolves a `timer` wait, and
+`cancelled` releases any wait because the run was cancelled. Deliberately not a job control: none
+of these requeues a job, and none of them is `job.retry`. Closed at the schema and open on the
+wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+ApprovalDecision: TypeAlias = str
+"""The decision recorded against an approval request. There are exactly two, because an approval
+either was or was not given; a request that timed out has no decision at all and is reported by
+its `Wait` reaching `expired`. Closed at the schema and open on the wire, with the same fail-safe
+reading as `RunStatus`.
+"""
+
+EffectOutcome: TypeAlias = str
+"""What an `EffectSettlement` says happened to the effect its intent declared: `committed` is proven
+by a receipt, `not_committed` is proven not to have happened, and `unknown` is the honest third
+answer -- the runtime could not establish either. `unknown` is uncertainty, not failure: it must
+not be reported as a failed effect, and it must not licence a blind retry of a logically
+identical effect. Closed at the schema and open on the wire, with the same fail-safe reading as
+`RunStatus`.
+"""
+
+CleanupOutcome: TypeAlias = str
+"""What one recorded cleanup achieved: `released` freed the resource, `not_required` found nothing
+to free, and `failed` could not free it. Cleanup is observable rather than implied, so a failed
+cleanup is recorded as a receipt rather than left unsaid. Closed at the schema and open on the
+wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+RunDefinitionKind: TypeAlias = str
+"""Which kind of executable definition a run executes. The two public product terms are
+`agent_component` and `workflow`; there is no provider, adapter, worker-host or Harness kind
+here, because none of those is a definition a run executes. Closed at the schema and open on the
+wire, with the same fail-safe reading as `RunStatus`.
 """
 
 ProbeKind: TypeAlias = str
@@ -4839,6 +4961,1272 @@ class RecordVersionReference:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalReference:
+    """A workspace-scoped, source-qualified pointer at a fact recorded somewhere other than this
+    record. Every correlation states which domain its identifier belongs to, because the same
+    spelling means different things in different domains: an agent-lane ledger `run_id` and a
+    canonical `Run.run_id` are different identifiers that must never be joined. Only a
+    `runtime` reference is authoritative; every other kind is correlation or evidence, never
+    a source of truth, so discovering a fact through one never makes it a fact this run may
+    act on.
+    """
+
+    source_kind: RuntimeSourceKind
+    source_id: OpaqueToken
+    workspace_id: WorkspaceId
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["source_kind"] = self.source_kind
+        wire["source_id"] = self.source_id
+        wire["workspace_id"] = self.workspace_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ExternalReference") -> ExternalReference:
+        """Decode a wire payload into a ExternalReference.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_source_kind = _decode_str(
+            _require_field(mapping, "source_kind", path),
+            f"{path}.source_kind",
+        )
+        field_source_id = _decode_str(
+            _require_field(mapping, "source_id", path),
+            f"{path}.source_id",
+        )
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        return cls(
+            source_kind=field_source_kind,
+            source_id=field_source_id,
+            workspace_id=field_workspace_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunDefinitionRef:
+    """The exact executable definition a run was admitted to execute: which kind, which
+    definition, and at which released version. Immutable for the life of the run -- a run
+    does not change what it is running -- so the definition reported on a completed run is
+    the one it was admitted with.
+    """
+
+    definition_kind: RunDefinitionKind
+    definition_id: Identifier
+    definition_version: ReleaseVersion
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["definition_kind"] = self.definition_kind
+        wire["definition_id"] = self.definition_id
+        wire["definition_version"] = self.definition_version
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "RunDefinitionRef") -> RunDefinitionRef:
+        """Decode a wire payload into a RunDefinitionRef.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_definition_kind = _decode_str(
+            _require_field(mapping, "definition_kind", path),
+            f"{path}.definition_kind",
+        )
+        field_definition_id = _decode_str(
+            _require_field(mapping, "definition_id", path),
+            f"{path}.definition_id",
+        )
+        field_definition_version = _decode_str(
+            _require_field(mapping, "definition_version", path),
+            f"{path}.definition_version",
+        )
+        return cls(
+            definition_kind=field_definition_kind,
+            definition_id=field_definition_id,
+            definition_version=field_definition_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PolicySnapshot:
+    """The immutable policy a run is pinned to at one revision. It states two capability sets
+    and keeps them apart on purpose: `granted_capabilities` is what this run may actually
+    invoke, and `discovered_capabilities` is what the workspace was found to offer. Discovery
+    is not authority -- a capability that appears only in the discovered set authorizes
+    nothing, and an effect naming one is refused. A run's policy may be re-pinned as it
+    proceeds, but only monotonically: revisions move forward and grants may narrow, never
+    widen, so authority a run once held cannot be silently re-granted mid-flight.
+    """
+
+    workspace_id: WorkspaceId
+    policy_snapshot_id: Identifier
+    run_id: Identifier
+    revision: int
+    pinned_at: Timestamp
+    granted_capabilities: tuple[CapabilityId, ...]
+    discovered_capabilities: tuple[CapabilityId, ...]
+    decision_reason: OpenCode
+    audit_reference: AuditReference
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["policy_snapshot_id"] = self.policy_snapshot_id
+        wire["run_id"] = self.run_id
+        wire["revision"] = self.revision
+        wire["pinned_at"] = self.pinned_at
+        wire["granted_capabilities"] = list(self.granted_capabilities)
+        wire["discovered_capabilities"] = list(self.discovered_capabilities)
+        wire["decision_reason"] = self.decision_reason
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "PolicySnapshot") -> PolicySnapshot:
+        """Decode a wire payload into a PolicySnapshot.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_policy_snapshot_id = _decode_str(
+            _require_field(mapping, "policy_snapshot_id", path),
+            f"{path}.policy_snapshot_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_pinned_at = _decode_str(
+            _require_field(mapping, "pinned_at", path),
+            f"{path}.pinned_at",
+        )
+        field_granted_capabilities_items = _decode_sequence(
+            _require_field(mapping, "granted_capabilities", path),
+            f"{path}.granted_capabilities",
+        )
+        field_granted_capabilities = tuple(
+            _decode_str(item, f"{path}.granted_capabilities[{index}]")
+            for index, item in enumerate(field_granted_capabilities_items)
+        )
+        field_discovered_capabilities_items = _decode_sequence(
+            _require_field(mapping, "discovered_capabilities", path),
+            f"{path}.discovered_capabilities",
+        )
+        field_discovered_capabilities = tuple(
+            _decode_str(item, f"{path}.discovered_capabilities[{index}]")
+            for index, item in enumerate(field_discovered_capabilities_items)
+        )
+        field_decision_reason = _decode_str(
+            _require_field(mapping, "decision_reason", path),
+            f"{path}.decision_reason",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            policy_snapshot_id=field_policy_snapshot_id,
+            run_id=field_run_id,
+            revision=field_revision,
+            pinned_at=field_pinned_at,
+            granted_capabilities=field_granted_capabilities,
+            discovered_capabilities=field_discovered_capabilities,
+            decision_reason=field_decision_reason,
+            audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetSnapshot:
+    """The immutable budget a run is pinned to at one revision: the ceilings admission accepted,
+    and what has been consumed against them so far. Limits are pinned at admission and may
+    narrow but never widen as a run proceeds, and consumption never decreases: a counter that
+    went backwards is a report nobody can audit. Consumption never exceeds its ceiling -- a
+    run that would exceed one stops rather than reporting a number its own limit forbids.
+    """
+
+    workspace_id: WorkspaceId
+    budget_snapshot_id: Identifier
+    run_id: Identifier
+    revision: int
+    pinned_at: Timestamp
+    max_cost_units: int
+    consumed_cost_units: int
+    max_token_units: int
+    consumed_token_units: int
+    max_wall_clock_ms: DurationMs | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["budget_snapshot_id"] = self.budget_snapshot_id
+        wire["run_id"] = self.run_id
+        wire["revision"] = self.revision
+        wire["pinned_at"] = self.pinned_at
+        wire["max_cost_units"] = self.max_cost_units
+        wire["consumed_cost_units"] = self.consumed_cost_units
+        wire["max_token_units"] = self.max_token_units
+        wire["consumed_token_units"] = self.consumed_token_units
+        if self.max_wall_clock_ms is not None:
+            wire["max_wall_clock_ms"] = self.max_wall_clock_ms
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "BudgetSnapshot") -> BudgetSnapshot:
+        """Decode a wire payload into a BudgetSnapshot.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_budget_snapshot_id = _decode_str(
+            _require_field(mapping, "budget_snapshot_id", path),
+            f"{path}.budget_snapshot_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_revision = _decode_int(_require_field(mapping, "revision", path), f"{path}.revision")
+        field_pinned_at = _decode_str(
+            _require_field(mapping, "pinned_at", path),
+            f"{path}.pinned_at",
+        )
+        field_max_cost_units = _decode_int(
+            _require_field(mapping, "max_cost_units", path),
+            f"{path}.max_cost_units",
+        )
+        field_consumed_cost_units = _decode_int(
+            _require_field(mapping, "consumed_cost_units", path),
+            f"{path}.consumed_cost_units",
+        )
+        field_max_token_units = _decode_int(
+            _require_field(mapping, "max_token_units", path),
+            f"{path}.max_token_units",
+        )
+        field_consumed_token_units = _decode_int(
+            _require_field(mapping, "consumed_token_units", path),
+            f"{path}.consumed_token_units",
+        )
+        field_max_wall_clock_ms: DurationMs | None = None
+        if "max_wall_clock_ms" in mapping:
+            raw_max_wall_clock_ms = mapping["max_wall_clock_ms"]
+            if raw_max_wall_clock_ms is None:
+                raise ContractDecodeError(
+                    f"{path}.max_wall_clock_ms: null is not a valid value"
+                )
+            field_max_wall_clock_ms = _decode_int(
+                raw_max_wall_clock_ms,
+                f"{path}.max_wall_clock_ms",
+            )
+        return cls(
+            workspace_id=field_workspace_id,
+            budget_snapshot_id=field_budget_snapshot_id,
+            run_id=field_run_id,
+            revision=field_revision,
+            pinned_at=field_pinned_at,
+            max_cost_units=field_max_cost_units,
+            consumed_cost_units=field_consumed_cost_units,
+            max_token_units=field_max_token_units,
+            consumed_token_units=field_consumed_token_units,
+            max_wall_clock_ms=field_max_wall_clock_ms,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityGrant:
+    """One capability issued to one run, for the life of that run. A grant is per-run and backed
+    by the policy revision that issued it: it names the `PolicySnapshot` whose
+    `granted_capabilities` contains it, so a grant can always be traced to the decision that
+    made it and can never outlive a narrowing of that decision. Static manifest wiring is not
+    a grant, and a capability the workspace merely offers is not a grant either.
+    """
+
+    workspace_id: WorkspaceId
+    capability_grant_id: Identifier
+    run_id: Identifier
+    capability_id: CapabilityId
+    policy_snapshot_id: Identifier
+    granted_at: Timestamp
+    scopes: tuple[Scope, ...]
+    purpose: Purpose
+    expires_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["capability_grant_id"] = self.capability_grant_id
+        wire["run_id"] = self.run_id
+        wire["capability_id"] = self.capability_id
+        wire["policy_snapshot_id"] = self.policy_snapshot_id
+        wire["granted_at"] = self.granted_at
+        if self.expires_at is not None:
+            wire["expires_at"] = self.expires_at
+        wire["scopes"] = list(self.scopes)
+        wire["purpose"] = self.purpose
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CapabilityGrant") -> CapabilityGrant:
+        """Decode a wire payload into a CapabilityGrant.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_capability_grant_id = _decode_str(
+            _require_field(mapping, "capability_grant_id", path),
+            f"{path}.capability_grant_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_capability_id = _decode_str(
+            _require_field(mapping, "capability_id", path),
+            f"{path}.capability_id",
+        )
+        field_policy_snapshot_id = _decode_str(
+            _require_field(mapping, "policy_snapshot_id", path),
+            f"{path}.policy_snapshot_id",
+        )
+        field_granted_at = _decode_str(
+            _require_field(mapping, "granted_at", path),
+            f"{path}.granted_at",
+        )
+        field_expires_at: Timestamp | None = None
+        if "expires_at" in mapping:
+            raw_expires_at = mapping["expires_at"]
+            if raw_expires_at is None:
+                raise ContractDecodeError(
+                    f"{path}.expires_at: null is not a valid value"
+                )
+            field_expires_at = _decode_str(raw_expires_at, f"{path}.expires_at")
+        field_scopes_items = _decode_sequence(
+            _require_field(mapping, "scopes", path),
+            f"{path}.scopes",
+        )
+        field_scopes = tuple(
+            _decode_str(item, f"{path}.scopes[{index}]")
+            for index, item in enumerate(field_scopes_items)
+        )
+        field_purpose = _decode_str(_require_field(mapping, "purpose", path), f"{path}.purpose")
+        return cls(
+            workspace_id=field_workspace_id,
+            capability_grant_id=field_capability_grant_id,
+            run_id=field_run_id,
+            capability_id=field_capability_id,
+            policy_snapshot_id=field_policy_snapshot_id,
+            granted_at=field_granted_at,
+            expires_at=field_expires_at,
+            scopes=field_scopes,
+            purpose=field_purpose,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Wait:
+    """One durable suspension of a run: what it is waiting for, whether it is still waiting, and
+    the digest that binds the state it will resume from. First-class rather than a scheduler
+    detail, because a suspended run is a state the contract must be able to state, and
+    because resuming from a checkpoint nobody can identify is indistinguishable from starting
+    again. Resolved by exactly one `ResolveWait`, which is a Runtime command and not
+    `job.retry`: nothing here requeues a job.
+    """
+
+    workspace_id: WorkspaceId
+    wait_id: Identifier
+    run_id: Identifier
+    run_step_id: Identifier
+    kind: WaitKind
+    status: WaitStatus
+    created_at: Timestamp
+    resume_digest: ContentChecksum
+    expires_at: Timestamp | None = None
+    resolved_at: Timestamp | None = None
+    resolution_reason: OpenCode | None = None
+    approval_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["wait_id"] = self.wait_id
+        wire["run_id"] = self.run_id
+        wire["run_step_id"] = self.run_step_id
+        wire["kind"] = self.kind
+        wire["status"] = self.status
+        wire["created_at"] = self.created_at
+        if self.expires_at is not None:
+            wire["expires_at"] = self.expires_at
+        if self.resolved_at is not None:
+            wire["resolved_at"] = self.resolved_at
+        if self.resolution_reason is not None:
+            wire["resolution_reason"] = self.resolution_reason
+        if self.approval_id is not None:
+            wire["approval_id"] = self.approval_id
+        wire["resume_digest"] = self.resume_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "Wait") -> Wait:
+        """Decode a wire payload into a Wait.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_wait_id = _decode_str(_require_field(mapping, "wait_id", path), f"{path}.wait_id")
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id = _decode_str(
+            _require_field(mapping, "run_step_id", path),
+            f"{path}.run_step_id",
+        )
+        field_kind = _decode_str(_require_field(mapping, "kind", path), f"{path}.kind")
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_expires_at: Timestamp | None = None
+        if "expires_at" in mapping:
+            raw_expires_at = mapping["expires_at"]
+            if raw_expires_at is None:
+                raise ContractDecodeError(
+                    f"{path}.expires_at: null is not a valid value"
+                )
+            field_expires_at = _decode_str(raw_expires_at, f"{path}.expires_at")
+        field_resolved_at: Timestamp | None = None
+        if "resolved_at" in mapping:
+            raw_resolved_at = mapping["resolved_at"]
+            if raw_resolved_at is None:
+                raise ContractDecodeError(
+                    f"{path}.resolved_at: null is not a valid value"
+                )
+            field_resolved_at = _decode_str(raw_resolved_at, f"{path}.resolved_at")
+        field_resolution_reason: OpenCode | None = None
+        if "resolution_reason" in mapping:
+            raw_resolution_reason = mapping["resolution_reason"]
+            if raw_resolution_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.resolution_reason: null is not a valid value"
+                )
+            field_resolution_reason = _decode_str(
+                raw_resolution_reason,
+                f"{path}.resolution_reason",
+            )
+        field_approval_id: Identifier | None = None
+        if "approval_id" in mapping:
+            raw_approval_id = mapping["approval_id"]
+            if raw_approval_id is None:
+                raise ContractDecodeError(
+                    f"{path}.approval_id: null is not a valid value"
+                )
+            field_approval_id = _decode_str(raw_approval_id, f"{path}.approval_id")
+        field_resume_digest = _decode_str(
+            _require_field(mapping, "resume_digest", path),
+            f"{path}.resume_digest",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            wait_id=field_wait_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            kind=field_kind,
+            status=field_status,
+            created_at=field_created_at,
+            expires_at=field_expires_at,
+            resolved_at=field_resolved_at,
+            resolution_reason=field_resolution_reason,
+            approval_id=field_approval_id,
+            resume_digest=field_resume_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Approval:
+    """The immutable request/decision pair for one approval `Wait`: who was asked, who answered,
+    what they answered, and when. The request half is written when the wait is created and
+    never edited; the decision half is written once and never edited either, so an approval
+    cannot be re-decided, only superseded by a new run. A request with no decision is still
+    pending; a decision is complete or absent, never partial -- a recorded decision always
+    carries its decider, its instant and its audit reference, because a decision nobody can
+    attribute is not an approval.
+    """
+
+    workspace_id: WorkspaceId
+    approval_id: Identifier
+    run_id: Identifier
+    wait_id: Identifier
+    requested_at: Timestamp
+    approver_role: Identifier
+    assigned_to: Identifier | None = None
+    escalated_to: Identifier | None = None
+    expires_at: Timestamp | None = None
+    decision: ApprovalDecision | None = None
+    decided_at: Timestamp | None = None
+    decided_by: Identifier | None = None
+    audit_reference: AuditReference | None = None
+    comment: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["approval_id"] = self.approval_id
+        wire["run_id"] = self.run_id
+        wire["wait_id"] = self.wait_id
+        wire["requested_at"] = self.requested_at
+        wire["approver_role"] = self.approver_role
+        if self.assigned_to is not None:
+            wire["assigned_to"] = self.assigned_to
+        if self.escalated_to is not None:
+            wire["escalated_to"] = self.escalated_to
+        if self.expires_at is not None:
+            wire["expires_at"] = self.expires_at
+        if self.decision is not None:
+            wire["decision"] = self.decision
+        if self.decided_at is not None:
+            wire["decided_at"] = self.decided_at
+        if self.decided_by is not None:
+            wire["decided_by"] = self.decided_by
+        if self.audit_reference is not None:
+            wire["audit_reference"] = self.audit_reference
+        if self.comment is not None:
+            wire["comment"] = self.comment
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "Approval") -> Approval:
+        """Decode a wire payload into a Approval.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_approval_id = _decode_str(
+            _require_field(mapping, "approval_id", path),
+            f"{path}.approval_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_wait_id = _decode_str(_require_field(mapping, "wait_id", path), f"{path}.wait_id")
+        field_requested_at = _decode_str(
+            _require_field(mapping, "requested_at", path),
+            f"{path}.requested_at",
+        )
+        field_approver_role = _decode_str(
+            _require_field(mapping, "approver_role", path),
+            f"{path}.approver_role",
+        )
+        field_assigned_to: Identifier | None = None
+        if "assigned_to" in mapping:
+            raw_assigned_to = mapping["assigned_to"]
+            if raw_assigned_to is None:
+                raise ContractDecodeError(
+                    f"{path}.assigned_to: null is not a valid value"
+                )
+            field_assigned_to = _decode_str(raw_assigned_to, f"{path}.assigned_to")
+        field_escalated_to: Identifier | None = None
+        if "escalated_to" in mapping:
+            raw_escalated_to = mapping["escalated_to"]
+            if raw_escalated_to is None:
+                raise ContractDecodeError(
+                    f"{path}.escalated_to: null is not a valid value"
+                )
+            field_escalated_to = _decode_str(raw_escalated_to, f"{path}.escalated_to")
+        field_expires_at: Timestamp | None = None
+        if "expires_at" in mapping:
+            raw_expires_at = mapping["expires_at"]
+            if raw_expires_at is None:
+                raise ContractDecodeError(
+                    f"{path}.expires_at: null is not a valid value"
+                )
+            field_expires_at = _decode_str(raw_expires_at, f"{path}.expires_at")
+        field_decision: ApprovalDecision | None = None
+        if "decision" in mapping:
+            raw_decision = mapping["decision"]
+            if raw_decision is None:
+                raise ContractDecodeError(
+                    f"{path}.decision: null is not a valid value"
+                )
+            field_decision = _decode_str(raw_decision, f"{path}.decision")
+        field_decided_at: Timestamp | None = None
+        if "decided_at" in mapping:
+            raw_decided_at = mapping["decided_at"]
+            if raw_decided_at is None:
+                raise ContractDecodeError(
+                    f"{path}.decided_at: null is not a valid value"
+                )
+            field_decided_at = _decode_str(raw_decided_at, f"{path}.decided_at")
+        field_decided_by: Identifier | None = None
+        if "decided_by" in mapping:
+            raw_decided_by = mapping["decided_by"]
+            if raw_decided_by is None:
+                raise ContractDecodeError(
+                    f"{path}.decided_by: null is not a valid value"
+                )
+            field_decided_by = _decode_str(raw_decided_by, f"{path}.decided_by")
+        field_audit_reference: AuditReference | None = None
+        if "audit_reference" in mapping:
+            raw_audit_reference = mapping["audit_reference"]
+            if raw_audit_reference is None:
+                raise ContractDecodeError(
+                    f"{path}.audit_reference: null is not a valid value"
+                )
+            field_audit_reference = _decode_str(raw_audit_reference, f"{path}.audit_reference")
+        field_comment: str | None = None
+        if "comment" in mapping:
+            raw_comment = mapping["comment"]
+            if raw_comment is None:
+                raise ContractDecodeError(
+                    f"{path}.comment: null is not a valid value"
+                )
+            field_comment = _decode_str(raw_comment, f"{path}.comment")
+        return cls(
+            workspace_id=field_workspace_id,
+            approval_id=field_approval_id,
+            run_id=field_run_id,
+            wait_id=field_wait_id,
+            requested_at=field_requested_at,
+            approver_role=field_approver_role,
+            assigned_to=field_assigned_to,
+            escalated_to=field_escalated_to,
+            expires_at=field_expires_at,
+            decision=field_decision,
+            decided_at=field_decided_at,
+            decided_by=field_decided_by,
+            audit_reference=field_audit_reference,
+            comment=field_comment,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EffectIntent:
+    """The record written *before* a run acts on the world: which capability it will invoke,
+    under which grant, with which logically idempotent key, over exactly which request bytes.
+    Nothing may be observed or settled that was not first intended -- a receipt or settlement
+    with no matching intent is an effect nobody authorized and nobody can reconcile. The
+    pairing of `idempotency_key` and `request_digest` is what makes idempotency *logical*
+    rather than accidental: the same key over the same digest is one effect however many
+    times it is delivered, and the same key over a different digest is a conflict rather than
+    a replay.
+    """
+
+    workspace_id: WorkspaceId
+    effect_intent_id: Identifier
+    run_id: Identifier
+    run_step_id: Identifier
+    attempt_id: Identifier
+    capability_id: CapabilityId
+    capability_grant_id: Identifier
+    effect_kind: OpenCode
+    idempotency_key: IdempotencyKey
+    request_digest: ContentChecksum
+    declared_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["effect_intent_id"] = self.effect_intent_id
+        wire["run_id"] = self.run_id
+        wire["run_step_id"] = self.run_step_id
+        wire["attempt_id"] = self.attempt_id
+        wire["capability_id"] = self.capability_id
+        wire["capability_grant_id"] = self.capability_grant_id
+        wire["effect_kind"] = self.effect_kind
+        wire["idempotency_key"] = self.idempotency_key
+        wire["request_digest"] = self.request_digest
+        wire["declared_at"] = self.declared_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EffectIntent") -> EffectIntent:
+        """Decode a wire payload into a EffectIntent.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_effect_intent_id = _decode_str(
+            _require_field(mapping, "effect_intent_id", path),
+            f"{path}.effect_intent_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id = _decode_str(
+            _require_field(mapping, "run_step_id", path),
+            f"{path}.run_step_id",
+        )
+        field_attempt_id = _decode_str(
+            _require_field(mapping, "attempt_id", path),
+            f"{path}.attempt_id",
+        )
+        field_capability_id = _decode_str(
+            _require_field(mapping, "capability_id", path),
+            f"{path}.capability_id",
+        )
+        field_capability_grant_id = _decode_str(
+            _require_field(mapping, "capability_grant_id", path),
+            f"{path}.capability_grant_id",
+        )
+        field_effect_kind = _decode_str(
+            _require_field(mapping, "effect_kind", path),
+            f"{path}.effect_kind",
+        )
+        field_idempotency_key = _decode_str(
+            _require_field(mapping, "idempotency_key", path),
+            f"{path}.idempotency_key",
+        )
+        field_request_digest = _decode_str(
+            _require_field(mapping, "request_digest", path),
+            f"{path}.request_digest",
+        )
+        field_declared_at = _decode_str(
+            _require_field(mapping, "declared_at", path),
+            f"{path}.declared_at",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            effect_intent_id=field_effect_intent_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            attempt_id=field_attempt_id,
+            capability_id=field_capability_id,
+            capability_grant_id=field_capability_grant_id,
+            effect_kind=field_effect_kind,
+            idempotency_key=field_idempotency_key,
+            request_digest=field_request_digest,
+            declared_at=field_declared_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EffectSettlement:
+    """The final, audited answer to what happened to one intended effect. Like a receipt it
+    never stands alone: it names its intent, shares that intent's run and workspace, and
+    never settles before the intent was declared. A `committed` settlement must name the
+    receipt that proves it -- a claim that an effect landed, with no observation of it
+    landing, is an assertion rather than a settlement. An `unknown` settlement is the honest
+    third answer and is not a failure: it says reconciliation is owed, and a run holding one
+    may not call itself succeeded or failed.
+    """
+
+    workspace_id: WorkspaceId
+    effect_settlement_id: Identifier
+    run_id: Identifier
+    effect_intent_id: Identifier
+    outcome: EffectOutcome
+    settled_at: Timestamp
+    reason: OpenCode
+    audit_reference: AuditReference
+    effect_receipt_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["effect_settlement_id"] = self.effect_settlement_id
+        wire["run_id"] = self.run_id
+        wire["effect_intent_id"] = self.effect_intent_id
+        wire["outcome"] = self.outcome
+        if self.effect_receipt_id is not None:
+            wire["effect_receipt_id"] = self.effect_receipt_id
+        wire["settled_at"] = self.settled_at
+        wire["reason"] = self.reason
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EffectSettlement") -> EffectSettlement:
+        """Decode a wire payload into a EffectSettlement.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_effect_settlement_id = _decode_str(
+            _require_field(mapping, "effect_settlement_id", path),
+            f"{path}.effect_settlement_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_effect_intent_id = _decode_str(
+            _require_field(mapping, "effect_intent_id", path),
+            f"{path}.effect_intent_id",
+        )
+        field_outcome = _decode_str(_require_field(mapping, "outcome", path), f"{path}.outcome")
+        field_effect_receipt_id: Identifier | None = None
+        if "effect_receipt_id" in mapping:
+            raw_effect_receipt_id = mapping["effect_receipt_id"]
+            if raw_effect_receipt_id is None:
+                raise ContractDecodeError(
+                    f"{path}.effect_receipt_id: null is not a valid value"
+                )
+            field_effect_receipt_id = _decode_str(
+                raw_effect_receipt_id,
+                f"{path}.effect_receipt_id",
+            )
+        field_settled_at = _decode_str(
+            _require_field(mapping, "settled_at", path),
+            f"{path}.settled_at",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            effect_settlement_id=field_effect_settlement_id,
+            run_id=field_run_id,
+            effect_intent_id=field_effect_intent_id,
+            outcome=field_outcome,
+            effect_receipt_id=field_effect_receipt_id,
+            settled_at=field_settled_at,
+            reason=field_reason,
+            audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEvent:
+    """One entry in a run's ordered event stream. Sequences are contiguous from zero and never
+    renumbered, instants never regress, and each entry states the run status in force when it
+    was recorded, so the stream is a readable history rather than a set of notes. Append-
+    only: an event is never edited or removed, and a correction is a further event.
+    """
+
+    workspace_id: WorkspaceId
+    runtime_event_id: Identifier
+    run_id: Identifier
+    sequence: int
+    occurred_at: Timestamp
+    event_kind: OpenCode
+    run_status: RunStatus
+    run_step_id: Identifier | None = None
+    message: str | None = None
+    details: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["runtime_event_id"] = self.runtime_event_id
+        wire["run_id"] = self.run_id
+        wire["sequence"] = self.sequence
+        wire["occurred_at"] = self.occurred_at
+        wire["event_kind"] = self.event_kind
+        wire["run_status"] = self.run_status
+        if self.run_step_id is not None:
+            wire["run_step_id"] = self.run_step_id
+        if self.message is not None:
+            wire["message"] = self.message
+        if self.details is not None:
+            wire["details"] = _encode_json_object(self.details)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "RuntimeEvent") -> RuntimeEvent:
+        """Decode a wire payload into a RuntimeEvent.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_runtime_event_id = _decode_str(
+            _require_field(mapping, "runtime_event_id", path),
+            f"{path}.runtime_event_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_sequence = _decode_int(_require_field(mapping, "sequence", path), f"{path}.sequence")
+        field_occurred_at = _decode_str(
+            _require_field(mapping, "occurred_at", path),
+            f"{path}.occurred_at",
+        )
+        field_event_kind = _decode_str(
+            _require_field(mapping, "event_kind", path),
+            f"{path}.event_kind",
+        )
+        field_run_status = _decode_str(
+            _require_field(mapping, "run_status", path),
+            f"{path}.run_status",
+        )
+        field_run_step_id: Identifier | None = None
+        if "run_step_id" in mapping:
+            raw_run_step_id = mapping["run_step_id"]
+            if raw_run_step_id is None:
+                raise ContractDecodeError(
+                    f"{path}.run_step_id: null is not a valid value"
+                )
+            field_run_step_id = _decode_str(raw_run_step_id, f"{path}.run_step_id")
+        field_message: str | None = None
+        if "message" in mapping:
+            raw_message = mapping["message"]
+            if raw_message is None:
+                raise ContractDecodeError(
+                    f"{path}.message: null is not a valid value"
+                )
+            field_message = _decode_str(raw_message, f"{path}.message")
+        field_details: JsonObject | None = None
+        if "details" in mapping:
+            raw_details = mapping["details"]
+            if raw_details is None:
+                raise ContractDecodeError(
+                    f"{path}.details: null is not a valid value"
+                )
+            field_details = _decode_json_object(raw_details, f"{path}.details")
+        return cls(
+            workspace_id=field_workspace_id,
+            runtime_event_id=field_runtime_event_id,
+            run_id=field_run_id,
+            sequence=field_sequence,
+            occurred_at=field_occurred_at,
+            event_kind=field_event_kind,
+            run_status=field_run_status,
+            run_step_id=field_run_step_id,
+            message=field_message,
+            details=field_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Artifact:
+    """One content-addressed output a run produced, bound to the run that produced it.
+    Identified by digest rather than by location: the bytes are the identity, so an artifact
+    can be proven unchanged without knowing where it is stored. Carries no filesystem path,
+    URL, bucket, credential or storage option -- where an artifact lives is a storage
+    decision and never a wire fact.
+    """
+
+    workspace_id: WorkspaceId
+    artifact_id: Identifier
+    run_id: Identifier
+    artifact_kind: OpenCode
+    media_type: MediaType
+    content_checksum: ContentChecksum
+    content_length_bytes: int
+    produced_at: Timestamp
+    run_step_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["artifact_id"] = self.artifact_id
+        wire["run_id"] = self.run_id
+        if self.run_step_id is not None:
+            wire["run_step_id"] = self.run_step_id
+        wire["artifact_kind"] = self.artifact_kind
+        wire["media_type"] = self.media_type
+        wire["content_checksum"] = self.content_checksum
+        wire["content_length_bytes"] = self.content_length_bytes
+        wire["produced_at"] = self.produced_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "Artifact") -> Artifact:
+        """Decode a wire payload into a Artifact.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_artifact_id = _decode_str(
+            _require_field(mapping, "artifact_id", path),
+            f"{path}.artifact_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id: Identifier | None = None
+        if "run_step_id" in mapping:
+            raw_run_step_id = mapping["run_step_id"]
+            if raw_run_step_id is None:
+                raise ContractDecodeError(
+                    f"{path}.run_step_id: null is not a valid value"
+                )
+            field_run_step_id = _decode_str(raw_run_step_id, f"{path}.run_step_id")
+        field_artifact_kind = _decode_str(
+            _require_field(mapping, "artifact_kind", path),
+            f"{path}.artifact_kind",
+        )
+        field_media_type = _decode_str(
+            _require_field(mapping, "media_type", path),
+            f"{path}.media_type",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_content_length_bytes = _decode_int(
+            _require_field(mapping, "content_length_bytes", path),
+            f"{path}.content_length_bytes",
+        )
+        field_produced_at = _decode_str(
+            _require_field(mapping, "produced_at", path),
+            f"{path}.produced_at",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            artifact_id=field_artifact_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            artifact_kind=field_artifact_kind,
+            media_type=field_media_type,
+            content_checksum=field_content_checksum,
+            content_length_bytes=field_content_length_bytes,
+            produced_at=field_produced_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupReceipt:
+    """The record that cleanup was attempted, and what it achieved. Cleanup is observable rather
+    than assumed: a run that reached a terminal status states what it released, including
+    cleanup that failed. A receipt is written for the attempt, not for the success, so a
+    failed release is visible instead of being indistinguishable from one that never ran.
+    """
+
+    workspace_id: WorkspaceId
+    cleanup_receipt_id: Identifier
+    run_id: Identifier
+    resource_kind: OpenCode
+    outcome: CleanupOutcome
+    reason: OpenCode
+    performed_at: Timestamp
+    audit_reference: AuditReference
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["cleanup_receipt_id"] = self.cleanup_receipt_id
+        wire["run_id"] = self.run_id
+        wire["resource_kind"] = self.resource_kind
+        wire["outcome"] = self.outcome
+        wire["reason"] = self.reason
+        wire["performed_at"] = self.performed_at
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "CleanupReceipt") -> CleanupReceipt:
+        """Decode a wire payload into a CleanupReceipt.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_cleanup_receipt_id = _decode_str(
+            _require_field(mapping, "cleanup_receipt_id", path),
+            f"{path}.cleanup_receipt_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_resource_kind = _decode_str(
+            _require_field(mapping, "resource_kind", path),
+            f"{path}.resource_kind",
+        )
+        field_outcome = _decode_str(_require_field(mapping, "outcome", path), f"{path}.outcome")
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        field_performed_at = _decode_str(
+            _require_field(mapping, "performed_at", path),
+            f"{path}.performed_at",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            cleanup_receipt_id=field_cleanup_receipt_id,
+            run_id=field_run_id,
+            resource_kind=field_resource_kind,
+            outcome=field_outcome,
+            reason=field_reason,
+            performed_at=field_performed_at,
+            audit_reference=field_audit_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolveWait:
+    """The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`.
+    Deliberately outside the application job family: it is not `job.retry`, there is no
+    `job.resume`, it is not a `JobControl` member, and it neither requeues a job nor names
+    one -- it carries no `job_id`, and nothing here selects a recovery. It names the wait it
+    resolves, how it resolves it, and the resume digest the wait published, so a resolution
+    proves it is resuming the state that was suspended. The resolution must match the wait's
+    kind: a signal never resolves an approval, and an approval decision never resolves a
+    timer.
+    """
+
+    workspace_id: WorkspaceId
+    run_id: Identifier
+    wait_id: Identifier
+    resolution: WaitResolution
+    resume_digest: ContentChecksum
+    requested_at: Timestamp
+    reason: OpenCode
+    approval_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["run_id"] = self.run_id
+        wire["wait_id"] = self.wait_id
+        wire["resolution"] = self.resolution
+        if self.approval_id is not None:
+            wire["approval_id"] = self.approval_id
+        wire["resume_digest"] = self.resume_digest
+        wire["requested_at"] = self.requested_at
+        wire["reason"] = self.reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ResolveWait") -> ResolveWait:
+        """Decode a wire payload into a ResolveWait.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_wait_id = _decode_str(_require_field(mapping, "wait_id", path), f"{path}.wait_id")
+        field_resolution = _decode_str(
+            _require_field(mapping, "resolution", path),
+            f"{path}.resolution",
+        )
+        field_approval_id: Identifier | None = None
+        if "approval_id" in mapping:
+            raw_approval_id = mapping["approval_id"]
+            if raw_approval_id is None:
+                raise ContractDecodeError(
+                    f"{path}.approval_id: null is not a valid value"
+                )
+            field_approval_id = _decode_str(raw_approval_id, f"{path}.approval_id")
+        field_resume_digest = _decode_str(
+            _require_field(mapping, "resume_digest", path),
+            f"{path}.resume_digest",
+        )
+        field_requested_at = _decode_str(
+            _require_field(mapping, "requested_at", path),
+            f"{path}.requested_at",
+        )
+        field_reason = _decode_str(_require_field(mapping, "reason", path), f"{path}.reason")
+        return cls(
+            workspace_id=field_workspace_id,
+            run_id=field_run_id,
+            wait_id=field_wait_id,
+            resolution=field_resolution,
+            approval_id=field_approval_id,
+            resume_digest=field_resume_digest,
+            requested_at=field_requested_at,
+            reason=field_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceProbeRequest:
     """A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
     carries no `operation`, no `input`, and no workspace or authority scoping, because a
@@ -7063,6 +8451,306 @@ class RecordIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class Attempt:
+    """One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
+    workspace and start instant never change, and an attempt terminalizes exactly once.
+    Within a step, attempts are numbered `1..N` contiguously and never overlap; only a
+    `failed`, `cancelled` or `uncertain` attempt may be followed by another, because a
+    `succeeded` attempt is final. An `uncertain` attempt is the case retrying blindly would
+    corrupt: whether its effect landed is not known, so the next step is reconciliation, not
+    repetition.
+    """
+
+    workspace_id: WorkspaceId
+    attempt_id: Identifier
+    run_id: Identifier
+    run_step_id: Identifier
+    attempt_number: int
+    status: AttemptStatus
+    started_at: Timestamp
+    finished_at: Timestamp | None = None
+    failure: ApiError | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["attempt_id"] = self.attempt_id
+        wire["run_id"] = self.run_id
+        wire["run_step_id"] = self.run_step_id
+        wire["attempt_number"] = self.attempt_number
+        wire["status"] = self.status
+        wire["started_at"] = self.started_at
+        if self.finished_at is not None:
+            wire["finished_at"] = self.finished_at
+        if self.failure is not None:
+            wire["failure"] = self.failure.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "Attempt") -> Attempt:
+        """Decode a wire payload into a Attempt.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_attempt_id = _decode_str(
+            _require_field(mapping, "attempt_id", path),
+            f"{path}.attempt_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id = _decode_str(
+            _require_field(mapping, "run_step_id", path),
+            f"{path}.run_step_id",
+        )
+        field_attempt_number = _decode_int(
+            _require_field(mapping, "attempt_number", path),
+            f"{path}.attempt_number",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_started_at = _decode_str(
+            _require_field(mapping, "started_at", path),
+            f"{path}.started_at",
+        )
+        field_finished_at: Timestamp | None = None
+        if "finished_at" in mapping:
+            raw_finished_at = mapping["finished_at"]
+            if raw_finished_at is None:
+                raise ContractDecodeError(
+                    f"{path}.finished_at: null is not a valid value"
+                )
+            field_finished_at = _decode_str(raw_finished_at, f"{path}.finished_at")
+        field_failure: ApiError | None = None
+        if "failure" in mapping:
+            raw_failure = mapping["failure"]
+            if raw_failure is None:
+                raise ContractDecodeError(
+                    f"{path}.failure: null is not a valid value"
+                )
+            field_failure = ApiError.from_wire(raw_failure, f"{path}.failure")
+        return cls(
+            workspace_id=field_workspace_id,
+            attempt_id=field_attempt_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            attempt_number=field_attempt_number,
+            status=field_status,
+            started_at=field_started_at,
+            finished_at=field_finished_at,
+            failure=field_failure,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EffectReceipt:
+    """Evidence that an intended effect was actually observed to execute, bound to the intent
+    that authorized it. A receipt never stands alone: it names its `EffectIntent`, shares
+    that intent's run and workspace, and is never observed before the intent was declared. A
+    provider-side reference may be attached as correlation, but it is an `ExternalReference`
+    and therefore subordinate evidence -- it identifies the effect somewhere else, and never
+    becomes the authority for whether the effect happened here.
+    """
+
+    workspace_id: WorkspaceId
+    effect_receipt_id: Identifier
+    run_id: Identifier
+    effect_intent_id: Identifier
+    observed_at: Timestamp
+    response_digest: ContentChecksum
+    external_reference: ExternalReference | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["effect_receipt_id"] = self.effect_receipt_id
+        wire["run_id"] = self.run_id
+        wire["effect_intent_id"] = self.effect_intent_id
+        wire["observed_at"] = self.observed_at
+        wire["response_digest"] = self.response_digest
+        if self.external_reference is not None:
+            wire["external_reference"] = self.external_reference.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EffectReceipt") -> EffectReceipt:
+        """Decode a wire payload into a EffectReceipt.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_effect_receipt_id = _decode_str(
+            _require_field(mapping, "effect_receipt_id", path),
+            f"{path}.effect_receipt_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_effect_intent_id = _decode_str(
+            _require_field(mapping, "effect_intent_id", path),
+            f"{path}.effect_intent_id",
+        )
+        field_observed_at = _decode_str(
+            _require_field(mapping, "observed_at", path),
+            f"{path}.observed_at",
+        )
+        field_response_digest = _decode_str(
+            _require_field(mapping, "response_digest", path),
+            f"{path}.response_digest",
+        )
+        field_external_reference: ExternalReference | None = None
+        if "external_reference" in mapping:
+            raw_external_reference = mapping["external_reference"]
+            if raw_external_reference is None:
+                raise ContractDecodeError(
+                    f"{path}.external_reference: null is not a valid value"
+                )
+            field_external_reference = ExternalReference.from_wire(
+                raw_external_reference,
+                f"{path}.external_reference",
+            )
+        return cls(
+            workspace_id=field_workspace_id,
+            effect_receipt_id=field_effect_receipt_id,
+            run_id=field_run_id,
+            effect_intent_id=field_effect_intent_id,
+            observed_at=field_observed_at,
+            response_digest=field_response_digest,
+            external_reference=field_external_reference,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceItem:
+    """One piece of evidence a run captured, bound to the run that captured it. `authoritative`
+    is the load-bearing field: only evidence the runtime itself recorded may be
+    authoritative, and evidence drawn from an external log, an agent-lane ledger or a
+    control-plane projection is subordinate however complete it looks -- it corroborates the
+    runtime's own record and never replaces it. `retained` states whether the evidence is
+    still held: cancelling a run stops the work, never the record, so a cancelled run's
+    evidence stays retained.
+    """
+
+    workspace_id: WorkspaceId
+    evidence_item_id: Identifier
+    run_id: Identifier
+    evidence_kind: OpenCode
+    source: ExternalReference
+    content_checksum: ContentChecksum
+    captured_at: Timestamp
+    authoritative: bool
+    retained: bool
+    run_step_id: Identifier | None = None
+    artifact_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["evidence_item_id"] = self.evidence_item_id
+        wire["run_id"] = self.run_id
+        if self.run_step_id is not None:
+            wire["run_step_id"] = self.run_step_id
+        wire["evidence_kind"] = self.evidence_kind
+        wire["source"] = self.source.to_wire()
+        wire["content_checksum"] = self.content_checksum
+        if self.artifact_id is not None:
+            wire["artifact_id"] = self.artifact_id
+        wire["captured_at"] = self.captured_at
+        wire["authoritative"] = self.authoritative
+        wire["retained"] = self.retained
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "EvidenceItem") -> EvidenceItem:
+        """Decode a wire payload into a EvidenceItem.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_evidence_item_id = _decode_str(
+            _require_field(mapping, "evidence_item_id", path),
+            f"{path}.evidence_item_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id: Identifier | None = None
+        if "run_step_id" in mapping:
+            raw_run_step_id = mapping["run_step_id"]
+            if raw_run_step_id is None:
+                raise ContractDecodeError(
+                    f"{path}.run_step_id: null is not a valid value"
+                )
+            field_run_step_id = _decode_str(raw_run_step_id, f"{path}.run_step_id")
+        field_evidence_kind = _decode_str(
+            _require_field(mapping, "evidence_kind", path),
+            f"{path}.evidence_kind",
+        )
+        field_source = ExternalReference.from_wire(
+            _require_field(mapping, "source", path),
+            f"{path}.source",
+        )
+        field_content_checksum = _decode_str(
+            _require_field(mapping, "content_checksum", path),
+            f"{path}.content_checksum",
+        )
+        field_artifact_id: Identifier | None = None
+        if "artifact_id" in mapping:
+            raw_artifact_id = mapping["artifact_id"]
+            if raw_artifact_id is None:
+                raise ContractDecodeError(
+                    f"{path}.artifact_id: null is not a valid value"
+                )
+            field_artifact_id = _decode_str(raw_artifact_id, f"{path}.artifact_id")
+        field_captured_at = _decode_str(
+            _require_field(mapping, "captured_at", path),
+            f"{path}.captured_at",
+        )
+        field_authoritative = _decode_bool(
+            _require_field(mapping, "authoritative", path),
+            f"{path}.authoritative",
+        )
+        field_retained = _decode_bool(_require_field(mapping, "retained", path), f"{path}.retained")
+        return cls(
+            workspace_id=field_workspace_id,
+            evidence_item_id=field_evidence_item_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            evidence_kind=field_evidence_kind,
+            source=field_source,
+            content_checksum=field_content_checksum,
+            artifact_id=field_artifact_id,
+            captured_at=field_captured_at,
+            authoritative=field_authoritative,
+            retained=field_retained,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceEndpointDescriptor:
     """The published coordination facts a client needs to find one running service instance and
     decide whether it can talk to it, before any request is sent. Coordination data only: a
@@ -8298,6 +9986,107 @@ class ProvenanceEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class RunStep:
+    """One step of a run, with the complete attempt history that executed it. Steps are ordered
+    `1..N` contiguously within a run and never renumbered; the history is append-only, so a
+    correction is a further attempt rather than an edit to a recorded one. A step that is
+    `waiting` names the `Wait` holding it, because a suspended step that cannot say what it
+    is suspended on cannot be resolved.
+    """
+
+    workspace_id: WorkspaceId
+    run_step_id: Identifier
+    run_id: Identifier
+    ordinal: int
+    step_kind: OpenCode
+    status: RunStepStatus
+    created_at: Timestamp
+    updated_at: Timestamp
+    attempts: tuple[Attempt, ...]
+    wait_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["run_step_id"] = self.run_step_id
+        wire["run_id"] = self.run_id
+        wire["ordinal"] = self.ordinal
+        wire["step_kind"] = self.step_kind
+        wire["status"] = self.status
+        wire["created_at"] = self.created_at
+        wire["updated_at"] = self.updated_at
+        wire["attempts"] = [item.to_wire() for item in self.attempts]
+        if self.wait_id is not None:
+            wire["wait_id"] = self.wait_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "RunStep") -> RunStep:
+        """Decode a wire payload into a RunStep.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_run_step_id = _decode_str(
+            _require_field(mapping, "run_step_id", path),
+            f"{path}.run_step_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_ordinal = _decode_int(_require_field(mapping, "ordinal", path), f"{path}.ordinal")
+        field_step_kind = _decode_str(
+            _require_field(mapping, "step_kind", path),
+            f"{path}.step_kind",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_updated_at = _decode_str(
+            _require_field(mapping, "updated_at", path),
+            f"{path}.updated_at",
+        )
+        field_attempts_items = _decode_sequence(
+            _require_field(mapping, "attempts", path),
+            f"{path}.attempts",
+        )
+        field_attempts = tuple(
+            Attempt.from_wire(item, f"{path}.attempts[{index}]")
+            for index, item in enumerate(field_attempts_items)
+        )
+        field_wait_id: Identifier | None = None
+        if "wait_id" in mapping:
+            raw_wait_id = mapping["wait_id"]
+            if raw_wait_id is None:
+                raise ContractDecodeError(
+                    f"{path}.wait_id: null is not a valid value"
+                )
+            field_wait_id = _decode_str(raw_wait_id, f"{path}.wait_id")
+        return cls(
+            workspace_id=field_workspace_id,
+            run_step_id=field_run_step_id,
+            run_id=field_run_id,
+            ordinal=field_ordinal,
+            step_kind=field_step_kind,
+            status=field_status,
+            created_at=field_created_at,
+            updated_at=field_updated_at,
+            attempts=field_attempts,
+            wait_id=field_wait_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceProbeResult:
     """The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
     `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated
@@ -9357,6 +11146,260 @@ class RecordProvenance:
             sources=field_sources,
             assertion=field_assertion,
             extraction=field_extraction,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    """One canonical execution of an Agent Component or Workflow, with the complete history that
+    produced it. Workspace-scoped by construction: the run and every record hanging off it
+    state the same `workspace_id`, so no part of a run's history can be read against the
+    wrong workspace. `logical_key` is the run's stable idempotency identity -- two admissions
+    carrying the same logical key are the same run replayed, not two runs -- and it is what
+    makes a replay provable rather than assumed. The aggregate is deliberately complete: a
+    run states its policy, its budget, its grants, its steps, its waits and approvals, its
+    intended and settled effects, its event stream, its artifacts, its evidence and its
+    cleanup, because each of those is a question a reader of a finished run has to be able to
+    answer without a second read. Every one of those arrays is stated, empty when there is
+    nothing in it: a run with no waits and a run that forgot to mention its waits are not two
+    readings a caller should have to tell apart, and `finished_at` is the single optional
+    field, absent exactly while the run has not finished.
+    """
+
+    workspace_id: WorkspaceId
+    run_id: Identifier
+    definition: RunDefinitionRef
+    status: RunStatus
+    logical_key: IdempotencyKey
+    originating_operation: OperationName
+    audit_reference: AuditReference
+    created_at: Timestamp
+    updated_at: Timestamp
+    policy: PolicySnapshot
+    budget: BudgetSnapshot
+    capability_grants: tuple[CapabilityGrant, ...]
+    steps: tuple[RunStep, ...]
+    waits: tuple[Wait, ...]
+    approvals: tuple[Approval, ...]
+    effect_intents: tuple[EffectIntent, ...]
+    effect_receipts: tuple[EffectReceipt, ...]
+    effect_settlements: tuple[EffectSettlement, ...]
+    events: tuple[RuntimeEvent, ...]
+    artifacts: tuple[Artifact, ...]
+    evidence: tuple[EvidenceItem, ...]
+    cleanup_receipts: tuple[CleanupReceipt, ...]
+    correlations: tuple[ExternalReference, ...]
+    finished_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["run_id"] = self.run_id
+        wire["definition"] = self.definition.to_wire()
+        wire["status"] = self.status
+        wire["logical_key"] = self.logical_key
+        wire["originating_operation"] = self.originating_operation
+        wire["audit_reference"] = self.audit_reference
+        wire["created_at"] = self.created_at
+        wire["updated_at"] = self.updated_at
+        if self.finished_at is not None:
+            wire["finished_at"] = self.finished_at
+        wire["policy"] = self.policy.to_wire()
+        wire["budget"] = self.budget.to_wire()
+        wire["capability_grants"] = [item.to_wire() for item in self.capability_grants]
+        wire["steps"] = [item.to_wire() for item in self.steps]
+        wire["waits"] = [item.to_wire() for item in self.waits]
+        wire["approvals"] = [item.to_wire() for item in self.approvals]
+        wire["effect_intents"] = [item.to_wire() for item in self.effect_intents]
+        wire["effect_receipts"] = [item.to_wire() for item in self.effect_receipts]
+        wire["effect_settlements"] = [item.to_wire() for item in self.effect_settlements]
+        wire["events"] = [item.to_wire() for item in self.events]
+        wire["artifacts"] = [item.to_wire() for item in self.artifacts]
+        wire["evidence"] = [item.to_wire() for item in self.evidence]
+        wire["cleanup_receipts"] = [item.to_wire() for item in self.cleanup_receipts]
+        wire["correlations"] = [item.to_wire() for item in self.correlations]
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "Run") -> Run:
+        """Decode a wire payload into a Run.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_definition = RunDefinitionRef.from_wire(
+            _require_field(mapping, "definition", path),
+            f"{path}.definition",
+        )
+        field_status = _decode_str(_require_field(mapping, "status", path), f"{path}.status")
+        field_logical_key = _decode_str(
+            _require_field(mapping, "logical_key", path),
+            f"{path}.logical_key",
+        )
+        field_originating_operation = _decode_str(
+            _require_field(mapping, "originating_operation", path),
+            f"{path}.originating_operation",
+        )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        field_created_at = _decode_str(
+            _require_field(mapping, "created_at", path),
+            f"{path}.created_at",
+        )
+        field_updated_at = _decode_str(
+            _require_field(mapping, "updated_at", path),
+            f"{path}.updated_at",
+        )
+        field_finished_at: Timestamp | None = None
+        if "finished_at" in mapping:
+            raw_finished_at = mapping["finished_at"]
+            if raw_finished_at is None:
+                raise ContractDecodeError(
+                    f"{path}.finished_at: null is not a valid value"
+                )
+            field_finished_at = _decode_str(raw_finished_at, f"{path}.finished_at")
+        field_policy = PolicySnapshot.from_wire(
+            _require_field(mapping, "policy", path),
+            f"{path}.policy",
+        )
+        field_budget = BudgetSnapshot.from_wire(
+            _require_field(mapping, "budget", path),
+            f"{path}.budget",
+        )
+        field_capability_grants_items = _decode_sequence(
+            _require_field(mapping, "capability_grants", path),
+            f"{path}.capability_grants",
+        )
+        field_capability_grants = tuple(
+            CapabilityGrant.from_wire(item, f"{path}.capability_grants[{index}]")
+            for index, item in enumerate(field_capability_grants_items)
+        )
+        field_steps_items = _decode_sequence(
+            _require_field(mapping, "steps", path),
+            f"{path}.steps",
+        )
+        field_steps = tuple(
+            RunStep.from_wire(item, f"{path}.steps[{index}]")
+            for index, item in enumerate(field_steps_items)
+        )
+        field_waits_items = _decode_sequence(
+            _require_field(mapping, "waits", path),
+            f"{path}.waits",
+        )
+        field_waits = tuple(
+            Wait.from_wire(item, f"{path}.waits[{index}]")
+            for index, item in enumerate(field_waits_items)
+        )
+        field_approvals_items = _decode_sequence(
+            _require_field(mapping, "approvals", path),
+            f"{path}.approvals",
+        )
+        field_approvals = tuple(
+            Approval.from_wire(item, f"{path}.approvals[{index}]")
+            for index, item in enumerate(field_approvals_items)
+        )
+        field_effect_intents_items = _decode_sequence(
+            _require_field(mapping, "effect_intents", path),
+            f"{path}.effect_intents",
+        )
+        field_effect_intents = tuple(
+            EffectIntent.from_wire(item, f"{path}.effect_intents[{index}]")
+            for index, item in enumerate(field_effect_intents_items)
+        )
+        field_effect_receipts_items = _decode_sequence(
+            _require_field(mapping, "effect_receipts", path),
+            f"{path}.effect_receipts",
+        )
+        field_effect_receipts = tuple(
+            EffectReceipt.from_wire(item, f"{path}.effect_receipts[{index}]")
+            for index, item in enumerate(field_effect_receipts_items)
+        )
+        field_effect_settlements_items = _decode_sequence(
+            _require_field(mapping, "effect_settlements", path),
+            f"{path}.effect_settlements",
+        )
+        field_effect_settlements = tuple(
+            EffectSettlement.from_wire(item, f"{path}.effect_settlements[{index}]")
+            for index, item in enumerate(field_effect_settlements_items)
+        )
+        field_events_items = _decode_sequence(
+            _require_field(mapping, "events", path),
+            f"{path}.events",
+        )
+        field_events = tuple(
+            RuntimeEvent.from_wire(item, f"{path}.events[{index}]")
+            for index, item in enumerate(field_events_items)
+        )
+        field_artifacts_items = _decode_sequence(
+            _require_field(mapping, "artifacts", path),
+            f"{path}.artifacts",
+        )
+        field_artifacts = tuple(
+            Artifact.from_wire(item, f"{path}.artifacts[{index}]")
+            for index, item in enumerate(field_artifacts_items)
+        )
+        field_evidence_items = _decode_sequence(
+            _require_field(mapping, "evidence", path),
+            f"{path}.evidence",
+        )
+        field_evidence = tuple(
+            EvidenceItem.from_wire(item, f"{path}.evidence[{index}]")
+            for index, item in enumerate(field_evidence_items)
+        )
+        field_cleanup_receipts_items = _decode_sequence(
+            _require_field(mapping, "cleanup_receipts", path),
+            f"{path}.cleanup_receipts",
+        )
+        field_cleanup_receipts = tuple(
+            CleanupReceipt.from_wire(item, f"{path}.cleanup_receipts[{index}]")
+            for index, item in enumerate(field_cleanup_receipts_items)
+        )
+        field_correlations_items = _decode_sequence(
+            _require_field(mapping, "correlations", path),
+            f"{path}.correlations",
+        )
+        field_correlations = tuple(
+            ExternalReference.from_wire(item, f"{path}.correlations[{index}]")
+            for index, item in enumerate(field_correlations_items)
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            run_id=field_run_id,
+            definition=field_definition,
+            status=field_status,
+            logical_key=field_logical_key,
+            originating_operation=field_originating_operation,
+            audit_reference=field_audit_reference,
+            created_at=field_created_at,
+            updated_at=field_updated_at,
+            finished_at=field_finished_at,
+            policy=field_policy,
+            budget=field_budget,
+            capability_grants=field_capability_grants,
+            steps=field_steps,
+            waits=field_waits,
+            approvals=field_approvals,
+            effect_intents=field_effect_intents,
+            effect_receipts=field_effect_receipts,
+            effect_settlements=field_effect_settlements,
+            events=field_events,
+            artifacts=field_artifacts,
+            evidence=field_evidence,
+            cleanup_receipts=field_cleanup_receipts,
+            correlations=field_correlations,
         )
 
 

@@ -130,6 +130,61 @@
       "tolerant_decode": true,
       "semantic": "calendar_invalid_timestamp_tolerated",
       "description": "'canonical_resolution_time' is '2026-02-30T00:00:00Z': it matches Timestamp's lexical pattern (two-digit month and day fields) but names a calendar date that does not exist. Strict validation with jsonschema.FormatChecker rejects it under the 'date-time' format, so the fixture is schema-invalid. The generated decoder does not re-implement format or pattern constraints, so tolerant production decoding accepts the string verbatim."
+    },
+    {
+      "id": "runtime-run-replay",
+      "file": "runtime-run-replay.json",
+      "envelope": null,
+      "definition": "Run",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_replay_is_logically_idempotent",
+      "description": "A complete canonical Run that succeeded: policy and budget pinned at admission, one capability grant backed by the granted set, one step with one succeeded attempt, and one effect intent whose receipt and committed settlement both name it. Re-admitting the same 'logical_key' over the same definition is a replay of this run rather than new work; the same key over a different definition version is an idempotency_conflict."
+    },
+    {
+      "id": "runtime-run-cancelled-evidence",
+      "file": "runtime-run-cancelled-evidence.json",
+      "envelope": null,
+      "definition": "Run",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_cancellation_preserves_evidence",
+      "description": "A cancelled canonical Run. Cancelling stops the work and never the record: every evidence item stays retained, the run that executed an attempt still holds evidence of it, and the terminal run states the cleanup it performed. A copy of this run with its evidence marked unretained is refused by semantics_runtime.validate_run."
+    },
+    {
+      "id": "runtime-unknown-run-status",
+      "file": "runtime-unknown-run-status.json",
+      "envelope": null,
+      "definition": "Run",
+      "branch": null,
+      "schema_valid": false,
+      "tolerant_decode": true,
+      "semantic": "runtime_unknown_run_status_fails_safe",
+      "description": "A Run whose status is 'quiesced_experimental', which a newer peer might send. RunStatus is closed at the schema, so strict Draft 2020-12 validation rejects it; tolerant production decoding preserves the value verbatim. Every semantic decision then fails safe: the status is not known, not terminal, not successful, not waiting, and never permits a new effect, and validate_terminal_run refuses to treat the run as finished rather than guessing."
+    },
+    {
+      "id": "runtime-effect-receipt-without-intent",
+      "file": "runtime-effect-receipt-without-intent.json",
+      "envelope": null,
+      "definition": "Run",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_effect_without_intent_rejected",
+      "description": "A Run carrying an effect receipt and an effect settlement that name an intent the run never declared. Nothing structural is wrong with either array element, so the document is schema-valid and decodes, but semantics_runtime rejects it: no effect receipt or settlement exists without its intent, because an effect nobody declared is one nobody authorized and nobody can reconcile."
+    },
+    {
+      "id": "runtime-resolve-wait",
+      "file": "runtime-resolve-wait.json",
+      "envelope": null,
+      "definition": "ResolveWait",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_resolve_wait_is_not_job_recovery",
+      "description": "A valid ResolveWait resolving one approval Wait, quoting the resume digest that wait published. It is a Runtime-domain command and not job recovery: it names no job, it is not job.retry, it is not a JobControl member, and the frozen operation catalogue still publishes no job.resume and no runtime.* operation."
     }
   ]
 }

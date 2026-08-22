@@ -16,6 +16,7 @@
 //   contracts/application/v1/schemas/graph.schema.json
 //   contracts/application/v1/schemas/context-pack.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
+//   contracts/application/v1/schemas/runtime.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -1418,6 +1419,353 @@ export function isEvidenceDisposition(value: unknown): value is EvidenceDisposit
 }
 
 /**
+ * Which representation an `ExternalReference` names, so a correlated identifier is never read as
+ * an identifier of a different domain. `runtime` is the canonical Runtime itself and the only
+ * authoritative kind; `application_job` is the durable job substrate a Run is admitted and
+ * claimed through; `control_plane_projection` is the read-only control-plane correlation record;
+ * `agent_lane_ledger` is the agent-lane PM run ledger, whose `run_id` is a different identifier
+ * in a different domain and must never be joined to a canonical `Run.run_id`; `external_log` is
+ * any log or trace captured outside this contract. Closed at the schema and tolerant on the
+ * wire: an unrecognized kind decodes and is preserved, but it is never authoritative.
+ */
+export type RuntimeSourceKind = string;
+
+/**
+ * The closed `RuntimeSourceKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const RUNTIME_SOURCE_KIND_VALUES = [
+  "runtime",
+  "application_job",
+  "control_plane_projection",
+  "agent_lane_ledger",
+  "external_log",
+] as const;
+
+/**
+ * Return whether a value is a declared `RuntimeSourceKind`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isRuntimeSourceKind(value: unknown): value is RuntimeSourceKind {
+  return (
+    typeof value === "string" &&
+    (RUNTIME_SOURCE_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where a canonical `Run` stands. A Core-owned vocabulary, deliberately neither the scheduler's
+ * `JobState` (which cannot express waiting) nor the control plane's run status (which is not
+ * durable): `admitted` is accepted with a policy and budget snapshot pinned but not yet
+ * executing, `running` is executing, `waiting` is durably suspended on a `Wait`, `succeeded`
+ * completed with every step succeeded, `partially_completed` reached the end with some step not
+ * succeeded, `failed` ended on a failure, `cancelled` was stopped by request, and `uncertain`
+ * means the outcome of at least one effect is not known and has not been reconciled. Closed at
+ * the schema and open on the wire: an unrecognized status decodes and is preserved verbatim, but
+ * no semantic decision may be taken from it -- it is never terminal, never successful, never a
+ * licence to start a new effect.
+ */
+export type RunStatus = string;
+
+/**
+ * The closed `RunStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const RUN_STATUS_VALUES = [
+  "admitted",
+  "running",
+  "waiting",
+  "succeeded",
+  "partially_completed",
+  "failed",
+  "cancelled",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `RunStatus`. The generated decoders do not call this --
+ * decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isRunStatus(value: unknown): value is RunStatus {
+  return (
+    typeof value === "string" &&
+    (RUN_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where one `RunStep` stands. `pending` has not started, `running` is executing an attempt,
+ * `waiting` is suspended on a `Wait`, `succeeded`, `failed` and `cancelled` are terminal
+ * outcomes, and `skipped` is a step the run deliberately did not execute. Closed at the schema
+ * and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type RunStepStatus = string;
+
+/**
+ * The closed `RunStepStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const RUN_STEP_STATUS_VALUES = [
+  "pending",
+  "running",
+  "waiting",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "skipped",
+] as const;
+
+/**
+ * Return whether a value is a declared `RunStepStatus`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isRunStepStatus(value: unknown): value is RunStepStatus {
+  return (
+    typeof value === "string" &&
+    (RUN_STEP_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where one `Attempt` stands. An attempt exists because execution started, so there is no queued
+ * attempt state: waiting to run is a state of the step, not of an execution of it. `uncertain`
+ * is an attempt whose effect may or may not have landed; it is not a failure, and reporting it
+ * as one would licence a retry that duplicates a committed effect. Closed at the schema and open
+ * on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type AttemptStatus = string;
+
+/**
+ * The closed `AttemptStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const ATTEMPT_STATUS_VALUES = [
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "uncertain",
+] as const;
+
+/**
+ * Return whether a value is a declared `AttemptStatus`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isAttemptStatus(value: unknown): value is AttemptStatus {
+  return (
+    typeof value === "string" &&
+    (ATTEMPT_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What a durable `Wait` is waiting for: an `approval` decision by a human or role, an
+ * `external_signal` delivered from outside the run, or a `timer` reaching its deadline. The kind
+ * fixes which resolution may resolve it, so a signal can never be accepted as an approval.
+ * Closed at the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WaitKind = string;
+
+/**
+ * The closed `WaitKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const WAIT_KIND_VALUES = [
+  "approval",
+  "external_signal",
+  "timer",
+] as const;
+
+/**
+ * Return whether a value is a declared `WaitKind`. The generated decoders do not call this --
+ * decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isWaitKind(value: unknown): value is WaitKind {
+  return (
+    typeof value === "string" &&
+    (WAIT_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Where one `Wait` stands: `pending` is unresolved and still holding the run, `resolved` was
+ * resolved by exactly one `ResolveWait`, `expired` passed its deadline without one, and
+ * `cancelled` was released because the run was cancelled. Closed at the schema and open on the
+ * wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WaitStatus = string;
+
+/**
+ * The closed `WaitStatus` vocabulary, emitted from the schema's `enum`.
+ */
+export const WAIT_STATUS_VALUES = [
+  "pending",
+  "resolved",
+  "expired",
+  "cancelled",
+] as const;
+
+/**
+ * Return whether a value is a declared `WaitStatus`. The generated decoders do not call this --
+ * decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isWaitStatus(value: unknown): value is WaitStatus {
+  return (
+    typeof value === "string" &&
+    (WAIT_STATUS_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * How one `ResolveWait` proposes to resolve a `Wait`, paired to the wait's own kind:
+ * `approval_decision` resolves an `approval` wait and names the recorded `Approval`,
+ * `external_signal` resolves an `external_signal` wait, `timer_expiry` resolves a `timer` wait,
+ * and `cancelled` releases any wait because the run was cancelled. Deliberately not a job
+ * control: none of these requeues a job, and none of them is `job.retry`. Closed at the schema
+ * and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WaitResolution = string;
+
+/**
+ * The closed `WaitResolution` vocabulary, emitted from the schema's `enum`.
+ */
+export const WAIT_RESOLUTION_VALUES = [
+  "approval_decision",
+  "external_signal",
+  "timer_expiry",
+  "cancelled",
+] as const;
+
+/**
+ * Return whether a value is a declared `WaitResolution`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isWaitResolution(value: unknown): value is WaitResolution {
+  return (
+    typeof value === "string" &&
+    (WAIT_RESOLUTION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The decision recorded against an approval request. There are exactly two, because an approval
+ * either was or was not given; a request that timed out has no decision at all and is reported
+ * by its `Wait` reaching `expired`. Closed at the schema and open on the wire, with the same
+ * fail-safe reading as `RunStatus`.
+ */
+export type ApprovalDecision = string;
+
+/**
+ * The closed `ApprovalDecision` vocabulary, emitted from the schema's `enum`.
+ */
+export const APPROVAL_DECISION_VALUES = [
+  "approved",
+  "rejected",
+] as const;
+
+/**
+ * Return whether a value is a declared `ApprovalDecision`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isApprovalDecision(value: unknown): value is ApprovalDecision {
+  return (
+    typeof value === "string" &&
+    (APPROVAL_DECISION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What an `EffectSettlement` says happened to the effect its intent declared: `committed` is
+ * proven by a receipt, `not_committed` is proven not to have happened, and `unknown` is the
+ * honest third answer -- the runtime could not establish either. `unknown` is uncertainty, not
+ * failure: it must not be reported as a failed effect, and it must not licence a blind retry of
+ * a logically identical effect. Closed at the schema and open on the wire, with the same fail-
+ * safe reading as `RunStatus`.
+ */
+export type EffectOutcome = string;
+
+/**
+ * The closed `EffectOutcome` vocabulary, emitted from the schema's `enum`.
+ */
+export const EFFECT_OUTCOME_VALUES = [
+  "committed",
+  "not_committed",
+  "unknown",
+] as const;
+
+/**
+ * Return whether a value is a declared `EffectOutcome`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isEffectOutcome(value: unknown): value is EffectOutcome {
+  return (
+    typeof value === "string" &&
+    (EFFECT_OUTCOME_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What one recorded cleanup achieved: `released` freed the resource, `not_required` found
+ * nothing to free, and `failed` could not free it. Cleanup is observable rather than implied, so
+ * a failed cleanup is recorded as a receipt rather than left unsaid. Closed at the schema and
+ * open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type CleanupOutcome = string;
+
+/**
+ * The closed `CleanupOutcome` vocabulary, emitted from the schema's `enum`.
+ */
+export const CLEANUP_OUTCOME_VALUES = [
+  "released",
+  "not_required",
+  "failed",
+] as const;
+
+/**
+ * Return whether a value is a declared `CleanupOutcome`. The generated decoders do not call this
+ * -- decoding stays tolerant and preserves an unrecognized value -- and this is the primitive a
+ * caller enforcing the closed domain validates with.
+ */
+export function isCleanupOutcome(value: unknown): value is CleanupOutcome {
+  return (
+    typeof value === "string" &&
+    (CLEANUP_OUTCOME_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Which kind of executable definition a run executes. The two public product terms are
+ * `agent_component` and `workflow`; there is no provider, adapter, worker-host or Harness kind
+ * here, because none of those is a definition a run executes. Closed at the schema and open on
+ * the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type RunDefinitionKind = string;
+
+/**
+ * The closed `RunDefinitionKind` vocabulary, emitted from the schema's `enum`.
+ */
+export const RUN_DEFINITION_KIND_VALUES = [
+  "agent_component",
+  "workflow",
+] as const;
+
+/**
+ * Return whether a value is a declared `RunDefinitionKind`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isRunDefinitionKind(value: unknown): value is RunDefinitionKind {
+  return (
+    typeof value === "string" &&
+    (RUN_DEFINITION_KIND_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -2766,6 +3114,630 @@ export interface RecordVersionReference {
 }
 
 /**
+ * A workspace-scoped, source-qualified pointer at a fact recorded somewhere other than this
+ * record. Every correlation states which domain its identifier belongs to, because the same
+ * spelling means different things in different domains: an agent-lane ledger `run_id` and a
+ * canonical `Run.run_id` are different identifiers that must never be joined. Only a `runtime`
+ * reference is authoritative; every other kind is correlation or evidence, never a source of
+ * truth, so discovering a fact through one never makes it a fact this run may act on.
+ */
+export interface ExternalReference {
+  /**
+   * Which domain `source_id` is an identifier in.
+   */
+  readonly source_kind: RuntimeSourceKind;
+  /**
+   * The identifier this reference names, in the domain `source_kind` states. Opaque: it is
+   * round-tripped verbatim and never parsed, and never rewritten into an identifier of another
+   * domain.
+   */
+  readonly source_id: OpaqueToken;
+  /**
+   * Workspace this correlation is scoped to. A reference is never workspace-free: an
+   * identifier without the workspace it was issued in cannot be resolved, and could be
+   * resolved against the wrong one.
+   */
+  readonly workspace_id: WorkspaceId;
+}
+
+/**
+ * The exact executable definition a run was admitted to execute: which kind, which definition,
+ * and at which released version. Immutable for the life of the run -- a run does not change what
+ * it is running -- so the definition reported on a completed run is the one it was admitted
+ * with.
+ */
+export interface RunDefinitionRef {
+  /**
+   * Whether this run executes an Agent Component or a Workflow.
+   */
+  readonly definition_kind: RunDefinitionKind;
+  /**
+   * Stable identifier of the definition.
+   */
+  readonly definition_id: Identifier;
+  /**
+   * The released version of the definition this run executes.
+   */
+  readonly definition_version: ReleaseVersion;
+}
+
+/**
+ * The immutable policy a run is pinned to at one revision. It states two capability sets and
+ * keeps them apart on purpose: `granted_capabilities` is what this run may actually invoke, and
+ * `discovered_capabilities` is what the workspace was found to offer. Discovery is not authority
+ * -- a capability that appears only in the discovered set authorizes nothing, and an effect
+ * naming one is refused. A run's policy may be re-pinned as it proceeds, but only monotonically:
+ * revisions move forward and grants may narrow, never widen, so authority a run once held cannot
+ * be silently re-granted mid-flight.
+ */
+export interface PolicySnapshot {
+  /**
+   * Workspace this snapshot was pinned in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this snapshot, unique within its workspace.
+   */
+  readonly policy_snapshot_id: Identifier;
+  /**
+   * The run this snapshot is pinned to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * 1-based revision of this run's policy. Strictly increasing within one run.
+   */
+  readonly revision: number;
+  /**
+   * When this revision was pinned.
+   */
+  readonly pinned_at: Timestamp;
+  /**
+   * The capabilities this run may invoke. May be empty: a run that invokes nothing is granted
+   * nothing.
+   */
+  readonly granted_capabilities: readonly CapabilityId[];
+  /**
+   * The capabilities the workspace was found to offer. Informational only; presence here never
+   * authorizes an effect.
+   */
+  readonly discovered_capabilities: readonly CapabilityId[];
+  /**
+   * Open code naming why the policy resolved as it did, such as `workspace_default` or
+   * `operator_narrowed`.
+   */
+  readonly decision_reason: OpenCode;
+  /**
+   * Immutable reference to the audit record for pinning this revision.
+   */
+  readonly audit_reference: AuditReference;
+}
+
+/**
+ * The immutable budget a run is pinned to at one revision: the ceilings admission accepted, and
+ * what has been consumed against them so far. Limits are pinned at admission and may narrow but
+ * never widen as a run proceeds, and consumption never decreases: a counter that went backwards
+ * is a report nobody can audit. Consumption never exceeds its ceiling -- a run that would exceed
+ * one stops rather than reporting a number its own limit forbids.
+ */
+export interface BudgetSnapshot {
+  /**
+   * Workspace this snapshot was pinned in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this snapshot, unique within its workspace.
+   */
+  readonly budget_snapshot_id: Identifier;
+  /**
+   * The run this snapshot is pinned to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * 1-based revision of this run's budget. Strictly increasing within one run.
+   */
+  readonly revision: number;
+  /**
+   * When this revision was pinned.
+   */
+  readonly pinned_at: Timestamp;
+  /**
+   * Ceiling on cost units for this run.
+   */
+  readonly max_cost_units: number;
+  /**
+   * Cost units consumed so far. Never greater than `max_cost_units`.
+   */
+  readonly consumed_cost_units: number;
+  /**
+   * Ceiling on token units for this run.
+   */
+  readonly max_token_units: number;
+  /**
+   * Token units consumed so far. Never greater than `max_token_units`.
+   */
+  readonly consumed_token_units: number;
+  /**
+   * Ceiling on wall-clock duration for this run, when one applies.
+   */
+  readonly max_wall_clock_ms?: DurationMs;
+}
+
+/**
+ * One capability issued to one run, for the life of that run. A grant is per-run and backed by
+ * the policy revision that issued it: it names the `PolicySnapshot` whose `granted_capabilities`
+ * contains it, so a grant can always be traced to the decision that made it and can never
+ * outlive a narrowing of that decision. Static manifest wiring is not a grant, and a capability
+ * the workspace merely offers is not a grant either.
+ */
+export interface CapabilityGrant {
+  /**
+   * Workspace this grant was issued in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this grant, unique within its workspace.
+   */
+  readonly capability_grant_id: Identifier;
+  /**
+   * The run this grant was issued to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The capability granted.
+   */
+  readonly capability_id: CapabilityId;
+  /**
+   * The policy revision that issued this grant. Its `granted_capabilities` must contain
+   * `capability_id`.
+   */
+  readonly policy_snapshot_id: Identifier;
+  /**
+   * When this grant was issued.
+   */
+  readonly granted_at: Timestamp;
+  /**
+   * When this grant stops being usable, when it is time-bounded.
+   */
+  readonly expires_at?: Timestamp;
+  /**
+   * Scope tokens narrowing this grant. Scopes narrow; they never widen granted authority.
+   */
+  readonly scopes: readonly Scope[];
+  /**
+   * The purpose limitation this grant was issued under.
+   */
+  readonly purpose: Purpose;
+}
+
+/**
+ * One durable suspension of a run: what it is waiting for, whether it is still waiting, and the
+ * digest that binds the state it will resume from. First-class rather than a scheduler detail,
+ * because a suspended run is a state the contract must be able to state, and because resuming
+ * from a checkpoint nobody can identify is indistinguishable from starting again. Resolved by
+ * exactly one `ResolveWait`, which is a Runtime command and not `job.retry`: nothing here
+ * requeues a job.
+ */
+export interface Wait {
+  /**
+   * Workspace this wait was created in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this wait, unique within its workspace.
+   */
+  readonly wait_id: Identifier;
+  /**
+   * The run this wait suspends.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step this wait suspends.
+   */
+  readonly run_step_id: Identifier;
+  /**
+   * What this wait is waiting for. Fixes which resolution may resolve it.
+   */
+  readonly kind: WaitKind;
+  /**
+   * Where this wait stands.
+   */
+  readonly status: WaitStatus;
+  /**
+   * When this wait was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When this wait stops being resolvable, when it is time-bounded.
+   */
+  readonly expires_at?: Timestamp;
+  /**
+   * When this wait stopped being pending. Present exactly when the wait is no longer
+   * `pending`.
+   */
+  readonly resolved_at?: Timestamp;
+  /**
+   * Open code naming why this wait stopped being pending, such as `approved` or
+   * `deadline_exceeded`.
+   */
+  readonly resolution_reason?: OpenCode;
+  /**
+   * The approval that resolved this wait, present only on a resolved `approval` wait.
+   */
+  readonly approval_id?: Identifier;
+  /**
+   * Digest binding the state this wait resumes from, so a resolution proves it is resuming the
+   * state that was suspended rather than some later one. The same canonical `ContentChecksum`
+   * the import contract uses: a value both sides recompute and compare byte for byte, never an
+   * opaque server token.
+   */
+  readonly resume_digest: ContentChecksum;
+}
+
+/**
+ * The immutable request/decision pair for one approval `Wait`: who was asked, who answered, what
+ * they answered, and when. The request half is written when the wait is created and never
+ * edited; the decision half is written once and never edited either, so an approval cannot be
+ * re-decided, only superseded by a new run. A request with no decision is still pending; a
+ * decision is complete or absent, never partial -- a recorded decision always carries its
+ * decider, its instant and its audit reference, because a decision nobody can attribute is not
+ * an approval.
+ */
+export interface Approval {
+  /**
+   * Workspace this approval was requested in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this approval, unique within its workspace.
+   */
+  readonly approval_id: Identifier;
+  /**
+   * The run this approval belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The wait this approval resolves, or is expected to resolve.
+   */
+  readonly wait_id: Identifier;
+  /**
+   * When the approval was requested.
+   */
+  readonly requested_at: Timestamp;
+  /**
+   * The role asked to decide.
+   */
+  readonly approver_role: Identifier;
+  /**
+   * The principal the request was assigned to, when it was assigned to one rather than left to
+   * the role.
+   */
+  readonly assigned_to?: Identifier;
+  /**
+   * The principal or role the request was escalated to, when it was escalated.
+   */
+  readonly escalated_to?: Identifier;
+  /**
+   * When the request stops being decidable, when it is time-bounded.
+   */
+  readonly expires_at?: Timestamp;
+  /**
+   * What was decided. Absent while the request is pending.
+   */
+  readonly decision?: ApprovalDecision;
+  /**
+   * When the decision was recorded. Present exactly when `decision` is.
+   */
+  readonly decided_at?: Timestamp;
+  /**
+   * The principal who decided. Present exactly when `decision` is.
+   */
+  readonly decided_by?: Identifier;
+  /**
+   * Immutable reference to the audit record for the decision. Present exactly when `decision`
+   * is.
+   */
+  readonly audit_reference?: AuditReference;
+  /**
+   * Human-readable note the decider left. Not a stable interface.
+   */
+  readonly comment?: string;
+}
+
+/**
+ * The record written *before* a run acts on the world: which capability it will invoke, under
+ * which grant, with which logically idempotent key, over exactly which request bytes. Nothing
+ * may be observed or settled that was not first intended -- a receipt or settlement with no
+ * matching intent is an effect nobody authorized and nobody can reconcile. The pairing of
+ * `idempotency_key` and `request_digest` is what makes idempotency *logical* rather than
+ * accidental: the same key over the same digest is one effect however many times it is
+ * delivered, and the same key over a different digest is a conflict rather than a replay.
+ */
+export interface EffectIntent {
+  /**
+   * Workspace this intent was declared in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this intent, unique within its workspace.
+   */
+  readonly effect_intent_id: Identifier;
+  /**
+   * The run that declared this intent.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step that declared this intent.
+   */
+  readonly run_step_id: Identifier;
+  /**
+   * The attempt that declared this intent.
+   */
+  readonly attempt_id: Identifier;
+  /**
+   * The capability this effect invokes.
+   */
+  readonly capability_id: CapabilityId;
+  /**
+   * The grant authorizing this effect. A capability that was merely discovered is not a grant.
+   */
+  readonly capability_grant_id: Identifier;
+  /**
+   * Open code naming what kind of effect this is, such as `record_write` or `message_send`.
+   */
+  readonly effect_kind: OpenCode;
+  /**
+   * The stable logical key for this effect. Equal keys with different request digests are an
+   * `idempotency_conflict`, exactly as on the application wire.
+   */
+  readonly idempotency_key: IdempotencyKey;
+  /**
+   * Digest of the exact request bytes this intent will send, so a replay proves it is the same
+   * effect rather than asserting it.
+   */
+  readonly request_digest: ContentChecksum;
+  /**
+   * When this intent was declared. No receipt or settlement for this effect may precede it.
+   */
+  readonly declared_at: Timestamp;
+}
+
+/**
+ * The final, audited answer to what happened to one intended effect. Like a receipt it never
+ * stands alone: it names its intent, shares that intent's run and workspace, and never settles
+ * before the intent was declared. A `committed` settlement must name the receipt that proves it
+ * -- a claim that an effect landed, with no observation of it landing, is an assertion rather
+ * than a settlement. An `unknown` settlement is the honest third answer and is not a failure: it
+ * says reconciliation is owed, and a run holding one may not call itself succeeded or failed.
+ */
+export interface EffectSettlement {
+  /**
+   * Workspace this settlement was recorded in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this settlement, unique within its workspace.
+   */
+  readonly effect_settlement_id: Identifier;
+  /**
+   * The run this settlement belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The intent this settlement settles. Required: there is no settlement without an intent.
+   */
+  readonly effect_intent_id: Identifier;
+  /**
+   * What the runtime established about the effect.
+   */
+  readonly outcome: EffectOutcome;
+  /**
+   * The receipt proving a `committed` outcome. Present exactly when the outcome is
+   * `committed`.
+   */
+  readonly effect_receipt_id?: Identifier;
+  /**
+   * When this settlement was recorded. Never earlier than the intent's `declared_at`.
+   */
+  readonly settled_at: Timestamp;
+  /**
+   * Open code naming how the outcome was established, such as `receipt_observed` or
+   * `provider_unreachable`.
+   */
+  readonly reason: OpenCode;
+  /**
+   * Immutable reference to the audit record for this settlement.
+   */
+  readonly audit_reference: AuditReference;
+}
+
+/**
+ * One entry in a run's ordered event stream. Sequences are contiguous from zero and never
+ * renumbered, instants never regress, and each entry states the run status in force when it was
+ * recorded, so the stream is a readable history rather than a set of notes. Append-only: an
+ * event is never edited or removed, and a correction is a further event.
+ */
+export interface RuntimeEvent {
+  /**
+   * Workspace this event was recorded in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this event, unique within its workspace.
+   */
+  readonly runtime_event_id: Identifier;
+  /**
+   * The run this event belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * 0-based position of this event within its run's stream.
+   */
+  readonly sequence: number;
+  /**
+   * When this event occurred. Never earlier than the preceding event's.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * Open code naming what happened, such as `run_admitted` or `wait_resolved`.
+   */
+  readonly event_kind: OpenCode;
+  /**
+   * The run status in force when this event was recorded.
+   */
+  readonly run_status: RunStatus;
+  /**
+   * The step this event is about, when it is about one.
+   */
+  readonly run_step_id?: Identifier;
+  /**
+   * Human-readable event note. Not a stable interface.
+   */
+  readonly message?: string;
+  /**
+   * Optional structured detail.
+   */
+  readonly details?: JsonObject;
+}
+
+/**
+ * One content-addressed output a run produced, bound to the run that produced it. Identified by
+ * digest rather than by location: the bytes are the identity, so an artifact can be proven
+ * unchanged without knowing where it is stored. Carries no filesystem path, URL, bucket,
+ * credential or storage option -- where an artifact lives is a storage decision and never a wire
+ * fact.
+ */
+export interface Artifact {
+  /**
+   * Workspace this artifact was produced in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this artifact, unique within its workspace.
+   */
+  readonly artifact_id: Identifier;
+  /**
+   * The run that produced this artifact.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step that produced this artifact, when one step did.
+   */
+  readonly run_step_id?: Identifier;
+  /**
+   * Open code naming what kind of output this is, such as `report` or `transcript`.
+   */
+  readonly artifact_kind: OpenCode;
+  /**
+   * Media type of this artifact's content. The same `MediaType` L0 evidence carries, so one
+   * type describes one concept wherever it is reached from.
+   */
+  readonly media_type: MediaType;
+  /**
+   * Digest of this artifact's content, proving the bytes have not changed since they were
+   * produced.
+   */
+  readonly content_checksum: ContentChecksum;
+  /**
+   * Length of this artifact's content in bytes. Zero is valid: empty output is still output.
+   */
+  readonly content_length_bytes: number;
+  /**
+   * When this artifact was produced.
+   */
+  readonly produced_at: Timestamp;
+}
+
+/**
+ * The record that cleanup was attempted, and what it achieved. Cleanup is observable rather than
+ * assumed: a run that reached a terminal status states what it released, including cleanup that
+ * failed. A receipt is written for the attempt, not for the success, so a failed release is
+ * visible instead of being indistinguishable from one that never ran.
+ */
+export interface CleanupReceipt {
+  /**
+   * Workspace this cleanup was performed in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this receipt, unique within its workspace.
+   */
+  readonly cleanup_receipt_id: Identifier;
+  /**
+   * The run this cleanup was performed for.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Open code naming what was cleaned up, such as `capability_grant` or `staged_content`.
+   */
+  readonly resource_kind: OpenCode;
+  /**
+   * What this cleanup achieved.
+   */
+  readonly outcome: CleanupOutcome;
+  /**
+   * Open code naming why this outcome was reached, such as `run_terminal` or
+   * `resource_locked`.
+   */
+  readonly reason: OpenCode;
+  /**
+   * When this cleanup was performed.
+   */
+  readonly performed_at: Timestamp;
+  /**
+   * Immutable reference to the audit record for this cleanup.
+   */
+  readonly audit_reference: AuditReference;
+}
+
+/**
+ * The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`.
+ * Deliberately outside the application job family: it is not `job.retry`, there is no
+ * `job.resume`, it is not a `JobControl` member, and it neither requeues a job nor names one --
+ * it carries no `job_id`, and nothing here selects a recovery. It names the wait it resolves,
+ * how it resolves it, and the resume digest the wait published, so a resolution proves it is
+ * resuming the state that was suspended. The resolution must match the wait's kind: a signal
+ * never resolves an approval, and an approval decision never resolves a timer.
+ */
+export interface ResolveWait {
+  /**
+   * Workspace the wait was created in. Stated explicitly: a resolution is never resolved
+   * against the wrong workspace.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * The run whose wait is being resolved.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The one wait this command resolves.
+   */
+  readonly wait_id: Identifier;
+  /**
+   * How the wait is resolved. Must match the wait's own kind.
+   */
+  readonly resolution: WaitResolution;
+  /**
+   * The recorded approval carrying the decision. Present exactly when `resolution` is
+   * `approval_decision`.
+   */
+  readonly approval_id?: Identifier;
+  /**
+   * The digest the wait published. A resolution quoting a different digest is resuming a
+   * different state and is refused.
+   */
+  readonly resume_digest: ContentChecksum;
+  /**
+   * When this resolution was requested.
+   */
+  readonly requested_at: Timestamp;
+  /**
+   * Open code naming why the wait is being resolved, such as `approved` or `signal_received`.
+   * Never an authorization input.
+   */
+  readonly reason: OpenCode;
+}
+
+/**
  * A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
  * carries no `operation`, no `input`, and no workspace or authority scoping, because a probe
  * must be answerable before those concepts apply.
@@ -3766,6 +4738,155 @@ export interface RecordIdentity {
 }
 
 /**
+ * One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
+ * workspace and start instant never change, and an attempt terminalizes exactly once. Within a
+ * step, attempts are numbered `1..N` contiguously and never overlap; only a `failed`,
+ * `cancelled` or `uncertain` attempt may be followed by another, because a `succeeded` attempt
+ * is final. An `uncertain` attempt is the case retrying blindly would corrupt: whether its
+ * effect landed is not known, so the next step is reconciliation, not repetition.
+ */
+export interface Attempt {
+  /**
+   * Workspace this attempt ran in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this attempt, unique within its workspace.
+   */
+  readonly attempt_id: Identifier;
+  /**
+   * The run this attempt belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step this attempt is an execution of.
+   */
+  readonly run_step_id: Identifier;
+  /**
+   * 1-based ordinal of this attempt within its step.
+   */
+  readonly attempt_number: number;
+  /**
+   * Status this attempt reached.
+   */
+  readonly status: AttemptStatus;
+  /**
+   * When this attempt started.
+   */
+  readonly started_at: Timestamp;
+  /**
+   * When this attempt finished. Present exactly when the attempt is no longer running.
+   */
+  readonly finished_at?: Timestamp;
+  /**
+   * The failure this attempt ended with, when it failed. Never present on an `uncertain`
+   * attempt: uncertainty is not failure, and giving it an error would licence the retry the
+   * uncertainty forbids.
+   */
+  readonly failure?: ApiError;
+}
+
+/**
+ * Evidence that an intended effect was actually observed to execute, bound to the intent that
+ * authorized it. A receipt never stands alone: it names its `EffectIntent`, shares that intent's
+ * run and workspace, and is never observed before the intent was declared. A provider-side
+ * reference may be attached as correlation, but it is an `ExternalReference` and therefore
+ * subordinate evidence -- it identifies the effect somewhere else, and never becomes the
+ * authority for whether the effect happened here.
+ */
+export interface EffectReceipt {
+  /**
+   * Workspace this receipt was observed in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this receipt, unique within its workspace.
+   */
+  readonly effect_receipt_id: Identifier;
+  /**
+   * The run this receipt belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The intent this receipt is evidence for. Required: there is no receipt without an intent.
+   */
+  readonly effect_intent_id: Identifier;
+  /**
+   * When the effect was observed to have executed. Never earlier than the intent's
+   * `declared_at`.
+   */
+  readonly observed_at: Timestamp;
+  /**
+   * Digest of the exact response bytes observed, so two deliveries of one logical effect can
+   * be compared rather than assumed equal.
+   */
+  readonly response_digest: ContentChecksum;
+  /**
+   * Where this effect is identified outside this contract, when it is. Correlation and
+   * subordinate evidence only.
+   */
+  readonly external_reference?: ExternalReference;
+}
+
+/**
+ * One piece of evidence a run captured, bound to the run that captured it. `authoritative` is
+ * the load-bearing field: only evidence the runtime itself recorded may be authoritative, and
+ * evidence drawn from an external log, an agent-lane ledger or a control-plane projection is
+ * subordinate however complete it looks -- it corroborates the runtime's own record and never
+ * replaces it. `retained` states whether the evidence is still held: cancelling a run stops the
+ * work, never the record, so a cancelled run's evidence stays retained.
+ */
+export interface EvidenceItem {
+  /**
+   * Workspace this evidence was captured in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this evidence item, unique within its workspace.
+   */
+  readonly evidence_item_id: Identifier;
+  /**
+   * The run that captured this evidence.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step that captured this evidence, when one step did.
+   */
+  readonly run_step_id?: Identifier;
+  /**
+   * Open code naming what this evidence is, such as `model_invocation` or
+   * `capability_response`.
+   */
+  readonly evidence_kind: OpenCode;
+  /**
+   * Where this evidence came from, qualified by domain. A non-`runtime` source is subordinate
+   * evidence and can never be authoritative.
+   */
+  readonly source: ExternalReference;
+  /**
+   * Digest of the captured evidence content, proving it has not been altered since capture.
+   */
+  readonly content_checksum: ContentChecksum;
+  /**
+   * The artifact holding this evidence's content, when it was stored as one.
+   */
+  readonly artifact_id?: Identifier;
+  /**
+   * When this evidence was captured.
+   */
+  readonly captured_at: Timestamp;
+  /**
+   * True only when the runtime itself recorded this evidence. Evidence from any other source
+   * is subordinate and must state false.
+   */
+  readonly authoritative: boolean;
+  /**
+   * True while this evidence is still held. Cancelling a run never sets it false.
+   */
+  readonly retained: boolean;
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -4463,6 +5584,58 @@ export interface ProvenanceEntry {
 }
 
 /**
+ * One step of a run, with the complete attempt history that executed it. Steps are ordered
+ * `1..N` contiguously within a run and never renumbered; the history is append-only, so a
+ * correction is a further attempt rather than an edit to a recorded one. A step that is
+ * `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is
+ * suspended on cannot be resolved.
+ */
+export interface RunStep {
+  /**
+   * Workspace this step ran in.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this step, unique within its workspace.
+   */
+  readonly run_step_id: Identifier;
+  /**
+   * The run this step belongs to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * 1-based position of this step within its run.
+   */
+  readonly ordinal: number;
+  /**
+   * Open code naming what this step does, such as `plan` or `capability_call` or
+   * `approval_wait`. Descriptive: it never selects an implementation.
+   */
+  readonly step_kind: OpenCode;
+  /**
+   * Status this step currently reports.
+   */
+  readonly status: RunStepStatus;
+  /**
+   * When this step was created.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When this step was last observed to change.
+   */
+  readonly updated_at: Timestamp;
+  /**
+   * Every execution attempt of this step, in ascending attempt number. Empty for a step that
+   * never executed.
+   */
+  readonly attempts: readonly Attempt[];
+  /**
+   * The wait holding this step, present exactly when the step is `waiting`.
+   */
+  readonly wait_id?: Identifier;
+}
+
+/**
  * The answer to one runtime probe. Deliberately distinct from `SuccessResponseEnvelope` /
  * `ErrorResponseEnvelope`: it carries no `result`/`error` branch and no negotiated authority,
  * because a probe answers a transport-level question, not an application operation.
@@ -5027,6 +6200,126 @@ export interface RecordProvenance {
    * one did. Absent for a claim a human asserted directly.
    */
   readonly extraction?: CandidateExtractionMetadata;
+}
+
+/**
+ * One canonical execution of an Agent Component or Workflow, with the complete history that
+ * produced it. Workspace-scoped by construction: the run and every record hanging off it state
+ * the same `workspace_id`, so no part of a run's history can be read against the wrong
+ * workspace. `logical_key` is the run's stable idempotency identity -- two admissions carrying
+ * the same logical key are the same run replayed, not two runs -- and it is what makes a replay
+ * provable rather than assumed. The aggregate is deliberately complete: a run states its policy,
+ * its budget, its grants, its steps, its waits and approvals, its intended and settled effects,
+ * its event stream, its artifacts, its evidence and its cleanup, because each of those is a
+ * question a reader of a finished run has to be able to answer without a second read. Every one
+ * of those arrays is stated, empty when there is nothing in it: a run with no waits and a run
+ * that forgot to mention its waits are not two readings a caller should have to tell apart, and
+ * `finished_at` is the single optional field, absent exactly while the run has not finished.
+ */
+export interface Run {
+  /**
+   * Workspace this run belongs to. Every record in this run restates it, and every one must
+   * agree.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this run, unique within its workspace. Never joined to an identifier from
+   * another domain, however similarly spelled.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The executable definition this run executes.
+   */
+  readonly definition: RunDefinitionRef;
+  /**
+   * Where this run stands.
+   */
+  readonly status: RunStatus;
+  /**
+   * The stable logical identity of the work this run performs. Equal keys over equal
+   * definitions are one run replayed; equal keys over different definitions are a conflict.
+   */
+  readonly logical_key: IdempotencyKey;
+  /**
+   * The application operation whose invocation admitted this run.
+   */
+  readonly originating_operation: OperationName;
+  /**
+   * Immutable reference to the audit record for this run's admission.
+   */
+  readonly audit_reference: AuditReference;
+  /**
+   * When this run was admitted.
+   */
+  readonly created_at: Timestamp;
+  /**
+   * When this run was last observed to change.
+   */
+  readonly updated_at: Timestamp;
+  /**
+   * When this run reached a terminal status, when it has.
+   */
+  readonly finished_at?: Timestamp;
+  /**
+   * The policy revision currently in force for this run.
+   */
+  readonly policy: PolicySnapshot;
+  /**
+   * The budget revision currently in force for this run.
+   */
+  readonly budget: BudgetSnapshot;
+  /**
+   * Every capability issued to this run. May be empty: a run that invokes nothing is granted
+   * nothing.
+   */
+  readonly capability_grants: readonly CapabilityGrant[];
+  /**
+   * Every step of this run, in ascending ordinal.
+   */
+  readonly steps: readonly RunStep[];
+  /**
+   * Every durable wait this run has entered, resolved or otherwise.
+   */
+  readonly waits: readonly Wait[];
+  /**
+   * Every approval requested for this run, decided or otherwise.
+   */
+  readonly approvals: readonly Approval[];
+  /**
+   * Every effect this run declared before acting. Nothing observed or settled may be absent
+   * from here.
+   */
+  readonly effect_intents: readonly EffectIntent[];
+  /**
+   * Every observation that an intended effect executed.
+   */
+  readonly effect_receipts: readonly EffectReceipt[];
+  /**
+   * Every audited answer to what happened to an intended effect.
+   */
+  readonly effect_settlements: readonly EffectSettlement[];
+  /**
+   * This run's ordered event stream, contiguous from sequence zero.
+   */
+  readonly events: readonly RuntimeEvent[];
+  /**
+   * Every output this run produced.
+   */
+  readonly artifacts: readonly Artifact[];
+  /**
+   * Every piece of evidence this run captured. Cancelling a run never empties it.
+   */
+  readonly evidence: readonly EvidenceItem[];
+  /**
+   * Every cleanup this run performed. A terminal run states at least one, because cleanup is
+   * observable rather than assumed.
+   */
+  readonly cleanup_receipts: readonly CleanupReceipt[];
+  /**
+   * Source-qualified pointers at how this run appears in other domains. Correlation only: none
+   * of them is authority over this run's own record.
+   */
+  readonly correlations: readonly ExternalReference[];
 }
 
 /**

@@ -152,6 +152,48 @@ def test_fixture_tolerant_decode_matches_declared_catches_a_wrong_expectation(
     assert "compatible-negotiation" in findings[0]
 
 
+def test_fixture_tolerant_decode_matches_declared_reports_a_definition_that_is_not_a_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest entry naming a scalar is a finding, not an `AttributeError`.
+
+    `definition` is resolved by name off the generated module, so a name that resolves to a
+    scalar alias -- `AttemptStatus` is `str` -- has no `from_wire` to reach through. The gate
+    exists to report malformed manifests, and one that dies on the way to reporting one
+    reports nothing at all, including everything it had not checked yet.
+    """
+    monkeypatch.setattr(
+        checker,
+        "_load_manifest",
+        lambda: [
+            {
+                "id": "runtime-run-replay",
+                "file": "runtime-run-replay.json",
+                "definition": "AttemptStatus",
+                "tolerant_decode": True,
+            }
+        ],
+    )
+    findings = checker.check_fixture_tolerant_decode_matches_declared()
+    assert len(findings) == 1
+    assert "AttemptStatus" in findings[0]
+
+
+@pytest.mark.parametrize("envelope", [[], {}, 7, True])
+def test_fixture_target_ref_reports_a_malformed_envelope_rather_than_raising(
+    envelope: Any,
+) -> None:
+    """A manifest entry whose `envelope` is not a string is a finding, not a `TypeError`.
+
+    The manifest is untrusted input to this gate, and an unhashable value like `[]` makes a
+    bare `envelope not in _ENVELOPE_REFS` raise. A gate that dies while reporting one
+    malformed entry reports nothing at all, including everything it had not checked yet.
+    """
+    ref, reason = checker._fixture_target_ref({"envelope": envelope})
+    assert ref is None
+    assert "unknown envelope" in reason
+
+
 def test_registry_sources_are_exact_catches_a_reordered_list(monkeypatch: pytest.MonkeyPatch) -> None:
     real_load_schema = cast("SchemaLoader", checker._load_schema)
 

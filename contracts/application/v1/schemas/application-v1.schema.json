@@ -19,7 +19,8 @@
     "https://contracts.omnivia.dev/application/v1/knowledge.schema.json",
     "https://contracts.omnivia.dev/application/v1/graph.schema.json",
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
-    "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json"
+    "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -627,6 +628,93 @@
     },
     "CompatibilityMatrix": {
       "$ref": "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json#/$defs/CompatibilityMatrix"
+    },
+    "RuntimeSourceKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeSourceKind"
+    },
+    "RunStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStatus"
+    },
+    "RunStepStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStepStatus"
+    },
+    "AttemptStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/AttemptStatus"
+    },
+    "WaitKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitKind"
+    },
+    "WaitStatus": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitStatus"
+    },
+    "WaitResolution": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WaitResolution"
+    },
+    "ApprovalDecision": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ApprovalDecision"
+    },
+    "EffectOutcome": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectOutcome"
+    },
+    "CleanupOutcome": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupOutcome"
+    },
+    "RunDefinitionKind": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionKind"
+    },
+    "ExternalReference": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference"
+    },
+    "RunDefinitionRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionRef"
+    },
+    "PolicySnapshot": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/PolicySnapshot"
+    },
+    "BudgetSnapshot": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/BudgetSnapshot"
+    },
+    "CapabilityGrant": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CapabilityGrant"
+    },
+    "Attempt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Attempt"
+    },
+    "RunStep": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunStep"
+    },
+    "Wait": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Wait"
+    },
+    "Approval": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Approval"
+    },
+    "EffectIntent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectIntent"
+    },
+    "EffectReceipt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectReceipt"
+    },
+    "EffectSettlement": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EffectSettlement"
+    },
+    "RuntimeEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RuntimeEvent"
+    },
+    "Artifact": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Artifact"
+    },
+    "EvidenceItem": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/EvidenceItem"
+    },
+    "CleanupReceipt": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupReceipt"
+    },
+    "Run": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run"
+    },
+    "ResolveWait": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
     }
   }
 }
