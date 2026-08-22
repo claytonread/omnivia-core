@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "omnivia-core-runtime"
 version = "0.1.0"
-description = "Operational OmniVia Core local service: fenced workspace storage and migrations, ownership and recovery, durable jobs, and the application operation surface. Depends on omnivia-core; does not implement the Agent Runtime domain."
+description = "Operational OmniVia Core local service with fenced storage, durable jobs, and the canonical Agent Runtime persistence, command, replay, scheduler, and wait foundation."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
