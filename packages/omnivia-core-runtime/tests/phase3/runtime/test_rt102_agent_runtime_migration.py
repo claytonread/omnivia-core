@@ -597,11 +597,16 @@ def test_the_canonical_schema_carries_every_object_this_slice_adds(
         }
     finally:
         connection.close()
-    assert len(triggers) == 24
-    for table in TABLES:
-        stem = table.removeprefix("omnivia_")
-        for statement in ("insert", "update", "delete"):
-            assert f"omnivia_guard_{stem}_{statement}" in triggers
+    # A subset claim, not a claim about the whole `omnivia_guard_runtime_%` namespace:
+    # RT-103 names its own guards in it too, and this slice has authority over its own
+    # eight tables' twenty-four triggers and none over what lands beside them.
+    own_triggers = {
+        f"omnivia_guard_{table.removeprefix('omnivia_')}_{statement}"
+        for table in TABLES
+        for statement in ("insert", "update", "delete")
+    }
+    assert len(own_triggers) == 24
+    assert own_triggers <= triggers
 
 
 def test_drift_in_any_object_this_slice_adds_is_detected(migrated: Path) -> None:
@@ -672,22 +677,25 @@ def test_a_populated_0017_head_reaches_0018_with_every_prior_fact_intact(
         finally:
             head.close()
 
-    maintenance = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
-    try:
-        state = read_workspace_state(maintenance)
-        assert state is not None
-        applied = apply_pending_migrations(
-            maintenance,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=m1.SERVICE_INSTANCE,
-            fencing_generation=state.fencing_generation,
-            workspace_id=WORKSPACE_ID,
-        )
-        after = capture_inventory(maintenance)
-        assert integrity_check(maintenance) == []
-        assert foreign_key_check(maintenance) == []
-    finally:
-        maintenance.close()
+    # Scoped to exactly this slice's own version: a prefix claim about 0018 landing
+    # cleanly on a populated 0017 head, not a claim that no migration ever follows it.
+    with m1.migration_catalogue_through(MIGRATION_VERSION):
+        maintenance = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
+        try:
+            state = read_workspace_state(maintenance)
+            assert state is not None
+            applied = apply_pending_migrations(
+                maintenance,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=m1.SERVICE_INSTANCE,
+                fencing_generation=state.fencing_generation,
+                workspace_id=WORKSPACE_ID,
+            )
+            after = capture_inventory(maintenance)
+            assert integrity_check(maintenance) == []
+            assert foreign_key_check(maintenance) == []
+        finally:
+            maintenance.close()
 
     assert [m.version for m in applied] == [MIGRATION_VERSION]
     assert before.total_rows > 0

@@ -1,10 +1,10 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103).
 
-Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait` and `RuntimeEvent` on
-migration 0018, and nothing above them. There is no command envelope, no
-`ResolveWait` handling, no admission decision and no status machine here: RT-104
-owns the command/event-append transaction, and this module gives it the writes and
-reads to build one out of.
+Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
+0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019), and nothing
+above them. There is no command envelope, no `ResolveWait` handling, no admission
+decision and no status machine here: RT-104 owns the command/event-append
+transaction, and this module gives it the writes and reads to build one out of.
 
 Every public write function opens its own `fenced_transaction` rather than assuming
 the caller did, so a repository call is durable authority-checked on entry and again
@@ -26,12 +26,19 @@ fence: the context manager is what hands it out.
 Two boundary decisions, stated rather than papered over:
 
 * Reads return the generated contract records -- `RunStep`, `Attempt`, `Wait`,
-  `RuntimeEvent` -- because each can be materialised honestly from what 0018 stores.
-* A whole `Run` cannot be. The accepted contract requires a `PolicySnapshot`, a
-  `BudgetSnapshot`, capability grants, artifacts, evidence and cleanup receipts,
-  whose stores belong to RT-103 and RT-202+. `read_run` therefore returns
-  :class:`RunSnapshot`, which states exactly what this migration holds, rather than
-  a `Run` with six invented fields.
+  `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt` -- because each can be
+  materialised honestly from what 0018 and 0019 store.
+* A whole `Run` cannot be. The accepted contract also requires a `PolicySnapshot`, a
+  `BudgetSnapshot`, capability grants and the effect family, whose stores belong to
+  RT-202+. `read_run` therefore returns :class:`RunSnapshot`, which states exactly
+  what these two migrations hold, rather than a `Run` with the remaining fields
+  invented.
+
+A missing `omnivia_blob_objects` row for an artifact's content address is an
+availability fact, not a reason to refuse or hide the artifact's own metadata:
+:func:`read_blob_availability` reports it as unavailable, and every artifact read
+still returns the row this module stores regardless of what the blob catalogue
+currently holds.
 
 Every read takes the caller's workspace and filters on it in SQL. A workspace that
 arrives inside a record is never the one a query runs against: an identifier without
@@ -55,8 +62,11 @@ from omnivia_core.contracts.v1 import (
     RUN_TERMINAL_STATUSES,
     WAIT_STATUS_PENDING,
     ApiError,
+    Artifact,
     Attempt,
+    CleanupReceipt,
     ContractDecodeError,
+    EvidenceItem,
     ExternalReference,
     RunDefinitionRef,
     RunStep,
@@ -174,14 +184,14 @@ class RunAdmission:
 
 @dataclass(frozen=True, slots=True)
 class RunSnapshot:
-    """What RT-102 can honestly report about one canonical run.
+    """What RT-102 and RT-103 can honestly report about one canonical run.
 
-    Deliberately not a `Run`. The contract's aggregate requires a policy snapshot, a
-    budget snapshot, capability grants, artifacts, evidence and cleanup receipts;
-    none of those has a store yet, and filling them in to satisfy a type would
-    report data nobody recorded. `status`, `updated_at` and `finished_at` are read
-    from the event stream, which states the run status in force at every entry, so
-    they are derived from stored facts rather than maintained beside them.
+    Deliberately not a `Run`. The contract's aggregate also requires a policy
+    snapshot, a budget snapshot, capability grants and the effect family; none of
+    those has a store yet, and filling them in to satisfy a type would report data
+    nobody recorded. `status`, `updated_at` and `finished_at` are read from the
+    event stream, which states the run status in force at every entry, so they are
+    derived from stored facts rather than maintained beside them.
     """
 
     workspace_id: str
@@ -199,6 +209,9 @@ class RunSnapshot:
     steps: tuple[RunStep, ...]
     waits: tuple[Wait, ...]
     events: tuple[RuntimeEvent, ...]
+    artifacts: tuple[Artifact, ...]
+    evidence: tuple[EvidenceItem, ...]
+    cleanup_receipts: tuple[CleanupReceipt, ...]
     correlations: tuple[ExternalReference, ...]
 
 
@@ -480,6 +493,122 @@ class RuntimeWriter:
         )
         return sequence
 
+    def append_artifact(
+        self,
+        *,
+        artifact_id: str,
+        run_id: str,
+        artifact_kind: str,
+        media_type: str,
+        content_checksum: str,
+        content_length_bytes: int,
+        produced_at_us: int,
+        run_step_id: str | None = None,
+    ) -> None:
+        """Record one content-addressed output a run produced.
+
+        Storage only, and independent of any physical blob: the content address and
+        length are recorded whether or not `omnivia_blob_objects` currently holds a
+        matching row. The migration's guard refuses only an outright contradiction --
+        a verified blob of this same address whose length disagrees.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_artifacts "
+            "(workspace_id, artifact_id, run_id, run_step_id, artifact_kind, "
+            "media_type, content_checksum, content_length_bytes, produced_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                artifact_id,
+                run_id,
+                run_step_id,
+                artifact_kind,
+                media_type,
+                content_checksum,
+                content_length_bytes,
+                produced_at_us,
+            ),
+        )
+
+    def append_evidence_item(
+        self,
+        *,
+        evidence_item_id: str,
+        run_id: str,
+        evidence_kind: str,
+        source: ExternalReference,
+        content_checksum: str,
+        captured_at_us: int,
+        authoritative: bool,
+        retained: bool,
+        run_step_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> None:
+        """Record one piece of evidence a run captured, exactly once.
+
+        `source` is stored as its three fields rather than a nested document, so it
+        round-trips through the same columns a correlation's own `workspace_id`,
+        `source_kind` and `source_id` are: nothing here re-encodes it as JSON. The
+        migration refuses an authoritative claim from anything but the runtime's own
+        record, and refuses an `artifact_id` that names an artifact of another run or
+        a different checksum.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_evidence "
+            "(workspace_id, evidence_item_id, run_id, run_step_id, evidence_kind, "
+            "source_kind, source_id, source_workspace_id, content_checksum, "
+            "artifact_id, captured_at_us, authoritative, retained) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                evidence_item_id,
+                run_id,
+                run_step_id,
+                evidence_kind,
+                source.source_kind,
+                source.source_id,
+                source.workspace_id,
+                content_checksum,
+                artifact_id,
+                captured_at_us,
+                1 if authoritative else 0,
+                1 if retained else 0,
+            ),
+        )
+
+    def append_cleanup_receipt(
+        self,
+        *,
+        cleanup_receipt_id: str,
+        run_id: str,
+        resource_kind: str,
+        outcome: str,
+        reason: str,
+        performed_at_us: int,
+        audit_reference: str,
+    ) -> None:
+        """Record that cleanup was attempted for one run, and what it achieved.
+
+        Written for the attempt, not for the success: a `failed` outcome is as
+        storable as `released` or `not_required`, so a failed release is a row
+        rather than silence indistinguishable from cleanup that never ran.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_cleanup_receipts "
+            "(workspace_id, cleanup_receipt_id, run_id, resource_kind, outcome, "
+            "reason, performed_at_us, audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                cleanup_receipt_id,
+                run_id,
+                resource_kind,
+                outcome,
+                reason,
+                performed_at_us,
+                audit_reference,
+            ),
+        )
+
     def _next_sequence(self, query: str, parameters: tuple[object, ...]) -> int:
         row = self.connection.execute(query, parameters).fetchone()
         if row is None:  # pragma: no cover - an aggregate always returns one row
@@ -733,6 +862,110 @@ def append_run_event(
         )
 
 
+def append_artifact(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    artifact_id: str,
+    run_id: str,
+    artifact_kind: str,
+    media_type: str,
+    content_checksum: str,
+    content_length_bytes: int,
+    produced_at_us: int,
+    run_step_id: str | None = None,
+) -> None:
+    """Record one content-addressed output a run produced, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_artifact(
+            artifact_id=artifact_id,
+            run_id=run_id,
+            run_step_id=run_step_id,
+            artifact_kind=artifact_kind,
+            media_type=media_type,
+            content_checksum=content_checksum,
+            content_length_bytes=content_length_bytes,
+            produced_at_us=produced_at_us,
+        )
+
+
+def append_evidence_item(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    evidence_item_id: str,
+    run_id: str,
+    evidence_kind: str,
+    source: ExternalReference,
+    content_checksum: str,
+    captured_at_us: int,
+    authoritative: bool,
+    retained: bool,
+    run_step_id: str | None = None,
+    artifact_id: str | None = None,
+) -> None:
+    """Record one piece of evidence a run captured, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_evidence_item(
+            evidence_item_id=evidence_item_id,
+            run_id=run_id,
+            run_step_id=run_step_id,
+            evidence_kind=evidence_kind,
+            source=source,
+            content_checksum=content_checksum,
+            artifact_id=artifact_id,
+            captured_at_us=captured_at_us,
+            authoritative=authoritative,
+            retained=retained,
+        )
+
+
+def append_cleanup_receipt(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    cleanup_receipt_id: str,
+    run_id: str,
+    resource_kind: str,
+    outcome: str,
+    reason: str,
+    performed_at_us: int,
+    audit_reference: str,
+) -> None:
+    """Record that cleanup was attempted for one run, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_cleanup_receipt(
+            cleanup_receipt_id=cleanup_receipt_id,
+            run_id=run_id,
+            resource_kind=resource_kind,
+            outcome=outcome,
+            reason=reason,
+            performed_at_us=performed_at_us,
+            audit_reference=audit_reference,
+        )
+
+
 # --- reads --------------------------------------------------------------------
 
 
@@ -840,6 +1073,199 @@ def read_run_waits(
         )
         for row in rows
     )
+
+
+def read_run_artifacts(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[Artifact, ...]:
+    """Every artifact this run produced, in production order then identifier order."""
+    rows = connection.execute(
+        "SELECT artifact_id, run_step_id, artifact_kind, media_type, "
+        "content_checksum, content_length_bytes, produced_at_us "
+        "FROM omnivia_runtime_artifacts "
+        "WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY produced_at_us, artifact_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(
+        Artifact(
+            workspace_id=workspace_id,
+            artifact_id=str(row[0]),
+            run_id=run_id,
+            run_step_id=None if row[1] is None else str(row[1]),
+            artifact_kind=str(row[2]),
+            media_type=str(row[3]),
+            content_checksum=str(row[4]),
+            content_length_bytes=int(row[5]),
+            produced_at=_timestamp(int(row[6])),
+        )
+        for row in rows
+    )
+
+
+def read_artifact(
+    connection: sqlite3.Connection, *, workspace_id: str, artifact_id: str
+) -> Artifact | None:
+    """One artifact by identifier, or `None` when this workspace holds no such artifact."""
+    row = connection.execute(
+        "SELECT run_id, run_step_id, artifact_kind, media_type, content_checksum, "
+        "content_length_bytes, produced_at_us FROM omnivia_runtime_artifacts "
+        "WHERE workspace_id = ? AND artifact_id = ?",
+        (workspace_id, artifact_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return Artifact(
+        workspace_id=workspace_id,
+        artifact_id=artifact_id,
+        run_id=str(row[0]),
+        run_step_id=None if row[1] is None else str(row[1]),
+        artifact_kind=str(row[2]),
+        media_type=str(row[3]),
+        content_checksum=str(row[4]),
+        content_length_bytes=int(row[5]),
+        produced_at=_timestamp(int(row[6])),
+    )
+
+
+def read_run_evidence(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[EvidenceItem, ...]:
+    """Every evidence item this run captured, in capture order then identifier order."""
+    rows = connection.execute(
+        "SELECT evidence_item_id, run_step_id, evidence_kind, source_kind, "
+        "source_id, source_workspace_id, content_checksum, artifact_id, "
+        "captured_at_us, authoritative, retained FROM omnivia_runtime_evidence "
+        "WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY captured_at_us, evidence_item_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(_evidence_item_from_row(run_id, row) for row in rows)
+
+
+def read_evidence_item(
+    connection: sqlite3.Connection, *, workspace_id: str, evidence_item_id: str
+) -> EvidenceItem | None:
+    """One evidence item by identifier, or `None` when this workspace holds no such item."""
+    row = connection.execute(
+        "SELECT run_id, run_step_id, evidence_kind, source_kind, source_id, "
+        "source_workspace_id, content_checksum, artifact_id, captured_at_us, "
+        "authoritative, retained FROM omnivia_runtime_evidence "
+        "WHERE workspace_id = ? AND evidence_item_id = ?",
+        (workspace_id, evidence_item_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _evidence_item_from_row(str(row[0]), (evidence_item_id, *row[1:]))
+
+
+def _evidence_item_from_row(run_id: str, row: tuple[object, ...]) -> EvidenceItem:
+    captured_at_us = row[8]
+    if not isinstance(captured_at_us, int):
+        raise StorageError("a stored evidence capture time is not an integer")
+    return EvidenceItem(
+        workspace_id=str(row[5]),
+        evidence_item_id=str(row[0]),
+        run_id=run_id,
+        run_step_id=None if row[1] is None else str(row[1]),
+        evidence_kind=str(row[2]),
+        source=ExternalReference(
+            source_kind=str(row[3]),
+            source_id=str(row[4]),
+            workspace_id=str(row[5]),
+        ),
+        content_checksum=str(row[6]),
+        artifact_id=None if row[7] is None else str(row[7]),
+        captured_at=_timestamp(captured_at_us),
+        authoritative=bool(row[9]),
+        retained=bool(row[10]),
+    )
+
+
+def read_run_cleanup_receipts(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[CleanupReceipt, ...]:
+    """Every cleanup receipt of this run, in performance order then identifier order."""
+    rows = connection.execute(
+        "SELECT cleanup_receipt_id, resource_kind, outcome, reason, "
+        "performed_at_us, audit_ref FROM omnivia_runtime_cleanup_receipts "
+        "WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY performed_at_us, cleanup_receipt_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(
+        CleanupReceipt(
+            workspace_id=workspace_id,
+            cleanup_receipt_id=str(row[0]),
+            run_id=run_id,
+            resource_kind=str(row[1]),
+            outcome=str(row[2]),
+            reason=str(row[3]),
+            performed_at=_timestamp(int(row[4])),
+            audit_reference=str(row[5]),
+        )
+        for row in rows
+    )
+
+
+def read_cleanup_receipt(
+    connection: sqlite3.Connection, *, workspace_id: str, cleanup_receipt_id: str
+) -> CleanupReceipt | None:
+    """One cleanup receipt by identifier, or `None` when this workspace holds no such receipt."""
+    row = connection.execute(
+        "SELECT run_id, resource_kind, outcome, reason, performed_at_us, audit_ref "
+        "FROM omnivia_runtime_cleanup_receipts "
+        "WHERE workspace_id = ? AND cleanup_receipt_id = ?",
+        (workspace_id, cleanup_receipt_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return CleanupReceipt(
+        workspace_id=workspace_id,
+        cleanup_receipt_id=cleanup_receipt_id,
+        run_id=str(row[0]),
+        resource_kind=str(row[1]),
+        outcome=str(row[2]),
+        reason=str(row[3]),
+        performed_at=_timestamp(int(row[4])),
+        audit_reference=str(row[5]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class BlobAvailability:
+    """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
+
+    An availability fact, never a permission or a corruption trigger: a `False` here
+    says only that this workspace's blob catalogue has no verified row for this exact
+    `(workspace_id, content_checksum)` pair right now. It fabricates no bytes and
+    raises for nothing this repository can already tell apart from a database error --
+    a missing blob is an ordinary, expected state for a Runtime record to outlive.
+    """
+
+    available: bool
+    content_length_bytes: int | None = None
+
+
+def read_blob_availability(
+    connection: sqlite3.Connection, *, workspace_id: str, content_checksum: str
+) -> BlobAvailability:
+    """Report whether the blob catalogue currently holds this content address.
+
+    Deliberately narrow: this is a read of the existing `omnivia_blob_objects`
+    catalogue (migration 0008), which records verified identity rather than physical
+    storage. It is not a second blob store, carries no filesystem path or URL, and an
+    absent row is reported as unavailable rather than raised as an error -- reading an
+    artifact's own metadata never depends on this answer.
+    """
+    row = connection.execute(
+        "SELECT content_length_bytes FROM omnivia_blob_objects "
+        "WHERE workspace_id = ? AND content_digest = ?",
+        (workspace_id, content_checksum),
+    ).fetchone()
+    if row is None:
+        return BlobAvailability(available=False)
+    return BlobAvailability(available=True, content_length_bytes=int(row[0]))
 
 
 def _attempts_by_step(
@@ -979,6 +1405,13 @@ def read_run(
         steps=read_run_steps(connection, workspace_id=workspace_id, run_id=run_id),
         waits=read_run_waits(connection, workspace_id=workspace_id, run_id=run_id),
         events=events,
+        artifacts=read_run_artifacts(
+            connection, workspace_id=workspace_id, run_id=run_id
+        ),
+        evidence=read_run_evidence(connection, workspace_id=workspace_id, run_id=run_id),
+        cleanup_receipts=read_run_cleanup_receipts(
+            connection, workspace_id=workspace_id, run_id=run_id
+        ),
         correlations=(
             ExternalReference(
                 source_kind=_JOB_SOURCE_KIND,
@@ -1004,17 +1437,28 @@ def read_workspace_run_ids(
 
 
 __all__ = [
+    "BlobAvailability",
     "RunAdmission",
     "RunSnapshot",
     "RuntimeWriter",
     "admit_run",
+    "append_artifact",
+    "append_cleanup_receipt",
+    "append_evidence_item",
     "append_run_event",
     "append_run_step",
     "close_wait",
     "finish_attempt",
     "open_wait",
+    "read_artifact",
+    "read_blob_availability",
+    "read_cleanup_receipt",
+    "read_evidence_item",
     "read_run",
+    "read_run_artifacts",
+    "read_run_cleanup_receipts",
     "read_run_events",
+    "read_run_evidence",
     "read_run_id_by_job",
     "read_run_id_by_logical_key",
     "read_run_steps",
