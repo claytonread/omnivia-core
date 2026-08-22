@@ -279,6 +279,19 @@ class RuntimeWriter:
                 admission.message,
             ),
         )
+        # RT-105's derived active-Run summary is part of this same transaction.
+        # Import locally to keep the projection module independent of this repository
+        # module while still giving RuntimeWriter the only incremental write seam.
+        from omnivia_core_runtime.storage.projections.runtime_run_summary import (
+            apply_runtime_run_summary_event,
+        )
+
+        apply_runtime_run_summary_event(
+            self.connection,
+            workspace_id=self.workspace_id,
+            run_id=admission.run_id,
+            runtime_event_id=admission.runtime_event_id,
+        )
 
     def append_run_step(
         self,
@@ -495,6 +508,16 @@ class RuntimeWriter:
                 digest,
                 byte_length,
             ),
+        )
+        from omnivia_core_runtime.storage.projections.runtime_run_summary import (
+            apply_runtime_run_summary_event,
+        )
+
+        apply_runtime_run_summary_event(
+            self.connection,
+            workspace_id=self.workspace_id,
+            run_id=run_id,
+            runtime_event_id=runtime_event_id,
         )
         return sequence
 

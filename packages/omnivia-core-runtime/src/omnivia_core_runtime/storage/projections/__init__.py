@@ -1,13 +1,15 @@
 """Derived read models built from authoritative storage, and nothing else.
 
 A projection in this package owns no truth. Every row it holds is reproducible from
-the tables 0008 and 0009 already carry, which is what makes a projection safe to
-delete and rebuild and what makes `omnivia_projection_ledger.rebuildable` a fact
-rather than an aspiration.
+the authoritative tables named by its module, which is what makes a projection safe
+to delete and rebuild and what makes a rebuildable claim a fact rather than an
+aspiration.
 
-One module today: `fts`, the `evidence.search` FTS5 projection. The lifecycle it
-drives -- runs, checkpoints, validation, activation -- is migration 0011's and is not
-re-implemented here; this package supplies the *content* those runs are about.
+Two projection shapes live here. `fts` is the independently rebuilt and atomically
+activated `evidence.search` snapshot whose lifecycle migration 0011 owns.
+`runtime_run_summary` is transactional materialised state: it advances in the same
+fenced transaction as the canonical RuntimeEvent and uses a per-Run cursor, so giving
+it a second activation pointer would make the live status lag by construction.
 """
 
 from __future__ import annotations
