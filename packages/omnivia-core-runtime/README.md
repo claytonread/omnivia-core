@@ -64,7 +64,15 @@ contract package. This operational package currently owns:
 - durable `Approval` and `CapabilityGrant` records: an approval request and its
   one decision are separate append-only facts, so a second decision is
   structurally impossible rather than merely refused, and a grant is stored as
-  the canonical wire document backed by the exact `PolicySnapshot` it names.
+  the canonical wire document backed by the exact `PolicySnapshot` it names; and
+- a pure, fail-closed capability gateway: a proposed action, the run's persisted
+  authority and a deterministic binding resolver decide one `AuthorizedInvocation`,
+  which carries authority and never an adapter handle. It reads no database, holds
+  no adapter and looks nothing up; the binding inventory, the records and the
+  instant are all arguments. Discovery stays out of authority here too -- a
+  discovered binding is excluded before selection rather than ranked below an
+  approved one, and two approved bindings tying at the highest satisfying version
+  are refused as ambiguous rather than resolved by inventory order.
 
 Two limits of accepted v1 shape what is stored. It records no requester identity
 and gives an `Approval` no field naming a grant it authorised, so neither is
@@ -74,11 +82,19 @@ its wait, and the deadlines a decision must fall inside. The exact action and
 state an approval is granted for stays bound by the existing `Wait.resume_digest`,
 which `ResolveWait` already checks; RT-203 adds no second digest.
 
+The gateway authorises; it does not dispatch. No accepted contract states which
+effect classes require an approval, gives an `Approval` a field naming a grant, or
+makes evidence mandatory for a class of action, so it invents none of them: a
+supplied approval must actually authorise, and the evidence a proposal names must
+be the runtime's own retained record. Those open questions are asserted as open in
+the RT-204 tests rather than closed by a local rule.
+
 These seams are private service implementation today; no new public runtime
 operation has been added to the frozen application catalogue. The following later
 milestones are intentionally not claimed by this package metadata: WorkerAdapter
-hosting, startup/orphan recovery, capability dispatch, effect
-intent/receipt/settlement, and uncertain-effect reconciliation.
+hosting, startup/orphan recovery, capability *dispatch* -- the gateway above
+decides authority only and holds no adapter -- effect intent/receipt/settlement,
+and uncertain-effect reconciliation.
 
 The accepted substrate ownership and migration decisions are recorded in
 `docs/specs/agent-runtime-substrate-reconciliation.md`.
