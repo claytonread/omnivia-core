@@ -49,7 +49,7 @@
       "state": "candidate",
       "predecessor": 20,
       "sha256": "0ee6f61bd34e901f2d5a952527fa275a966add7e5c25fe545ec35f44c592eb0f",
-      "introduced_commit": "95a61abd964029211384e59ebc01f791a00172ca",
+      "introduced_commit": "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
       "accepted_commit": null
     },
     {
@@ -60,7 +60,7 @@
       "state": "candidate",
       "predecessor": 21,
       "sha256": "350fa9904a4a1a7a2c52c9133e972649bffa05d430887f5f04c3568fbef9a828",
-      "introduced_commit": "f34bbf69f0afd720d2ecfc177e6431b605673b18",
+      "introduced_commit": "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
       "accepted_commit": null
     },
     {
