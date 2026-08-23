@@ -35,9 +35,9 @@ dispatch**: :class:`DispatchRequest` carries authority and correlation and never
 endpoint, socket, credential, adapter handle or request payload -- exactly the boundary
 `AuthorizedInvocation` holds one seam earlier. It registers no operation and adds no
 public wire surface; the frozen application catalogue is untouched and there is no
-`effect.dispatch` operation. It reconciles nothing: what to do about an `unknown`
-settlement is a later milestone, and inventing a rule for it here would be this module
-deciding a question no accepted contract has answered.
+`effect.dispatch` operation. And it reconciles nothing: an `unknown` settlement made here
+stands, immutable, and :mod:`.effect_reconciliation` is where the late answer to it is
+established and recorded beside it.
 """
 
 from __future__ import annotations

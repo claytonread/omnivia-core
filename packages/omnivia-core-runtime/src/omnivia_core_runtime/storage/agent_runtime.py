@@ -1,10 +1,11 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203, RT-205).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203, RT-205, RT-206).
 
 Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
 0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019),
 `PolicySnapshot` and `BudgetSnapshot` (migration 0021), `Approval` and
 `CapabilityGrant` (migration 0022), `EffectIntent`, the dispatch outbox, `EffectReceipt`
-and `EffectSettlement` (migration 0023), and nothing above them. There is
+and `EffectSettlement` (migration 0023), the late reconciliation of an effect settled
+`unknown` (migration 0024), and nothing above them. There is
 no command envelope, no `ResolveWait` handling, no admission decision and no status
 machine here: RT-104 owns the command/event-append transaction, and this module gives it
 the writes and reads to build one out of.
@@ -193,6 +194,10 @@ _EFFECT_RECEIPT_COLUMNS: Final = (
 _EFFECT_SETTLEMENT_COLUMNS: Final = (
     "effect_settlement_id, run_id, effect_intent_id, outcome, settled_at_us, reason, "
     "audit_ref, effect_receipt_id"
+)
+_EFFECT_RECONCILIATION_COLUMNS: Final = (
+    "effect_reconciliation_id, run_id, effect_intent_id, effect_settlement_id, "
+    "outcome, reconciled_at_us, reason, audit_ref, effect_receipt_id"
 )
 
 #: One `Approval`, joined from the request 0022 stores and the decision and comment it
@@ -392,14 +397,45 @@ class StoredCapabilityGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectReconciliation:
+    """The one late, explicit answer an `unknown` `EffectSettlement` is finally given.
+
+    A local record rather than a contract one, for the reason :class:`RunSnapshot` is
+    local: accepted v1 has `EffectIntent`, `EffectReceipt` and `EffectSettlement` and no
+    reconciliation shape, and publishing one as if it were canonical would be this
+    package inventing a record the contract does not have. Every field is either a field
+    an `EffectSettlement` already has or the identifier of the settlement being
+    reconciled, so nothing here is new vocabulary -- it is the same four things a
+    settlement says, said about a settlement.
+
+    It never replaces the settlement it names. 0023's `unknown` row stays exactly as
+    written, because the fact that the effect was once uncertain is itself part of the
+    record, and 0024 stores this beside it as a separate immutable fact.
+    """
+
+    workspace_id: str
+    effect_reconciliation_id: str
+    run_id: str
+    effect_intent_id: str
+    effect_settlement_id: str
+    outcome: str
+    reconciled_at: str
+    reason: str
+    audit_reference: str
+    effect_receipt_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunSnapshot:
     """What RT-102, RT-103, RT-202 and RT-203 can honestly report about one canonical run.
 
-    Deliberately not a `Run`. The contract's aggregate also requires the effect family,
-    which has no store yet, and filling it in to satisfy a type would report data nobody
-    recorded. `approvals` and `capability_grants` are what 0022 records, and
-    `effect_intents`, `effect_receipts` and `effect_settlements` are what 0023 records;
-    each is an empty tuple for a run that has none, which is an answer rather than a gap.
+    Deliberately not a `Run`. `approvals` and `capability_grants` are what 0022 records,
+    `effect_intents`, `effect_receipts` and `effect_settlements` are what 0023 records,
+    and `effect_reconciliations` is what 0024 records; each is an empty tuple for a run
+    that has none, which is an answer rather than a gap. The last has no counterpart on
+    the accepted aggregate at all -- reporting it here rather than folding it into
+    `effect_settlements` is what keeps an effect's `unknown` settlement and the answer it
+    was later given two facts instead of one overwritten one.
     `policy` and `budget` are the run's latest
     stored revisions and are optional for the same reason: a run admitted before
     migration 0021, or one whose decisions were never recorded, has neither, and `None`
@@ -433,6 +469,7 @@ class RunSnapshot:
     effect_intents: tuple[EffectIntent, ...] = ()
     effect_receipts: tuple[EffectReceipt, ...] = ()
     effect_settlements: tuple[EffectSettlement, ...] = ()
+    effect_reconciliations: tuple[EffectReconciliation, ...] = ()
     policy: PolicySnapshot | None = None
     budget: BudgetSnapshot | None = None
 
@@ -1293,8 +1330,9 @@ class RuntimeWriter:
         One settlement per intent, of any outcome: 0023 keys the row on the intent, so a
         second answer has nowhere to live under any spelling and re-settling is
         structurally impossible rather than merely refused. `unknown` is the honest third
-        answer and not a failure -- what reconciles it is a later milestone, and this
-        module invents no rule for it.
+        answer and not a failure -- and it stays exactly as written, because
+        :meth:`reconcile_effect` records the answer it later receives as a fact of its
+        own rather than as an amendment to this one.
         """
         intents = read_run_effect_intents(
             self.connection, workspace_id=self.workspace_id, run_id=settlement.run_id
@@ -1324,6 +1362,40 @@ class RuntimeWriter:
                 settlement.reason,
                 settlement.audit_reference,
                 settlement.effect_receipt_id,
+            ),
+        )
+
+    def reconcile_effect(self, reconciliation: EffectReconciliation) -> None:
+        """Record the one late answer an effect settled `unknown` is finally given.
+
+        Deliberately thin. Every rule a reconciliation has is a rule about rows this
+        database already holds -- the settlement being `unknown` and belonging to this
+        intent, the receipt a `committed` answer names being for the same intent and
+        observed no later than the reconciliation, the absence of any receipt or dispatch
+        behind a `not_committed` one -- and 0024 states all of them as guards on the
+        insert. Restating them here would be a second copy that could disagree, which is
+        the reason :meth:`record_effect_receipt` does not restate 0023's either.
+
+        The decision itself is not made here and the outcome is not this method's to
+        choose: :func:`~service.effect_reconciliation.decide_reconciliation` derives it
+        from the retained evidence, and this writes down what it derived.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_effect_reconciliations "
+            "(workspace_id, effect_reconciliation_id, run_id, effect_intent_id, "
+            "effect_settlement_id, outcome, reconciled_at_us, reason, audit_ref, "
+            "effect_receipt_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                reconciliation.effect_reconciliation_id,
+                reconciliation.run_id,
+                reconciliation.effect_intent_id,
+                reconciliation.effect_settlement_id,
+                reconciliation.outcome,
+                _instant_us(reconciliation.reconciled_at),
+                reconciliation.reason,
+                reconciliation.audit_reference,
+                reconciliation.effect_receipt_id,
             ),
         )
 
@@ -1884,6 +1956,24 @@ def settle_effect(
         fencing_generation=fencing_generation,
     ) as writer:
         writer.settle_effect(settlement)
+
+
+def reconcile_effect(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    reconciliation: EffectReconciliation,
+) -> None:
+    """Record the one reconciliation of an effect, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.reconcile_effect(reconciliation)
 
 
 # --- reads --------------------------------------------------------------------
@@ -2676,6 +2766,56 @@ def read_run_effect_settlements(
     return tuple(_effect_settlement_from_row(workspace_id, row) for row in rows)
 
 
+def _effect_reconciliation_from_row(
+    workspace_id: str, row: tuple[Any, ...]
+) -> EffectReconciliation:
+    return EffectReconciliation(
+        workspace_id=workspace_id,
+        effect_reconciliation_id=str(row[0]),
+        run_id=str(row[1]),
+        effect_intent_id=str(row[2]),
+        effect_settlement_id=str(row[3]),
+        outcome=str(row[4]),
+        reconciled_at=_timestamp(int(row[5])),
+        reason=str(row[6]),
+        audit_reference=str(row[7]),
+        effect_receipt_id=None if row[8] is None else str(row[8]),
+    )
+
+
+def read_effect_reconciliation_for_intent(
+    connection: sqlite3.Connection, *, workspace_id: str, effect_intent_id: str
+) -> EffectReconciliation | None:
+    """The one late answer this intent received, or `None` while it has none.
+
+    `None` is not "still uncertain": an intent that was never settled `unknown` has no
+    reconciliation to hold and never will. What an effect finally came to is this answer
+    when there is one and its settlement's otherwise, which is why both reads exist and
+    neither hides the other.
+    """
+    row = connection.execute(
+        f"SELECT {_EFFECT_RECONCILIATION_COLUMNS} "
+        "FROM omnivia_runtime_effect_reconciliations "
+        "WHERE workspace_id = ? AND effect_intent_id = ?",
+        (workspace_id, effect_intent_id),
+    ).fetchone()
+    return None if row is None else _effect_reconciliation_from_row(workspace_id, row)
+
+
+def read_run_effect_reconciliations(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[EffectReconciliation, ...]:
+    """Every effect this run reconciled, in reconciliation then identifier order."""
+    rows = connection.execute(
+        f"SELECT {_EFFECT_RECONCILIATION_COLUMNS} "
+        "FROM omnivia_runtime_effect_reconciliations "
+        "WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY reconciled_at_us, effect_reconciliation_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(_effect_reconciliation_from_row(workspace_id, row) for row in rows)
+
+
 @dataclass(frozen=True, slots=True)
 class BlobAvailability:
     """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
@@ -2885,6 +3025,9 @@ def read_run(
             connection, workspace_id=workspace_id, run_id=run_id
         ),
         effect_settlements=read_run_effect_settlements(
+            connection, workspace_id=workspace_id, run_id=run_id
+        ),
+        effect_reconciliations=read_run_effect_reconciliations(
             connection, workspace_id=workspace_id, run_id=run_id
         ),
         policy=None if policy is None else policy.snapshot,

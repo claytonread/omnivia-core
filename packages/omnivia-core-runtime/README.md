@@ -46,11 +46,11 @@ second queue or a second public application catalogue. Canonical, language-neutr
 record shapes and semantic validators remain owned by the public `omnivia-core`
 contract package. This operational package currently owns:
 
-- additive migrations `0018`–`0023` for `Run`, `RunStep`, `Attempt`, `Wait`,
+- additive migrations `0018`–`0024` for `Run`, `RunStep`, `Attempt`, `Wait`,
   `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, the rebuildable
   run-summary projection, `PolicySnapshot`/`BudgetSnapshot`,
-  `Approval`/`CapabilityGrant`, and `EffectIntent`/dispatch outbox/`EffectReceipt`/
-  `EffectSettlement`;
+  `Approval`/`CapabilityGrant`, `EffectIntent`/dispatch outbox/`EffectReceipt`/
+  `EffectSettlement`, and the late reconciliation of an effect settled `unknown`;
 - append/read repositories with immutable content references and degraded missing-
   blob reads;
 - transactional runtime commands with aggregate sequence expectations, application
@@ -92,7 +92,24 @@ contract package. This operational package currently owns:
   success, and a `committed` settlement must name a stored receipt for its own
   intent. Uncertainty is not failure: an `unknown` settlement stands, a late receipt
   is retained beside it as the evidence a reconciliation is owed, and a receipt that
-  contradicts a `not_committed` settlement is refused rather than resolved.
+  contradicts a `not_committed` settlement is refused rather than resolved; and
+- an explicit uncertain-effect reconciler that closes an `unknown` settlement without
+  overwriting it. Migration `0024` adds a relation rather than relaxing `0023`'s
+  one-settlement-per-intent key: the `unknown` row stays exactly as written, because
+  the fact that the effect was once uncertain is itself part of the record, and the
+  answer that later arrives is a second immutable fact naming the settlement it
+  answers. Settlement history is preserved and the final outcome is durable; neither
+  is bought with the other. Reconciliation is never a retry -- nothing here
+  dispatches, and reconciling changes no dispatch count. A retained late receipt for
+  the intent is the only route to `committed`; an effect never handed out reconciles
+  `not_committed`; and an effect that was dispatched with no receipt retained is
+  *refused* rather than answered, because neither outcome can be established from
+  this record and neither may be assumed. Contradictions fail closed: a
+  `not_committed` reconciliation is refused over any receipt or dispatch record, a
+  `committed` one must name a receipt for its own intent observed no later than the
+  reconciliation, only a settlement that is actually `unknown` may be reconciled, and
+  a second, different final answer has nowhere to live. Repeating a reconciliation
+  answers from the store and writes nothing.
 
 Two limits of accepted v1 shape what is stored. It records no requester identity
 and gives an `Approval` no field naming a grant it authorised, so neither is
@@ -119,10 +136,12 @@ invocation is not implemented here and is not implied by this record.
 These seams are private service implementation today; no new public runtime
 operation has been added to the frozen application catalogue. The following later
 milestones are intentionally not claimed by this package metadata: WorkerAdapter
-hosting, startup/orphan recovery, capability *dispatch* -- the gateway and the
-effect transaction above decide and record, and neither holds an adapter -- and
-uncertain-effect reconciliation, which is what an `unknown` settlement and its
-retained late receipt are left waiting for.
+hosting, startup/orphan recovery, and capability *dispatch* -- the gateway, the
+effect transaction and the reconciler above decide and record, and none of them
+holds an adapter. Reconciliation is bounded by the same rule: an effect that was
+dispatched with no receipt retained is resolved by a fact from outside Core, no
+accepted contract describes such a fact, and this package therefore refuses that
+case rather than inventing one.
 
 The accepted substrate ownership and migration decisions are recorded in
 `docs/specs/agent-runtime-substrate-reconciliation.md`.
