@@ -82,7 +82,7 @@ class SearchService:
         Returns:
             Excerpt with match context
         """
-        content = memory.content
+        content: str = memory.content
         query_lower = query.lower()
         content_lower = content.lower()
 

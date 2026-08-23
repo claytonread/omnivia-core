@@ -11,7 +11,7 @@ Deprecated: import these from ``omnivia_core.memory_graph.assembly`` instead.
 # and cross-leaf-imported bindings this leaf's historical namespace still has to
 # resolve: `annotations` and the thirteen contract names the canonical assembler
 # imports from its sibling `models` leaf. No other error code is suppressed.
-from omnivia_core.memory_graph.assembly import (  # type: ignore[attr-defined]
+from omnivia_core.memory_graph.assembly import (  # type: ignore[attr-defined,unused-ignore]
     EvidenceGraphResponse,
     GraphPreviewEdge,
     GraphPreviewKind,

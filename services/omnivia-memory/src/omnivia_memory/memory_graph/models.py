@@ -11,7 +11,7 @@ Deprecated: import these from ``omnivia_core.memory_graph.models`` instead.
 # bindings this leaf's historical namespace still has to resolve (`Any`, `Enum`,
 # `TypeAlias`, `annotations`, `dataclass`, `field`). No other error code is
 # suppressed.
-from omnivia_core.memory_graph.models import (  # type: ignore[attr-defined]
+from omnivia_core.memory_graph.models import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     Confidence,
     Enum,

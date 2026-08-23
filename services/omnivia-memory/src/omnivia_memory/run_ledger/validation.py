@@ -17,7 +17,7 @@ Deprecated: import ``TERMINAL_RUN_STATUSES`` / ``validate_evidence_file_ref`` /
 # imports from the shared-validation and knowledge-validation leaves) -- names
 # this leaf's historical namespace still has to resolve. No other error code is
 # suppressed.
-from omnivia_core.run_ledger.validation import (  # type: ignore[attr-defined]
+from omnivia_core.run_ledger.validation import (  # type: ignore[attr-defined,unused-ignore]
     RUN_LEDGER_CONTRACT_VERSION,
     TERMINAL_RUN_STATUSES,
     EvidenceFileRef,

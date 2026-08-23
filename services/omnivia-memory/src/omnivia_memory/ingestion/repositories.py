@@ -125,7 +125,7 @@ class SourceRepository:
     ) -> list[Source]:
         """List all source records, optionally filtered."""
         query = "SELECT * FROM sources"
-        params = []
+        params: list[str | int] = []
 
         conditions = []
         if file_type is not None:
@@ -144,7 +144,7 @@ class SourceRepository:
             query += " WHERE " + " AND ".join(conditions)
 
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])  # type: ignore[list-item]
+        params.extend([limit, offset])
 
         cursor = self.db.execute(query, tuple(params))
         return [self._row_to_source(row) for row in cursor.fetchall()]

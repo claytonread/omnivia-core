@@ -96,9 +96,10 @@ def write_ingestion_records_to_graph(
 
 
 def _required_workspace_id(source: Source) -> str:
-    if source.workspace_id is None or not source.workspace_id.strip():
+    workspace_id: str | None = source.workspace_id
+    if workspace_id is None or not workspace_id.strip():
         raise IngestionGraphAdapterError("source workspace_id is required")
-    return source.workspace_id
+    return workspace_id
 
 
 def _relative_uri(path: Path, workspace_root: Path) -> str:
