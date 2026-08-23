@@ -1,11 +1,12 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203, RT-205, RT-206).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203, RT-205, RT-206, RT-207).
 
 Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
 0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019),
 `PolicySnapshot` and `BudgetSnapshot` (migration 0021), `Approval` and
 `CapabilityGrant` (migration 0022), `EffectIntent`, the dispatch outbox, `EffectReceipt`
 and `EffectSettlement` (migration 0023), the late reconciliation of an effect settled
-`unknown` (migration 0024), and nothing above them. There is
+`unknown` (migration 0024), the one stop command a run is given and the workspace's
+emergency admission-stop ledger (migration 0025), and nothing above them. There is
 no command envelope, no `ResolveWait` handling, no admission decision and no status
 machine here: RT-104 owns the command/event-append transaction, and this module gives it
 the writes and reads to build one out of.
@@ -208,6 +209,16 @@ _APPROVAL_COLUMNS: Final = (
     "a.assigned_to, a.escalated_to, a.expires_at_us, d.decision, d.decided_at_us, "
     "d.decided_by, d.audit_ref, c.comment"
 )
+_RUN_STOP_COLUMNS: Final = (
+    "run_stop_id, run_id, stop_reason, running_work, requested_at_us, audit_ref, "
+    "superseded_by_run_id"
+)
+
+_ADMISSION_STOP_COLUMNS: Final = (
+    "sequence, admission_stop_id, state, running_work, effective_at_us, reason, "
+    "audit_ref"
+)
+
 _APPROVAL_SOURCE: Final = (
     "omnivia_runtime_approvals a "
     "LEFT JOIN omnivia_runtime_approval_decisions d "
@@ -426,6 +437,58 @@ class EffectReconciliation:
 
 
 @dataclass(frozen=True, slots=True)
+class RunStop:
+    """The one stop command a run is given, and nothing about what it became.
+
+    A local record rather than a contract one, for the reason
+    :class:`EffectReconciliation` is local: accepted v1 has `RunStatus` and no stop
+    command, so publishing one as if it were canonical would be this package inventing a
+    record the contract does not have. Nothing here is a status -- what the run finally
+    becomes is derived from this command plus the run's own open work and recorded on the
+    event stream, where a run's status has always lived.
+
+    `stop_reason` is why, `running_work` is what is to happen to the attempts and waits
+    already open, and neither has a default: an implicit answer to "and what about the
+    work in flight?" is exactly the answer an operator has to give explicitly.
+    `superseded_by_run_id` names the successor of a `superseded` stop and is `None` for
+    the other two, because a supersession that cannot say what replaced the run is
+    indistinguishable from a cancellation.
+    """
+
+    workspace_id: str
+    run_stop_id: str
+    run_id: str
+    stop_reason: str
+    running_work: str
+    requested_at: str
+    audit_reference: str
+    superseded_by_run_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionStop:
+    """One entry of a workspace's emergency admission-stop ledger.
+
+    A ledger entry rather than a flag, so engaging and releasing are both durable facts
+    with instants and audit references rather than a boolean somebody flipped. The entry
+    with the highest `sequence` is the one in force.
+
+    `running_work` states the policy the whole workspace is stopping under and is present
+    exactly on an `engaged` entry: releasing a stop declares nothing about work, so a
+    released entry carries no policy rather than a meaningless repeat of the last one.
+    """
+
+    workspace_id: str
+    sequence: int
+    admission_stop_id: str
+    state: str
+    effective_at: str
+    reason: str
+    audit_reference: str
+    running_work: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunSnapshot:
     """What RT-102, RT-103, RT-202 and RT-203 can honestly report about one canonical run.
 
@@ -472,6 +535,13 @@ class RunSnapshot:
     effect_reconciliations: tuple[EffectReconciliation, ...] = ()
     policy: PolicySnapshot | None = None
     budget: BudgetSnapshot | None = None
+    stop: RunStop | None = None
+    """The stop command this run was given, or `None` for a run nobody stopped.
+
+    Reported beside the history rather than folded into `status`, because the two answer
+    different questions: `status` is what the run is, and this is what was asked of it and
+    why. A run stopped and then terminalized keeps both, so "cancelled" never has to be
+    read as "cancelled for some reason nobody wrote down"."""
 
 
 # --- writes -------------------------------------------------------------------
@@ -1399,6 +1469,67 @@ class RuntimeWriter:
             ),
         )
 
+    def request_run_stop(self, stop: RunStop) -> None:
+        """Record the one stop command a run is given, exactly once.
+
+        Deliberately thin, for :meth:`reconcile_effect`'s reason. Every rule a stop has is
+        a rule about rows this database already holds -- the run existing, the run not
+        having already finished, the instant not preceding the admission, a `superseded`
+        stop naming a successor of this same workspace, and the running-work policy
+        agreeing with an engaged emergency stop -- and 0025 states all of them as guards
+        on the insert.
+
+        It writes no status. What the run becomes is
+        :func:`~service.runtime_stop.decide_stop_settlement`'s answer, appended to the
+        event stream by the caller in this same transaction.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_run_stops "
+            "(workspace_id, run_stop_id, run_id, stop_reason, running_work, "
+            "requested_at_us, audit_ref, superseded_by_run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                stop.run_stop_id,
+                stop.run_id,
+                stop.stop_reason,
+                stop.running_work,
+                _instant_us(stop.requested_at),
+                stop.audit_reference,
+                stop.superseded_by_run_id,
+            ),
+        )
+
+    def record_admission_stop(self, entry: AdmissionStop) -> int:
+        """Append one entry to this workspace's admission-stop ledger, and return it.
+
+        The sequence is allocated from the ledger inside the transaction rather than taken
+        from the caller, for the reason :meth:`append_run_event` allocates its own: two
+        concurrent appends cannot agree on a number the guard would then have to reject.
+        `entry.sequence` is therefore ignored and the allocated one returned.
+        """
+        sequence = self._next_sequence(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM omnivia_runtime_admission_stops "
+            "WHERE workspace_id = ?",
+            (self.workspace_id,),
+        )
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_admission_stops "
+            "(workspace_id, sequence, admission_stop_id, state, running_work, "
+            "effective_at_us, reason, audit_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                sequence,
+                entry.admission_stop_id,
+                entry.state,
+                entry.running_work,
+                _instant_us(entry.effective_at),
+                entry.reason,
+                entry.audit_reference,
+            ),
+        )
+        return sequence
+
     def _append_approval_comment(self, approval: Approval) -> None:
         """The one comment fact an approval carries, when it carries one.
 
@@ -1974,6 +2105,24 @@ def reconcile_effect(
         fencing_generation=fencing_generation,
     ) as writer:
         writer.reconcile_effect(reconciliation)
+
+
+def record_admission_stop(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    entry: AdmissionStop,
+) -> int:
+    """Append one admission-stop ledger entry, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.record_admission_stop(entry)
 
 
 # --- reads --------------------------------------------------------------------
@@ -2816,6 +2965,63 @@ def read_run_effect_reconciliations(
     return tuple(_effect_reconciliation_from_row(workspace_id, row) for row in rows)
 
 
+def read_run_stop(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> RunStop | None:
+    """The stop command this run was given, or `None` for a run nobody stopped.
+
+    `None` is an answer rather than a gap, and it is not "not stopped yet": a run reaches
+    a terminal status by finishing as well as by being stopped, and reading no stop for a
+    cancelled run would be a contradiction rather than an absence.
+    """
+    row = connection.execute(
+        f"SELECT {_RUN_STOP_COLUMNS} FROM omnivia_runtime_run_stops "
+        "WHERE workspace_id = ? AND run_id = ?",
+        (workspace_id, run_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return RunStop(
+        workspace_id=workspace_id,
+        run_stop_id=str(row[0]),
+        run_id=str(row[1]),
+        stop_reason=str(row[2]),
+        running_work=str(row[3]),
+        requested_at=_timestamp(int(row[4])),
+        audit_reference=str(row[5]),
+        superseded_by_run_id=None if row[6] is None else str(row[6]),
+    )
+
+
+def read_admission_stop(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> AdmissionStop | None:
+    """The admission-stop ledger entry in force, or `None` for a ledger with none.
+
+    The latest entry whatever its state, not the latest *engaged* one: a released stop is
+    the fact that admission is open again, and hiding it behind `None` would make "never
+    stopped" and "stopped and released" the same answer. Whether admission is actually
+    denied is `state`, which every caller has to read anyway.
+    """
+    row = connection.execute(
+        f"SELECT {_ADMISSION_STOP_COLUMNS} FROM omnivia_runtime_admission_stops "
+        "WHERE workspace_id = ? ORDER BY sequence DESC LIMIT 1",
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return AdmissionStop(
+        workspace_id=workspace_id,
+        sequence=int(row[0]),
+        admission_stop_id=str(row[1]),
+        state=str(row[2]),
+        running_work=None if row[3] is None else str(row[3]),
+        effective_at=_timestamp(int(row[4])),
+        reason=str(row[5]),
+        audit_reference=str(row[6]),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BlobAvailability:
     """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
@@ -3032,6 +3238,7 @@ def read_run(
         ),
         policy=None if policy is None else policy.snapshot,
         budget=None if budget is None else budget.snapshot,
+        stop=read_run_stop(connection, workspace_id=workspace_id, run_id=run_id),
     )
 
 
@@ -3050,9 +3257,12 @@ def read_workspace_run_ids(
 
 
 __all__ = [
+    "AdmissionStop",
     "BlobAvailability",
+    "EffectReconciliation",
     "RunAdmission",
     "RunSnapshot",
+    "RunStop",
     "RuntimeWriter",
     "StoredBudgetSnapshot",
     "StoredCapabilityGrant",
@@ -3070,6 +3280,7 @@ __all__ = [
     "finish_attempt",
     "issue_capability_grant",
     "open_wait",
+    "read_admission_stop",
     "read_approval",
     "read_artifact",
     "read_blob_availability",
@@ -3080,6 +3291,7 @@ __all__ = [
     "read_effect_intent",
     "read_effect_receipt",
     "read_effect_receipt_for_intent",
+    "read_effect_reconciliation_for_intent",
     "read_effect_settlement",
     "read_effect_settlement_for_intent",
     "read_evidence_item",
@@ -3092,6 +3304,7 @@ __all__ = [
     "read_run_cleanup_receipts",
     "read_run_effect_intents",
     "read_run_effect_receipts",
+    "read_run_effect_reconciliations",
     "read_run_effect_settlements",
     "read_run_events",
     "read_run_evidence",
@@ -3100,8 +3313,11 @@ __all__ = [
     "read_run_policy_snapshots",
     "read_run_sequence",
     "read_run_steps",
+    "read_run_stop",
     "read_run_waits",
     "read_workspace_run_ids",
+    "reconcile_effect",
+    "record_admission_stop",
     "record_approval_decision",
     "record_effect_dispatch",
     "record_effect_receipt",
