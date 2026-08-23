@@ -46,25 +46,26 @@ second queue or a second public application catalogue. Canonical, language-neutr
 record shapes and semantic validators remain owned by the public `omnivia-core`
 contract package. This operational package currently owns:
 
-- additive migrations `0018`–`0020` for `Run`, `RunStep`, `Attempt`, `Wait`,
-  `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, and the rebuildable
-  run-summary projection;
+- additive migrations `0018`–`0021` for `Run`, `RunStep`, `Attempt`, `Wait`,
+  `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, the rebuildable
+  run-summary projection, and `PolicySnapshot`/`BudgetSnapshot`;
 - append/read repositories with immutable content references and degraded missing-
   blob reads;
 - transactional runtime commands with aggregate sequence expectations, application
   audit records, idempotency claims, and replayed outcomes;
 - incremental materialisation and full replay of the run-summary projection;
 - fenced scheduling over `omnivia_durable_jobs`, including bounded stranded-claim
-  recovery; and
+  recovery;
 - durable, policy-checked wait opening and single-use resolution that resumes the
-  same running attempt rather than inventing `job.resume`.
+  same running attempt rather than inventing `job.resume`; and
+- content-addressed, hash-verified persistence of accepted `PolicySnapshot` and
+  `BudgetSnapshot` decisions, immutable and monotonic per run.
 
 These seams are private service implementation today; no new public runtime
 operation has been added to the frozen application catalogue. The following later
 milestones are intentionally not claimed by this package metadata: WorkerAdapter
-hosting, startup/orphan recovery, policy and budget snapshots, durable approvals and
-grants, capability dispatch, effect intent/receipt/settlement, and uncertain-effect
-reconciliation.
+hosting, startup/orphan recovery, durable approvals and grants, capability
+dispatch, effect intent/receipt/settlement, and uncertain-effect reconciliation.
 
 The accepted substrate ownership and migration decisions are recorded in
 `docs/specs/agent-runtime-substrate-reconciliation.md`.

@@ -1,10 +1,11 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202).
 
 Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
-0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019), and nothing
-above them. There is no command envelope, no `ResolveWait` handling, no admission
-decision and no status machine here: RT-104 owns the command/event-append
-transaction, and this module gives it the writes and reads to build one out of.
+0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019),
+`PolicySnapshot` and `BudgetSnapshot` (migration 0021), and nothing above them. There is
+no command envelope, no `ResolveWait` handling, no admission decision and no status
+machine here: RT-104 owns the command/event-append transaction, and this module gives it
+the writes and reads to build one out of.
 
 Every public write function opens its own `fenced_transaction` rather than assuming
 the caller did, so a repository call is durable authority-checked on entry and again
@@ -29,13 +30,23 @@ composition either way.
 Two boundary decisions, stated rather than papered over:
 
 * Reads return the generated contract records -- `RunStep`, `Attempt`, `Wait`,
-  `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt` -- because each can be
-  materialised honestly from what 0018 and 0019 store.
-* A whole `Run` cannot be. The accepted contract also requires a `PolicySnapshot`, a
-  `BudgetSnapshot`, capability grants and the effect family, whose stores belong to
-  RT-202+. `read_run` therefore returns :class:`RunSnapshot`, which states exactly
-  what these two migrations hold, rather than a `Run` with the remaining fields
-  invented.
+  `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, `PolicySnapshot`,
+  `BudgetSnapshot` -- because each can be materialised honestly from what 0018, 0019
+  and 0021 store.
+* A whole `Run` still cannot be. 0021 gives `read_run` the run's latest policy and
+  budget, but the accepted aggregate also requires capability grants and the effect
+  family, whose stores belong to RT-202's successors. `read_run` therefore keeps
+  returning :class:`RunSnapshot`, whose `policy` and `budget` are optional because a
+  run admitted before 0021 -- or one whose decisions were never recorded -- has
+  neither, rather than a `Run` with the remaining fields invented.
+
+A policy or budget snapshot is stored as the complete canonical v1 wire document plus
+the digest and byte length of exactly those bytes. The digest addresses the document,
+the contract's own snapshot identifier included; it is not that identifier and does not
+derive it. Every read recomputes both, requires the bytes to be canonical, decodes
+through the generated contract, validates the semantics and checks the columns the row
+is indexed by against the document itself, so a tampered row raises `StorageError`
+rather than returning something that merely parses.
 
 A missing `omnivia_blob_objects` row for an artifact's content address is an
 availability fact, not a reason to refuse or hide the artifact's own metadata:
@@ -56,7 +67,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Final
 
@@ -67,15 +78,22 @@ from omnivia_core.contracts.v1 import (
     ApiError,
     Artifact,
     Attempt,
+    BudgetSnapshot,
     CleanupReceipt,
     ContractDecodeError,
+    ContractSemanticError,
     EvidenceItem,
     ExternalReference,
+    PolicySnapshot,
     RunDefinitionRef,
     RunStep,
     RuntimeEvent,
     Wait,
     to_canonical_json,
+    validate_budget_snapshot,
+    validate_budget_snapshot_progression,
+    validate_policy_snapshot,
+    validate_policy_snapshot_progression,
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
@@ -88,6 +106,20 @@ _ATTEMPT_STATUS_FAILED: Final = "failed"
 #: only: the job substrate is where a run is admitted and claimed, never authority
 #: over the run's own record.
 _JOB_SOURCE_KIND: Final = "application_job"
+
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+
+#: The columns of one stored snapshot row, in the order the row helpers read them. Both
+#: 0021 tables have the same shape but not the same identifier name, so the identifier
+#: column is the only part that varies.
+_POLICY_SNAPSHOT_COLUMNS: Final = (
+    "policy_snapshot_id, run_id, revision, pinned_at_us, snapshot_json, "
+    "snapshot_digest, snapshot_byte_length"
+)
+_BUDGET_SNAPSHOT_COLUMNS: Final = (
+    "budget_snapshot_id, run_id, revision, pinned_at_us, snapshot_json, "
+    "snapshot_digest, snapshot_byte_length"
+)
 
 
 def _timestamp(value: int) -> str:
@@ -141,6 +173,30 @@ def _verified_document(
     return decoded
 
 
+def _verified_canonical_document(
+    text: object, digest: object, byte_length: object, label: str
+) -> dict[str, Any]:
+    """One stored document that must be canonical bytes, not merely equivalent JSON.
+
+    A snapshot is content-addressed, so the bytes are the record: a row that decodes to
+    the right value out of a re-spaced or re-ordered spelling has a digest nobody else
+    can reproduce, which is the same defect as a wrong digest arriving one step later.
+    """
+    decoded = _verified_document(text, digest, byte_length, label)
+    if to_canonical_json(decoded) != str(text):
+        raise StorageError(f"a stored {label} is not canonical JSON")
+    return decoded
+
+
+def _instant_us(value: str) -> int:
+    """One validated RFC 3339 UTC timestamp as the microsecond column it is indexed by.
+
+    Only ever called on a timestamp the contract validators have already parsed, on both
+    the write and the read path, so the spelling is known good by the time it arrives.
+    """
+    return (datetime.fromisoformat(value) - _EPOCH) // timedelta(microseconds=1)
+
+
 def _stored_failure(text: object, digest: object, byte_length: object) -> ApiError:
     """One stored attempt failure, verified and decoded as the contract's `ApiError`.
 
@@ -186,15 +242,42 @@ class RunAdmission:
 
 
 @dataclass(frozen=True, slots=True)
-class RunSnapshot:
-    """What RT-102 and RT-103 can honestly report about one canonical run.
+class StoredPolicySnapshot:
+    """One accepted `PolicySnapshot` and the address of the bytes it was stored as.
 
-    Deliberately not a `Run`. The contract's aggregate also requires a policy
-    snapshot, a budget snapshot, capability grants and the effect family; none of
-    those has a store yet, and filling them in to satisfy a type would report data
-    nobody recorded. `status`, `updated_at` and `finished_at` are read from the
-    event stream, which states the run status in force at every entry, so they are
-    derived from stored facts rather than maintained beside them.
+    `content_address` is the `sha256:` digest of the complete canonical wire document,
+    and `content_length_bytes` is that document's exact length. Both are properties of
+    the storage, not of the accepted contract, which is why they live here rather than
+    widening the public wire schema with two fields nobody publishes.
+    """
+
+    snapshot: PolicySnapshot
+    content_address: str
+    content_length_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredBudgetSnapshot:
+    """One accepted `BudgetSnapshot` and the address of the bytes it was stored as."""
+
+    snapshot: BudgetSnapshot
+    content_address: str
+    content_length_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunSnapshot:
+    """What RT-102, RT-103 and RT-202 can honestly report about one canonical run.
+
+    Deliberately not a `Run`. The contract's aggregate also requires capability grants
+    and the effect family; neither has a store yet, and filling them in to satisfy a
+    type would report data nobody recorded. `policy` and `budget` are the run's latest
+    stored revisions and are optional for the same reason: a run admitted before
+    migration 0021, or one whose decisions were never recorded, has neither, and `None`
+    says so rather than inventing an unbounded default. `status`, `updated_at` and
+    `finished_at` are read from the event stream, which states the run status in force
+    at every entry, so they are derived from stored facts rather than maintained beside
+    them.
     """
 
     workspace_id: str
@@ -216,6 +299,8 @@ class RunSnapshot:
     evidence: tuple[EvidenceItem, ...]
     cleanup_receipts: tuple[CleanupReceipt, ...]
     correlations: tuple[ExternalReference, ...]
+    policy: PolicySnapshot | None = None
+    budget: BudgetSnapshot | None = None
 
 
 # --- writes -------------------------------------------------------------------
@@ -637,6 +722,79 @@ class RuntimeWriter:
             ),
         )
 
+    def append_policy_snapshot(self, snapshot: PolicySnapshot) -> None:
+        """Record one accepted policy decision as the immutable successor of the last.
+
+        Validated before a statement is issued, and validated against the run's latest
+        stored revision when it already has one, so a widening leaves the previous
+        decision exactly as it was and inserts nothing at all. The refusal is the
+        contract's own :class:`ContractSemanticError`: the caller handed over a record
+        the accepted rules refuse, which is not a database this module failed to read.
+
+        The workspace checked against is the writer's, never the one inside the record.
+        The run is the snapshot's own claim -- there is no second run to check it
+        against here -- and the composite foreign key is what refuses a run this
+        workspace does not hold.
+        """
+        validate_policy_snapshot(
+            snapshot, run_id=snapshot.run_id, workspace_id=self.workspace_id
+        )
+        previous = _latest_policy_snapshot(
+            self.connection, workspace_id=self.workspace_id, run_id=snapshot.run_id
+        )
+        if previous is not None:
+            validate_policy_snapshot_progression(previous.snapshot, snapshot)
+        document, digest, byte_length = _stored_document(snapshot.to_wire())
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_policy_snapshots "
+            "(workspace_id, policy_snapshot_id, run_id, revision, pinned_at_us, "
+            "snapshot_json, snapshot_digest, snapshot_byte_length) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                snapshot.policy_snapshot_id,
+                snapshot.run_id,
+                snapshot.revision,
+                _instant_us(snapshot.pinned_at),
+                document,
+                digest,
+                byte_length,
+            ),
+        )
+
+    def append_budget_snapshot(self, snapshot: BudgetSnapshot) -> None:
+        """Record one accepted budget decision as the immutable successor of the last.
+
+        The same rule policy follows, in the direction budget monotonicity runs:
+        ceilings may narrow and never widen, consumption never decreases, and a revision
+        that breaks either leaves the previous decision intact and stores nothing.
+        """
+        validate_budget_snapshot(
+            snapshot, run_id=snapshot.run_id, workspace_id=self.workspace_id
+        )
+        previous = _latest_budget_snapshot(
+            self.connection, workspace_id=self.workspace_id, run_id=snapshot.run_id
+        )
+        if previous is not None:
+            validate_budget_snapshot_progression(previous.snapshot, snapshot)
+        document, digest, byte_length = _stored_document(snapshot.to_wire())
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_budget_snapshots "
+            "(workspace_id, budget_snapshot_id, run_id, revision, pinned_at_us, "
+            "snapshot_json, snapshot_digest, snapshot_byte_length) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                snapshot.budget_snapshot_id,
+                snapshot.run_id,
+                snapshot.revision,
+                _instant_us(snapshot.pinned_at),
+                document,
+                digest,
+                byte_length,
+            ),
+        )
+
     def _next_sequence(self, query: str, parameters: tuple[object, ...]) -> int:
         row = self.connection.execute(query, parameters).fetchone()
         if row is None:  # pragma: no cover - an aggregate always returns one row
@@ -1014,6 +1172,42 @@ def append_cleanup_receipt(
         )
 
 
+def append_policy_snapshot(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    snapshot: PolicySnapshot,
+) -> None:
+    """Record one accepted policy decision, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_policy_snapshot(snapshot)
+
+
+def append_budget_snapshot(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    snapshot: BudgetSnapshot,
+) -> None:
+    """Record one accepted budget decision, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.append_budget_snapshot(snapshot)
+
+
 # --- reads --------------------------------------------------------------------
 
 
@@ -1305,6 +1499,165 @@ def read_cleanup_receipt(
     )
 
 
+def _stored_policy_snapshot(
+    row: tuple[Any, ...], *, workspace_id: str
+) -> StoredPolicySnapshot:
+    """One policy snapshot row, proven before any of it is believed.
+
+    Ordered digest and length, canonical form, decode, semantics, then the columns the
+    row is indexed by against the document itself. A row whose selectors disagree with
+    its own bytes is not this snapshot however well it parses, so it leaves here as a
+    `StorageError` rather than as data a caller could act on.
+    """
+    document = _verified_canonical_document(row[4], row[5], row[6], "policy snapshot")
+    try:
+        snapshot = PolicySnapshot.from_wire(document)
+    except ContractDecodeError as error:
+        raise StorageError(
+            "a stored policy snapshot is not a valid PolicySnapshot"
+        ) from error
+    try:
+        validate_policy_snapshot(
+            snapshot, run_id=snapshot.run_id, workspace_id=workspace_id
+        )
+    except ContractSemanticError as error:
+        raise StorageError(
+            "a stored policy snapshot is not a valid PolicySnapshot"
+        ) from error
+    if (
+        snapshot.policy_snapshot_id != str(row[0])
+        or snapshot.run_id != str(row[1])
+        or snapshot.revision != int(row[2])
+        or _instant_us(snapshot.pinned_at) != int(row[3])
+    ):
+        raise StorageError(
+            "a stored policy snapshot disagrees with the columns it is indexed by"
+        )
+    return StoredPolicySnapshot(
+        snapshot=snapshot,
+        content_address=str(row[5]),
+        content_length_bytes=int(row[6]),
+    )
+
+
+def _stored_budget_snapshot(
+    row: tuple[Any, ...], *, workspace_id: str
+) -> StoredBudgetSnapshot:
+    """One budget snapshot row, proven the same way a policy row is."""
+    document = _verified_canonical_document(row[4], row[5], row[6], "budget snapshot")
+    try:
+        snapshot = BudgetSnapshot.from_wire(document)
+    except ContractDecodeError as error:
+        raise StorageError(
+            "a stored budget snapshot is not a valid BudgetSnapshot"
+        ) from error
+    try:
+        validate_budget_snapshot(
+            snapshot, run_id=snapshot.run_id, workspace_id=workspace_id
+        )
+    except ContractSemanticError as error:
+        raise StorageError(
+            "a stored budget snapshot is not a valid BudgetSnapshot"
+        ) from error
+    if (
+        snapshot.budget_snapshot_id != str(row[0])
+        or snapshot.run_id != str(row[1])
+        or snapshot.revision != int(row[2])
+        or _instant_us(snapshot.pinned_at) != int(row[3])
+    ):
+        raise StorageError(
+            "a stored budget snapshot disagrees with the columns it is indexed by"
+        )
+    return StoredBudgetSnapshot(
+        snapshot=snapshot,
+        content_address=str(row[5]),
+        content_length_bytes=int(row[6]),
+    )
+
+
+def read_policy_snapshot(
+    connection: sqlite3.Connection, *, workspace_id: str, policy_snapshot_id: str
+) -> StoredPolicySnapshot | None:
+    """One policy snapshot by identifier, or `None` when this workspace holds no such one."""
+    row = connection.execute(
+        f"SELECT {_POLICY_SNAPSHOT_COLUMNS} FROM omnivia_runtime_policy_snapshots "
+        "WHERE workspace_id = ? AND policy_snapshot_id = ?",
+        (workspace_id, policy_snapshot_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _stored_policy_snapshot(row, workspace_id=workspace_id)
+
+
+def read_budget_snapshot(
+    connection: sqlite3.Connection, *, workspace_id: str, budget_snapshot_id: str
+) -> StoredBudgetSnapshot | None:
+    """One budget snapshot by identifier, or `None` when this workspace holds no such one."""
+    row = connection.execute(
+        f"SELECT {_BUDGET_SNAPSHOT_COLUMNS} FROM omnivia_runtime_budget_snapshots "
+        "WHERE workspace_id = ? AND budget_snapshot_id = ?",
+        (workspace_id, budget_snapshot_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _stored_budget_snapshot(row, workspace_id=workspace_id)
+
+
+def read_run_policy_snapshots(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[StoredPolicySnapshot, ...]:
+    """Every policy decision this run was pinned to, oldest revision first.
+
+    Revision order is the decision order, and it is a total order no two entries of one
+    run can share, which the pinned instant is not: two revisions pinned in the same
+    millisecond would otherwise come back in whatever order the page arrived in.
+    """
+    rows = connection.execute(
+        f"SELECT {_POLICY_SNAPSHOT_COLUMNS} FROM omnivia_runtime_policy_snapshots "
+        "WHERE workspace_id = ? AND run_id = ? ORDER BY revision",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(_stored_policy_snapshot(row, workspace_id=workspace_id) for row in rows)
+
+
+def read_run_budget_snapshots(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[StoredBudgetSnapshot, ...]:
+    """Every budget decision this run was pinned to, oldest revision first."""
+    rows = connection.execute(
+        f"SELECT {_BUDGET_SNAPSHOT_COLUMNS} FROM omnivia_runtime_budget_snapshots "
+        "WHERE workspace_id = ? AND run_id = ? ORDER BY revision",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(_stored_budget_snapshot(row, workspace_id=workspace_id) for row in rows)
+
+
+def _latest_policy_snapshot(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> StoredPolicySnapshot | None:
+    row = connection.execute(
+        f"SELECT {_POLICY_SNAPSHOT_COLUMNS} FROM omnivia_runtime_policy_snapshots "
+        "WHERE workspace_id = ? AND run_id = ? ORDER BY revision DESC LIMIT 1",
+        (workspace_id, run_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _stored_policy_snapshot(row, workspace_id=workspace_id)
+
+
+def _latest_budget_snapshot(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> StoredBudgetSnapshot | None:
+    row = connection.execute(
+        f"SELECT {_BUDGET_SNAPSHOT_COLUMNS} FROM omnivia_runtime_budget_snapshots "
+        "WHERE workspace_id = ? AND run_id = ? ORDER BY revision DESC LIMIT 1",
+        (workspace_id, run_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _stored_budget_snapshot(row, workspace_id=workspace_id)
+
+
 @dataclass(frozen=True, slots=True)
 class BlobAvailability:
     """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
@@ -1456,6 +1809,12 @@ def read_run(
         raise StorageError(f"run {run_id!r} has no event stream to read its status from")
     latest = events[-1]
     job_id = str(row[0])
+    policy = _latest_policy_snapshot(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    budget = _latest_budget_snapshot(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
     return RunSnapshot(
         workspace_id=workspace_id,
         run_id=run_id,
@@ -1492,6 +1851,8 @@ def read_run(
                 workspace_id=workspace_id,
             ),
         ),
+        policy=None if policy is None else policy.snapshot,
+        budget=None if budget is None else budget.snapshot,
     )
 
 
@@ -1514,10 +1875,14 @@ __all__ = [
     "RunAdmission",
     "RunSnapshot",
     "RuntimeWriter",
+    "StoredBudgetSnapshot",
+    "StoredPolicySnapshot",
     "admit_run",
     "append_artifact",
+    "append_budget_snapshot",
     "append_cleanup_receipt",
     "append_evidence_item",
+    "append_policy_snapshot",
     "append_run_event",
     "append_run_step",
     "close_wait",
@@ -1525,15 +1890,19 @@ __all__ = [
     "open_wait",
     "read_artifact",
     "read_blob_availability",
+    "read_budget_snapshot",
     "read_cleanup_receipt",
     "read_evidence_item",
+    "read_policy_snapshot",
     "read_run",
     "read_run_artifacts",
+    "read_run_budget_snapshots",
     "read_run_cleanup_receipts",
     "read_run_events",
     "read_run_evidence",
     "read_run_id_by_job",
     "read_run_id_by_logical_key",
+    "read_run_policy_snapshots",
     "read_run_sequence",
     "read_run_steps",
     "read_run_waits",
