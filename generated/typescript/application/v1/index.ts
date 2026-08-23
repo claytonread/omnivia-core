@@ -3310,6 +3310,57 @@ export interface CapabilityGrant {
 }
 
 /**
+ * The immutable watermark that makes context delivery to one attempt bounded and replayable. It
+ * states the lineage it was issued to -- workspace, run, step and attempt, all four, because an
+ * attempt is the thing that actually reads context and an identifier without its lineage could
+ * be resolved against the wrong one -- the sequence of the first `RuntimeEvent` the attempt has
+ * *not* seen, and the ceiling on how many entries one delivery may carry. Deliberately not an
+ * opaque server token: every field is a value both sides can recompute and compare, so a caller
+ * can prove a delivery is the next one rather than being told so. Deliberately not a second
+ * event stream either -- it is a position in the run's own `RuntimeEvent` sequence, which is
+ * already contiguous from zero, so a cursor is replayable exactly because the stream it indexes
+ * never renumbers. Presenting the same cursor twice yields the same delivery; presenting the
+ * cursor a delivery returned yields only what came after it.
+ */
+export interface ContextCursor {
+  /**
+   * Workspace this cursor was issued in. A cursor is never workspace-free: it is refused
+   * against any other workspace rather than resolved there.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * The run whose event stream this cursor indexes.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The step this cursor was issued to. Must be a step of `run_id`.
+   */
+  readonly run_step_id: Identifier;
+  /**
+   * The attempt this cursor was issued to. Must be an attempt of `run_step_id`, not merely one
+   * existing somewhere in the run.
+   */
+  readonly attempt_id: Identifier;
+  /**
+   * Sequence of the first `RuntimeEvent` this attempt has not been delivered. Zero on a fresh
+   * cursor; equal to the stream length when the attempt is caught up. A cursor pointing past
+   * the end of a contiguous stream claims to have seen events that do not exist and is
+   * refused.
+   */
+  readonly next_sequence: number;
+  /**
+   * Ceiling on how many entries one delivery against this cursor may carry. Required and
+   * bounded on both ends: an absent, zero or unbounded ceiling is an unbounded delivery, which
+   * is the thing this record exists to prevent.
+   */
+  readonly max_items: number;
+  /**
+   * When this cursor was issued.
+   */
+  readonly issued_at: Timestamp;
+}
+
+/**
  * One durable suspension of a run: what it is waiting for, whether it is still waiting, and the
  * digest that binds the state it will resume from. First-class rather than a scheduler detail,
  * because a suspended run is a state the contract must be able to state, and because resuming
@@ -5588,7 +5639,11 @@ export interface ProvenanceEntry {
  * `1..N` contiguously within a run and never renumbered; the history is append-only, so a
  * correction is a further attempt rather than an edit to a recorded one. A step that is
  * `waiting` names the `Wait` holding it, because a suspended step that cannot say what it is
- * suspended on cannot be resolved.
+ * suspended on cannot be resolved. A step that was spawned by another names it in
+ * `parent_run_step_id`: parentage is stated by the child and never by a list on the parent, so a
+ * child and the parent it claims cannot disagree. Parentage is a link inside one run -- both
+ * steps restate the same `run_id` and `workspace_id` -- and it never crosses into another run or
+ * workspace, however similarly spelled the identifier.
  */
 export interface RunStep {
   /**
@@ -5603,6 +5658,13 @@ export interface RunStep {
    * The run this step belongs to.
    */
   readonly run_id: Identifier;
+  /**
+   * The step that spawned this one, when one did. Absent on a root step. The parent is a step
+   * of this same run, and it is an earlier one: a step's ordinal is greater than its parent's,
+   * so a parent chain is finite and acyclic by construction rather than by a cycle check
+   * nobody can see.
+   */
+  readonly parent_run_step_id?: Identifier;
   /**
    * 1-based position of this step within its run.
    */

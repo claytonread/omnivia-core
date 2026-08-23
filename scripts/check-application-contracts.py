@@ -200,6 +200,18 @@ FROZEN_FIXTURE_MAP: dict[str, tuple[str, str, bool, bool]] = {
         True,
         True,
     ),
+    "runtime-run-child-steps": (
+        "runtime-run-child-steps.json",
+        "runtime_child_steps_stay_inside_one_run",
+        True,
+        True,
+    ),
+    "runtime-context-cursor": (
+        "runtime-context-cursor.json",
+        "runtime_context_cursor_replays_deterministically",
+        True,
+        True,
+    ),
     "runtime-resolve-wait": (
         "runtime-resolve-wait.json",
         "runtime_resolve_wait_is_not_job_recovery",
@@ -1071,6 +1083,98 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
             return []
         return [f"{file_name}: an effect receipt with no matching intent must be refused"]
 
+    def runtime_child_steps_stay_inside_one_run(file_name: str) -> list[str]:
+        """A child step links to a parent of its own run, and its wait stays the run's.
+
+        Three things the fixture exists to hold. The run validates with a parent and a child
+        in it. Repointing the child at a step id from another run is *refused* rather than
+        resolved somewhere else, which is the whole of "parentage never crosses a run". And
+        the child's pending wait is reachable from the parent through the run's own `waits`
+        array, so a parent can see what its children are blocked on without a second wait
+        record existing anywhere.
+        """
+        run = _run(file_name)
+        findings: list[str] = []
+        try:
+            runtime.validate_run(run, workspace_id=run.workspace_id)
+        except compatibility.ContractSemanticError as error:
+            findings.append(f"{file_name}: expected a valid parent/child run, raised {error}")
+        children = [step for step in run.steps if step.parent_run_step_id is not None]
+        if len(children) != 1:
+            return [*findings, f"{file_name}: expected exactly one child step"]
+        child = children[0]
+        parent_id = child.parent_run_step_id
+        if runtime.child_run_steps(run, run_step_id=parent_id) != (child,):
+            findings.append(f"{file_name}: the parent does not read back its one child")
+        under_parent = runtime.waits_under_step(run, run_step_id=parent_id)
+        if [wait.wait_id for wait in under_parent] != [wait.wait_id for wait in run.waits]:
+            findings.append(
+                f"{file_name}: the child's wait is not visible from the parent, or a wait the "
+                "run does not hold is"
+            )
+        if any(step.wait_id is not None for step in run.steps if step.run_step_id == parent_id):
+            findings.append(f"{file_name}: the parent holds a wait of its own for its child")
+        document = _fixture_document(file_name)
+        foreign = generated.Run.from_wire(
+            {
+                **document,
+                "steps": [
+                    step
+                    if step.get("parent_run_step_id") is None
+                    else {**step, "parent_run_step_id": "step-of-another-run"}
+                    for step in document["steps"]
+                ],
+            }
+        )
+        try:
+            runtime.validate_run(foreign, workspace_id=foreign.workspace_id)
+        except compatibility.ContractSemanticError:
+            return findings
+        findings.append(f"{file_name}: a parent link out of this run must be refused")
+        return findings
+
+    def runtime_context_cursor_replays_deterministically(file_name: str) -> list[str]:
+        """The same cursor delivers the same context, and the next one delivers only the rest.
+
+        Idempotence and progress are one property here, not two: a delivery is a slice of a
+        stream that is contiguous from zero, so replaying a cursor cannot return anything else
+        and advancing one cannot return anything twice. The run the cursor indexes is the
+        parent/child fixture, so the lineage it names is a real step and a real attempt of it.
+        """
+        cursor = generated.ContextCursor.from_wire(_fixture_document(file_name))
+        run = _run("runtime-run-child-steps.json")
+        findings: list[str] = []
+        try:
+            runtime.validate_context_cursor(
+                cursor, run_id=run.run_id, workspace_id=run.workspace_id
+            )
+        except compatibility.ContractSemanticError as error:
+            return [f"{file_name}: expected a valid ContextCursor, raised {error}"]
+        first, advanced = runtime.deliver_context(
+            cursor, run=run, workspace_id=run.workspace_id
+        )
+        again, _ = runtime.deliver_context(cursor, run=run, workspace_id=run.workspace_id)
+        if first != again:
+            findings.append(f"{file_name}: replaying one cursor delivered different context")
+        if len(first) != cursor.max_items:
+            findings.append(
+                f"{file_name}: a delivery of {len(first)} entries does not fill the "
+                f"{cursor.max_items}-entry bound this stream can satisfy"
+            )
+        rest, caught_up = runtime.deliver_context(
+            advanced, run=run, workspace_id=run.workspace_id
+        )
+        if {event.sequence for event in first} & {event.sequence for event in rest}:
+            findings.append(f"{file_name}: the advanced cursor redelivered seen context")
+        if first + rest != tuple(run.events):
+            findings.append(f"{file_name}: two deliveries did not cover the stream exactly once")
+        exhausted, unchanged = runtime.deliver_context(
+            caught_up, run=run, workspace_id=run.workspace_id
+        )
+        if exhausted != () or unchanged != caught_up:
+            findings.append(f"{file_name}: a caught-up cursor is not a fixed point")
+        return findings
+
     def runtime_resolve_wait_is_not_job_recovery(file_name: str) -> list[str]:
         """`ResolveWait` is a Runtime command, and nothing about it is a job control.
 
@@ -1100,6 +1204,10 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
         "runtime_cancellation_preserves_evidence": runtime_cancellation_preserves_evidence,
         "runtime_unknown_run_status_fails_safe": runtime_unknown_run_status_fails_safe,
         "runtime_effect_without_intent_rejected": runtime_effect_without_intent_rejected,
+        "runtime_child_steps_stay_inside_one_run": runtime_child_steps_stay_inside_one_run,
+        "runtime_context_cursor_replays_deterministically": (
+            runtime_context_cursor_replays_deterministically
+        ),
         "runtime_resolve_wait_is_not_job_recovery": runtime_resolve_wait_is_not_job_recovery,
         "effective_capabilities_match": effective_capabilities_match,
         "capability_denial": capability_denial,

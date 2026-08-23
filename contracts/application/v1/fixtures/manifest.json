@@ -176,6 +176,28 @@
       "description": "A Run carrying an effect receipt and an effect settlement that name an intent the run never declared. Nothing structural is wrong with either array element, so the document is schema-valid and decodes, but semantics_runtime rejects it: no effect receipt or settlement exists without its intent, because an effect nobody declared is one nobody authorized and nobody can reconcile."
     },
     {
+      "id": "runtime-run-child-steps",
+      "file": "runtime-run-child-steps.json",
+      "envelope": null,
+      "definition": "Run",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_child_steps_stay_inside_one_run",
+      "description": "A canonical Run whose second step was spawned by its first: the child names 'parent_run_step_id', the parent names no list of children, and the child is suspended on the run's one pending Wait. Parentage is a link inside one run at a lower ordinal, so the chain is acyclic without a cycle check, and repointing the child at a step id from another run is refused by semantics_runtime.validate_run rather than resolved there. The child's wait is visible from the parent through semantics_runtime.waits_under_step, which reads the run's own 'waits' array: a child gets no second wait record and the parent gets no wait of its own."
+    },
+    {
+      "id": "runtime-context-cursor",
+      "file": "runtime-context-cursor.json",
+      "envelope": null,
+      "definition": "ContextCursor",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_context_cursor_replays_deterministically",
+      "description": "A fresh ContextCursor issued to one attempt of one step of 'runtime-run-child-steps.json', bounded to two entries per delivery. Delivering against it twice returns the same two events both times, and delivering against the cursor it returns yields only the events after them; a cursor caught up on the stream delivers nothing and comes back unchanged. Its lineage is checked against the run rather than trusted: an attempt of another step, a step of another run and a workspace it was not issued in are all refused."
+    },
+    {
       "id": "runtime-resolve-wait",
       "file": "runtime-resolve-wait.json",
       "envelope": null,

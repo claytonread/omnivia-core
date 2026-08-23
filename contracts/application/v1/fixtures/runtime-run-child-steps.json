@@ -1,0 +1,154 @@
+{
+  "approvals": [
+    {
+      "approval_id": "approval-0001",
+      "approver_role": "onboarding-reviewer",
+      "requested_at": "2026-08-22T09:00:06Z",
+      "run_id": "run-0002",
+      "wait_id": "wait-0001",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "artifacts": [],
+  "audit_reference": "audit-run-0002-admit",
+  "budget": {
+    "budget_snapshot_id": "budget-0002",
+    "consumed_cost_units": 3,
+    "consumed_token_units": 1024,
+    "max_cost_units": 1000,
+    "max_token_units": 200000,
+    "pinned_at": "2026-08-22T09:00:00Z",
+    "revision": 1,
+    "run_id": "run-0002",
+    "workspace_id": "ws-runtime-1"
+  },
+  "capability_grants": [],
+  "cleanup_receipts": [],
+  "correlations": [],
+  "created_at": "2026-08-22T09:00:00Z",
+  "definition": {
+    "definition_id": "onboarding.reviewer",
+    "definition_kind": "workflow",
+    "definition_version": "1.4.0"
+  },
+  "effect_intents": [],
+  "effect_receipts": [],
+  "effect_settlements": [],
+  "events": [
+    {
+      "event_kind": "run_admitted",
+      "occurred_at": "2026-08-22T09:00:00Z",
+      "run_id": "run-0002",
+      "run_status": "admitted",
+      "runtime_event_id": "event-0000",
+      "sequence": 0,
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "event_kind": "step_started",
+      "occurred_at": "2026-08-22T09:00:02Z",
+      "run_id": "run-0002",
+      "run_status": "running",
+      "run_step_id": "step-parent",
+      "runtime_event_id": "event-0001",
+      "sequence": 1,
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "event_kind": "child_step_spawned",
+      "occurred_at": "2026-08-22T09:00:04Z",
+      "run_id": "run-0002",
+      "run_status": "running",
+      "run_step_id": "step-child",
+      "runtime_event_id": "event-0002",
+      "sequence": 2,
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "event_kind": "wait_opened",
+      "occurred_at": "2026-08-22T09:00:06Z",
+      "run_id": "run-0002",
+      "run_status": "waiting",
+      "run_step_id": "step-child",
+      "runtime_event_id": "event-0003",
+      "sequence": 3,
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "evidence": [],
+  "logical_key": "onboarding-2026-08-22-globex",
+  "originating_operation": "memory.create",
+  "policy": {
+    "audit_reference": "audit-run-0002-admit",
+    "decision_reason": "workspace_default",
+    "discovered_capabilities": [],
+    "granted_capabilities": [],
+    "pinned_at": "2026-08-22T09:00:00Z",
+    "policy_snapshot_id": "policy-0002",
+    "revision": 1,
+    "run_id": "run-0002",
+    "workspace_id": "ws-runtime-1"
+  },
+  "run_id": "run-0002",
+  "status": "waiting",
+  "steps": [
+    {
+      "attempts": [
+        {
+          "attempt_id": "attempt-parent-1",
+          "attempt_number": 1,
+          "run_id": "run-0002",
+          "run_step_id": "step-parent",
+          "started_at": "2026-08-22T09:00:02Z",
+          "status": "running",
+          "workspace_id": "ws-runtime-1"
+        }
+      ],
+      "created_at": "2026-08-22T09:00:01Z",
+      "ordinal": 1,
+      "run_id": "run-0002",
+      "run_step_id": "step-parent",
+      "status": "running",
+      "step_kind": "plan",
+      "updated_at": "2026-08-22T09:00:04Z",
+      "workspace_id": "ws-runtime-1"
+    },
+    {
+      "attempts": [
+        {
+          "attempt_id": "attempt-child-1",
+          "attempt_number": 1,
+          "run_id": "run-0002",
+          "run_step_id": "step-child",
+          "started_at": "2026-08-22T09:00:04Z",
+          "status": "running",
+          "workspace_id": "ws-runtime-1"
+        }
+      ],
+      "created_at": "2026-08-22T09:00:04Z",
+      "ordinal": 2,
+      "parent_run_step_id": "step-parent",
+      "run_id": "run-0002",
+      "run_step_id": "step-child",
+      "status": "waiting",
+      "step_kind": "approval_wait",
+      "updated_at": "2026-08-22T09:00:06Z",
+      "wait_id": "wait-0001",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "updated_at": "2026-08-22T09:00:06Z",
+  "waits": [
+    {
+      "created_at": "2026-08-22T09:00:06Z",
+      "kind": "approval",
+      "resume_digest": "sha256:6f4b2c1d9a8e7f3b5c0d2e1a4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f8a0b2c",
+      "run_id": "run-0002",
+      "run_step_id": "step-child",
+      "status": "pending",
+      "wait_id": "wait-0001",
+      "workspace_id": "ws-runtime-1"
+    }
+  ],
+  "workspace_id": "ws-runtime-1"
+}

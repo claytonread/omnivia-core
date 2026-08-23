@@ -175,6 +175,7 @@ __all__ = [
     "CompatibilityMetadata",
     "ComponentKind",
     "ContentChecksum",
+    "ContextCursor",
     "ContextPackAuthorizationContext",
     "ContextPackAuthorizedCandidate",
     "ContextPackAuthorizedCandidateSetManifest",
@@ -5364,6 +5365,90 @@ class CapabilityGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextCursor:
+    """The immutable watermark that makes context delivery to one attempt bounded and
+    replayable. It states the lineage it was issued to -- workspace, run, step and attempt,
+    all four, because an attempt is the thing that actually reads context and an identifier
+    without its lineage could be resolved against the wrong one -- the sequence of the first
+    `RuntimeEvent` the attempt has *not* seen, and the ceiling on how many entries one
+    delivery may carry. Deliberately not an opaque server token: every field is a value both
+    sides can recompute and compare, so a caller can prove a delivery is the next one rather
+    than being told so. Deliberately not a second event stream either -- it is a position in
+    the run's own `RuntimeEvent` sequence, which is already contiguous from zero, so a cursor
+    is replayable exactly because the stream it indexes never renumbers. Presenting the same
+    cursor twice yields the same delivery; presenting the cursor a delivery returned yields
+    only what came after it.
+    """
+
+    workspace_id: WorkspaceId
+    run_id: Identifier
+    run_step_id: Identifier
+    attempt_id: Identifier
+    next_sequence: int
+    max_items: int
+    issued_at: Timestamp
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["run_id"] = self.run_id
+        wire["run_step_id"] = self.run_step_id
+        wire["attempt_id"] = self.attempt_id
+        wire["next_sequence"] = self.next_sequence
+        wire["max_items"] = self.max_items
+        wire["issued_at"] = self.issued_at
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ContextCursor") -> ContextCursor:
+        """Decode a wire payload into a ContextCursor.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_run_step_id = _decode_str(
+            _require_field(mapping, "run_step_id", path),
+            f"{path}.run_step_id",
+        )
+        field_attempt_id = _decode_str(
+            _require_field(mapping, "attempt_id", path),
+            f"{path}.attempt_id",
+        )
+        field_next_sequence = _decode_int(
+            _require_field(mapping, "next_sequence", path),
+            f"{path}.next_sequence",
+        )
+        field_max_items = _decode_int(
+            _require_field(mapping, "max_items", path),
+            f"{path}.max_items",
+        )
+        field_issued_at = _decode_str(
+            _require_field(mapping, "issued_at", path),
+            f"{path}.issued_at",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            run_id=field_run_id,
+            run_step_id=field_run_step_id,
+            attempt_id=field_attempt_id,
+            next_sequence=field_next_sequence,
+            max_items=field_max_items,
+            issued_at=field_issued_at,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Wait:
     """One durable suspension of a run: what it is waiting for, whether it is still waiting, and
     the digest that binds the state it will resume from. First-class rather than a scheduler
@@ -9991,7 +10076,11 @@ class RunStep:
     `1..N` contiguously within a run and never renumbered; the history is append-only, so a
     correction is a further attempt rather than an edit to a recorded one. A step that is
     `waiting` names the `Wait` holding it, because a suspended step that cannot say what it
-    is suspended on cannot be resolved.
+    is suspended on cannot be resolved. A step that was spawned by another names it in
+    `parent_run_step_id`: parentage is stated by the child and never by a list on the parent,
+    so a child and the parent it claims cannot disagree. Parentage is a link inside one run
+    -- both steps restate the same `run_id` and `workspace_id` -- and it never crosses into
+    another run or workspace, however similarly spelled the identifier.
     """
 
     workspace_id: WorkspaceId
@@ -10003,6 +10092,7 @@ class RunStep:
     created_at: Timestamp
     updated_at: Timestamp
     attempts: tuple[Attempt, ...]
+    parent_run_step_id: Identifier | None = None
     wait_id: Identifier | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -10015,6 +10105,8 @@ class RunStep:
         wire["workspace_id"] = self.workspace_id
         wire["run_step_id"] = self.run_step_id
         wire["run_id"] = self.run_id
+        if self.parent_run_step_id is not None:
+            wire["parent_run_step_id"] = self.parent_run_step_id
         wire["ordinal"] = self.ordinal
         wire["step_kind"] = self.step_kind
         wire["status"] = self.status
@@ -10042,6 +10134,17 @@ class RunStep:
             f"{path}.run_step_id",
         )
         field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_parent_run_step_id: Identifier | None = None
+        if "parent_run_step_id" in mapping:
+            raw_parent_run_step_id = mapping["parent_run_step_id"]
+            if raw_parent_run_step_id is None:
+                raise ContractDecodeError(
+                    f"{path}.parent_run_step_id: null is not a valid value"
+                )
+            field_parent_run_step_id = _decode_str(
+                raw_parent_run_step_id,
+                f"{path}.parent_run_step_id",
+            )
         field_ordinal = _decode_int(_require_field(mapping, "ordinal", path), f"{path}.ordinal")
         field_step_kind = _decode_str(
             _require_field(mapping, "step_kind", path),
@@ -10076,6 +10179,7 @@ class RunStep:
             workspace_id=field_workspace_id,
             run_step_id=field_run_step_id,
             run_id=field_run_id,
+            parent_run_step_id=field_parent_run_step_id,
             ordinal=field_ordinal,
             step_kind=field_step_kind,
             status=field_status,

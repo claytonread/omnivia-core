@@ -26,6 +26,7 @@ from omnivia_core.contracts.v1.generated import (
     Approval,
     Attempt,
     BudgetSnapshot,
+    ContextCursor,
     ExternalReference,
     JobControl,
     PolicySnapshot,
@@ -1487,5 +1488,299 @@ def test_a_decision_never_predates_its_own_request() -> None:
 )
 def test_a_misused_entry_point_raises_a_contract_semantic_error(call: Any) -> None:
     """No public function may leak a raw `TypeError`/`AttributeError` to a direct caller."""
+    with pytest.raises(ContractSemanticError):
+        call()
+
+
+# --------------------------------------------------------------------------
+# Step parentage is bounded, and it does not leave its run (RT-304)
+# --------------------------------------------------------------------------
+
+CHILD_RUN_ID = "run-0002"
+PARENT_STEP = "step-parent"
+CHILD_STEP = "step-child"
+
+
+def _child_document() -> dict[str, Any]:
+    return _fixture("runtime-run-child-steps.json")
+
+
+def _child_run(document: dict[str, Any] | None = None) -> Run:
+    return Run.from_wire(document if document is not None else _child_document())
+
+
+def _shaped_run(steps: list[dict[str, Any]]) -> Run:
+    """The parent/child fixture with its step tree replaced by `steps`.
+
+    Waits, approvals and step-attributed events are dropped with them: this builder exists to
+    say something about the *shape* of a step tree, and leaving records behind that point at
+    steps it no longer has would fail on a rule other tests already cover.
+    """
+    document = _child_document()
+    return Run.from_wire(
+        {
+            **document,
+            "status": "admitted",
+            "approvals": [],
+            "waits": [],
+            "steps": steps,
+            "events": document["events"][:1],
+        }
+    )
+
+
+def _step(ordinal: int, parent: str | None = None) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "attempts": [],
+        "created_at": "2026-08-22T09:00:00Z",
+        "ordinal": ordinal,
+        "run_id": CHILD_RUN_ID,
+        "run_step_id": f"step-{ordinal:03d}",
+        "status": "pending",
+        "step_kind": "plan",
+        "updated_at": "2026-08-22T09:00:00Z",
+        "workspace_id": WORKSPACE,
+    }
+    if parent is not None:
+        step["parent_run_step_id"] = parent
+    return step
+
+
+def _chain(length: int) -> list[dict[str, Any]]:
+    """`length` steps nested one inside the next, so the last sits at depth `length - 1`."""
+    return [
+        _step(ordinal, None if ordinal == 1 else f"step-{ordinal - 1:03d}")
+        for ordinal in range(1, length + 1)
+    ]
+
+
+def _fan_out(children: int) -> list[dict[str, Any]]:
+    """One root step with `children` children, all at depth one."""
+    return [_step(1), *(_step(ordinal, "step-001") for ordinal in range(2, children + 2))]
+
+
+def test_a_child_step_names_its_parent_and_the_parent_reads_it_back() -> None:
+    """One link, stated once, by the child.
+
+    There is no `child_run_step_ids` on the parent to disagree with the child's claim, and
+    nothing is lost by that: the enumeration a parent needs is a function of the same links.
+    """
+    run = _child_run()
+    runtime.validate_run(run, workspace_id=WORKSPACE)
+    child = next(step for step in run.steps if step.run_step_id == CHILD_STEP)
+    assert child.parent_run_step_id == PARENT_STEP
+    assert runtime.child_run_steps(run, run_step_id=PARENT_STEP) == (child,)
+    assert runtime.child_run_steps(run, run_step_id=CHILD_STEP) == ()
+    assert not hasattr(child, "child_run_step_ids")
+
+
+def test_a_root_step_names_no_parent() -> None:
+    """Parentage is optional, so every run that existed before RT-304 is still a valid run."""
+    parent = next(step for step in _child_run().steps if step.run_step_id == PARENT_STEP)
+    assert parent.parent_run_step_id is None
+    runtime.validate_run(_run(), workspace_id=WORKSPACE)
+
+
+def test_a_parent_link_never_crosses_a_run() -> None:
+    """A step id from another run resolves to nothing here rather than to a step there.
+
+    The identifier below is a real step of `runtime-run-replay.json`, in the same workspace,
+    spelled exactly as that run spells it. That is precisely the join this must refuse: a
+    `run_step_id` means nothing outside the run that issued it.
+    """
+    foreign = _replace(_child_document(), "steps.1.parent_run_step_id", "step-0001")
+    with pytest.raises(ContractSemanticError, match="names no step of this run"):
+        runtime.validate_run(_child_run(foreign), workspace_id=WORKSPACE)
+
+
+def test_a_parent_link_never_crosses_a_workspace() -> None:
+    """Validating the same run against another workspace refuses it whole, links included."""
+    with pytest.raises(ContractSemanticError, match="workspace"):
+        runtime.validate_run(_child_run(), workspace_id="ws-runtime-2")
+
+
+def test_a_step_is_not_its_own_parent() -> None:
+    document = _replace(_child_document(), "steps.1.parent_run_step_id", CHILD_STEP)
+    with pytest.raises(ContractSemanticError, match="not its own parent"):
+        runtime.validate_run(_child_run(document), workspace_id=WORKSPACE)
+
+
+def test_a_parent_is_a_step_that_already_existed() -> None:
+    """Lower ordinal, so a chain is finite and acyclic without anybody walking it."""
+    document = _replace(_child_document(), "steps.0.parent_run_step_id", CHILD_STEP)
+    with pytest.raises(ContractSemanticError, match="not before this step"):
+        runtime.validate_run(_child_run(document), workspace_id=WORKSPACE)
+
+
+def test_nesting_stops_at_the_published_depth() -> None:
+    """The ceiling is published so a caller decides with the number it will be judged by."""
+    deepest = runtime.MAX_RUN_STEP_DEPTH
+    runtime.validate_run(_shaped_run(_chain(deepest + 1)), workspace_id=WORKSPACE)
+    with pytest.raises(ContractSemanticError, match=f"depth {deepest + 1}"):
+        runtime.validate_run(_shaped_run(_chain(deepest + 2)), workspace_id=WORKSPACE)
+
+
+def test_one_step_spawns_a_bounded_number_of_children() -> None:
+    widest = runtime.MAX_CHILD_RUN_STEPS
+    runtime.validate_run(_shaped_run(_fan_out(widest)), workspace_id=WORKSPACE)
+    with pytest.raises(ContractSemanticError, match="spawns more than"):
+        runtime.validate_run(_shaped_run(_fan_out(widest + 1)), workspace_id=WORKSPACE)
+
+
+def test_a_childs_wait_is_visible_from_its_parent_without_a_second_wait_record() -> None:
+    """One wait authority per run, and a way for the parent to look at it.
+
+    The child's suspension is a single `Wait` in the run's own `waits` array, resolved by the
+    one `ResolveWait` that resolves any wait. The parent holds no wait of its own for it --
+    a duplicate would be a second thing to resolve and a second thing to get wrong -- and it
+    still sees what its child is blocked on.
+    """
+    run = _child_run()
+    parent = next(step for step in run.steps if step.run_step_id == PARENT_STEP)
+    assert parent.wait_id is None
+    assert len(run.waits) == 1
+    assert runtime.waits_under_step(run, run_step_id=PARENT_STEP) == run.waits
+    assert runtime.waits_under_step(run, run_step_id=CHILD_STEP) == run.waits
+
+
+def test_a_wait_view_is_asked_for_a_step_the_run_actually_has() -> None:
+    for reader in (runtime.child_run_steps, runtime.waits_under_step):
+        with pytest.raises(ContractSemanticError, match="names no step of this run"):
+            reader(_child_run(), run_step_id="step-nowhere")
+
+
+# --------------------------------------------------------------------------
+# Context delivery is bounded and replayable (RT-304)
+# --------------------------------------------------------------------------
+
+
+def _cursor(**overrides: Any) -> ContextCursor:
+    return ContextCursor.from_wire({**_fixture("runtime-context-cursor.json"), **overrides})
+
+
+def test_replaying_one_cursor_delivers_exactly_the_same_context() -> None:
+    """Determinism and idempotence are one property: a delivery is a slice, not a consumption."""
+    run = _child_run()
+    cursor = _cursor()
+    first, advanced = runtime.deliver_context(cursor, run=run, workspace_id=WORKSPACE)
+    again, advanced_again = runtime.deliver_context(cursor, run=run, workspace_id=WORKSPACE)
+    assert first == again
+    assert advanced == advanced_again
+    assert first == tuple(run.events[: cursor.max_items])
+    assert advanced.next_sequence == len(first)
+    assert cursor.next_sequence == 0, "the cursor a caller holds is never mutated"
+
+
+def test_an_advanced_cursor_delivers_only_what_has_not_been_seen() -> None:
+    run = _child_run()
+    first, advanced = runtime.deliver_context(_cursor(), run=run, workspace_id=WORKSPACE)
+    rest, caught_up = runtime.deliver_context(advanced, run=run, workspace_id=WORKSPACE)
+    assert not {event.sequence for event in first} & {event.sequence for event in rest}
+    assert first + rest == tuple(run.events)
+    assert caught_up.next_sequence == len(run.events)
+
+
+def test_a_caught_up_cursor_is_a_fixed_point() -> None:
+    """Nothing left to deliver is the cursor coming back unchanged, not a second empty state."""
+    run = _child_run()
+    caught_up = _cursor(next_sequence=len(run.events))
+    delivered, returned = runtime.deliver_context(caught_up, run=run, workspace_id=WORKSPACE)
+    assert delivered == ()
+    assert returned == caught_up
+
+
+def test_a_delivery_never_exceeds_the_cursors_own_ceiling() -> None:
+    run = _child_run()
+    delivered, _ = runtime.deliver_context(_cursor(max_items=1), run=run, workspace_id=WORKSPACE)
+    assert len(delivered) == 1
+    assert len(run.events) > 1, "the fixture must have more context than one delivery carries"
+
+
+def test_a_cursor_ceiling_is_bounded_on_both_ends() -> None:
+    """A ceiling a caller may set to anything is not a ceiling."""
+    scope = {"run_id": CHILD_RUN_ID, "workspace_id": WORKSPACE}
+    with pytest.raises(ContractSemanticError, match="max_items"):
+        runtime.validate_context_cursor(_cursor(max_items=0), **scope)
+    with pytest.raises(ContractSemanticError, match="delivery ceiling"):
+        runtime.validate_context_cursor(
+            _cursor(max_items=runtime.MAX_CONTEXT_DELIVERY_ITEMS + 1), **scope
+        )
+    runtime.validate_context_cursor(
+        _cursor(max_items=runtime.MAX_CONTEXT_DELIVERY_ITEMS), **scope
+    )
+
+
+def test_a_cursor_is_refused_outside_the_lineage_it_was_issued_to() -> None:
+    """All four of workspace, run, step and attempt, because any one of them can be the wrong one."""
+    run = _child_run()
+    with pytest.raises(ContractSemanticError, match="workspace"):
+        runtime.deliver_context(
+            _cursor(workspace_id="ws-runtime-2"), run=run, workspace_id="ws-runtime-2"
+        )
+    with pytest.raises(ContractSemanticError, match="is not this run"):
+        runtime.deliver_context(_cursor(run_id=RUN_ID), run=run, workspace_id=WORKSPACE)
+    with pytest.raises(ContractSemanticError, match="names no step of this run"):
+        runtime.deliver_context(
+            _cursor(run_step_id="step-nowhere"), run=run, workspace_id=WORKSPACE
+        )
+
+
+def test_a_cursor_names_an_attempt_of_the_step_it_names() -> None:
+    """`attempt-parent-1` is a real attempt of this run -- of the *other* step.
+
+    The same rule an `EffectIntent` obeys: an attempt existing somewhere in the run is not
+    the attempt this record was issued to, and accepting one would let a cursor be replayed
+    against an execution that never held it.
+    """
+    with pytest.raises(ContractSemanticError, match="is not an attempt of step"):
+        runtime.deliver_context(
+            _cursor(attempt_id="attempt-parent-1"), run=_child_run(), workspace_id=WORKSPACE
+        )
+
+
+def test_a_cursor_cannot_have_been_delivered_events_that_do_not_exist() -> None:
+    """On a stream contiguous from zero, a position past the end is a corrupt cursor."""
+    run = _child_run()
+    with pytest.raises(ContractSemanticError, match="past the end"):
+        runtime.deliver_context(
+            _cursor(next_sequence=len(run.events) + 1), run=run, workspace_id=WORKSPACE
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"run_step_id": "not a step id"}, "run_step_id"),
+        ({"attempt_id": ""}, "attempt_id"),
+        ({"issued_at": "2026-08-22 09:00:04"}, "issued_at"),
+        ({"next_sequence": -1}, "next_sequence"),
+        ({"next_sequence": 100_000}, "longest event stream"),
+    ),
+)
+def test_a_malformed_cursor_is_refused_before_anything_is_delivered(
+    overrides: dict[str, Any], expected: str
+) -> None:
+    with pytest.raises(ContractSemanticError, match=expected):
+        runtime.validate_context_cursor(
+            _cursor(**overrides), run_id=CHILD_RUN_ID, workspace_id=WORKSPACE
+        )
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda: runtime.validate_context_cursor(None, run_id=RUN_ID, workspace_id=WORKSPACE),
+        lambda: runtime.validate_context_cursor({}, run_id=RUN_ID, workspace_id=WORKSPACE),
+        lambda: runtime.validate_context_cursor(_cursor(), run_id=RUN_ID, workspace_id=None),
+        lambda: runtime.deliver_context(_cursor(), run=None, workspace_id=WORKSPACE),
+        lambda: runtime.deliver_context(_cursor(), run={}, workspace_id=WORKSPACE),
+        lambda: runtime.child_run_steps(None, run_step_id=PARENT_STEP),
+        lambda: runtime.child_run_steps(_child_run(), run_step_id=None),
+        lambda: runtime.waits_under_step(object(), run_step_id=PARENT_STEP),
+        lambda: runtime.waits_under_step(_child_run(), run_step_id=7),
+    ),
+    ids=lambda call: "case",
+)
+def test_the_rt304_entry_points_never_raise_a_raw_type_error(call: Any) -> None:
     with pytest.raises(ContractSemanticError):
         call()
