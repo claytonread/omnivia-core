@@ -77,15 +77,15 @@ ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read"
 
 # The two already-replayed FND-F3 candidates' exact introducing commits, each
-# pinned as a distinct ancestor of the checked head -- not yet accepted, so
+# pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
 # neither carries an accepted_commit.
 CANDIDATE_INTRODUCED_COMMITS = {
-    21: "95a61abd964029211384e59ebc01f791a00172ca",
-    22: "f34bbf69f0afd720d2ecfc177e6431b605673b18",
+    21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
+    22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
-# distinct ancestor of ACCEPTED_COMMIT.
+# the commit that first introduced the migration file in ACCEPTED_COMMIT.
 INTRODUCED_COMMITS = {
     18: "a2da96a8fee541b9e18475f2753060f7e5bf6ff5",
     19: "b1c5b43a5e5adbe578f9379d134d6d7c6baefa70",
