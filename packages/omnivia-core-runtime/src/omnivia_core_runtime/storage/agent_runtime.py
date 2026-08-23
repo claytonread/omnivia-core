@@ -1,8 +1,9 @@
-"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202).
+"""Authoritative persistence for the canonical Agent Runtime records (RT-102, RT-103, RT-202, RT-203).
 
 Storage primitives for `Run`, `RunStep`, `Attempt`, `Wait`, `RuntimeEvent` (migration
 0018), `Artifact`, `EvidenceItem` and `CleanupReceipt` (migration 0019),
-`PolicySnapshot` and `BudgetSnapshot` (migration 0021), and nothing above them. There is
+`PolicySnapshot` and `BudgetSnapshot` (migration 0021), `Approval` and
+`CapabilityGrant` (migration 0022), and nothing above them. There is
 no command envelope, no `ResolveWait` handling, no admission decision and no status
 machine here: RT-104 owns the command/event-append transaction, and this module gives it
 the writes and reads to build one out of.
@@ -31,22 +32,42 @@ Two boundary decisions, stated rather than papered over:
 
 * Reads return the generated contract records -- `RunStep`, `Attempt`, `Wait`,
   `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, `PolicySnapshot`,
-  `BudgetSnapshot` -- because each can be materialised honestly from what 0018, 0019
-  and 0021 store.
-* A whole `Run` still cannot be. 0021 gives `read_run` the run's latest policy and
-  budget, but the accepted aggregate also requires capability grants and the effect
-  family, whose stores belong to RT-202's successors. `read_run` therefore keeps
-  returning :class:`RunSnapshot`, whose `policy` and `budget` are optional because a
-  run admitted before 0021 -- or one whose decisions were never recorded -- has
-  neither, rather than a `Run` with the remaining fields invented.
+  `BudgetSnapshot`, `Approval`, `CapabilityGrant` -- because each can be materialised
+  honestly from what 0018, 0019, 0021 and 0022 store.
+* A whole `Run` still cannot be. 0022 gives `read_run` the run's approvals and
+  capability grants on top of 0021's latest policy and budget, but the accepted
+  aggregate also requires the effect family, whose store belongs to RT-203's successor.
+  `read_run` therefore keeps returning :class:`RunSnapshot`, whose `policy` and `budget`
+  are optional because a run admitted before 0021 -- or one whose decisions were never
+  recorded -- has neither, rather than a `Run` with the remaining fields invented.
 
-A policy or budget snapshot is stored as the complete canonical v1 wire document plus
-the digest and byte length of exactly those bytes. The digest addresses the document,
-the contract's own snapshot identifier included; it is not that identifier and does not
-derive it. Every read recomputes both, requires the bytes to be canonical, decodes
-through the generated contract, validates the semantics and checks the columns the row
-is indexed by against the document itself, so a tampered row raises `StorageError`
-rather than returning something that merely parses.
+A policy or budget snapshot, and a capability grant, is stored as the complete canonical
+v1 wire document plus the digest and byte length of exactly those bytes. The digest
+addresses the document, the contract's own identifier included; it is not that
+identifier and does not derive it. Every read recomputes both, requires the bytes to be
+canonical, decodes through the generated contract, validates the semantics and checks
+the columns the row is indexed by against the document itself, so a tampered row raises
+`StorageError` rather than returning something that merely parses. A grant is validated
+against the exact `PolicySnapshot` it names -- the historical one, not whichever
+revision is latest now -- because a grant issued under a policy that has since narrowed
+is still the grant that was issued, and re-checking it against a decision made
+afterwards would make history unreadable.
+
+An `Approval` is not stored as a document. It is one request and, later, one decision,
+written as separate append-only facts and materialised by joining them: all four
+decision fields absent is pending, all four present is decided, and 0022's own primary
+key is what makes a second decision structurally impossible rather than merely refused.
+`record_approval_decision` compares every immutable request fact with the one already
+stored before it appends anything, so a decision that disagrees with its own request
+inserts nothing at all.
+
+Two limits of accepted v1 are worth stating rather than papering over. It records no
+requester identity, so this module stores none. And it gives an `Approval` no field
+naming a grant it authorised, so no such edge is stored either -- inventing either
+would be this module publishing a record the contract does not have. Who `decided_by`
+may be remains the `WaitResolutionPolicy` seam's decision; what is checked here is the
+shape of the identifier, the immutable correlation to the request and its wait, and the
+deadlines a decision must fall inside.
 
 A missing `omnivia_blob_objects` row for an artifact's content address is an
 availability fact, not a reason to refuse or hide the artifact's own metadata:
@@ -66,7 +87,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Final
@@ -76,9 +97,11 @@ from omnivia_core.contracts.v1 import (
     RUN_TERMINAL_STATUSES,
     WAIT_STATUS_PENDING,
     ApiError,
+    Approval,
     Artifact,
     Attempt,
     BudgetSnapshot,
+    CapabilityGrant,
     CleanupReceipt,
     ContractDecodeError,
     ContractSemanticError,
@@ -90,8 +113,10 @@ from omnivia_core.contracts.v1 import (
     RuntimeEvent,
     Wait,
     to_canonical_json,
+    validate_approval,
     validate_budget_snapshot,
     validate_budget_snapshot_progression,
+    validate_capability_grant,
     validate_policy_snapshot,
     validate_policy_snapshot_progression,
 )
@@ -119,6 +144,27 @@ _POLICY_SNAPSHOT_COLUMNS: Final = (
 _BUDGET_SNAPSHOT_COLUMNS: Final = (
     "budget_snapshot_id, run_id, revision, pinned_at_us, snapshot_json, "
     "snapshot_digest, snapshot_byte_length"
+)
+
+_CAPABILITY_GRANT_COLUMNS: Final = (
+    "capability_grant_id, run_id, policy_snapshot_id, granted_at_us, grant_json, "
+    "grant_digest, grant_byte_length"
+)
+
+#: One `Approval`, joined from the request 0022 stores and the decision and comment it
+#: may later receive. `LEFT JOIN` twice rather than three reads, because pending and
+#: decided are the same record read at two instants and one query says so.
+_APPROVAL_COLUMNS: Final = (
+    "a.approval_id, a.run_id, a.wait_id, a.requested_at_us, a.approver_role, "
+    "a.assigned_to, a.escalated_to, a.expires_at_us, d.decision, d.decided_at_us, "
+    "d.decided_by, d.audit_ref, c.comment"
+)
+_APPROVAL_SOURCE: Final = (
+    "omnivia_runtime_approvals a "
+    "LEFT JOIN omnivia_runtime_approval_decisions d "
+    "ON d.workspace_id = a.workspace_id AND d.approval_id = a.approval_id "
+    "LEFT JOIN omnivia_runtime_approval_comments c "
+    "ON c.workspace_id = a.workspace_id AND c.approval_id = a.approval_id"
 )
 
 
@@ -197,6 +243,17 @@ def _instant_us(value: str) -> int:
     return (datetime.fromisoformat(value) - _EPOCH) // timedelta(microseconds=1)
 
 
+def _canonical_instant(value: str | None) -> str | None:
+    """One timestamp respelled the way a stored microsecond column reads back.
+
+    A record materialised from columns stores the instant, not the spelling, so
+    `...:40.000Z` and `...:40Z` are one fact written two ways. Comparing the spellings
+    would refuse a decision that restates its own request exactly, in a spelling this
+    module itself never emits.
+    """
+    return None if value is None else _timestamp(_instant_us(value))
+
+
 def _stored_failure(text: object, digest: object, byte_length: object) -> ApiError:
     """One stored attempt failure, verified and decoded as the contract's `ApiError`.
 
@@ -266,12 +323,28 @@ class StoredBudgetSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class RunSnapshot:
-    """What RT-102, RT-103 and RT-202 can honestly report about one canonical run.
+class StoredCapabilityGrant:
+    """One issued `CapabilityGrant` and the address of the bytes it was stored as.
 
-    Deliberately not a `Run`. The contract's aggregate also requires capability grants
-    and the effect family; neither has a store yet, and filling them in to satisfy a
-    type would report data nobody recorded. `policy` and `budget` are the run's latest
+    The same shape, and for the same reason, as :class:`StoredPolicySnapshot`: the
+    address and the length are properties of the storage rather than of the accepted
+    contract, so they live here instead of widening the public wire schema.
+    """
+
+    grant: CapabilityGrant
+    content_address: str
+    content_length_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunSnapshot:
+    """What RT-102, RT-103, RT-202 and RT-203 can honestly report about one canonical run.
+
+    Deliberately not a `Run`. The contract's aggregate also requires the effect family,
+    which has no store yet, and filling it in to satisfy a type would report data nobody
+    recorded. `approvals` and `capability_grants` are what 0022 records and are empty
+    tuples for a run that has neither, which is an answer rather than a gap.
+    `policy` and `budget` are the run's latest
     stored revisions and are optional for the same reason: a run admitted before
     migration 0021, or one whose decisions were never recorded, has neither, and `None`
     says so rather than inventing an unbounded default. `status`, `updated_at` and
@@ -298,6 +371,8 @@ class RunSnapshot:
     artifacts: tuple[Artifact, ...]
     evidence: tuple[EvidenceItem, ...]
     cleanup_receipts: tuple[CleanupReceipt, ...]
+    approvals: tuple[Approval, ...]
+    capability_grants: tuple[CapabilityGrant, ...]
     correlations: tuple[ExternalReference, ...]
     policy: PolicySnapshot | None = None
     budget: BudgetSnapshot | None = None
@@ -795,6 +870,200 @@ class RuntimeWriter:
             ),
         )
 
+    def request_approval(self, approval: Approval) -> None:
+        """Record that one approval was asked for, and the comment it already carries.
+
+        The request half only. A decided `Approval` is not a request that happens to
+        know its own answer: :meth:`record_approval_decision` is what records one, and
+        it is a separate append precisely so a second decision has nowhere to live.
+
+        The workspace checked against is the writer's, never the one inside the record.
+        Whether the wait is an approval wait of this same run, and whether it is still
+        pending, are 0022's guards -- this module does not restate them in Python where
+        a second copy could disagree.
+        """
+        validate_approval(
+            approval, run_id=approval.run_id, workspace_id=self.workspace_id
+        )
+        if approval.decision is not None:
+            raise StorageError(
+                "a requested approval carries no decision; record_approval_decision is "
+                "what records one"
+            )
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_approvals "
+            "(workspace_id, approval_id, run_id, wait_id, requested_at_us, "
+            "approver_role, assigned_to, escalated_to, expires_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                approval.approval_id,
+                approval.run_id,
+                approval.wait_id,
+                _instant_us(approval.requested_at),
+                approval.approver_role,
+                approval.assigned_to,
+                approval.escalated_to,
+                None if approval.expires_at is None else _instant_us(approval.expires_at),
+            ),
+        )
+        self._append_approval_comment(approval)
+
+    def record_approval_decision(self, approval: Approval) -> None:
+        """Record the one decision an already-requested approval ever receives.
+
+        Takes the complete decided `Approval`, not a decision in isolation, because the
+        accepted record is the request/decision pair and a caller holding half of it can
+        state which half it thinks it has. Every immutable request fact is compared with
+        the one already stored before a statement is issued, so a decision that
+        disagrees with its own request -- a different wait, role, assignee, deadline or
+        instant -- inserts nothing at all rather than appending a decision onto a
+        request nobody made in those terms.
+
+        Only the facts that are genuinely new are appended: the decision, and a comment
+        the request did not already carry. A comment already recorded is never replaced,
+        and a second decision is refused here and then refused again by 0022's primary
+        key, which is what makes it structurally impossible rather than merely policed.
+        """
+        validate_approval(
+            approval, run_id=approval.run_id, workspace_id=self.workspace_id
+        )
+        decision = approval.decision
+        decided_at = approval.decided_at
+        decided_by = approval.decided_by
+        audit_reference = approval.audit_reference
+        if (
+            decision is None
+            or decided_at is None
+            or decided_by is None
+            or audit_reference is None
+        ):
+            raise StorageError(
+                "a recorded approval decision states all of decision, decided_at, "
+                "decided_by and audit_reference; a partial one is not a decision"
+            )
+        stored = read_approval(
+            self.connection,
+            workspace_id=self.workspace_id,
+            approval_id=approval.approval_id,
+        )
+        if stored is None:
+            raise StorageError(
+                f"approval {approval.approval_id!r} was never requested in this workspace"
+            )
+        if stored.decision is not None:
+            raise StorageError(
+                f"approval {approval.approval_id!r} is already decided; a decision is "
+                "recorded once and never re-decided"
+            )
+        # Comparing the whole record with its decision stripped and the stored comment
+        # substituted checks every immutable request fact at once -- including any the
+        # contract gains later -- rather than a hand-written field list that could fall
+        # behind the record it claims to compare.
+        requested = replace(
+            approval,
+            requested_at=_timestamp(_instant_us(approval.requested_at)),
+            expires_at=_canonical_instant(approval.expires_at),
+            decision=None,
+            decided_at=None,
+            decided_by=None,
+            audit_reference=None,
+            comment=stored.comment,
+        )
+        if requested != stored:
+            raise StorageError(
+                f"the decision offered for approval {approval.approval_id!r} disagrees "
+                "with the request already recorded for it"
+            )
+        if stored.comment is not None and approval.comment != stored.comment:
+            raise StorageError(
+                f"approval {approval.approval_id!r} already carries a comment; a comment "
+                "is recorded once and never replaced"
+            )
+        if stored.comment is None:
+            self._append_approval_comment(approval)
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_approval_decisions "
+            "(workspace_id, approval_id, decision, decided_at_us, decided_by, audit_ref) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                approval.approval_id,
+                decision,
+                _instant_us(decided_at),
+                decided_by,
+                audit_reference,
+            ),
+        )
+
+    def issue_capability_grant(self, grant: CapabilityGrant) -> None:
+        """Issue one capability to one run, backed by the policy in force right now.
+
+        *Discovery is not authority*, and neither is a policy the run has already moved
+        past. The grant must name the run's latest stored `PolicySnapshot` -- pinning a
+        grant to a superseded revision would let a narrowing be walked back by quoting
+        the decision it replaced -- and the accepted contract's own
+        `validate_capability_grant` is what proves the capability is in that policy's
+        `granted_capabilities` rather than only in its `discovered_capabilities`. Both
+        answers are settled before a statement is issued, so a refused grant leaves the
+        database exactly as it found it.
+        """
+        policy = _latest_policy_snapshot(
+            self.connection, workspace_id=self.workspace_id, run_id=grant.run_id
+        )
+        if policy is None:
+            raise StorageError(
+                f"run {grant.run_id!r} has no pinned policy for a capability grant to "
+                "be backed by"
+            )
+        if policy.snapshot.policy_snapshot_id != grant.policy_snapshot_id:
+            raise StorageError(
+                "a grant names the policy in force when it is issued; run "
+                f"{grant.run_id!r} is pinned to "
+                f"{policy.snapshot.policy_snapshot_id!r}, not "
+                f"{grant.policy_snapshot_id!r}"
+            )
+        validate_capability_grant(
+            grant,
+            run_id=grant.run_id,
+            workspace_id=self.workspace_id,
+            policy=policy.snapshot,
+        )
+        document, digest, byte_length = _stored_document(grant.to_wire())
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_capability_grants "
+            "(workspace_id, capability_grant_id, run_id, policy_snapshot_id, "
+            "granted_at_us, grant_json, grant_digest, grant_byte_length) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                grant.capability_grant_id,
+                grant.run_id,
+                grant.policy_snapshot_id,
+                _instant_us(grant.granted_at),
+                document,
+                digest,
+                byte_length,
+            ),
+        )
+
+    def _append_approval_comment(self, approval: Approval) -> None:
+        """The one comment fact an approval carries, when it carries one.
+
+        A row of its own rather than a column on either half, because the accepted
+        contract lets a *pending* approval carry a comment and lets a decision add one
+        later, and a column on either half would need an UPDATE to represent the second
+        of those. There is one authoritative copy and 0022's primary key refuses a
+        replacement.
+        """
+        if approval.comment is None:
+            return
+        self.connection.execute(
+            "INSERT INTO omnivia_runtime_approval_comments "
+            "(workspace_id, approval_id, comment) VALUES (?, ?, ?)",
+            (self.workspace_id, approval.approval_id, approval.comment),
+        )
+
     def _next_sequence(self, query: str, parameters: tuple[object, ...]) -> int:
         row = self.connection.execute(query, parameters).fetchone()
         if row is None:  # pragma: no cover - an aggregate always returns one row
@@ -1206,6 +1475,60 @@ def append_budget_snapshot(
         fencing_generation=fencing_generation,
     ) as writer:
         writer.append_budget_snapshot(snapshot)
+
+
+def request_approval(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    approval: Approval,
+) -> None:
+    """Record one approval request, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.request_approval(approval)
+
+
+def record_approval_decision(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    approval: Approval,
+) -> None:
+    """Record the one decision an approval receives, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.record_approval_decision(approval)
+
+
+def issue_capability_grant(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    grant: CapabilityGrant,
+) -> None:
+    """Issue one policy-backed capability grant, in its own fenced transaction."""
+    with runtime_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        writer.issue_capability_grant(grant)
 
 
 # --- reads --------------------------------------------------------------------
@@ -1658,6 +1981,142 @@ def _latest_budget_snapshot(
     return _stored_budget_snapshot(row, workspace_id=workspace_id)
 
 
+def _approval_from_row(workspace_id: str, row: tuple[Any, ...]) -> Approval:
+    """One `Approval`, joined from the request and whatever has been recorded since.
+
+    Pending and decided are the same record read at two instants: all four decision
+    fields absent is pending, all four present is decided, and 0022 makes the partial
+    state between them unrepresentable by keying the decision on the approval alone.
+    """
+    return Approval(
+        workspace_id=workspace_id,
+        approval_id=str(row[0]),
+        run_id=str(row[1]),
+        wait_id=str(row[2]),
+        requested_at=_timestamp(int(row[3])),
+        approver_role=str(row[4]),
+        assigned_to=None if row[5] is None else str(row[5]),
+        escalated_to=None if row[6] is None else str(row[6]),
+        expires_at=None if row[7] is None else _timestamp(int(row[7])),
+        decision=None if row[8] is None else str(row[8]),
+        decided_at=None if row[9] is None else _timestamp(int(row[9])),
+        decided_by=None if row[10] is None else str(row[10]),
+        audit_reference=None if row[11] is None else str(row[11]),
+        comment=None if row[12] is None else str(row[12]),
+    )
+
+
+def read_approval(
+    connection: sqlite3.Connection, *, workspace_id: str, approval_id: str
+) -> Approval | None:
+    """One approval by identifier, or `None` when this workspace holds no such request."""
+    row = connection.execute(
+        f"SELECT {_APPROVAL_COLUMNS} FROM {_APPROVAL_SOURCE} "
+        "WHERE a.workspace_id = ? AND a.approval_id = ?",
+        (workspace_id, approval_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _approval_from_row(workspace_id, row)
+
+
+def read_run_approvals(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[Approval, ...]:
+    """Every approval this run asked for, in request order then identifier order."""
+    rows = connection.execute(
+        f"SELECT {_APPROVAL_COLUMNS} FROM {_APPROVAL_SOURCE} "
+        "WHERE a.workspace_id = ? AND a.run_id = ? "
+        "ORDER BY a.requested_at_us, a.approval_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(_approval_from_row(workspace_id, row) for row in rows)
+
+
+def _stored_capability_grant(
+    connection: sqlite3.Connection, row: tuple[Any, ...], *, workspace_id: str
+) -> StoredCapabilityGrant:
+    """One capability grant row, proven before any of it is believed.
+
+    The same order a snapshot row is proven in -- digest and length, canonical form,
+    decode, then the columns the row is indexed by against the document itself -- with
+    the semantics checked against the `PolicySnapshot` the grant *names* rather than
+    whichever revision is latest now. A grant issued under a policy that has since
+    narrowed is still the grant that was issued; re-checking it against a decision made
+    afterwards would make a legal history unreadable, which is the opposite of what
+    reading it is for.
+    """
+    document = _verified_canonical_document(row[4], row[5], row[6], "capability grant")
+    try:
+        grant = CapabilityGrant.from_wire(document)
+    except ContractDecodeError as error:
+        raise StorageError(
+            "a stored capability grant is not a valid CapabilityGrant"
+        ) from error
+    if (
+        grant.capability_grant_id != str(row[0])
+        or grant.run_id != str(row[1])
+        or grant.policy_snapshot_id != str(row[2])
+        or _instant_us(grant.granted_at) != int(row[3])
+    ):
+        raise StorageError(
+            "a stored capability grant disagrees with the columns it is indexed by"
+        )
+    policy = read_policy_snapshot(
+        connection, workspace_id=workspace_id, policy_snapshot_id=grant.policy_snapshot_id
+    )
+    if policy is None:
+        raise StorageError(
+            "a stored capability grant names a policy snapshot this workspace does not hold"
+        )
+    try:
+        validate_capability_grant(
+            grant,
+            run_id=grant.run_id,
+            workspace_id=workspace_id,
+            policy=policy.snapshot,
+        )
+    except ContractSemanticError as error:
+        raise StorageError(
+            "a stored capability grant is not a valid CapabilityGrant"
+        ) from error
+    return StoredCapabilityGrant(
+        grant=grant,
+        content_address=str(row[5]),
+        content_length_bytes=int(row[6]),
+    )
+
+
+def read_capability_grant(
+    connection: sqlite3.Connection, *, workspace_id: str, capability_grant_id: str
+) -> StoredCapabilityGrant | None:
+    """One capability grant by identifier, or `None` when this workspace holds no such one."""
+    row = connection.execute(
+        f"SELECT {_CAPABILITY_GRANT_COLUMNS} FROM omnivia_runtime_capability_grants "
+        "WHERE workspace_id = ? AND capability_grant_id = ?",
+        (workspace_id, capability_grant_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return _stored_capability_grant(connection, row, workspace_id=workspace_id)
+
+
+def read_run_capability_grants(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[StoredCapabilityGrant, ...]:
+    """Every capability issued to this run, in issue order then identifier order."""
+    rows = connection.execute(
+        f"SELECT {_CAPABILITY_GRANT_COLUMNS} FROM omnivia_runtime_capability_grants "
+        "WHERE workspace_id = ? AND run_id = ? "
+        "ORDER BY granted_at_us, capability_grant_id",
+        (workspace_id, run_id),
+    ).fetchall()
+    return tuple(
+        _stored_capability_grant(connection, row, workspace_id=workspace_id)
+        for row in rows
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BlobAvailability:
     """Whether `omnivia_blob_objects` currently holds the bytes an artifact addresses.
@@ -1844,6 +2303,15 @@ def read_run(
         cleanup_receipts=read_run_cleanup_receipts(
             connection, workspace_id=workspace_id, run_id=run_id
         ),
+        approvals=read_run_approvals(
+            connection, workspace_id=workspace_id, run_id=run_id
+        ),
+        capability_grants=tuple(
+            issued.grant
+            for issued in read_run_capability_grants(
+                connection, workspace_id=workspace_id, run_id=run_id
+            )
+        ),
         correlations=(
             ExternalReference(
                 source_kind=_JOB_SOURCE_KIND,
@@ -1876,6 +2344,7 @@ __all__ = [
     "RunSnapshot",
     "RuntimeWriter",
     "StoredBudgetSnapshot",
+    "StoredCapabilityGrant",
     "StoredPolicySnapshot",
     "admit_run",
     "append_artifact",
@@ -1887,16 +2356,21 @@ __all__ = [
     "append_run_step",
     "close_wait",
     "finish_attempt",
+    "issue_capability_grant",
     "open_wait",
+    "read_approval",
     "read_artifact",
     "read_blob_availability",
     "read_budget_snapshot",
+    "read_capability_grant",
     "read_cleanup_receipt",
     "read_evidence_item",
     "read_policy_snapshot",
     "read_run",
+    "read_run_approvals",
     "read_run_artifacts",
     "read_run_budget_snapshots",
+    "read_run_capability_grants",
     "read_run_cleanup_receipts",
     "read_run_events",
     "read_run_evidence",
@@ -1907,7 +2381,9 @@ __all__ = [
     "read_run_steps",
     "read_run_waits",
     "read_workspace_run_ids",
+    "record_approval_decision",
     "record_step_status",
+    "request_approval",
     "runtime_writer",
     "start_attempt",
     "transaction_local_writer",

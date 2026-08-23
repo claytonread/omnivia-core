@@ -46,9 +46,10 @@ second queue or a second public application catalogue. Canonical, language-neutr
 record shapes and semantic validators remain owned by the public `omnivia-core`
 contract package. This operational package currently owns:
 
-- additive migrations `0018`–`0021` for `Run`, `RunStep`, `Attempt`, `Wait`,
+- additive migrations `0018`–`0022` for `Run`, `RunStep`, `Attempt`, `Wait`,
   `RuntimeEvent`, `Artifact`, `EvidenceItem`, `CleanupReceipt`, the rebuildable
-  run-summary projection, and `PolicySnapshot`/`BudgetSnapshot`;
+  run-summary projection, `PolicySnapshot`/`BudgetSnapshot`, and
+  `Approval`/`CapabilityGrant`;
 - append/read repositories with immutable content references and degraded missing-
   blob reads;
 - transactional runtime commands with aggregate sequence expectations, application
@@ -59,13 +60,25 @@ contract package. This operational package currently owns:
 - durable, policy-checked wait opening and single-use resolution that resumes the
   same running attempt rather than inventing `job.resume`; and
 - content-addressed, hash-verified persistence of accepted `PolicySnapshot` and
-  `BudgetSnapshot` decisions, immutable and monotonic per run.
+  `BudgetSnapshot` decisions, immutable and monotonic per run; and
+- durable `Approval` and `CapabilityGrant` records: an approval request and its
+  one decision are separate append-only facts, so a second decision is
+  structurally impossible rather than merely refused, and a grant is stored as
+  the canonical wire document backed by the exact `PolicySnapshot` it names.
+
+Two limits of accepted v1 shape what is stored. It records no requester identity
+and gives an `Approval` no field naming a grant it authorised, so neither is
+persisted. Authorising who may decide remains the wait-resolution policy seam;
+persistence checks identifier shape, the immutable correlation to the request and
+its wait, and the deadlines a decision must fall inside. The exact action and
+state an approval is granted for stays bound by the existing `Wait.resume_digest`,
+which `ResolveWait` already checks; RT-203 adds no second digest.
 
 These seams are private service implementation today; no new public runtime
 operation has been added to the frozen application catalogue. The following later
 milestones are intentionally not claimed by this package metadata: WorkerAdapter
-hosting, startup/orphan recovery, durable approvals and grants, capability
-dispatch, effect intent/receipt/settlement, and uncertain-effect reconciliation.
+hosting, startup/orphan recovery, capability dispatch, effect
+intent/receipt/settlement, and uncertain-effect reconciliation.
 
 The accepted substrate ownership and migration decisions are recorded in
 `docs/specs/agent-runtime-substrate-reconciliation.md`.
