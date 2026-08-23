@@ -815,8 +815,14 @@ def validate_budget_snapshot_progression(
     """Raise unless `current` is a legal successor of `previous` for one run.
 
     Budget is monotonic the same way policy is, in the direction that protects the caller:
-    revisions move forward, ceilings may narrow but never widen, and consumption never
-    decreases. A counter that went backwards is a report nobody can audit.
+    revisions move forward, instants do not regress, ceilings may narrow but never widen,
+    and consumption never decreases. A counter that went backwards is a report nobody can
+    audit.
+
+    `max_wall_clock_ms` is optional, and absent means *unbounded* rather than zero, so it
+    widens in both the directions a required ceiling can: a later revision may not raise a
+    finite limit, and may not drop one either. Absent to finite is the narrowing case and is
+    allowed, as are absent to absent and finite to smaller or equal.
 
     And, as with policy, both snapshots are validated in full first, against the previous
     snapshot's own run and workspace: two budgets for different runs -- or for the same run
@@ -842,6 +848,10 @@ def validate_budget_snapshot_progression(
             f"{label}: revision {after} does not advance on {before}; budget revisions "
             "move forward only"
         )
+    if _parse_timestamp(current.pinned_at, f"{label} (current).pinned_at") < _parse_timestamp(
+        previous.pinned_at, f"{label} (previous).pinned_at"
+    ):
+        raise ContractSemanticError(f"{label}: pinned_at regresses between revisions")
     for field in ("max_cost_units", "max_token_units"):
         widened = _require_at_least(getattr(current, field), 0, f"{label} (current).{field}")
         original = _require_at_least(getattr(previous, field), 0, f"{label} (previous).{field}")
@@ -849,6 +859,23 @@ def validate_budget_snapshot_progression(
             raise ContractSemanticError(
                 f"{label}: {field} widens from {original} to {widened}; a pinned ceiling "
                 "may narrow but never widen"
+            )
+    if previous.max_wall_clock_ms is not None:
+        original = _require_at_least(
+            previous.max_wall_clock_ms, 0, f"{label} (previous).max_wall_clock_ms"
+        )
+        if current.max_wall_clock_ms is None:
+            raise ContractSemanticError(
+                f"{label}: max_wall_clock_ms widens from {original} to unbounded; a pinned "
+                "ceiling may narrow but never widen"
+            )
+        widened = _require_at_least(
+            current.max_wall_clock_ms, 0, f"{label} (current).max_wall_clock_ms"
+        )
+        if widened > original:
+            raise ContractSemanticError(
+                f"{label}: max_wall_clock_ms widens from {original} to {widened}; a pinned "
+                "ceiling may narrow but never widen"
             )
     for field in ("consumed_cost_units", "consumed_token_units"):
         later = _require_at_least(getattr(current, field), 0, f"{label} (current).{field}")

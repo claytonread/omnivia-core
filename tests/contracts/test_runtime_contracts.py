@@ -770,6 +770,45 @@ def test_a_pinned_ceiling_may_narrow_but_never_widen() -> None:
         )
 
 
+def test_a_budget_revision_may_not_regress_in_time() -> None:
+    with pytest.raises(ContractSemanticError, match="pinned_at regresses"):
+        runtime.validate_budget_snapshot_progression(
+            _budget(),
+            _budget(revision=2, budget_snapshot_id="budget-0002", pinned_at="2026-08-22T08:00:00Z"),
+        )
+
+
+def _unbounded_budget(**overrides: Any) -> BudgetSnapshot:
+    """The same budget with no wall-clock ceiling at all, which is not a ceiling of zero."""
+    return dataclasses.replace(_budget(**overrides), max_wall_clock_ms=None)
+
+
+def test_an_optional_wall_clock_ceiling_may_narrow_but_never_widen() -> None:
+    """Absent means unbounded, so it widens in both directions a required ceiling cannot."""
+    first = _budget()
+    later = {"revision": 2, "budget_snapshot_id": "budget-0002"}
+    runtime.validate_budget_snapshot_progression(
+        first, _budget(**later, max_wall_clock_ms=300_000)
+    )
+    runtime.validate_budget_snapshot_progression(first, _budget(**later))
+    with pytest.raises(ContractSemanticError, match="may narrow but never widen"):
+        runtime.validate_budget_snapshot_progression(
+            first, _budget(**later, max_wall_clock_ms=1_200_000)
+        )
+    with pytest.raises(ContractSemanticError, match="widens from 600000 to unbounded"):
+        runtime.validate_budget_snapshot_progression(first, _unbounded_budget(**later))
+
+
+def test_pinning_a_wall_clock_ceiling_on_an_unbounded_budget_is_a_narrowing() -> None:
+    later = {"revision": 2, "budget_snapshot_id": "budget-0002"}
+    runtime.validate_budget_snapshot_progression(
+        _unbounded_budget(), _budget(**later, max_wall_clock_ms=1)
+    )
+    runtime.validate_budget_snapshot_progression(
+        _unbounded_budget(), _unbounded_budget(**later)
+    )
+
+
 def test_a_budget_progression_validates_both_snapshots_in_full() -> None:
     """A ceiling comparison over a snapshot that never passed its own rules proves nothing."""
     with pytest.raises(ContractSemanticError, match="exceeds max_cost_units"):
