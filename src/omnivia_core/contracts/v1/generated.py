@@ -292,7 +292,9 @@ __all__ = [
     "MemorySearchInput",
     "MemorySearchOrder",
     "MemorySearchResult",
+    "MutationEvidence",
     "MutationPrecondition",
+    "MutationTarget",
     "Omission",
     "OpaqueToken",
     "OpenCode",
@@ -381,6 +383,9 @@ __all__ = [
     "WorkspaceListInput",
     "WorkspaceListResult",
     "WorkspaceStatus",
+    "WorktreeLease",
+    "WorktreeLeaseLifecycle",
+    "WorktreeRef",
     "context_pack_authorized_candidate_from_wire",
     "context_pack_authorized_candidate_to_wire",
     "context_pack_citation_from_wire",
@@ -2425,6 +2430,16 @@ RunDefinitionKind: TypeAlias = str
 `agent_component` and `workflow`; there is no provider, adapter, worker-host or Harness kind
 here, because none of those is a definition a run executes. Closed at the schema and open on the
 wire, with the same fail-safe reading as `RunStatus`.
+"""
+
+WorktreeLeaseLifecycle: TypeAlias = str
+"""Where one `WorktreeLease` stands in its own life: `acquiring` is taking the worktree and may not
+yet mutate it, `held` is the only lifecycle a mutation may commit under, `draining` is finishing
+in-flight work and admits no new mutation, and `released` handed the worktree back. Deliberately
+the same four words the durable workspace service lease already records, because two vocabularies
+for one lifecycle are two things that have to be kept in agreement. Closed at the schema and open
+on the wire, with the same fail-safe reading as `RunStatus` -- an unrecognized lifecycle is not
+`held`, so it permits nothing.
 """
 
 ProbeKind: TypeAlias = str
@@ -5012,6 +5027,63 @@ class ExternalReference:
             source_kind=field_source_kind,
             source_id=field_source_id,
             workspace_id=field_workspace_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeRef:
+    """The source-qualified identity of one worktree: which workspace, which source root within
+    it, and which worktree of that root. All three, always. None of them is unique on its own
+    -- the same worktree identifier can be issued under two source roots, and the same source
+    root identifier can exist in two workspaces -- so an identity missing either qualifier
+    can be resolved against a tree it was never issued for, which is the one confusion a
+    mutation must never make. Two references name the same worktree exactly when all three
+    members are equal; a shared spelling of any one member implies nothing about the other
+    two. Carries no filesystem path, mount point, device, remote or repository URL: where a
+    worktree lives is a host decision and never a wire fact, which is the rule `Artifact`
+    already obeys.
+    """
+
+    workspace_id: WorkspaceId
+    source_root_id: Identifier
+    worktree_id: Identifier
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["source_root_id"] = self.source_root_id
+        wire["worktree_id"] = self.worktree_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorktreeRef") -> WorktreeRef:
+        """Decode a wire payload into a WorktreeRef.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_source_root_id = _decode_str(
+            _require_field(mapping, "source_root_id", path),
+            f"{path}.source_root_id",
+        )
+        field_worktree_id = _decode_str(
+            _require_field(mapping, "worktree_id", path),
+            f"{path}.worktree_id",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            source_root_id=field_source_root_id,
+            worktree_id=field_worktree_id,
         )
 
 
@@ -8536,6 +8608,53 @@ class RecordIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class MutationTarget:
+    """Exactly what one mutation acted on: a source-qualified worktree, and a digest of the
+    target's worktree-relative path within it. The path itself is deliberately absent. A
+    digest is comparable -- two mutations of one path in one worktree agree, two paths do not
+    -- without disclosing a filesystem layout, so a target can be recorded, exported and
+    retained with no redaction pass over it and nothing to redact. Both members are bounded
+    canonical scalars this contract already publishes, so a target can never carry free text,
+    a caller-shaped blob or an unbounded field.
+    """
+
+    worktree: WorktreeRef
+    path_digest: ContentChecksum
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["worktree"] = self.worktree.to_wire()
+        wire["path_digest"] = self.path_digest
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MutationTarget") -> MutationTarget:
+        """Decode a wire payload into a MutationTarget.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_worktree = WorktreeRef.from_wire(
+            _require_field(mapping, "worktree", path),
+            f"{path}.worktree",
+        )
+        field_path_digest = _decode_str(
+            _require_field(mapping, "path_digest", path),
+            f"{path}.path_digest",
+        )
+        return cls(
+            worktree=field_worktree,
+            path_digest=field_path_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Attempt:
     """One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
     workspace and start instant never change, and an attempt terminalizes exactly once.
@@ -8832,6 +8951,132 @@ class EvidenceItem:
             captured_at=field_captured_at,
             authoritative=field_authoritative,
             retained=field_retained,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeLease:
+    """One run's exclusive claim on one worktree, held under the workspace service lease rather
+    than beside it. This is a sublease, not a second authority: `service_instance_id` and
+    `fencing_generation` restate the exact holder and generation the durable workspace lease
+    already recorded, so a worktree claim can never be current while the workspace lease that
+    issued it is not. `lease_generation` is this worktree's own monotonic counter,
+    incremented by every acquisition and every takeover, and it is what a writer carries into
+    a mutation so a resumed predecessor's write is refused rather than accepted under a
+    generation that has moved on. Ownership fails closed on every axis: a lease whose fencing
+    generation is not the current one is superseded whatever its own record says, a released
+    lease is not a free one, `expires_at` is a ceiling and never a renewal, and a lifecycle
+    other than `held` -- including an unrecognized one -- permits no mutation at all. Expiry
+    alone is never proof the previous holder is gone; it is what makes a takeover permissible
+    to investigate, and the successor's generation is what makes the predecessor's writes
+    refusable.
+    """
+
+    workspace_id: WorkspaceId
+    worktree_lease_id: Identifier
+    worktree: WorktreeRef
+    run_id: Identifier
+    service_instance_id: Identifier
+    fencing_generation: int
+    lease_generation: int
+    lifecycle: WorktreeLeaseLifecycle
+    acquired_at: Timestamp
+    expires_at: Timestamp
+    audit_reference: AuditReference
+    released_at: Timestamp | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["worktree_lease_id"] = self.worktree_lease_id
+        wire["worktree"] = self.worktree.to_wire()
+        wire["run_id"] = self.run_id
+        wire["service_instance_id"] = self.service_instance_id
+        wire["fencing_generation"] = self.fencing_generation
+        wire["lease_generation"] = self.lease_generation
+        wire["lifecycle"] = self.lifecycle
+        wire["acquired_at"] = self.acquired_at
+        wire["expires_at"] = self.expires_at
+        if self.released_at is not None:
+            wire["released_at"] = self.released_at
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorktreeLease") -> WorktreeLease:
+        """Decode a wire payload into a WorktreeLease.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_worktree_lease_id = _decode_str(
+            _require_field(mapping, "worktree_lease_id", path),
+            f"{path}.worktree_lease_id",
+        )
+        field_worktree = WorktreeRef.from_wire(
+            _require_field(mapping, "worktree", path),
+            f"{path}.worktree",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_service_instance_id = _decode_str(
+            _require_field(mapping, "service_instance_id", path),
+            f"{path}.service_instance_id",
+        )
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_lease_generation = _decode_int(
+            _require_field(mapping, "lease_generation", path),
+            f"{path}.lease_generation",
+        )
+        field_lifecycle = _decode_str(
+            _require_field(mapping, "lifecycle", path),
+            f"{path}.lifecycle",
+        )
+        field_acquired_at = _decode_str(
+            _require_field(mapping, "acquired_at", path),
+            f"{path}.acquired_at",
+        )
+        field_expires_at = _decode_str(
+            _require_field(mapping, "expires_at", path),
+            f"{path}.expires_at",
+        )
+        field_released_at: Timestamp | None = None
+        if "released_at" in mapping:
+            raw_released_at = mapping["released_at"]
+            if raw_released_at is None:
+                raise ContractDecodeError(
+                    f"{path}.released_at: null is not a valid value"
+                )
+            field_released_at = _decode_str(raw_released_at, f"{path}.released_at")
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            worktree_lease_id=field_worktree_lease_id,
+            worktree=field_worktree,
+            run_id=field_run_id,
+            service_instance_id=field_service_instance_id,
+            fencing_generation=field_fencing_generation,
+            lease_generation=field_lease_generation,
+            lifecycle=field_lifecycle,
+            acquired_at=field_acquired_at,
+            expires_at=field_expires_at,
+            released_at=field_released_at,
+            audit_reference=field_audit_reference,
         )
 
 
@@ -10187,6 +10432,168 @@ class RunStep:
             updated_at=field_updated_at,
             attempts=field_attempts,
             wait_id=field_wait_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MutationEvidence:
+    """The record that one run changed one thing in one worktree, and everything a reader needs
+    to decide whether it was allowed to. It never stands alone: it names the `EffectIntent`
+    that authorized it, exactly as an `EffectReceipt` does, so a change nobody declared is a
+    change nobody can reconcile. It names the `WorktreeLease` it committed under and restates
+    that lease's `lease_generation` and `fencing_generation`, so a write made under authority
+    that had already moved on is refusable after the fact and not merely at the time. It
+    names the `PolicySnapshot` revision in force, so what was permitted is read from the
+    policy the run was actually pinned to rather than from whatever policy is current when
+    the record is read. `before_digest` and `after_digest` state what changed: an absent
+    `before_digest` is a target that did not exist, an absent `after_digest` is one that no
+    longer does, and a record with neither -- or with two equal digests -- describes no
+    mutation at all and is refused rather than recorded. `cleanup_receipt_id` links the
+    change to the cleanup that undid or released it, so a mutation and its reversal are one
+    story instead of two. Redaction-safe by construction: every field is an identifier, a
+    digest, a bounded code or an instant, there is no path, no content, no diff and no
+    message, so this record is publishable and retainable as written.
+    """
+
+    workspace_id: WorkspaceId
+    mutation_evidence_id: Identifier
+    run_id: Identifier
+    effect_intent_id: Identifier
+    target: MutationTarget
+    worktree_lease_id: Identifier
+    lease_generation: int
+    fencing_generation: int
+    policy_snapshot_id: Identifier
+    policy_revision: int
+    recorded_at: Timestamp
+    audit_reference: AuditReference
+    before_digest: ContentChecksum | None = None
+    after_digest: ContentChecksum | None = None
+    cleanup_receipt_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["workspace_id"] = self.workspace_id
+        wire["mutation_evidence_id"] = self.mutation_evidence_id
+        wire["run_id"] = self.run_id
+        wire["effect_intent_id"] = self.effect_intent_id
+        wire["target"] = self.target.to_wire()
+        wire["worktree_lease_id"] = self.worktree_lease_id
+        wire["lease_generation"] = self.lease_generation
+        wire["fencing_generation"] = self.fencing_generation
+        wire["policy_snapshot_id"] = self.policy_snapshot_id
+        wire["policy_revision"] = self.policy_revision
+        if self.before_digest is not None:
+            wire["before_digest"] = self.before_digest
+        if self.after_digest is not None:
+            wire["after_digest"] = self.after_digest
+        wire["recorded_at"] = self.recorded_at
+        if self.cleanup_receipt_id is not None:
+            wire["cleanup_receipt_id"] = self.cleanup_receipt_id
+        wire["audit_reference"] = self.audit_reference
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "MutationEvidence") -> MutationEvidence:
+        """Decode a wire payload into a MutationEvidence.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_workspace_id = _decode_str(
+            _require_field(mapping, "workspace_id", path),
+            f"{path}.workspace_id",
+        )
+        field_mutation_evidence_id = _decode_str(
+            _require_field(mapping, "mutation_evidence_id", path),
+            f"{path}.mutation_evidence_id",
+        )
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_effect_intent_id = _decode_str(
+            _require_field(mapping, "effect_intent_id", path),
+            f"{path}.effect_intent_id",
+        )
+        field_target = MutationTarget.from_wire(
+            _require_field(mapping, "target", path),
+            f"{path}.target",
+        )
+        field_worktree_lease_id = _decode_str(
+            _require_field(mapping, "worktree_lease_id", path),
+            f"{path}.worktree_lease_id",
+        )
+        field_lease_generation = _decode_int(
+            _require_field(mapping, "lease_generation", path),
+            f"{path}.lease_generation",
+        )
+        field_fencing_generation = _decode_int(
+            _require_field(mapping, "fencing_generation", path),
+            f"{path}.fencing_generation",
+        )
+        field_policy_snapshot_id = _decode_str(
+            _require_field(mapping, "policy_snapshot_id", path),
+            f"{path}.policy_snapshot_id",
+        )
+        field_policy_revision = _decode_int(
+            _require_field(mapping, "policy_revision", path),
+            f"{path}.policy_revision",
+        )
+        field_before_digest: ContentChecksum | None = None
+        if "before_digest" in mapping:
+            raw_before_digest = mapping["before_digest"]
+            if raw_before_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.before_digest: null is not a valid value"
+                )
+            field_before_digest = _decode_str(raw_before_digest, f"{path}.before_digest")
+        field_after_digest: ContentChecksum | None = None
+        if "after_digest" in mapping:
+            raw_after_digest = mapping["after_digest"]
+            if raw_after_digest is None:
+                raise ContractDecodeError(
+                    f"{path}.after_digest: null is not a valid value"
+                )
+            field_after_digest = _decode_str(raw_after_digest, f"{path}.after_digest")
+        field_recorded_at = _decode_str(
+            _require_field(mapping, "recorded_at", path),
+            f"{path}.recorded_at",
+        )
+        field_cleanup_receipt_id: Identifier | None = None
+        if "cleanup_receipt_id" in mapping:
+            raw_cleanup_receipt_id = mapping["cleanup_receipt_id"]
+            if raw_cleanup_receipt_id is None:
+                raise ContractDecodeError(
+                    f"{path}.cleanup_receipt_id: null is not a valid value"
+                )
+            field_cleanup_receipt_id = _decode_str(
+                raw_cleanup_receipt_id,
+                f"{path}.cleanup_receipt_id",
+            )
+        field_audit_reference = _decode_str(
+            _require_field(mapping, "audit_reference", path),
+            f"{path}.audit_reference",
+        )
+        return cls(
+            workspace_id=field_workspace_id,
+            mutation_evidence_id=field_mutation_evidence_id,
+            run_id=field_run_id,
+            effect_intent_id=field_effect_intent_id,
+            target=field_target,
+            worktree_lease_id=field_worktree_lease_id,
+            lease_generation=field_lease_generation,
+            fencing_generation=field_fencing_generation,
+            policy_snapshot_id=field_policy_snapshot_id,
+            policy_revision=field_policy_revision,
+            before_digest=field_before_digest,
+            after_digest=field_after_digest,
+            recorded_at=field_recorded_at,
+            cleanup_receipt_id=field_cleanup_receipt_id,
+            audit_reference=field_audit_reference,
         )
 
 

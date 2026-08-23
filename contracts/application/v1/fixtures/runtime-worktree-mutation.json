@@ -1,0 +1,24 @@
+{
+  "after_digest": "sha256:5f3c9b1e0a7d4c2b8e6f1a3d5c7b9e0f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b",
+  "audit_reference": "audit-run-0001-mutation",
+  "before_digest": "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "cleanup_receipt_id": "cleanup-0001",
+  "effect_intent_id": "intent-0001",
+  "fencing_generation": 7,
+  "lease_generation": 3,
+  "mutation_evidence_id": "mutation-0001",
+  "policy_revision": 1,
+  "policy_snapshot_id": "policy-0001",
+  "recorded_at": "2026-08-22T09:00:07Z",
+  "run_id": "run-0001",
+  "target": {
+    "path_digest": "sha256:9e8d7c6b5a4938271605f4e3d2c1b0a9988776655443322110ffeeddccbbaa99",
+    "worktree": {
+      "source_root_id": "source-root-primary",
+      "workspace_id": "ws-runtime-1",
+      "worktree_id": "worktree-0001"
+    }
+  },
+  "workspace_id": "ws-runtime-1",
+  "worktree_lease_id": "worktree-lease-0001"
+}

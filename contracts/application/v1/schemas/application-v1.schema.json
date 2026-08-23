@@ -662,8 +662,17 @@
     "RunDefinitionKind": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionKind"
     },
+    "WorktreeLeaseLifecycle": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeLeaseLifecycle"
+    },
     "ExternalReference": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ExternalReference"
+    },
+    "WorktreeRef": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeRef"
+    },
+    "MutationTarget": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/MutationTarget"
     },
     "RunDefinitionRef": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/RunDefinitionRef"
@@ -712,6 +721,12 @@
     },
     "CleanupReceipt": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/CleanupReceipt"
+    },
+    "WorktreeLease": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorktreeLease"
+    },
+    "MutationEvidence": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/MutationEvidence"
     },
     "Run": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run"

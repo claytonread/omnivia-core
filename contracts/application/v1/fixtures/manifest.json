@@ -198,6 +198,28 @@
       "description": "A fresh ContextCursor issued to one attempt of one step of 'runtime-run-child-steps.json', bounded to two entries per delivery. Delivering against it twice returns the same two events both times, and delivering against the cursor it returns yields only the events after them; a cursor caught up on the stream delivers nothing and comes back unchanged. Its lineage is checked against the run rather than trusted: an attempt of another step, a step of another run and a workspace it was not issued in are all refused."
     },
     {
+      "id": "runtime-worktree-lease",
+      "file": "runtime-worktree-lease.json",
+      "envelope": null,
+      "definition": "WorktreeLease",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_worktree_lease_fails_closed",
+      "description": "A held WorktreeLease on one source-qualified worktree of 'runtime-run-replay.json's run, issued under fencing generation 7 at its own lease generation 3. Current only in the one case where every axis agrees: semantics_runtime.worktree_lease_status reports 'superseded' under any other workspace fencing generation, 'released' once it is handed back, 'expired' at or after 'expires_at', and 'not_held' for 'acquiring', 'draining' and any lifecycle this build does not recognize -- so permits_worktree_mutation is false for all four."
+    },
+    {
+      "id": "runtime-worktree-mutation",
+      "file": "runtime-worktree-mutation.json",
+      "envelope": null,
+      "definition": "MutationEvidence",
+      "branch": null,
+      "schema_valid": true,
+      "tolerant_decode": true,
+      "semantic": "runtime_mutation_evidence_is_bound_to_lease_and_run",
+      "description": "MutationEvidence for one modified target in the worktree 'runtime-worktree-lease.json' claims, recorded inside that lease's window and carrying its lease and fencing generations. It binds to the run of 'runtime-run-replay.json' at four points: the intent that declared it, the policy snapshot and revision in force, the lease it committed under, and the cleanup receipt that released it. The target is source-qualified, so the same worktree identifier under another source root is refused rather than matched, and the record carries digests instead of paths or content, so nothing in it needs redacting before it is published."
+    },
+    {
       "id": "runtime-resolve-wait",
       "file": "runtime-resolve-wait.json",
       "envelope": null,

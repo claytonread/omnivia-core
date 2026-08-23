@@ -92,12 +92,13 @@ def _strict_validator(reference: str) -> Draft202012Validator:
     )
 
 
-def test_manifest_lists_exactly_twenty_fixtures() -> None:
-    """Thirteen envelope fixtures, the five canonical Runtime records RT-101 added, and the
-    two RT-304 added: a Run with a parent and a child step, and the `ContextCursor` issued
-    against it."""
-    assert len(MANIFEST) == 20
-    assert sum(1 for entry in MANIFEST if entry.get("definition")) == 7
+def test_manifest_lists_exactly_twenty_two_fixtures() -> None:
+    """Thirteen envelope fixtures, the five canonical Runtime records RT-101 added, the two
+    RT-304 added -- a Run with a parent and a child step, and the `ContextCursor` issued
+    against it -- and the two RT-401 added: a `WorktreeLease` and the `MutationEvidence`
+    recorded under it."""
+    assert len(MANIFEST) == 22
+    assert sum(1 for entry in MANIFEST if entry.get("definition")) == 9
 
 
 def test_manifest_ids_are_unique() -> None:

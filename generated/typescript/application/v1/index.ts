@@ -1766,6 +1766,39 @@ export function isRunDefinitionKind(value: unknown): value is RunDefinitionKind 
 }
 
 /**
+ * Where one `WorktreeLease` stands in its own life: `acquiring` is taking the worktree and may
+ * not yet mutate it, `held` is the only lifecycle a mutation may commit under, `draining` is
+ * finishing in-flight work and admits no new mutation, and `released` handed the worktree back.
+ * Deliberately the same four words the durable workspace service lease already records, because
+ * two vocabularies for one lifecycle are two things that have to be kept in agreement. Closed at
+ * the schema and open on the wire, with the same fail-safe reading as `RunStatus` -- an
+ * unrecognized lifecycle is not `held`, so it permits nothing.
+ */
+export type WorktreeLeaseLifecycle = string;
+
+/**
+ * The closed `WorktreeLeaseLifecycle` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKTREE_LEASE_LIFECYCLE_VALUES = [
+  "acquiring",
+  "held",
+  "draining",
+  "released",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorktreeLeaseLifecycle`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorktreeLeaseLifecycle(value: unknown): value is WorktreeLeaseLifecycle {
+  return (
+    typeof value === "string" &&
+    (WORKTREE_LEASE_LIFECYCLE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -3138,6 +3171,34 @@ export interface ExternalReference {
    * resolved against the wrong one.
    */
   readonly workspace_id: WorkspaceId;
+}
+
+/**
+ * The source-qualified identity of one worktree: which workspace, which source root within it,
+ * and which worktree of that root. All three, always. None of them is unique on its own -- the
+ * same worktree identifier can be issued under two source roots, and the same source root
+ * identifier can exist in two workspaces -- so an identity missing either qualifier can be
+ * resolved against a tree it was never issued for, which is the one confusion a mutation must
+ * never make. Two references name the same worktree exactly when all three members are equal; a
+ * shared spelling of any one member implies nothing about the other two. Carries no filesystem
+ * path, mount point, device, remote or repository URL: where a worktree lives is a host decision
+ * and never a wire fact, which is the rule `Artifact` already obeys.
+ */
+export interface WorktreeRef {
+  /**
+   * Workspace this worktree belongs to.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * The source root within that workspace this worktree was created under. Unique within its
+   * workspace, and never assumed to mean the same root in another one.
+   */
+  readonly source_root_id: Identifier;
+  /**
+   * This worktree, unique within its source root. Never unique on its own: it is read only
+   * together with the two qualifiers above.
+   */
+  readonly worktree_id: Identifier;
 }
 
 /**
@@ -4789,6 +4850,27 @@ export interface RecordIdentity {
 }
 
 /**
+ * Exactly what one mutation acted on: a source-qualified worktree, and a digest of the target's
+ * worktree-relative path within it. The path itself is deliberately absent. A digest is
+ * comparable -- two mutations of one path in one worktree agree, two paths do not -- without
+ * disclosing a filesystem layout, so a target can be recorded, exported and retained with no
+ * redaction pass over it and nothing to redact. Both members are bounded canonical scalars this
+ * contract already publishes, so a target can never carry free text, a caller-shaped blob or an
+ * unbounded field.
+ */
+export interface MutationTarget {
+  /**
+   * The worktree this mutation acted inside, qualified by workspace and source root.
+   */
+  readonly worktree: WorktreeRef;
+  /**
+   * Digest of the target's worktree-relative path. Identity, not location: it proves two
+   * mutations touched the same target without saying where that target is.
+   */
+  readonly path_digest: ContentChecksum;
+}
+
+/**
  * One execution attempt of one `RunStep`. Immutable once recorded: identity, step, run,
  * workspace and start instant never change, and an attempt terminalizes exactly once. Within a
  * step, attempts are numbered `1..N` contiguously and never overlap; only a `failed`,
@@ -4935,6 +5017,79 @@ export interface EvidenceItem {
    * True while this evidence is still held. Cancelling a run never sets it false.
    */
   readonly retained: boolean;
+}
+
+/**
+ * One run's exclusive claim on one worktree, held under the workspace service lease rather than
+ * beside it. This is a sublease, not a second authority: `service_instance_id` and
+ * `fencing_generation` restate the exact holder and generation the durable workspace lease
+ * already recorded, so a worktree claim can never be current while the workspace lease that
+ * issued it is not. `lease_generation` is this worktree's own monotonic counter, incremented by
+ * every acquisition and every takeover, and it is what a writer carries into a mutation so a
+ * resumed predecessor's write is refused rather than accepted under a generation that has moved
+ * on. Ownership fails closed on every axis: a lease whose fencing generation is not the current
+ * one is superseded whatever its own record says, a released lease is not a free one,
+ * `expires_at` is a ceiling and never a renewal, and a lifecycle other than `held` -- including
+ * an unrecognized one -- permits no mutation at all. Expiry alone is never proof the previous
+ * holder is gone; it is what makes a takeover permissible to investigate, and the successor's
+ * generation is what makes the predecessor's writes refusable.
+ */
+export interface WorktreeLease {
+  /**
+   * Workspace this lease was issued in. Always the workspace its `worktree` names.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this lease, unique within its workspace.
+   */
+  readonly worktree_lease_id: Identifier;
+  /**
+   * The worktree this lease claims, qualified by workspace and source root so one lease can
+   * never be read against another root's tree of the same name.
+   */
+  readonly worktree: WorktreeRef;
+  /**
+   * The run holding this lease. A worktree is claimed by one run at a time.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The workspace service instance this lease was issued under -- the same holder identity the
+   * durable workspace lease records, restated rather than reinvented.
+   */
+  readonly service_instance_id: Identifier;
+  /**
+   * The workspace lease's fencing generation this sublease was issued under. Not this lease's
+   * own counter: it is the generation the workspace lease had, so a sublease surviving a
+   * takeover is detectably stale.
+   */
+  readonly fencing_generation: number;
+  /**
+   * This worktree's own monotonic claim counter, incremented by every acquisition and
+   * takeover. Strictly increasing per worktree; a number that repeats or goes backwards makes
+   * two holders indistinguishable.
+   */
+  readonly lease_generation: number;
+  /**
+   * Where this lease stands. Only `held` permits a mutation.
+   */
+  readonly lifecycle: WorktreeLeaseLifecycle;
+  /**
+   * When this lease was taken.
+   */
+  readonly acquired_at: Timestamp;
+  /**
+   * When this lease stops being current, always after `acquired_at`. A ceiling on how long the
+   * holder may act without renewing, never a promise that the holder is gone once it passes.
+   */
+  readonly expires_at: Timestamp;
+  /**
+   * When the worktree was handed back. Present exactly when `lifecycle` is `released`.
+   */
+  readonly released_at?: Timestamp;
+  /**
+   * Immutable reference to the audit record for this claim.
+   */
+  readonly audit_reference: AuditReference;
 }
 
 /**
@@ -5695,6 +5850,95 @@ export interface RunStep {
    * The wait holding this step, present exactly when the step is `waiting`.
    */
   readonly wait_id?: Identifier;
+}
+
+/**
+ * The record that one run changed one thing in one worktree, and everything a reader needs to
+ * decide whether it was allowed to. It never stands alone: it names the `EffectIntent` that
+ * authorized it, exactly as an `EffectReceipt` does, so a change nobody declared is a change
+ * nobody can reconcile. It names the `WorktreeLease` it committed under and restates that
+ * lease's `lease_generation` and `fencing_generation`, so a write made under authority that had
+ * already moved on is refusable after the fact and not merely at the time. It names the
+ * `PolicySnapshot` revision in force, so what was permitted is read from the policy the run was
+ * actually pinned to rather than from whatever policy is current when the record is read.
+ * `before_digest` and `after_digest` state what changed: an absent `before_digest` is a target
+ * that did not exist, an absent `after_digest` is one that no longer does, and a record with
+ * neither -- or with two equal digests -- describes no mutation at all and is refused rather
+ * than recorded. `cleanup_receipt_id` links the change to the cleanup that undid or released it,
+ * so a mutation and its reversal are one story instead of two. Redaction-safe by construction:
+ * every field is an identifier, a digest, a bounded code or an instant, there is no path, no
+ * content, no diff and no message, so this record is publishable and retainable as written.
+ */
+export interface MutationEvidence {
+  /**
+   * Workspace this mutation was made in. Always the workspace its target's worktree names.
+   */
+  readonly workspace_id: WorkspaceId;
+  /**
+   * Identifier of this record, unique within its workspace.
+   */
+  readonly mutation_evidence_id: Identifier;
+  /**
+   * The run that made this mutation.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The intent that authorized this mutation. Required: nothing is changed that was not first
+   * declared.
+   */
+  readonly effect_intent_id: Identifier;
+  /**
+   * The source-qualified target this mutation acted on.
+   */
+  readonly target: MutationTarget;
+  /**
+   * The worktree lease this mutation committed under.
+   */
+  readonly worktree_lease_id: Identifier;
+  /**
+   * The worktree lease's own generation when this mutation committed. Together with
+   * `fencing_generation` this is the fencing token the write actually carried, so a resumed
+   * predecessor's mutation is identifiable as such rather than merely undated.
+   */
+  readonly lease_generation: number;
+  /**
+   * The workspace fencing generation in force when this mutation committed. Restated here
+   * rather than looked up, so a write made under a superseded generation stays visible once
+   * the lease record is gone.
+   */
+  readonly fencing_generation: number;
+  /**
+   * The policy snapshot in force when this mutation was authorized.
+   */
+  readonly policy_snapshot_id: Identifier;
+  /**
+   * The revision of that snapshot. A run's policy may be re-pinned, so the revision is what
+   * makes 'what was permitted' answerable at all.
+   */
+  readonly policy_revision: number;
+  /**
+   * Digest of the target's content before this mutation. Absent exactly when the target did
+   * not exist.
+   */
+  readonly before_digest?: ContentChecksum;
+  /**
+   * Digest of the target's content after this mutation. Absent exactly when the target no
+   * longer exists.
+   */
+  readonly after_digest?: ContentChecksum;
+  /**
+   * When this mutation committed. The instant the lease is judged current at.
+   */
+  readonly recorded_at: Timestamp;
+  /**
+   * The cleanup that released or reversed this mutation, when one has. Absent while nothing
+   * has cleaned it up.
+   */
+  readonly cleanup_receipt_id?: Identifier;
+  /**
+   * Immutable reference to the audit record for this mutation.
+   */
+  readonly audit_reference: AuditReference;
 }
 
 /**

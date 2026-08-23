@@ -29,10 +29,12 @@ from omnivia_core.contracts.v1.generated import (
     ContextCursor,
     ExternalReference,
     JobControl,
+    MutationEvidence,
     PolicySnapshot,
     ResolveWait,
     Run,
     Wait,
+    WorktreeLease,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -140,6 +142,7 @@ _VOCABULARY_CONSTANTS = {
     "EffectOutcome": "EFFECT_OUTCOMES",
     "CleanupOutcome": "CLEANUP_OUTCOMES",
     "RunDefinitionKind": "RUN_DEFINITION_KINDS",
+    "WorktreeLeaseLifecycle": "WORKTREE_LEASE_LIFECYCLES",
 }
 
 
@@ -1782,5 +1785,348 @@ def test_a_malformed_cursor_is_refused_before_anything_is_delivered(
     ids=lambda call: "case",
 )
 def test_the_rt304_entry_points_never_raise_a_raw_type_error(call: Any) -> None:
+    with pytest.raises(ContractSemanticError):
+        call()
+
+
+# --------------------------------------------------------------------------
+# Worktree leases and mutation evidence (RT-401)
+# --------------------------------------------------------------------------
+
+INSIDE_LEASE = "2026-08-22T09:30:00Z"
+
+
+def _lease(**overrides: Any) -> WorktreeLease:
+    return WorktreeLease.from_wire({**_fixture("runtime-worktree-lease.json"), **overrides})
+
+
+def _mutation_document() -> dict[str, Any]:
+    return _fixture("runtime-worktree-mutation.json")
+
+
+def _mutation(**overrides: Any) -> MutationEvidence:
+    return MutationEvidence.from_wire({**_mutation_document(), **overrides})
+
+
+def _status(lease: WorktreeLease, generation: int, at: str) -> str:
+    return runtime.worktree_lease_status(
+        lease, workspace_id=WORKSPACE, fencing_generation=generation, at=at
+    )
+
+
+def _validate_mutation(evidence: MutationEvidence, lease: WorktreeLease | None = None) -> None:
+    runtime.validate_mutation_evidence(
+        evidence, lease=lease or _lease(), run=_run(), workspace_id=WORKSPACE
+    )
+
+
+def test_a_worktree_is_identified_by_all_three_of_its_qualifiers() -> None:
+    """Neither the worktree id nor the source root id is unique on its own."""
+    worktree = _lease().worktree
+    assert worktree == dataclasses.replace(worktree)
+    for field, value in (
+        ("workspace_id", "ws-runtime-2"),
+        ("source_root_id", "source-root-secondary"),
+        ("worktree_id", "worktree-0002"),
+    ):
+        assert worktree != dataclasses.replace(worktree, **{field: value})
+
+
+def test_a_worktree_ref_is_refused_against_a_workspace_it_was_not_issued_in() -> None:
+    with pytest.raises(ContractSemanticError, match="workspace"):
+        runtime.validate_worktree_ref(_lease().worktree, workspace_id="ws-runtime-2")
+
+
+def test_a_held_unexpired_lease_under_its_own_generation_is_the_one_current_case() -> None:
+    lease = _lease()
+    assert _status(lease, lease.fencing_generation, INSIDE_LEASE) == (
+        runtime.WORKTREE_LEASE_STATUS_CURRENT
+    )
+    assert runtime.permits_worktree_mutation(
+        lease,
+        workspace_id=WORKSPACE,
+        fencing_generation=lease.fencing_generation,
+        at=INSIDE_LEASE,
+    )
+
+
+def test_a_lease_under_a_superseded_fencing_generation_is_stale_whatever_it_says() -> None:
+    """The generation is the only fact a suspended holder cannot forge about itself.
+
+    So it is read first: a lease that still calls itself `held`, inside its own window, is
+    superseded the moment the workspace lease it hangs off has moved to a successor.
+    """
+    lease = _lease()
+    assert _status(lease, lease.fencing_generation + 1, INSIDE_LEASE) == (
+        runtime.WORKTREE_LEASE_STATUS_SUPERSEDED
+    )
+    assert not runtime.permits_worktree_mutation(
+        lease,
+        workspace_id=WORKSPACE,
+        fencing_generation=lease.fencing_generation + 1,
+        at=INSIDE_LEASE,
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "at", "expected"),
+    (
+        ({}, "2026-08-22T10:00:00Z", runtime.WORKTREE_LEASE_STATUS_EXPIRED),
+        ({}, "2026-08-22T23:00:00Z", runtime.WORKTREE_LEASE_STATUS_EXPIRED),
+        (
+            {"lifecycle": "released", "released_at": INSIDE_LEASE},
+            INSIDE_LEASE,
+            runtime.WORKTREE_LEASE_STATUS_RELEASED,
+        ),
+        ({"lifecycle": "acquiring"}, INSIDE_LEASE, runtime.WORKTREE_LEASE_STATUS_NOT_HELD),
+        ({"lifecycle": "draining"}, INSIDE_LEASE, runtime.WORKTREE_LEASE_STATUS_NOT_HELD),
+    ),
+)
+def test_every_other_lifecycle_and_instant_refuses(
+    overrides: dict[str, Any], at: str, expected: str
+) -> None:
+    """The window is half-open: a lease and its successor are never both current at one instant."""
+    lease = _lease(**overrides)
+    assert _status(lease, lease.fencing_generation, at) == expected
+    assert not runtime.permits_worktree_mutation(
+        lease, workspace_id=WORKSPACE, fencing_generation=lease.fencing_generation, at=at
+    )
+
+
+def test_an_unrecognized_lifecycle_decodes_and_still_permits_nothing() -> None:
+    """An open vocabulary may add a lifecycle; a build that has not heard of it decides nothing.
+
+    It decodes rather than being refused -- the same reading `RunStatus` gets -- and it lands
+    in `not_held` by falling through, because only the exact string `held` reaches `current`.
+    """
+    unknown = _lease(lifecycle="quarantined")
+    runtime.validate_worktree_lease(unknown, workspace_id=WORKSPACE)
+    assert _status(unknown, unknown.fencing_generation, INSIDE_LEASE) == (
+        runtime.WORKTREE_LEASE_STATUS_NOT_HELD
+    )
+    assert not runtime.permits_worktree_mutation(
+        unknown,
+        workspace_id=WORKSPACE,
+        fencing_generation=unknown.fencing_generation,
+        at=INSIDE_LEASE,
+    )
+    assert "quarantined" not in runtime.WORKTREE_LEASE_LIFECYCLES
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"expires_at": "2026-08-22T09:00:00Z"}, "grants no window"),
+        ({"expires_at": "2026-08-21T09:00:00Z"}, "grants no window"),
+        ({"released_at": INSIDE_LEASE}, "has not been handed back"),
+        ({"lifecycle": "released"}, "must say when it was handed back"),
+        ({"fencing_generation": 0}, "fencing_generation"),
+        ({"lease_generation": 0}, "lease_generation"),
+        ({"worktree_lease_id": "not a lease id"}, "worktree_lease_id"),
+    ),
+)
+def test_an_incoherent_lease_record_is_refused(
+    overrides: dict[str, Any], expected: str
+) -> None:
+    with pytest.raises(ContractSemanticError, match=expected):
+        runtime.validate_worktree_lease(_lease(**overrides), workspace_id=WORKSPACE)
+
+
+def test_mutation_evidence_binds_to_its_lease_and_its_run() -> None:
+    """The fixture is the whole binding: intent, policy revision, lease token and cleanup."""
+    evidence = _mutation()
+    _validate_mutation(evidence)
+    run = _run()
+    lease = _lease()
+    assert evidence.effect_intent_id in {intent.effect_intent_id for intent in run.effect_intents}
+    assert evidence.policy_snapshot_id == run.policy.policy_snapshot_id
+    assert evidence.policy_revision == run.policy.revision
+    assert evidence.cleanup_receipt_id in {
+        receipt.cleanup_receipt_id for receipt in run.cleanup_receipts
+    }
+    assert (evidence.lease_generation, evidence.fencing_generation) == (
+        lease.lease_generation,
+        lease.fencing_generation,
+    )
+
+
+def test_the_same_worktree_name_under_another_source_root_is_a_mismatch() -> None:
+    """The record still looks well formed; only the source root makes it the wrong worktree."""
+    document = _mutation_document()
+    for field, value in (
+        ("source_root_id", "source-root-secondary"),
+        ("worktree_id", "worktree-0002"),
+    ):
+        evidence = _mutation(
+            target={
+                **document["target"],
+                "worktree": {**document["target"]["worktree"], field: value},
+            }
+        )
+        with pytest.raises(ContractSemanticError, match="not the worktree this lease claims"):
+            _validate_mutation(evidence)
+
+
+def test_a_mutation_target_in_another_workspace_is_refused_before_it_is_compared() -> None:
+    document = _mutation_document()
+    evidence = _mutation(
+        target={
+            **document["target"],
+            "worktree": {**document["target"]["worktree"], "workspace_id": "ws-runtime-2"},
+        }
+    )
+    with pytest.raises(ContractSemanticError, match="workspace"):
+        _validate_mutation(evidence)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"lease_generation": 2}, "not the lease's current generation"),
+        ({"lease_generation": 4}, "not the lease's current generation"),
+        ({"fencing_generation": 6}, "not the generation this lease was issued under"),
+        ({"worktree_lease_id": "worktree-lease-0002"}, "worktree_lease_id"),
+    ),
+)
+def test_a_write_carrying_the_wrong_fencing_token_is_refused_after_the_fact(
+    overrides: dict[str, Any], expected: str
+) -> None:
+    """A resumed predecessor writes under the generation it believed in, which is refusable."""
+    with pytest.raises(ContractSemanticError, match=expected):
+        _validate_mutation(_mutation(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("recorded_at", "expected"),
+    (
+        ("2026-08-22T08:59:59Z", "before the lease was taken"),
+        ("2026-08-22T10:00:00Z", "at or after the lease expired"),
+        ("2026-08-22T11:00:00Z", "at or after the lease expired"),
+    ),
+)
+def test_a_write_outside_the_leases_window_is_refused(
+    recorded_at: str, expected: str
+) -> None:
+    with pytest.raises(ContractSemanticError, match=expected):
+        _validate_mutation(_mutation(recorded_at=recorded_at))
+
+
+def test_nothing_may_be_written_after_the_worktree_was_handed_back() -> None:
+    released = _lease(lifecycle="released", released_at="2026-08-22T09:00:05Z")
+    _validate_mutation(_mutation(recorded_at="2026-08-22T09:00:04Z"), released)
+    with pytest.raises(ContractSemanticError, match="after the worktree was handed back"):
+        _validate_mutation(_mutation(recorded_at="2026-08-22T09:00:06Z"), released)
+
+
+@pytest.mark.parametrize("lifecycle", ("acquiring", "quarantined"))
+def test_a_lease_that_was_never_held_authorized_nothing(lifecycle: str) -> None:
+    """An allow-list, so a lifecycle this build has not heard of fails closed like `acquiring`."""
+    with pytest.raises(ContractSemanticError, match="not a lifecycle a lease has been held in"):
+        _validate_mutation(_mutation(), _lease(lifecycle=lifecycle))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    (
+        ({"effect_intent_id": "intent-9999"}, "names no intent of this run"),
+        ({"policy_snapshot_id": "policy-9999"}, "run's policy snapshot"),
+        ({"policy_revision": 2}, "not the revision this run is pinned to"),
+        ({"cleanup_receipt_id": "cleanup-9999"}, "names no cleanup receipt of this run"),
+        ({"run_id": "run-0002"}, "is not this run"),
+        ({"workspace_id": "ws-runtime-2"}, "is not this workspace"),
+    ),
+)
+def test_mutation_evidence_never_stands_alone(
+    overrides: dict[str, Any], expected: str
+) -> None:
+    with pytest.raises(ContractSemanticError, match=expected):
+        _validate_mutation(_mutation(**overrides))
+
+
+def test_a_record_that_describes_no_change_is_refused_rather_than_kept() -> None:
+    """Evidence of nothing having happened is what a reader mistakes for evidence that it did."""
+    document = _mutation_document()
+    both_absent = {
+        key: value
+        for key, value in document.items()
+        if key not in {"before_digest", "after_digest"}
+    }
+    with pytest.raises(ContractSemanticError, match="records no change"):
+        _validate_mutation(MutationEvidence.from_wire(both_absent))
+    with pytest.raises(ContractSemanticError, match="record no change"):
+        _validate_mutation(_mutation(after_digest=document["before_digest"]))
+
+
+def test_a_creation_and_a_deletion_each_state_exactly_one_digest() -> None:
+    """One absent digest is the disposition: there is no second field to disagree with it."""
+    document = _mutation_document()
+    created = {key: value for key, value in document.items() if key != "before_digest"}
+    deleted = {key: value for key, value in document.items() if key != "after_digest"}
+    _validate_mutation(MutationEvidence.from_wire(created))
+    _validate_mutation(MutationEvidence.from_wire(deleted))
+
+
+def test_mutation_evidence_carries_no_path_content_or_message() -> None:
+    """Redaction-safe by construction: there is nothing in the record to redact."""
+    wire = _mutation().to_wire()
+    flat = json.dumps(wire)
+    assert "/" not in flat.replace("sha256:", "")
+    assert set(wire) <= {
+        "workspace_id",
+        "mutation_evidence_id",
+        "run_id",
+        "effect_intent_id",
+        "target",
+        "worktree_lease_id",
+        "lease_generation",
+        "fencing_generation",
+        "policy_snapshot_id",
+        "policy_revision",
+        "before_digest",
+        "after_digest",
+        "recorded_at",
+        "cleanup_receipt_id",
+        "audit_reference",
+    }
+    assert set(wire["target"]) == {"worktree", "path_digest"}
+
+
+def test_the_rt401_records_are_additive_to_every_existing_fixture() -> None:
+    """No existing record grew a field, so every fixture still decodes and validates as it did."""
+    run = _run()
+    runtime.validate_run(run, workspace_id=WORKSPACE)
+    assert not hasattr(run, "mutations")
+    assert not hasattr(run, "worktree_leases")
+    child = _child_run()
+    runtime.validate_run(child, workspace_id=WORKSPACE)
+
+
+@pytest.mark.parametrize(
+    "call",
+    (
+        lambda: runtime.validate_worktree_ref(None, workspace_id=WORKSPACE),
+        lambda: runtime.validate_worktree_ref({}, workspace_id=WORKSPACE),
+        lambda: runtime.validate_worktree_lease(None, workspace_id=WORKSPACE),
+        lambda: runtime.validate_worktree_lease(_lease(), workspace_id=None),
+        lambda: _status(_lease(), 7, "2026-08-22 09:30:00"),
+        lambda: runtime.worktree_lease_status(
+            _lease(), workspace_id=WORKSPACE, fencing_generation=None, at=INSIDE_LEASE
+        ),
+        lambda: runtime.permits_worktree_mutation(
+            object(), workspace_id=WORKSPACE, fencing_generation=7, at=INSIDE_LEASE
+        ),
+        lambda: runtime.validate_mutation_evidence(
+            None, lease=_lease(), run=_run(), workspace_id=WORKSPACE
+        ),
+        lambda: runtime.validate_mutation_evidence(
+            _mutation(), lease={}, run=_run(), workspace_id=WORKSPACE
+        ),
+        lambda: runtime.validate_mutation_evidence(
+            _mutation(), lease=_lease(), run=None, workspace_id=WORKSPACE
+        ),
+    ),
+    ids=lambda call: "case",
+)
+def test_the_rt401_entry_points_never_raise_a_raw_type_error(call: Any) -> None:
     with pytest.raises(ContractSemanticError):
         call()

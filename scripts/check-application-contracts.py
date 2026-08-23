@@ -41,6 +41,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib.util
 import json
 import os
@@ -209,6 +210,18 @@ FROZEN_FIXTURE_MAP: dict[str, tuple[str, str, bool, bool]] = {
     "runtime-context-cursor": (
         "runtime-context-cursor.json",
         "runtime_context_cursor_replays_deterministically",
+        True,
+        True,
+    ),
+    "runtime-worktree-lease": (
+        "runtime-worktree-lease.json",
+        "runtime_worktree_lease_fails_closed",
+        True,
+        True,
+    ),
+    "runtime-worktree-mutation": (
+        "runtime-worktree-mutation.json",
+        "runtime_mutation_evidence_is_bound_to_lease_and_run",
         True,
         True,
     ),
@@ -1175,6 +1188,134 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
             findings.append(f"{file_name}: a caught-up cursor is not a fixed point")
         return findings
 
+    def runtime_worktree_lease_fails_closed(file_name: str) -> list[str]:
+        """One case is current; every other axis refuses, including one this build cannot read.
+
+        The four refusals are the point. A superseded fencing generation refuses whatever the
+        lease says about itself, because the generation is the only fact its holder cannot
+        forge. A released lease is not a free one. An instant at the expiry is already past
+        it -- the window is half-open, so a lease and its successor cannot both be current for
+        one instant. And a lifecycle that is not `held`, *including a value this build has
+        never heard of*, permits nothing rather than being guessed at.
+        """
+        lease = generated.WorktreeLease.from_wire(_fixture_document(file_name))
+        workspace = lease.workspace_id
+        current = lease.fencing_generation
+        inside = "2026-08-22T09:30:00Z"
+        findings: list[str] = []
+
+        def _status(candidate: Any, generation: int, at: str) -> str:
+            return runtime.worktree_lease_status(
+                candidate, workspace_id=workspace, fencing_generation=generation, at=at
+            )
+
+        if _status(lease, current, inside) != runtime.WORKTREE_LEASE_STATUS_CURRENT:
+            findings.append(f"{file_name}: a held, unexpired lease under its own generation "
+                            "is not current")
+        if not runtime.permits_worktree_mutation(
+            lease, workspace_id=workspace, fencing_generation=current, at=inside
+        ):
+            findings.append(f"{file_name}: the one current case does not permit a mutation")
+        cases: tuple[tuple[Any, int, str, str], ...] = (
+            (lease, current + 1, inside, runtime.WORKTREE_LEASE_STATUS_SUPERSEDED),
+            (lease, current, lease.expires_at, runtime.WORKTREE_LEASE_STATUS_EXPIRED),
+            (
+                dataclasses.replace(
+                    lease,
+                    lifecycle=runtime.WORKTREE_LEASE_LIFECYCLE_RELEASED,
+                    released_at=inside,
+                ),
+                current,
+                inside,
+                runtime.WORKTREE_LEASE_STATUS_RELEASED,
+            ),
+            (
+                dataclasses.replace(
+                    lease, lifecycle=runtime.WORKTREE_LEASE_LIFECYCLE_DRAINING
+                ),
+                current,
+                inside,
+                runtime.WORKTREE_LEASE_STATUS_NOT_HELD,
+            ),
+        )
+        for candidate, generation, at, expected in cases:
+            actual = _status(candidate, generation, at)
+            if actual != expected:
+                findings.append(f"{file_name}: expected {expected!r}, got {actual!r}")
+            if runtime.permits_worktree_mutation(
+                candidate, workspace_id=workspace, fencing_generation=generation, at=at
+            ):
+                findings.append(f"{file_name}: a {expected!r} lease permitted a mutation")
+        unknown = generated.WorktreeLease.from_wire(
+            {**_fixture_document(file_name), "lifecycle": "quarantined"}
+        )
+        if _status(unknown, current, inside) != runtime.WORKTREE_LEASE_STATUS_NOT_HELD:
+            findings.append(
+                f"{file_name}: an unrecognized lifecycle must fall through to 'not_held'"
+            )
+        if runtime.permits_worktree_mutation(
+            unknown, workspace_id=workspace, fencing_generation=current, at=inside
+        ):
+            findings.append(f"{file_name}: an unrecognized lifecycle permitted a mutation")
+        return findings
+
+    def runtime_mutation_evidence_is_bound_to_lease_and_run(file_name: str) -> list[str]:
+        """Evidence stands only with its lease and its run, and its target is source-qualified.
+
+        The mismatch that matters is the last one: repointing the target at the same worktree
+        identifier under a *different source root* leaves a record that still looks entirely
+        well formed, and it must be refused. That is the whole of "source-qualified": a
+        worktree is its workspace, its source root and its own identifier together, and any
+        one of the three matching is not two of them matching.
+        """
+        document = _fixture_document(file_name)
+        evidence = generated.MutationEvidence.from_wire(document)
+        lease = generated.WorktreeLease.from_wire(
+            _fixture_document("runtime-worktree-lease.json")
+        )
+        run = _run("runtime-run-replay.json")
+        workspace = run.workspace_id
+        findings: list[str] = []
+        try:
+            runtime.validate_mutation_evidence(
+                evidence, lease=lease, run=run, workspace_id=workspace
+            )
+        except compatibility.ContractSemanticError as error:
+            findings.append(f"{file_name}: expected valid mutation evidence, raised {error}")
+        if evidence.cleanup_receipt_id not in {
+            receipt.cleanup_receipt_id for receipt in run.cleanup_receipts
+        }:
+            findings.append(f"{file_name}: the cleanup linkage names no receipt of this run")
+        refusals: tuple[tuple[str, dict[str, Any]], ...] = (
+            (
+                "another source root",
+                {
+                    "target": {
+                        **document["target"],
+                        "worktree": {
+                            **document["target"]["worktree"],
+                            "source_root_id": "source-root-secondary",
+                        },
+                    }
+                },
+            ),
+            ("a stale lease generation", {"lease_generation": lease.lease_generation - 1}),
+            ("a superseded fencing generation", {"fencing_generation": 1}),
+            ("an undeclared intent", {"effect_intent_id": "intent-9999"}),
+            ("a write after the lease expired", {"recorded_at": lease.expires_at}),
+            ("a change that changed nothing", {"after_digest": document["before_digest"]}),
+        )
+        for what, overrides in refusals:
+            candidate = generated.MutationEvidence.from_wire({**document, **overrides})
+            try:
+                runtime.validate_mutation_evidence(
+                    candidate, lease=lease, run=run, workspace_id=workspace
+                )
+            except compatibility.ContractSemanticError:
+                continue
+            findings.append(f"{file_name}: {what} must be refused")
+        return findings
+
     def runtime_resolve_wait_is_not_job_recovery(file_name: str) -> list[str]:
         """`ResolveWait` is a Runtime command, and nothing about it is a job control.
 
@@ -1207,6 +1348,10 @@ def _semantic_checks(codec: ModuleType, compatibility: ModuleType) -> dict[str, 
         "runtime_child_steps_stay_inside_one_run": runtime_child_steps_stay_inside_one_run,
         "runtime_context_cursor_replays_deterministically": (
             runtime_context_cursor_replays_deterministically
+        ),
+        "runtime_worktree_lease_fails_closed": runtime_worktree_lease_fails_closed,
+        "runtime_mutation_evidence_is_bound_to_lease_and_run": (
+            runtime_mutation_evidence_is_bound_to_lease_and_run
         ),
         "runtime_resolve_wait_is_not_job_recovery": runtime_resolve_wait_is_not_job_recovery,
         "effective_capabilities_match": effective_capabilities_match,

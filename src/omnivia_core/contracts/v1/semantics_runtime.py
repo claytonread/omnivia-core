@@ -40,6 +40,23 @@ event stream, scoped to the workspace, run, step and attempt it was issued to. B
 stream is contiguous from zero, :func:`deliver_context` is a slice: the same cursor always
 yields the same events, and the cursor a delivery returns yields only what came after them.
 
+*A worktree is claimed under the workspace lease, not beside it.* A `WorktreeLease` restates
+the service instance and fencing generation the durable workspace lease already holds, so a
+worktree claim cannot be current while the lease that issued it is not, and it adds one
+counter of its own -- `lease_generation` -- which is what a mutation carries so a resumed
+predecessor's write is refusable rather than merely late. Every axis fails closed:
+:func:`worktree_lease_status` reads the fencing generation first because it is the only fact
+the holder cannot forge about itself, and only the exact lifecycle `held` reaches `current`,
+so an unrecognized one permits nothing. Expiry permits investigating a takeover; it never
+proves the holder is gone.
+
+*A mutation is evidence, source-qualified and redaction-safe.* A `MutationEvidence` names the
+intent that declared it, the lease and generations it committed under, the policy revision in
+force, and its target as a worktree qualified by workspace and source root together -- so the
+same worktree name under another root is a mismatch, not a match. It carries digests rather
+than paths and content, so it is publishable as written, and it links to the cleanup that
+reversed it so a change and its undoing are one story.
+
 *Idempotency is logical and stable.* Two admissions carrying the same `logical_key` are one
 run replayed; the same key over a different definition is a conflict. The same rule applies
 one level down to effects, keyed by `idempotency_key` over `request_digest`. The three
@@ -127,6 +144,8 @@ from omnivia_core.contracts.v1.generated import (
     EffectSettlement,
     EvidenceItem,
     ExternalReference,
+    MutationEvidence,
+    MutationTarget,
     PolicySnapshot,
     ResolveWait,
     Run,
@@ -134,6 +153,8 @@ from omnivia_core.contracts.v1.generated import (
     RunStep,
     RuntimeEvent,
     Wait,
+    WorktreeLease,
+    WorktreeRef,
 )
 from omnivia_core.contracts.v1.semantics_jobs import (
     IDEMPOTENCY_CONFLICT,
@@ -183,6 +204,17 @@ __all__ = [
     "WAIT_RESOLUTION_FOR_KIND",
     "WAIT_STATUSES",
     "WAIT_STATUS_PENDING",
+    "WORKTREE_LEASE_LIFECYCLES",
+    "WORKTREE_LEASE_LIFECYCLE_ACQUIRING",
+    "WORKTREE_LEASE_LIFECYCLE_DRAINING",
+    "WORKTREE_LEASE_LIFECYCLE_HELD",
+    "WORKTREE_LEASE_LIFECYCLE_RELEASED",
+    "WORKTREE_LEASE_STATUSES",
+    "WORKTREE_LEASE_STATUS_CURRENT",
+    "WORKTREE_LEASE_STATUS_EXPIRED",
+    "WORKTREE_LEASE_STATUS_NOT_HELD",
+    "WORKTREE_LEASE_STATUS_RELEASED",
+    "WORKTREE_LEASE_STATUS_SUPERSEDED",
     "child_run_steps",
     "classify_effect_replay",
     "classify_run_replay",
@@ -194,6 +226,7 @@ __all__ = [
     "is_terminal_run_status",
     "is_waiting_run_status",
     "permits_new_effect",
+    "permits_worktree_mutation",
     "validate_approval",
     "validate_artifact",
     "validate_attempt",
@@ -208,6 +241,7 @@ __all__ = [
     "validate_effect_settlement",
     "validate_evidence_item",
     "validate_external_reference",
+    "validate_mutation_evidence",
     "validate_policy_snapshot",
     "validate_policy_snapshot_progression",
     "validate_resolve_wait",
@@ -218,7 +252,10 @@ __all__ = [
     "validate_runtime_event_stream",
     "validate_terminal_run",
     "validate_wait",
+    "validate_worktree_lease",
+    "validate_worktree_ref",
     "waits_under_step",
+    "worktree_lease_status",
 ]
 
 # --- bounds restated from the schema ------------------------------------------
@@ -460,6 +497,57 @@ EFFECT_OUTCOMES: Final[tuple[str, ...]] = (
 CLEANUP_OUTCOMES: Final[tuple[str, ...]] = ("released", "not_required", "failed")
 
 RUN_DEFINITION_KINDS: Final[tuple[str, ...]] = ("agent_component", "workflow")
+
+WORKTREE_LEASE_LIFECYCLE_ACQUIRING: Final = "acquiring"
+WORKTREE_LEASE_LIFECYCLE_HELD: Final = "held"
+WORKTREE_LEASE_LIFECYCLE_DRAINING: Final = "draining"
+WORKTREE_LEASE_LIFECYCLE_RELEASED: Final = "released"
+
+WORKTREE_LEASE_LIFECYCLES: Final[tuple[str, ...]] = (
+    WORKTREE_LEASE_LIFECYCLE_ACQUIRING,
+    WORKTREE_LEASE_LIFECYCLE_HELD,
+    WORKTREE_LEASE_LIFECYCLE_DRAINING,
+    WORKTREE_LEASE_LIFECYCLE_RELEASED,
+)
+"""The lifecycle a `WorktreeLease` record may be in.
+
+The same four words the durable workspace service lease already records, deliberately: a
+worktree claim is a sublease under that lease, and a second vocabulary for one lifecycle is a
+second thing to keep in agreement. Only `held` ever permits a mutation."""
+
+_WORKTREE_LEASE_LIFECYCLES_ONCE_HELD: Final[frozenset[str]] = frozenset(
+    {
+        WORKTREE_LEASE_LIFECYCLE_HELD,
+        WORKTREE_LEASE_LIFECYCLE_DRAINING,
+        WORKTREE_LEASE_LIFECYCLE_RELEASED,
+    }
+)
+"""The lifecycles a lease has demonstrably passed through `held` to reach.
+
+Stated as the allow-list rather than as "not `acquiring`", which is the difference between
+failing closed and failing open. `acquiring` is the one *known* lifecycle that has never held
+the worktree, but an open vocabulary may add another, and a build that has not heard of it
+must not be the one deciding a mutation under it was authorized."""
+
+WORKTREE_LEASE_STATUS_CURRENT: Final = "current"
+WORKTREE_LEASE_STATUS_SUPERSEDED: Final = "superseded"
+WORKTREE_LEASE_STATUS_RELEASED: Final = "released"
+WORKTREE_LEASE_STATUS_EXPIRED: Final = "expired"
+WORKTREE_LEASE_STATUS_NOT_HELD: Final = "not_held"
+
+WORKTREE_LEASE_STATUSES: Final[tuple[str, ...]] = (
+    WORKTREE_LEASE_STATUS_CURRENT,
+    WORKTREE_LEASE_STATUS_SUPERSEDED,
+    WORKTREE_LEASE_STATUS_RELEASED,
+    WORKTREE_LEASE_STATUS_EXPIRED,
+    WORKTREE_LEASE_STATUS_NOT_HELD,
+)
+"""What :func:`worktree_lease_status` may answer.
+
+Derived rather than recorded, which is why it is not a wire vocabulary: a lease's standing is
+its own record read against the workspace's current fencing generation and an instant, and
+neither of those is a field the record could carry without going stale. Exactly one of the
+five permits a mutation."""
 
 RUNTIME_AUTHORITATIVE_SOURCE_KIND: Final = "runtime"
 RUNTIME_SOURCE_KINDS: Final[tuple[str, ...]] = (
@@ -2203,6 +2291,336 @@ def deliver_context(
     return delivered, dataclasses.replace(
         cursor, next_sequence=cursor.next_sequence + len(delivered)
     )
+
+
+# --- worktree leases and mutation evidence --------------------------------------
+
+
+def validate_worktree_ref(ref: object, *, workspace_id: object, label: str = "worktree") -> None:
+    """Raise unless `ref` is a source-qualified worktree identity in this workspace.
+
+    All three members are required by the schema, and this is what they are for: a worktree
+    identifier is unique only inside its source root, and a source root identifier is unique
+    only inside its workspace. Two references name the same worktree exactly when all three
+    are equal -- :class:`WorktreeRef` is frozen, so `==` is that rule -- and a shared spelling
+    of any one member says nothing about the other two.
+    """
+    _require_type(ref, WorktreeRef, label)
+    assert isinstance(ref, WorktreeRef)
+    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
+    _require_scoped(ref.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace")
+    _validate_identifier(ref.source_root_id, f"{label}.source_root_id")
+    _validate_identifier(ref.worktree_id, f"{label}.worktree_id")
+
+
+def _validate_mutation_target(
+    target: object, *, workspace_id: object, label: str = "target"
+) -> None:
+    _require_type(target, MutationTarget, label)
+    assert isinstance(target, MutationTarget)
+    validate_worktree_ref(target.worktree, workspace_id=workspace_id, label=f"{label}.worktree")
+    _validate_content_checksum(target.path_digest, f"{label}.path_digest")
+
+
+def validate_worktree_lease(
+    lease: object, *, workspace_id: object, label: str = "worktree_lease"
+) -> None:
+    """Raise unless `lease` is a well-formed claim on one worktree in this workspace.
+
+    Shape and internal coherence only; whether the claim is *current* is
+    :func:`worktree_lease_status`, because that question needs the workspace's fencing
+    generation and an instant, neither of which the record carries.
+
+    Two coherence rules are worth naming. `expires_at` must be after `acquired_at`: a window
+    that closes before it opens is not a window, and a lease that never granted anything is a
+    record no reader can act on. And `released_at` is present exactly when the lifecycle is
+    `released`: a handover instant on a live lease and a released lease with no handover
+    instant are each a record disagreeing with itself.
+
+    The lifecycle is checked as a bounded code and not as membership of
+    :data:`WORKTREE_LEASE_LIFECYCLES`. That is the same reading `RunStatus` gets and for the
+    same reason: the vocabulary is closed at the schema and open on the wire, so a lifecycle a
+    later release adds decodes here rather than being refused by a build that has not heard of
+    it. Nothing is inferred from it either -- :func:`worktree_lease_status` reports anything
+    that is not `held` as `not_held`, so an unrecognized lifecycle permits nothing.
+    """
+    _require_type(lease, WorktreeLease, label)
+    assert isinstance(lease, WorktreeLease)
+    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
+    _require_scoped(lease.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace")
+    _validate_identifier(lease.worktree_lease_id, f"{label}.worktree_lease_id")
+    validate_worktree_ref(
+        lease.worktree, workspace_id=expected_workspace, label=f"{label}.worktree"
+    )
+    _validate_identifier(lease.run_id, f"{label}.run_id")
+    _validate_identifier(lease.service_instance_id, f"{label}.service_instance_id")
+    _require_at_least(lease.fencing_generation, 1, f"{label}.fencing_generation")
+    _require_at_least(lease.lease_generation, 1, f"{label}.lease_generation")
+    lifecycle = _validate_open_code(lease.lifecycle, f"{label}.lifecycle")
+    acquired_at = _parse_timestamp(lease.acquired_at, f"{label}.acquired_at")
+    expires_at = _parse_timestamp(lease.expires_at, f"{label}.expires_at")
+    if expires_at <= acquired_at:
+        raise ContractSemanticError(
+            f"{label}.expires_at: a lease that expires at or before {lease.acquired_at!r} "
+            "grants no window to act in"
+        )
+    _validate_audit_reference(lease.audit_reference, f"{label}.audit_reference")
+    released = lifecycle == WORKTREE_LEASE_LIFECYCLE_RELEASED
+    if released and lease.released_at is None:
+        raise ContractSemanticError(
+            f"{label}.released_at: a released lease must say when it was handed back"
+        )
+    if not released and lease.released_at is not None:
+        raise ContractSemanticError(
+            f"{label}.released_at: a lease in lifecycle {lifecycle!r} has not been handed back"
+        )
+    if lease.released_at is not None:
+        released_at = _parse_timestamp(lease.released_at, f"{label}.released_at")
+        if released_at < acquired_at:
+            raise ContractSemanticError(
+                f"{label}.released_at: a lease is not handed back before it was taken"
+            )
+
+
+def worktree_lease_status(
+    lease: object,
+    *,
+    workspace_id: object,
+    fencing_generation: object,
+    at: object,
+    label: str = "worktree_lease",
+) -> str:
+    """Return where `lease` stands against the workspace's current authority at instant `at`.
+
+    Fail-closed on every axis, and the order the axes are read in is deliberate.
+
+    The fencing generation is read first, because it is the only axis whose evidence comes
+    from outside the record. A holder that was suspended and resumed still believes its own
+    lifecycle field and its own expiry; what it cannot forge is the workspace lease having
+    moved to a successor. So a lease issued under a superseded generation is `superseded`
+    whatever else it says about itself, and nothing further about it is worth reading.
+
+    Then the record's own statements, most decisive first: a `released` lease was handed back,
+    an `expired` one ran past the window it was granted, and any lifecycle other than `held`
+    -- `acquiring`, `draining`, or a value this build does not recognize -- is `not_held`. An
+    unrecognized lifecycle lands there by falling through rather than by being guessed at,
+    which is the same fail-safe reading `RunStatus` gets: an open vocabulary may add a
+    lifecycle, and a build that has not heard of it must not be the one deciding it permits
+    writing. Only the exact string `held` ever reaches `current`.
+
+    Expiry is a ceiling on acting, never a proof about the holder. That a lease expired does
+    not establish that its holder is gone -- a paused process resumes believing it still owns
+    the worktree -- so `expired` is what permits investigating a takeover, and it is the
+    successor's higher `lease_generation` that makes the predecessor's writes refusable.
+    """
+    validate_worktree_lease(lease, workspace_id=workspace_id, label=label)
+    assert isinstance(lease, WorktreeLease)
+    current_generation = _require_at_least(fencing_generation, 1, "fencing_generation")
+    moment = _parse_timestamp(at, "at")
+    if lease.fencing_generation != current_generation:
+        return WORKTREE_LEASE_STATUS_SUPERSEDED
+    if lease.lifecycle == WORKTREE_LEASE_LIFECYCLE_RELEASED:
+        return WORKTREE_LEASE_STATUS_RELEASED
+    if moment >= _parse_timestamp(lease.expires_at, f"{label}.expires_at"):
+        return WORKTREE_LEASE_STATUS_EXPIRED
+    if lease.lifecycle != WORKTREE_LEASE_LIFECYCLE_HELD:
+        return WORKTREE_LEASE_STATUS_NOT_HELD
+    return WORKTREE_LEASE_STATUS_CURRENT
+
+
+def permits_worktree_mutation(
+    lease: object,
+    *,
+    workspace_id: object,
+    fencing_generation: object,
+    at: object,
+    label: str = "worktree_lease",
+) -> bool:
+    """Whether `lease` may commit a mutation at `at`. True only for the one current case."""
+    return (
+        worktree_lease_status(
+            lease,
+            workspace_id=workspace_id,
+            fencing_generation=fencing_generation,
+            at=at,
+            label=label,
+        )
+        == WORKTREE_LEASE_STATUS_CURRENT
+    )
+
+
+def validate_mutation_evidence(
+    evidence: object,
+    *,
+    lease: object,
+    run: object,
+    workspace_id: object,
+    label: str = "mutation_evidence",
+) -> None:
+    """Raise unless `evidence` records a mutation this lease and this run actually authorized.
+
+    Four bindings, and the record is worth nothing without all four.
+
+    *The target is the leased worktree.* Compared source-qualified, all three members at once,
+    so a mutation of the same worktree name under another source root -- or under the same
+    source root in another workspace -- is a mismatch rather than a match.
+
+    *The fencing token is the lease's.* `lease_generation` and `fencing_generation` are
+    restated on the evidence and must equal the lease's exactly. That is what makes a write by
+    a resumed predecessor refusable after the fact: it carries the generation it believed in,
+    which is not the one the lease holds.
+
+    *The write landed inside the window the lease granted.* Not before it was taken, not at or
+    after it expired, and not after it was handed back. This is a question about history, so
+    it is asked against the lease's own instants rather than against a lifecycle that has
+    since moved on -- but the lifecycle must be one a lease reached *through* `held`, stated
+    as an allow-list, so `acquiring` and any lifecycle this build does not recognize authorize
+    nothing rather than passing a "not acquiring" test they were never measured against.
+
+    *The change is declared, pinned and reconcilable.* The intent exists in this run, the
+    policy snapshot and revision are the ones the run is pinned to, and a named cleanup
+    receipt is one of this run's own -- so a mutation and the cleanup that reversed it are one
+    story rather than two records that merely look related.
+
+    Finally, the digests must describe a change: an absent `before_digest` is a target that
+    did not exist and an absent `after_digest` is one that no longer does, but neither absent
+    is no mutation, and two equal digests are a mutation that changed nothing. Both are
+    refused rather than recorded, because evidence of nothing having happened is exactly what
+    a reader would mistake for evidence that something did.
+    """
+    _require_type(evidence, MutationEvidence, label)
+    assert isinstance(evidence, MutationEvidence)
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    validate_worktree_lease(lease, workspace_id=workspace_id, label="lease")
+    assert isinstance(lease, WorktreeLease)
+
+    expected_workspace = _validate_workspace_id(workspace_id, "workspace_id")
+    _require_scoped(run.workspace_id, expected_workspace, "run.workspace_id", "workspace")
+    expected_run = _validate_identifier(run.run_id, "run.run_id")
+    _require_scoped(
+        evidence.workspace_id, expected_workspace, f"{label}.workspace_id", "workspace"
+    )
+    _require_scoped(evidence.run_id, expected_run, f"{label}.run_id", "run")
+    _require_scoped(lease.run_id, expected_run, "lease.run_id", "run")
+    _validate_identifier(evidence.mutation_evidence_id, f"{label}.mutation_evidence_id")
+    _validate_audit_reference(evidence.audit_reference, f"{label}.audit_reference")
+
+    _validate_mutation_target(
+        evidence.target, workspace_id=expected_workspace, label=f"{label}.target"
+    )
+    assert isinstance(evidence.target, MutationTarget)
+    if evidence.target.worktree != lease.worktree:
+        raise ContractSemanticError(
+            f"{label}.target.worktree: {evidence.target.worktree} is not the worktree this "
+            f"lease claims ({lease.worktree}); a worktree is its workspace, its source root "
+            "and its own identifier together"
+        )
+
+    _require_scoped(
+        evidence.worktree_lease_id,
+        lease.worktree_lease_id,
+        f"{label}.worktree_lease_id",
+        "lease",
+    )
+    if _require_at_least(
+        evidence.lease_generation, 1, f"{label}.lease_generation"
+    ) != lease.lease_generation:
+        raise ContractSemanticError(
+            f"{label}.lease_generation: {evidence.lease_generation} is not the lease's current "
+            f"generation ({lease.lease_generation}); a write under a superseded generation is "
+            "refused, not reinterpreted"
+        )
+    if _require_at_least(
+        evidence.fencing_generation, 1, f"{label}.fencing_generation"
+    ) != lease.fencing_generation:
+        raise ContractSemanticError(
+            f"{label}.fencing_generation: {evidence.fencing_generation} is not the generation "
+            f"this lease was issued under ({lease.fencing_generation})"
+        )
+
+    if lease.lifecycle not in _WORKTREE_LEASE_LIFECYCLES_ONCE_HELD:
+        raise ContractSemanticError(
+            f"lease.lifecycle: {lease.lifecycle!r} is not a lifecycle a lease has been held in, "
+            "so it authorized no mutation"
+        )
+    recorded_at = _parse_timestamp(evidence.recorded_at, f"{label}.recorded_at")
+    if recorded_at < _parse_timestamp(lease.acquired_at, "lease.acquired_at"):
+        raise ContractSemanticError(
+            f"{label}.recorded_at: {evidence.recorded_at!r} is before the lease was taken"
+        )
+    if recorded_at >= _parse_timestamp(lease.expires_at, "lease.expires_at"):
+        raise ContractSemanticError(
+            f"{label}.recorded_at: {evidence.recorded_at!r} is at or after the lease expired; "
+            "a window that has closed authorizes nothing"
+        )
+    if lease.released_at is not None and recorded_at > _parse_timestamp(
+        lease.released_at, "lease.released_at"
+    ):
+        raise ContractSemanticError(
+            f"{label}.recorded_at: {evidence.recorded_at!r} is after the worktree was handed "
+            "back"
+        )
+
+    intents = _intents_by_id(run.effect_intents, "run.effect_intents")
+    if _validate_identifier(evidence.effect_intent_id, f"{label}.effect_intent_id") not in intents:
+        raise ContractSemanticError(
+            f"{label}.effect_intent_id: {evidence.effect_intent_id!r} names no intent of this "
+            "run; nothing is changed that was not first declared"
+        )
+    validate_policy_snapshot(
+        run.policy, run_id=expected_run, workspace_id=expected_workspace, label="run.policy"
+    )
+    assert isinstance(run.policy, PolicySnapshot)
+    _require_scoped(
+        evidence.policy_snapshot_id,
+        run.policy.policy_snapshot_id,
+        f"{label}.policy_snapshot_id",
+        "run's policy snapshot",
+    )
+    if _require_at_least(
+        evidence.policy_revision, 1, f"{label}.policy_revision"
+    ) != run.policy.revision:
+        raise ContractSemanticError(
+            f"{label}.policy_revision: {evidence.policy_revision} is not the revision this run "
+            f"is pinned to ({run.policy.revision})"
+        )
+    if evidence.cleanup_receipt_id is not None:
+        cleanup_ids = {
+            receipt.cleanup_receipt_id
+            for receipt in _require_sequence(
+                run.cleanup_receipts, "run.cleanup_receipts", _MAX_CLEANUP_RECEIPTS
+            )
+            if isinstance(receipt, CleanupReceipt)
+        }
+        if (
+            _validate_identifier(evidence.cleanup_receipt_id, f"{label}.cleanup_receipt_id")
+            not in cleanup_ids
+        ):
+            raise ContractSemanticError(
+                f"{label}.cleanup_receipt_id: {evidence.cleanup_receipt_id!r} names no cleanup "
+                "receipt of this run"
+            )
+
+    before = (
+        None
+        if evidence.before_digest is None
+        else _validate_content_checksum(evidence.before_digest, f"{label}.before_digest")
+    )
+    after = (
+        None
+        if evidence.after_digest is None
+        else _validate_content_checksum(evidence.after_digest, f"{label}.after_digest")
+    )
+    if before is None and after is None:
+        raise ContractSemanticError(
+            f"{label}: a mutation with neither a before nor an after digest records no change"
+        )
+    if before is not None and before == after:
+        raise ContractSemanticError(
+            f"{label}: identical before and after digests record no change; evidence of "
+            "nothing having happened reads as evidence that something did"
+        )
 
 
 # --- logical idempotency -------------------------------------------------------
