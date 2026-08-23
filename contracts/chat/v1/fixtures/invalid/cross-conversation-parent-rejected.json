@@ -1,0 +1,70 @@
+{
+  "parentMessage": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "messageId": "msg-0001-root",
+    "role": "user",
+    "authorType": "human",
+    "authorId": "actor-alice",
+    "conversationSequence": 1,
+    "schemaVersion": 1,
+    "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+    "completionStatus": "complete",
+    "visibility": "standard",
+    "parts": [
+      {
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "messageId": "msg-0001-root",
+        "partId": "part-0001",
+        "index": 0,
+        "type": "text",
+        "schemaVersion": 1,
+        "visibility": "standard",
+        "payload": {
+          "text": "Review the supplier proposal"
+        },
+        "provenance": "human",
+        "contentHash": "f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a",
+        "createdAt": "2026-08-20T10:00:00Z"
+      }
+    ],
+    "createdOnBranchId": "branch-0001-original",
+    "createdAt": "2026-08-20T10:00:00Z",
+    "committedAt": "2026-08-20T10:00:00Z"
+  },
+  "childMessage": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-9999-other",
+    "messageId": "msg-0002-a1",
+    "parentMessageId": "msg-0001-root",
+    "role": "assistant",
+    "authorType": "provider",
+    "conversationSequence": 2,
+    "schemaVersion": 1,
+    "contentHash": "f55ff16f66f43360266b95db6f8fec01d76031054306ae4a4b380598f6cfd114",
+    "completionStatus": "complete",
+    "visibility": "standard",
+    "parts": [
+      {
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "messageId": "msg-0002-a1",
+        "partId": "part-0002",
+        "index": 0,
+        "type": "markdown",
+        "schemaVersion": 1,
+        "visibility": "standard",
+        "payload": {
+          "markdown": "Here is a comparison."
+        },
+        "provenance": "ai",
+        "contentHash": "3946ca64ff78d93ca61090a437cbb6b3d2ca0d488f5f9ccf3059608368b27693",
+        "createdAt": "2026-08-20T10:00:05Z"
+      }
+    ],
+    "createdOnBranchId": "branch-0001-original",
+    "createdAt": "2026-08-20T10:00:05Z",
+    "committedAt": "2026-08-20T10:00:05Z"
+  }
+}

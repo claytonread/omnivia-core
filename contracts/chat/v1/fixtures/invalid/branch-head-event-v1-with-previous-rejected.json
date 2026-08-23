@@ -1,0 +1,16 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "eventId": "bhe-0001b",
+  "headVersion": 1,
+  "previousHeadMessageId": "msg-phantom",
+  "newHeadMessageId": "msg-0001-root",
+  "cause": "branch_created",
+  "commandId": "cmd-0001b",
+  "graphRevision": 1,
+  "conversationSequence": 1,
+  "actorId": "actor-alice",
+  "occurredAt": "2026-08-20T10:00:00Z",
+  "schemaVersion": 1
+}

@@ -1,0 +1,8 @@
+{
+  "messageType": "bridge.backpressure",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "contextId": "bctx-0001",
+  "action": "resume",
+  "pendingEvents": 10
+}

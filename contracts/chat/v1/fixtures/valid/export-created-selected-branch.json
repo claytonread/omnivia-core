@@ -1,0 +1,16 @@
+{
+  "workspaceId": "ws-acme",
+  "exportId": "export-0001",
+  "conversationId": "conv-0001",
+  "scope": "selected_branch_snapshot",
+  "branchSnapshots": [
+    {
+      "branchId": "branch-0001-original",
+      "headMessageId": "msg-0002-a1"
+    }
+  ],
+  "graphRevision": 2,
+  "createdBy": "actor-alice",
+  "createdAt": "2026-08-20T10:05:00Z",
+  "schemaVersion": 1
+}

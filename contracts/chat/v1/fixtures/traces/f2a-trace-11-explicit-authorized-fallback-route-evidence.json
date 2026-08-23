@@ -1,0 +1,102 @@
+{
+  "attemptMeta": {
+    "invocation-t11": {
+      "configuredRoute": "conn-primary-anthropic",
+      "resolvedRoute": "conn-fallback-openai"
+    }
+  },
+  "events": [
+    {
+      "invocationId": "invocation-t11",
+      "attemptId": "attempt-t11",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t11",
+      "attemptId": "attempt-t11",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t11-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t11",
+      "attemptId": "attempt-t11",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t11-1",
+      "stepId": "step-1",
+      "delta": "answer via fallback route"
+    },
+    {
+      "invocationId": "invocation-t11",
+      "attemptId": "attempt-t11",
+      "ordinal": 3,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-t11-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t11",
+      "attemptId": "attempt-t11",
+      "ordinal": 4,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "finishReason": "stop",
+      "usage": {
+        "reported": {
+          "inputTokens": 55,
+          "outputTokens": 20,
+          "totalTokens": 75
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-t11-001",
+        "providerModelId": "gpt-4.1",
+        "respondedAt": "2026-08-20T10:10:04Z"
+      },
+      "cancellationState": "not_cancelled",
+      "routeEvidence": {
+        "configuredPreference": {
+          "connectionId": "conn-primary-anthropic",
+          "modelId": "claude-sonnet-5"
+        },
+        "admittedRoute": {
+          "connectionId": "conn-fallback-openai",
+          "modelId": "gpt-4.1",
+          "adapterName": "openai-adapter",
+          "adapterVersion": "3.2.0"
+        },
+        "routeDecision": "fallback",
+        "sameRouteRetryCount": 0,
+        "fallbackAuthorised": true,
+        "attemptStartedAt": "2026-08-20T10:10:00Z",
+        "attemptEndedAt": "2026-08-20T10:10:04Z",
+        "terminalReason": "stop",
+        "usage": {
+          "reported": {
+            "inputTokens": 55,
+            "outputTokens": 20,
+            "totalTokens": 75
+          }
+        },
+        "reconciliationState": "reconciled"
+      }
+    }
+  ]
+}

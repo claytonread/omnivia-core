@@ -1,0 +1,5 @@
+{
+  "commandId": "cmd-envelope-0002",
+  "status": "completed",
+  "resultRef": "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/MessageSubmittedResult/cmd-envelope-0002"
+}

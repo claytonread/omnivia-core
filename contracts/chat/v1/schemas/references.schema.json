@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/references.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - Attachment and Context Reference revalidation",
+  "description": "Closes CGAP-042-010. Normative wire shapes for the Attachment and Context Reference revalidation result used before an amendment commit (REF-042 §14.2-§14.4, ADR-022 §4.9). Revalidation SHALL check Workspace, actor permission, existence and retention state, source revision where required, security and malware state, target compatibility and size or content policy (REF-042 §14.2). A reference valid on the source Message is not automatically valid for the amended Message; current authority is checked at commit (REF042-RULE-018, ADR022-INV-013). The commit command returns structured reference failures rather than silently omitting a reference that was part of the source Message (REF-042 §14.3).",
+  "type": "object",
+  "$defs": {
+    "ReferenceKind": {
+      "title": "ReferenceKind",
+      "description": "The closed v1 reference-kind vocabulary distinguishing an Attachment Reference from a Context Reference for revalidation purposes.",
+      "enum": ["attachment", "context"]
+    },
+    "ReferenceRevalidation": {
+      "title": "ReferenceRevalidation",
+      "description": "The outcome of revalidating one Attachment or Context Reference before an amendment commit (REF-042 §14.2). Closes CGAP-042-010. `failure` is present if and only if `outcome` is `invalid`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "outcome", "referenceId"],
+      "properties": {
+        "kind": { "$ref": "https://contracts.omnivia.dev/chat/v1/references.schema.json#/$defs/ReferenceKind" },
+        "referenceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "outcome": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ReferenceRevalidationOutcome" },
+        "sourceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Present only when `outcome` is `valid` and a source revision was pinned (REF-042 §14.4)."
+        },
+        "failure": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ReferenceFailure" }
+      },
+      "if": {
+        "properties": { "outcome": { "const": "invalid" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "required": ["failure"],
+        "not": { "required": ["sourceRevision"] }
+      },
+      "else": {
+        "not": { "required": ["failure"] }
+      }
+    },
+    "ReferenceRevalidationBatch": {
+      "title": "ReferenceRevalidationBatch",
+      "description": "The complete revalidation result set produced for one amendment commit attempt (REF-042 §14.2-§14.3), bounded to the reference counts of the source Message.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["results"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/references.schema.json#/$defs/ReferenceRevalidation" },
+          "maxItems": 128
+        }
+      }
+    }
+  }
+}

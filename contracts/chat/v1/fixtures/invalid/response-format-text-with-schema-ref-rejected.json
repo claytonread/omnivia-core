@@ -1,0 +1,4 @@
+{
+  "kind": "text",
+  "schemaRef": "https://contracts.omnivia.dev/chat/v1/should-not-appear.schema.json#/$defs/Anything"
+}

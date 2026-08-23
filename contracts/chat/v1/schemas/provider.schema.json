@@ -1,0 +1,867 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/provider.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - F2a provider-invocation projection",
+  "description": "The F2a provider-invocation projection: a Chat-owned wire shape over one Provider Invocation (REF-019 §5.7) driving a Generation Attempt (generation.schema.json). F2a is a projection of the Chat Runtime Contract, not an independent public authority; it reuses REF-019 Provider Invocation and Boundary Result semantics by reference and never redefines Provider Service authority, and it originates its own closed event-discriminator, finish-reason and error-code vocabularies because REF-019 §18.8 and §7.9 leave the exact wire shape to a contract definition (REF-019 §7.1 Contract Ownership belongs to DOC-004). Provider credentials, arbitrary headers or URLs, raw request/response bodies, protected chain-of-thought content and SDK objects or exceptions are forbidden on this wire boundary; every field is either a stable identity, a closed vocabulary member, a bounded structured value, or an explicitly sanitised optional identity. `ProviderInvocationRequest` is the wire request; `ProviderEvent` (`stream-start` through `finish`/`error`) is the wire stream; `ProviderInvocationRecord` is the separate durable Core-owned record of truth Core persists to recover across retries and fallbacks (CHAT-RUNTIME-CONTRACT-V1-CATALOGUE.json's `f2a.recordSchemaRef` names it as catalogue-reachable) — the three are related but never interchangeable. Exactly one terminal `finish` or `error` event is permitted per Attempt event stream; a stream that ends without one is `malformed-response` (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11). Repeated provider-issued tool IDs across distinct model steps are disambiguated by `attemptId` plus `stepId` (technical delivery specification §12.7, trace class 3).",
+  "type": "object",
+  "$defs": {
+    "FinishReason": {
+      "title": "FinishReason",
+      "description": "The closed v1 normalised finish-reason vocabulary (technical delivery specification §12.7), conceptually aligned to REF-019 §18.8 by concept, not by shared schema, since REF-019 leaves the exact enum to contract definition.",
+      "enum": ["stop", "length", "tool-calls", "content-filter", "error", "cancelled", "unknown"]
+    },
+    "ProviderErrorCode": {
+      "title": "ProviderErrorCode",
+      "description": "The closed v1 stable provider error-code vocabulary (technical delivery specification §12.7), conceptually aligned to REF-019 §7.9 Stable Diagnostics by concept, not by shared schema. Never a raw upstream provider or SDK exception.",
+      "enum": [
+        "authentication",
+        "permission",
+        "model-not-found",
+        "rate-limited",
+        "quota-or-budget",
+        "invalid-request",
+        "context-window-exceeded",
+        "content-policy",
+        "endpoint-policy",
+        "timeout",
+        "cancelled",
+        "transport",
+        "provider-unavailable",
+        "malformed-response",
+        "unsupported-operation",
+        "unknown"
+      ]
+    },
+    "ProviderEventType": {
+      "title": "ProviderEventType",
+      "description": "The closed v1 normalised provider event-discriminator vocabulary (technical delivery specification §12.7). Additive event types are a compatible minor extension; a strict decoder that receives an unrecognised type applies the additive-decode policy in CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11 (safe diagnostic and resnapshot), never a guessed interpretation.",
+      "enum": [
+        "stream-start", "text-start", "text-delta", "text-end",
+        "reasoning-start", "reasoning-delta", "reasoning-end",
+        "tool-input-start", "tool-input-delta", "tool-input-end",
+        "tool-call", "tool-result", "tool-approval-request",
+        "structured-output", "file", "source", "warning",
+        "provider-metadata", "finish", "error"
+      ]
+    },
+    "ToolChoice": {
+      "title": "ToolChoice",
+      "description": "Bounded tool-choice directive. `toolName` is present if and only if `mode` is `named`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["auto", "none", "required", "named"] },
+        "toolName": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "if": { "properties": { "mode": { "const": "named" } }, "required": ["mode"] },
+      "then": { "required": ["toolName"] },
+      "else": { "not": { "required": ["toolName"] } }
+    },
+    "ToolDefinition": {
+      "title": "ToolDefinition",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputSchema", "name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 4096 },
+        "inputSchema": { "type": "object", "additionalProperties": true, "description": "A Draft 2020-12 JSON Schema object for the tool's input shape." }
+      }
+    },
+    "ProviderMessagePart": {
+      "title": "ProviderMessagePart",
+      "description": "One part of an outbound provider-facing message. Never a raw prompt string; always a typed, bounded structure. Each `kind` permits and requires only its own appropriate fields (freeze §11): `text` carries `text` only; `reasoning` carries no content field at all, because protected chain-of-thought is forbidden on this wire boundary (freeze §11 rule 5); `tool-call` carries `toolCallId`, `toolName` and `input`; `tool-result` carries `toolCallId` and `output`; `file` carries `attachmentReference`; `source` carries an `evidenceReference` or a non-empty `displayLabel` (or both), mirroring `SourceEvent`. `input`/`output` are semantically opaque tool payloads, bounded here to at most 1024 top-level properties each; this schema does not by itself prove a total byte or nesting-depth ceiling, and relies on F2a's own frozen 16 MiB (16,777,216-byte) maximum serialized request/event size (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §15, matching the existing `bridge.schema.json#/$defs/ContextBoundMessage.maxMessageBytes` ceiling F2b already freezes) for the total size bound.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["text", "reasoning", "tool-call", "tool-result", "file", "source"] },
+        "text": { "type": "string", "maxLength": 1048576 },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "toolName": { "type": "string", "maxLength": 128 },
+        "input": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "output": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "attachmentReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" },
+        "evidenceReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/EvidenceReference" },
+        "displayLabel": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "if": { "properties": { "kind": { "const": "text" } }, "required": ["kind"] },
+      "then": {
+        "required": ["text"],
+        "not": { "anyOf": [
+          { "required": ["toolCallId"] }, { "required": ["toolName"] }, { "required": ["input"] },
+          { "required": ["output"] }, { "required": ["attachmentReference"] },
+          { "required": ["evidenceReference"] }, { "required": ["displayLabel"] }
+        ] }
+      },
+      "else": {
+        "if": { "properties": { "kind": { "const": "reasoning" } }, "required": ["kind"] },
+        "then": {
+          "not": { "anyOf": [
+            { "required": ["text"] }, { "required": ["toolCallId"] }, { "required": ["toolName"] },
+            { "required": ["input"] }, { "required": ["output"] }, { "required": ["attachmentReference"] },
+            { "required": ["evidenceReference"] }, { "required": ["displayLabel"] }
+          ] }
+        },
+        "else": {
+          "if": { "properties": { "kind": { "const": "tool-call" } }, "required": ["kind"] },
+          "then": {
+            "required": ["toolCallId", "toolName", "input"],
+            "not": { "anyOf": [
+              { "required": ["text"] }, { "required": ["output"] }, { "required": ["attachmentReference"] },
+              { "required": ["evidenceReference"] }, { "required": ["displayLabel"] }
+            ] }
+          },
+          "else": {
+            "if": { "properties": { "kind": { "const": "tool-result" } }, "required": ["kind"] },
+            "then": {
+              "required": ["toolCallId", "output"],
+              "not": { "anyOf": [
+                { "required": ["text"] }, { "required": ["toolName"] }, { "required": ["input"] },
+                { "required": ["attachmentReference"] }, { "required": ["evidenceReference"] }, { "required": ["displayLabel"] }
+              ] }
+            },
+            "else": {
+              "if": { "properties": { "kind": { "const": "file" } }, "required": ["kind"] },
+              "then": {
+                "required": ["attachmentReference"],
+                "not": { "anyOf": [
+                  { "required": ["text"] }, { "required": ["toolCallId"] }, { "required": ["toolName"] },
+                  { "required": ["input"] }, { "required": ["output"] },
+                  { "required": ["evidenceReference"] }, { "required": ["displayLabel"] }
+                ] }
+              },
+              "else": {
+                "not": { "anyOf": [
+                  { "required": ["text"] }, { "required": ["toolCallId"] }, { "required": ["toolName"] },
+                  { "required": ["input"] }, { "required": ["output"] }, { "required": ["attachmentReference"] }
+                ] },
+                "anyOf": [ { "required": ["evidenceReference"] }, { "required": ["displayLabel"] } ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "ProviderMessage": {
+      "title": "ProviderMessage",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parts", "role"],
+      "properties": {
+        "role": { "enum": ["system", "user", "assistant", "tool"] },
+        "parts": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderMessagePart" },
+          "minItems": 1,
+          "maxItems": 4096
+        }
+      }
+    },
+    "ResponseFormat": {
+      "title": "ResponseFormat",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["text", "json", "structured"] },
+        "schemaRef": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Required if and only if `kind` is `structured`; an opaque reference to the requested output schema, never the inline schema body."
+        }
+      },
+      "if": { "properties": { "kind": { "const": "structured" } }, "required": ["kind"] },
+      "then": { "required": ["schemaRef"] },
+      "else": { "not": { "required": ["schemaRef"] } }
+    },
+    "GenerationOptions": {
+      "title": "GenerationOptions",
+      "description": "Bounded, closed generation-tuning options. Every field is optional; omission means the adapter's own default applies.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "topP": { "type": "number", "minimum": 0, "maximum": 1 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "presencePenalty": { "type": "number", "minimum": -2, "maximum": 2 },
+        "frequencyPenalty": { "type": "number", "minimum": -2, "maximum": 2 },
+        "stopSequences": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "maxItems": 16
+        }
+      }
+    },
+    "SanitisedScalarValue": {
+      "title": "SanitisedScalarValue",
+      "description": "One bounded scalar value permitted inside an intentionally extensible F2a provider-options or provider-metadata map. Deliberately excludes nested object values so this shape alone cannot smuggle an arbitrarily deep or large structure. The `number` branch is itself finitely bounded (±1,000,000,000), matching the intent of every other numeric bound in this bundle -- a provider-options or provider-metadata value that is genuinely a bounded tuning knob or count never needs a magnitude past this ceiling. This is not by itself proof the value is free of a credential, header or URL: a scalar string can still carry any text. `BoundedExtensiblePropertyName`'s reserved-key denylist and the installed adapter's own closed option schema are the actual defences; see §15 in CHAT-RUNTIME-CONTRACT-V1-FREEZE.md.",
+      "anyOf": [
+        { "type": "string", "maxLength": 4096 },
+        { "type": "number", "minimum": -1000000000, "maximum": 1000000000 },
+        { "type": "boolean" },
+        { "type": "null" }
+      ]
+    },
+    "BoundedExtensiblePropertyName": {
+      "title": "BoundedExtensiblePropertyName",
+      "description": "A bounded property name for an intentionally extensible F2a provider-options or provider-metadata map. Rejects the common reserved names under which a credential, header, URL or endpoint value is most likely to be smuggled, matched case-insensitively via an explicit per-letter case class (never a Python-only inline flag group), so this pattern compiles and behaves identically under `new RegExp(...)` in an ECMA-262 (JavaScript/Ajv) consumer as it does here. This is a defence-in-depth denylist, not proof that every possible secret-shaped value is caught by this shape alone; the installed adapter's own closed option schema remains the actual runtime authority (§15).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!(?:[aA][pP][iI][kK][eE][yY]|[aA][pP][iI]_[kK][eE][yY]|[aA][uU][tT][hH][oO][rR][iI][zZ][aA][tT][iI][oO][nN]|[pP][aA][sS][sS][wW][oO][rR][dD]|[sS][eE][cC][rR][eE][tT]|[tT][oO][kK][eE][nN]|[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]|[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS]|[cC][oO][oO][kK][iI][eE]|[hH][eE][aA][dD][eE][rR]|[hH][eE][aA][dD][eE][rR][sS]|[uU][rR][lL]|[eE][nN][dD][pP][oO][iI][nN][tT]|[eE][nN][dD][pP][oO][iI][nN][tT][uU][rR][lL])(?![\\s\\S]))[A-Za-z][A-Za-z0-9_]*(?![\\s\\S])"
+    },
+    "ProviderOptionNamespace": {
+      "title": "ProviderOptionNamespace",
+      "description": "The exact provider or adapter family a namespaced provider-options value applies to.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z][A-Za-z0-9._-]*(?![\\s\\S])"
+    },
+    "ProviderOptionsNamespaceValue": {
+      "title": "ProviderOptionsNamespaceValue",
+      "description": "One namespace's bounded provider-options object (REF-019 §5.2 leaves adapter-specific knobs to contract definition). Every value is a bounded scalar or an array of bounded scalars, never a nested object. Provider options remain adapter-schema validated at runtime; an opaque namespace object satisfying this shape alone is not proof of credential/header/URL safety (§15).",
+      "type": "object",
+      "propertyNames": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/BoundedExtensiblePropertyName" },
+      "additionalProperties": {
+        "anyOf": [
+          { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SanitisedScalarValue" },
+          {
+            "type": "array",
+            "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SanitisedScalarValue" },
+            "maxItems": 64
+          }
+        ]
+      },
+      "maxProperties": 64
+    },
+    "ProviderOptionsByNamespace": {
+      "title": "ProviderOptionsByNamespace",
+      "description": "Bounded, provider-namespaced tuning options that do not fit `GenerationOptions` (REF-019 §5.2 leaves adapter-specific knobs to contract definition), keyed by the exact provider or adapter family each value applies to. An actual bounded map, not one anonymous `{namespace, options}` object, so more than one adapter family's options can be carried on a single request. Never a credential, raw header, raw URL or SDK object; each namespace's value remains subject to the installed adapter's own closed option schema at runtime (§15).",
+      "type": "object",
+      "propertyNames": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderOptionNamespace" },
+      "additionalProperties": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderOptionsNamespaceValue" },
+      "maxProperties": 16
+    },
+    "ReconciliationState": {
+      "title": "ReconciliationState",
+      "description": "The closed v1 vocabulary for whether a terminal or indeterminate Provider Invocation Evidence record (`RouteEvidence`, `ProviderInvocationRecord`) has been reconciled against upstream provider truth.",
+      "enum": ["reconciled", "pending_reconciliation", "unreconciled"]
+    },
+    "ProviderInvocationRequest": {
+      "title": "ProviderInvocationRequest",
+      "description": "The F2a request/admission projection, reconciled to the exact package-neutral request vocabulary the technical delivery specification §10 freezes: `invocationId, workspaceId, jobId, attemptId, connectionId, modelId, operation, messages[], tools[]?, toolChoice?, responseFormat?, generationOptions?, providerOptionsByNamespace?, deadlineAt?, classificationRef, residencyRef, idempotencyKey, correlationId`. `connectionId` and `modelId` name an already-resolved Provider route (REF-019 §5.5-§5.6); this record never carries credentials, raw endpoint URLs or arbitrary headers (REF-019 §6.12 No Generic Prompt Endpoint). `operation` is fixed to `language.stream`, the accepted W3 launch packet's streamed provider-invocation operation; no other operation is defined in this Review Candidate. `policyRef` is a W3 launch-packet addition, not part of the base technical-spec vocabulary. This Review Candidate's sole request shape is scoped to the accepted W3 Gate-B launch boundary, so `policyRef`, `classificationRef`, `residencyRef` and `deadlineAt` are all required here even though the base technical delivery specification marks `deadlineAt` generically optional (`deadlineAt?`) for the package-neutral vocabulary at large; this intentionally tightens that generic optional deadline for the commissioned Gate-B boundary, per the W3 launch packet §§1-3.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId", "classificationRef", "connectionId", "conversationId", "correlationId", "deadlineAt",
+        "idempotencyKey", "invocationId", "jobId", "messages", "modelId", "operation", "policyRef",
+        "requestedAt", "residencyRef", "responseFormat", "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "attemptId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId",
+          "description": "The Chat Generation Attempt this request is driving. Distinct from a stream event's own `attemptId`, which references `ProviderAttemptId` (a transport-level Attempt); the record context makes the distinction explicit."
+        },
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "connectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderConnectionId" },
+        "modelId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderModelId" },
+        "operation": {
+          "const": "language.stream",
+          "description": "Fixed to `language.stream`, matching the accepted W3 launch packet: this invocation uses the streamed provider event form (REF-019 §6.2 Invoke Streaming Provider)."
+        },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderMessage" },
+          "minItems": 1,
+          "maxItems": 4096
+        },
+        "tools": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolDefinition" },
+          "maxItems": 128
+        },
+        "toolChoice": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolChoice" },
+        "responseFormat": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ResponseFormat" },
+        "generationOptions": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/GenerationOptions" },
+        "providerOptionsByNamespace": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderOptionsByNamespace" },
+        "policyRef": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Opaque reference to the governing Provider policy (REF-019 §5.2); a W3 launch-packet addition required for the Gate-B launch boundary." },
+        "classificationRef": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "residencyRef": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "idempotencyKey": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/IdempotencyKey" },
+        "correlationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CorrelationId" },
+        "causationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CausationId" },
+        "deadlineAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "requestedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ConfiguredRoutePreference": {
+      "title": "ConfiguredRoutePreference",
+      "description": "The Provider route configured as this invocation's preference before it ran (REF-019 §5.5-§5.6): a named connection and model identity, never a raw endpoint URL or credential.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connectionId", "modelId"],
+      "properties": {
+        "connectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderConnectionId" },
+        "modelId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderModelId" }
+      }
+    },
+    "AdmittedProviderRoute": {
+      "title": "AdmittedProviderRoute",
+      "description": "The concrete, admitted connection/model/adapter route this attempt actually ran against, distinct from `ConfiguredRoutePreference` whenever a same-route retry or an authorised fallback substituted a route (REF-019 §5.9).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapterName", "adapterVersion", "connectionId", "modelId"],
+      "properties": {
+        "connectionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderConnectionId" },
+        "modelId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderModelId" },
+        "adapterName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adapterVersion": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "RouteEvidence": {
+      "title": "RouteEvidence",
+      "description": "Configured preference plus the concrete admitted connection/model/adapter route, decision, retry, timing, usage/cost and reconciliation Evidence, required whenever fallback selected a route other than the one configured (REF-019 §5.9 Fallback; F2a canonical trace classes 10-11). Every field this record requires is required whenever the record itself is present; a terminal event or `ProviderInvocationRecord` carrying `routeEvidence` at all therefore always carries complete route, timing and usage Evidence, never a partial one. `routeDecision`, `fallbackAuthorised`, `configuredPreference` and `admittedRoute` are relationally consistent: `fallback` requires `fallbackAuthorised: true` and an `admittedRoute` that differs from `configuredPreference`; `configured` and `same_route_retry` require `fallbackAuthorised: false` and an `admittedRoute` that does not differ from `configuredPreference`. JSON Schema alone cannot compare two nested sibling objects for equality, so this invariant is proven by the validator's `route_evidence_internally_consistent` relational check, not by a schema keyword.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admittedRoute", "attemptEndedAt", "attemptStartedAt", "configuredPreference", "fallbackAuthorised",
+        "reconciliationState", "routeDecision", "sameRouteRetryCount", "terminalReason", "usage"
+      ],
+      "properties": {
+        "configuredPreference": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ConfiguredRoutePreference" },
+        "admittedRoute": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/AdmittedProviderRoute" },
+        "routeDecision": { "enum": ["configured", "same_route_retry", "fallback"] },
+        "sameRouteRetryCount": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "fallbackAuthorised": {
+          "type": "boolean",
+          "description": "True only for an explicit, authorised fallback to a route other than `configuredPreference` (REF-019 §5.9); never true for an undeclared, silent route substitution."
+        },
+        "attemptStartedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "attemptEndedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "terminalReason": {
+          "anyOf": [
+            { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/FinishReason" },
+            { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderErrorCode" }
+          ]
+        },
+        "usage": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderUsage" },
+        "estimatedCost": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/EstimatedCost" },
+        "reconciliationState": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ReconciliationState" }
+      }
+    },
+    "UsageCounts": {
+      "title": "UsageCounts",
+      "description": "Bounded token-usage counts by category (technical delivery specification §12.7-§12.8). Every field is optional, but at least one category is required; a category absent from the provider's own reporting is simply omitted, never guessed as zero, and an empty `UsageCounts` object carries no information and is rejected.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "outputTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "totalTokens": { "type": "integer", "minimum": 0, "maximum": 200000000 },
+        "reasoningTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "cacheReadTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "cacheWriteTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "audioTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "otherTokens": { "type": "integer", "minimum": 0, "maximum": 100000000 }
+      }
+    },
+    "ProviderUsage": {
+      "title": "ProviderUsage",
+      "description": "Usage broken out by provenance: `reported` is exactly what the provider itself returned; `estimated` is an OmniVia-computed approximation used when the provider under-reports or omits a category. The two are never merged into one unlabelled count. At least one of `reported` or `estimated` is required; an empty `ProviderUsage` object carries no information and is rejected.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reported": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/UsageCounts" },
+        "estimated": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/UsageCounts" }
+      },
+      "anyOf": [
+        { "required": ["reported"] },
+        { "required": ["estimated"] }
+      ]
+    },
+    "EstimatedCost": {
+      "title": "EstimatedCost",
+      "description": "A bounded, reproducible estimated-cost projection over `ProviderUsage`, never a provider-issued invoice.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "calculationVersion", "catalogueRevision", "currency", "pricingSource"],
+      "properties": {
+        "amount": { "type": "number", "minimum": 0, "maximum": 1000000 },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$(?![\\s\\S])" },
+        "catalogueRevision": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "pricingSource": { "enum": ["provider_reported", "omnivia_catalogue", "estimate"] },
+        "calculationVersion": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "StreamStartEvent": {
+      "title": "StreamStartEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "stream-start" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "TextLifecycleEvent": {
+      "title": "TextLifecycleEvent",
+      "description": "Covers `text-start`, `text-delta` and `text-end`. `delta` is present if and only if `eventType` is `text-delta`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "partId", "receivedAt", "schemaVersion", "stepId"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "enum": ["text-start", "text-delta", "text-end"] },
+        "partId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "delta": { "type": "string", "maxLength": 65536 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      },
+      "if": { "properties": { "eventType": { "const": "text-delta" } }, "required": ["eventType"] },
+      "then": { "required": ["delta"] },
+      "else": { "not": { "required": ["delta"] } }
+    },
+    "ReasoningLifecycleEvent": {
+      "title": "ReasoningLifecycleEvent",
+      "description": "Covers `reasoning-start`, `reasoning-delta` and `reasoning-end`. Deliberately carries no reasoning content field: protected chain-of-thought is forbidden on this wire boundary (REF-042 §7.3 hidden reasoning is never a user-visible Message Part). Lifecycle presence only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "partId", "receivedAt", "schemaVersion", "stepId"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "enum": ["reasoning-start", "reasoning-delta", "reasoning-end"] },
+        "partId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ToolInputLifecycleEvent": {
+      "title": "ToolInputLifecycleEvent",
+      "description": "Covers `tool-input-start`, `tool-input-delta` and `tool-input-end`. `toolName` is present only on `tool-input-start`; `inputDelta` only on `tool-input-delta`; `input` only on `tool-input-end`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion", "stepId", "toolCallId"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "enum": ["tool-input-start", "tool-input-delta", "tool-input-end"] },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "toolName": { "type": "string", "maxLength": 128 },
+        "inputDelta": { "type": "string", "maxLength": 65536 },
+        "input": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      },
+      "if": { "properties": { "eventType": { "const": "tool-input-start" } }, "required": ["eventType"] },
+      "then": {
+        "required": ["toolName"],
+        "not": { "anyOf": [ { "required": ["inputDelta"] }, { "required": ["input"] } ] }
+      },
+      "else": {
+        "if": { "properties": { "eventType": { "const": "tool-input-delta" } }, "required": ["eventType"] },
+        "then": {
+          "required": ["inputDelta"],
+          "not": { "anyOf": [ { "required": ["toolName"] }, { "required": ["input"] } ] }
+        },
+        "else": {
+          "required": ["input"],
+          "not": { "anyOf": [ { "required": ["toolName"] }, { "required": ["inputDelta"] } ] }
+        }
+      }
+    },
+    "ToolCallEvent": {
+      "title": "ToolCallEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "input", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion", "stepId", "toolCallId", "toolName"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "tool-call" },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "toolName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "input": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ToolResultEvent": {
+      "title": "ToolResultEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "output", "receivedAt", "schemaVersion", "stepId", "toolCallId"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "tool-result" },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "output": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "isError": { "type": "boolean" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ToolApprovalRequestEvent": {
+      "title": "ToolApprovalRequestEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalRequestId", "attemptId", "eventType", "input", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion", "stepId", "toolCallId", "toolName"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "tool-approval-request" },
+        "toolCallId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderPartId" },
+        "stepId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderStepId" },
+        "toolName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "input": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "approvalRequestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceScopedId" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "StructuredOutputEvent": {
+      "title": "StructuredOutputEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "output", "receivedAt", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "structured-output" },
+        "output": { "type": "object", "additionalProperties": true, "maxProperties": 1024 },
+        "schemaRef": { "type": "string", "maxLength": 512 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "FileEvent": {
+      "title": "FileEvent",
+      "description": "Never raw bytes; identity only (CGAP-042-010 attachment semantics reused).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "attachmentReference", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "file" },
+        "attachmentReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "SourceEvent": {
+      "title": "SourceEvent",
+      "description": "A citation source. Never an arbitrary raw URL; an opaque reference or a bounded display label only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "source" },
+        "evidenceReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/EvidenceReference" },
+        "displayLabel": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      },
+      "anyOf": [ { "required": ["evidenceReference"] }, { "required": ["displayLabel"] } ]
+    },
+    "WarningEvent": {
+      "title": "WarningEvent",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "code", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "safeMessage", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "warning" },
+        "code": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode" },
+        "safeMessage": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ProviderMetadataEvent": {
+      "title": "ProviderMetadataEvent",
+      "description": "Bounded provider metadata only, with property names and scalar values bounded via the same reusable `BoundedExtensiblePropertyName`/`SanitisedScalarValue` defs `ProviderOptionsByNamespace` uses. Never an SDK object, exception or raw response body. This bounding is defence-in-depth, not proof the metadata is free of every possible credential/header/URL-shaped value; see §15.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "eventType", "invocationId", "metadata", "occurredAt", "ordinal", "receivedAt", "schemaVersion"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "provider-metadata" },
+        "metadata": {
+          "type": "object",
+          "propertyNames": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/BoundedExtensiblePropertyName" },
+          "additionalProperties": {
+            "anyOf": [
+              { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SanitisedScalarValue" },
+              {
+                "type": "array",
+                "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SanitisedScalarValue" },
+                "maxItems": 64
+              }
+            ]
+          },
+          "maxProperties": 128
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "SanitisedResponseMetadata": {
+      "title": "SanitisedResponseMetadata",
+      "description": "Closed, sanitised response metadata sufficient for a stable provider response/model/time identity. Never an SDK object, exception, raw header, raw URL or raw response body; a value outside this shape is dropped by the adapter before this event is constructed, not passed through opaquely. `respondedAt` is always required, even when the provider itself supplies no response ID, model identity or system fingerprint: it is always locally knowable (Core stamps it when the terminal event is received), so an empty `{}` object can never satisfy this record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["respondedAt"],
+      "properties": {
+        "providerResponseId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "providerModelId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "The concrete model identity the provider itself reported serving the response, when it may differ from the requested `modelId`."
+        },
+        "systemFingerprint": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "respondedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "FinishCancellationState": {
+      "title": "FinishCancellationState",
+      "description": "Explicit, closed cancellation state carried on every `FinishEvent`, so a consumer never has to infer cancellation from `finishReason` alone.",
+      "enum": ["not_cancelled", "cancelled"]
+    },
+    "FinishEvent": {
+      "title": "FinishEvent",
+      "description": "One of the two possible terminal event types (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11). `routeEvidence` is required whenever a fallback route differs from the configured route (trace class 11). `usage`, `responseMetadata` and `cancellationState` are required on every `FinishEvent`. Cancellation consistency: `finishReason: cancelled` requires `cancellationState: cancelled` and a bounded `cancellationInitiator`; every other `finishReason` requires `cancellationState: not_cancelled` and forbids `cancellationInitiator`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "cancellationState", "eventType", "finishReason", "invocationId", "occurredAt", "ordinal", "receivedAt", "responseMetadata", "schemaVersion", "usage"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "finish" },
+        "finishReason": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/FinishReason" },
+        "usage": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderUsage" },
+        "estimatedCost": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/EstimatedCost" },
+        "responseMetadata": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SanitisedResponseMetadata" },
+        "cancellationState": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/FinishCancellationState" },
+        "cancellationInitiator": {
+          "enum": ["caller", "deadline", "provider"],
+          "description": "Required if and only if `cancellationState` is `cancelled`; states who or what initiated the cancellation."
+        },
+        "routeEvidence": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/RouteEvidence" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      },
+      "if": { "properties": { "finishReason": { "const": "cancelled" } }, "required": ["finishReason"] },
+      "then": {
+        "required": ["cancellationInitiator"],
+        "properties": { "cancellationState": { "const": "cancelled" } }
+      },
+      "else": {
+        "not": { "required": ["cancellationInitiator"] },
+        "properties": { "cancellationState": { "const": "not_cancelled" } }
+      }
+    },
+    "ErrorEvent": {
+      "title": "ErrorEvent",
+      "description": "The other possible terminal event type (CHAT-RUNTIME-CONTRACT-V1-FREEZE.md §11). `retryable` and a sanitised `statusClass` are required on every `ErrorEvent`; provider request identity and `retryAfterSeconds` remain optional and bounded, since upstream does not always supply them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "errorCode", "eventType", "invocationId", "occurredAt", "ordinal", "receivedAt", "retryable", "safeMessage", "schemaVersion", "statusClass"],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "attemptId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+        "ordinal": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eventType": { "const": "error" },
+        "errorCode": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderErrorCode" },
+        "safeMessage": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "retryable": { "type": "boolean" },
+        "statusClass": {
+          "enum": ["client_error", "server_error", "rate_limited", "timeout", "unknown"],
+          "description": "A sanitised, coarse status classification. Never a raw upstream HTTP status code or provider-specific status string."
+        },
+        "retryAfterSeconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
+        "usage": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderUsage" },
+        "estimatedCost": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/EstimatedCost" },
+        "routeEvidence": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/RouteEvidence" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "occurredAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "receivedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "providerEventId": { "type": "string", "maxLength": 256 },
+        "providerRequestId": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ProviderInvocationLifecycleState": {
+      "title": "ProviderInvocationLifecycleState",
+      "description": "The closed v1 durable lifecycle vocabulary for one `ProviderInvocationRecord`, aligned by concept (not by shared schema) to REF-019 Appendix B's Invocation state model; this record never redefines Provider Service authority over that state model. `indeterminate` names a durable invocation whose outcome Core could not yet safely resolve (for example a crash between admission and a terminal transport event) and that requires reconciliation before it is treated as either succeeded or failed.",
+      "enum": ["requested", "in_progress", "succeeded", "failed", "cancelled", "indeterminate"]
+    },
+    "ProviderInvocationRecord": {
+      "title": "ProviderInvocationRecord",
+      "description": "The durable, Core-owned record of truth for one logical Provider Invocation (REF-019 §5.7, §22.8-§22.11), distinct from and outliving any one transport Attempt (`ProviderAttemptId`) beneath it. Core persists exactly this shape to recover safely after a crash, a same-route retry, or an authorised fallback; it is never itself the wire request or a stream event, and it never claims to redefine Provider Service authority over Invocation identity or lifecycle. `attemptIds` lists every transport Attempt admitted under this invocation so far, oldest first, and is closed to duplicates (`uniqueItems`): the same transport Attempt is never listed twice. A non-terminal `lifecycleState` (`requested`, `in_progress`) carries neither `terminalAt` nor `routeEvidence`, so it never pretends a result already exists. A newly `requested` invocation may have zero Attempts (none has been admitted yet); every other lifecycle state (`in_progress`, and every terminal or indeterminate state) requires at least one, since each has already admitted at least one transport Attempt. A terminal `lifecycleState` (`succeeded`, `failed`, `cancelled`) requires both `terminalAt` and a complete `routeEvidence`, so Core can resume or reconcile safely from the record alone. `indeterminate` requires `reconciliationState` and forbids `routeEvidence`, since an indeterminate invocation has, by definition, no confirmed terminal route/result Evidence yet.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptIds", "connectionId", "conversationId", "createdAt", "generationAttemptId",
+        "invocationId", "jobId", "lifecycleState", "modelId", "operation", "updatedAt", "workspaceId"
+      ],
+      "properties": {
+        "invocationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderInvocationId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "jobId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+        "generationAttemptId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationAttemptId",
+          "description": "The Chat Generation Attempt this Provider Invocation is driving; distinct from a transport-level `ProviderAttemptId` (`attemptIds`)."
+        },
+        "operation": {
+          "const": "language.stream",
+          "description": "Fixed to `language.stream`, matching `ProviderInvocationRequest.operation`."
+        },
+        "connectionId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderConnectionId",
+          "description": "The requested named-connection identity, as admitted at invocation creation time. The concrete admitted route actually used (which may differ under retry or fallback) is `routeEvidence.admittedRoute`."
+        },
+        "modelId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderModelId",
+          "description": "The requested model identity, as admitted at invocation creation time."
+        },
+        "attemptIds": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProviderAttemptId" },
+          "maxItems": 1000,
+          "uniqueItems": true
+        },
+        "lifecycleState": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderInvocationLifecycleState" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "terminalAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "routeEvidence": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/RouteEvidence" },
+        "reconciliationState": { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ReconciliationState" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "lifecycleState": { "enum": ["succeeded", "failed", "cancelled"] } },
+            "required": ["lifecycleState"]
+          },
+          "then": { "required": ["routeEvidence", "terminalAt"] },
+          "else": {
+            "if": { "properties": { "lifecycleState": { "const": "indeterminate" } }, "required": ["lifecycleState"] },
+            "then": {
+              "required": ["reconciliationState"],
+              "not": { "required": ["routeEvidence"] }
+            },
+            "else": {
+              "not": {
+                "anyOf": [ { "required": ["routeEvidence"] }, { "required": ["terminalAt"] } ]
+              }
+            }
+          }
+        },
+        {
+          "description": "Only a newly `requested` invocation may have zero Attempts; every other lifecycle state has already admitted at least one.",
+          "if": {
+            "properties": { "lifecycleState": { "const": "requested" } },
+            "required": ["lifecycleState"]
+          },
+          "then": {},
+          "else": { "properties": { "attemptIds": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "ProviderEvent": {
+      "title": "ProviderEvent",
+      "description": "The discriminated union of every F2a event $def, keyed by `eventType` (technical delivery specification §12.7). One trace fixture is an ordered sequence of `ProviderEvent` records, grouped by `(invocationId, attemptId)`.",
+      "oneOf": [
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/StreamStartEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/TextLifecycleEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ReasoningLifecycleEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolInputLifecycleEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolCallEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolResultEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ToolApprovalRequestEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/StructuredOutputEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/FileEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/SourceEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/WarningEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ProviderMetadataEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/FinishEvent" },
+        { "$ref": "https://contracts.omnivia.dev/chat/v1/provider.schema.json#/$defs/ErrorEvent" }
+      ]
+    }
+  }
+}

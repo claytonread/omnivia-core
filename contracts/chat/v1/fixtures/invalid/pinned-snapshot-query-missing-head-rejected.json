@@ -1,0 +1,8 @@
+{
+  "requestId": "req-0002",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "actorId": "actor-alice",
+  "pinnedGraphRevision": 7
+}

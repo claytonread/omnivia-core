@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/graph.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - Conversation graph identity",
+  "description": "Closes CGAP-042-001 (Conversation and Message identity) and CGAP-042-002 (MessageDerivation). Normative wire shapes for Conversation, Message, MessagePart and MessageDerivation, exactly as REF-042 §7.1-§7.4 and ADR-022 §4.1-§4.3, §4.14-§4.15 define them. Every record is closed. Committed Message and MessagePart content, author, structural parent, content hash and creation sequence are immutable after commit (REF042-RULE-002, ADR022-INV-001, ADR022-INV-002).",
+  "type": "object",
+  "$defs": {
+    "Conversation": {
+      "title": "Conversation",
+      "description": "A Workspace-scoped container for related Chat Messages, branch paths, participants, shares, exports and view state (REF-042 §4.1, §7.1). Not itself a linear transcript.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conversationId",
+        "createdAt",
+        "createdBy",
+        "graphRevision",
+        "latestConversationSequence",
+        "schemaVersion",
+        "state",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId"
+        },
+        "conversationId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId",
+          "description": "Stable and opaque."
+        },
+        "createdBy": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId"
+        },
+        "createdAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "title": {
+          "type": "string",
+          "description": "Shared display metadata. Not part of Message lineage (REF-042 §7.1).",
+          "minLength": 0,
+          "maxLength": 512
+        },
+        "state": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationState"
+        },
+        "defaultBranchId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId",
+          "description": "When present, identifies an existing accessible branch (REF-042 §7.1). Not organisational truth and does not invalidate other branches (ADR-022 §4.6)."
+        },
+        "graphRevision": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision",
+          "description": "Increments only for durable graph changes."
+        },
+        "latestConversationSequence": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence"
+        },
+        "schemaVersion": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion"
+        },
+        "archivedAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "tombstonedAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        }
+      }
+    },
+    "MessagePart": {
+      "title": "MessagePart",
+      "description": "An ordered, typed unit of Message content (REF-042 §4.4, §7.3). Not a DOM fragment; never reconstructed from rendered HTML. The set of parts belonging to a committed Message is immutable. Unknown types decode to an inert, display-safe fallback and generated executable UI is prohibited.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contentHash",
+        "conversationId",
+        "createdAt",
+        "index",
+        "messageId",
+        "partId",
+        "payload",
+        "schemaVersion",
+        "type",
+        "visibility",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId"
+        },
+        "conversationId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId"
+        },
+        "messageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId"
+        },
+        "partId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessagePartId"
+        },
+        "index": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PartIndex",
+          "description": "Stable order position of this part within its Message."
+        },
+        "type": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open, dot-namespaced part-type code, for example `text`, `markdown`, `citation`, `table`, `warning`, `app.output`, `workflow.status` (REF-042 §4.4). Open by design so a compatible minor release can add types; an unrecognised type decodes to an inert, display-safe fallback and is never executed."
+        },
+        "schemaVersion": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion"
+        },
+        "visibility": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageVisibility"
+        },
+        "payload": {
+          "type": "object",
+          "description": "Type-specific closed payload envelope. The exact per-type payload shapes are owned by the Chat Part-type registry (out of scope for REF-042 and for this contract per REF-042 §2.2); this field is deliberately an opaque, schema-versioned object boundary rather than an invented catalogue.",
+          "additionalProperties": true
+        },
+        "provenance": {
+          "type": "string",
+          "enum": [
+            "human",
+            "ai",
+            "import",
+            "migration",
+            "system"
+          ],
+          "description": "Optional origin class for this part, aligned to DOC-004 §8.4 ProvenanceSourceKind by concept, not by shared schema."
+        },
+        "contentHash": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContentHash"
+        },
+        "createdAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        }
+      }
+    },
+    "Message": {
+      "title": "Message",
+      "description": "An immutable semantic Chat node authored by a user, assistant or another supported actor type (REF-042 §4.3, §7.2, ADR-022 §4.1). After commitment, canonical content, parentMessageId, author identity and creation sequence never change (ADR022-INV-001, ADR022-INV-002, REF042-RULE-002).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorType",
+        "completionStatus",
+        "committedAt",
+        "contentHash",
+        "conversationId",
+        "conversationSequence",
+        "createdAt",
+        "messageId",
+        "parts",
+        "role",
+        "schemaVersion",
+        "visibility",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId"
+        },
+        "conversationId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId"
+        },
+        "messageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Stable and unique within the Workspace."
+        },
+        "parentMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Immutable structural parent. Absent means the conceptual Conversation Root (REF-042 §4.2, §4.5). At most one incoming lineage edge per Message (REF-042 §4.9)."
+        },
+        "role": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageRole"
+        },
+        "authorType": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AuthorType"
+        },
+        "authorId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId",
+          "description": "Present when authorType names an identifiable principal."
+        },
+        "conversationSequence": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationSequence"
+        },
+        "schemaVersion": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion"
+        },
+        "contentHash": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContentHash"
+        },
+        "completionStatus": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CompletionStatus"
+        },
+        "visibility": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageVisibility"
+        },
+        "parts": {
+          "type": "array",
+          "description": "Ordered, typed Message Parts comprising this Message (REF-042 §4.3). Order is stable and the set is immutable once committed.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/MessagePart"
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        },
+        "createdOnBranchId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId",
+          "description": "Optional creation provenance only. Never canonical branch membership (REF042-RULE-007)."
+        },
+        "createdAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "committedAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "tombstonedAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp",
+          "description": "Present only when this Message has been tombstoned under a governed redaction procedure (REF-042 §25.2). A tombstone never implies the Message never existed (REF-042 §25.4)."
+        }
+      }
+    },
+    "MessageDerivation": {
+      "title": "MessageDerivation",
+      "description": "A typed relation stating that one immutable Message was created from another immutable Message, without making the source a structural parent (REF-042 §4.10, §7.4, CGAP-042-002). Closes CGAP-042-002. Source and derived Messages always share Workspace and Conversation; amendment and regeneration source/derived pairs always share role and structural parent (REF042-INV-008, REF042-INV-009); derivation edges are acyclic and point from newer derived Messages to older source Messages.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conversationId",
+        "createdAt",
+        "createdBy",
+        "derivedMessageId",
+        "kind",
+        "sourceMessageId",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId"
+        },
+        "conversationId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId"
+        },
+        "derivedMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId"
+        },
+        "sourceMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId"
+        },
+        "kind": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DerivationKind"
+        },
+        "createdBy": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId"
+        },
+        "createdAt": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Optional, non-authoritative derivation metadata. Never replaces lineage (REF-042 §7.4).",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

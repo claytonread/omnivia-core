@@ -1,0 +1,12 @@
+{
+  "v": "2.0",
+  "dir": "module->host",
+  "kind": "module/chat.snapshot-request",
+  "payload": {
+    "messageType": "bridge.snapshot-request",
+    "bridgeProtocolVersion": "1.0",
+    "schemaVersion": 1,
+    "contextId": "bctx-carrier-04",
+    "requestedAt": "2026-08-20T10:00:01Z"
+  }
+}

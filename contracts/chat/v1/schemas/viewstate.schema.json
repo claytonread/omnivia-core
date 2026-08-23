@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - ConversationViewState and ComposerDraft",
+  "description": "Closes CGAP-042-005 (ConversationViewState). Normative wire shapes exactly as REF-042 §7.7-§7.8 define them. View state is actor-scoped and, where required, device-scoped (REF-042 §15.1-§15.2). Selecting, expanding, comparing or focusing a branch SHALL NOT change Message lineage or content and SHALL NOT increment graph revision (REF042-RULE-009, REF042-INV-012, ADR022-INV-014). View state is never a source of organisational truth (REF-042 §7.7, REF042-RULE-011). `ComposerDraft` is mutable client-composition state, not a Message node (REF-042 §7.8, ADR-022 §4.2); it gives wire shape to the `SaveDraft` and `DiscardDraft` W2 commands without itself closing a CGAP-042 gap.",
+  "type": "object",
+  "$defs": {
+    "ConversationViewState": {
+      "title": "ConversationViewState",
+      "description": "Actor-scoped, optionally device-scoped, active-branch selection (REF-042 §7.7). Closes CGAP-042-005.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeBranchId",
+        "actorId",
+        "conversationId",
+        "lastSeenGraphRevision",
+        "schemaVersion",
+        "updatedAt",
+        "version",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "deviceId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId",
+          "description": "When present, this record is a device-level override of the actor default (REF-042 §15.2)."
+        },
+        "activeBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "focusedMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "lastSeenGraphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "version": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion",
+          "description": "Opaque optimistic-concurrency token for this exact row (REF-042 §7.7, §21.5)."
+        }
+      }
+    },
+    "ComposerDraft": {
+      "title": "ComposerDraft",
+      "description": "Mutable, actor-scoped, unsent composition state (REF-042 §7.8). Not a Message node; never assembled into a committed Conversation graph.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actorId",
+        "attachmentReferences",
+        "contextReferences",
+        "conversationId",
+        "draftId",
+        "mode",
+        "schemaVersion",
+        "text",
+        "updatedAt",
+        "version",
+        "workspaceId"
+      ],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" },
+        "mode": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ComposerDraftMode" },
+        "sourceMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Present when `mode` is `edit_message` or `reuse_message` (REF-042 §7.8)."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 262144,
+          "description": "Untrusted client-composed text. Never parsed as executable content."
+        },
+        "attachmentReferences": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" },
+          "maxItems": 64
+        },
+        "contextReferences": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" },
+          "maxItems": 64
+        },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "stashedFromDraftId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId",
+          "description": "Present when this draft was preserved from a prior draft protected during `BeginMessageEdit` (REF-042 §13.2, ADR-022 §4.10)."
+        },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "version": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    }
+  }
+}

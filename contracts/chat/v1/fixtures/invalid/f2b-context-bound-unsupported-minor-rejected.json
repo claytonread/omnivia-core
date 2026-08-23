@@ -1,0 +1,13 @@
+{
+  "messageType": "bridge.context-bound",
+  "bridgeProtocolVersion": "1.1",
+  "schemaVersion": 1,
+  "contextId": "bctx-version-02",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "actorId": "actor-alice",
+  "maxMessageBytes": 32768,
+  "maxBatchEvents": 20,
+  "maxSnapshotItems": 20,
+  "boundAt": "2026-08-20T10:00:00Z"
+}

@@ -1,0 +1,45 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t09",
+      "attemptId": "attempt-t09",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t09",
+      "attemptId": "attempt-t09",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t09-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t09",
+      "attemptId": "attempt-t09",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t09-1",
+      "stepId": "step-1",
+      "delta": "partial"
+    },
+    {
+      "invocationId": "invocation-t09",
+      "attemptId": "attempt-t09",
+      "ordinal": 3,
+      "eventType": "video-frame",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z"
+    }
+  ]
+}

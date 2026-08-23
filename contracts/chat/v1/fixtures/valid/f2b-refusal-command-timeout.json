@@ -1,0 +1,9 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "reason": "command_timeout",
+  "contextId": "bctx-0001",
+  "refusedCommandId": "cmd-hosted-0007",
+  "safeMessage": "This request took too long to complete."
+}

@@ -1,0 +1,9 @@
+{
+  "messageType": "bridge.refusal",
+  "bridgeProtocolVersion": "1.0",
+  "schemaVersion": 1,
+  "reason": "not_ready",
+  "safeMessage": "Your session is not ready yet.",
+  "contextId": "bctx-not-ready-01",
+  "refusedCommandId": "cmd-early-01"
+}

@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t05",
+      "attemptId": "attempt-t05",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t05",
+      "attemptId": "attempt-t05",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t05-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t05",
+      "attemptId": "attempt-t05",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t05-1",
+      "stepId": "step-1",
+      "delta": "Still working"
+    },
+    {
+      "invocationId": "invocation-t05",
+      "attemptId": "attempt-t05",
+      "ordinal": 3,
+      "eventType": "error",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "errorCode": "timeout",
+      "safeMessage": "The absolute deadline was reached.",
+      "retryable": true,
+      "statusClass": "timeout"
+    }
+  ]
+}

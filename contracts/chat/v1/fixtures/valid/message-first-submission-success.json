@@ -1,0 +1,34 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "messageId": "msg-0001-root",
+  "role": "user",
+  "authorType": "human",
+  "authorId": "actor-alice",
+  "conversationSequence": 1,
+  "schemaVersion": 1,
+  "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+  "completionStatus": "complete",
+  "visibility": "standard",
+  "parts": [
+    {
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0001-root",
+      "partId": "part-0001",
+      "index": 0,
+      "type": "text",
+      "schemaVersion": 1,
+      "visibility": "standard",
+      "payload": {
+        "text": "Review the supplier proposal"
+      },
+      "provenance": "human",
+      "contentHash": "f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a",
+      "createdAt": "2026-08-20T10:00:00Z"
+    }
+  ],
+  "createdOnBranchId": "branch-0001-original",
+  "createdAt": "2026-08-20T10:00:00Z",
+  "committedAt": "2026-08-20T10:00:00Z"
+}

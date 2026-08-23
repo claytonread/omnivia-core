@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/queries.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - Read projections",
+  "description": "Closes CGAP-042-007 (branch path, pinned-snapshot, sibling, branch-list and lazy-descendant queries) and freezes the W2 read-projection surface named by the Chat technical delivery specification §10 and §12.6: paginated Conversation list/search, actor/selected-path Conversation snapshot, stable-anchor Message/Part paging. Every query is authorised at read time (REF-042 §11.1, §15.1) and returns only accessible content; an inaccessible required ancestor fails the containing query closed rather than partially assembling a path (REF-042 §11.1 step 4, REF042-RULE-013). Every list and page query is bounded and cursor-paginated (`PageSize`, `OpaqueCursor`); no query loads an unbounded graph (REF-042 §11.3, §26.2).",
+  "type": "object",
+  "$defs": {
+    "DivergenceMetadata": {
+      "title": "DivergenceMetadata",
+      "description": "Lightweight sibling-position metadata at one visible divergence point, without loading inactive siblings' content (REF-042 §11.3, §16.2). Closes part of CGAP-042-007.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageId", "selectedOrdinal", "siblingCount"],
+      "properties": {
+        "messageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "siblingCount": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "selectedOrdinal": { "type": "integer", "minimum": 1, "maximum": 100000, "description": "1-based position of this Message within its sibling set (REF-042 §10.2)." },
+        "previousSiblingId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "nextSiblingId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" }
+      }
+    },
+    "BranchPathQuery": {
+      "title": "BranchPathQuery",
+      "description": "Reconstructs one branch path root-to-head, or a pinned snapshot when `pinnedGraphRevision` and `pinnedHeadMessageId` are supplied together (REF-042 §11.1, §11.2). Closes CGAP-042-007.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "conversationId", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "pinnedHeadMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "pinnedGraphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["pinnedHeadMessageId"] },
+          "then": { "required": ["pinnedGraphRevision"] }
+        },
+        {
+          "if": { "required": ["pinnedGraphRevision"] },
+          "then": { "required": ["pinnedHeadMessageId"] }
+        }
+      ]
+    },
+    "BranchPathResult": {
+      "title": "BranchPathResult",
+      "description": "REF-042 Appendix D `ConversationThreadProjection`, disposable and rebuildable, never itself the authoritative graph.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "conversationId", "generationJobIds", "graphRevision", "headMessageId", "messages", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message" },
+          "minItems": 0,
+          "maxItems": 4096
+        },
+        "divergenceMetadataByMessageId": {
+          "type": "object",
+          "additionalProperties": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/DivergenceMetadata" },
+          "description": "Keyed by `messageId` (REF-042 §16.2). Present only for visible Messages belonging to a sibling set with more than one member."
+        },
+        "generationJobIds": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+          "maxItems": 4096
+        },
+        "viewStateVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
+      }
+    },
+    "BranchListQuery": {
+      "title": "BranchListQuery",
+      "description": "Lists branches for one Conversation (REF-042 §10.3, §16). Closes part of CGAP-042-007.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "conversationId", "pageSize", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "includeArchived": { "type": "boolean" },
+        "pageSize": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PageSize" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "BranchSummary": {
+      "title": "BranchSummary",
+      "description": "Lightweight branch-list row, not the full `MessageBranch` record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "currentHeadMessageId", "headVersion", "originKind", "state"],
+      "properties": {
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "originKind": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchOriginKind" },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchState" },
+        "currentHeadMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "headVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/HeadVersion" },
+        "lastAdvancedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "BranchListResult": {
+      "title": "BranchListResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branches", "hasMore"],
+      "properties": {
+        "branches": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchSummary" },
+          "maxItems": 200
+        },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "hasMore": { "type": "boolean" }
+      }
+    },
+    "DescendantsQuery": {
+      "title": "DescendantsQuery",
+      "description": "Lazily loads inactive descendants from a Message, for a divergence control expanded by the user (REF-042 §11.3, §16.2). Closes part of CGAP-042-007.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "conversationId", "fromMessageId", "pageSize", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "fromMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "pageSize": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PageSize" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "DescendantsResult": {
+      "title": "DescendantsResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hasMore", "messages"],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message" },
+          "maxItems": 200
+        },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "hasMore": { "type": "boolean" }
+      }
+    },
+    "ConversationListQuery": {
+      "title": "ConversationListQuery",
+      "description": "Paginated Conversation list and search (Chat technical delivery specification §10). Not part of CGAP-042-007; freezes the W2 read surface only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "pageSize", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "searchText": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Untrusted search text matched against canonical Message content, never truncated rendered DOM (REF-042 §19.1)."
+        },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationState" },
+        "pageSize": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PageSize" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "ConversationSummary": {
+      "title": "ConversationSummary",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversationId", "graphRevision", "state"],
+      "properties": {
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "title": { "type": "string", "maxLength": 512 },
+        "state": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationState" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "activeBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "matchedMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Present only for a search result; identifies the exact branch-scoped match (REF-042 §19.2)."
+        },
+        "matchedBranchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" }
+      }
+    },
+    "ConversationListResult": {
+      "title": "ConversationListResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversations", "hasMore"],
+      "properties": {
+        "conversations": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/ConversationSummary" },
+          "maxItems": 200
+        },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "hasMore": { "type": "boolean" }
+      }
+    },
+    "ConversationSnapshotQuery": {
+      "title": "ConversationSnapshotQuery",
+      "description": "The actor's selected-path Conversation snapshot (Chat technical delivery specification §10): `Conversation` plus the actor's resolved active branch path in one bounded read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "conversationId", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "deviceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId" }
+      }
+    },
+    "ConversationSnapshotResult": {
+      "title": "ConversationSnapshotResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conversation", "path", "viewState"],
+      "properties": {
+        "conversation": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Conversation" },
+        "path": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathResult" },
+        "viewState": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" }
+      }
+    },
+    "MessagePageDirection": {
+      "title": "MessagePageDirection",
+      "enum": ["before", "after"]
+    },
+    "MessagePageQuery": {
+      "title": "MessagePageQuery",
+      "description": "Stable-anchor Message and Message Part paging (Chat technical delivery specification §10). `anchorMessageId` absent means page from the branch head.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "branchId", "conversationId", "direction", "pageSize", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "anchorMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "direction": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/MessagePageDirection" },
+        "pageSize": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/PageSize" },
+        "cursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" }
+      }
+    },
+    "MessagePageResult": {
+      "title": "MessagePageResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hasMore", "messages"],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Message" },
+          "maxItems": 200
+        },
+        "nextCursor": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/OpaqueCursor" },
+        "hasMore": { "type": "boolean" }
+      }
+    },
+    "ComposerDraftQuery": {
+      "title": "ComposerDraftQuery",
+      "description": "Reads back a saved ComposerDraft, for example after reconnect (viewstate.schema.json#/$defs/ComposerDraft).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "conversationId", "draftId", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "draftId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DraftId" }
+      }
+    },
+    "ComposerDraftResult": {
+      "title": "ComposerDraftResult",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["found"],
+      "properties": {
+        "found": { "type": "boolean" },
+        "draft": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ComposerDraft" }
+      },
+      "if": { "properties": { "found": { "const": true } }, "required": ["found"] },
+      "then": { "required": ["draft"] },
+      "else": { "not": { "required": ["draft"] } }
+    },
+    "EvidencePreviewQuery": {
+      "title": "EvidencePreviewQuery",
+      "description": "Looks up a display-safe preview for one Evidence record by its authorised stable `EvidenceReference` (REF-034 §5.1, §8.2). Reuses Evidence identity by reference only; never redefines REF-034 authority or duplicates Evidence content storage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "evidenceReference", "requestId", "workspaceId"],
+      "properties": {
+        "requestId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/RequestId" },
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "evidenceReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/EvidenceReference" }
+      }
+    },
+    "EvidencePreviewOutcome": {
+      "title": "EvidencePreviewOutcome",
+      "enum": ["available", "not_found", "permission_denied", "workspace_mismatch", "unavailable"]
+    },
+    "EvidencePreviewResult": {
+      "title": "EvidencePreviewResult",
+      "description": "A structured, display-safe preview projection. Never a raw Evidence content dump, raw store error or policy-internal detail.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidenceId", "outcome"],
+      "properties": {
+        "evidenceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/EvidenceReferenceId" },
+        "outcome": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/EvidencePreviewOutcome" },
+        "safeSummary": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "Present only when `outcome` is `available` (REF-034 §5.9-§5.10 content classes summarised safely)."
+        },
+        "sourceMessageId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId",
+          "description": "Present when this Evidence traces to a Chat Message (REF-042 §19.5 L0 Evidence)."
+        }
+      },
+      "if": {
+        "properties": { "outcome": { "const": "available" } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "required": ["safeSummary"]
+      }
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "snapshotId": "bsnap-t13",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-0"
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "events": [
+        {
+          "eventId": "evt-t13-a",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0001-root",
+          "role": "user",
+          "branchId": "branch-0001-original",
+          "graphRevision": 1,
+          "conversationSequence": 1,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t13-a"
+        }
+      ],
+      "fromCursor": "cursor-0",
+      "nextCursor": "cursor-t13-1"
+    },
+    {
+      "messageType": "bridge.backpressure",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "action": "pause",
+      "pendingEvents": 5000,
+      "watermarkCursor": "cursor-t13-1"
+    },
+    {
+      "messageType": "bridge.resnapshot",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "reason": "backpressure_overflow",
+      "resnapshotCursor": "cursor-t13-resync"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-13",
+      "requestedAt": "2026-08-20T10:07:00Z",
+      "cursor": "cursor-t13-resync"
+    }
+  ]
+}

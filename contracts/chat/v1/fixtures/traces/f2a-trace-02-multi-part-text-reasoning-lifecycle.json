@@ -1,0 +1,102 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 1,
+      "eventType": "reasoning-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t02-r1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 2,
+      "eventType": "reasoning-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t02-r1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 3,
+      "eventType": "reasoning-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-t02-r1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 4,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "partId": "part-t02-x1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 5,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:05Z",
+      "receivedAt": "2026-08-20T10:10:05Z",
+      "partId": "part-t02-x1",
+      "stepId": "step-1",
+      "delta": "Based on that reasoning, "
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 6,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:06Z",
+      "receivedAt": "2026-08-20T10:10:06Z",
+      "partId": "part-t02-x1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t02",
+      "attemptId": "attempt-t02",
+      "ordinal": 7,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:07Z",
+      "receivedAt": "2026-08-20T10:10:07Z",
+      "finishReason": "stop",
+      "usage": {
+        "reported": {
+          "inputTokens": 80,
+          "outputTokens": 30,
+          "totalTokens": 110
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-t02-001",
+        "respondedAt": "2026-08-20T10:10:07Z"
+      },
+      "cancellationState": "not_cancelled"
+    }
+  ]
+}
