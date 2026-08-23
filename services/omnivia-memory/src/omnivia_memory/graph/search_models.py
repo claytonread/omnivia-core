@@ -39,7 +39,7 @@ from __future__ import annotations
 # resolve: `Any`, `dataclass`, `field`, and the three `Entity` / `EntityType` /
 # `RelationshipType` names the canonical records import from their sibling
 # `omnivia_core.graph.models` leaf. No other error code is suppressed.
-from omnivia_core.graph.search_models import (  # type: ignore[attr-defined]
+from omnivia_core.graph.search_models import (  # type: ignore[attr-defined,unused-ignore]
     Any,
     Entity,
     EntityType,

@@ -12,7 +12,7 @@ Deprecated: import these from ``omnivia_core.run_ledger.models`` instead.
 # `dataclass`, `field`, and `ContractVersion`, which the canonical run-ledger
 # models leaf imports from the knowledge leaf) -- names this leaf's historical
 # namespace still has to resolve. No other error code is suppressed.
-from omnivia_core.run_ledger.models import (  # type: ignore[attr-defined]
+from omnivia_core.run_ledger.models import (  # type: ignore[attr-defined,unused-ignore]
     RUN_LEDGER_CONTRACT_VERSION,
     RUN_LEDGER_PATH_ENV,
     ContractVersion,

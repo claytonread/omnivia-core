@@ -18,7 +18,7 @@ instead.
 # canonical validation module imports from the shared-validation and
 # knowledge-validation leaves) -- names this leaf's historical namespace still
 # has to resolve. No other error code is suppressed.
-from omnivia_core.control_plane.validation import (  # type: ignore[attr-defined]
+from omnivia_core.control_plane.validation import (  # type: ignore[attr-defined,unused-ignore]
     APPROVAL_ESCALATION_STATES,
     CONTROL_PLANE_CONTRACT_VERSION,
     CONTROL_PLANE_SCHEMA_VERSION,

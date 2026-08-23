@@ -13,7 +13,7 @@ from ``omnivia_core.app_shell_bridge.validation`` instead.
 # bindings (`TYPE_CHECKING`, `Any`, `Dict`, `List`) -- names the canonical
 # module's own imports left at its module scope and that this leaf's historical
 # namespace still has to resolve. No other error code is suppressed.
-from omnivia_core.app_shell_bridge.validation import (  # type: ignore[attr-defined]
+from omnivia_core.app_shell_bridge.validation import (  # type: ignore[attr-defined,unused-ignore]
     TYPE_CHECKING,
     Any,
     AppShellBridgeValidationError,

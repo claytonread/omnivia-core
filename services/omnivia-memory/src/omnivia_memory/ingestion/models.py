@@ -16,7 +16,7 @@ Deprecated: import these from ``omnivia_core.ingestion.models`` instead.
 # `TYPE_CHECKING`, `annotations`, `dataclass`, `datetime`, `field`, `timezone`,
 # and the plain `enum`, `hashlib` and `uuid` module bindings). No other error
 # code is suppressed.
-from omnivia_core.ingestion.models import (  # type: ignore[attr-defined]
+from omnivia_core.ingestion.models import (  # type: ignore[attr-defined,unused-ignore]
     TYPE_CHECKING,
     Any,
     Chunk,
