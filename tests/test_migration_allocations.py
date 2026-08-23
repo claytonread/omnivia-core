@@ -48,12 +48,13 @@ GUARD = REPO_ROOT / "scripts" / "check-migration-allocations.py"
 AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 
 # The exact T-0660 Option B allocation: number, filename, semantic owner, state.
-# 0018-0020 are the Agent Runtime lane's present candidates; 0021-0024 are
-# reserved for lanes whose SQL does not exist yet and must not appear early.
+# 0018-0020 are the Agent Runtime lane, accepted at the PR #88 default-branch
+# landing; 0021-0024 are reserved for lanes whose SQL does not exist yet and
+# must not appear early.
 EXPECTED_ALLOCATION = (
-    (18, "0018_agent_runtime_records.sql", "Agent Runtime", "candidate"),
-    (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "candidate"),
-    (20, "0020_runtime_run_summary_projection.sql", "Agent Runtime", "candidate"),
+    (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
+    (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
+    (20, "0020_runtime_run_summary_projection.sql", "Agent Runtime", "accepted"),
     (21, "0021_context_models.sql", "Context Models", "reserved"),
     (22, "0022_workflow_runs.sql", "Workflow Runtime", "reserved"),
     (23, "0023_provider_invocations.sql", "Provider Service", "reserved"),
@@ -61,8 +62,19 @@ EXPECTED_ALLOCATION = (
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
-FROZEN_SOURCE_HEAD = "9b4fb2fa78328823e9579e04cc725135265f7029"
+# PR #88's default-branch merge commit: the frozen landing this authority
+# accepts 0018-0020 against.
+FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
+ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B / Clayton Read"
+
+# The Agent Runtime lane's three introducing commits, each preserved as a
+# distinct ancestor of ACCEPTED_COMMIT.
+INTRODUCED_COMMITS = {
+    18: "a2da96a8fee541b9e18475f2753060f7e5bf6ff5",
+    19: "b1c5b43a5e5adbe578f9379d134d6d7c6baefa70",
+    20: "29ab1c4da90a8ac80f6711474c171fb0883d7381",
+}
 
 GUARD_COMMAND = "python scripts/check-migration-allocations.py"
 PREFLIGHT = REPO_ROOT / "scripts" / "preflight"
@@ -124,9 +136,16 @@ def test_every_allocation_belongs_to_this_repository() -> None:
     assert {entry["repository"] for entry in _document()["allocations"]} == {"omnivia-core"}
 
 
-def test_nothing_is_accepted_yet() -> None:
-    """T-0660 freezes numbers. It accepts no branch, so no entry may claim one."""
-    assert all(entry["accepted_commit"] is None for entry in _document()["allocations"])
+def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0024 stay
+    reserved allocations, not yet claimed by any commit."""
+    document = _document()
+    for entry in document["allocations"]:
+        if entry["number"] in INTRODUCED_COMMITS:
+            assert entry["accepted_commit"] == ACCEPTED_COMMIT
+            assert entry["introduced_commit"] == INTRODUCED_COMMITS[entry["number"]]
+        else:
+            assert entry["accepted_commit"] is None
 
 
 def test_reserved_sql_is_absent_from_the_tree() -> None:
@@ -180,6 +199,22 @@ def _drop_entry(document: dict[str, Any], number: int) -> None:
 
 def _entry(document: dict[str, Any], number: int) -> dict[str, Any]:
     return next(entry for entry in document["allocations"] if entry["number"] == number)
+
+
+def _as_candidate(document: dict[str, Any], number: int) -> dict[str, Any]:
+    entry = _entry(document, number)
+    entry.update({"state": "candidate", "accepted_commit": None})
+    return entry
+
+
+def _remove_candidate_file(document: dict[str, Any], present: dict[str, str]) -> None:
+    _as_candidate(document, 18)
+    present.pop("0018_agent_runtime_records.sql")
+
+
+def _drift_candidate_file(document: dict[str, Any], present: dict[str, str]) -> None:
+    _as_candidate(document, 18)
+    present["0018_agent_runtime_records.sql"] = "b" * 64
 
 
 MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
@@ -269,18 +304,40 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "unknown state",
-        lambda document, present: _entry(document, 21).update({"state": "accepted"}),
+        lambda document, present: _entry(document, 21).update({"state": "effective"}),
         "state must be",
     ),
     (
         "candidate pins no hash",
-        lambda document, present: _entry(document, 18).update({"sha256": None}),
+        lambda document, present: _as_candidate(document, 18).update({"sha256": None}),
         "must pin a 64-character sha256",
     ),
     (
         "candidate pins no introducing commit",
-        lambda document, present: _entry(document, 18).update({"introduced_commit": None}),
+        lambda document, present: _as_candidate(document, 18).update(
+            {"introduced_commit": None}
+        ),
         "must pin a 40-character introducing commit",
+    ),
+    (
+        "accepted allocation pins no hash",
+        lambda document, present: _entry(document, 18).update({"sha256": None}),
+        "accepted allocation must pin a 64-character sha256",
+    ),
+    (
+        "accepted allocation pins no introducing commit",
+        lambda document, present: _entry(document, 18).update({"introduced_commit": None}),
+        "accepted allocation must pin a 40-character introducing commit",
+    ),
+    (
+        "accepted allocation pins no accepted commit",
+        lambda document, present: _entry(document, 18).update({"accepted_commit": None}),
+        "accepted allocation must pin a 40-character accepted commit",
+    ),
+    (
+        "accepted allocation pins malformed accepted commit",
+        lambda document, present: _entry(document, 18).update({"accepted_commit": "HEAD"}),
+        "accepted allocation must pin a 40-character accepted commit",
     ),
     (
         "reserved entry pins a hash",
@@ -288,17 +345,34 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
         "must pin neither sha256 nor introduced_commit",
     ),
     (
-        "accepted commit claimed before acceptance",
-        lambda document, present: _entry(document, 18).update({"accepted_commit": "a" * 40}),
+        "candidate carries an accepted commit",
+        lambda document, present: _entry(document, 18).update({"state": "candidate"}),
+        "accepted_commit must be null",
+    ),
+    (
+        "reserved allocation carries an accepted commit",
+        lambda document, present: _entry(document, 21).update(
+            {"accepted_commit": "a" * 40}
+        ),
         "accepted_commit must be null",
     ),
     (
         "candidate sql is missing",
-        lambda document, present: present.pop("0018_agent_runtime_records.sql"),
+        _remove_candidate_file,
         "candidate file is missing",
     ),
     (
         "candidate sql content drifted",
+        _drift_candidate_file,
+        "content drifted",
+    ),
+    (
+        "accepted sql is missing",
+        lambda document, present: present.pop("0018_agent_runtime_records.sql"),
+        "accepted file is missing",
+    ),
+    (
+        "accepted sql content drifted",
         lambda document, present: present.update(
             {"0018_agent_runtime_records.sql": "b" * 64}
         ),
@@ -454,7 +528,7 @@ def test_the_pinned_hashes_are_the_runtime_checksum_of_the_migration_text() -> N
     """
     document = _document()
     for number, filename, _owner, state in EXPECTED_ALLOCATION:
-        if state != "candidate":
+        if state not in ("candidate", "accepted"):
             continue
         text = (guard.MIGRATION_DIR / filename).read_text(encoding="utf-8")
         expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -516,8 +590,8 @@ def _rev_parse(revision: str) -> str:
 
 def test_the_commit_pins_hold_against_this_repository() -> None:
     """The control for the rejections below, and the fact itself: `frozen_source_head`
-    is a commit this checkout descends from, and each candidate's introducing commit
-    really carries that pathname with the pinned content."""
+    is a commit this checkout descends from, each accepted allocation's introducing
+    commit really carries the pinned content, and its accepted commit preserves it."""
     assert guard.check_history(AUTHORITY.read_text(encoding="utf-8")) == []
 
 
@@ -565,6 +639,72 @@ def test_content_at_the_introducing_commit_must_match_the_pinned_digest() -> Non
     findings = guard.check_history(json.dumps(document))
     assert len(findings) == 1, findings
     assert "the authority pins 000000000000" in findings[0]
+
+
+def test_an_accepted_commit_that_does_not_exist_is_rejected() -> None:
+    document = _document()
+    _entry(document, 18)["accepted_commit"] = "2" * 40
+    findings = guard.check_history(json.dumps(document))
+    assert findings == [
+        f"allocations[0]: accepted_commit {'2' * 40} is not a commit in this repository"
+    ]
+
+
+def test_the_introducing_commit_must_ancestor_the_accepted_commit() -> None:
+    document = _document()
+    accepted_before_introduction = _rev_parse(f"{INTRODUCED_COMMITS[18]}^")
+    _entry(document, 18)["accepted_commit"] = accepted_before_introduction
+    findings = guard.check_history(json.dumps(document))
+    assert findings == [
+        (
+            f"allocations[0]: introduced_commit {INTRODUCED_COMMITS[18]} is not an "
+            f"ancestor of accepted_commit {accepted_before_introduction}"
+        )
+    ]
+
+
+def test_the_checked_head_must_descend_from_the_accepted_commit() -> None:
+    document = _document()
+    head_before_acceptance = _rev_parse(f"{ACCEPTED_COMMIT}^1")
+    document["frozen_source_head"] = head_before_acceptance
+    findings = guard.check_history(json.dumps(document), head=head_before_acceptance)
+    assert len(findings) == 3, findings
+    assert all("does not descend from the accepted lineage" in finding for finding in findings)
+
+
+def test_the_accepted_commit_must_contain_the_migration_blob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_git = guard._git
+    path = f"{guard.MIGRATION_PATH}/0018_agent_runtime_records.sql"
+
+    def missing_accepted_blob(arguments: list[str], cwd: Path) -> tuple[int, bytes]:
+        if arguments == ["cat-file", "blob", f"{ACCEPTED_COMMIT}:{path}"]:
+            return 128, b""
+        return original_git(arguments, cwd)
+
+    monkeypatch.setattr(guard, "_git", missing_accepted_blob)
+    findings = guard.check_history(AUTHORITY.read_text(encoding="utf-8"))
+    assert findings == [
+        f"allocations[0]: accepted_commit {ACCEPTED_COMMIT} does not contain {path}"
+    ]
+
+
+def test_content_at_the_accepted_commit_must_match_the_pinned_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_git = guard._git
+    path = f"{guard.MIGRATION_PATH}/0018_agent_runtime_records.sql"
+
+    def mismatched_accepted_blob(arguments: list[str], cwd: Path) -> tuple[int, bytes]:
+        if arguments == ["cat-file", "blob", f"{ACCEPTED_COMMIT}:{path}"]:
+            return 0, b"-- mismatched accepted content\n"
+        return original_git(arguments, cwd)
+
+    monkeypatch.setattr(guard, "_git", mismatched_accepted_blob)
+    findings = guard.check_history(AUTHORITY.read_text(encoding="utf-8"))
+    assert len(findings) == 1, findings
+    assert f"{path} at accepted_commit {ACCEPTED_COMMIT} hashes to" in findings[0]
 
 
 def test_history_findings_reach_the_process_exit_code(

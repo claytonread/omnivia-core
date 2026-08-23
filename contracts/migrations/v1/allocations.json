@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "decision": "T-0660 / Option B / Clayton Read",
-  "frozen_source_head": "9b4fb2fa78328823e9579e04cc725135265f7029",
+  "frozen_source_head": "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3",
   "reserved_rule": "A reserved migration number is an allocation, not a file. Its SQL must remain absent from the migration directory until this authority deliberately advances that allocation's state from 'reserved' to 'candidate' in the same change that adds the file, with its content hash and introducing commit recorded here.",
   "accepted_predecessor": {
     "number": 17,
@@ -13,33 +13,33 @@
       "filename": "0018_agent_runtime_records.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "candidate",
+      "state": "accepted",
       "predecessor": 17,
       "sha256": "e1f9cd544ca0bea8505a4f084002e43e0f913bbc971fb1ce92c851be98414019",
       "introduced_commit": "a2da96a8fee541b9e18475f2753060f7e5bf6ff5",
-      "accepted_commit": null
+      "accepted_commit": "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
     },
     {
       "number": 19,
       "filename": "0019_artifact_evidence_cleanup_records.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "candidate",
+      "state": "accepted",
       "predecessor": 18,
       "sha256": "543945a87d9fda4a2ec3bef001bb5c4fb9dbcc338b0f7266c68e69deaf827115",
       "introduced_commit": "b1c5b43a5e5adbe578f9379d134d6d7c6baefa70",
-      "accepted_commit": null
+      "accepted_commit": "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
     },
     {
       "number": 20,
       "filename": "0020_runtime_run_summary_projection.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "candidate",
+      "state": "accepted",
       "predecessor": 19,
       "sha256": "3451223fe623848d8d0db42a3a72f23f1948b276bd89cd0a127c257820d36841",
       "introduced_commit": "29ab1c4da90a8ac80f6711474c171fb0883d7381",
-      "accepted_commit": null
+      "accepted_commit": "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
     },
     {
       "number": 21,

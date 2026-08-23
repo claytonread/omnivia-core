@@ -22,16 +22,24 @@ What it enforces:
 * a filename names its own number (`0021_*.sql` for migration 21) and no
   filename is allocated twice;
 * a `candidate` entry pins a 64-character content hash and a 40-character
-  introducing commit, and the file on disk exists with exactly that content;
-* a `reserved` entry pins neither, and its file is *absent* -- a reserved
-  number is an allocation, not a file, until the authority advances it;
-* `accepted_commit` is null everywhere, because no entry has been accepted yet;
+  introducing commit, the file on disk exists with exactly that content, and
+  `accepted_commit` is null;
+* an `accepted` entry pins the same content hash and introducing commit as a
+  candidate, plus a 40-character `accepted_commit`, and the file on disk
+  exists with exactly that content;
+* a `reserved` entry pins neither a hash, an introducing commit nor an
+  accepted commit, and its file is *absent* -- a reserved number is an
+  allocation, not a file, until the authority advances it;
 * every `.sql` in the migration directory numbered above the accepted
   predecessor is allocated here, and no two `.sql` files claim the same number
   at *any* point in the sequence, including at or below the predecessor;
 * the commit pins are real: `frozen_source_head` is a commit this checkout
-  descends from, and each candidate's `introduced_commit` is a commit that
-  contains that exact migration pathname with the pinned content.
+  descends from, each candidate's or accepted entry's `introduced_commit` is a
+  commit that contains that exact migration pathname with the pinned content,
+  and for an accepted entry the `introduced_commit` is an ancestor of the
+  `accepted_commit`, the `accepted_commit` is an ancestor of the checked head,
+  and the migration blob at the `accepted_commit` also matches the pinned
+  content.
 
 Content is hashed the way the runtime hashes it -- the UTF-8 *text* of the file,
 not its raw bytes. `Migration.checksum` digests
@@ -77,6 +85,7 @@ MIGRATION_PATH = MIGRATION_DIR.relative_to(REPO_ROOT).as_posix()
 SCHEMA_VERSION = 1
 CANDIDATE = "candidate"
 RESERVED = "reserved"
+ACCEPTED = "accepted"
 
 TOP_LEVEL_FIELDS = (
     "schema_version",
@@ -186,14 +195,37 @@ def _check_state(
     state = entry["state"]
     digest = entry["sha256"]
     introduced = entry["introduced_commit"]
+    accepted = entry["accepted_commit"]
 
-    if entry["accepted_commit"] is not None:
-        findings.append(
-            f"{label}: accepted_commit must be null until the allocation is accepted, "
-            f"got {entry['accepted_commit']!r}"
-        )
-
-    if state == CANDIDATE:
+    if state == ACCEPTED:
+        pinned = isinstance(digest, str) and _DIGEST.match(digest) is not None
+        if not pinned:
+            findings.append(
+                f"{label}: an accepted allocation must pin a 64-character sha256, got {digest!r}"
+            )
+        if not isinstance(introduced, str) or not _COMMIT.match(introduced):
+            findings.append(
+                f"{label}: an accepted allocation must pin a 40-character introducing commit, "
+                f"got {introduced!r}"
+            )
+        if not isinstance(accepted, str) or not _COMMIT.match(accepted):
+            findings.append(
+                f"{label}: an accepted allocation must pin a 40-character accepted commit, "
+                f"got {accepted!r}"
+            )
+        if filename not in present:
+            findings.append(f"{label}: accepted file is missing from the migration directory")
+        elif pinned and present[filename] != digest:
+            findings.append(
+                f"{label}: {filename} content drifted -- the authority pins "
+                f"{str(digest)[:12]}…, the file hashes to {present[filename][:12]}…"
+            )
+    elif state == CANDIDATE:
+        if accepted is not None:
+            findings.append(
+                f"{label}: accepted_commit must be null until the allocation is accepted, "
+                f"got {accepted!r}"
+            )
         pinned = isinstance(digest, str) and _DIGEST.match(digest) is not None
         if not pinned:
             findings.append(f"{label}: a candidate must pin a 64-character sha256, got {digest!r}")
@@ -210,6 +242,11 @@ def _check_state(
                 f"{str(digest)[:12]}…, the file hashes to {present[filename][:12]}…"
             )
     elif state == RESERVED:
+        if accepted is not None:
+            findings.append(
+                f"{label}: accepted_commit must be null until the allocation is accepted, "
+                f"got {accepted!r}"
+            )
         if digest is not None or introduced is not None:
             findings.append(
                 f"{label}: a reserved allocation must pin neither sha256 nor "
@@ -221,7 +258,9 @@ def _check_state(
                 "allocation's state deliberately before the file appears"
             )
     else:
-        findings.append(f"{label}: state must be {CANDIDATE!r} or {RESERVED!r}, got {state!r}")
+        findings.append(
+            f"{label}: state must be {CANDIDATE!r}, {RESERVED!r} or {ACCEPTED!r}, got {state!r}"
+        )
 
 
 def check(text: str, present: Mapping[str, str]) -> list[str]:
@@ -405,8 +444,9 @@ def check_history(text: str, head: str = "HEAD", cwd: Path = REPO_ROOT) -> list[
     `check()` so the mutation suite stays pure, offline and free of repository
     state; `main()` calls both.
 
-    Malformed and non-candidate entries are left alone here -- `check()` reports
-    those, and repeating them would double every finding.
+    Malformed entries, and entries that are neither `candidate` nor `accepted`,
+    are left alone here -- `check()` reports those, and repeating them would
+    double every finding.
     """
     findings: list[str] = []
     try:
@@ -441,7 +481,7 @@ def check_history(text: str, head: str = "HEAD", cwd: Path = REPO_ROOT) -> list[
         return findings
 
     for index, entry in enumerate(entries):
-        if not isinstance(entry, dict) or entry.get("state") != CANDIDATE:
+        if not isinstance(entry, dict) or entry.get("state") not in (CANDIDATE, ACCEPTED):
             continue
         commit = entry.get("introduced_commit")
         filename = entry.get("filename")
@@ -471,6 +511,50 @@ def check_history(text: str, head: str = "HEAD", cwd: Path = REPO_ROOT) -> list[
             findings.append(
                 f"{label}: {path} at commit {commit} hashes to {actual[:12]}…, "
                 f"the authority pins {digest[:12]}…"
+            )
+            continue
+
+        if entry.get("state") != ACCEPTED:
+            continue
+
+        accepted_commit = entry.get("accepted_commit")
+        if not (isinstance(accepted_commit, str) and _COMMIT.match(accepted_commit)):
+            continue
+
+        if not _is_commit(accepted_commit, cwd):
+            findings.append(
+                f"{label}: accepted_commit {accepted_commit} is not a commit in this repository"
+            )
+            continue
+
+        ancestry, _ = _git(["merge-base", "--is-ancestor", commit, accepted_commit], cwd)
+        if ancestry != 0:
+            findings.append(
+                f"{label}: introduced_commit {commit} is not an ancestor of "
+                f"accepted_commit {accepted_commit}"
+            )
+            continue
+
+        ancestry, _ = _git(["merge-base", "--is-ancestor", accepted_commit, head], cwd)
+        if ancestry != 0:
+            findings.append(
+                f"{label}: accepted_commit {accepted_commit} is not an ancestor of {head}, "
+                "so this checkout does not descend from the accepted lineage"
+            )
+            continue
+
+        code, accepted_blob = _git(["cat-file", "blob", f"{accepted_commit}:{path}"], cwd)
+        if code != 0:
+            findings.append(f"{label}: accepted_commit {accepted_commit} does not contain {path}")
+            continue
+
+        accepted_actual = normalized_digest(
+            accepted_blob, f"{label}: {path} at accepted_commit {accepted_commit}"
+        )
+        if accepted_actual != digest:
+            findings.append(
+                f"{label}: {path} at accepted_commit {accepted_commit} hashes to "
+                f"{accepted_actual[:12]}…, the authority pins {digest[:12]}…"
             )
 
     return findings
