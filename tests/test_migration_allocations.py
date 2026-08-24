@@ -52,8 +52,9 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # landing. 0021-0022 are the already-replayed FND-F3 diff, candidates pinned to
 # their exact introducing commits but not yet accepted. 0023 is the next
 # 0024 and 0025 are the next materialized Agent Runtime candidates. 0026 is the
-# materialized Context Models candidate. 0027-0029 are the previously-reserved lanes
-# for other owners, shifted up to keep the sequence contiguous and unmaterialized.
+# materialized Context Models candidate. 0027 is the materialized Workflow Runtime
+# candidate. 0028-0029 remain reserved lanes for other owners, shifted up to keep
+# the sequence contiguous and unmaterialized.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -64,7 +65,7 @@ EXPECTED_ALLOCATION = (
     (24, "0024_runtime_effect_reconciliations.sql", "Agent Runtime", "candidate"),
     (25, "0025_runtime_stop_and_admission_control.sql", "Agent Runtime", "candidate"),
     (26, "0026_context_models.sql", "Context Models", "candidate"),
-    (27, "0027_workflow_runs.sql", "Workflow Runtime", "reserved"),
+    (27, "0027_workflow_runs.sql", "Workflow Runtime", "candidate"),
     (28, "0028_provider_invocations.sql", "Provider Service", "reserved"),
     (29, "0029_chat_foundation.sql", "Chat", "reserved"),
 )
@@ -86,6 +87,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     24: "e9827ae9f83188f9e9c4fc848597edf04aa67416",
     25: "af25779a66e41a32dc268940caf0abc2d699ffc9",
     26: "40348d38bde2dc3ad098b68cf9637eb8a8445535",
+    27: "348bb389f4b5a7b27769ba5224afb43031a6127f",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -157,9 +159,9 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0025 are
-    candidates pinned to their introducing commits but not accepted; 0026-0029
-    stay reserved allocations, not yet claimed by any commit."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0027 are
+    candidates pinned to their introducing commits but not accepted; 0028-0029 stay
+    reserved allocations, not yet claimed by any commit."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:
@@ -368,7 +370,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved entry pins a hash",
-        lambda document, present: _entry(document, 27).update({"sha256": "0" * 64}),
+        lambda document, present: _entry(document, 28).update({"sha256": "0" * 64}),
         "must pin neither sha256 nor introduced_commit",
     ),
     (
@@ -378,7 +380,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved allocation carries an accepted commit",
-        lambda document, present: _entry(document, 27).update(
+        lambda document, present: _entry(document, 28).update(
             {"accepted_commit": "a" * 40}
         ),
         "accepted_commit must be null",
@@ -408,7 +410,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     (
         "reserved sql appears early",
         lambda document, present: present.update(
-            {"0027_workflow_runs.sql": "c" * 64}
+            {"0028_provider_invocations.sql": "c" * 64}
         ),
         "already exists; advance this allocation",
     ),

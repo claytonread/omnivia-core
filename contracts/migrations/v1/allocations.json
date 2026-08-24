@@ -112,10 +112,10 @@
       "filename": "0027_workflow_runs.sql",
       "owner": "Workflow Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 26,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "9aaef9850e689eeebbc5937ef95e4bf2d1956a003883a5d8e64c5551b2db8e92",
+      "introduced_commit": "348bb389f4b5a7b27769ba5224afb43031a6127f",
       "accepted_commit": null
     },
     {
