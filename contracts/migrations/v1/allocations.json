@@ -101,10 +101,10 @@
       "filename": "0026_context_models.sql",
       "owner": "Context Models",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 25,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "c981b5f8d135d92fe952697db7ac2bbf3cc1159af16df11f859df9c171502d56",
+      "introduced_commit": "40348d38bde2dc3ad098b68cf9637eb8a8445535",
       "accepted_commit": null
     },
     {

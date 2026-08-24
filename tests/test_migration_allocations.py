@@ -51,8 +51,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # 0018-0020 are the Agent Runtime lane, accepted at the PR #88 default-branch
 # landing. 0021-0022 are the already-replayed FND-F3 diff, candidates pinned to
 # their exact introducing commits but not yet accepted. 0023 is the next
-# 0024 and 0025 are the next materialized Agent Runtime candidates. 0026-0029
-# are the previously-reserved lanes
+# 0024 and 0025 are the next materialized Agent Runtime candidates. 0026 is the
+# materialized Context Models candidate. 0027-0029 are the previously-reserved lanes
 # for other owners, shifted up to keep the sequence contiguous and unmaterialized.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
@@ -63,7 +63,7 @@ EXPECTED_ALLOCATION = (
     (23, "0023_runtime_effect_transactions.sql", "Agent Runtime", "candidate"),
     (24, "0024_runtime_effect_reconciliations.sql", "Agent Runtime", "candidate"),
     (25, "0025_runtime_stop_and_admission_control.sql", "Agent Runtime", "candidate"),
-    (26, "0026_context_models.sql", "Context Models", "reserved"),
+    (26, "0026_context_models.sql", "Context Models", "candidate"),
     (27, "0027_workflow_runs.sql", "Workflow Runtime", "reserved"),
     (28, "0028_provider_invocations.sql", "Provider Service", "reserved"),
     (29, "0029_chat_foundation.sql", "Chat", "reserved"),
@@ -85,6 +85,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     23: "44e3ed256c38dadc54203994e209380d6e6f439f",
     24: "e9827ae9f83188f9e9c4fc848597edf04aa67416",
     25: "af25779a66e41a32dc268940caf0abc2d699ffc9",
+    26: "40348d38bde2dc3ad098b68cf9637eb8a8445535",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -367,7 +368,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved entry pins a hash",
-        lambda document, present: _entry(document, 26).update({"sha256": "0" * 64}),
+        lambda document, present: _entry(document, 27).update({"sha256": "0" * 64}),
         "must pin neither sha256 nor introduced_commit",
     ),
     (
@@ -377,7 +378,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved allocation carries an accepted commit",
-        lambda document, present: _entry(document, 26).update(
+        lambda document, present: _entry(document, 27).update(
             {"accepted_commit": "a" * 40}
         ),
         "accepted_commit must be null",
@@ -407,7 +408,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     (
         "reserved sql appears early",
         lambda document, present: present.update(
-            {"0026_context_models.sql": "c" * 64}
+            {"0027_workflow_runs.sql": "c" * 64}
         ),
         "already exists; advance this allocation",
     ),
