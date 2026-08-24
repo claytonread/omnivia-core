@@ -48,6 +48,9 @@ class ScenarioResult:
     database_size_mb: float | None = None
     error_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    slo: dict[str, Any] = field(default_factory=dict)
+    """Optional SLO evidence emitted by a scenario (empty for scenarios
+    without threshold checks). Older reports without the key still load."""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -56,7 +59,9 @@ class ScenarioResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ScenarioResult:
         """Create from dictionary."""
-        return cls(**data)
+        payload = dict(data)
+        payload.setdefault("slo", {})
+        return cls(**payload)
 
 
 @dataclass

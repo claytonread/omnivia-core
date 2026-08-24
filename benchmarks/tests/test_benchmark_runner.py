@@ -132,6 +132,37 @@ def test_profile_sizes() -> None:
     assert get_item_count("unknown") == 100
 
 
+def test_scenario_result_slo_defaults_and_round_trips() -> None:
+    legacy = scenario_result().to_dict()
+    legacy.pop("slo")
+
+    assert ScenarioResult.from_dict(legacy).slo == {}
+
+    with_slo = scenario_result()
+    with_slo.slo = {"status": "pass", "storage_bytes_per_run": 1024.0}
+    restored = ScenarioResult.from_dict(json.loads(json.dumps(with_slo.to_dict())))
+
+    assert restored.slo["status"] == "pass"
+
+
+def test_runner_reports_runtime_slo_evidence() -> None:
+    run = run_benchmarks(
+        profile="tiny",
+        scenario_names=["control_plane_runtime_load_soak"],
+        quiet=True,
+    )
+
+    result = run.scenarios[0]
+
+    assert result.status == "pass"
+    assert result.slo["status"] == "pass"
+    assert result.slo["breaches"] == []
+    assert result.slo["storage_bytes_per_run"] > 0
+    assert result.database_size_mb is not None and result.database_size_mb > 0
+    assert result.p99_latency_ms >= result.p95_latency_ms
+    assert json.loads(export_json(run))["scenarios"][0]["slo"]["status"] == "pass"
+
+
 def test_runner_smoke_single_scenario() -> None:
     run = run_benchmarks(profile="tiny", scenario_names=["create_memory"], quiet=True)
 

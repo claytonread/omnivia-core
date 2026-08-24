@@ -40,9 +40,14 @@ Run specific scenarios:
 scripts/run-core-benchmarks.sh --scenario create_memory --scenario retrieve_memory
 ```
 
-The helper prepends `services/omnivia-memory/src` to `PYTHONPATH` before
-executing the Python runner. This avoids accidentally importing `omnivia_memory`
-from an editable install or a stale worktree.
+The helper prepends `src` and `services/omnivia-memory/src` to `PYTHONPATH`
+before executing the Python runner. This avoids accidentally importing
+`omnivia_core` or `omnivia_memory` from an editable install or a stale
+worktree.
+
+The helper uses `.venv/bin/python` when present, or
+`OMNIVIA_BENCHMARK_PYTHON` when set, so runtime/control-plane scenarios run
+under the same Python version as the Core test environment.
 
 ### Export Results
 
@@ -109,6 +114,57 @@ python -m benchmarks.runner.benchmark_compare --latest benchmarks/reports/benchm
 ### Mixed Workloads
 - `mixed_workload` - Combined read/write operations
 
+### Control-Plane Runtime
+- `control_plane_runtime_load_soak` - Real `ControlPlaneRegistry` load/soak gate
+
+## Control-Plane Runtime Load/Soak Gate
+
+`control_plane_runtime_load_soak` is the executable Core runtime SLO gate. It
+stores one active manifest in a temporary SQLite database, ingests up to 200
+unique trigger events (`MAX_RUNTIME_LOAD_RUNS`, so large profiles stay bounded),
+executes every accepted run through the real dry-run runtime path with
+schema-valid input and output payloads, then reads
+`summarize_observability_metrics` and `project_redacted_otel_observability`.
+
+It makes no network calls, starts no daemon, sleeps nowhere, and invokes no
+model or provider: the dry-run path simulates steps locally.
+
+The scenario emits an `slo` evidence block on its result (also carried through
+to the report schema):
+
+| Field | Meaning |
+|-------|---------|
+| `operation_count`, `completed_count` | Runs attempted and completed |
+| `total_duration_ms`, `throughput_ops_per_second` | Wall-clock and throughput |
+| `mean_latency_ms`, `p95_latency_ms`, `p99_latency_ms` | Per-run ingest+execute latency |
+| `database_bytes`, `storage_bytes_per_run` | SQLite growth, absolute and per completed run |
+| `observability_summary_ms` | Cost of the summary plus projection calls |
+| `metrics_run_count`, `metrics_completed_count`, `metrics_failed_count` | Core observability summary counts |
+| `projection_span_count`, `projection_metrics_completed_count` | Redacted OTel projection counts |
+| `redaction_violations` | Forbidden terms or payload values found in the projection |
+| `thresholds`, `breaches`, `status` | Bounds applied, breaches found, and `pass`/`fail` |
+
+Thresholds live in `RuntimeSloThresholds` (`benchmarks/thresholds.py`) and are
+absolute bounds rather than baseline comparisons. They are deliberately loose so
+an ordinary laptop is not flaky, while still failing closed on unbounded storage
+growth, dropped runs, inconsistent projection counts, or pathological slowness:
+
+| Threshold | Default | Observed locally (`tiny`) |
+|-----------|---------|---------------------------|
+| `max_storage_bytes_per_run` | 65,536 | ~9-14 KiB |
+| `max_p99_latency_ms` | 750.0 | ~15-50 ms |
+| `min_throughput_ops_per_second` | 2.0 | ~75-150 |
+| `min_completed_ratio` | 1.0 | 1.0 |
+| `min_spans_per_completed_run` | 1.0 | ~7 |
+
+Any breach sets the scenario `error`, so the runner records the scenario as
+`failed`. Run it alone with:
+
+```bash
+scripts/run-core-benchmarks.sh \
+    --profile tiny --scenario control_plane_runtime_load_soak --format json --quiet
+```
+
 ## Result Schema
 
 Benchmark results are stored as structured JSON with the following top-level fields:
@@ -132,6 +188,8 @@ Each scenario result includes:
 - `database_size_mb`: Database size when tracked
 - `error_count`: Number of errors
 - `warnings`: Scenario limitations or non-fatal warnings
+- `slo`: SLO evidence and threshold verdict when the scenario produces one
+  (empty object otherwise; reports written before this field still load)
 
 ## Directory Structure
 
