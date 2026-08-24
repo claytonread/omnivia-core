@@ -134,10 +134,10 @@
       "filename": "0029_chat_foundation.sql",
       "owner": "Chat",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 28,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "56419928e082dbb8d8ef0084c4eed374c742b038b02ec35f0a7477b94225a946",
+      "introduced_commit": "192e88b28a89c6740b302cc3646d732f45086c70",
       "accepted_commit": null
     }
   ]
