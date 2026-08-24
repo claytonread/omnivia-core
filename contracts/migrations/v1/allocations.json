@@ -79,10 +79,10 @@
       "filename": "0024_runtime_effect_reconciliations.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 23,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "bda410753b280cb5b986251a93e60eeac5673f947dad1fc9a962a949b74f2da0",
+      "introduced_commit": "e9827ae9f83188f9e9c4fc848597edf04aa67416",
       "accepted_commit": null
     },
     {
