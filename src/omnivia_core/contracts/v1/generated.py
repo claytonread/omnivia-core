@@ -39,7 +39,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Final, TypeAlias, cast
@@ -1066,7 +1066,15 @@ def is_timestamp(value: object) -> bool:
     ):
         return False
     try:
-        datetime.fromisoformat(value)
+        datetime(
+            int(value[0:4]),
+            int(value[5:7]),
+            int(value[8:10]),
+            int(value[11:13]),
+            int(value[14:16]),
+            int(value[17:19]),
+            tzinfo=UTC,
+        )
     except ValueError:
         return False
     return True

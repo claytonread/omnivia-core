@@ -23,7 +23,6 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_rt102_agent_runtime_migration as m18
-import test_rt202_policy_budget_snapshot_migration as m202
 import test_rt203_approval_capability_grant_migration as m203
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.storage import migrations as migrations_module
@@ -35,7 +34,10 @@ from omnivia_core_runtime.storage.connection import (
     open_database,
     split_sql_statements,
 )
-from omnivia_core_runtime.storage.inventory import compare_inventories, capture_inventory
+from omnivia_core_runtime.storage.inventory import (
+    capture_inventory,
+    compare_inventories,
+)
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,

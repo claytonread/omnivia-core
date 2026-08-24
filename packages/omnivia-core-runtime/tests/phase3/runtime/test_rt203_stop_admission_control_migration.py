@@ -21,7 +21,10 @@ from omnivia_core_runtime.storage.connection import (
     integrity_check,
     open_database,
 )
-from omnivia_core_runtime.storage.inventory import compare_inventories, capture_inventory
+from omnivia_core_runtime.storage.inventory import (
+    capture_inventory,
+    compare_inventories,
+)
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,
