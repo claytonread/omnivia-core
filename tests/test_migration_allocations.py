@@ -83,7 +83,7 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
-    23: "a5d2b5912bd2ba39711d390582e55967fcaa75dd",
+    23: "44e3ed256c38dadc54203994e209380d6e6f439f",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
