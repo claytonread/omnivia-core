@@ -8,16 +8,17 @@
 --
 --   omnivia_runtime_effect_intents      one immutable declaration before acting
 --   omnivia_runtime_effect_receipts     one immutable observation of an intended effect
---   omnivia_runtime_effect_settlements  the one audited answer for an intended effect
+--   omnivia_runtime_effect_settlements  an audited answer for an intended effect
 --
 -- The stored shape follows the accepted v1 contract without inventing a provider store.
 -- Intent columns are the canonical selectors a runtime command needs before acting:
 -- run, step, attempt, capability, grant, idempotency key, request digest and declaration
 -- instant. A receipt is subordinate evidence for an intent; its optional external
 -- reference is stored as canonical JSON bytes with the digest and byte length beside it.
--- A settlement is the final audited answer for one intent: `committed` names the receipt
+-- A settlement is an audited answer for one intent: `committed` names the receipt
 -- proving it, while `not_committed` and `unknown` name no receipt. `unknown` is not a
--- failure and grants no retry authority; it records that reconciliation is still owed.
+-- failure and grants no retry authority; it records that reconciliation is still owed,
+-- and later reconciliation may append a later answer rather than rewriting this one.
 --
 -- The SQL states the rules it can know from existing rows: the run must be running before
 -- a new intent is declared; the step, attempt and grant must all belong to that same run;
@@ -213,8 +214,6 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_effect_settlements (
            AND audit_ref GLOB '[A-Za-z0-9]*'
            AND audit_ref NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(audit_ref, char(0)) = 0),
-
-    UNIQUE (workspace_id, effect_intent_id),
 
     FOREIGN KEY (workspace_id, run_id)
         REFERENCES omnivia_runtime_runs (workspace_id, run_id),

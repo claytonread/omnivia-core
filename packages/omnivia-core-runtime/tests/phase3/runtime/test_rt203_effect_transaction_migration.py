@@ -333,13 +333,24 @@ def test_non_committed_settlement_names_no_receipt(owned: m1.Owned) -> None:
                 reason="provider_unreachable",
             ),
         )
+        _insert(
+            owned,
+            SETTLEMENTS,
+            settlement_row(
+                effect_settlement_id="effect-settlement-0002",
+                outcome="not_committed",
+                effect_receipt_id=None,
+                reason="absence_proven",
+                settled_at_us=BASE_US + 6,
+            ),
+        )
 
     with guarded(owned), pytest.raises(sqlite3.IntegrityError):
         _insert(
             owned,
             SETTLEMENTS,
             settlement_row(
-                effect_settlement_id="effect-settlement-0002",
+                effect_settlement_id="effect-settlement-0003",
                 outcome="unknown",
                 effect_receipt_id="effect-receipt-0001",
             ),
