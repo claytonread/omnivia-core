@@ -90,10 +90,10 @@
       "filename": "0025_runtime_stop_and_admission_control.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 24,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "ef7fd8b7657e45b8e0fc2795114bf957e4f7a0710677e120bcd953a2b25adcdc",
+      "introduced_commit": "af25779a66e41a32dc268940caf0abc2d699ffc9",
       "accepted_commit": null
     },
     {
