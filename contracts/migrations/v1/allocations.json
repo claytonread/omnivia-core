@@ -123,10 +123,10 @@
       "filename": "0028_provider_invocations.sql",
       "owner": "Provider Service",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 27,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "1769269a27474aee23f7749d535a5399ddeb498cc88780c688ec56ad38ab53cd",
+      "introduced_commit": "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
       "accepted_commit": null
     },
     {
