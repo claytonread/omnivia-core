@@ -68,10 +68,10 @@
       "filename": "0023_runtime_effect_transactions.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 22,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "c425cda06d933ffb69c58e38f93efd998424576d83196c36ed04150f8d225ada",
+      "introduced_commit": "a5d2b5912bd2ba39711d390582e55967fcaa75dd",
       "accepted_commit": null
     },
     {

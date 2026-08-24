@@ -50,9 +50,10 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # The exact T-0660 successor allocation: number, filename, semantic owner, state.
 # 0018-0020 are the Agent Runtime lane, accepted at the PR #88 default-branch
 # landing. 0021-0022 are the already-replayed FND-F3 diff, candidates pinned to
-# their exact introducing commits but not yet accepted. 0023-0025 are reserved
-# successors for the same Agent Runtime lane (the canonical divergent Runtime
-# line's known next migrations). 0026-0029 are the previously-reserved lanes
+# their exact introducing commits but not yet accepted. 0023 is the next
+# materialized Agent Runtime candidate. 0024-0025 are reserved successors for
+# the same Agent Runtime lane (the canonical divergent Runtime line's known next
+# migrations). 0026-0029 are the previously-reserved lanes
 # for other owners, shifted up to keep the sequence contiguous and unmaterialized.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
@@ -60,7 +61,7 @@ EXPECTED_ALLOCATION = (
     (20, "0020_runtime_run_summary_projection.sql", "Agent Runtime", "accepted"),
     (21, "0021_runtime_policy_budget_snapshots.sql", "Agent Runtime", "candidate"),
     (22, "0022_runtime_approvals_capability_grants.sql", "Agent Runtime", "candidate"),
-    (23, "0023_runtime_effect_transactions.sql", "Agent Runtime", "reserved"),
+    (23, "0023_runtime_effect_transactions.sql", "Agent Runtime", "candidate"),
     (24, "0024_runtime_effect_reconciliations.sql", "Agent Runtime", "reserved"),
     (25, "0025_runtime_stop_and_admission_control.sql", "Agent Runtime", "reserved"),
     (26, "0026_context_models.sql", "Context Models", "reserved"),
@@ -82,6 +83,7 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
+    23: "a5d2b5912bd2ba39711d390582e55967fcaa75dd",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -153,9 +155,9 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0022 are
-    candidates pinned to their replayed introducing commits but not accepted;
-    0023-0029 stay reserved allocations, not yet claimed by any commit."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0023 are
+    candidates pinned to their introducing commits but not accepted; 0024-0029
+    stay reserved allocations, not yet claimed by any commit."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:
@@ -364,7 +366,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved entry pins a hash",
-        lambda document, present: _entry(document, 23).update({"sha256": "0" * 64}),
+        lambda document, present: _entry(document, 24).update({"sha256": "0" * 64}),
         "must pin neither sha256 nor introduced_commit",
     ),
     (
@@ -374,7 +376,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved allocation carries an accepted commit",
-        lambda document, present: _entry(document, 23).update(
+        lambda document, present: _entry(document, 24).update(
             {"accepted_commit": "a" * 40}
         ),
         "accepted_commit must be null",
@@ -404,7 +406,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     (
         "reserved sql appears early",
         lambda document, present: present.update(
-            {"0023_runtime_effect_transactions.sql": "c" * 64}
+            {"0024_runtime_effect_reconciliations.sql": "c" * 64}
         ),
         "already exists; advance this allocation",
     ),
