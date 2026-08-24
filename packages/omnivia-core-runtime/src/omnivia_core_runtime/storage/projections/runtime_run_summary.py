@@ -375,6 +375,49 @@ def runtime_run_summary_projection_digest(
     return f"sha256:{sha256(payload).hexdigest()}"
 
 
+def _replayed_summaries(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> tuple[_StoredSummary, ...]:
+    rows = connection.execute(
+        "SELECT r.workspace_id, r.run_id, r.job_id, r.definition_kind, "
+        "r.definition_id, r.definition_version, r.logical_key, "
+        "r.originating_operation, r.audit_ref, r.created_at_us, "
+        "e.runtime_event_id, e.sequence, e.occurred_at_us, e.run_status "
+        "FROM omnivia_runtime_runs r LEFT JOIN omnivia_runtime_events e "
+        "ON e.workspace_id = r.workspace_id AND e.run_id = r.run_id "
+        "WHERE r.workspace_id = ? ORDER BY r.run_id, e.sequence",
+        (workspace_id,),
+    ).fetchall()
+
+    by_run: dict[str, _StoredSummary] = {}
+    for row in rows:
+        if row[10] is None:
+            raise StorageError(f"run {row[1]!r} has no event stream to replay")
+        run = _run_source(row)
+        event = _event_source(row, 10)
+        by_run[run.run_id] = _reduce_event(by_run.get(run.run_id), run, event)
+    return tuple(by_run[run_id] for run_id in sorted(by_run))
+
+
+def runtime_run_summary_replay_digest(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> RuntimeRunSummaryRebuild:
+    """Digest a full canonical replay without mutating the live projection.
+
+    ``rebuild_runtime_run_summaries`` is intentionally a repair/rebuild operation: it
+    deletes and re-materialises the projection under a fence. Integrity checks need a
+    different seam. A drifted projection must be refused while left exactly as found,
+    not fixed first and then reported as bad. This read-only replay uses the same pure
+    reducer and canonical bytes as the rebuild path, but performs no writes.
+    """
+    summaries = _replayed_summaries(connection, workspace_id=workspace_id)
+    payload = _canonical_document(summaries).encode("utf-8")
+    return RuntimeRunSummaryRebuild(
+        record_count=len(summaries),
+        build_digest=f"sha256:{sha256(payload).hexdigest()}",
+    )
+
+
 def rebuild_runtime_run_summaries(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -389,29 +432,11 @@ def rebuild_runtime_run_summaries(
         workspace_id=workspace_id,
         fencing_generation=fencing_generation,
     ):
-        rows = connection.execute(
-            "SELECT r.workspace_id, r.run_id, r.job_id, r.definition_kind, "
-            "r.definition_id, r.definition_version, r.logical_key, "
-            "r.originating_operation, r.audit_ref, r.created_at_us, "
-            "e.runtime_event_id, e.sequence, e.occurred_at_us, e.run_status "
-            "FROM omnivia_runtime_runs r LEFT JOIN omnivia_runtime_events e "
-            "ON e.workspace_id = r.workspace_id AND e.run_id = r.run_id "
-            "WHERE r.workspace_id = ? ORDER BY r.run_id, e.sequence",
-            (workspace_id,),
-        ).fetchall()
+        summaries = _replayed_summaries(connection, workspace_id=workspace_id)
         connection.execute(
             f"DELETE FROM {_TABLE} WHERE workspace_id = ?", (workspace_id,)
         )
 
-        by_run: dict[str, _StoredSummary] = {}
-        for row in rows:
-            if row[10] is None:
-                raise StorageError(f"run {row[1]!r} has no event stream to replay")
-            run = _run_source(row)
-            event = _event_source(row, 10)
-            by_run[run.run_id] = _reduce_event(by_run.get(run.run_id), run, event)
-
-        summaries = tuple(by_run[run_id] for run_id in sorted(by_run))
         for summary in summaries:
             _insert_stored(connection, summary)
         payload = _canonical_document(summaries).encode("utf-8")
@@ -430,4 +455,5 @@ __all__ = [
     "rebuild_runtime_run_summaries",
     "runtime_run_summary_projection_bytes",
     "runtime_run_summary_projection_digest",
+    "runtime_run_summary_replay_digest",
 ]
