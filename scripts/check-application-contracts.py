@@ -30,6 +30,10 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   pagination, idempotency, precondition, audit and allowed-error posture -- with
   the independent ``tests/contracts/fixtures/operation-catalogue-v1.json``
   regression oracle agreeing with it entry for entry;
+- catalogue *membership* matches the accepted contract checkpoint commit, so a
+  twenty-first operation cannot be published by editing the frozen constants in
+  this script -- the anchor is repository-external on a hosted run, exactly as
+  it is for the pattern baseline;
 - ``src/omnivia_core/contracts`` has no import outside the standard library
   or its own package -- no runtime, storage, HTTP, MCP, CLI, Platform, Dev,
   or validation-framework dependency;
@@ -2931,6 +2935,106 @@ def check_pattern_baseline_is_the_accepted_checkpoint() -> list[str]:
     return findings
 
 
+def _catalogue_names_at(revision: str) -> list[str] | None:
+    """The operation names the catalogue published at ``revision``, or ``None``.
+
+    ``None`` is "unreadable", never "assume unchanged": a claim about a commit
+    nobody can read is not evidence, and the caller turns it into a finding the
+    same way :func:`_definitions_at` does.
+    """
+    code, blob = _git("show", f"{revision}:{SCHEMA_ROOT}/operations.schema.json")
+    if code != 0:
+        return None
+    try:
+        document = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    entries = document.get(OPERATION_CATALOGUE_ANNOTATION)
+    if not isinstance(entries, list):
+        return None
+    return [
+        entry["name"]
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    ]
+
+
+def check_operation_catalogue_membership_is_accepted() -> list[str]:
+    """Catalogue membership may move only by moving the accepted checkpoint.
+
+    WHY THIS EXISTS. Every other freeze in this file is a constant *in this
+    file* -- :data:`ALL_SCHEMAS`, :data:`FROZEN_OPERATIONS`,
+    :data:`ERROR_PROFILES` -- and each one's failure message invites the edit
+    that unfreezes it ("add them to ALL_SCHEMAS in this script if the addition
+    is intentional"). Nothing there separates an *intentional* addition from a
+    *governed* one. So publishing a twenty-first application operation is a
+    mechanical edit -- a new schema document, both ``SOURCE_SCHEMAS`` tuples,
+    :data:`FROZEN_OPERATIONS`, :data:`ERROR_PROFILES`, the regression fixture,
+    the README and the suite -- after which every check in this file reports
+    green and the frozen twenty are quietly twenty-two.
+
+    That is not hypothetical. A ``chat.command``/``chat.events`` pair reached a
+    green 22-entry catalogue that way, against DOC-004 Appendix AC.3 ("adds no
+    operation to the Application Contract v1 twenty-operation catalogue"),
+    against CHAT-RUNTIME-CONTRACT-V1-FREEZE section 5 (no Chat name appears in,
+    is added to, or is aliased from either Application Contract catalogue), and
+    against DOC-010's "its exact twenty-operation catalogue remains frozen".
+
+    :func:`check_scalar_pattern_compatibility` already refuses to let the wire
+    *language* be judged by a constant the candidate can rewrite: it anchors to
+    a commit named by repository-external configuration, because "acceptance is
+    a fact about review, and the only way to know it here is to be told by
+    something the candidate does not write". Catalogue *membership* is at least
+    as public as a pattern and had no such anchor. This is that anchor, and it
+    is why the frozen constants above can stay readable: they say what the
+    twenty are, this says the twenty are the accepted twenty.
+
+    Membership only. Order, posture, payload bindings and the regression oracle
+    stay with the checks that already own them; this one answers exactly "is
+    this the accepted set of operations".
+    """
+    expected, anchor_findings = _resolve_accepted_checkpoint()
+    if expected is None:
+        return anchor_findings
+    if _git("cat-file", "-e", f"{expected}^{{commit}}")[0] != 0:
+        return [
+            (
+                f"{OPERATION_CATALOGUE_ANNOTATION}: the accepted contract checkpoint "
+                f"{expected} is not a commit in this repository, so catalogue "
+                "membership cannot be verified (deepen a shallow fetch)"
+            )
+        ]
+    accepted = _catalogue_names_at(expected)
+    if accepted is None:
+        return [
+            (
+                f"{OPERATION_CATALOGUE_ANNOTATION}: the catalogue cannot be read at the "
+                f"accepted checkpoint {expected[:7]}, so membership cannot be verified"
+            )
+        ]
+
+    entries, shape_findings = _catalogue_entries()
+    if shape_findings:
+        return shape_findings
+    current = _string_names(_entry_names(entries))
+
+    findings: list[str] = []
+    for name in sorted(set(current) - set(accepted)):
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: {name!r} is not published by the accepted "
+            f"checkpoint {expected[:7]}; adding an application operation is "
+            f"{CLASSIFICATION_MAJOR} and needs an accepted contract decision, not an edit "
+            "to the frozen constants in this script"
+        )
+    for name in sorted(set(accepted) - set(current)):
+        findings.append(
+            f"{OPERATION_CATALOGUE_ANNOTATION}: {name!r} is published by the accepted "
+            f"checkpoint {expected[:7]} and is missing here; removing an application "
+            f"operation is {CLASSIFICATION_MAJOR} and needs an accepted contract decision"
+        )
+    return findings
+
+
 def check_scalar_pattern_compatibility() -> list[str]:
     """Classify every canonical pattern change against the accepted baseline.
 
@@ -3014,6 +3118,7 @@ def run_checks() -> list[str]:
     findings += check_contract_package_has_no_forbidden_imports()
     findings += check_generated_artifacts_match_schemas()
     findings += check_pattern_baseline_is_the_accepted_checkpoint()
+    findings += check_operation_catalogue_membership_is_accepted()
     findings += check_scalar_pattern_compatibility()
     return findings
 

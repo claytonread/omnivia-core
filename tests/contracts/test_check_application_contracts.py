@@ -1902,3 +1902,96 @@ def test_a_case_that_is_not_an_object_is_reported(
     monkeypatch.setattr(checker, "FIXTURES_DIR", _corpus_with(document, tmp_path))
     findings = cast("Check", checker.check_adapter_conformance_corpus)()
     assert any("cases[0]: must be an object" in finding for finding in findings), findings
+
+
+# --------------------------------------------------------------------------
+# Operation catalogue: membership against the accepted checkpoint.
+#
+# Every other freeze in the gate is a constant inside the gate, so the mutation
+# matrix above can only ever prove the gate agrees with itself. These prove the
+# one thing it cannot: that catalogue *membership* is judged against a commit,
+# so a candidate cannot publish a twenty-first operation by editing
+# FROZEN_OPERATIONS in the same diff that publishes it.
+# --------------------------------------------------------------------------
+
+
+def _with_appended_operation(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(schema: str) -> dict[str, Any]:
+        document = real_load_schema(schema)
+        if schema == "operations":
+            document = copy.deepcopy(document)
+            document[checker.OPERATION_CATALOGUE_ANNOTATION].append({"name": name})
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+
+
+def test_catalogue_membership_matches_the_accepted_checkpoint() -> None:
+    assert cast("Check", checker.check_operation_catalogue_membership_is_accepted)() == []
+
+
+def test_an_operation_the_accepted_checkpoint_does_not_publish_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression this check exists for: a chat pair reaching a green gate."""
+    _with_appended_operation(monkeypatch, "chat.command")
+    findings = cast("Check", checker.check_operation_catalogue_membership_is_accepted)()
+    assert any("'chat.command'" in finding for finding in findings), findings
+    assert any(checker.CLASSIFICATION_MAJOR in finding for finding in findings), findings
+
+
+def test_an_operation_the_accepted_checkpoint_publishes_cannot_be_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_load_schema = cast("SchemaLoader", checker._load_schema)
+
+    def _load_schema(schema: str) -> dict[str, Any]:
+        document = real_load_schema(schema)
+        if schema == "operations":
+            document = copy.deepcopy(document)
+            document[checker.OPERATION_CATALOGUE_ANNOTATION] = [
+                entry
+                for entry in document[checker.OPERATION_CATALOGUE_ANNOTATION]
+                if entry.get("name") != "memory.get"
+            ]
+        return document
+
+    monkeypatch.setattr(checker, "_load_schema", _load_schema)
+    findings = cast("Check", checker.check_operation_catalogue_membership_is_accepted)()
+    assert any("'memory.get'" in finding for finding in findings), findings
+    assert any(checker.CLASSIFICATION_MAJOR in finding for finding in findings), findings
+
+
+def test_membership_fails_closed_when_the_checkpoint_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable anchor is a finding, never a pass: a claim about a commit
+    nobody can read is not evidence.
+    """
+    real_git = cast("Callable[..., tuple[int, str]]", checker._git)
+
+    def _git(*arguments: str) -> tuple[int, str]:
+        if arguments and arguments[0] == "show":
+            return 1, ""
+        return real_git(*arguments)
+
+    monkeypatch.setattr(checker, "_git", _git)
+    findings = cast("Check", checker.check_operation_catalogue_membership_is_accepted)()
+    assert len(findings) == 1
+    assert "cannot be read at the accepted checkpoint" in findings[0]
+
+
+def test_the_membership_check_is_registered_in_the_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check nobody calls protects nothing."""
+    _with_appended_operation(monkeypatch, "chat.events")
+    # Matched on this check's own sentence rather than on the operation name:
+    # check_operation_catalogue_shape reports an unknown operation too, so a
+    # name-only assertion would still pass with this check deleted.
+    assert any(
+        "is not published by the accepted checkpoint" in finding
+        for finding in cast("Check", checker.run_checks)()
+    )
