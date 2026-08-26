@@ -11,15 +11,15 @@ and the proved replay -- already happened by the time either of these runs.
 **The one seam this module adds, and why it is a parameter.** `chat.command` carries a
 Chat Contract command name and that command's own request document, both opaque to the
 Application Contract. Translating one into the domain writes it performs is Chat domain
-policy, and this repository does not hold it yet: `storage/chat.py` is a repository,
-`service/chat_command.py` is a transaction composition, and no module between them maps
-`CHAT_COMMAND_NAMES` onto writer calls. So :class:`ChatHandlers` takes a
-:data:`ChatCommandResolver` and production supplies none: an authorized, granted,
-well-formed `chat.command` refuses with `dependency_unavailable` because this build
-ships no implementation of the command it names, which is the honest answer and the one
-that cannot quietly half-settle a conversation. The lane that brings the Chat commands
-adds the resolver at the wiring site in `service/application.py`; nothing else here
-changes when it does.
+policy, and it lives in exactly one place: :class:`ChatHandlers` takes a
+:data:`ChatCommandResolver`, and `service/application.py` supplies
+`service/chat_submit.py`'s at the wiring site. That resolver serves `SubmitMessage` and
+returns `None` for every other command name -- and for any `SubmitMessage` variant
+naming work no authority in this build performs -- so an authorized, granted,
+well-formed `chat.command` this build has no implementation of still refuses with
+`dependency_unavailable`, which is the honest answer and the one that cannot quietly
+half-settle a conversation. A build wired with no resolver at all refuses every Chat
+command the same way; nothing here changes between the two.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
     OperationContext,
     OperationError,
+    application_refusal,
 )
 from omnivia_core_runtime.storage.chat import GenerationEvent
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
@@ -154,7 +155,9 @@ class ChatHandlers:
             else self.resolve_command(request, context)
         )
         if command is None:
-            raise OperationError(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_COMMAND)
+            raise application_refusal(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_COMMAND
+            )
 
         equivalence = idempotency_equivalence(
             context.request.operation,

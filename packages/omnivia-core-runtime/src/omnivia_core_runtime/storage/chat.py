@@ -89,6 +89,7 @@ __all__ = [
     "insert_view_state",
     "read_active_draft",
     "read_actor_view_state",
+    "read_branch",
     "read_branch_head_events",
     "read_conversation",
     "read_generation_events",
@@ -1669,6 +1670,55 @@ def read_message_parts(
         (workspace_id, message_id),
     ).fetchall()
     return tuple(_message_part_from_row(row) for row in rows)
+
+
+_BRANCH_COLUMNS = (
+    "workspace_id, conversation_id, branch_id, origin_kind, created_from_branch_id, "
+    "fork_parent_message_id, fork_source_message_id, initial_head_message_id, "
+    "current_head_message_id, created_by_actor_id, created_at_us, "
+    "created_conversation_sequence, head_version, schema_version, state, "
+    "archived_at_us, tombstoned_at_us"
+)
+
+
+def _branch_from_row(row: tuple[Any, ...]) -> Branch:
+    return Branch(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        branch_id=row[2],
+        origin_kind=row[3],
+        created_from_branch_id=row[4],
+        fork_parent_message_id=row[5],
+        fork_source_message_id=row[6],
+        initial_head_message_id=row[7],
+        current_head_message_id=row[8],
+        created_by_actor_id=row[9],
+        created_at_us=row[10],
+        created_conversation_sequence=row[11],
+        head_version=row[12],
+        schema_version=row[13],
+        state=row[14],
+        archived_at_us=row[15],
+        tombstoned_at_us=row[16],
+    )
+
+
+def read_branch(
+    connection: sqlite3.Connection, *, workspace_id: str, branch_id: str
+) -> Branch | None:
+    """One branch's row, including the head projection a command appends against.
+
+    The projection rather than the head-event history: `head_version` and
+    `current_head_message_id` are what 0029 holds an advancing writer to, so a
+    command checking a caller's expected head against anything else would be
+    checking against a value the guard does not use.
+    """
+    row = connection.execute(
+        f"SELECT {_BRANCH_COLUMNS} FROM omnivia_chat_message_branches "
+        "WHERE workspace_id = ? AND branch_id = ?",
+        (workspace_id, branch_id),
+    ).fetchone()
+    return None if row is None else _branch_from_row(row)
 
 
 _BRANCH_HEAD_EVENT_COLUMNS = (
