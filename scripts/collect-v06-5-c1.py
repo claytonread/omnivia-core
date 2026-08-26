@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and record the exact V06-5 C1 73-by-3 semantic matrix."""
+"""Run and record the exact V06-5 C1 77-by-3 semantic matrix."""
 
 from __future__ import annotations
 
@@ -238,8 +238,8 @@ def main() -> int:
     corpus = json.loads(corpus_bytes)
     cases = corpus["cases"]
     case_ids = [case["id"] for case in cases]
-    if len(cases) != 73 or len(set(case_ids)) != 73:
-        raise SystemExit("the frozen corpus is not exactly 73 unique cases")
+    if len(cases) != 77 or len(set(case_ids)) != 77:
+        raise SystemExit("the frozen corpus is not exactly 77 unique cases")
 
     output = args.output or (
         repo.parent / "_evidence" / "omnivia-core" / "v06-5" / commit
@@ -349,7 +349,7 @@ def main() -> int:
             "core_tree": tree,
             "corpus_path": CORPUS.as_posix(),
             "corpus_sha256": corpus_sha256,
-            "case_count": 73,
+            "case_count": 77,
             "adapters": list(ADAPTERS),
             "expected_executions": 219,
             "passed_executions": 219,

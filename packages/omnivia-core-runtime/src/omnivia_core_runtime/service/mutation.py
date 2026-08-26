@@ -87,7 +87,7 @@ from omnivia_core_runtime.service.authorization import (
 from omnivia_core_runtime.service.operations import OperationError
 
 #: The purpose each mutating catalogue operation is served under, and the only purposes
-#: a mutation grant may ever carry. Five values over nine operations: a purpose names a
+#: a mutation grant may ever carry. Six values over ten operations: a purpose names a
 #: coherent operation family rather than restating an operation name, which is the same
 #: shape `application.OPERATION_PURPOSES` uses for the read operations.
 #:
@@ -100,6 +100,7 @@ MEMORY_AUTHORING_PURPOSE: Final = "memory_authoring"
 CONTENT_INGESTION_PURPOSE: Final = "content_ingestion"
 JOB_CONTROL_PURPOSE: Final = "job_control"
 KNOWLEDGE_GOVERNANCE_PURPOSE: Final = "knowledge_governance"
+CHAT_AUTHORING_PURPOSE: Final = "chat_authoring"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -108,6 +109,7 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "import.start": CONTENT_INGESTION_PURPOSE,
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
+        "chat.command": CHAT_AUTHORING_PURPOSE,
         "knowledge.propose": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
@@ -134,6 +136,10 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         "import.start": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.cancel": WORKSPACE_CONTRIBUTOR_ROLE,
         "job.retry": WORKSPACE_CONTRIBUTOR_ROLE,
+        # A chat command authors conversation content in one workspace; it reviews
+        # nothing and administers nothing, so it takes the same contributor role every
+        # other workspace-scoped authoring mutation here takes.
+        "chat.command": WORKSPACE_CONTRIBUTOR_ROLE,
         "knowledge.propose": WORKSPACE_CONTRIBUTOR_ROLE,
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
@@ -1073,6 +1079,7 @@ def _digest(canonical: str) -> str:
 
 
 __all__ = [
+    "CHAT_AUTHORING_PURPOSE",
     "CONTENT_INGESTION_PURPOSE",
     "DEFAULT_GRANT_LIFETIME_US",
     "INSTALLATION_ADMINISTRATOR_ROLE",

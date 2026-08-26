@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 20-operation catalogue, composed from
-five separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 22-operation catalogue, composed from
+six separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -36,6 +36,7 @@ from omnivia_core_runtime.service.application import (
     ApplicationDispatcher,
     ProductionApplicationSurface,
     build_application_registry,
+    build_chat_application_dispatcher,
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
@@ -157,10 +158,10 @@ def _build_production_application_surface(
     probe: Dispatcher,
     installation: ApplicationDispatcher,
 ) -> ProductionApplicationSurface:
-    """Compose the exact 20-operation production route for one live service.
+    """Compose the exact 22-operation production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    five authority families. The workspace service instance keeps its own
+    six authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -210,12 +211,20 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=jobs,
     )
+    chat = build_chat_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=governance,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
         memory=memory,
         jobs=jobs,
         governance=governance,
+        chat=chat,
         probe=probe,
     )
 

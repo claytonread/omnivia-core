@@ -188,7 +188,7 @@ It is a contract only: it introduces no handler, runtime, HTTP binding, CLI, or
 MCP implementation.
 
 The canonical `x-omnivia-operation-catalogue` annotation in
-`operations.schema.json` names exactly **20 application operations** and binds
+`operations.schema.json` names exactly **22 application operations** and binds
 each to its input/result schemas and its scope, capability, completion,
 pagination, idempotency, mutation-precondition, audit, and allowed-error
 posture.
@@ -199,14 +199,14 @@ Two are installation-scoped:
 workspace.create   workspace.list
 ```
 
-Eighteen are workspace-scoped:
+Twenty are workspace-scoped:
 
 ```text
-candidate.approve   candidate.reject    context_pack.build  evidence.search
-graph.traverse      import.start        job.cancel          job.events
-job.get             job.retry           knowledge.propose   knowledge.search
-memory.create       memory.get          memory.list         memory.search
-record.supersede    workspace.inspect
+candidate.approve   candidate.reject    chat.command        chat.events
+context_pack.build  evidence.search     graph.traverse      import.start
+job.cancel          job.events          job.get             job.retry
+knowledge.propose   knowledge.search    memory.create       memory.get
+memory.list         memory.search       record.supersede    workspace.inspect
 ```
 
 `service.health`, `service.readiness`, and `service.discover` are **not** in
@@ -853,8 +853,8 @@ Canonical source and generated artifacts:
   request presenting a token an earlier result issued is a continuation of it. A
   declaration is kept as an assertion and checked against what was derived.
 
-  The corpus holds 73 exchanges: one primary success for each of the 20
-  operations, an honest replay and an idempotency conflict for each of the 9
+  The corpus holds 77 exchanges: one primary success for each of the 22
+  operations, an honest replay and an idempotency conflict for each of the 10
   mutations, a second page for each of the 7 paginated operations, one case for
   each of the 26 frozen error codes on an operation the catalogue permits to
   raise it, and two further readings of one job — failed, then succeeded — so
