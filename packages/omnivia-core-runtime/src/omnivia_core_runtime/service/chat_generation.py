@@ -332,10 +332,10 @@ def claim_queued_generation(
 
     Everything the first claim writes commits together, in one fenced transaction:
     the queue row's `queued` -> `claimed` -> `submitted` walk (0029 admits no direct
-    `queued` -> `submitted` edge), the generation job, its first attempt, the
-    `chat.generation.queued` event at sequence one, and the job's move to `running`
-    under a fresh lease. A crash anywhere inside it leaves the submission `queued`
-    and this call repeatable.
+    `queued` -> `submitted` edge), the generation job when the submitter did not
+    already create it, its first attempt, the `chat.generation.queued` event at
+    sequence one, and the job's move to `running` under a fresh lease. A crash anywhere
+    inside it leaves the submission `queued` and this call repeatable.
 
     The conversation graph is not touched. `trigger_message_id` names a message some
     earlier command committed; this call reads the conversation only for the
@@ -367,6 +367,24 @@ def claim_queued_generation(
             f"conversation {submission.conversation_id!r} is not in this workspace"
         )
 
+    existing_job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if existing_job is not None and (
+        existing_job.conversation_id != submission.conversation_id
+        or existing_job.branch_id != submission.branch_id
+        or existing_job.trigger_message_id != trigger_message_id
+        or existing_job.graph_revision_observed != conversation.graph_revision
+        or existing_job.idempotency_key != submission.idempotency_key
+        or existing_job.state != "queued"
+        or existing_job.lease_epoch != 0
+        or existing_job.current_attempt_id is not None
+        or existing_job.last_event_sequence != 0
+    ):
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is not the queued job for this submission"
+        )
+
     expires_at_us = now_us + lease_duration_us
     with chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
@@ -380,17 +398,18 @@ def claim_queued_generation(
             claim_epoch=1,
             claim_expires_at_us=expires_at_us,
         )
-        writer.append_generation_job(
-            generation_job_id=generation_job_id,
-            conversation_id=submission.conversation_id,
-            branch_id=submission.branch_id,
-            trigger_message_id=trigger_message_id,
-            graph_revision_observed=conversation.graph_revision,
-            idempotency_key=submission.idempotency_key,
-            schema_version=1,
-            created_at_us=now_us,
-            updated_at_us=now_us,
-        )
+        if existing_job is None:
+            writer.append_generation_job(
+                generation_job_id=generation_job_id,
+                conversation_id=submission.conversation_id,
+                branch_id=submission.branch_id,
+                trigger_message_id=trigger_message_id,
+                graph_revision_observed=conversation.graph_revision,
+                idempotency_key=submission.idempotency_key,
+                schema_version=1,
+                created_at_us=now_us,
+                updated_at_us=now_us,
+            )
         writer.append_generation_attempt(
             generation_attempt_id=generation_attempt_id,
             conversation_id=submission.conversation_id,

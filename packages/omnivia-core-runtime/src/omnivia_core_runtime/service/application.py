@@ -75,6 +75,7 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
     authorize_application_request,
 )
+from omnivia_core_runtime.service.chat_submit import resolve_chat_command
 from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
     CHAT_EVENTS_OPERATION,
@@ -1398,17 +1399,19 @@ def build_chat_application_dispatcher(
     fallback: ApplicationFallback,
     clock: Clock | None = None,
     allocate_identifier: IdentifierAllocator = random_identifier,
-    resolve_command: ChatCommandResolver | None = None,
+    resolve_command: ChatCommandResolver | None = resolve_chat_command,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
     """Compose the exact two-operation W2-F2 Chat family around the existing router.
 
-    `resolve_command` is the one Chat-domain seam and production states none: see
-    `handlers/chat.py`. A build that ships no resolver still registers, authorizes and
-    audits `chat.command` exactly as this surface requires -- it refuses at the domain
-    step, after the grant and before any write, rather than being absent from the
-    catalogue.
+    `resolve_command` is the one Chat-domain seam and production now states the Core
+    resolver `service/chat_submit.py` ships: a `SubmitMessage` in the variant this build
+    can perform is executed into durable Chat storage, and every other Chat command --
+    and every `SubmitMessage` variant naming work no authority here does -- still
+    refuses at the domain step, after the grant and before any write, rather than being
+    absent from the catalogue. Passing `None` restores the resolverless build, which is
+    what a test proving that refusal path uses.
     """
     session = chat_family_session(
         principal_id=principal_id,
