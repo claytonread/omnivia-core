@@ -75,6 +75,13 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
     authorize_application_request,
 )
+from omnivia_core_runtime.service.handlers.chat import (
+    CHAT_COMMAND_OPERATION,
+    CHAT_EVENTS_OPERATION,
+    CHAT_FAMILY_OPERATIONS,
+    ChatCommandResolver,
+    ChatHandlers,
+)
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
 from omnivia_core_runtime.service.handlers.evidence import evidence_search
 from omnivia_core_runtime.service.handlers.governance import (
@@ -212,6 +219,19 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 
 GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {name: MUTATION_PURPOSES[name] for name in GOVERNANCE_FAMILY_OPERATIONS}
+)
+
+#: The W2-F2 Chat family. Two purposes rather than one, on the same split the job
+#: family uses: the mutation is served under the purpose `MUTATION_PURPOSES` declares
+#: for it -- which is the only purpose a grant for it can ever carry -- and the durable
+#: event replay is an observation, which is not what a caller authors a conversation
+#: under.
+CHAT_OBSERVATION_PURPOSE: Final = "chat_observation"
+CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
+        CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
+    }
 )
 
 #: Where the principal comes from, recorded verbatim as the owner fixed it. Not the
@@ -550,6 +570,49 @@ def build_governance_registry(
     return registry
 
 
+def chat_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The W2-F2 contributor grant for one workspace's Chat surface."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(CHAT_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=CHAT_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(CHAT_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        CHAT_COMMAND_OPERATION, cast(OperationHandler, handlers.chat_command)
+    )
+    registry.register(
+        CHAT_EVENTS_OPERATION, cast(OperationHandler, handlers.chat_events)
+    )
+    return registry
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -705,7 +768,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 20/20 complete.
+    is anything other than 22/22 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -722,8 +785,8 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 5:
-            raise ValueError("the production surface requires exactly five authority families")
+        if len(distinct_routes) != 6:
+            raise ValueError("the production surface requires exactly six authority families")
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
         if any(route.probe.grant.principal != self._principal for route in distinct_routes):
@@ -776,11 +839,12 @@ def compose_production_application_surface(
     memory: ApplicationDispatcher,
     jobs: ApplicationDispatcher,
     governance: ApplicationDispatcher,
+    chat: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
     """Compose all real family handlers into the exact frozen catalogue."""
-    families = (installation, reads, memory, jobs, governance)
+    families = (installation, reads, memory, jobs, governance, chat)
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
     for family in families:
@@ -1313,6 +1377,54 @@ def build_governance_application_dispatcher(
         allocate_identifier=allocate_identifier,
     )
     registry = build_governance_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
+def build_chat_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    resolve_command: ChatCommandResolver | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact two-operation W2-F2 Chat family around the existing router.
+
+    `resolve_command` is the one Chat-domain seam and production states none: see
+    `handlers/chat.py`. A build that ships no resolver still registers, authorizes and
+    audits `chat.command` exactly as this surface requires -- it refuses at the domain
+    step, after the grant and before any write, rather than being absent from the
+    catalogue.
+    """
+    session = chat_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = ChatHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        resolve_command=resolve_command,
+    )
+    registry = build_chat_registry(handlers)
     return ApplicationDispatcher(
         registry=registry,
         session=session,

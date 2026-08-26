@@ -2363,7 +2363,13 @@ def test_the_probe_router_owns_no_clock_of_its_own() -> None:
         for node in ast.walk(timestamp_guard)
         if isinstance(node, ast.Attribute)
     }
-    assert "fromisoformat" in guard_reads
+    guard_calls = {
+        node.func.id
+        for node in ast.walk(timestamp_guard)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "datetime" in guard_calls
+    assert "fromisoformat" not in guard_calls
     assert guard_reads.isdisjoint({"now", "utcnow", "today", "monotonic", "monotonic_ns"})
 
     with pytest.raises(TypeError):

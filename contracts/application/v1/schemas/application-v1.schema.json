@@ -20,7 +20,8 @@
     "https://contracts.omnivia.dev/application/v1/graph.schema.json",
     "https://contracts.omnivia.dev/application/v1/context-pack.schema.json",
     "https://contracts.omnivia.dev/application/v1/compatibility-matrix.schema.json",
-    "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+    "https://contracts.omnivia.dev/application/v1/runtime.schema.json",
+    "https://contracts.omnivia.dev/application/v1/chat.schema.json"
   ],
   "$defs": {
     "ContractVersion": {
@@ -715,6 +716,24 @@
     },
     "ResolveWait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
+    },
+    "ChatConversationExpectation": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation"
+    },
+    "ChatCommandInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput"
+    },
+    "ChatCommandResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult"
+    },
+    "ChatGenerationEvent": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+    },
+    "ChatEventsInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput"
+    },
+    "ChatEventsResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
     }
   }
 }

@@ -1,0 +1,41 @@
+{
+  "invocationId": "invocation-rec-05",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "jobId": "job-0002",
+  "generationAttemptId": "attempt-0005",
+  "operation": "language.stream",
+  "connectionId": "conn-primary-anthropic",
+  "modelId": "claude-sonnet-5",
+  "attemptIds": ["attempt-0005a"],
+  "lifecycleState": "succeeded",
+  "createdAt": "2026-08-20T10:00:00Z",
+  "updatedAt": "2026-08-20T10:00:10Z",
+  "terminalAt": "2026-08-20T10:00:10Z",
+  "routeEvidence": {
+    "configuredPreference": {
+      "connectionId": "conn-primary-anthropic",
+      "modelId": "claude-sonnet-5"
+    },
+    "admittedRoute": {
+      "connectionId": "conn-fallback-openai",
+      "modelId": "gpt-4.1",
+      "adapterName": "openai-adapter",
+      "adapterVersion": "3.2.0"
+    },
+    "routeDecision": "configured",
+    "sameRouteRetryCount": 0,
+    "fallbackAuthorised": false,
+    "attemptStartedAt": "2026-08-20T10:00:00Z",
+    "attemptEndedAt": "2026-08-20T10:00:10Z",
+    "terminalReason": "stop",
+    "usage": {
+      "reported": {
+        "inputTokens": 100,
+        "outputTokens": 50,
+        "totalTokens": 150
+      }
+    },
+    "reconciliationState": "reconciled"
+  }
+}

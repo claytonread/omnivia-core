@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - SharedConversation and ConversationExport",
+  "description": "Closes CGAP-042-009. Normative wire shapes exactly as REF-042 §18 and ADR-022 §7.1-§7.2 define them. Both a share and an export identify a pinned branch snapshot: Conversation ID, branch ID, branch-head Message ID and graph revision (REF-042 §18.1, §18.3, ADR022-INV-016). A pinned identifier is re-authorised on open (REF-042 §18.5); possession of a share or export identifier alone never grants access beyond its declared scope and current authorisation (REF042-RULE-019).",
+  "type": "object",
+  "$defs": {
+    "BranchSnapshotRef": {
+      "title": "BranchSnapshotRef",
+      "description": "One pinned branch identity within a share or export scope (REF-042 §4.22, §18.3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchId", "headMessageId"],
+      "properties": {
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" }
+      }
+    },
+    "SharedConversation": {
+      "title": "SharedConversation",
+      "description": "A read-only share pinned to one branch snapshot (REF-042 §18.1). A read-only share cannot Edit, append or select an inaccessible branch and cannot create branches (REF-042 §18.1, REF042-INV-019, ADR022-INV-... see ADR-022 §7.1). Closes CGAP-042-009.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accessPolicy", "branchId", "conversationId", "createdAt", "createdBy", "graphRevision", "headMessageId", "schemaVersion", "shareId", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "shareId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ShareId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "headMessageId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/MessageId" },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "createdBy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "accessPolicy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SharePolicy" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" },
+        "expiresAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "revokedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ConversationExport": {
+      "title": "ConversationExport",
+      "description": "Declares exactly one scope and includes branch and graph identifiers sufficient to reproduce it (REF-042 §18.3). An export SHALL NOT silently switch to a later branch head after creation (ADR-022 §7.2). `branchSnapshots` has exactly one entry when `scope` is `selected_branch_snapshot`. Closes CGAP-042-009.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branchSnapshots", "conversationId", "createdAt", "createdBy", "exportId", "graphRevision", "schemaVersion", "scope", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "exportId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "scope": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ExportScope" },
+        "branchSnapshots": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/sharing.schema.json#/$defs/BranchSnapshotRef" },
+          "minItems": 1,
+          "maxItems": 4096
+        },
+        "graphRevision": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GraphRevision" },
+        "createdBy": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "schemaVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/SchemaVersion" }
+      },
+      "if": {
+        "properties": { "scope": { "const": "selected_branch_snapshot" } },
+        "required": ["scope"]
+      },
+      "then": {
+        "properties": {
+          "branchSnapshots": { "minItems": 1, "maxItems": 1 }
+        }
+      }
+    }
+  }
+}

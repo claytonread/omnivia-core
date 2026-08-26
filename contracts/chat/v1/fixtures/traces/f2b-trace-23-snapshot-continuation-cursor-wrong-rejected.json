@@ -1,0 +1,56 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-23",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-23",
+      "requestedAt": "2026-08-20T10:00:01Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-23",
+      "snapshotId": "bsnap-t23",
+      "snapshotGraphRevision": 2,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": true,
+      "nextCursor": "cursor-t23-page1"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-23",
+      "requestedAt": "2026-08-20T10:00:02Z",
+      "cursor": "cursor-t23-GUESSED"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-23",
+      "snapshotId": "bsnap-t23",
+      "snapshotGraphRevision": 2,
+      "pageIndex": 1,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t23-boundary"
+    }
+  ]
+}

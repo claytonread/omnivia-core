@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/application/v1/chat.schema.json",
+  "title": "OmniVia Core Application Contract v1 - chat payloads",
+  "description": "Input and result payloads for the two chat application operations. Chat's own command, query, event and generation vocabularies are published separately and in full as Chat Contract v1 (`contracts/chat/v1`); this document deliberately does not restate them. It binds what the *application* boundary owns -- which chat command is being settled, which conversation revision the caller expects it to apply to, and which generation stream is being replayed -- and carries the chat document itself as an opaque JSON object the application envelope neither inspects nor validates. Restating thirty command shapes here would create a second, drifting copy of a contract that is already frozen elsewhere; carrying them keeps one source for chat semantics and one source for application authority. This document declares no root type: it is a definition container only.",
+  "$defs": {
+    "ChatConversationExpectation": {
+      "title": "ChatConversationExpectation",
+      "description": "The conversation a chat command changes, and the revision the caller believes it is at. Optimistic concurrency for the conversation aggregate, stated as both counters rather than one: a conversation's `graph_revision` and its append position move independently, so expecting only one of them admits a command whose view is stale in exactly the half it did not state. A mismatch is a `conflict` the caller re-reads and re-decides against; it is not a `mutation_precondition_failed`, which names a record version the caller refreshes and retries.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation this command expects to change."
+        },
+        "graph_revision": {
+          "type": "integer",
+          "description": "The conversation graph's optimistic revision token as the caller last observed it.",
+          "minimum": 0
+        },
+        "latest_conversation_sequence": {
+          "type": "integer",
+          "description": "The conversation's latest append position as the caller last observed it.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "conversation_id",
+        "graph_revision",
+        "latest_conversation_sequence"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatCommandInput": {
+      "title": "ChatCommandInput",
+      "description": "Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single mutation seam. `command_name` names a member of the Chat Contract's own closed command registry and `command` is that command's request document, carried verbatim and opaque to this envelope. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier. The envelope's `idempotency_key` is required by the catalogue and is what makes a repeated submission answer from the settled outcome rather than appending a second message.",
+      "type": "object",
+      "properties": {
+        "command_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Chat Contract v1 command name, such as `SubmitMessage`. Refused when it is not a member of that contract's closed registry."
+        },
+        "command": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 request document for `command_name`, carried verbatim. Decoded and validated against the chat contract, never against this one."
+        },
+        "expected_conversation": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation",
+          "description": "The conversation revision this command expects. Absent for a command that touches no existing conversation."
+        }
+      },
+      "required": [
+        "command_name",
+        "command"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatCommandResult": {
+      "title": "ChatCommandResult",
+      "description": "Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed with the command name it answers. The chat result is carried opaquely for the same reason the request is. A replayed submission returns the stored result of the command that already ran, not a second settlement.",
+      "type": "object",
+      "properties": {
+        "command_name": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The Chat Contract v1 command name this result answers. Echoes the request."
+        },
+        "command_result": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim."
+        },
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "The conversation the settled command changed, where it changed one."
+        }
+      },
+      "required": [
+        "command_name",
+        "command_result"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatGenerationEvent": {
+      "title": "ChatGenerationEvent",
+      "description": "One durable generation-lifecycle event, as the workspace recorded it. Provider content is never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace persisted, and no request body, response body, header, URL or credential has a path into it.",
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of this durable event."
+        },
+        "event_type": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "The durable event type, such as `chat.generation.started`. Open by design so a compatible minor release can add lifecycle vocabulary."
+        },
+        "generation_event_sequence": {
+          "type": "integer",
+          "description": "This event's position in its generation's contiguous history, counting from one.",
+          "minimum": 1
+        },
+        "cursor": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "The server-issued cursor naming this position. Round-tripped verbatim as a later request's `after_cursor`; never parsed."
+        },
+        "occurred_at": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Timestamp",
+          "description": "When the workspace recorded this event."
+        },
+        "payload": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The event's sanitised durable payload."
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "generation_event_sequence",
+        "cursor",
+        "occurred_at"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatEventsInput": {
+      "title": "ChatEventsInput",
+      "description": "Input for `chat.events`: replay one generation's durable event history after a cursor. A request carrying no `after_cursor` replays the whole history. Transport-level streaming is out of scope: this is a replay of what was recorded, not a subscription. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "generation_job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the generation whose events to replay."
+        },
+        "after_cursor": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Replay strictly after this position. Absent replays from the beginning."
+        }
+      },
+      "required": [
+        "generation_job_id"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatEventsResult": {
+      "title": "ChatEventsResult",
+      "description": "Result of `chat.events`: the durable event suffix after the requested cursor, or the demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events` is empty and `resnapshot_reason` states why the requested position could not be honoured; a fabricated continuation is exactly what that answer exists to prevent. Events are strictly increasing, duplicate-free and contiguous from the position the request continued from.",
+      "type": "object",
+      "properties": {
+        "generation_job_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the generation these events belong to. Echoes the request."
+        },
+        "events": {
+          "type": "array",
+          "description": "The durable events after the requested cursor, in ascending sequence order. Empty when a resnapshot is required.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+          },
+          "maxItems": 1000
+        },
+        "requires_resnapshot": {
+          "type": "boolean",
+          "description": "Whether the caller must take a fresh snapshot instead of continuing from the cursor it presented."
+        },
+        "resnapshot_reason": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Why a fresh snapshot is required, such as `cursor_unknown_or_expired`. Present only when `requires_resnapshot` is true."
+        }
+      },
+      "required": [
+        "generation_job_id",
+        "events",
+        "requires_resnapshot"
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

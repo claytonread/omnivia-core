@@ -154,6 +154,8 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
@@ -255,6 +257,7 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
         "import.start",
         "job.cancel",
         "job.retry",
@@ -273,6 +276,7 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
         "import.start",
         "job.cancel",
         "job.retry",
@@ -315,6 +319,8 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",
@@ -344,6 +350,8 @@
       "operation_traceability_refs": [
         "candidate.approve",
         "candidate.reject",
+        "chat.command",
+        "chat.events",
         "context_pack.build",
         "evidence.search",
         "graph.traverse",

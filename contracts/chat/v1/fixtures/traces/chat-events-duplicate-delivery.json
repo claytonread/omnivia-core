@@ -1,0 +1,34 @@
+{
+  "messages": [
+    {
+      "eventId": "evt-dup-0001",
+      "eventType": "chat.message.committed",
+      "schemaVersion": 1,
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0002-a1",
+      "parentMessageId": "msg-0001-root",
+      "role": "assistant",
+      "branchId": "branch-0001-original",
+      "graphRevision": 2,
+      "conversationSequence": 2,
+      "occurredAt": "2026-08-20T10:00:05Z",
+      "cursor": "cursor-opaque-0002"
+    },
+    {
+      "eventId": "evt-dup-0001",
+      "eventType": "chat.message.committed",
+      "schemaVersion": 1,
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "messageId": "msg-0002-a1",
+      "parentMessageId": "msg-0001-root",
+      "role": "assistant",
+      "branchId": "branch-0001-original",
+      "graphRevision": 2,
+      "conversationSequence": 2,
+      "occurredAt": "2026-08-20T10:00:05Z",
+      "cursor": "cursor-opaque-0002"
+    }
+  ]
+}

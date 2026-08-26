@@ -13,18 +13,23 @@ requires-python = ">=3.11"
 packages = ["src/omnivia_core"]
 
 # `contracts/application/v1/{schemas,fixtures}` stay the only checked-in
-# canonical copy (ADR-038), and `contracts/host/v1/{schemas,fixtures}` the only
+# canonical copy (ADR-038), `contracts/host/v1/{schemas,fixtures}` the only
 # checked-in copy of the exact Host Contract v1.0.0 bytes DOC-004 section AA
-# incorporates. This force-includes them into the built wheel under importable
-# resource paths alongside each version package's Python modules, without
-# duplicating them anywhere else in the source tree. The Host Contract fixtures
-# keep their governed category directories (valid, invalid, denial, degradation,
-# migration), which the force-include preserves.
+# incorporates, and `contracts/chat/v1/{schemas,fixtures}` the only checked-in
+# copy of the exact Chat Runtime Contract v1 bytes approval
+# GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001 binds. This force-includes them
+# into the built wheel under importable resource paths alongside each version
+# package's Python modules, without duplicating them anywhere else in the
+# source tree. The Host Contract and Chat Runtime Contract fixtures keep their
+# governed category directories (valid, invalid, denial, degradation,
+# migration; valid, invalid, traces), which the force-include preserves.
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/application/v1/schemas" = "omnivia_core/contracts/v1/resources/schemas"
 "contracts/application/v1/fixtures" = "omnivia_core/contracts/v1/resources/fixtures"
 "contracts/host/v1/schemas" = "omnivia_core/host_contract/v1/resources/schemas"
 "contracts/host/v1/fixtures" = "omnivia_core/host_contract/v1/resources/fixtures"
+"contracts/chat/v1/schemas" = "omnivia_core/chat_contract/v1/resources/schemas"
+"contracts/chat/v1/fixtures" = "omnivia_core/chat_contract/v1/resources/fixtures"
 
 # Canonical collection scope. Every tree in this checkout that holds tests is
 # named here, so a bare `pytest -q` from the repository root is the whole suite

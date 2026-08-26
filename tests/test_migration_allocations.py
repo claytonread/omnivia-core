@@ -50,23 +50,24 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # The exact T-0660 successor allocation: number, filename, semantic owner, state.
 # 0018-0020 are the Agent Runtime lane, accepted at the PR #88 default-branch
 # landing. 0021-0022 are the already-replayed FND-F3 diff, candidates pinned to
-# their exact introducing commits but not yet accepted. 0023-0025 are reserved
-# successors for the same Agent Runtime lane (the canonical divergent Runtime
-# line's known next migrations). 0026-0029 are the previously-reserved lanes
-# for other owners, shifted up to keep the sequence contiguous and unmaterialized.
+# their exact introducing commits but not yet accepted. 0023 is the next
+# 0024 and 0025 are the next materialized Agent Runtime candidates. 0026 is the
+# materialized Context Models candidate. 0027 is the materialized Workflow Runtime
+# candidate. 0028 is the materialized Provider Service candidate. 0029 is the
+# materialized Chat foundation candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
     (20, "0020_runtime_run_summary_projection.sql", "Agent Runtime", "accepted"),
     (21, "0021_runtime_policy_budget_snapshots.sql", "Agent Runtime", "candidate"),
     (22, "0022_runtime_approvals_capability_grants.sql", "Agent Runtime", "candidate"),
-    (23, "0023_runtime_effect_transactions.sql", "Agent Runtime", "reserved"),
-    (24, "0024_runtime_effect_reconciliations.sql", "Agent Runtime", "reserved"),
-    (25, "0025_runtime_stop_and_admission_control.sql", "Agent Runtime", "reserved"),
-    (26, "0026_context_models.sql", "Context Models", "reserved"),
-    (27, "0027_workflow_runs.sql", "Workflow Runtime", "reserved"),
-    (28, "0028_provider_invocations.sql", "Provider Service", "reserved"),
-    (29, "0029_chat_foundation.sql", "Chat", "reserved"),
+    (23, "0023_runtime_effect_transactions.sql", "Agent Runtime", "candidate"),
+    (24, "0024_runtime_effect_reconciliations.sql", "Agent Runtime", "candidate"),
+    (25, "0025_runtime_stop_and_admission_control.sql", "Agent Runtime", "candidate"),
+    (26, "0026_context_models.sql", "Context Models", "candidate"),
+    (27, "0027_workflow_runs.sql", "Workflow Runtime", "candidate"),
+    (28, "0028_provider_invocations.sql", "Provider Service", "candidate"),
+    (29, "0029_chat_foundation.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -82,6 +83,13 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
+    23: "44e3ed256c38dadc54203994e209380d6e6f439f",
+    24: "e9827ae9f83188f9e9c4fc848597edf04aa67416",
+    25: "af25779a66e41a32dc268940caf0abc2d699ffc9",
+    26: "40348d38bde2dc3ad098b68cf9637eb8a8445535",
+    27: "348bb389f4b5a7b27769ba5224afb43031a6127f",
+    28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
+    29: "192e88b28a89c6740b302cc3646d732f45086c70",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -153,9 +161,9 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0022 are
-    candidates pinned to their replayed introducing commits but not accepted;
-    0023-0029 stay reserved allocations, not yet claimed by any commit."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0027 are
+    candidates pinned to their introducing commits but not accepted; 0028 and 0029
+    are downstream candidates pinned the same way."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:
@@ -172,7 +180,7 @@ def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
 
 
 def test_reserved_sql_is_absent_from_the_tree() -> None:
-    """The point of a reservation: the number is taken, the file is not there."""
+    """If this authority carries a reservation, the file is not there."""
     directory = guard.MIGRATION_DIR
     for number, filename, _owner, state in EXPECTED_ALLOCATION:
         if state == "reserved":
@@ -227,6 +235,22 @@ def _entry(document: dict[str, Any], number: int) -> dict[str, Any]:
 def _as_candidate(document: dict[str, Any], number: int) -> dict[str, Any]:
     entry = _entry(document, number)
     entry.update({"state": "candidate", "accepted_commit": None})
+    return entry
+
+
+def _append_reserved_30(document: dict[str, Any]) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "number": 30,
+        "filename": "0030_reserved_followup.sql",
+        "owner": "Future Lane",
+        "repository": "omnivia-core",
+        "state": "reserved",
+        "predecessor": 29,
+        "sha256": None,
+        "introduced_commit": None,
+        "accepted_commit": None,
+    }
+    document["allocations"].append(entry)
     return entry
 
 
@@ -364,7 +388,9 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved entry pins a hash",
-        lambda document, present: _entry(document, 23).update({"sha256": "0" * 64}),
+        lambda document, present: _append_reserved_30(document).update(
+            {"sha256": "0" * 64}
+        ),
         "must pin neither sha256 nor introduced_commit",
     ),
     (
@@ -374,7 +400,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved allocation carries an accepted commit",
-        lambda document, present: _entry(document, 23).update(
+        lambda document, present: _append_reserved_30(document).update(
             {"accepted_commit": "a" * 40}
         ),
         "accepted_commit must be null",
@@ -403,8 +429,9 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved sql appears early",
-        lambda document, present: present.update(
-            {"0023_runtime_effect_transactions.sql": "c" * 64}
+        lambda document, present: (
+            _append_reserved_30(document),
+            present.update({"0030_reserved_followup.sql": "c" * 64}),
         ),
         "already exists; advance this allocation",
     ),

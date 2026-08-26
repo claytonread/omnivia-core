@@ -1,0 +1,20 @@
+{
+  "protocolVersion": "1.0",
+  "commandId": "cmd-amend-bad",
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "sourceMessageId": "msg-0003-u2",
+  "newMessageId": "msg-0005-u2b",
+  "branchId": "branch-0002-amend",
+  "headMessageId": "msg-0005-u2b",
+  "graphRevision": 6,
+  "conversationSequence": 5,
+  "generationJobId": "job-0001",
+  "attachmentWarnings": [],
+  "idempotentReplay": false,
+  "failure": {
+    "code": "invalid_derivation",
+    "safeMessage": "invalid",
+    "correlationId": "corr-0001"
+  }
+}

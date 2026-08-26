@@ -1,0 +1,63 @@
+{
+  "attemptMeta": {
+    "invocation-t10b": {
+      "configuredRoute": "conn-primary-anthropic",
+      "resolvedRoute": "conn-fallback-openai"
+    }
+  },
+  "events": [
+    {
+      "invocationId": "invocation-t10b",
+      "attemptId": "attempt-t10bx",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t10b",
+      "attemptId": "attempt-t10bx",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t10bx-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t10b",
+      "attemptId": "attempt-t10bx",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t10bx-1",
+      "stepId": "step-1",
+      "delta": "answer"
+    },
+    {
+      "invocationId": "invocation-t10b",
+      "attemptId": "attempt-t10bx",
+      "ordinal": 3,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-t10bx-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t10b",
+      "attemptId": "attempt-t10bx",
+      "ordinal": 4,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "finishReason": "stop"
+    }
+  ]
+}

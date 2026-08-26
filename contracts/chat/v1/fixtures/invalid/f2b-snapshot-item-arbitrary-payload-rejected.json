@@ -1,0 +1,7 @@
+{
+  "itemKind": "conversation",
+  "payload": {
+    "somethingArbitrary": true,
+    "notAConversationField": "should be rejected"
+  }
+}

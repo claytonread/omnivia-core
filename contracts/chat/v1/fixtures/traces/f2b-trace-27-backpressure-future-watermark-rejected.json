@@ -1,0 +1,70 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-27",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-27",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-27",
+      "snapshotId": "bsnap-t27",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t27-0"
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-27",
+      "events": [
+        {
+          "eventId": "evt-t27-a",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0002-a1",
+          "role": "assistant",
+          "branchId": "branch-0001-original",
+          "graphRevision": 2,
+          "conversationSequence": 2,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t27-1",
+          "parentMessageId": "msg-0001-root"
+        }
+      ],
+      "fromCursor": "cursor-t27-0",
+      "nextCursor": "cursor-t27-1"
+    },
+    {
+      "messageType": "bridge.backpressure",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-27",
+      "action": "pause",
+      "pendingEvents": 10,
+      "watermarkCursor": "cursor-t27-NEVER-ISSUED"
+    }
+  ]
+}

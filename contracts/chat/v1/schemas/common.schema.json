@@ -1,0 +1,481 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.omnivia.dev/chat/v1/common.schema.json",
+  "title": "OmniVia Chat Runtime Contract v1 - shared primitive and envelope types",
+  "description": "Shared scalar, identity and envelope types reused across the Chat Runtime Contract v1 schema bundle. Every record here is closed: additionalProperties is false and unknown fields fail unless a field is explicitly named as an additive-decode extension point. This bundle is a proposal-stage freeze subject; it defines Chat's own wire shapes and reuses trusted actor/workspace admission, transport framing, Runtime, Provider and Evidence semantics by reference (DOC-005, REF-019, REF-034) without redefining their authority.",
+  "type": "object",
+  "$defs": {
+    "ProtocolVersion": {
+      "title": "ProtocolVersion",
+      "description": "The Chat Runtime Contract wire protocol version, e.g. \"1.0\". Major identifies a compatibility boundary; a strict decoder rejects an unsupported major and never silently downgrades.",
+      "type": "string",
+      "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)$"
+    },
+    "SchemaVersion": {
+      "title": "SchemaVersion",
+      "description": "The per-record schema generation, a positive integer that increments only on an additive or compatible change to that exact record shape.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "WorkspaceScopedId": {
+      "title": "WorkspaceScopedId",
+      "description": "A stable, opaque, server-issued identifier. Never client-minted authority; never parsed for meaning.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$(?![\\s\\S])"
+    },
+    "WorkspaceId": { "title": "WorkspaceId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "ConversationId": { "title": "ConversationId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "MessageId": { "title": "MessageId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "MessagePartId": { "title": "MessagePartId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "BranchId": { "title": "BranchId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "BranchHeadEventId": { "title": "BranchHeadEventId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "ShareId": { "title": "ShareId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "ExportId": { "title": "ExportId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "GenerationJobId": { "title": "GenerationJobId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "GenerationAttemptId": { "title": "GenerationAttemptId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "DraftId": { "title": "DraftId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "AttachmentReferenceId": { "title": "AttachmentReferenceId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "ContextReferenceId": { "title": "ContextReferenceId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "EvidenceReferenceId": { "title": "EvidenceReferenceId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "QueuedSubmissionId": { "title": "QueuedSubmissionId", "$ref": "#/$defs/WorkspaceScopedId" },
+    "ProviderInvocationId": {
+      "title": "ProviderInvocationId",
+      "description": "One attributable, duplicate-safe logical Provider Invocation identity (REF-019 §5.7), reused by reference. Stable across the invocation's transport Attempts.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ProviderAttemptId": {
+      "title": "ProviderAttemptId",
+      "description": "One transport-level Attempt beneath a Provider Invocation (REF-019 §5.7: several transport Attempts remain one duplicate-safe logical invocation). A same-route retry creates a new `ProviderAttemptId` under the same `ProviderInvocationId`; an authorised fallback or Regenerate creates a new `ProviderInvocationId` (REF-019 §5.9-§5.10).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ProviderPartId": {
+      "title": "ProviderPartId",
+      "description": "A stable identity for one part or tool-call lifecycle within one F2a event stream (technical delivery specification §12.7).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ProviderStepId": {
+      "title": "ProviderStepId",
+      "description": "A stable identity for one model step within one F2a event stream, used to disambiguate a repeated provider-issued tool ID across distinct steps (technical delivery specification §12.7, F2a canonical trace class 3).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ProviderConnectionId": {
+      "title": "ProviderConnectionId",
+      "description": "Opaque named-connection identity for an already-resolved Provider route (REF-019 §5.5). Never a raw endpoint URL, credential or arbitrary header.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ProviderModelId": {
+      "title": "ProviderModelId",
+      "description": "Opaque identity for an already-resolved Provider model selection (REF-019 §5.6), its own bounded scalar shape rather than `WorkspaceScopedId`: real admitted provider model identities are commonly namespaced (for example `openai/gpt-4.1`, `anthropic/claude-sonnet-5`), which both exceeds `WorkspaceScopedId`'s 128-character ceiling and needs the `/` character `WorkspaceScopedId` forbids. Permits provider-safe namespaced characters (`/ . : _ @ -`) alongside alphanumerics. Never a raw endpoint URL or credential: rejects an empty value, any whitespace (outside the permitted character set), and the `://` URL-scheme marker anywhere in the value. This is a bounded shape, not proof every possible credential/URL-shaped value is caught by it alone -- the installed adapter's own closed model catalogue remains the actual runtime authority.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?!.*://)[A-Za-z0-9][A-Za-z0-9/._:@-]*$(?![\\s\\S])"
+    },
+    "BridgeContextId": {
+      "title": "BridgeContextId",
+      "description": "The trusted, host-bound identity a hosted F2b renderer context is admitted and bound to. Server/host-supplied only; a message bearing a stale or mismatched `BridgeContextId` after context rotation is refused (F2b freeze §12).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ActorId": {
+      "title": "ActorId",
+      "description": "A trusted, server-supplied durable principal identifier. Never accepted from an untrusted payload; the transport binds it from authenticated session context (DOC-005 §7.2 App Runtime Context pins \"authenticated principal and delegated authority\"; REF-042 REF042-RULE-012).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "DeviceId": {
+      "title": "DeviceId",
+      "description": "An optional trusted device scope for per-device view state. Server-supplied, never client-asserted authority.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "CommandId": {
+      "title": "CommandId",
+      "description": "Client-supplied idempotency key for one exact command invocation. Reused with different content is an idempotency conflict; reused with identical content returns the original committed result.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "RequestId": {
+      "title": "RequestId",
+      "description": "Per-request correlation identifier for a query or read operation. Not an idempotency key: queries carry no commit side effect.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "IdempotencyKey": {
+      "title": "IdempotencyKey",
+      "description": "A caller-supplied, duplicate-safe key scoping one exact invocation attempt at a trust boundary that is not itself a Chat command (for example F2a `ProviderInvocationRequest`), reused with different content is an idempotency conflict at that boundary, exactly as `CommandId` is for Chat commands (REF-019 §5.7 duplicate-safe invocation).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "CorrelationId": {
+      "title": "CorrelationId",
+      "description": "A stable, server- or caller-issued per-request identifier used for cross-system tracing at a trust boundary (for example F2a). Distinct from `ClientCorrelationHint`, which is explicitly untrusted and echoed back verbatim; a `CorrelationId` is a first-class trace identity, not a display echo.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "CausationId": {
+      "title": "CausationId",
+      "description": "An optional stable reference to the identifier of the command, event or invocation that caused this one, for causal trace reconstruction only. Never itself an authorisation grant.",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ClientCorrelationHint": {
+      "title": "ClientCorrelationHint",
+      "description": "UNTRUSTED. A caller-supplied correlation hint echoed back verbatim for client-side matching. Never an authorisation, causation, trace or attribution input.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$(?![\\s\\S])"
+    },
+    "Timestamp": {
+      "title": "Timestamp",
+      "description": "An RFC 3339 UTC timestamp with an explicit offset.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "GraphRevision": {
+      "title": "GraphRevision",
+      "description": "A Conversation-scoped monotonically increasing sequence allocated only for durable structural graph changes (REF-042 §4.19). View-state-only changes never increment it.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "ConversationSequence": {
+      "title": "ConversationSequence",
+      "description": "A monotonic per-Conversation ordering value assigned to committed Messages and structural events (REF-042 §4.20). Provides stable sibling ordering independent of client clocks.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "HeadVersion": {
+      "title": "HeadVersion",
+      "description": "A per-branch monotonically increasing version that advances with each valid head append (REF-042 §7.5, §7.6).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "ViewStateVersion": {
+      "title": "ViewStateVersion",
+      "description": "An opaque optimistic-concurrency token for one ConversationViewState row.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "ResourceVersion": {
+      "title": "ResourceVersion",
+      "description": "A generic, bounded, non-negative optimistic-concurrency or generation marker for whatever resource a command result names, used where the resource in conflict is not necessarily a ConversationViewState row (for example `CommandResultEnvelope.currentVersion`, which is generic command-conflict context, not a view-state-only token).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "ContentHash": {
+      "title": "ContentHash",
+      "description": "A lowercase hex SHA-256 digest of canonical Message or Message Part content, used for optimistic pre-commit verification (REF-042 §7.2, §13.3) and never as a decryption or authority token.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$(?![\\s\\S])"
+    },
+    "OpaqueCursor": {
+      "title": "OpaqueCursor",
+      "description": "An opaque, server-issued pagination or event-stream position token. Clients round-trip it verbatim and never parse, construct or infer it. An unrecognised, expired or unauthorized cursor yields a stable resnapshot response, never a guessed continuation.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "TransportEventId": {
+      "title": "TransportEventId",
+      "description": "A stable, opaque, server-issued identifier for one delivered transport event occurrence, used for at-least-once consumer dedupe (REF-042 §23).",
+      "$ref": "#/$defs/WorkspaceScopedId"
+    },
+    "ChatEventType": {
+      "title": "ChatEventType",
+      "description": "The closed v1 durable Chat transport event-type vocabulary (REF-042 §23, CGAP-042-008). `chat.branch.selected` is view-state activity and never carries a graph revision. Additive event types are a compatible minor extension; a strict decoder that does not recognise a type SHALL treat the event as an unknown-additive event requiring a resnapshot per the contract's freeze document, never a guessed interpretation.",
+      "enum": [
+        "chat.conversation.created",
+        "chat.message.committed",
+        "chat.message.derivation_recorded",
+        "chat.branch.created",
+        "chat.branch.head_advanced",
+        "chat.branch.selected",
+        "chat.branch.archived",
+        "chat.message.tombstoned",
+        "chat.generation.queued",
+        "chat.generation.started",
+        "chat.generation.succeeded",
+        "chat.generation.failed",
+        "chat.generation.cancelled",
+        "chat.share.created",
+        "chat.export.created"
+      ]
+    },
+    "GenerationEventSequence": {
+      "title": "GenerationEventSequence",
+      "description": "A monotonic per-Generation-Job ordering value for Generation events (REF-042 §23), independent of Conversation graph revision.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "PageSize": {
+      "title": "PageSize",
+      "description": "A requested page size, bounded to keep every paginated response finite.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "MessageRole": {
+      "title": "MessageRole",
+      "description": "The closed v1 conversational role vocabulary for a Message. `amendment` derivations require both source and derived Message to be `user`; `regeneration` derivations require both to be `assistant` (REF-042 §7.4). Additive roles are a compatible minor extension; decoders preserve and inertly display an unrecognised role rather than reject the Message.",
+      "enum": ["user", "assistant", "system", "tool"]
+    },
+    "AuthorType": {
+      "title": "AuthorType",
+      "description": "The closed v1 author-kind vocabulary, distinct from conversational Role. An assistant-role Message is always authored by `provider`; a user-role Message is normally authored by `human` but MAY be `service` for an authorized automated actor.",
+      "enum": ["human", "service", "provider", "system"]
+    },
+    "CompletionStatus": {
+      "title": "CompletionStatus",
+      "description": "The closed v1 sealed-result vocabulary for a committed Message (REF-042 §7.2). Never used to mutate content after sealing; a retry or continuation creates a new sibling Message rather than changing this value.",
+      "enum": ["complete", "interrupted", "failed_partial"]
+    },
+    "MessageVisibility": {
+      "title": "MessageVisibility",
+      "description": "The closed v1 visibility vocabulary, reused for both a Message and one of its Message Parts (REF-042 §7.2, §7.3, §12.4). `standard` is shown to the user and, when its owning Message is on the prompt path, assembled into model context. `user_only` (for example branch-navigation labels or action affordances materialised as a Message or Message Part) is shown to the user and excluded from prompt assembly. `internal` (for example audit or diagnostic annotations, or hidden reasoning) is never shown to the user and never assembled into prompt context. One closed enum is reused at both grains rather than two duplicate vocabularies because the semantics are identical at each grain.",
+      "enum": ["standard", "user_only", "internal"]
+    },
+    "PartIndex": {
+      "title": "PartIndex",
+      "description": "The stable, zero-based order position of a Message Part within its owning Message (REF-042 §7.3). Order is stable and the set of indices for a committed Message never changes.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4095
+    },
+    "OpenCode": {
+      "title": "OpenCode",
+      "description": "An open, dot-namespaced, lower-case identifier code, for example `text`, `markdown`, `citation`, `app.output`, `workflow.status`. Open by design so a compatible minor release can add codes; a strict decoder that does not recognise a code preserves it and applies the documented inert, display-safe fallback rather than rejecting the containing record. Never itself an executable reference.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$(?![\\s\\S])"
+    },
+    "ConversationState": {
+      "title": "ConversationState",
+      "description": "The closed v1 Conversation lifecycle vocabulary.",
+      "enum": ["active", "archived", "tombstoned"]
+    },
+    "BranchState": {
+      "title": "BranchState",
+      "description": "The closed v1 MessageBranch state vocabulary (REF-042 §7.5). Archiving or tombstoning a branch never deletes its Messages.",
+      "enum": ["open", "archived", "tombstoned"]
+    },
+    "BranchOriginKind": {
+      "title": "BranchOriginKind",
+      "description": "The closed v1 initial MessageBranch.originKind vocabulary (REF-042 §7.5).",
+      "enum": ["original", "message_amendment", "assistant_regeneration", "explicit_fork", "import"]
+    },
+    "DerivationKind": {
+      "title": "DerivationKind",
+      "description": "The closed v1 MessageDerivation.kind vocabulary (REF-042 §7.4).",
+      "enum": ["amendment", "regeneration", "reuse", "imported_revision"]
+    },
+    "BranchHeadCause": {
+      "title": "BranchHeadCause",
+      "description": "The closed v1 BranchHeadEvent.cause vocabulary (REF-042 §7.6).",
+      "enum": [
+        "branch_created",
+        "user_message_appended",
+        "assistant_message_materialised",
+        "human_input_appended",
+        "imported",
+        "recovered_projection"
+      ]
+    },
+    "GenerationJobState": {
+      "title": "GenerationJobState",
+      "description": "The closed v1 Generation Job state vocabulary. `queued` and `running` are non-terminal; `succeeded`, `failed` and `cancelled` are terminal. A retry creates a new GenerationAttempt under the same Job rather than reopening a terminal Job.",
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
+    },
+    "GenerationAttemptState": {
+      "title": "GenerationAttemptState",
+      "description": "The closed v1 Generation Attempt state vocabulary, one bounded execution attempt for one Generation Job (DOC-005 §4.12 Attempt, reused by reference).",
+      "enum": ["running", "succeeded", "failed", "cancelled"]
+    },
+    "ReferenceRevalidationOutcome": {
+      "title": "ReferenceRevalidationOutcome",
+      "description": "The closed v1 outcome vocabulary for one Attachment or Context Reference revalidation (REF-042 §14.2, ADR-022 §4.9).",
+      "enum": ["valid", "invalid"]
+    },
+    "ReferenceFailureReason": {
+      "title": "ReferenceFailureReason",
+      "description": "The closed v1 structured, display-safe reference-failure reason vocabulary. Never a raw store, malware-scanner or provider error string.",
+      "enum": [
+        "not_found",
+        "workspace_mismatch",
+        "permission_denied",
+        "retention_expired",
+        "source_revision_unavailable",
+        "security_or_malware_hold",
+        "target_incompatible",
+        "size_or_content_policy_denied"
+      ]
+    },
+    "ExportScope": {
+      "title": "ExportScope",
+      "description": "The closed v1 ConversationExport scope vocabulary (REF-042 §18.3).",
+      "enum": ["selected_branch_snapshot", "all_accessible_branches_snapshot"]
+    },
+    "SharePolicy": {
+      "title": "SharePolicy",
+      "description": "The closed v1 SharedConversation access-policy vocabulary. A share is read-only in v1; it cannot Edit, append or select an inaccessible branch (REF-042 §18.1).",
+      "enum": ["workspace_read_only", "link_read_only"]
+    },
+    "ComposerDraftMode": {
+      "title": "ComposerDraftMode",
+      "description": "The closed v1 ComposerDraft.mode vocabulary (REF-042 §7.8).",
+      "enum": ["normal", "edit_message", "reuse_message"]
+    },
+    "AttachmentReference": {
+      "title": "AttachmentReference",
+      "description": "A stable, opaque reference to a File Reference by identity only. Never a path, URL or raw bytes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["referenceId"],
+      "properties": {
+        "referenceId": { "$ref": "#/$defs/AttachmentReferenceId" },
+        "sourceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Optional immutable source revision pinned at commit time (REF-042 §14.4)."
+        }
+      }
+    },
+    "ContextReference": {
+      "title": "ContextReference",
+      "description": "A stable, opaque reference to a governed Context Reference by identity only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["referenceId"],
+      "properties": {
+        "referenceId": { "$ref": "#/$defs/ContextReferenceId" },
+        "sourceRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "EvidenceReference": {
+      "title": "EvidenceReference",
+      "description": "A stable reference to a governed Evidence record by identity, reused by reference from REF-034 §8.2 without redefining Evidence authority: Evidence identity plus an optional integrity digest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidenceId"],
+      "properties": {
+        "evidenceId": { "$ref": "#/$defs/EvidenceReferenceId" },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$(?![\\s\\S])",
+          "description": "Optional lowercase hex SHA-256 digest (REF-034 §8.2)."
+        }
+      }
+    },
+    "TargetReference": {
+      "title": "TargetReference",
+      "description": "An optional opaque reference identifying the App, Workflow or Agent target context a Message or draft is directed at. Identity only; never an executable payload.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "referenceId"],
+      "properties": {
+        "kind": { "enum": ["app", "workflow", "agent"] },
+        "referenceId": { "$ref": "#/$defs/WorkspaceScopedId" }
+      }
+    },
+    "ReferenceFailure": {
+      "title": "ReferenceFailure",
+      "description": "One structured, display-safe reference failure (REF-042 §14.3). Carries no raw upstream error.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["referenceId", "reason", "safeMessage"],
+      "properties": {
+        "referenceId": { "$ref": "#/$defs/WorkspaceScopedId" },
+        "reason": { "$ref": "#/$defs/ReferenceFailureReason" },
+        "safeMessage": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "Human-readable, display-safe explanation. Never parsed and never branched on."
+        }
+      }
+    },
+    "ErrorCode": {
+      "title": "ErrorCode",
+      "description": "The closed v1 stable error-code registry for Chat Runtime Contract commands and queries.",
+      "enum": [
+        "authentication_required",
+        "authorization_denied",
+        "workspace_mismatch",
+        "conversation_not_found",
+        "message_not_found",
+        "branch_not_found",
+        "not_eligible_for_amendment",
+        "source_content_hash_mismatch",
+        "idempotency_conflict",
+        "idempotent_replay",
+        "stale_expected_version",
+        "invalid_derivation",
+        "derivation_cycle_rejected",
+        "reference_revalidation_failed",
+        "cursor_unknown_or_expired",
+        "unauthorized_cursor",
+        "graph_revision_unavailable",
+        "resnapshot_required",
+        "share_or_export_revoked",
+        "share_or_export_expired",
+        "rate_limited",
+        "deadline_exceeded",
+        "internal_recoverable",
+        "internal_non_recoverable"
+      ]
+    },
+    "Failure": {
+      "title": "Failure",
+      "description": "A closed command or query failure envelope.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "safeMessage", "correlationId"],
+      "properties": {
+        "code": { "$ref": "#/$defs/ErrorCode" },
+        "safeMessage": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "correlationId": { "$ref": "#/$defs/WorkspaceScopedId" },
+        "referenceFailures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ReferenceFailure" },
+          "maxItems": 64,
+          "description": "Populated only for reference_revalidation_failed."
+        }
+      }
+    },
+    "PromptContextManifest": {
+      "title": "PromptContextManifest",
+      "description": "A reproducible, non-content-duplicating manifest of the prompt-context inputs a Generation Job assembled (REF-042 §12.5). Carries stable identifiers, versions and hashes only, never raw restricted content, credentials, headers or a raw prompt body.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pathMessageIds", "graphRevision"],
+      "properties": {
+        "pathMessageIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MessageId" },
+          "minItems": 1,
+          "maxItems": 4096,
+          "description": "The triggering Message and its structural ancestors only (REF-042 §12.1); no sibling or descendant outside the path."
+        },
+        "graphRevision": { "$ref": "#/$defs/GraphRevision" },
+        "attachmentReferenceIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AttachmentReferenceId" },
+          "maxItems": 4096
+        },
+        "contextReferenceIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ContextReferenceId" },
+          "maxItems": 4096
+        },
+        "policyVersion": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    }
+  }
+}

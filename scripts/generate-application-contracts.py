@@ -94,6 +94,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "context-pack",
     "compatibility-matrix",
     "runtime",
+    "chat",
 )
 #: The reference-only registry. It contributes annotations, never definitions.
 REGISTRY_SCHEMA = "application-v1"
@@ -1329,8 +1330,20 @@ def emit_python_scalar_guards(contract: Contract) -> tuple[list[str], list[str]]
                     lines.append(f"{prefix}{clause}")
                 lines.append("    ):")
             lines.append("        return False")
+            # `datetime.fromisoformat` is deliberately not used here: it normalizes an
+            # out-of-range hour (24) by rolling into the next day instead of raising,
+            # which is exactly the value this guard must refuse. The constructor below
+            # validates every field strictly and raises ValueError instead.
             lines.append("    try:")
-            lines.append("        datetime.fromisoformat(value)")
+            lines.append("        datetime(")
+            lines.append("            int(value[0:4]),")
+            lines.append("            int(value[5:7]),")
+            lines.append("            int(value[8:10]),")
+            lines.append("            int(value[11:13]),")
+            lines.append("            int(value[14:16]),")
+            lines.append("            int(value[17:19]),")
+            lines.append("            tzinfo=UTC,")
+            lines.append("        )")
             lines.append("    except ValueError:")
             lines.append("        return False")
             lines.append("    return True")
@@ -1377,7 +1390,7 @@ def emit_python(contract: Contract) -> str:
         "import re",
         "from collections.abc import Mapping, Sequence",
         "from dataclasses import dataclass",
-        "from datetime import datetime",
+        "from datetime import UTC, datetime",
         "from math import isfinite",
         "from types import MappingProxyType",
         "from typing import Any, Final, TypeAlias, cast",

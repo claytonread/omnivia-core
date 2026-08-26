@@ -4198,6 +4198,85 @@ class ControlPlaneRegistry:
             generated_at=_now(),
         )
 
+    def project_redacted_otel_observability(
+        self,
+        workspace_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a read-only redacted OTel-style projection of local evidence.
+
+        This is a display/export view only: it reads existing
+        ``control_plane_events`` rows and
+        :meth:`summarize_observability_metrics` and never writes to canonical
+        control-plane state, so ``control_plane_events`` is left unchanged.
+        Span attributes are copied from an explicit allowlist rather than the
+        raw event payload, so raw prompts, outputs, secrets, secret refs,
+        token/connector values, and arbitrary payload keys never reach the
+        projection.
+        """
+
+        metrics = self.summarize_observability_metrics(workspace_id)
+
+        rows = self.db.execute(
+            """
+            SELECT id, event_type, resource_type, resource_id, payload_json, created_at
+            FROM control_plane_events
+            WHERE workspace_id = ?
+            ORDER BY created_at, id
+            """,
+            (workspace_id,),
+        ).fetchall()
+
+        spans: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if run_id is not None and payload.get("run_id") != run_id:
+                continue
+            raw_trace_id = payload.get("trace_id")
+            if not raw_trace_id:
+                # No trace correlation: skip rather than fabricate one.
+                continue
+            trace_id = _redact_observability_text(str(raw_trace_id))
+            audit_event_id = str(row["id"])
+            raw_span_id = payload.get("span_id")
+            span_id = (
+                _redact_observability_text(str(raw_span_id))
+                if raw_span_id
+                else f"projected.{audit_event_id}"
+            )
+            event_type = str(row["event_type"])
+            spans.append(
+                {
+                    "name": _redact_observability_text(event_type),
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "parent_span_id": None,
+                    "kind": "internal",
+                    "status": _observability_span_status(event_type, payload),
+                    "created_at": row["created_at"],
+                    "attributes": _observability_span_attributes(
+                        audit_event_id,
+                        event_type,
+                        row["resource_type"],
+                        row["resource_id"],
+                        str(row["created_at"]),
+                        payload,
+                    ),
+                }
+            )
+
+        return {
+            "schema": "omnivia.control_plane.redacted_otel_projection.v1",
+            "source": "local-registry",
+            "redacted": True,
+            "workspace_id": workspace_id,
+            "run_id": run_id,
+            "generated_at": _now(),
+            "spans": spans,
+            "metrics": asdict(metrics),
+        }
+
     def _coerce_valid_manifest(
         self, manifest: ControlPlaneManifest | dict[str, Any]
     ) -> ControlPlaneManifest:
@@ -5517,6 +5596,112 @@ def _coerce_notification_status(
 def _is_sensitive_observability_key(key: str) -> bool:
     lowered = key.lower()
     return any(marker in lowered for marker in SENSITIVE_OBSERVABILITY_KEYS)
+
+
+# Closed allowlist of event-payload keys the redacted OTel projection copies
+# into a span's attributes. Every value behind these keys is already a
+# display-safe scalar in the underlying event dataclasses/payloads (see
+# RunStepRecord, LocalModelInvocationRecord, and the capability/approval
+# invocation payloads above); anything not named here is dropped rather than
+# copied, so unlisted payload keys (secret refs, executor metadata, schema
+# summaries, output summaries, ...) never reach the projection.
+_OTEL_PROJECTION_ATTRIBUTE_KEYS = (
+    "run_id",
+    "step_id",
+    "automation_id",
+    "agent_id",
+    "capability_id",
+    "policy_decision_id",
+    "policy_audit_event_id",
+    "mode",
+    "simulated",
+    "executor_backed",
+    "attempt",
+    "retry_count",
+    "token_usage",
+    "cost_units",
+    "model_provider",
+    "model_name",
+    "invocation_type",
+    "prompt_redacted",
+    "output_redacted",
+)
+
+_OTEL_SPAN_OK_STATUSES = frozenset({"completed", "succeeded", "simulated"})
+_OTEL_SPAN_ERROR_STATUSES = frozenset(
+    {"failed", "cancelled", "rejected", "timed_out", "blocked", "dead_letter"}
+)
+_OTEL_SPAN_WAITING_STATUSES = frozenset({"waiting_for_approval", "approval_required"})
+_OTEL_PROJECTION_FORBIDDEN_TEXT_MARKERS = (
+    "client_handle",
+    "model_output",
+    "output=",
+    "output:",
+    "prompt=",
+    "prompt:",
+    "raw_response",
+    "response_body",
+)
+
+
+def _observability_span_status(event_type: str, payload: Mapping[str, Any]) -> str:
+    """Derive a closed OTel-style span status from a display-safe event.
+
+    Prefers the event's own ``status`` field (run/run-step evidence); falls
+    back to the event type's final segment (e.g. ``capability.invocation.
+    simulated``) for events that carry no ``status`` key. Unrecognized values
+    map to ``"unset"`` rather than guessing.
+    """
+
+    status = payload.get("status")
+    candidate = status if isinstance(status, str) and status else event_type.rsplit(".", 1)[-1]
+    if candidate in _OTEL_SPAN_OK_STATUSES:
+        return "ok"
+    if candidate in _OTEL_SPAN_ERROR_STATUSES:
+        return "error"
+    if candidate in _OTEL_SPAN_WAITING_STATUSES:
+        return "waiting"
+    if candidate == "started" and "wait" in event_type:
+        return "waiting"
+    return "unset"
+
+
+def _observability_span_attributes(
+    audit_event_id: str,
+    event_type: str,
+    resource_type: Any,
+    resource_id: Any,
+    created_at: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a closed, display-safe attribute set for one projected span."""
+
+    attributes: dict[str, Any] = {
+        "audit_event_id": _redact_observability_text(audit_event_id),
+        "event_type": _redact_observability_text(event_type),
+        "created_at": _redact_observability_text(created_at),
+    }
+    if resource_type is not None:
+        attributes["resource_type"] = _redact_observability_text(str(resource_type))
+    if resource_id is not None:
+        attributes["resource_id"] = _redact_observability_text(str(resource_id))
+    for key in _OTEL_PROJECTION_ATTRIBUTE_KEYS:
+        value = payload.get(key)
+        if value is not None:
+            attributes[key] = _redact_otel_projection_value(value)
+    return attributes
+
+
+def _redact_otel_projection_value(value: Any) -> Any:
+    """Redact scalar values that are safe by schema but hostile if misused."""
+
+    redacted = _redact_observability_payload(value)
+    if isinstance(redacted, str) and any(
+        marker in redacted.lower()
+        for marker in _OTEL_PROJECTION_FORBIDDEN_TEXT_MARKERS
+    ):
+        return "[REDACTED]"
+    return redacted
 
 
 def _event_from_dict(data: dict[str, Any]) -> TriggerEventEnvelope:

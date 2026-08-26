@@ -68,10 +68,10 @@
       "filename": "0023_runtime_effect_transactions.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 22,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "b74670225e165c054687dcafe7c8934fbf393eb4e143839b22dc7de63120dd6e",
+      "introduced_commit": "44e3ed256c38dadc54203994e209380d6e6f439f",
       "accepted_commit": null
     },
     {
@@ -79,10 +79,10 @@
       "filename": "0024_runtime_effect_reconciliations.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 23,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "bda410753b280cb5b986251a93e60eeac5673f947dad1fc9a962a949b74f2da0",
+      "introduced_commit": "e9827ae9f83188f9e9c4fc848597edf04aa67416",
       "accepted_commit": null
     },
     {
@@ -90,10 +90,10 @@
       "filename": "0025_runtime_stop_and_admission_control.sql",
       "owner": "Agent Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 24,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "ef7fd8b7657e45b8e0fc2795114bf957e4f7a0710677e120bcd953a2b25adcdc",
+      "introduced_commit": "af25779a66e41a32dc268940caf0abc2d699ffc9",
       "accepted_commit": null
     },
     {
@@ -101,10 +101,10 @@
       "filename": "0026_context_models.sql",
       "owner": "Context Models",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 25,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "c981b5f8d135d92fe952697db7ac2bbf3cc1159af16df11f859df9c171502d56",
+      "introduced_commit": "40348d38bde2dc3ad098b68cf9637eb8a8445535",
       "accepted_commit": null
     },
     {
@@ -112,10 +112,10 @@
       "filename": "0027_workflow_runs.sql",
       "owner": "Workflow Runtime",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 26,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "9aaef9850e689eeebbc5937ef95e4bf2d1956a003883a5d8e64c5551b2db8e92",
+      "introduced_commit": "348bb389f4b5a7b27769ba5224afb43031a6127f",
       "accepted_commit": null
     },
     {
@@ -123,10 +123,10 @@
       "filename": "0028_provider_invocations.sql",
       "owner": "Provider Service",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 27,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "1769269a27474aee23f7749d535a5399ddeb498cc88780c688ec56ad38ab53cd",
+      "introduced_commit": "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
       "accepted_commit": null
     },
     {
@@ -134,10 +134,10 @@
       "filename": "0029_chat_foundation.sql",
       "owner": "Chat",
       "repository": "omnivia-core",
-      "state": "reserved",
+      "state": "candidate",
       "predecessor": 28,
-      "sha256": null,
-      "introduced_commit": null,
+      "sha256": "56419928e082dbb8d8ef0084c4eed374c742b038b02ec35f0a7477b94225a946",
+      "introduced_commit": "192e88b28a89c6740b302cc3646d732f45086c70",
       "accepted_commit": null
     }
   ]

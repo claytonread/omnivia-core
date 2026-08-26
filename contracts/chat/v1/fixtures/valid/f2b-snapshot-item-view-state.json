@@ -1,0 +1,13 @@
+{
+  "itemKind": "view_state",
+  "payload": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "actorId": "actor-alice",
+    "activeBranchId": "branch-0001-original",
+    "lastSeenGraphRevision": 2,
+    "schemaVersion": 1,
+    "updatedAt": "2026-08-20T10:00:05Z",
+    "version": 1
+  }
+}

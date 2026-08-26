@@ -1,0 +1,108 @@
+{
+  "attemptMeta": {
+    "invocation-t10": {
+      "configuredRoute": "conn-primary-anthropic",
+      "resolvedRoute": "conn-primary-anthropic"
+    }
+  },
+  "events": [
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10a",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10a",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t10-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10a",
+      "ordinal": 2,
+      "eventType": "error",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "errorCode": "transport",
+      "safeMessage": "Connection reset.",
+      "retryable": true,
+      "statusClass": "server_error"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10b",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10b",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t10-2",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10b",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t10-2",
+      "stepId": "step-1",
+      "delta": "recovered"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10b",
+      "ordinal": 3,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-t10-2",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t10",
+      "attemptId": "attempt-t10b",
+      "ordinal": 4,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "finishReason": "stop",
+      "usage": {
+        "reported": {
+          "inputTokens": 30,
+          "outputTokens": 10,
+          "totalTokens": 40
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-t10b-001",
+        "respondedAt": "2026-08-20T10:10:04Z"
+      },
+      "cancellationState": "not_cancelled"
+    }
+  ]
+}

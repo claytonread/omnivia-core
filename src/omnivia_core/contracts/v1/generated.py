@@ -17,6 +17,7 @@
 #   contracts/application/v1/schemas/context-pack.schema.json
 #   contracts/application/v1/schemas/compatibility-matrix.schema.json
 #   contracts/application/v1/schemas/runtime.schema.json
+#   contracts/application/v1/schemas/chat.schema.json
 # Generator:
 #   scripts/generate-application-contracts.py
 #
@@ -39,7 +40,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Any, Final, TypeAlias, cast
@@ -168,6 +169,12 @@ __all__ = [
     "CapabilityRef",
     "CapabilityRequirement",
     "CapabilitySet",
+    "ChatCommandInput",
+    "ChatCommandResult",
+    "ChatConversationExpectation",
+    "ChatEventsInput",
+    "ChatEventsResult",
+    "ChatGenerationEvent",
     "CleanupOutcome",
     "CleanupReceipt",
     "ClientIdentity",
@@ -1066,7 +1073,15 @@ def is_timestamp(value: object) -> bool:
     ):
         return False
     try:
-        datetime.fromisoformat(value)
+        datetime(
+            int(value[0:4]),
+            int(value[5:7]),
+            int(value[8:10]),
+            int(value[11:13]),
+            int(value[14:16]),
+            int(value[17:19]),
+            tzinfo=UTC,
+        )
     except ValueError:
         return False
     return True
@@ -2575,6 +2590,239 @@ class WorkspaceInspectInput:
         """
         _require_mapping(payload, path)
         return cls(
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatConversationExpectation:
+    """The conversation a chat command changes, and the revision the caller believes it is at.
+    Optimistic concurrency for the conversation aggregate, stated as both counters rather
+    than one: a conversation's `graph_revision` and its append position move independently,
+    so expecting only one of them admits a command whose view is stale in exactly the half it
+    did not state. A mismatch is a `conflict` the caller re-reads and re-decides against; it
+    is not a `mutation_precondition_failed`, which names a record version the caller
+    refreshes and retries.
+    """
+
+    conversation_id: Identifier
+    graph_revision: int
+    latest_conversation_sequence: int
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["conversation_id"] = self.conversation_id
+        wire["graph_revision"] = self.graph_revision
+        wire["latest_conversation_sequence"] = self.latest_conversation_sequence
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "ChatConversationExpectation"
+    ) -> ChatConversationExpectation:
+        """Decode a wire payload into a ChatConversationExpectation.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_conversation_id = _decode_str(
+            _require_field(mapping, "conversation_id", path),
+            f"{path}.conversation_id",
+        )
+        field_graph_revision = _decode_int(
+            _require_field(mapping, "graph_revision", path),
+            f"{path}.graph_revision",
+        )
+        field_latest_conversation_sequence = _decode_int(
+            _require_field(mapping, "latest_conversation_sequence", path),
+            f"{path}.latest_conversation_sequence",
+        )
+        return cls(
+            conversation_id=field_conversation_id,
+            graph_revision=field_graph_revision,
+            latest_conversation_sequence=field_latest_conversation_sequence,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCommandResult:
+    """Result of `chat.command`: the settled command's own Chat Contract v1 result envelope,
+    echoed with the command name it answers. The chat result is carried opaquely for the same
+    reason the request is. A replayed submission returns the stored result of the command
+    that already ran, not a second settlement.
+    """
+
+    command_name: Identifier
+    command_result: JsonObject
+    conversation_id: Identifier | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["command_name"] = self.command_name
+        wire["command_result"] = _encode_json_object(self.command_result)
+        if self.conversation_id is not None:
+            wire["conversation_id"] = self.conversation_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatCommandResult") -> ChatCommandResult:
+        """Decode a wire payload into a ChatCommandResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_command_name = _decode_str(
+            _require_field(mapping, "command_name", path),
+            f"{path}.command_name",
+        )
+        field_command_result = _decode_json_object(
+            _require_field(mapping, "command_result", path),
+            f"{path}.command_result",
+        )
+        field_conversation_id: Identifier | None = None
+        if "conversation_id" in mapping:
+            raw_conversation_id = mapping["conversation_id"]
+            if raw_conversation_id is None:
+                raise ContractDecodeError(
+                    f"{path}.conversation_id: null is not a valid value"
+                )
+            field_conversation_id = _decode_str(raw_conversation_id, f"{path}.conversation_id")
+        return cls(
+            command_name=field_command_name,
+            command_result=field_command_result,
+            conversation_id=field_conversation_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGenerationEvent:
+    """One durable generation-lifecycle event, as the workspace recorded it. Provider content is
+    never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
+    persisted, and no request body, response body, header, URL or credential has a path into
+    it.
+    """
+
+    event_id: Identifier
+    event_type: OpenCode
+    generation_event_sequence: int
+    cursor: OpaqueToken
+    occurred_at: Timestamp
+    payload: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["event_id"] = self.event_id
+        wire["event_type"] = self.event_type
+        wire["generation_event_sequence"] = self.generation_event_sequence
+        wire["cursor"] = self.cursor
+        wire["occurred_at"] = self.occurred_at
+        if self.payload is not None:
+            wire["payload"] = _encode_json_object(self.payload)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatGenerationEvent") -> ChatGenerationEvent:
+        """Decode a wire payload into a ChatGenerationEvent.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_event_id = _decode_str(_require_field(mapping, "event_id", path), f"{path}.event_id")
+        field_event_type = _decode_str(
+            _require_field(mapping, "event_type", path),
+            f"{path}.event_type",
+        )
+        field_generation_event_sequence = _decode_int(
+            _require_field(mapping, "generation_event_sequence", path),
+            f"{path}.generation_event_sequence",
+        )
+        field_cursor = _decode_str(_require_field(mapping, "cursor", path), f"{path}.cursor")
+        field_occurred_at = _decode_str(
+            _require_field(mapping, "occurred_at", path),
+            f"{path}.occurred_at",
+        )
+        field_payload: JsonObject | None = None
+        if "payload" in mapping:
+            raw_payload = mapping["payload"]
+            if raw_payload is None:
+                raise ContractDecodeError(
+                    f"{path}.payload: null is not a valid value"
+                )
+            field_payload = _decode_json_object(raw_payload, f"{path}.payload")
+        return cls(
+            event_id=field_event_id,
+            event_type=field_event_type,
+            generation_event_sequence=field_generation_event_sequence,
+            cursor=field_cursor,
+            occurred_at=field_occurred_at,
+            payload=field_payload,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEventsInput:
+    """Input for `chat.events`: replay one generation's durable event history after a cursor. A
+    request carrying no `after_cursor` replays the whole history. Transport-level streaming
+    is out of scope: this is a replay of what was recorded, not a subscription. Workspace-
+    scoped through the request envelope's selected workspace, so this payload never carries a
+    second, independent workspace identifier.
+    """
+
+    generation_job_id: Identifier
+    after_cursor: OpaqueToken | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["generation_job_id"] = self.generation_job_id
+        if self.after_cursor is not None:
+            wire["after_cursor"] = self.after_cursor
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatEventsInput") -> ChatEventsInput:
+        """Decode a wire payload into a ChatEventsInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_generation_job_id = _decode_str(
+            _require_field(mapping, "generation_job_id", path),
+            f"{path}.generation_job_id",
+        )
+        field_after_cursor: OpaqueToken | None = None
+        if "after_cursor" in mapping:
+            raw_after_cursor = mapping["after_cursor"]
+            if raw_after_cursor is None:
+                raise ContractDecodeError(
+                    f"{path}.after_cursor: null is not a valid value"
+                )
+            field_after_cursor = _decode_str(raw_after_cursor, f"{path}.after_cursor")
+        return cls(
+            generation_job_id=field_generation_job_id,
+            after_cursor=field_after_cursor,
         )
 
 
@@ -6474,6 +6722,140 @@ class CoreTargetV1:
             workspace_ref=field_workspace_ref,
             management=field_management,
             endpoint_profile_ref=field_endpoint_profile_ref,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCommandInput:
+    """Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's
+    single mutation seam. `command_name` names a member of the Chat Contract's own closed
+    command registry and `command` is that command's request document, carried verbatim and
+    opaque to this envelope. Workspace-scoped through the request envelope's selected
+    workspace, so this payload never carries a second, independent workspace identifier. The
+    envelope's `idempotency_key` is required by the catalogue and is what makes a repeated
+    submission answer from the settled outcome rather than appending a second message.
+    """
+
+    command_name: Identifier
+    command: JsonObject
+    expected_conversation: ChatConversationExpectation | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["command_name"] = self.command_name
+        wire["command"] = _encode_json_object(self.command)
+        if self.expected_conversation is not None:
+            wire["expected_conversation"] = self.expected_conversation.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatCommandInput") -> ChatCommandInput:
+        """Decode a wire payload into a ChatCommandInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_command_name = _decode_str(
+            _require_field(mapping, "command_name", path),
+            f"{path}.command_name",
+        )
+        field_command = _decode_json_object(
+            _require_field(mapping, "command", path),
+            f"{path}.command",
+        )
+        field_expected_conversation: ChatConversationExpectation | None = None
+        if "expected_conversation" in mapping:
+            raw_expected_conversation = mapping["expected_conversation"]
+            if raw_expected_conversation is None:
+                raise ContractDecodeError(
+                    f"{path}.expected_conversation: null is not a valid value"
+                )
+            field_expected_conversation = ChatConversationExpectation.from_wire(
+                raw_expected_conversation,
+                f"{path}.expected_conversation",
+            )
+        return cls(
+            command_name=field_command_name,
+            command=field_command,
+            expected_conversation=field_expected_conversation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatEventsResult:
+    """Result of `chat.events`: the durable event suffix after the requested cursor, or the
+    demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events`
+    is empty and `resnapshot_reason` states why the requested position could not be honoured;
+    a fabricated continuation is exactly what that answer exists to prevent. Events are
+    strictly increasing, duplicate-free and contiguous from the position the request
+    continued from.
+    """
+
+    generation_job_id: Identifier
+    events: tuple[ChatGenerationEvent, ...]
+    requires_resnapshot: bool
+    resnapshot_reason: OpenCode | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["generation_job_id"] = self.generation_job_id
+        wire["events"] = [item.to_wire() for item in self.events]
+        wire["requires_resnapshot"] = self.requires_resnapshot
+        if self.resnapshot_reason is not None:
+            wire["resnapshot_reason"] = self.resnapshot_reason
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatEventsResult") -> ChatEventsResult:
+        """Decode a wire payload into a ChatEventsResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_generation_job_id = _decode_str(
+            _require_field(mapping, "generation_job_id", path),
+            f"{path}.generation_job_id",
+        )
+        field_events_items = _decode_sequence(
+            _require_field(mapping, "events", path),
+            f"{path}.events",
+        )
+        field_events = tuple(
+            ChatGenerationEvent.from_wire(item, f"{path}.events[{index}]")
+            for index, item in enumerate(field_events_items)
+        )
+        field_requires_resnapshot = _decode_bool(
+            _require_field(mapping, "requires_resnapshot", path),
+            f"{path}.requires_resnapshot",
+        )
+        field_resnapshot_reason: OpenCode | None = None
+        if "resnapshot_reason" in mapping:
+            raw_resnapshot_reason = mapping["resnapshot_reason"]
+            if raw_resnapshot_reason is None:
+                raise ContractDecodeError(
+                    f"{path}.resnapshot_reason: null is not a valid value"
+                )
+            field_resnapshot_reason = _decode_str(
+                raw_resnapshot_reason,
+                f"{path}.resnapshot_reason",
+            )
+        return cls(
+            generation_job_id=field_generation_job_id,
+            events=field_events,
+            requires_resnapshot=field_requires_resnapshot,
+            resnapshot_reason=field_resnapshot_reason,
         )
 
 
@@ -12779,6 +13161,113 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "upgrade_required",
             "workspace_busy",
             "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.command",
+        scope=OperationScope(
+            required_scopes=("chat:write",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatCommandInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatCommandResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.command",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "conflict",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="chat.events",
+        scope=OperationScope(
+            required_scopes=("chat:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatEventsInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/chat.schema.json"
+            "#/$defs/ChatEventsResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="chat.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "size_limit_exceeded",
+            "upgrade_required",
             "workspace_migration_required",
             "workspace_not_granted",
         ),

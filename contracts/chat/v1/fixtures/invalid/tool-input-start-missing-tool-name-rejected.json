@@ -1,0 +1,11 @@
+{
+  "invocationId": "invocation-tneg",
+  "attemptId": "attempt-tneg",
+  "ordinal": 1,
+  "eventType": "tool-input-start",
+  "schemaVersion": 1,
+  "occurredAt": "2026-08-20T10:10:01Z",
+  "receivedAt": "2026-08-20T10:10:01Z",
+  "toolCallId": "tool-neg",
+  "stepId": "step-1"
+}

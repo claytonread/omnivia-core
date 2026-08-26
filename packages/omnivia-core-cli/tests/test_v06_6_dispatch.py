@@ -5,7 +5,7 @@
 production takes exactly the object these tests build, and nothing here stands
 in for `dispatch_application`, `dispatch_probe` or the client's own `call`.
 
-- **The catalogue is the source of the claims.** Every one of the twenty
+- **The catalogue is the source of the claims.** Every one of the twenty-two
   commands is dispatched and the envelope compared against
   `get_operation_metadata(command.operation)` -- scopes by value, the
   capability requirement by *identity*, because the module's claim is that it
@@ -335,11 +335,11 @@ def test_every_probe_command_path_resolves_to_its_own_command(
     assert find_probe_command(command.path) is command
 
 
-def test_the_two_lookups_are_declared_and_cover_all_twenty_three_paths() -> None:
-    """Twenty application paths and three probe paths, and no path in both."""
+def test_the_two_lookups_are_declared_and_cover_all_twenty_five_paths() -> None:
+    """Twenty-two application paths and three probe paths, and no path in both."""
     application = {command.path for command in APPLICATION_COMMANDS}
     probes = {command.path for command in PROBE_COMMANDS}
-    assert len(application) == 20
+    assert len(application) == 22
     assert len(probes) == 3
     assert not application & probes
 
@@ -479,7 +479,7 @@ def test_the_refusal_cannot_be_constructed_with_anything_in_it() -> None:
 
 
 # --------------------------------------------------------------------------
-# 2 & 3. What each of the twenty commands actually sends
+# 2 & 3. What each of the twenty-two commands actually sends
 # --------------------------------------------------------------------------
 
 
@@ -819,6 +819,7 @@ def test_an_uncorrelated_answer_is_refused_rather_than_returned(
     overrides: dict[str, str],
 ) -> None:
     """A caller reading it would be reading some other call's result."""
+    caller_request_id = "caller-chosen-id-02"
     transport = RecordingTransport(answer=lambda request: success(request, **overrides))
     with pytest.raises(DispatchError) as raised:
         dispatch_application(
@@ -826,9 +827,9 @@ def test_an_uncorrelated_answer_is_refused_rather_than_returned(
             MEMORY_GET,
             payload={},
             deadline=deadline(),
-            request_id="caller-chosen-id-02",
+            request_id=caller_request_id,
         )
-    assert_payload_free(raised.value, "some-other-calls-id", "caller-chosen-id-02")
+    assert_payload_free(raised.value, "some-other-calls-id", caller_request_id)
 
 
 def test_an_uncorrelated_error_answer_is_refused_too() -> None:
@@ -925,6 +926,7 @@ def test_a_probe_answer_without_this_calls_echo_is_refused(
     overrides: dict[str, Any],
 ) -> None:
     """An answer this call cannot vouch for is not one it returns."""
+    caller_request_id = "caller-chosen-probe-04"
     transport = RecordingTransport(
         probe_answer=lambda request: echo(request, **overrides)
     )
@@ -933,9 +935,9 @@ def test_a_probe_answer_without_this_calls_echo_is_refused(
             client(transport),
             find_probe_command(("service", "health")),
             deadline=deadline(),
-            request_id="caller-chosen-probe-04",
+            request_id=caller_request_id,
         )
-    assert_payload_free(raised.value, "some-other-probes-id", "caller-chosen-probe-04")
+    assert_payload_free(raised.value, "some-other-probes-id", caller_request_id)
     assert transport.calls == []
 
 

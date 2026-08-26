@@ -1,0 +1,9 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "derivedMessageId": "msg-a",
+  "sourceMessageId": "msg-a",
+  "kind": "reuse",
+  "createdBy": "actor-alice",
+  "createdAt": "2026-08-20T10:00:10Z"
+}

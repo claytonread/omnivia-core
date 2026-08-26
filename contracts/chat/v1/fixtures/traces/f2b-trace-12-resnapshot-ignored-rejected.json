@@ -1,0 +1,73 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-12",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 20,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-12",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-12",
+      "snapshotId": "bsnap-t12",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t12-0"
+    },
+    {
+      "messageType": "bridge.resnapshot",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-12",
+      "reason": "context_rotated",
+      "resnapshotCursor": "cursor-t12-resync"
+    },
+    {
+      "messageType": "bridge.command",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-12",
+      "commandId": "cmd-t12",
+      "commandKind": "SubmitMessage",
+      "payload": {
+        "protocolVersion": "1.0",
+        "commandId": "cmd-t12",
+        "workspaceId": "ws-acme",
+        "conversationId": "conv-0001",
+        "branchId": "branch-0001-original",
+        "actorId": "actor-alice",
+        "expectedHeadMessageId": "msg-0001-root",
+        "expectedHeadVersion": 1,
+        "editableParts": [
+          {
+            "type": "text",
+            "payload": {
+              "text": "hi"
+            }
+          }
+        ],
+        "attachmentReferences": [],
+        "contextReferences": []
+      },
+      "sentAt": "2026-08-20T10:01:00Z"
+    }
+  ]
+}

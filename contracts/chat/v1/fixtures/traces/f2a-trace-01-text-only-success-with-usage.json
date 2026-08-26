@@ -1,0 +1,88 @@
+{
+  "events": [
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 0,
+      "eventType": "stream-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:00Z",
+      "receivedAt": "2026-08-20T10:10:00Z"
+    },
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 1,
+      "eventType": "text-start",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:01Z",
+      "receivedAt": "2026-08-20T10:10:01Z",
+      "partId": "part-t01-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 2,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:02Z",
+      "receivedAt": "2026-08-20T10:10:02Z",
+      "partId": "part-t01-1",
+      "stepId": "step-1",
+      "delta": "The report "
+    },
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 3,
+      "eventType": "text-delta",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:03Z",
+      "receivedAt": "2026-08-20T10:10:03Z",
+      "partId": "part-t01-1",
+      "stepId": "step-1",
+      "delta": "shows steady growth."
+    },
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 4,
+      "eventType": "text-end",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:04Z",
+      "receivedAt": "2026-08-20T10:10:04Z",
+      "partId": "part-t01-1",
+      "stepId": "step-1"
+    },
+    {
+      "invocationId": "invocation-t01",
+      "attemptId": "attempt-t01",
+      "ordinal": 5,
+      "eventType": "finish",
+      "schemaVersion": 1,
+      "occurredAt": "2026-08-20T10:10:05Z",
+      "receivedAt": "2026-08-20T10:10:05Z",
+      "finishReason": "stop",
+      "usage": {
+        "reported": {
+          "inputTokens": 120,
+          "outputTokens": 42,
+          "totalTokens": 162
+        }
+      },
+      "responseMetadata": {
+        "providerResponseId": "resp-t01-001",
+        "respondedAt": "2026-08-20T10:10:05Z"
+      },
+      "cancellationState": "not_cancelled",
+      "estimatedCost": {
+        "amount": 0.0031,
+        "currency": "USD",
+        "catalogueRevision": "2026-08-01",
+        "pricingSource": "provider_reported",
+        "calculationVersion": "cost-calc-1"
+      }
+    }
+  ]
+}

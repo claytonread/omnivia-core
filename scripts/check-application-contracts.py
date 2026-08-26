@@ -102,6 +102,7 @@ SOURCE_SCHEMAS: tuple[str, ...] = (
     "context-pack",
     "compatibility-matrix",
     "runtime",
+    "chat",
 )
 REGISTRY_SCHEMA = "application-v1"
 ALL_SCHEMAS: tuple[str, ...] = (*SOURCE_SCHEMAS, REGISTRY_SCHEMA)
@@ -1190,6 +1191,11 @@ _CREATE_MUT: tuple[str, ...] = tuple(
 _GOV_MUT: tuple[str, ...] = tuple(
     sorted((*_CREATE_MUT, "conflict", "mutation_precondition_failed", "not_found"))
 )
+#: Deliberately excludes ``mutation_precondition_failed``: a chat command states the
+#: conversation revision it expects, and a conversation another writer advanced is a
+#: state the caller re-reads and re-decides against -- a ``conflict`` -- not a record
+#: version it refreshes and retries.
+_CHAT_MUT: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "conflict", "not_found")))
 _IMPORT_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "size_limit_exceeded")))
 #: Deliberately excludes ``conflict``: a state-based cancel/retry refusal is a
 #: successful explicit disposition returning the unchanged handle, not an error.
@@ -1210,6 +1216,7 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "CONTEXT_READ": _CONTEXT_READ,
     "CREATE_MUT": _CREATE_MUT,
     "GOV_MUT": _GOV_MUT,
+    "CHAT_MUT": _CHAT_MUT,
     "IMPORT_START": _IMPORT_START,
     "JOB_CONTROL": _JOB_CONTROL,
     "JOB_EVENTS": _JOB_EVENTS,
@@ -1244,7 +1251,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 20 application operations, in the frozen code-point order. Runtime
+#: The exact 22 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1255,6 +1262,14 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "candidate.reject": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "CandidateReject", "GOV_MUT", False,
+    ),
+    "chat.command": FrozenOperation(
+        "workspace", ("chat:write",), "update", "chat.command",
+        "chat", "ChatCommand", "CHAT_MUT", False,
+    ),
+    "chat.events": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatEvents", "JOB_EVENTS", False,
     ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",

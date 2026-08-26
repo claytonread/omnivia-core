@@ -41,7 +41,7 @@ def packaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_list_schema_names_matches_canonical_source(packaged: Path) -> None:
     expected = tuple(sorted(path.name.removesuffix(".schema.json") for path in CANONICAL_SCHEMA_DIR.glob("*.schema.json")))
     assert resources.list_schema_names() == expected
-    assert len(expected) == 17
+    assert len(expected) == 18
 
 
 def test_read_schema_text_matches_canonical_source(packaged: Path) -> None:

@@ -748,7 +748,7 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 
 
 def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
-    """Exactly the nine, explicitly, with a mismatch failing closed for each of them."""
+    """Exactly the ten, explicitly, with a mismatch failing closed for each of them."""
     assert set(MUTATION_PURPOSES) == {
         "workspace.create",
         "memory.create",
@@ -759,10 +759,11 @@ def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
         "candidate.approve",
         "candidate.reject",
         "record.supersede",
+        "chat.command",
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 9
+    assert len(MUTATION_PURPOSES) == 10
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -784,7 +785,7 @@ def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
         )
     }
     assert len(governance) == 1
-    assert len(set(MUTATION_PURPOSES.values())) == 5
+    assert len(set(MUTATION_PURPOSES.values())) == 6
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -1529,9 +1530,9 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     default = build_application_registry()
     assert default.operations == shipped
     assert len(shipped) == 6
-    # None of the fourteen unserved operations, mutating or not.
+    # None of the sixteen unserved operations, mutating or not.
     assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 14
+    assert len(APPLICATION_OPERATIONS - shipped) == 16
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1722,6 +1723,7 @@ def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) 
         "candidate.approve": "knowledge_reviewer",
         "candidate.reject": "knowledge_reviewer",
         "record.supersede": "knowledge_reviewer",
+        "chat.command": "workspace_contributor",
     }
     assert set(MUTATION_ROLES) == MUTATING_OPERATIONS
 

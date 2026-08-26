@@ -17,6 +17,7 @@
 //   contracts/application/v1/schemas/context-pack.schema.json
 //   contracts/application/v1/schemas/compatibility-matrix.schema.json
 //   contracts/application/v1/schemas/runtime.schema.json
+//   contracts/application/v1/schemas/chat.schema.json
 // Generator:
 //   scripts/generate-application-contracts.py
 //
@@ -2150,6 +2151,102 @@ export interface WorkspaceInspectInput {
 }
 
 /**
+ * The conversation a chat command changes, and the revision the caller believes it is at.
+ * Optimistic concurrency for the conversation aggregate, stated as both counters rather than
+ * one: a conversation's `graph_revision` and its append position move independently, so
+ * expecting only one of them admits a command whose view is stale in exactly the half it did not
+ * state. A mismatch is a `conflict` the caller re-reads and re-decides against; it is not a
+ * `mutation_precondition_failed`, which names a record version the caller refreshes and retries.
+ */
+export interface ChatConversationExpectation {
+  /**
+   * Identifier of the conversation this command expects to change.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The conversation graph's optimistic revision token as the caller last observed it.
+   */
+  readonly graph_revision: number;
+  /**
+   * The conversation's latest append position as the caller last observed it.
+   */
+  readonly latest_conversation_sequence: number;
+}
+
+/**
+ * Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed
+ * with the command name it answers. The chat result is carried opaquely for the same reason the
+ * request is. A replayed submission returns the stored result of the command that already ran,
+ * not a second settlement.
+ */
+export interface ChatCommandResult {
+  /**
+   * The Chat Contract v1 command name this result answers. Echoes the request.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim.
+   */
+  readonly command_result: JsonObject;
+  /**
+   * The conversation the settled command changed, where it changed one.
+   */
+  readonly conversation_id?: Identifier;
+}
+
+/**
+ * One durable generation-lifecycle event, as the workspace recorded it. Provider content is
+ * never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
+ * persisted, and no request body, response body, header, URL or credential has a path into it.
+ */
+export interface ChatGenerationEvent {
+  /**
+   * Identifier of this durable event.
+   */
+  readonly event_id: Identifier;
+  /**
+   * The durable event type, such as `chat.generation.started`. Open by design so a compatible
+   * minor release can add lifecycle vocabulary.
+   */
+  readonly event_type: OpenCode;
+  /**
+   * This event's position in its generation's contiguous history, counting from one.
+   */
+  readonly generation_event_sequence: number;
+  /**
+   * The server-issued cursor naming this position. Round-tripped verbatim as a later request's
+   * `after_cursor`; never parsed.
+   */
+  readonly cursor: OpaqueToken;
+  /**
+   * When the workspace recorded this event.
+   */
+  readonly occurred_at: Timestamp;
+  /**
+   * The event's sanitised durable payload.
+   */
+  readonly payload?: JsonObject;
+}
+
+/**
+ * Input for `chat.events`: replay one generation's durable event history after a cursor. A
+ * request carrying no `after_cursor` replays the whole history. Transport-level streaming is out
+ * of scope: this is a replay of what was recorded, not a subscription. Workspace-scoped through
+ * the request envelope's selected workspace, so this payload never carries a second, independent
+ * workspace identifier.
+ */
+export interface ChatEventsInput {
+  /**
+   * Identifier of the generation whose events to replay.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * Replay strictly after this position. Absent replays from the beginning.
+   */
+  readonly after_cursor?: OpaqueToken;
+}
+
+/**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
  * an authorization input.
  */
@@ -3937,6 +4034,62 @@ export function areCoreTargetV1AuthoritiesValid(value: readonly CoreTargetV1[]):
   } catch {
     return false;
   }
+}
+
+/**
+ * Input for `chat.command`: one Chat Contract v1 command, settled through the workspace's single
+ * mutation seam. `command_name` names a member of the Chat Contract's own closed command
+ * registry and `command` is that command's request document, carried verbatim and opaque to this
+ * envelope. Workspace-scoped through the request envelope's selected workspace, so this payload
+ * never carries a second, independent workspace identifier. The envelope's `idempotency_key` is
+ * required by the catalogue and is what makes a repeated submission answer from the settled
+ * outcome rather than appending a second message.
+ */
+export interface ChatCommandInput {
+  /**
+   * The Chat Contract v1 command name, such as `SubmitMessage`. Refused when it is not a
+   * member of that contract's closed registry.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 request document for `command_name`, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly command: JsonObject;
+  /**
+   * The conversation revision this command expects. Absent for a command that touches no
+   * existing conversation.
+   */
+  readonly expected_conversation?: ChatConversationExpectation;
+}
+
+/**
+ * Result of `chat.events`: the durable event suffix after the requested cursor, or the demand
+ * for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events` is empty and
+ * `resnapshot_reason` states why the requested position could not be honoured; a fabricated
+ * continuation is exactly what that answer exists to prevent. Events are strictly increasing,
+ * duplicate-free and contiguous from the position the request continued from.
+ */
+export interface ChatEventsResult {
+  /**
+   * Identifier of the generation these events belong to. Echoes the request.
+   */
+  readonly generation_job_id: Identifier;
+  /**
+   * The durable events after the requested cursor, in ascending sequence order. Empty when a
+   * resnapshot is required.
+   */
+  readonly events: readonly ChatGenerationEvent[];
+  /**
+   * Whether the caller must take a fresh snapshot instead of continuing from the cursor it
+   * presented.
+   */
+  readonly requires_resnapshot: boolean;
+  /**
+   * Why a fresh snapshot is required, such as `cursor_unknown_or_expired`. Present only when
+   * `requires_resnapshot` is true.
+   */
+  readonly resnapshot_reason?: OpenCode;
 }
 
 /**
@@ -7112,6 +7265,71 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "upgrade_required",
       "workspace_busy",
       "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.command",
+    scope: { required_scopes: ["chat:write"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatCommandResult",
+    required_capability: { id: "chat.command", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.events",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "size_limit_exceeded",
+      "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",
     ],

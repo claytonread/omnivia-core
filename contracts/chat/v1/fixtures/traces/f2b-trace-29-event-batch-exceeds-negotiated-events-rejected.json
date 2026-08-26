@@ -1,0 +1,91 @@
+{
+  "messages": [
+    {
+      "messageType": "bridge.context-bound",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-29",
+      "workspaceId": "ws-acme",
+      "conversationId": "conv-0001",
+      "actorId": "actor-alice",
+      "maxMessageBytes": 32768,
+      "maxBatchEvents": 2,
+      "maxSnapshotItems": 20,
+      "boundAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-request",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-29",
+      "requestedAt": "2026-08-20T10:00:00Z"
+    },
+    {
+      "messageType": "bridge.snapshot-page",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-29",
+      "snapshotId": "bsnap-t29",
+      "snapshotGraphRevision": 1,
+      "pageIndex": 0,
+      "items": [],
+      "hasMore": false,
+      "snapshotBoundaryCursor": "cursor-t29-0"
+    },
+    {
+      "messageType": "bridge.event-batch",
+      "bridgeProtocolVersion": "1.0",
+      "schemaVersion": 1,
+      "contextId": "bctx-trace-29",
+      "events": [
+        {
+          "eventId": "evt-t29-a",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0002-a1",
+          "role": "assistant",
+          "branchId": "branch-0001-original",
+          "graphRevision": 2,
+          "conversationSequence": 2,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t29-1",
+          "parentMessageId": "msg-0001-root"
+        },
+        {
+          "eventId": "evt-t29-b",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0003-a2",
+          "role": "assistant",
+          "branchId": "branch-0001-original",
+          "graphRevision": 3,
+          "conversationSequence": 3,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t29-2",
+          "parentMessageId": "msg-0001-root"
+        },
+        {
+          "eventId": "evt-t29-c",
+          "eventType": "chat.message.committed",
+          "schemaVersion": 1,
+          "workspaceId": "ws-acme",
+          "conversationId": "conv-0001",
+          "messageId": "msg-0004-a3",
+          "role": "assistant",
+          "branchId": "branch-0001-original",
+          "graphRevision": 4,
+          "conversationSequence": 4,
+          "occurredAt": "2026-08-20T10:00:00Z",
+          "cursor": "cursor-t29-3",
+          "parentMessageId": "msg-0001-root"
+        }
+      ],
+      "fromCursor": "cursor-t29-0",
+      "nextCursor": "cursor-t29-3"
+    }
+  ]
+}
