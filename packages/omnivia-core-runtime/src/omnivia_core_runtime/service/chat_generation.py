@@ -67,6 +67,7 @@ __all__ = [
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
     "claim_queued_generation",
+    "renew_generation_lease",
     "replay_generation_events",
 ]
 
@@ -671,6 +672,76 @@ def _existing_provider_event(
 
 
 # --- replay --------------------------------------------------------------------------
+
+
+# --- lease renewal -----------------------------------------------------------------
+
+
+def renew_generation_lease(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    lease_owner: str,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> int:
+    """Extend a running job's lease without writing an event. Returns the new expiry.
+
+    0029 requires a `running` job to carry a lease that has not expired at the moment
+    of the write, and every write above re-states it -- which is enough only while
+    events keep arriving. A provider that thinks for longer than the lease before its
+    first token, or pauses mid-stream, would let its own claim lapse and leave a job
+    that is durably `running` under a dead lease. This is the heartbeat that does not
+    depend on the stream producing anything.
+
+    It is also the fencing check. The compare-and-set is on `(state, lease_epoch)`, so
+    a renewal whose job has been taken over by another instance fails rather than
+    silently reviving a claim someone else now holds; the owner is compared too, so a
+    caller learns it lost the lease instead of extending a stranger's.
+
+    Nothing else about the job moves: state, epoch, attempt and event sequence are all
+    written back as they were read, because `update_generation_job` sets every column
+    and a heartbeat that reset `last_event_sequence` would corrupt the replay cursor
+    it is supposed to protect.
+    """
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    if job.state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if job.state != "running":
+        raise GenerationLifecycleError(
+            f"generation job {generation_job_id!r} is {job.state!r}, not running"
+        )
+    if job.lease_owner != lease_owner:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is leased by another instance"
+        )
+
+    expires_at_us = now_us + lease_duration_us
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_generation_job(
+            generation_job_id=generation_job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state=job.state,
+            lease_epoch=job.lease_epoch,
+            current_attempt_id=job.current_attempt_id,
+            lease_owner=job.lease_owner,
+            lease_expires_at_us=expires_at_us,
+            heartbeat_at_us=now_us,
+            last_event_sequence=job.last_event_sequence,
+            updated_at_us=now_us,
+            started_at_us=job.started_at_us,
+        )
+    return expires_at_us
 
 
 def replay_generation_events(
