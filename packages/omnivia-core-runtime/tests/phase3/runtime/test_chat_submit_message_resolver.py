@@ -827,6 +827,98 @@ def _stream(request: Any, deltas: tuple[str, ...], *, finish: bool = True) -> It
         }
 
 
+def test_a_non_contiguous_provider_ordinal_fails_the_generation(
+    seeded: m1.Owned,
+) -> None:
+    """A provider stream that skips an event ordinal must fail the generation."""
+
+    def provider(request: Any) -> Iterator[Any]:
+        common = {
+            "invocationId": request.invocation_id,
+            "attemptId": request.attempt_id,
+            "schemaVersion": 1,
+            "occurredAt": "2052-05-23T00:00:01Z",
+            "receivedAt": "2052-05-23T00:00:01Z",
+        }
+        yield {**common, "ordinal": 0, "eventType": "stream-start"}
+        yield {
+            **common,
+            "ordinal": 2,
+            "eventType": "text-delta",
+            "partId": "provider-part-1",
+            "stepId": "provider-step-1",
+            "delta": "assistant reply",
+        }
+        yield {**common, "ordinal": 3, "eventType": "finish", "finishReason": "stop"}
+
+    job = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        provider,
+        _executor_config(),
+        "cmd-gb01-noncontiguous",
+    )
+
+    assert job is not None
+    assert job.state == "failed"
+    assert job.result_message_id is None
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=job.generation_job_id,
+        )
+    ] == [
+        "chat.generation.queued",
+        "chat.generation.started",
+        "chat.generation.failed",
+    ]
+
+
+def test_a_stale_branch_head_at_settlement_fails_the_generation(
+    seeded: m1.Owned,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A branch head advance between claim and settlement must fail the generation."""
+    import dataclasses
+
+    clock = FakeClock(wall=WALL)
+    generating = {"active": False}
+    real_read_branch = chat.read_branch
+
+    def provider(request: Any) -> Iterator[Any]:
+        generating["active"] = True
+        yield from _stream(request, ("assistant reply",))
+
+    def read_branch_with_a_moved_head(
+        connection: Any, *, workspace_id: str, branch_id: str
+    ) -> Any:
+        branch = real_read_branch(
+            connection, workspace_id=workspace_id, branch_id=branch_id
+        )
+        if branch is None or not generating["active"]:
+            return branch
+        return dataclasses.replace(
+            branch, current_head_message_id="msg-gb01-concurrent-advance"
+        )
+
+    monkeypatch.setattr(chat, "read_branch", read_branch_with_a_moved_head)
+
+    job = _run_executor(
+        seeded,
+        clock,
+        provider,
+        _executor_config(),
+        "cmd-gb01-stalehead",
+    )
+
+    assert generating["active"], "the provider never ran"
+    assert job is not None
+    assert job.state == "failed"
+    assert job.result_message_id is None
+
+
 def test_an_unreachable_route_terminalizes_as_provider_unavailable(
     seeded: m1.Owned,
 ) -> None:
