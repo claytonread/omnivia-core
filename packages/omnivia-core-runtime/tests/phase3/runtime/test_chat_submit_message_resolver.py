@@ -16,7 +16,11 @@ from omnivia_core_runtime.service.application import (
     build_chat_application_dispatcher,
 )
 from omnivia_core_runtime.service.authorization import Grant
-from omnivia_core_runtime.service.chat_generation import claim_queued_generation
+from omnivia_core_runtime.service.chat_generation import (
+    GenerationConflict,
+    claim_queued_generation,
+    renew_generation_lease,
+)
 from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
     GenerationExecutorConfig,
@@ -730,3 +734,251 @@ def test_gb01_generation_claim_consumes_the_precreated_queued_job(
         "queuedSubmissionId": "cmd-gb01-submit.sub",
     }
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+# --- H1: route availability and lease renewal ---------------------------------------
+#
+# Two facts the executor could previously not tell apart or keep alive.
+#
+# The first is WHICH terminal failure happened. Every boundary failure used to
+# terminalize as `malformed-response`, so "I never reached a provider" and "a provider
+# answered badly" were the same durable outcome -- and they are not the same fact. One
+# is a routing or configuration problem, the other is a response to investigate.
+#
+# The second is the lease. `claim_queued_generation` takes one and every event write
+# re-states it, which keeps a chatty stream alive and does nothing for a quiet one. A
+# provider thinking for longer than the lease before its first token would let its own
+# claim lapse, leaving a job durably `running` under a dead lease.
+
+
+def _executor_config(**overrides: Any) -> GenerationExecutorConfig:
+    return GenerationExecutorConfig(
+        **{
+            "connection_id": "provider-connection-1",
+            "model_id": "provider-model-1",
+            "policy_ref": "policy-1",
+            "classification_ref": "classification-1",
+            "residency_ref": "residency-1",
+            "service_actor_id": "actor-core-chat",
+            **overrides,
+        }
+    )
+
+
+def _run_executor(
+    seeded: m1.Owned,
+    clock: FakeClock,
+    provider: Any,
+    config: GenerationExecutorConfig,
+    command_id: str,
+) -> Any:
+    executor = ChatGenerationExecutor(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        fencing_generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+        invoke=provider,
+        config=config,
+    )
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=executor.execute_submission,
+    ).dispatch(_request(_submit_command(command_id=command_id)))
+    assert isinstance(response, SuccessResponseEnvelope), response
+    return chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=f"{command_id}.gen",
+    )
+
+
+def _stream(request: Any, deltas: tuple[str, ...], *, finish: bool = True) -> Iterator[Any]:
+    common = {
+        "invocationId": request.invocation_id,
+        "attemptId": request.attempt_id,
+        "schemaVersion": 1,
+        "occurredAt": "2052-05-23T00:00:01Z",
+        "receivedAt": "2052-05-23T00:00:01Z",
+    }
+    yield {**common, "ordinal": 0, "eventType": "stream-start"}
+    for index, delta in enumerate(deltas, start=1):
+        yield {
+            **common,
+            "ordinal": index,
+            "eventType": "text-delta",
+            "partId": f"provider-part-{index}",
+            "stepId": "provider-step-1",
+            "delta": delta,
+        }
+    if finish:
+        yield {
+            **common,
+            "ordinal": len(deltas) + 1,
+            "eventType": "finish",
+            "finishReason": "stop",
+        }
+
+
+def test_an_unreachable_route_terminalizes_as_provider_unavailable(
+    seeded: m1.Owned,
+) -> None:
+    """No route resolved: real lifecycle, and the outcome names the actual cause."""
+    calls: list[Any] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        calls.append(request)
+        yield from ()
+
+    job = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        provider,
+        _executor_config(connection_id=""),
+        "cmd-gb01-no-route",
+    )
+
+    # The provider is never asked, because there was nothing to ask.
+    assert calls == []
+    assert job is not None
+    assert job.state == "failed"
+    assert job.sanitized_error_code == "provider-unavailable"
+    # The point of claiming first: the submission still has a durable lifecycle to
+    # observe and replay, rather than disappearing between the queue and the provider.
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=job.generation_job_id,
+        )
+    ] == ["chat.generation.queued", "chat.generation.failed"]
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_a_stream_that_ends_without_a_terminal_event_stays_malformed_response(
+    seeded: m1.Owned,
+) -> None:
+    """The provider WAS reached. A bad response must not read as an unreachable one."""
+    job = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        lambda request: _stream(request, ("half an answer",), finish=False),
+        _executor_config(),
+        "cmd-gb01-truncated",
+    )
+    assert job is not None
+    assert job.state == "failed"
+    assert job.sanitized_error_code == "malformed-response"
+
+
+def test_the_claim_lease_outlives_the_invocation_deadline(seeded: m1.Owned) -> None:
+    """A lease shorter than the deadline expires while the wait is still legitimate."""
+    clock = FakeClock(wall=WALL)
+    deadline_seconds = 600
+    observed: list[int] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        running = chat.read_generation_job(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id="cmd-gb01-long-deadline.gen",
+        )
+        assert running is not None and running.lease_expires_at_us is not None
+        observed.append(running.lease_expires_at_us - int(WALL.timestamp() * 1_000_000))
+        yield from _stream(request, ("answer",))
+
+    _run_executor(
+        seeded,
+        clock,
+        provider,
+        _executor_config(deadline_seconds=deadline_seconds),
+        "cmd-gb01-long-deadline",
+    )
+    # Sized from the deadline, not left at the 60s default it would otherwise take.
+    assert observed and observed[0] >= deadline_seconds * 1_000_000
+
+
+def test_a_quiet_stream_renews_its_lease_rather_than_letting_it_lapse(
+    seeded: m1.Owned,
+) -> None:
+    """The renewal that does not depend on events arriving.
+
+    The provider goes quiet for longer than half the lease between its start and its
+    first token, which is exactly the gap an event-driven re-statement cannot cover.
+    """
+    clock = FakeClock(wall=WALL)
+    job_id = "cmd-gb01-quiet.gen"
+    expiries: list[int] = []
+
+    def read_expiry() -> int:
+        running = chat.read_generation_job(
+            seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=job_id
+        )
+        assert running is not None and running.lease_expires_at_us is not None
+        return running.lease_expires_at_us
+
+    def provider(request: Any) -> Iterator[Any]:
+        common = {
+            "invocationId": request.invocation_id,
+            "attemptId": request.attempt_id,
+            "schemaVersion": 1,
+            "occurredAt": "2052-05-23T00:00:01Z",
+            "receivedAt": "2052-05-23T00:00:01Z",
+        }
+        yield {**common, "ordinal": 0, "eventType": "stream-start"}
+        expiries.append(read_expiry())
+        # Long enough to pass the renewal point, short enough that a correctly sized
+        # lease has not yet expired -- the window where the heartbeat is the only thing
+        # keeping the claim alive.
+        clock.advance_wall(100)
+        yield {
+            **common,
+            "ordinal": 1,
+            "eventType": "text-delta",
+            "partId": "provider-part-1",
+            "stepId": "provider-step-1",
+            "delta": "eventually",
+        }
+        expiries.append(read_expiry())
+        yield {**common, "ordinal": 2, "eventType": "finish", "finishReason": "stop"}
+
+    job = _run_executor(
+        seeded, clock, provider, _executor_config(), "cmd-gb01-quiet"
+    )
+    assert job is not None and job.state == "succeeded"
+    assert len(expiries) == 2
+    # The lease moved forward without any event having required it to.
+    assert expiries[1] > expiries[0]
+
+
+def test_a_lease_may_not_be_renewed_by_another_instance(seeded: m1.Owned) -> None:
+    """Renewal is fenced: losing the lease must be discoverable, not silently undone."""
+    clock = FakeClock(wall=WALL)
+    refusals: list[str] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        try:
+            renew_generation_lease(
+                seeded.connection,
+                seeded.identity,
+                workspace_id=WORKSPACE_ID,
+                fencing_generation=seeded.generation,
+                generation_job_id="cmd-gb01-fenced.gen",
+                lease_owner="some-other-service-instance",
+                now_us=int(clock.wall_time().timestamp() * 1_000_000),
+            )
+        except GenerationConflict as error:
+            refusals.append(str(error))
+        yield from _stream(request, ("answer",))
+
+    job = _run_executor(
+        seeded, clock, provider, _executor_config(), "cmd-gb01-fenced"
+    )
+    assert job is not None and job.state == "succeeded"
+    assert len(refusals) == 1

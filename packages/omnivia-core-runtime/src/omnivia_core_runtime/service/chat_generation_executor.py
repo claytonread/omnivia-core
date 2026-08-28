@@ -19,9 +19,11 @@ from omnivia_core.chat_contract.v1 import ProviderInvocationRequest, to_canonica
 from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_generation import (
+    DEFAULT_LEASE_US,
     GenerationLifecycleError,
     append_provider_generation_event,
     claim_queued_generation,
+    renew_generation_lease,
 )
 from omnivia_core_runtime.storage import chat
 
@@ -29,16 +31,41 @@ __all__ = [
     "ChatGenerationExecutor",
     "GenerationExecutorConfig",
     "GenerationExecutorError",
+    "ProviderRouteUnavailable",
     "ProviderStream",
 ]
 
 ProviderStream = Callable[[ProviderInvocationRequest], Iterable[Mapping[str, Any]]]
 _MAX_TEXT_BYTES: Final = 262_144
+#: Head-room between an invocation's deadline and the lease that must outlive it.
+#: A lease shorter than the deadline expires while the executor is still legitimately
+#: waiting, so the claim is sized from the deadline rather than left at the default.
+_LEASE_MARGIN_SECONDS: Final = 30
+#: Sanitized, caller-safe text per terminal outcome. Never provider content.
+_SAFE_MESSAGES: Final = {
+    "provider-unavailable": "no provider route was reachable for this generation",
+    "malformed-response": "the provider stream could not be completed safely",
+}
 _TERMINAL_PROVIDER_EVENTS: Final = frozenset({"finish", "error"})
 
 
 class GenerationExecutorError(Exception):
     """A sanitized executor refusal; provider content is never included."""
+
+
+class ProviderRouteUnavailable(GenerationExecutorError):
+    """No provider route could be resolved, or the adapter cannot reach one.
+
+    Distinct from every other executor failure ON PURPOSE. "I never reached a
+    provider" and "a provider answered badly" are different facts about the same
+    attempt, and collapsing them loses the one a reader needs: whether the failure
+    is a routing or configuration problem to fix or a response to investigate. The frozen F2a
+    vocabulary already separates them -- `provider-unavailable` against
+    `malformed-response` -- so the distinction costs nothing to keep.
+
+    Raised by route resolution here, and available to an injected adapter that
+    discovers at call time that its connection is unreachable.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,10 +226,13 @@ class ChatGenerationExecutor:
             trigger_message_id=trigger_message_id,
             lease_owner=self.identity.service_instance_id,
             now_us=_now_us(self.clock),
+            lease_duration_us=self._lease_duration_us(),
         )
+        lease_expires_at_us = _now_us(self.clock) + self._lease_duration_us()
         invocation_id = _stable_id("provider-inv", generation_job_id)
         requested_at = self.clock.wall_time()
         try:
+            self._resolve_route()
             request = ProviderInvocationRequest(
                 invocation_id=invocation_id,
                 workspace_id=self.workspace_id,
@@ -230,8 +260,16 @@ class ChatGenerationExecutor:
                 requested_at=_timestamp(requested_at),
                 causation_id=trigger_message_id,
             )
+        except ProviderRouteUnavailable:
+            # Never reached a provider at all. The lifecycle is still real -- claimed,
+            # attempted, terminal -- which is what makes this a durable outcome rather
+            # than a submission that vanished.
+            self._fail_generation(
+                generation_job_id, attempt_id, error_code="provider-unavailable"
+            )
+            return
         except Exception:  # noqa: BLE001 - boundary failures are terminalized, never exposed
-            self._fail_generation(generation_job_id, attempt_id)
+            self._fail_generation(generation_job_id, attempt_id, error_code="malformed-response")
             return
 
         text_chunks: list[str] = []
@@ -249,6 +287,12 @@ class ChatGenerationExecutor:
         try:
             stream = self.invoke(request)
             for event in stream:
+                # Before the event is durable, not after: the append itself requires an
+                # unexpired lease, so a stream that paused past the renewal point would
+                # otherwise fail on the very write that proves it is still alive.
+                lease_expires_at_us = self._renew_lease_if_due(
+                    generation_job_id, lease_expires_at_us
+                )
                 event_type, expected_ordinal = self._validate_event(
                     event,
                     invocation_id=invocation_id,
@@ -305,9 +349,19 @@ class ChatGenerationExecutor:
             if not saw_terminal:
                 raise GenerationExecutorError("the provider stream ended without a terminal event")
         except GenerationLifecycleError:
+            # Includes losing the lease to another instance. Terminalizing here would
+            # write over a job this executor no longer owns.
             raise
+        except ProviderRouteUnavailable:
+            self._fail_generation(
+                generation_job_id, attempt_id, error_code="provider-unavailable"
+            )
+            return
         except Exception:  # noqa: BLE001 - provider/iterator failures cross this boundary
-            self._fail_generation(generation_job_id, attempt_id)
+            # A stream that started and then failed, or ended without a terminal event,
+            # is a bad RESPONSE -- the provider was reached. `malformed-response`, never
+            # `provider-unavailable`.
+            self._fail_generation(generation_job_id, attempt_id, error_code="malformed-response")
             return
 
     @staticmethod
@@ -334,7 +388,54 @@ class ChatGenerationExecutor:
             raise GenerationExecutorError("the provider event stream is not contiguous")
         return str(event_type), expected_ordinal + 1
 
-    def _fail_generation(self, generation_job_id: str, attempt_id: str) -> None:
+    def _lease_duration_us(self) -> int:
+        """A lease that outlives the invocation it is protecting."""
+        deadline_us = (self.config.deadline_seconds + _LEASE_MARGIN_SECONDS) * 1_000_000
+        return max(DEFAULT_LEASE_US, deadline_us)
+
+    def _resolve_route(self) -> None:
+        """Refuse before invoking when the configured route cannot name a provider.
+
+        Deliberately AFTER the claim, not before it. The owner's distinction is that a
+        workspace with an executor installed but no reachable route must still produce
+        a real lifecycle -- claimed, attempted, terminal -- rather than silently
+        swallowing the submission. Refusing before mutation is the separate case where
+        no executor boundary is installed at all, and that belongs to the handler.
+        """
+        if not self.config.connection_id or not self.config.model_id:
+            raise ProviderRouteUnavailable("no provider route is configured")
+
+    def _renew_lease_if_due(self, generation_job_id: str, lease_expires_at_us: int) -> int:
+        """Heartbeat once the lease is past half-life. Returns the expiry now in force.
+
+        Half-life rather than expiry, so a renewal that is itself slow still lands
+        inside the window it is extending.
+
+        KNOWN CEILING, stated rather than hidden: this runs between events, so a single
+        gap longer than the whole lease still expires it -- there is no thread here, and
+        one would need its own connection because sqlite connections are not shared
+        across threads. Sizing the lease from the invocation deadline is what makes that
+        gap unreachable in practice; a provider that blocks past deadline + margin has
+        already broken its own contract.
+        """
+        now_us = _now_us(self.clock)
+        duration_us = self._lease_duration_us()
+        if now_us < lease_expires_at_us - duration_us // 2:
+            return lease_expires_at_us
+        return renew_generation_lease(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=generation_job_id,
+            lease_owner=self.identity.service_instance_id,
+            now_us=now_us,
+            lease_duration_us=duration_us,
+        )
+
+    def _fail_generation(
+        self, generation_job_id: str, attempt_id: str, *, error_code: str
+    ) -> None:
         job = chat.read_generation_job(
             self.connection,
             workspace_id=self.workspace_id,
@@ -351,10 +452,12 @@ class ChatGenerationExecutor:
             generation_attempt_id=attempt_id,
             provider_event={
                 "eventType": "error",
-                "errorCode": "malformed-response",
-                "retryable": False,
+                "errorCode": error_code,
+                # An unreachable route is worth retrying; a response this build cannot
+                # read is not, because retrying reproduces it.
+                "retryable": error_code == "provider-unavailable",
                 "statusClass": "unknown",
-                "safeMessage": "the provider stream could not be completed safely",
+                "safeMessage": _SAFE_MESSAGES[error_code],
             },
             now_us=_now_us(self.clock),
         )
