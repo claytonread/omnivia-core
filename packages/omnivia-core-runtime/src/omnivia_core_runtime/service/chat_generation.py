@@ -40,6 +40,7 @@ other position states its `expected_sequence` and is refused
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -107,6 +108,14 @@ _DURABLE_IDENTIFIER_CHARS: Final = _DURABLE_IDENTIFIER_INITIAL | frozenset("._:-
 _STATUS_CLASSES: Final = frozenset(
     {"client_error", "server_error", "rate_limited", "timeout", "unknown"}
 )
+
+
+def _event_id(generation_job_id: str, sequence: int) -> str:
+    candidate = f"{generation_job_id}.e{sequence}"
+    if len(candidate) <= 128:
+        return candidate
+    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+    return f"generation-event-{digest[:40]}"
 
 
 class GenerationLifecycleError(Exception):
@@ -420,7 +429,7 @@ def claim_queued_generation(
             started_at_us=now_us,
         )
         writer.append_generation_event(
-            event_id=f"{generation_job_id}.e1",
+            event_id=_event_id(generation_job_id, 1),
             conversation_id=submission.conversation_id,
             branch_id=submission.branch_id,
             generation_job_id=generation_job_id,
@@ -588,7 +597,7 @@ def append_provider_generation_event(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.append_generation_event(
-            event_id=f"{generation_job_id}.e{sequence}",
+            event_id=_event_id(generation_job_id, sequence),
             conversation_id=job.conversation_id,
             branch_id=job.branch_id,
             generation_job_id=generation_job_id,
