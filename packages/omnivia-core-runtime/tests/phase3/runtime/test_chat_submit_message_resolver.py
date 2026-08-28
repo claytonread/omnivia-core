@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
-from omnivia_core_runtime.ownership.identity import FakeClock
+from omnivia_core_runtime.ownership.identity import FakeClock, SystemClock
 from omnivia_core_runtime.service.application import (
     CHAT_FAMILY_PURPOSES,
     build_chat_application_dispatcher,
@@ -26,6 +27,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     GenerationExecutorConfig,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.main import _default_chat_generation
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
@@ -982,3 +984,99 @@ def test_a_lease_may_not_be_renewed_by_another_instance(seeded: m1.Owned) -> Non
     )
     assert job is not None and job.state == "succeeded"
     assert len(refusals) == 1
+
+
+# --- H1: the production surface installs an executor --------------------------------
+
+
+def test_the_production_surface_installs_a_generation_executor(seeded: m1.Owned) -> None:
+    """A production build must consume a submission, not decline it at the door.
+
+    `_build_production_application_surface` took an `execute_chat_generation` seam that
+    nothing supplied, so the real service composed with `None` and every
+    `SubmitMessage` refused with `dependency_unavailable` before mutating anything.
+    The executor existed and was correct; only Core's own tests, which construct one
+    directly, ever reached it.
+
+    That is why this is worth a test rather than being obvious from the wiring: the
+    parameter was present, typed and passed through, so the seam LOOKED connected at
+    every point a reader would check. Nothing named the absent caller.
+    """
+    started = SimpleNamespace(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=SystemClock(),
+    )
+    assert _default_chat_generation(started) is not None  # type: ignore[arg-type]
+
+
+def test_a_build_with_no_provider_route_still_produces_a_real_lifecycle(
+    seeded: m1.Owned,
+) -> None:
+    """The default install carries a submission to a durable terminal.
+
+    Not a refusal, and not an orphan. `application.py` refuses without an executor so a
+    build "cannot leave a queued job that no worker can consume" -- and an installed
+    executor honours that invariant more completely, because the job IS consumed: it is
+    claimed, opens an attempt, and terminalizes as `provider-unavailable`, which is the
+    true outcome when no route is configured.
+
+    This is what makes the H1 restart/resume path exercisable against the real service
+    without any provider adapter: there is finally a durable generation to observe.
+    """
+    clock = FakeClock(wall=WALL)
+    started = SimpleNamespace(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+    )
+    execute = _default_chat_generation(started)  # type: ignore[arg-type]
+    assert execute is not None
+
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=execute,
+    ).dispatch(_request(_submit_command(command_id="cmd-gb01-installed")))
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-installed.gen",
+    )
+    assert job is not None
+    assert job.state == "failed"
+    assert job.sanitized_error_code == "provider-unavailable"
+    # The durable events a restarted client would replay.
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=job.generation_job_id,
+        )
+    ] == ["chat.generation.queued", "chat.generation.failed"]
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_an_unstarted_service_installs_no_executor(seeded: m1.Owned) -> None:
+    """No connection to write through means the refusal-before-mutation path stands."""
+    for missing in ("connection", "identity", "generation", "workspace_id"):
+        fields = {
+            "connection": seeded.connection,
+            "identity": seeded.identity,
+            "generation": seeded.generation,
+            "workspace_id": WORKSPACE_ID,
+            "clock": SystemClock(),
+        }
+        fields[missing] = None
+        assert _default_chat_generation(SimpleNamespace(**fields)) is None, missing  # type: ignore[arg-type]

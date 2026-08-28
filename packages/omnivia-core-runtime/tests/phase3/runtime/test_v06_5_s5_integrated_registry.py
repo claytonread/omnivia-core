@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
+from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service.application import (
     ProductionApplicationSurface,
     build_installation_application_dispatcher,
@@ -66,7 +67,13 @@ def surface(tmp_path: Path) -> Iterator[ProductionApplicationSurface]:
         ),
         owned,
     )
-    started = SimpleNamespace(**vars(owned), workspace_id=m1.WORKSPACE_ID)
+    # `clock` because a real ServiceRunner always carries one -- it is set in the
+    # constructor and cannot be absent -- and the production surface now builds the
+    # Chat generation executor from it. A double missing it would only prove that the
+    # double is incomplete.
+    started = SimpleNamespace(
+        **vars(owned), workspace_id=m1.WORKSPACE_ID, clock=SystemClock()
+    )
     installation = build_installation_application_dispatcher(
         service=_InstallationService(),  # type: ignore[arg-type]
         principal_id=principal,
@@ -215,3 +222,25 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
+
+
+def test_the_production_surface_installs_the_chat_generation_executor(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """The composed surface must arrive with an executor, not merely accept one.
+
+    `_build_production_application_surface` declared an `execute_chat_generation`
+    parameter and passed it through to the chat dispatcher, so the seam read as wired
+    at every point a reader would check -- and nothing supplied it. The real service
+    composed with `None`, and every `SubmitMessage` refused with
+    `dependency_unavailable` before mutating anything, while Core's own tests passed
+    because they construct an executor directly.
+
+    This asserts the CALLER, which is the half that was missing. It reaches the handler
+    the registry actually routes `chat.command` to, rather than re-testing the factory
+    in isolation: a factory that works and is never called is the bug being fixed here.
+    """
+    handler = surface.registry.get("chat.command")
+    handlers = getattr(handler, "__self__", None)
+    assert handlers is not None, "chat.command should route to a bound handler method"
+    assert handlers.execute_generation is not None

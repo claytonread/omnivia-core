@@ -27,8 +27,9 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Final, Protocol
 
 from omnivia_core.contracts.v1 import RequestEnvelope, ResponseEnvelope
 from omnivia_core_runtime.service.application import (
@@ -47,6 +48,11 @@ from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
     Grant,
     ServiceBinding,
+)
+from omnivia_core_runtime.service.chat_generation_executor import (
+    ChatGenerationExecutor,
+    GenerationExecutorConfig,
+    ProviderRouteUnavailable,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
@@ -153,6 +159,69 @@ def _router_for(
     )
 
 
+#: The route a build with no provider adapter resolves to: none.
+#:
+#: Empty `connection_id` and `model_id` are what make it unmistakably unrouted --
+#: `ChatGenerationExecutor._resolve_route` refuses on those two before it reads any
+#: of the others, so the remaining refs are inert here rather than plausible-looking
+#: values that a reader might mistake for a configured policy.
+_UNCONFIGURED_PROVIDER_ROUTE: Final = GenerationExecutorConfig(
+    connection_id="",
+    model_id="",
+    policy_ref="",
+    classification_ref="",
+    residency_ref="",
+    service_actor_id="core.chat.generation",
+)
+
+
+def _no_provider_adapter(_request: object) -> Iterable[Mapping[str, Any]]:
+    """The injected boundary for a build that has no adapter to call.
+
+    Never reached while the route is unconfigured -- route resolution refuses first
+    -- and present so that configuring a route without also installing an adapter
+    fails as a route problem rather than as a `None` being called.
+    """
+    raise ProviderRouteUnavailable("no provider adapter is installed in this build")
+
+
+def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution | None:
+    """Install the Core-owned executor, even with no provider adapter to call.
+
+    WHY INSTALL ONE THAT CANNOT SUCCEED. Without an executor `SubmitMessage` refuses
+    with `dependency_unavailable` before it mutates anything, and the reason given in
+    `application.py` is precise: a build with no executor "cannot leave a queued job
+    that no worker can consume". That invariant is about ORPHANED WORK, not about
+    refusing to work -- and an installed executor satisfies it more completely, because
+    every submission it accepts is carried to a durable terminal rather than declined
+    at the door.
+
+    So this makes the honest failure reachable. A submitted message now persists, is
+    claimed, opens an attempt and terminalizes as `provider-unavailable`, which is the
+    true outcome when no route exists. Before this, the same situation was a flat
+    refusal that produced no conversation at all -- and no durable generation for a
+    restarted client to observe, which is what made the H1 restart/resume path
+    impossible to exercise against the real service.
+
+    The three states stay distinct. A caller that supplies its own execution overrides
+    this entirely; a build that has not started has no connection to write through and
+    still refuses before mutation.
+    """
+    if started.connection is None or started.identity is None:
+        return None
+    if started.generation is None or started.workspace_id is None:
+        return None
+    return ChatGenerationExecutor(
+        connection=started.connection,
+        identity=started.identity,
+        fencing_generation=started.generation,
+        workspace_id=started.workspace_id,
+        clock=started.clock,
+        invoke=_no_provider_adapter,
+        config=_UNCONFIGURED_PROVIDER_ROUTE,
+    ).execute_submission
+
+
 def _build_production_application_surface(
     *,
     started: ServiceRunner,
@@ -219,7 +288,9 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=governance,
-        execute_generation=execute_chat_generation,
+        execute_generation=execute_chat_generation
+        if execute_chat_generation is not None
+        else _default_chat_generation(started),
     )
     return compose_production_application_surface(
         installation=installation,
