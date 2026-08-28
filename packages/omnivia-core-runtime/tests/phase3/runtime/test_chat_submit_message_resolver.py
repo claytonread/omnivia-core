@@ -17,6 +17,10 @@ from omnivia_core_runtime.service.application import (
 )
 from omnivia_core_runtime.service.authorization import Grant
 from omnivia_core_runtime.service.chat_generation import claim_queued_generation
+from omnivia_core_runtime.service.chat_generation_executor import (
+    ChatGenerationExecutor,
+    GenerationExecutorConfig,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage import chat
@@ -176,7 +180,10 @@ _UNSET = object()
 
 
 def _dispatcher(
-    holder: m1.Owned, *, resolve_command: object = _UNSET
+    holder: m1.Owned,
+    *,
+    resolve_command: object = _UNSET,
+    execute_generation: object = _UNSET,
 ) -> Any:
     fields: dict[str, Any] = {
         "service": holder,
@@ -185,6 +192,11 @@ def _dispatcher(
         "workspace_id": WORKSPACE_ID,
         "fallback": _fallback(),
         "clock": FakeClock(wall=WALL),
+        "execute_generation": (
+            (lambda **_fields: None)
+            if execute_generation is _UNSET
+            else execute_generation
+        ),
     }
     if resolve_command is not _UNSET:
         fields["resolve_command"] = resolve_command
@@ -427,6 +439,177 @@ def test_gb01_resolverless_wiring_still_refuses_submit_message(
     assert isinstance(response, ErrorResponseEnvelope), response
     assert response.error.code == "dependency_unavailable"
     assert _counts(seeded) == before
+
+
+def test_submit_refuses_before_writing_when_generation_executor_is_absent(
+    seeded: m1.Owned,
+) -> None:
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded, execute_generation=None).dispatch(
+        _request(
+            _submit_command(command_id="cmd-gb01-no-executor"),
+            idempotency_key="idem-gb01-no-executor",
+            request_id="req-gb01-no-executor",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "dependency_unavailable"
+    assert _counts(seeded) == before
+
+
+def test_submit_runs_provider_and_materialises_assistant_message(
+    seeded: m1.Owned,
+) -> None:
+    clock = FakeClock(wall=WALL)
+    requests: list[Any] = []
+
+    def provider(request: Any):
+        requests.append(request)
+        common = {
+            "invocationId": request.invocation_id,
+            "attemptId": request.attempt_id,
+            "schemaVersion": 1,
+            "occurredAt": "2052-05-23T00:00:01Z",
+            "receivedAt": "2052-05-23T00:00:01Z",
+        }
+        yield {**common, "ordinal": 0, "eventType": "stream-start"}
+        yield {
+            **common,
+            "ordinal": 1,
+            "eventType": "text-delta",
+            "partId": "provider-part-1",
+            "stepId": "provider-step-1",
+            "delta": "assistant reply",
+        }
+        yield {
+            **common,
+            "ordinal": 2,
+            "eventType": "finish",
+            "finishReason": "stop",
+        }
+
+    executor = ChatGenerationExecutor(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        fencing_generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+        invoke=provider,
+        config=GenerationExecutorConfig(
+            connection_id="provider-connection-1",
+            model_id="provider-model-1",
+            policy_ref="policy-1",
+            classification_ref="classification-1",
+            residency_ref="residency-1",
+            service_actor_id="actor-core-chat",
+        ),
+    )
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=executor.execute_submission,
+    ).dispatch(_request(_submit_command()))
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert len(requests) == 1
+    assert [message["role"] for message in requests[0].messages] == ["user", "user"]
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-submit.gen",
+    )
+    assert job is not None
+    assert job.state == "succeeded"
+    assert job.result_message_id is not None
+    parts = chat.read_message_parts(
+        seeded.connection, workspace_id=WORKSPACE_ID, message_id=job.result_message_id
+    )
+    assert [dict(part.payload) for part in parts] == [{"text": "assistant reply"}]
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=job.generation_job_id,
+        )
+    ] == [
+        "chat.generation.queued",
+        "chat.generation.started",
+        "chat.generation.succeeded",
+    ]
+    branch = chat.read_branch(
+        seeded.connection, workspace_id=WORKSPACE_ID, branch_id=BRANCH_ID
+    )
+    assert branch is not None
+    assert branch.current_head_message_id == job.result_message_id
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_provider_exception_becomes_sanitized_terminal_generation_failure(
+    seeded: m1.Owned,
+) -> None:
+    clock = FakeClock(wall=WALL)
+
+    def provider(_request: Any):
+        raise RuntimeError("secret upstream response body")
+
+    executor = ChatGenerationExecutor(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        fencing_generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+        invoke=provider,
+        config=GenerationExecutorConfig(
+            connection_id="provider-connection-1",
+            model_id="provider-model-1",
+            policy_ref="policy-1",
+            classification_ref="classification-1",
+            residency_ref="residency-1",
+            service_actor_id="actor-core-chat",
+        ),
+    )
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=executor.execute_submission,
+    ).dispatch(
+        _request(
+            _submit_command(command_id="cmd-gb01-provider-failure"),
+            idempotency_key="idem-gb01-provider-failure",
+            request_id="req-gb01-provider-failure",
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-provider-failure.gen",
+    )
+    assert job is not None
+    assert job.state == "failed"
+    assert job.sanitized_error_code == "malformed-response"
+    assert "secret" not in (job.sanitized_error_detail or "")
+    assert job.result_message_id is None
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=job.generation_job_id,
+        )
+    ] == ["chat.generation.queued", "chat.generation.failed"]
 
 
 @pytest.mark.parametrize(

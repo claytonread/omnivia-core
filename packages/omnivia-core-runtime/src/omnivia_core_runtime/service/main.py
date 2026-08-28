@@ -49,6 +49,7 @@ from omnivia_core_runtime.service.authorization import (
     ServiceBinding,
 )
 from omnivia_core_runtime.service.dispatch import Dispatcher
+from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
     HttpBind,
@@ -157,6 +158,7 @@ def _build_production_application_surface(
     started: ServiceRunner,
     probe: Dispatcher,
     installation: ApplicationDispatcher,
+    execute_chat_generation: ChatGenerationExecution | None = None,
 ) -> ProductionApplicationSurface:
     """Compose the exact 22-operation production route for one live service.
 
@@ -217,6 +219,7 @@ def _build_production_application_surface(
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=governance,
+        execute_generation=execute_chat_generation,
     )
     return compose_production_application_surface(
         installation=installation,

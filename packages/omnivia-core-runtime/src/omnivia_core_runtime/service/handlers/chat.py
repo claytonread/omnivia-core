@@ -58,6 +58,7 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
+from omnivia_core_runtime.service.chat_submit import SUBMIT_MESSAGE_COMMAND
 from omnivia_core_runtime.service.mutation import issue_mutation_grant
 from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
@@ -86,6 +87,7 @@ _MESSAGE_NO_COMMAND: Final = (
 #: runs. Returning `None` is a refusal rather than a no-op: the seam is never entered,
 #: so nothing is claimed, audited or written for a command this build cannot perform.
 ChatCommandResolver = Callable[[ChatCommandInput, OperationContext], ChatCommand | None]
+ChatGenerationExecution = Callable[..., None]
 
 
 def _timestamp(value: int) -> str:
@@ -122,6 +124,7 @@ class ChatHandlers:
     clock: Clock
     allocate_identifier: IdentifierAllocator
     resolve_command: ChatCommandResolver | None = None
+    execute_generation: ChatGenerationExecution | None = None
 
     def _authority(self) -> tuple[Any, Any, Any]:
         connection = getattr(self.service, "connection", None)
@@ -157,6 +160,14 @@ class ChatHandlers:
         if command is None:
             raise application_refusal(
                 ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_COMMAND
+            )
+        if (
+            request.command_name == SUBMIT_MESSAGE_COMMAND
+            and self.execute_generation is None
+        ):
+            raise application_refusal(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+                "this service instance has no configured chat generation executor",
             )
 
         equivalence = idempotency_equivalence(
@@ -211,6 +222,25 @@ class ChatHandlers:
             expected=expectation,
             allocate_identifier=self.allocate_identifier,
         )
+        if request.command_name == SUBMIT_MESSAGE_COMMAND:
+            command_id = request.command.get("commandId")
+            trigger_message_id = request.command.get("newMessageId")
+            if not isinstance(command_id, str):  # validated by the resolver
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            if trigger_message_id is None:
+                trigger_message_id = f"{command_id}.msg"
+            if not isinstance(trigger_message_id, str):  # validated by the resolver
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            executor = self.execute_generation
+            if executor is None:  # guarded before the mutation
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+                )
+            executor(
+                queued_submission_id=f"{command_id}.sub",
+                generation_job_id=f"{command_id}.gen",
+                trigger_message_id=trigger_message_id,
+            )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 
     def chat_events(self, context: OperationContext) -> Mapping[str, Any]:
@@ -245,5 +275,6 @@ __all__ = [
     "CHAT_EVENTS_OPERATION",
     "CHAT_FAMILY_OPERATIONS",
     "ChatCommandResolver",
+    "ChatGenerationExecution",
     "ChatHandlers",
 ]

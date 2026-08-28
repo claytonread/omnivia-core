@@ -96,6 +96,7 @@ __all__ = [
     "read_generation_job",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
+    "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
     "read_queued_submission",
@@ -1883,6 +1884,26 @@ def read_queued_submission(
         f"SELECT {_QUEUED_SUBMISSION_COLUMNS} FROM omnivia_chat_queued_submissions "
         "WHERE workspace_id = ? AND queued_submission_id = ?",
         (workspace_id, queued_submission_id),
+    ).fetchone()
+    return None if row is None else _queued_submission_from_row(row)
+
+
+def read_next_queued_submission(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> QueuedSubmission | None:
+    """Return the next claimable submission in deterministic queue order.
+
+    Queue sequence is scoped to a conversation, so the workspace-wide worker uses
+    creation time and stable identities as the outer ordering keys.  The state
+    predicate is part of the query: a restarted worker never mistakes an already
+    submitted row for fresh work.
+    """
+    row = connection.execute(
+        f"SELECT {_QUEUED_SUBMISSION_COLUMNS} FROM omnivia_chat_queued_submissions "
+        "WHERE workspace_id = ? AND state = 'queued' "
+        "ORDER BY created_at_us, conversation_id, queue_sequence, queued_submission_id "
+        "LIMIT 1",
+        (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
 

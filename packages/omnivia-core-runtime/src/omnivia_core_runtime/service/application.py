@@ -81,6 +81,7 @@ from omnivia_core_runtime.service.handlers.chat import (
     CHAT_EVENTS_OPERATION,
     CHAT_FAMILY_OPERATIONS,
     ChatCommandResolver,
+    ChatGenerationExecution,
     ChatHandlers,
 )
 from omnivia_core_runtime.service.handlers.context_pack import context_pack_build
@@ -1400,18 +1401,21 @@ def build_chat_application_dispatcher(
     clock: Clock | None = None,
     allocate_identifier: IdentifierAllocator = random_identifier,
     resolve_command: ChatCommandResolver | None = resolve_chat_command,
+    execute_generation: ChatGenerationExecution | None = None,
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
     """Compose the exact two-operation W2-F2 Chat family around the existing router.
 
-    `resolve_command` is the one Chat-domain seam and production now states the Core
+    `resolve_command` is the Chat-domain mutation seam and production states the Core
     resolver `service/chat_submit.py` ships: a `SubmitMessage` in the variant this build
     can perform is executed into durable Chat storage, and every other Chat command --
     and every `SubmitMessage` variant naming work no authority here does -- still
     refuses at the domain step, after the grant and before any write, rather than being
     absent from the catalogue. Passing `None` restores the resolverless build, which is
-    what a test proving that refusal path uses.
+    what a test proving that refusal path uses. ``execute_generation`` is the separate
+    Core-owned execution seam. A build without one refuses ``SubmitMessage`` before
+    the mutation runs, so it cannot leave a queued job that no worker can consume.
     """
     session = chat_family_session(
         principal_id=principal_id,
@@ -1426,6 +1430,7 @@ def build_chat_application_dispatcher(
         clock=SystemClock() if clock is None else clock,
         allocate_identifier=allocate_identifier,
         resolve_command=resolve_command,
+        execute_generation=execute_generation,
     )
     registry = build_chat_registry(handlers)
     return ApplicationDispatcher(
