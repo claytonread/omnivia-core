@@ -2248,15 +2248,25 @@ def read_next_queued_submission(
 ) -> QueuedSubmission | None:
     """Return the next claimable submission in deterministic queue order.
 
-    Queue sequence is scoped to a conversation, so the workspace-wide worker uses
-    creation time and stable identities as the outer ordering keys.  The state
-    predicate is part of the query: a restarted worker never mistakes an already
-    submitted row for fresh work.
+    0030's queue-order projection is authoritative when present; 0029's immutable
+    `queue_sequence` is the fallback for rows created before the projection existed.
+    The state predicate is part of the query: a restarted worker never mistakes an
+    already submitted row for fresh work.
     """
     row = connection.execute(
-        f"SELECT {_QUEUED_SUBMISSION_COLUMNS} FROM omnivia_chat_queued_submissions "
-        "WHERE workspace_id = ? AND state = 'queued' "
-        "ORDER BY created_at_us, conversation_id, queue_sequence, queued_submission_id "
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "FROM omnivia_chat_queued_submissions q "
+        "LEFT JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "WHERE q.workspace_id = ? AND q.state = 'queued' "
+        "ORDER BY COALESCE(p.queue_position, q.queue_sequence), "
+        "q.created_at_us, q.conversation_id, q.queued_submission_id "
         "LIMIT 1",
         (workspace_id,),
     ).fetchone()

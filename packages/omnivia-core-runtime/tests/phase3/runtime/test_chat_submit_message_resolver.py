@@ -70,6 +70,10 @@ CHAT_TABLES = (
     "omnivia_chat_generation_jobs",
     "omnivia_chat_generation_attempts",
     "omnivia_chat_generation_events",
+    "omnivia_chat_generation_job_status_projection",
+    "omnivia_chat_generation_attempt_outcomes",
+    "omnivia_chat_generation_text_chunks",
+    "omnivia_chat_queue_order_projection",
     "omnivia_chat_transactional_outbox",
 )
 COUNTED_TABLES = s0.DURABLE_TABLES + CHAT_TABLES
@@ -245,6 +249,73 @@ def _submit_command(
     return command
 
 
+def _reorder_command(
+    *,
+    command_id: str = "cmd-gb01-reorder",
+    queued_submission_id: str = "cmd-gb01-submit.sub",
+    target_position: int = 1,
+    expected_version: int = 1,
+    workspace_id: str = WORKSPACE_ID,
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = ACTOR_ID,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "queuedSubmissionId": queued_submission_id,
+        "targetPosition": target_position,
+        "expectedVersion": expected_version,
+    }
+    command.update(extra)
+    return command
+
+
+def _cancel_queue_command(
+    *,
+    command_id: str = "cmd-gb01-cancel-queue",
+    queued_submission_id: str = "cmd-gb01-submit.sub",
+    workspace_id: str = WORKSPACE_ID,
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = ACTOR_ID,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "queuedSubmissionId": queued_submission_id,
+    }
+    command.update(extra)
+    return command
+
+
+def _stop_generation_command(
+    *,
+    command_id: str = "cmd-gb01-stop-generation",
+    job_id: str = "cmd-gb01-submit.gen",
+    workspace_id: str = WORKSPACE_ID,
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = ACTOR_ID,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "jobId": job_id,
+    }
+    command.update(extra)
+    return command
+
+
 def _request(
     command: Mapping[str, Any],
     *,
@@ -271,6 +342,31 @@ def _request(
         purpose=CHAT_FAMILY_PURPOSES[OPERATION],
         workspace_id=WORKSPACE_ID,
     )
+
+
+def _submit_queued(
+    holder: m1.Owned,
+    *,
+    command_id: str,
+    expected_head_message_id: str,
+    expected_head_version: int,
+    expected_sequence: int,
+) -> SuccessResponseEnvelope:
+    response = _dispatcher(holder).dispatch(
+        _request(
+            _submit_command(
+                command_id=command_id,
+                message_id=f"{command_id}.msg",
+                expected_head_message_id=expected_head_message_id,
+                expected_head_version=expected_head_version,
+            ),
+            idempotency_key=f"idem-{command_id}",
+            request_id=f"req-{command_id}",
+            expected_sequence=expected_sequence,
+        )
+    )
+    assert isinstance(response, SuccessResponseEnvelope), response
+    return response
 
 
 def test_gb01_production_chat_command_submits_message_and_opens_generation(
@@ -305,6 +401,10 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
         ]
         + 1,
         "omnivia_chat_generation_jobs": before["omnivia_chat_generation_jobs"] + 1,
+        "omnivia_chat_queue_order_projection": before[
+            "omnivia_chat_queue_order_projection"
+        ]
+        + 1,
         "omnivia_chat_transactional_outbox": before[
             "omnivia_chat_transactional_outbox"
         ]
@@ -355,6 +455,17 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
     assert queued.submitted_message_id is None
     assert queued.submitted_generation_job_id is None
 
+    order = chat.read_queue_order_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-gb01-submit.sub",
+    )
+    assert order is not None
+    assert order.conversation_id == CONVERSATION_ID
+    assert order.queue_position == queued.queue_sequence
+    assert order.version == 1
+    assert order.updated_by_actor_id == ACTOR_ID
+
     job = chat.read_generation_job(
         seeded.connection,
         workspace_id=WORKSPACE_ID,
@@ -387,6 +498,420 @@ def test_gb01_production_chat_command_submits_message_and_opens_generation(
         "role": "user",
     }
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_reorder_queued_submission_updates_authoritative_worker_order(
+    seeded: m1.Owned,
+) -> None:
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-q1",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-q2",
+        expected_head_message_id="cmd-gb01-q1.msg",
+        expected_head_version=2,
+        expected_sequence=SEEDED_SEQUENCE + 1,
+    )
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-q3",
+        expected_head_message_id="cmd-gb01-q2.msg",
+        expected_head_version=3,
+        expected_sequence=SEEDED_SEQUENCE + 2,
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _reorder_command(
+                command_id="cmd-gb01-q3-first",
+                queued_submission_id="cmd-gb01-q3.sub",
+                target_position=1,
+                expected_version=1,
+            ),
+            command_name="ReorderQueuedSubmission",
+            idempotency_key="idem-gb01-q3-first",
+            request_id="req-gb01-q3-first",
+            expected_sequence=SEEDED_SEQUENCE + 3,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result == {
+        "command_name": "ReorderQueuedSubmission",
+        "command_result": {"commandId": "cmd-gb01-q3-first", "status": "completed"},
+        "conversation_id": CONVERSATION_ID,
+    }
+    assert [
+        row.queued_submission_id
+        for row in chat.read_queue_order_for_conversation(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+        )
+    ] == ["cmd-gb01-q3.sub", "cmd-gb01-q1.sub", "cmd-gb01-q2.sub"]
+    assert [
+        row.queue_position
+        for row in chat.read_queue_order_for_conversation(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+        )
+    ] == [1, 2, 3]
+    next_queued = chat.read_next_queued_submission(
+        seeded.connection, workspace_id=WORKSPACE_ID
+    )
+    assert next_queued is not None
+    assert next_queued.queued_submission_id == "cmd-gb01-q3.sub"
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_reorder_queued_submission_stale_version_conflicts_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-stale-order",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _reorder_command(
+                command_id="cmd-gb01-stale-order-reorder",
+                queued_submission_id="cmd-gb01-stale-order.sub",
+                target_position=2,
+                expected_version=2,
+            ),
+            command_name="ReorderQueuedSubmission",
+            idempotency_key="idem-gb01-stale-order-reorder",
+            request_id="req-gb01-stale-order-reorder",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+    order = chat.read_queue_order_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-gb01-stale-order.sub",
+    )
+    assert order is not None
+    assert order.queue_position == 1
+    assert order.version == 1
+
+
+def test_cancel_queued_submission_marks_only_a_pending_submission_cancelled(
+    seeded: m1.Owned,
+) -> None:
+    command_id = "c" * 128
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-cancellable",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _cancel_queue_command(
+                command_id=command_id,
+                queued_submission_id="cmd-gb01-cancellable.sub",
+            ),
+            command_name="CancelQueuedSubmission",
+            idempotency_key="idem-gb01-cancel-cancellable",
+            request_id="req-gb01-cancel-cancellable",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result == {
+        "command_name": "CancelQueuedSubmission",
+        "command_result": {
+            "commandId": command_id,
+            "status": "completed",
+        },
+        "conversation_id": CONVERSATION_ID,
+    }
+    queued = chat.read_queued_submission(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-gb01-cancellable.sub",
+    )
+    assert queued is not None
+    assert queued.state == "cancelled"
+    assert queued.version == 2
+    assert queued.claimed_by is None
+    assert queued.submitted_generation_job_id is None
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_cancel_queued_submission_conflicts_after_submission_claim(
+    seeded: m1.Owned,
+) -> None:
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-submitted-cancel",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    claim_queued_generation(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+        queued_submission_id="cmd-gb01-submitted-cancel.sub",
+        generation_job_id="cmd-gb01-submitted-cancel.gen",
+        generation_attempt_id="cmd-gb01-submitted-cancel.attempt1",
+        trigger_message_id="cmd-gb01-submitted-cancel.msg",
+        lease_owner="runner-gb01",
+        now_us=BASE_US + 2_000_000,
+    )
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _cancel_queue_command(
+                command_id="cmd-gb01-cancel-submitted",
+                queued_submission_id="cmd-gb01-submitted-cancel.sub",
+            ),
+            command_name="CancelQueuedSubmission",
+            idempotency_key="idem-gb01-cancel-submitted",
+            request_id="req-gb01-cancel-submitted",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+    queued = chat.read_queued_submission(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        queued_submission_id="cmd-gb01-submitted-cancel.sub",
+    )
+    assert queued is not None
+    assert queued.state == "submitted"
+
+
+def test_cancel_missing_queued_submission_conflicts_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _cancel_queue_command(
+                command_id="cmd-gb01-cancel-missing",
+                queued_submission_id="missing-gb01-submission",
+            ),
+            command_name="CancelQueuedSubmission",
+            idempotency_key="idem-gb01-cancel-missing",
+            request_id="req-gb01-cancel-missing",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_stop_generation_cancels_a_running_job_and_records_successor_evidence(
+    seeded: m1.Owned,
+) -> None:
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-stoppable",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    claim_queued_generation(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+        queued_submission_id="cmd-gb01-stoppable.sub",
+        generation_job_id="cmd-gb01-stoppable.gen",
+        generation_attempt_id="cmd-gb01-stoppable.attempt1",
+        trigger_message_id="cmd-gb01-stoppable.msg",
+        lease_owner="runner-gb01",
+        now_us=BASE_US + 2_000_000,
+    )
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _stop_generation_command(
+                command_id="cmd-gb01-stop-stoppable",
+                job_id="cmd-gb01-stoppable.gen",
+            ),
+            command_name="StopGeneration",
+            idempotency_key="idem-gb01-stop-stoppable",
+            request_id="req-gb01-stop-stoppable",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result == {
+        "command_name": "StopGeneration",
+        "command_result": {"commandId": "cmd-gb01-stop-stoppable", "status": "completed"},
+        "conversation_id": CONVERSATION_ID,
+    }
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-stoppable.gen",
+    )
+    assert job is not None
+    assert job.state == "cancelled"
+    assert job.current_attempt_id == "cmd-gb01-stoppable.attempt1"
+    assert job.last_event_sequence == 2
+    assert job.sanitized_error_code == "cancelled"
+    assert job.finished_at_us is not None
+    assert [
+        (event.event_type, event.generation_event_sequence, dict(event.payload))
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id="cmd-gb01-stoppable.gen",
+        )
+    ] == [
+        (
+            "chat.generation.queued",
+            1,
+            {
+                "attemptNumber": 1,
+                "queuedSubmissionId": "cmd-gb01-stoppable.sub",
+            },
+        ),
+        (
+            "chat.generation.cancelled",
+            2,
+            {
+                "finishReason": "cancelled",
+                "stoppedByActorId": ACTOR_ID,
+            },
+        ),
+    ]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-stoppable.gen",
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].generation_attempt_id == "cmd-gb01-stoppable.attempt1"
+    assert outcomes[0].terminal_state == "cancelled"
+    assert outcomes[0].retryable is False
+    assert outcomes[0].sanitized_error_code == "cancelled"
+    status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-stoppable.gen",
+    )
+    assert status is not None
+    assert status.state == "cancelled"
+    assert status.current_attempt_id == "cmd-gb01-stoppable.attempt1"
+    assert status.sanitized_error_code == "cancelled"
+    assert status.finished_at_us == job.finished_at_us
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_stop_generation_terminal_job_conflicts_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    _submit_queued(
+        seeded,
+        command_id="cmd-gb01-terminal-stop",
+        expected_head_message_id=ROOT_MESSAGE_ID,
+        expected_head_version=1,
+        expected_sequence=SEEDED_SEQUENCE,
+    )
+    claim_queued_generation(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+        queued_submission_id="cmd-gb01-terminal-stop.sub",
+        generation_job_id="cmd-gb01-terminal-stop.gen",
+        generation_attempt_id="cmd-gb01-terminal-stop.attempt1",
+        trigger_message_id="cmd-gb01-terminal-stop.msg",
+        lease_owner="runner-gb01",
+        now_us=BASE_US + 2_000_000,
+    )
+    assert isinstance(
+        _dispatcher(seeded).dispatch(
+            _request(
+                _stop_generation_command(
+                    command_id="cmd-gb01-stop-terminal-once",
+                    job_id="cmd-gb01-terminal-stop.gen",
+                ),
+                command_name="StopGeneration",
+                idempotency_key="idem-gb01-stop-terminal-once",
+                request_id="req-gb01-stop-terminal-once",
+                expected_sequence=SEEDED_SEQUENCE + 1,
+            )
+        ),
+        SuccessResponseEnvelope,
+    )
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _stop_generation_command(
+                command_id="cmd-gb01-stop-terminal-twice",
+                job_id="cmd-gb01-terminal-stop.gen",
+            ),
+            command_name="StopGeneration",
+            idempotency_key="idem-gb01-stop-terminal-twice",
+            request_id="req-gb01-stop-terminal-twice",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+    assert [
+        event.event_type
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id="cmd-gb01-terminal-stop.gen",
+        )
+    ] == ["chat.generation.queued", "chat.generation.cancelled"]
+
+
+def test_stop_missing_generation_conflicts_without_writes(seeded: m1.Owned) -> None:
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _stop_generation_command(
+                command_id="cmd-gb01-stop-missing",
+                job_id="missing-gb01-generation",
+            ),
+            command_name="StopGeneration",
+            idempotency_key="idem-gb01-stop-missing",
+            request_id="req-gb01-stop-missing",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
 
 
 def test_gb01_submit_replay_returns_stored_result_without_duplicate_rows(

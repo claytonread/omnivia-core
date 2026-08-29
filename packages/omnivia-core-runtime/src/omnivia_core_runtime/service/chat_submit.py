@@ -62,10 +62,30 @@ from omnivia_core.contracts.v1.generated import ChatCommandInput, ChatCommandRes
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
-from omnivia_core_runtime.storage.chat import ChatWriter, read_branch, read_conversation
+from omnivia_core_runtime.storage.chat import (
+    ChatWriter,
+    StaleVersion,
+    read_branch,
+    read_conversation,
+    read_generation_events,
+    read_generation_job,
+    read_generation_job_status_projection,
+    read_queue_order_for_conversation,
+    read_queue_order_projection,
+    read_queued_submission,
+)
 
-__all__ = ["SUBMIT_MESSAGE_COMMAND", "resolve_chat_command"]
+__all__ = [
+    "CANCEL_QUEUED_SUBMISSION_COMMAND",
+    "REORDER_QUEUED_SUBMISSION_COMMAND",
+    "STOP_GENERATION_COMMAND",
+    "SUBMIT_MESSAGE_COMMAND",
+    "resolve_chat_command",
+]
 
+CANCEL_QUEUED_SUBMISSION_COMMAND: Final = "CancelQueuedSubmission"
+REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
+STOP_GENERATION_COMMAND: Final = "StopGeneration"
 SUBMIT_MESSAGE_COMMAND: Final = "SubmitMessage"
 
 #: The domain event kind the outbox row carries. A member of the Chat contract's own
@@ -108,6 +128,38 @@ _FIELDS: Final = frozenset(
         "targetReference",
         "fromQueuedSubmissionId",
         "clientCorrelationHint",
+    }
+)
+_REORDER_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "queuedSubmissionId",
+        "targetPosition",
+        "expectedVersion",
+    }
+)
+_CANCEL_QUEUE_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "queuedSubmissionId",
+    }
+)
+_STOP_GENERATION_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "jobId",
     }
 )
 #: The optional fields whose *presence* names work this build cannot perform. Separate
@@ -168,6 +220,35 @@ class _SubmitMessage:
     message_id: str
     parts: tuple[_Part, ...]
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ReorderQueuedSubmission:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    queued_submission_id: str
+    target_position: int
+    expected_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CancelQueuedSubmission:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    queued_submission_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StopGeneration:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    job_id: str
 
 
 def _plain_json(value: Any) -> Any:
@@ -250,6 +331,20 @@ def _part(item: object, index: int) -> tuple[_Part, str]:
 
 def _digest(document: str) -> str:
     return "sha256:" + hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def _positive_integer(
+    document: Mapping[str, Any], field: str, *, maximum: int = _MAX_SAFE_INTEGER
+) -> int:
+    value = document.get(field)
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 1
+        or value > maximum
+    ):
+        raise _invalid(field, f"is not an integer from 1 to {maximum}")
+    return value
 
 
 def _array(
@@ -380,6 +475,68 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
     )
 
 
+def _decode_reorder(command: Mapping[str, Any]) -> _ReorderQueuedSubmission:
+    unknown = sorted(set(command) - _REORDER_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _ReorderQueuedSubmission(
+        command_id=_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        queued_submission_id=_identifier(command, "queuedSubmissionId"),
+        target_position=_positive_integer(command, "targetPosition", maximum=100_000),
+        expected_version=_positive_integer(command, "expectedVersion"),
+    )
+
+
+def _decode_cancel_queue(command: Mapping[str, Any]) -> _CancelQueuedSubmission:
+    unknown = sorted(set(command) - _CANCEL_QUEUE_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _CancelQueuedSubmission(
+        command_id=_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        queued_submission_id=_identifier(command, "queuedSubmissionId"),
+    )
+
+
+def _decode_stop_generation(command: Mapping[str, Any]) -> _StopGeneration:
+    unknown = sorted(set(command) - _STOP_GENERATION_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _StopGeneration(
+        command_id=_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        job_id=_identifier(command, "jobId"),
+    )
+
+
 # --- the command ---------------------------------------------------------------------
 
 
@@ -404,6 +561,26 @@ def _next_queue_sequence(
         (workspace_id, conversation_id),
     ).fetchone()
     return int(row[0])
+
+
+def _generation_event_id(generation_job_id: str, sequence: int) -> str:
+    candidate = f"{generation_job_id}.e{sequence}"
+    if len(candidate) <= 128:
+        return candidate
+    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+    return f"generation-event-{digest[:40]}"
+
+
+def _generation_cursor(generation_job_id: str, sequence: int) -> str:
+    return f"{generation_job_id}:{sequence:06d}"
+
+
+def _ack(command_name: str, command_id: str, conversation_id: str) -> Mapping[str, Any]:
+    return ChatCommandResult(
+        command_name=command_name,
+        command_result=CommandResultEnvelope(command_id=command_id, status="completed").to_wire(),
+        conversation_id=conversation_id,
+    ).to_wire()
 
 
 def _submit(request: _SubmitMessage) -> ChatCommand:
@@ -441,6 +618,11 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
         head_version = branch.head_version + 1
         queued_submission_id = f"{request.command_id}.sub"
         generation_job_id = f"{request.command_id}.gen"
+        queue_sequence = _next_queue_sequence(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
 
         writer.update_conversation(
             conversation_id=request.conversation_id,
@@ -511,16 +693,19 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             queued_submission_id=queued_submission_id,
             conversation_id=request.conversation_id,
             actor_id=request.actor_id,
-            queue_sequence=_next_queue_sequence(
-                writer.connection,
-                workspace_id=writer.workspace_id,
-                conversation_id=request.conversation_id,
-            ),
+            queue_sequence=queue_sequence,
             branch_id=request.branch_id,
             editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
             references=(),
             idempotency_key=request.command_id,
             created_at_us=now,
+            updated_at_us=now,
+        )
+        writer.insert_queue_order_projection(
+            queued_submission_id=queued_submission_id,
+            conversation_id=request.conversation_id,
+            queue_position=queue_sequence,
+            updated_by_actor_id=request.actor_id,
             updated_at_us=now,
         )
         writer.append_generation_job(
@@ -554,13 +739,260 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             conversation_id=request.conversation_id,
             generation_job_id=generation_job_id,
         )
-        return ChatCommandResult(
-            command_name=SUBMIT_MESSAGE_COMMAND,
-            command_result=CommandResultEnvelope(
-                command_id=request.command_id, status="completed"
-            ).to_wire(),
-            conversation_id=request.conversation_id,
-        ).to_wire()
+        return _ack(SUBMIT_MESSAGE_COMMAND, request.command_id, request.conversation_id)
+
+    return command
+
+
+def _reorder_queued_submission(request: _ReorderQueuedSubmission) -> ChatCommand:
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        submission = read_queued_submission(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            queued_submission_id=request.queued_submission_id,
+        )
+        projection = read_queue_order_projection(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            queued_submission_id=request.queued_submission_id,
+        )
+        if (
+            submission is None
+            or projection is None
+            or submission.conversation_id != request.conversation_id
+            or projection.conversation_id != request.conversation_id
+            or submission.actor_id != request.actor_id
+            or submission.state != "queued"
+        ):
+            raise ChatAggregateConflict("the queued submission is not reorderable")
+        try:
+            _move_queue_projection(
+                writer,
+                queued_submission_id=request.queued_submission_id,
+                expected_version=request.expected_version,
+                target_position=request.target_position,
+                actor_id=request.actor_id,
+                now_us=settlement.settled_at_us,
+            )
+        except StaleVersion as error:
+            raise ChatAggregateConflict("the queued submission order version moved") from error
+        return _ack(
+            REORDER_QUEUED_SUBMISSION_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
+
+    return command
+
+
+def _move_queue_projection(
+    writer: ChatWriter,
+    *,
+    queued_submission_id: str,
+    expected_version: int,
+    target_position: int,
+    actor_id: str,
+    now_us: int,
+) -> None:
+    projection = read_queue_order_projection(
+        writer.connection,
+        workspace_id=writer.workspace_id,
+        queued_submission_id=queued_submission_id,
+    )
+    if projection is None:
+        raise StaleVersion("queue order projection is missing")
+    if projection.version != expected_version:
+        raise StaleVersion("queue order projection version moved")
+    if projection.queue_position == target_position:
+        writer.update_queue_order_projection(
+            queued_submission_id=queued_submission_id,
+            expected_version=expected_version,
+            queue_position=target_position,
+            updated_by_actor_id=actor_id,
+            updated_at_us=now_us,
+        )
+        return
+
+    rows = list(
+        read_queue_order_for_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=projection.conversation_id,
+        )
+    )
+    occupied = {row.queue_position for row in rows}
+    if target_position not in occupied:
+        writer.update_queue_order_projection(
+            queued_submission_id=queued_submission_id,
+            expected_version=expected_version,
+            queue_position=target_position,
+            updated_by_actor_id=actor_id,
+            updated_at_us=now_us,
+        )
+        return
+
+    free_position = max(occupied) + 1
+    if free_position > 100_000:
+        raise ChatAggregateConflict("the queued submission order has no temporary position")
+
+    moving_expected = expected_version
+    writer.update_queue_order_projection(
+        queued_submission_id=queued_submission_id,
+        expected_version=moving_expected,
+        queue_position=free_position,
+        updated_by_actor_id=actor_id,
+        updated_at_us=now_us,
+    )
+    moving_expected += 1
+
+    old_position = projection.queue_position
+    if target_position < old_position:
+        shifted = sorted(
+            (row for row in rows if target_position <= row.queue_position < old_position),
+            key=lambda row: row.queue_position,
+            reverse=True,
+        )
+        delta = 1
+    else:
+        shifted = sorted(
+            (row for row in rows if old_position < row.queue_position <= target_position),
+            key=lambda row: row.queue_position,
+        )
+        delta = -1
+    for row in shifted:
+        writer.update_queue_order_projection(
+            queued_submission_id=row.queued_submission_id,
+            expected_version=row.version,
+            queue_position=row.queue_position + delta,
+            updated_by_actor_id=actor_id,
+            updated_at_us=now_us,
+        )
+
+    writer.update_queue_order_projection(
+        queued_submission_id=queued_submission_id,
+        expected_version=moving_expected,
+        queue_position=target_position,
+        updated_by_actor_id=actor_id,
+        updated_at_us=now_us,
+    )
+
+
+def _cancel_queued_submission(request: _CancelQueuedSubmission) -> ChatCommand:
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        submission = read_queued_submission(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            queued_submission_id=request.queued_submission_id,
+        )
+        if (
+            submission is None
+            or submission.conversation_id != request.conversation_id
+            or submission.actor_id != request.actor_id
+            or submission.state != "queued"
+        ):
+            raise ChatAggregateConflict("the queued submission is not cancellable")
+        writer.update_queued_submission(
+            queued_submission_id=request.queued_submission_id,
+            expected_version=submission.version,
+            state="cancelled",
+            updated_at_us=settlement.settled_at_us,
+        )
+        return _ack(
+            CANCEL_QUEUED_SUBMISSION_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
+
+    return command
+
+
+def _stop_generation(request: _StopGeneration) -> ChatCommand:
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        job = read_generation_job(
+            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+        )
+        if (
+            job is None
+            or job.conversation_id != request.conversation_id
+            or job.state != "running"
+            or job.current_attempt_id is None
+        ):
+            raise ChatAggregateConflict("the generation job is not running")
+        events = read_generation_events(
+            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+        )
+        if any(event.event_type in {"chat.generation.succeeded", "chat.generation.failed", "chat.generation.cancelled"} for event in events):
+            raise ChatAggregateConflict("the generation job is already terminal")
+        sequence = job.last_event_sequence + 1
+        now = settlement.settled_at_us
+        writer.append_generation_event(
+            event_id=_generation_event_id(request.job_id, sequence),
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            generation_job_id=request.job_id,
+            generation_attempt_id=job.current_attempt_id,
+            event_type="chat.generation.cancelled",
+            generation_event_sequence=sequence,
+            trigger_message_id=job.trigger_message_id,
+            result_message_id=None,
+            provider_event_id=None,
+            cursor=_generation_cursor(request.job_id, sequence),
+            payload={"finishReason": "cancelled", "stoppedByActorId": request.actor_id},
+            occurred_at_us=now,
+            schema_version=1,
+        )
+        writer.append_generation_attempt_outcome(
+            conversation_id=job.conversation_id,
+            generation_job_id=request.job_id,
+            generation_attempt_id=job.current_attempt_id,
+            terminal_state="cancelled",
+            retryable=False,
+            sanitized_error_code="cancelled",
+            occurred_at_us=now,
+        )
+        writer.update_generation_job(
+            generation_job_id=request.job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state="cancelled",
+            lease_epoch=job.lease_epoch,
+            current_attempt_id=job.current_attempt_id,
+            last_event_sequence=sequence,
+            sanitized_error_code="cancelled",
+            updated_at_us=now,
+            started_at_us=job.started_at_us,
+            finished_at_us=now,
+        )
+        projection = read_generation_job_status_projection(
+            writer.connection, workspace_id=writer.workspace_id, generation_job_id=request.job_id
+        )
+        if projection is None:
+            writer.insert_generation_job_status_projection(
+                generation_job_id=request.job_id,
+                conversation_id=job.conversation_id,
+                state="cancelled",
+                current_attempt_id=job.current_attempt_id,
+                sanitized_error_code="cancelled",
+                updated_at_us=now,
+                finished_at_us=now,
+            )
+        else:
+            writer.update_generation_job_status_projection(
+                generation_job_id=request.job_id,
+                expected_version=projection.version,
+                state="cancelled",
+                current_attempt_id=job.current_attempt_id,
+                sanitized_error_code="cancelled",
+                updated_at_us=now,
+                finished_at_us=now,
+            )
+        return _ack(STOP_GENERATION_COMMAND, request.command_id, request.conversation_id)
 
     return command
 
@@ -568,26 +1000,41 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
 def resolve_chat_command(
     request: ChatCommandInput, context: OperationContext
 ) -> ChatCommand | None:
-    """The production resolver: `SubmitMessage`, and `None` for every other command.
+    """The production resolver for the Core-owned Chat W5 command subset.
 
-    `None` is a refusal the handler renders as `dependency_unavailable`, and it is the
-    honest answer for a command this build has no implementation of -- including a
-    `SubmitMessage` variant that names work no authority here can do. A document that is
-    not a `SubmitMessage` at all raises `invalid_request` instead, before a grant is
-    issued and before a transaction is opened, so a malformed request writes nothing.
+    `None` is a refusal the handler renders as `dependency_unavailable`, and it is
+    still the honest answer for commands this build has no implementation of. A
+    document for a supported command raises `invalid_request` instead when malformed,
+    before a grant is issued and before a transaction is opened, so a malformed request
+    writes nothing.
 
     The workspace the command document names must be the one the request was authorized
     for. It is checked rather than trusted or ignored: the envelope is workspace-scoped
     through the request's selected workspace, and a payload naming a second one is a
     request this seam cannot settle honestly under either.
     """
-    if request.command_name != SUBMIT_MESSAGE_COMMAND:
-        return None
-    decoded = _decode(request.command)
-    if decoded.workspace_id != context.workspace_id:
-        raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-    if any(field in request.command for field in _UNSUPPORTED_FIELDS) or any(
-        request.command.get(field) for field in _UNSUPPORTED_REFERENCES
-    ):
-        return None
-    return _submit(decoded)
+    if request.command_name == SUBMIT_MESSAGE_COMMAND:
+        decoded = _decode(request.command)
+        if decoded.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if any(field in request.command for field in _UNSUPPORTED_FIELDS) or any(
+            request.command.get(field) for field in _UNSUPPORTED_REFERENCES
+        ):
+            return None
+        return _submit(decoded)
+    if request.command_name == REORDER_QUEUED_SUBMISSION_COMMAND:
+        decoded = _decode_reorder(request.command)
+        if decoded.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        return _reorder_queued_submission(decoded)
+    if request.command_name == CANCEL_QUEUED_SUBMISSION_COMMAND:
+        decoded = _decode_cancel_queue(request.command)
+        if decoded.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        return _cancel_queued_submission(decoded)
+    if request.command_name == STOP_GENERATION_COMMAND:
+        decoded = _decode_stop_generation(request.command)
+        if decoded.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        return _stop_generation(decoded)
+    return None
