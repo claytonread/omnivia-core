@@ -162,6 +162,10 @@ def _message_hash(text: str) -> tuple[str, str]:
     return message_hash, part_hash
 
 
+def _text_hash(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class ChatGenerationExecutor:
     connection: sqlite3.Connection
@@ -309,17 +313,45 @@ class ChatGenerationExecutor:
                     delta = event.get("delta")
                     if not isinstance(delta, str):
                         raise GenerationExecutorError("a provider text delta is malformed")
-                    text_chunks.append(delta)
-                    if len("".join(text_chunks).encode("utf-8")) > _MAX_TEXT_BYTES:
+                    candidate = "".join([*text_chunks, delta])
+                    if len(candidate.encode("utf-8")) > _MAX_TEXT_BYTES:
                         raise GenerationExecutorError("the provider response exceeds message bounds")
+                    with chat.chat_writer(
+                        self.connection,
+                        self.identity,
+                        workspace_id=self.workspace_id,
+                        fencing_generation=self.fencing_generation,
+                    ) as writer:
+                        writer.append_generation_text_chunk(
+                            conversation_id=claimed.job.conversation_id,
+                            generation_job_id=generation_job_id,
+                            generation_attempt_id=attempt_id,
+                            chunk_ordinal=len(text_chunks),
+                            provider_event_id=(
+                                str(event["providerEventId"])
+                                if isinstance(event.get("providerEventId"), str)
+                                else None
+                            ),
+                            text_content=delta,
+                            content_hash=_text_hash(delta),
+                            occurred_at_us=_now_us(self.clock),
+                        )
+                    text_chunks.append(delta)
                 if event_type == "finish" and event.get("finishReason") not in {
                     "error",
                     "cancelled",
                 }:
-                    if not saw_start or not text_chunks:
+                    durable_chunks = chat.read_generation_text_chunks(
+                        self.connection,
+                        workspace_id=self.workspace_id,
+                        generation_job_id=generation_job_id,
+                        generation_attempt_id=attempt_id,
+                    )
+                    if not saw_start or not durable_chunks:
                         raise GenerationExecutorError("a successful provider stream is incomplete")
                     result_message_id = self._materialize_assistant(
-                        claimed=claimed, text="".join(text_chunks)
+                        claimed=claimed,
+                        text="".join(chunk.text_content for chunk in durable_chunks),
                     )
                     append_provider_generation_event(
                         self.connection,

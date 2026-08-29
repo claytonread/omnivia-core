@@ -551,6 +551,33 @@ def test_submit_runs_provider_and_materialises_assistant_message(
         "chat.generation.started",
         "chat.generation.succeeded",
     ]
+    assert job.current_attempt_id is not None
+    chunks = chat.read_generation_text_chunks(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+        generation_attempt_id=job.current_attempt_id,
+    )
+    assert [chunk.text_content for chunk in chunks] == ["assistant reply"]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].generation_attempt_id == job.current_attempt_id
+    assert outcomes[0].terminal_state == "succeeded"
+    assert outcomes[0].result_message_id == job.result_message_id
+    assert outcomes[0].retryable is False
+    status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert status is not None
+    assert status.state == "succeeded"
+    assert status.result_message_id == job.result_message_id
+    assert status.current_attempt_id == job.current_attempt_id
     branch = chat.read_branch(
         seeded.connection, workspace_id=WORKSPACE_ID, branch_id=BRANCH_ID
     )
@@ -618,6 +645,23 @@ def test_provider_exception_becomes_sanitized_terminal_generation_failure(
             generation_job_id=job.generation_job_id,
         )
     ] == ["chat.generation.queued", "chat.generation.failed"]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].terminal_state == "failed"
+    assert outcomes[0].retryable is False
+    assert outcomes[0].sanitized_error_code == "malformed-response"
+    status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert status is not None
+    assert status.state == "failed"
+    assert status.sanitized_error_code == "malformed-response"
 
 
 @pytest.mark.parametrize(
@@ -954,6 +998,15 @@ def test_an_unreachable_route_terminalizes_as_provider_unavailable(
             generation_job_id=job.generation_job_id,
         )
     ] == ["chat.generation.queued", "chat.generation.failed"]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].terminal_state == "failed"
+    assert outcomes[0].retryable is True
+    assert outcomes[0].sanitized_error_code == "provider-unavailable"
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -971,6 +1024,22 @@ def test_a_stream_that_ends_without_a_terminal_event_stays_malformed_response(
     assert job is not None
     assert job.state == "failed"
     assert job.sanitized_error_code == "malformed-response"
+    assert job.current_attempt_id is not None
+    chunks = chat.read_generation_text_chunks(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+        generation_attempt_id=job.current_attempt_id,
+    )
+    assert [chunk.text_content for chunk in chunks] == ["half an answer"]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0].terminal_state == "failed"
+    assert outcomes[0].sanitized_error_code == "malformed-response"
 
 
 def test_the_claim_lease_outlives_the_invocation_deadline(seeded: m1.Owned) -> None:

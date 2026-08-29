@@ -456,6 +456,13 @@ def claim_queued_generation(
             updated_at_us=now_us,
             started_at_us=now_us,
         )
+        writer.insert_generation_job_status_projection(
+            generation_job_id=generation_job_id,
+            conversation_id=submission.conversation_id,
+            state="running",
+            current_attempt_id=generation_attempt_id,
+            updated_at_us=now_us,
+        )
         writer.update_queued_submission(
             queued_submission_id=queued_submission_id,
             expected_version=submission.version + 1,
@@ -594,6 +601,9 @@ def append_provider_generation_event(
 
     terminal_state = _TERMINAL_JOB_STATE_OF.get(event_type)
     expires_at_us = now_us + lease_duration_us
+    projection = chat.read_generation_job_status_projection(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
     with chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
@@ -628,11 +638,39 @@ def append_provider_generation_event(
                 updated_at_us=now_us,
                 started_at_us=job.started_at_us,
             )
+            if projection is None:
+                writer.insert_generation_job_status_projection(
+                    generation_job_id=generation_job_id,
+                    conversation_id=job.conversation_id,
+                    state=job.state,
+                    current_attempt_id=job.current_attempt_id,
+                    updated_at_us=now_us,
+                )
+            else:
+                writer.update_generation_job_status_projection(
+                    generation_job_id=generation_job_id,
+                    expected_version=projection.version,
+                    state=job.state,
+                    current_attempt_id=job.current_attempt_id,
+                    updated_at_us=now_us,
+                )
         else:
             code, detail = (
                 (None, None)
                 if terminal_state == "succeeded"
                 else _sanitized_failure(event_type, payload)
+            )
+            writer.append_generation_attempt_outcome(
+                conversation_id=job.conversation_id,
+                generation_job_id=generation_job_id,
+                generation_attempt_id=generation_attempt_id,
+                terminal_state=terminal_state,
+                result_message_id=result_message_id if terminal_state == "succeeded" else None,
+                provider_event_id=None if provider_event_id is None else str(provider_event_id),
+                retryable=bool(payload.get("retryable", False)),
+                sanitized_error_code=code,
+                sanitized_error_detail=detail,
+                occurred_at_us=now_us,
             )
             writer.update_generation_job(
                 generation_job_id=generation_job_id,
@@ -649,6 +687,30 @@ def append_provider_generation_event(
                 started_at_us=job.started_at_us,
                 finished_at_us=now_us,
             )
+            if projection is None:
+                writer.insert_generation_job_status_projection(
+                    generation_job_id=generation_job_id,
+                    conversation_id=job.conversation_id,
+                    state=terminal_state,
+                    current_attempt_id=job.current_attempt_id,
+                    result_message_id=result_message_id if terminal_state == "succeeded" else None,
+                    sanitized_error_code=code,
+                    sanitized_error_detail=detail,
+                    updated_at_us=now_us,
+                    finished_at_us=now_us,
+                )
+            else:
+                writer.update_generation_job_status_projection(
+                    generation_job_id=generation_job_id,
+                    expected_version=projection.version,
+                    state=terminal_state,
+                    current_attempt_id=job.current_attempt_id,
+                    result_message_id=result_message_id if terminal_state == "succeeded" else None,
+                    sanitized_error_code=code,
+                    sanitized_error_detail=detail,
+                    updated_at_us=now_us,
+                    finished_at_us=now_us,
+                )
 
     appended = chat.read_generation_events(
         connection, workspace_id=workspace_id, generation_job_id=generation_job_id
