@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
 from omnivia_core_runtime.ownership.identity import FakeClock, SystemClock
+from omnivia_core_runtime.service import chat_provider_route
 from omnivia_core_runtime.service.application import (
     CHAT_FAMILY_PURPOSES,
     build_chat_application_dispatcher,
@@ -1158,6 +1160,141 @@ def test_a_build_with_no_provider_route_still_produces_a_real_lifecycle(
         )
     ] == ["chat.generation.queued", "chat.generation.failed"]
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_the_default_executor_uses_an_explicit_local_provider_route(
+    seeded: m1.Owned,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured local route changes only the provider boundary, not Chat's lifecycle."""
+
+    class Response:
+        status = 200
+
+        def __init__(self, chunks: list[bytes]) -> None:
+            self.chunks = chunks
+
+        def read(self, _size: int = -1) -> bytes:
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class Connection:
+        seen: ClassVar[list[Connection]] = []
+
+        def __init__(self, host: str, port: int, *, timeout: float) -> None:
+            self.host = host
+            self.port = port
+            self.timeout = timeout
+            self.body = b""
+            self.headers: Mapping[str, str] = {}
+            self.path = ""
+            self.closed = False
+            self.__class__.seen.append(self)
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            body: bytes,
+            headers: Mapping[str, str],
+        ) -> None:
+            assert method == "POST"
+            self.path = path
+            self.body = body
+            self.headers = headers
+
+        def getresponse(self) -> Response:
+            request = json.loads(self.body.decode("utf-8"))
+            common = {
+                "invocationId": request["invocationId"],
+                "attemptId": request["attemptId"],
+                "schemaVersion": 1,
+                "occurredAt": "2052-05-23T00:00:01Z",
+                "receivedAt": "2052-05-23T00:00:01Z",
+            }
+            return Response(
+                [
+                    json.dumps(
+                        {**common, "ordinal": 0, "eventType": "stream-start"}
+                    ).encode("utf-8")
+                    + b"\n",
+                    json.dumps(
+                        {
+                            **common,
+                            "ordinal": 1,
+                            "eventType": "text-delta",
+                            "partId": "provider-part-1",
+                            "stepId": "provider-step-1",
+                            "delta": "assistant reply through local bridge",
+                        }
+                    ).encode("utf-8")
+                    + b"\n",
+                    json.dumps(
+                        {
+                            **common,
+                            "ordinal": 2,
+                            "eventType": "finish",
+                            "finishReason": "stop",
+                        }
+                    ).encode("utf-8")
+                    + b"\n",
+                ]
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(chat_provider_route, "HTTPConnection", Connection)
+    monkeypatch.setenv(
+        chat_provider_route.ENDPOINT_ENV, "http://127.0.0.1:49152/f2a/provider-stream"
+    )
+    monkeypatch.setenv(chat_provider_route.TOKEN_ENV, "route-token-secret")
+    monkeypatch.setenv(chat_provider_route.CONNECTION_ID_ENV, "provider-connection-1")
+    monkeypatch.setenv(chat_provider_route.MODEL_ID_ENV, "provider-model-1")
+    monkeypatch.setenv(chat_provider_route.POLICY_REF_ENV, "policy-1")
+    monkeypatch.setenv(chat_provider_route.CLASSIFICATION_REF_ENV, "classification-1")
+    monkeypatch.setenv(chat_provider_route.RESIDENCY_REF_ENV, "residency-1")
+
+    clock = FakeClock(wall=WALL)
+    started = SimpleNamespace(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+    )
+    execute = _default_chat_generation(started)  # type: ignore[arg-type]
+    assert execute is not None
+
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=execute,
+    ).dispatch(_request(_submit_command(command_id="cmd-gb01-local-route")))
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id="cmd-gb01-local-route.gen",
+    )
+    assert job is not None
+    assert job.state == "succeeded"
+    assert job.result_message_id is not None
+    parts = chat.read_message_parts(
+        seeded.connection, workspace_id=WORKSPACE_ID, message_id=job.result_message_id
+    )
+    assert [dict(part.payload) for part in parts] == [
+        {"text": "assistant reply through local bridge"}
+    ]
+    assert len(Connection.seen) == 1
+    assert Connection.seen[0].headers["Authorization"] == "Bearer route-token-secret"
+    assert b"route-token-secret" not in Connection.seen[0].body
+    assert Connection.seen[0].closed is True
 
 
 def test_an_unstarted_service_installs_no_executor(seeded: m1.Owned) -> None:

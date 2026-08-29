@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -54,6 +55,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     GenerationExecutorConfig,
     ProviderRouteUnavailable,
 )
+from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
 from omnivia_core_runtime.service.http_transport import (
@@ -206,19 +208,30 @@ def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution 
     The three states stay distinct. A caller that supplies its own execution overrides
     this entirely; a build that has not started has no connection to write through and
     still refuses before mutation.
+
+    A fourth state is layered on top without touching those three: an explicit,
+    complete `OMNIVIA_CHAT_PROVIDER_ROUTE_*` environment names a Platform-owned local
+    bridge (`chat_provider_route.py`). `provider_route_from_env` returns `None` for
+    every reason that route is not usable -- absent, incomplete, or an endpoint that
+    fails its loopback-only rule -- and `None` here means exactly what an unset
+    environment always meant: the unconfigured route, unchanged.
     """
     if started.connection is None or started.identity is None:
         return None
     if started.generation is None or started.workspace_id is None:
         return None
+    route = provider_route_from_env(os.environ)
+    invoke, config = (
+        route if route is not None else (_no_provider_adapter, _UNCONFIGURED_PROVIDER_ROUTE)
+    )
     return ChatGenerationExecutor(
         connection=started.connection,
         identity=started.identity,
         fencing_generation=started.generation,
         workspace_id=started.workspace_id,
         clock=started.clock,
-        invoke=_no_provider_adapter,
-        config=_UNCONFIGURED_PROVIDER_ROUTE,
+        invoke=invoke,
+        config=config,
     ).execute_submission
 
 
