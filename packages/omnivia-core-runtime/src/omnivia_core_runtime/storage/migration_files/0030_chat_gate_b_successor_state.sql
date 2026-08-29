@@ -290,7 +290,7 @@ CREATE INDEX IF NOT EXISTS omnivia_idx_chat_queue_order_projection_conversation
     ON omnivia_chat_queue_order_projection
         (workspace_id, conversation_id, queue_position);
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_job_status_projection_insert
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_job_status_projection_insert
 BEFORE INSERT ON omnivia_chat_generation_job_status_projection
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_chat_generation_job_status_projection')
@@ -309,7 +309,7 @@ BEGIN
             SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
 END;
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_job_status_projection_update
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_job_status_projection_update
 BEFORE UPDATE ON omnivia_chat_generation_job_status_projection
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: unguarded UPDATE on omnivia_chat_generation_job_status_projection')
@@ -343,13 +343,13 @@ BEGIN
                 AND NEW.state = OLD.state));
 END;
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_job_status_projection_delete
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_job_status_projection_delete
 BEFORE DELETE ON omnivia_chat_generation_job_status_projection
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_chat_generation_job_status_projection forbids DELETE');
 END;
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_attempt_outcomes_insert
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_attempt_outcomes_insert
 BEFORE INSERT ON omnivia_chat_generation_attempt_outcomes
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_chat_generation_attempt_outcomes')
@@ -368,13 +368,13 @@ BEGIN
             SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
 END;
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_attempt_outcomes_update
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_attempt_outcomes_update
 BEFORE UPDATE ON omnivia_chat_generation_attempt_outcomes
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_chat_generation_attempt_outcomes is append-only; UPDATE is never permitted');
 END;
 
-CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_attempt_outcomes_delete
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_chat_generation_attempt_outcomes_delete
 BEFORE DELETE ON omnivia_chat_generation_attempt_outcomes
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_chat_generation_attempt_outcomes forbids DELETE');

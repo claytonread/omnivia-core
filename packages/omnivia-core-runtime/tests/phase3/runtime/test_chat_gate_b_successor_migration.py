@@ -46,12 +46,12 @@ INDEXES = {
 }
 
 TRIGGERS = {
-    "omnivia_guard_chat_job_status_projection_insert",
-    "omnivia_guard_chat_job_status_projection_update",
-    "omnivia_guard_chat_job_status_projection_delete",
-    "omnivia_guard_chat_attempt_outcomes_insert",
-    "omnivia_guard_chat_attempt_outcomes_update",
-    "omnivia_guard_chat_attempt_outcomes_delete",
+    "omnivia_guard_chat_generation_job_status_projection_insert",
+    "omnivia_guard_chat_generation_job_status_projection_update",
+    "omnivia_guard_chat_generation_job_status_projection_delete",
+    "omnivia_guard_chat_generation_attempt_outcomes_insert",
+    "omnivia_guard_chat_generation_attempt_outcomes_update",
+    "omnivia_guard_chat_generation_attempt_outcomes_delete",
     "omnivia_guard_chat_generation_text_chunks_insert",
     "omnivia_guard_chat_generation_text_chunks_update",
     "omnivia_guard_chat_generation_text_chunks_delete",
