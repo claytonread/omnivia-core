@@ -1141,32 +1141,32 @@ def resolve_chat_command(
     request this seam cannot settle honestly under either.
     """
     if request.command_name == SUBMIT_MESSAGE_COMMAND:
-        decoded = _decode(request.command)
-        if decoded.workspace_id != context.workspace_id:
+        submit = _decode(request.command)
+        if submit.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
         if any(field in request.command for field in _UNSUPPORTED_FIELDS) or any(
             request.command.get(field) for field in _UNSUPPORTED_REFERENCES
         ):
             return None
-        return _submit(decoded)
+        return _submit(submit)
     if request.command_name == REORDER_QUEUED_SUBMISSION_COMMAND:
-        decoded = _decode_reorder(request.command)
-        if decoded.workspace_id != context.workspace_id:
+        reorder = _decode_reorder(request.command)
+        if reorder.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-        return _reorder_queued_submission(decoded)
+        return _reorder_queued_submission(reorder)
     if request.command_name == CANCEL_QUEUED_SUBMISSION_COMMAND:
-        decoded = _decode_cancel_queue(request.command)
-        if decoded.workspace_id != context.workspace_id:
+        cancel_queue = _decode_cancel_queue(request.command)
+        if cancel_queue.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-        return _cancel_queued_submission(decoded)
+        return _cancel_queued_submission(cancel_queue)
     if request.command_name == STOP_GENERATION_COMMAND:
-        decoded = _decode_stop_generation(request.command)
-        if decoded.workspace_id != context.workspace_id:
+        stop_generation = _decode_stop_generation(request.command)
+        if stop_generation.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-        return _stop_generation(decoded)
+        return _stop_generation(stop_generation)
     if request.command_name == RETRY_GENERATION_COMMAND:
-        decoded = _decode_retry_generation(request.command)
-        if decoded.workspace_id != context.workspace_id:
+        retry_generation = _decode_retry_generation(request.command)
+        if retry_generation.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
-        return _retry_generation(decoded)
+        return _retry_generation(retry_generation)
     return None
