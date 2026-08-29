@@ -139,6 +139,17 @@
       "sha256": "56419928e082dbb8d8ef0084c4eed374c742b038b02ec35f0a7477b94225a946",
       "introduced_commit": "192e88b28a89c6740b302cc3646d732f45086c70",
       "accepted_commit": null
+    },
+    {
+      "number": 30,
+      "filename": "0030_chat_gate_b_successor_state.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 29,
+      "sha256": "b9dbf5e5780193966da94a7a624ed97284099d2529d9581fc5676ae9e260a986",
+      "introduced_commit": "c64faf61774f46257ada951ad1fc56212c61556c",
+      "accepted_commit": null
     }
   ]
 }
