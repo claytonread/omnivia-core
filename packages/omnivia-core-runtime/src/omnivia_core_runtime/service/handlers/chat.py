@@ -58,7 +58,11 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
-from omnivia_core_runtime.service.chat_submit import SUBMIT_MESSAGE_COMMAND
+from omnivia_core_runtime.service.chat_submit import (
+    RETRY_GENERATION_COMMAND,
+    SUBMIT_MESSAGE_COMMAND,
+    retry_generation_attempt_id,
+)
 from omnivia_core_runtime.service.mutation import issue_mutation_grant
 from omnivia_core_runtime.service.operations import (
     AuditedOperationResult,
@@ -81,6 +85,9 @@ _MESSAGE_NO_STORAGE: Final = (
 )
 _MESSAGE_NO_COMMAND: Final = (
     "this build serves no implementation of the chat command this request names"
+)
+_GENERATION_EXECUTOR_COMMANDS: Final = frozenset(
+    {SUBMIT_MESSAGE_COMMAND, RETRY_GENERATION_COMMAND}
 )
 
 #: How one decoded `chat.command` becomes the domain mutation the transaction seam
@@ -162,7 +169,7 @@ class ChatHandlers:
                 ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_COMMAND
             )
         if (
-            request.command_name == SUBMIT_MESSAGE_COMMAND
+            request.command_name in _GENERATION_EXECUTOR_COMMANDS
             and self.execute_generation is None
         ):
             raise application_refusal(
@@ -222,7 +229,7 @@ class ChatHandlers:
             expected=expectation,
             allocate_identifier=self.allocate_identifier,
         )
-        if request.command_name == SUBMIT_MESSAGE_COMMAND:
+        if request.command_name == SUBMIT_MESSAGE_COMMAND and not outcome.replayed:
             command_id = request.command.get("commandId")
             trigger_message_id = request.command.get("newMessageId")
             if not isinstance(command_id, str):  # validated by the resolver
@@ -240,6 +247,22 @@ class ChatHandlers:
                 queued_submission_id=f"{command_id}.sub",
                 generation_job_id=f"{command_id}.gen",
                 trigger_message_id=trigger_message_id,
+            )
+        elif request.command_name == RETRY_GENERATION_COMMAND and not outcome.replayed:
+            command_id = request.command.get("commandId")
+            generation_job_id = request.command.get("jobId")
+            if not isinstance(command_id, str) or not isinstance(generation_job_id, str):
+                raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+            executor = self.execute_generation
+            if executor is None:  # guarded before the mutation
+                raise OperationError(
+                    ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+                )
+            executor(
+                generation_job_id=generation_job_id,
+                generation_attempt_id=retry_generation_attempt_id(
+                    command_id, generation_job_id
+                ),
             )
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
 

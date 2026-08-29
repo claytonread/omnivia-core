@@ -162,6 +162,10 @@ def _message_hash(text: str) -> tuple[str, str]:
     return message_hash, part_hash
 
 
+def _text_hash(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class ChatGenerationExecutor:
     connection: sqlite3.Connection
@@ -171,6 +175,23 @@ class ChatGenerationExecutor:
     clock: Clock
     invoke: ProviderStream
     config: GenerationExecutorConfig
+
+    def execute(self, **fields: Any) -> None:
+        """Run either a fresh queued submission or an already-opened retry attempt."""
+        if fields.get("queued_submission_id") is not None:
+            self.execute_submission(
+                queued_submission_id=str(fields["queued_submission_id"]),
+                generation_job_id=str(fields["generation_job_id"]),
+                trigger_message_id=str(fields["trigger_message_id"]),
+            )
+            return
+        if fields.get("generation_attempt_id") is not None:
+            self.execute_generation_attempt(
+                generation_job_id=str(fields["generation_job_id"]),
+                generation_attempt_id=str(fields["generation_attempt_id"]),
+            )
+            return
+        raise GenerationExecutorError("no executable chat generation target was supplied")
 
     def execute_next(self) -> str | None:
         """Execute the next queued workspace item, or return ``None`` when idle."""
@@ -228,16 +249,61 @@ class ChatGenerationExecutor:
             now_us=_now_us(self.clock),
             lease_duration_us=self._lease_duration_us(),
         )
+        self._execute_attempt(
+            job=claimed.job,
+            attempt_id=attempt_id,
+            trigger_message_id=trigger_message_id,
+            renew_lease=True,
+        )
+
+    def execute_generation_attempt(
+        self, *, generation_job_id: str, generation_attempt_id: str
+    ) -> None:
+        """Invoke the provider for an already-opened retry attempt."""
+        job = chat.read_generation_job(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=generation_job_id,
+        )
+        status = chat.read_generation_job_status_projection(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=generation_job_id,
+        )
+        if (
+            job is None
+            or status is None
+            or status.state != "running"
+            or status.current_attempt_id != generation_attempt_id
+        ):
+            return
+        self._execute_attempt(
+            job=job,
+            attempt_id=generation_attempt_id,
+            trigger_message_id=job.trigger_message_id,
+            renew_lease=job.state not in {"succeeded", "failed", "cancelled"},
+        )
+
+    def _execute_attempt(
+        self,
+        *,
+        job: chat.GenerationJob,
+        attempt_id: str,
+        trigger_message_id: str,
+        renew_lease: bool,
+    ) -> None:
         lease_expires_at_us = _now_us(self.clock) + self._lease_duration_us()
-        invocation_id = _stable_id("provider-inv", generation_job_id)
+        invocation_id = _stable_id(
+            "provider-inv", f"{job.generation_job_id}:{attempt_id}"
+        )
         requested_at = self.clock.wall_time()
         try:
             self._resolve_route()
             request = ProviderInvocationRequest(
                 invocation_id=invocation_id,
                 workspace_id=self.workspace_id,
-                conversation_id=claimed.job.conversation_id,
-                job_id=generation_job_id,
+                conversation_id=job.conversation_id,
+                job_id=job.generation_job_id,
                 attempt_id=attempt_id,
                 connection_id=self.config.connection_id,
                 model_id=self.config.model_id,
@@ -245,15 +311,15 @@ class ChatGenerationExecutor:
                 messages=_provider_messages(
                     self.connection,
                     workspace_id=self.workspace_id,
-                    conversation_id=claimed.job.conversation_id,
+                    conversation_id=job.conversation_id,
                     trigger_message_id=trigger_message_id,
                 ),
                 response_format={"kind": "text"},
                 policy_ref=self.config.policy_ref,
                 classification_ref=self.config.classification_ref,
                 residency_ref=self.config.residency_ref,
-                idempotency_key=claimed.job.idempotency_key,
-                correlation_id=_stable_id("correlation", generation_job_id),
+                idempotency_key=job.idempotency_key,
+                correlation_id=_stable_id("correlation", job.generation_job_id),
                 deadline_at=_timestamp(
                     requested_at + timedelta(seconds=self.config.deadline_seconds)
                 ),
@@ -265,11 +331,13 @@ class ChatGenerationExecutor:
             # attempted, terminal -- which is what makes this a durable outcome rather
             # than a submission that vanished.
             self._fail_generation(
-                generation_job_id, attempt_id, error_code="provider-unavailable"
+                job.generation_job_id, attempt_id, error_code="provider-unavailable"
             )
             return
         except Exception:  # noqa: BLE001 - boundary failures are terminalized, never exposed
-            self._fail_generation(generation_job_id, attempt_id, error_code="malformed-response")
+            self._fail_generation(
+                job.generation_job_id, attempt_id, error_code="malformed-response"
+            )
             return
 
         text_chunks: list[str] = []
@@ -278,10 +346,11 @@ class ChatGenerationExecutor:
         saw_terminal = False
         durable_started = any(
             event.event_type == "chat.generation.started"
+            and event.generation_attempt_id == attempt_id
             for event in chat.read_generation_events(
                 self.connection,
                 workspace_id=self.workspace_id,
-                generation_job_id=generation_job_id,
+                generation_job_id=job.generation_job_id,
             )
         )
         try:
@@ -290,9 +359,10 @@ class ChatGenerationExecutor:
                 # Before the event is durable, not after: the append itself requires an
                 # unexpired lease, so a stream that paused past the renewal point would
                 # otherwise fail on the very write that proves it is still alive.
-                lease_expires_at_us = self._renew_lease_if_due(
-                    generation_job_id, lease_expires_at_us
-                )
+                if renew_lease:
+                    lease_expires_at_us = self._renew_lease_if_due(
+                        job.generation_job_id, lease_expires_at_us
+                    )
                 event_type, expected_ordinal = self._validate_event(
                     event,
                     invocation_id=invocation_id,
@@ -309,24 +379,52 @@ class ChatGenerationExecutor:
                     delta = event.get("delta")
                     if not isinstance(delta, str):
                         raise GenerationExecutorError("a provider text delta is malformed")
-                    text_chunks.append(delta)
-                    if len("".join(text_chunks).encode("utf-8")) > _MAX_TEXT_BYTES:
+                    candidate = "".join([*text_chunks, delta])
+                    if len(candidate.encode("utf-8")) > _MAX_TEXT_BYTES:
                         raise GenerationExecutorError("the provider response exceeds message bounds")
+                    with chat.chat_writer(
+                        self.connection,
+                        self.identity,
+                        workspace_id=self.workspace_id,
+                        fencing_generation=self.fencing_generation,
+                    ) as writer:
+                        writer.append_generation_text_chunk(
+                            conversation_id=job.conversation_id,
+                            generation_job_id=job.generation_job_id,
+                            generation_attempt_id=attempt_id,
+                            chunk_ordinal=len(text_chunks),
+                            provider_event_id=(
+                                str(event["providerEventId"])
+                                if isinstance(event.get("providerEventId"), str)
+                                else None
+                            ),
+                            text_content=delta,
+                            content_hash=_text_hash(delta),
+                            occurred_at_us=_now_us(self.clock),
+                        )
+                    text_chunks.append(delta)
                 if event_type == "finish" and event.get("finishReason") not in {
                     "error",
                     "cancelled",
                 }:
-                    if not saw_start or not text_chunks:
+                    durable_chunks = chat.read_generation_text_chunks(
+                        self.connection,
+                        workspace_id=self.workspace_id,
+                        generation_job_id=job.generation_job_id,
+                        generation_attempt_id=attempt_id,
+                    )
+                    if not saw_start or not durable_chunks:
                         raise GenerationExecutorError("a successful provider stream is incomplete")
                     result_message_id = self._materialize_assistant(
-                        claimed=claimed, text="".join(text_chunks)
+                        job=job,
+                        text="".join(chunk.text_content for chunk in durable_chunks),
                     )
                     append_provider_generation_event(
                         self.connection,
                         self.identity,
                         workspace_id=self.workspace_id,
                         fencing_generation=self.fencing_generation,
-                        generation_job_id=generation_job_id,
+                        generation_job_id=job.generation_job_id,
                         generation_attempt_id=attempt_id,
                         provider_event=event,
                         result_message_id=result_message_id,
@@ -338,7 +436,7 @@ class ChatGenerationExecutor:
                         self.identity,
                         workspace_id=self.workspace_id,
                         fencing_generation=self.fencing_generation,
-                        generation_job_id=generation_job_id,
+                        generation_job_id=job.generation_job_id,
                         generation_attempt_id=attempt_id,
                         provider_event=event,
                         now_us=_now_us(self.clock),
@@ -354,14 +452,16 @@ class ChatGenerationExecutor:
             raise
         except ProviderRouteUnavailable:
             self._fail_generation(
-                generation_job_id, attempt_id, error_code="provider-unavailable"
+                job.generation_job_id, attempt_id, error_code="provider-unavailable"
             )
             return
         except Exception:  # noqa: BLE001 - provider/iterator failures cross this boundary
             # A stream that started and then failed, or ended without a terminal event,
             # is a bad RESPONSE -- the provider was reached. `malformed-response`, never
             # `provider-unavailable`.
-            self._fail_generation(generation_job_id, attempt_id, error_code="malformed-response")
+            self._fail_generation(
+                job.generation_job_id, attempt_id, error_code="malformed-response"
+            )
             return
 
     @staticmethod
@@ -441,7 +541,18 @@ class ChatGenerationExecutor:
             workspace_id=self.workspace_id,
             generation_job_id=generation_job_id,
         )
-        if job is None or job.state != "running":
+        status = chat.read_generation_job_status_projection(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=generation_job_id,
+        )
+        if job is None:
+            return
+        if job.state != "running" and not (
+            status is not None
+            and status.state == "running"
+            and status.current_attempt_id == attempt_id
+        ):
             return
         append_provider_generation_event(
             self.connection,
@@ -462,8 +573,7 @@ class ChatGenerationExecutor:
             now_us=_now_us(self.clock),
         )
 
-    def _materialize_assistant(self, *, claimed: Any, text: str) -> str:
-        job = claimed.job
+    def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
         message_id = _stable_id("assistant", job.generation_job_id)
         message_hash, part_hash = _message_hash(text)
         existing = self.connection.execute(

@@ -64,12 +64,16 @@ __all__ = [
     "Conversation",
     "Draft",
     "GenerationAttempt",
+    "GenerationAttemptOutcome",
     "GenerationEvent",
     "GenerationJob",
+    "GenerationJobStatusProjection",
+    "GenerationTextChunk",
     "Message",
     "MessageDerivation",
     "MessagePart",
     "OutboxEntry",
+    "QueueOrderProjection",
     "QueuedSubmission",
     "StaleVersion",
     "ViewState",
@@ -77,8 +81,10 @@ __all__ = [
     "append_branch_head_event",
     "append_conversation",
     "append_generation_attempt",
+    "append_generation_attempt_outcome",
     "append_generation_event",
     "append_generation_job",
+    "append_generation_text_chunk",
     "append_message",
     "append_message_derivation",
     "append_message_part",
@@ -86,26 +92,38 @@ __all__ = [
     "append_queued_submission",
     "chat_writer",
     "insert_draft",
+    "insert_generation_job_status_projection",
+    "insert_queue_order_projection",
     "insert_view_state",
     "read_active_draft",
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
     "read_conversation",
+    "read_generation_attempt",
+    "read_generation_attempt_outcome",
+    "read_generation_attempt_outcomes",
+    "read_generation_attempts",
     "read_generation_events",
     "read_generation_job",
+    "read_generation_job_status_projection",
+    "read_generation_text_chunks",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
     "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
+    "read_queue_order_for_conversation",
+    "read_queue_order_projection",
     "read_queued_submission",
     "transaction_local_writer",
     "update_branch_head",
     "update_conversation",
     "update_draft",
     "update_generation_job",
+    "update_generation_job_status_projection",
     "update_outbox_delivery",
+    "update_queue_order_projection",
     "update_queued_submission",
     "update_view_state",
 ]
@@ -408,6 +426,63 @@ class GenerationEvent:
     payload: Mapping[str, Any]
     occurred_at_us: int
     schema_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationJobStatusProjection:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    state: str
+    current_attempt_id: str | None
+    result_message_id: str | None
+    sanitized_error_code: str | None
+    sanitized_error_detail: str | None
+    version: int
+    schema_version: int
+    updated_at_us: int
+    finished_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationAttemptOutcome:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    terminal_state: str
+    result_message_id: str | None
+    provider_event_id: str | None
+    retryable: bool
+    sanitized_error_code: str | None
+    sanitized_error_detail: str | None
+    schema_version: int
+    occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationTextChunk:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    chunk_ordinal: int
+    provider_event_id: str | None
+    text_content: str
+    content_hash: str
+    schema_version: int
+    occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class QueueOrderProjection:
+    workspace_id: str
+    conversation_id: str
+    queued_submission_id: str
+    queue_position: int
+    version: int
+    updated_by_actor_id: str
+    updated_at_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -926,6 +1001,144 @@ class ChatWriter:
             ),
         )
 
+    def insert_generation_job_status_projection(
+        self,
+        *,
+        generation_job_id: str,
+        conversation_id: str,
+        state: str,
+        updated_at_us: int,
+        current_attempt_id: str | None = None,
+        result_message_id: str | None = None,
+        sanitized_error_code: str | None = None,
+        sanitized_error_detail: str | None = None,
+        version: int = 1,
+        schema_version: int = 1,
+        finished_at_us: int | None = None,
+    ) -> None:
+        """First write of 0030's retry-aware generation-job projection.
+
+        Migration 0029 stays immutable about its job state set; 0030 carries the
+        successor projection that can pause a failed attempt as `retryable` and
+        later resume the same job with a new attempt.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_job_status_projection "
+            "(workspace_id, conversation_id, generation_job_id, state, "
+            "current_attempt_id, result_message_id, sanitized_error_code, "
+            "sanitized_error_detail, version, schema_version, updated_at_us, "
+            "finished_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                state,
+                current_attempt_id,
+                result_message_id,
+                sanitized_error_code,
+                sanitized_error_detail,
+                version,
+                schema_version,
+                updated_at_us,
+                finished_at_us,
+            ),
+        )
+
+    def append_generation_attempt_outcome(
+        self,
+        *,
+        conversation_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        terminal_state: str,
+        retryable: bool,
+        occurred_at_us: int,
+        result_message_id: str | None = None,
+        provider_event_id: str | None = None,
+        sanitized_error_code: str | None = None,
+        sanitized_error_detail: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_attempt_outcomes "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "terminal_state, result_message_id, provider_event_id, retryable, "
+            "sanitized_error_code, sanitized_error_detail, schema_version, "
+            "occurred_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                generation_attempt_id,
+                terminal_state,
+                result_message_id,
+                provider_event_id,
+                1 if retryable else 0,
+                sanitized_error_code,
+                sanitized_error_detail,
+                schema_version,
+                occurred_at_us,
+            ),
+        )
+
+    def append_generation_text_chunk(
+        self,
+        *,
+        conversation_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        chunk_ordinal: int,
+        text_content: str,
+        content_hash: str,
+        occurred_at_us: int,
+        provider_event_id: str | None = None,
+        schema_version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_text_chunks "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "chunk_ordinal, provider_event_id, text_content, content_hash, "
+            "schema_version, occurred_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                generation_attempt_id,
+                chunk_ordinal,
+                provider_event_id,
+                text_content,
+                content_hash,
+                schema_version,
+                occurred_at_us,
+            ),
+        )
+
+    def insert_queue_order_projection(
+        self,
+        *,
+        queued_submission_id: str,
+        conversation_id: str,
+        queue_position: int,
+        updated_by_actor_id: str,
+        updated_at_us: int,
+        version: int = 1,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_queue_order_projection "
+            "(workspace_id, conversation_id, queued_submission_id, queue_position, "
+            "version, updated_by_actor_id, updated_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                queued_submission_id,
+                queue_position,
+                version,
+                updated_by_actor_id,
+                updated_at_us,
+            ),
+        )
+
     def append_outbox_entry(
         self,
         *,
@@ -1204,6 +1417,66 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "generation job", generation_job_id)
 
+    def update_generation_job_status_projection(
+        self,
+        *,
+        generation_job_id: str,
+        expected_version: int,
+        state: str,
+        updated_at_us: int,
+        current_attempt_id: str | None = None,
+        result_message_id: str | None = None,
+        sanitized_error_code: str | None = None,
+        sanitized_error_detail: str | None = None,
+        finished_at_us: int | None = None,
+    ) -> None:
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_generation_job_status_projection SET state = ?, "
+            "current_attempt_id = ?, result_message_id = ?, sanitized_error_code = ?, "
+            "sanitized_error_detail = ?, version = ?, updated_at_us = ?, "
+            "finished_at_us = ? "
+            "WHERE workspace_id = ? AND generation_job_id = ? AND version = ?",
+            (
+                state,
+                current_attempt_id,
+                result_message_id,
+                sanitized_error_code,
+                sanitized_error_detail,
+                expected_version + 1,
+                updated_at_us,
+                finished_at_us,
+                self.workspace_id,
+                generation_job_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "generation job status projection", generation_job_id)
+
+    def update_queue_order_projection(
+        self,
+        *,
+        queued_submission_id: str,
+        expected_version: int,
+        queue_position: int,
+        updated_by_actor_id: str,
+        updated_at_us: int,
+    ) -> None:
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_queue_order_projection SET queue_position = ?, "
+            "version = ?, updated_by_actor_id = ?, updated_at_us = ? "
+            "WHERE workspace_id = ? AND queued_submission_id = ? AND version = ?",
+            (
+                queue_position,
+                expected_version + 1,
+                updated_by_actor_id,
+                updated_at_us,
+                self.workspace_id,
+                queued_submission_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "queue order projection", queued_submission_id)
+
     def update_outbox_delivery(
         self,
         *,
@@ -1436,6 +1709,62 @@ def append_generation_event(
         writer.append_generation_event(**fields)
 
 
+def insert_generation_job_status_projection(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.insert_generation_job_status_projection(**fields)
+
+
+def append_generation_attempt_outcome(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_attempt_outcome(**fields)
+
+
+def append_generation_text_chunk(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_text_chunk(**fields)
+
+
+def insert_queue_order_projection(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.insert_queue_order_projection(**fields)
+
+
 def append_outbox_entry(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -1532,6 +1861,34 @@ def update_generation_job(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.update_generation_job(**fields)
+
+
+def update_generation_job_status_projection(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_generation_job_status_projection(**fields)
+
+
+def update_queue_order_projection(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_queue_order_projection(**fields)
 
 
 def update_outbox_delivery(
@@ -1893,19 +2250,74 @@ def read_next_queued_submission(
 ) -> QueuedSubmission | None:
     """Return the next claimable submission in deterministic queue order.
 
-    Queue sequence is scoped to a conversation, so the workspace-wide worker uses
-    creation time and stable identities as the outer ordering keys.  The state
-    predicate is part of the query: a restarted worker never mistakes an already
-    submitted row for fresh work.
+    0030's queue-order projection is authoritative when present; 0029's immutable
+    `queue_sequence` is the fallback for rows created before the projection existed.
+    The state predicate is part of the query: a restarted worker never mistakes an
+    already submitted row for fresh work.
     """
     row = connection.execute(
-        f"SELECT {_QUEUED_SUBMISSION_COLUMNS} FROM omnivia_chat_queued_submissions "
-        "WHERE workspace_id = ? AND state = 'queued' "
-        "ORDER BY created_at_us, conversation_id, queue_sequence, queued_submission_id "
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "FROM omnivia_chat_queued_submissions q "
+        "LEFT JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "WHERE q.workspace_id = ? AND q.state = 'queued' "
+        "ORDER BY COALESCE(p.queue_position, q.queue_sequence), "
+        "q.created_at_us, q.conversation_id, q.queued_submission_id "
         "LIMIT 1",
         (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
+
+
+_GENERATION_ATTEMPT_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "attempt_number, retry_of_attempt_id, state, provider_invocation_id, "
+    "schema_version, started_at_us, ended_at_us"
+)
+
+
+def _generation_attempt_from_row(row: tuple[Any, ...]) -> GenerationAttempt:
+    return GenerationAttempt(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        attempt_number=row[4],
+        retry_of_attempt_id=row[5],
+        state=row[6],
+        provider_invocation_id=row[7],
+        schema_version=row[8],
+        started_at_us=row[9],
+        ended_at_us=row[10],
+    )
+
+
+def read_generation_attempt(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> GenerationAttempt | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_COLUMNS} FROM omnivia_chat_generation_attempts "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _generation_attempt_from_row(row)
+
+
+def read_generation_attempts(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[GenerationAttempt, ...]:
+    rows = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_COLUMNS} FROM omnivia_chat_generation_attempts "
+        "WHERE workspace_id = ? AND generation_job_id = ? ORDER BY attempt_number",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_generation_attempt_from_row(row) for row in rows)
 
 
 _GENERATION_JOB_COLUMNS = (
@@ -1994,6 +2406,175 @@ def read_generation_events(
         (workspace_id, generation_job_id),
     ).fetchall()
     return tuple(_generation_event_from_row(row) for row in rows)
+
+
+_GENERATION_JOB_STATUS_PROJECTION_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, state, current_attempt_id, "
+    "result_message_id, sanitized_error_code, sanitized_error_detail, version, "
+    "schema_version, updated_at_us, finished_at_us"
+)
+
+
+def _generation_job_status_projection_from_row(
+    row: tuple[Any, ...],
+) -> GenerationJobStatusProjection:
+    return GenerationJobStatusProjection(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        state=row[3],
+        current_attempt_id=row[4],
+        result_message_id=row[5],
+        sanitized_error_code=row[6],
+        sanitized_error_detail=row[7],
+        version=row[8],
+        schema_version=row[9],
+        updated_at_us=row[10],
+        finished_at_us=row[11],
+    )
+
+
+def read_generation_job_status_projection(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> GenerationJobStatusProjection | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_JOB_STATUS_PROJECTION_COLUMNS} "
+        "FROM omnivia_chat_generation_job_status_projection "
+        "WHERE workspace_id = ? AND generation_job_id = ?",
+        (workspace_id, generation_job_id),
+    ).fetchone()
+    return None if row is None else _generation_job_status_projection_from_row(row)
+
+
+_GENERATION_ATTEMPT_OUTCOME_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "terminal_state, result_message_id, provider_event_id, retryable, "
+    "sanitized_error_code, sanitized_error_detail, schema_version, occurred_at_us"
+)
+
+
+def _generation_attempt_outcome_from_row(row: tuple[Any, ...]) -> GenerationAttemptOutcome:
+    return GenerationAttemptOutcome(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        terminal_state=row[4],
+        result_message_id=row[5],
+        provider_event_id=row[6],
+        retryable=bool(row[7]),
+        sanitized_error_code=row[8],
+        sanitized_error_detail=row[9],
+        schema_version=row[10],
+        occurred_at_us=row[11],
+    )
+
+
+def read_generation_attempt_outcome(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> GenerationAttemptOutcome | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_OUTCOME_COLUMNS} "
+        "FROM omnivia_chat_generation_attempt_outcomes "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _generation_attempt_outcome_from_row(row)
+
+
+def read_generation_attempt_outcomes(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[GenerationAttemptOutcome, ...]:
+    rows = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_OUTCOME_COLUMNS} "
+        "FROM omnivia_chat_generation_attempt_outcomes "
+        "WHERE workspace_id = ? AND generation_job_id = ? ORDER BY occurred_at_us, generation_attempt_id",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_generation_attempt_outcome_from_row(row) for row in rows)
+
+
+_GENERATION_TEXT_CHUNK_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "chunk_ordinal, provider_event_id, text_content, content_hash, schema_version, "
+    "occurred_at_us"
+)
+
+
+def _generation_text_chunk_from_row(row: tuple[Any, ...]) -> GenerationTextChunk:
+    return GenerationTextChunk(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        chunk_ordinal=row[4],
+        provider_event_id=row[5],
+        text_content=row[6],
+        content_hash=row[7],
+        schema_version=row[8],
+        occurred_at_us=row[9],
+    )
+
+
+def read_generation_text_chunks(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str | None = None,
+) -> tuple[GenerationTextChunk, ...]:
+    query = (
+        f"SELECT {_GENERATION_TEXT_CHUNK_COLUMNS} "
+        "FROM omnivia_chat_generation_text_chunks "
+        "WHERE workspace_id = ? AND generation_job_id = ?"
+    )
+    params: list[Any] = [workspace_id, generation_job_id]
+    if generation_attempt_id is not None:
+        query += " AND generation_attempt_id = ?"
+        params.append(generation_attempt_id)
+    query += " ORDER BY generation_attempt_id, chunk_ordinal"
+    rows = connection.execute(query, params).fetchall()
+    return tuple(_generation_text_chunk_from_row(row) for row in rows)
+
+
+_QUEUE_ORDER_PROJECTION_COLUMNS = (
+    "workspace_id, conversation_id, queued_submission_id, queue_position, version, "
+    "updated_by_actor_id, updated_at_us"
+)
+
+
+def _queue_order_projection_from_row(row: tuple[Any, ...]) -> QueueOrderProjection:
+    return QueueOrderProjection(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        queued_submission_id=row[2],
+        queue_position=row[3],
+        version=row[4],
+        updated_by_actor_id=row[5],
+        updated_at_us=row[6],
+    )
+
+
+def read_queue_order_projection(
+    connection: sqlite3.Connection, *, workspace_id: str, queued_submission_id: str
+) -> QueueOrderProjection | None:
+    row = connection.execute(
+        f"SELECT {_QUEUE_ORDER_PROJECTION_COLUMNS} FROM omnivia_chat_queue_order_projection "
+        "WHERE workspace_id = ? AND queued_submission_id = ?",
+        (workspace_id, queued_submission_id),
+    ).fetchone()
+    return None if row is None else _queue_order_projection_from_row(row)
+
+
+def read_queue_order_for_conversation(
+    connection: sqlite3.Connection, *, workspace_id: str, conversation_id: str
+) -> tuple[QueueOrderProjection, ...]:
+    rows = connection.execute(
+        f"SELECT {_QUEUE_ORDER_PROJECTION_COLUMNS} FROM omnivia_chat_queue_order_projection "
+        "WHERE workspace_id = ? AND conversation_id = ? ORDER BY queue_position, queued_submission_id",
+        (workspace_id, conversation_id),
+    ).fetchall()
+    return tuple(_queue_order_projection_from_row(row) for row in rows)
 
 
 _OUTBOX_COLUMNS = (

@@ -232,7 +232,7 @@ def _default_chat_generation(started: ServiceRunner) -> ChatGenerationExecution 
         clock=started.clock,
         invoke=invoke,
         config=config,
-    ).execute_submission
+    ).execute
 
 
 def _build_production_application_surface(
