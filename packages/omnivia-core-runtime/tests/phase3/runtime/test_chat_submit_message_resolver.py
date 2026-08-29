@@ -28,6 +28,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
     GenerationExecutorConfig,
 )
+from omnivia_core_runtime.service.chat_submit import retry_generation_attempt_id
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.main import _default_chat_generation
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
@@ -298,6 +299,27 @@ def _cancel_queue_command(
 def _stop_generation_command(
     *,
     command_id: str = "cmd-gb01-stop-generation",
+    job_id: str = "cmd-gb01-submit.gen",
+    workspace_id: str = WORKSPACE_ID,
+    conversation_id: str = CONVERSATION_ID,
+    actor_id: str = ACTOR_ID,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "jobId": job_id,
+    }
+    command.update(extra)
+    return command
+
+
+def _retry_generation_command(
+    *,
+    command_id: str = "cmd-gb01-retry-generation",
     job_id: str = "cmd-gb01-submit.gen",
     workspace_id: str = WORKSPACE_ID,
     conversation_id: str = CONVERSATION_ID,
@@ -911,6 +933,202 @@ def test_stop_missing_generation_conflicts_without_writes(seeded: m1.Owned) -> N
 
     assert isinstance(response, ErrorResponseEnvelope), response
     assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_retry_generation_opens_successor_attempt_and_executes_provider(
+    seeded: m1.Owned,
+) -> None:
+    first = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        lambda _request: (),
+        _executor_config(connection_id=""),
+        "cmd-gb01-retryable",
+    )
+    assert first is not None
+    assert first.state == "failed"
+    original_attempt_id = first.current_attempt_id
+    assert original_attempt_id is not None
+    status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    assert status is not None
+    assert status.state == "retryable"
+    assert status.current_attempt_id == original_attempt_id
+    assert status.sanitized_error_code == "provider-unavailable"
+    assert status.finished_at_us is None
+
+    calls: list[Any] = []
+
+    def provider(request: Any) -> Iterator[Any]:
+        calls.append(request)
+        yield from _stream(request, ("retried answer",))
+
+    clock = FakeClock(wall=WALL)
+    executor = ChatGenerationExecutor(
+        connection=seeded.connection,
+        identity=seeded.identity,
+        fencing_generation=seeded.generation,
+        workspace_id=WORKSPACE_ID,
+        clock=clock,
+        invoke=provider,
+        config=_executor_config(),
+    )
+    retry_command_id = "cmd-gb01-retry-after-route"
+    expected_attempt_id = retry_generation_attempt_id(
+        retry_command_id, first.generation_job_id
+    )
+
+    response = build_chat_application_dispatcher(
+        service=seeded,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=_fallback(),
+        clock=clock,
+        execute_generation=executor.execute,
+    ).dispatch(
+        _request(
+            _retry_generation_command(
+                command_id=retry_command_id,
+                job_id=first.generation_job_id,
+            ),
+            command_name="RetryGeneration",
+            idempotency_key="idem-gb01-retry-after-route",
+            request_id="req-gb01-retry-after-route",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result == {
+        "command_name": "RetryGeneration",
+        "command_result": {
+            "commandId": "cmd-gb01-retry-after-route",
+            "status": "completed",
+        },
+        "conversation_id": CONVERSATION_ID,
+    }
+    assert len(calls) == 1
+    assert calls[0].job_id == first.generation_job_id
+    assert calls[0].attempt_id == expected_attempt_id
+    attempts = chat.read_generation_attempts(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    assert [
+        (attempt.generation_attempt_id, attempt.attempt_number, attempt.retry_of_attempt_id)
+        for attempt in attempts
+    ] == [
+        (original_attempt_id, 1, None),
+        (expected_attempt_id, 2, original_attempt_id),
+    ]
+    outcomes = chat.read_generation_attempt_outcomes(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    assert [
+        (outcome.generation_attempt_id, outcome.terminal_state, outcome.retryable)
+        for outcome in outcomes
+    ] == [
+        (original_attempt_id, "failed", True),
+        (expected_attempt_id, "succeeded", False),
+    ]
+    updated_status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    assert updated_status is not None
+    assert updated_status.state == "succeeded"
+    assert updated_status.current_attempt_id == expected_attempt_id
+    assert updated_status.result_message_id is not None
+    parts = chat.read_message_parts(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        message_id=updated_status.result_message_id,
+    )
+    assert [dict(part.payload) for part in parts] == [{"text": "retried answer"}]
+    assert [
+        (event.event_type, event.generation_attempt_id)
+        for event in chat.read_generation_events(
+            seeded.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=first.generation_job_id,
+        )
+    ] == [
+        ("chat.generation.queued", None),
+        ("chat.generation.failed", original_attempt_id),
+        ("chat.generation.started", expected_attempt_id),
+        ("chat.generation.succeeded", expected_attempt_id),
+    ]
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_retry_generation_non_retryable_job_conflicts_without_writes(
+    seeded: m1.Owned,
+) -> None:
+    job = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        lambda _request: (_ for _ in ()).throw(RuntimeError("secret")),
+        _executor_config(),
+        "cmd-gb01-nonretryable",
+    )
+    assert job is not None
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _retry_generation_command(
+                command_id="cmd-gb01-retry-nonretryable",
+                job_id=job.generation_job_id,
+            ),
+            command_name="RetryGeneration",
+            idempotency_key="idem-gb01-retry-nonretryable",
+            request_id="req-gb01-retry-nonretryable",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_retry_generation_refuses_before_writing_when_executor_is_absent(
+    seeded: m1.Owned,
+) -> None:
+    job = _run_executor(
+        seeded,
+        FakeClock(wall=WALL),
+        lambda _request: (),
+        _executor_config(connection_id=""),
+        "cmd-gb01-retry-without-executor",
+    )
+    assert job is not None
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded, execute_generation=None).dispatch(
+        _request(
+            _retry_generation_command(
+                command_id="cmd-gb01-retry-no-executor",
+                job_id=job.generation_job_id,
+            ),
+            command_name="RetryGeneration",
+            idempotency_key="idem-gb01-retry-no-executor",
+            request_id="req-gb01-retry-no-executor",
+            expected_sequence=SEEDED_SEQUENCE + 1,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "dependency_unavailable"
     assert _counts(seeded) == before
 
 
@@ -1532,6 +1750,16 @@ def test_an_unreachable_route_terminalizes_as_provider_unavailable(
     assert outcomes[0].terminal_state == "failed"
     assert outcomes[0].retryable is True
     assert outcomes[0].sanitized_error_code == "provider-unavailable"
+    status = chat.read_generation_job_status_projection(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    assert status is not None
+    assert status.state == "retryable"
+    assert status.current_attempt_id == job.current_attempt_id
+    assert status.sanitized_error_code == "provider-unavailable"
+    assert status.finished_at_us is None
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 

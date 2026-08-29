@@ -587,12 +587,29 @@ def append_provider_generation_event(
                 "carrying a different durable event"
             )
 
-    if job.state in _TERMINAL_JOB_STATES or any(
-        event.event_type in _TERMINAL_EVENT_TYPES for event in events
-    ):
+    projection = chat.read_generation_job_status_projection(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    effective_state = projection.state if projection is not None else job.state
+    effective_attempt_id = (
+        projection.current_attempt_id if projection is not None else job.current_attempt_id
+    )
+    if effective_state in _TERMINAL_JOB_STATES:
         raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is not running this attempt"
+        )
+    if any(
+        event.generation_attempt_id == generation_attempt_id
+        and event.event_type in _TERMINAL_EVENT_TYPES
+        for event in events
+    ):
+        raise GenerationTerminal(f"generation attempt {generation_attempt_id!r} already ended")
 
-    sequence = job.last_event_sequence + 1
+    sequence = (
+        max((event.generation_event_sequence for event in events), default=0) + 1
+    )
     if expected_sequence is not None and expected_sequence != sequence:
         raise GenerationSequenceGap(
             f"generation job {generation_job_id!r} expects its next event at sequence "
@@ -601,9 +618,6 @@ def append_provider_generation_event(
 
     terminal_state = _TERMINAL_JOB_STATE_OF.get(event_type)
     expires_at_us = now_us + lease_duration_us
-    projection = chat.read_generation_job_status_projection(
-        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
-    )
     with chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
@@ -624,37 +638,47 @@ def append_provider_generation_event(
             schema_version=1,
         )
         if terminal_state is None:
-            writer.update_generation_job(
-                generation_job_id=generation_job_id,
-                expected_state=job.state,
-                expected_lease_epoch=job.lease_epoch,
-                state=job.state,
-                lease_epoch=job.lease_epoch,
-                current_attempt_id=job.current_attempt_id,
-                lease_owner=job.lease_owner,
-                lease_expires_at_us=expires_at_us,
-                heartbeat_at_us=now_us,
-                last_event_sequence=sequence,
-                updated_at_us=now_us,
-                started_at_us=job.started_at_us,
-            )
+            if job.state not in _TERMINAL_JOB_STATES:
+                writer.update_generation_job(
+                    generation_job_id=generation_job_id,
+                    expected_state=job.state,
+                    expected_lease_epoch=job.lease_epoch,
+                    state=job.state,
+                    lease_epoch=job.lease_epoch,
+                    current_attempt_id=job.current_attempt_id,
+                    lease_owner=job.lease_owner,
+                    lease_expires_at_us=expires_at_us,
+                    heartbeat_at_us=now_us,
+                    last_event_sequence=sequence,
+                    updated_at_us=now_us,
+                    started_at_us=job.started_at_us,
+                )
             if projection is None:
                 writer.insert_generation_job_status_projection(
                     generation_job_id=generation_job_id,
                     conversation_id=job.conversation_id,
-                    state=job.state,
-                    current_attempt_id=job.current_attempt_id,
+                    state=effective_state,
+                    current_attempt_id=effective_attempt_id,
                     updated_at_us=now_us,
                 )
             else:
                 writer.update_generation_job_status_projection(
                     generation_job_id=generation_job_id,
                     expected_version=projection.version,
-                    state=job.state,
-                    current_attempt_id=job.current_attempt_id,
+                    state=effective_state,
+                    current_attempt_id=effective_attempt_id,
                     updated_at_us=now_us,
                 )
         else:
+            retryable = bool(payload.get("retryable", False))
+            projected_state = (
+                "retryable"
+                if terminal_state == "failed" and retryable
+                else terminal_state
+            )
+            projected_finished_at_us = (
+                None if projected_state == "retryable" else now_us
+            )
             code, detail = (
                 (None, None)
                 if terminal_state == "succeeded"
@@ -667,49 +691,52 @@ def append_provider_generation_event(
                 terminal_state=terminal_state,
                 result_message_id=result_message_id if terminal_state == "succeeded" else None,
                 provider_event_id=None if provider_event_id is None else str(provider_event_id),
-                retryable=bool(payload.get("retryable", False)),
+                retryable=retryable,
                 sanitized_error_code=code,
                 sanitized_error_detail=detail,
                 occurred_at_us=now_us,
             )
-            writer.update_generation_job(
-                generation_job_id=generation_job_id,
-                expected_state=job.state,
-                expected_lease_epoch=job.lease_epoch,
-                state=terminal_state,
-                lease_epoch=job.lease_epoch,
-                current_attempt_id=job.current_attempt_id,
-                result_message_id=result_message_id if terminal_state == "succeeded" else None,
-                last_event_sequence=sequence,
-                sanitized_error_code=code,
-                sanitized_error_detail=detail,
-                updated_at_us=now_us,
-                started_at_us=job.started_at_us,
-                finished_at_us=now_us,
-            )
+            if job.state not in _TERMINAL_JOB_STATES:
+                writer.update_generation_job(
+                    generation_job_id=generation_job_id,
+                    expected_state=job.state,
+                    expected_lease_epoch=job.lease_epoch,
+                    state=terminal_state,
+                    lease_epoch=job.lease_epoch,
+                    current_attempt_id=job.current_attempt_id,
+                    result_message_id=(
+                        result_message_id if terminal_state == "succeeded" else None
+                    ),
+                    last_event_sequence=sequence,
+                    sanitized_error_code=code,
+                    sanitized_error_detail=detail,
+                    updated_at_us=now_us,
+                    started_at_us=job.started_at_us,
+                    finished_at_us=now_us,
+                )
             if projection is None:
                 writer.insert_generation_job_status_projection(
                     generation_job_id=generation_job_id,
                     conversation_id=job.conversation_id,
-                    state=terminal_state,
-                    current_attempt_id=job.current_attempt_id,
+                    state=projected_state,
+                    current_attempt_id=effective_attempt_id,
                     result_message_id=result_message_id if terminal_state == "succeeded" else None,
                     sanitized_error_code=code,
                     sanitized_error_detail=detail,
                     updated_at_us=now_us,
-                    finished_at_us=now_us,
+                    finished_at_us=projected_finished_at_us,
                 )
             else:
                 writer.update_generation_job_status_projection(
                     generation_job_id=generation_job_id,
                     expected_version=projection.version,
-                    state=terminal_state,
-                    current_attempt_id=job.current_attempt_id,
+                    state=projected_state,
+                    current_attempt_id=effective_attempt_id,
                     result_message_id=result_message_id if terminal_state == "succeeded" else None,
                     sanitized_error_code=code,
                     sanitized_error_detail=detail,
                     updated_at_us=now_us,
-                    finished_at_us=now_us,
+                    finished_at_us=projected_finished_at_us,
                 )
 
     appended = chat.read_generation_events(

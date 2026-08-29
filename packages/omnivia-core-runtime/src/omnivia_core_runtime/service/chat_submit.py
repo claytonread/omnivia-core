@@ -67,6 +67,8 @@ from omnivia_core_runtime.storage.chat import (
     StaleVersion,
     read_branch,
     read_conversation,
+    read_generation_attempt_outcome,
+    read_generation_attempts,
     read_generation_events,
     read_generation_job,
     read_generation_job_status_projection,
@@ -78,13 +80,16 @@ from omnivia_core_runtime.storage.chat import (
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
     "REORDER_QUEUED_SUBMISSION_COMMAND",
+    "RETRY_GENERATION_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
     "resolve_chat_command",
+    "retry_generation_attempt_id",
 ]
 
 CANCEL_QUEUED_SUBMISSION_COMMAND: Final = "CancelQueuedSubmission"
 REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
+RETRY_GENERATION_COMMAND: Final = "RetryGeneration"
 STOP_GENERATION_COMMAND: Final = "StopGeneration"
 SUBMIT_MESSAGE_COMMAND: Final = "SubmitMessage"
 
@@ -162,6 +167,7 @@ _STOP_GENERATION_FIELDS: Final = frozenset(
         "jobId",
     }
 )
+_RETRY_GENERATION_FIELDS: Final = _STOP_GENERATION_FIELDS
 #: The optional fields whose *presence* names work this build cannot perform. Separate
 #: from the unknown-field check: these are contract members, and a request carrying one
 #: is unimplemented rather than malformed.
@@ -244,6 +250,15 @@ class _CancelQueuedSubmission:
 
 @dataclass(frozen=True, slots=True)
 class _StopGeneration:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    job_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RetryGeneration:
     command_id: str
     workspace_id: str
     conversation_id: str
@@ -537,6 +552,26 @@ def _decode_stop_generation(command: Mapping[str, Any]) -> _StopGeneration:
     )
 
 
+def _decode_retry_generation(command: Mapping[str, Any]) -> _RetryGeneration:
+    unknown = sorted(set(command) - _RETRY_GENERATION_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    return _RetryGeneration(
+        command_id=_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        job_id=_identifier(command, "jobId"),
+    )
+
+
 # --- the command ---------------------------------------------------------------------
 
 
@@ -573,6 +608,18 @@ def _generation_event_id(generation_job_id: str, sequence: int) -> str:
 
 def _generation_cursor(generation_job_id: str, sequence: int) -> str:
     return f"{generation_job_id}:{sequence:06d}"
+
+
+def retry_generation_attempt_id(command_id: str, generation_job_id: str) -> str:
+    document = to_canonical_json(
+        {
+            "commandId": command_id,
+            "generationJobId": generation_job_id,
+            "kind": "RetryGeneration",
+        }
+    )
+    digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
+    return f"retry-attempt-{digest[:40]}"
 
 
 def _ack(command_name: str, command_id: str, conversation_id: str) -> Mapping[str, Any]:
@@ -997,6 +1044,86 @@ def _stop_generation(request: _StopGeneration) -> ChatCommand:
     return command
 
 
+def _retry_generation(request: _RetryGeneration) -> ChatCommand:
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        job = read_generation_job(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
+        )
+        status = read_generation_job_status_projection(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
+        )
+        if (
+            job is None
+            or status is None
+            or job.conversation_id != request.conversation_id
+            or status.conversation_id != request.conversation_id
+            or status.state != "retryable"
+            or status.current_attempt_id is None
+        ):
+            raise ChatAggregateConflict("the generation job is not retryable")
+
+        previous = read_generation_attempt_outcome(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_attempt_id=status.current_attempt_id,
+        )
+        if (
+            previous is None
+            or previous.generation_job_id != request.job_id
+            or previous.terminal_state != "failed"
+            or not previous.retryable
+        ):
+            raise ChatAggregateConflict("the generation attempt is not retryable")
+
+        attempts = read_generation_attempts(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            generation_job_id=request.job_id,
+        )
+        next_attempt_number = max(
+            (attempt.attempt_number for attempt in attempts), default=0
+        ) + 1
+        generation_attempt_id = retry_generation_attempt_id(
+            request.command_id, request.job_id
+        )
+        if any(
+            attempt.generation_attempt_id == generation_attempt_id
+            for attempt in attempts
+        ):
+            raise ChatAggregateConflict("the retry command already opened an attempt")
+        now = settlement.settled_at_us
+        writer.append_generation_attempt(
+            generation_attempt_id=generation_attempt_id,
+            conversation_id=job.conversation_id,
+            generation_job_id=request.job_id,
+            attempt_number=next_attempt_number,
+            retry_of_attempt_id=status.current_attempt_id,
+            state="running",
+            schema_version=1,
+            started_at_us=now,
+        )
+        writer.update_generation_job_status_projection(
+            generation_job_id=request.job_id,
+            expected_version=status.version,
+            state="running",
+            current_attempt_id=generation_attempt_id,
+            updated_at_us=now,
+        )
+        return _ack(
+            RETRY_GENERATION_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
+
+    return command
+
+
 def resolve_chat_command(
     request: ChatCommandInput, context: OperationContext
 ) -> ChatCommand | None:
@@ -1037,4 +1164,9 @@ def resolve_chat_command(
         if decoded.workspace_id != context.workspace_id:
             raise _invalid("workspaceId", "is not the workspace this request was authorized for")
         return _stop_generation(decoded)
+    if request.command_name == RETRY_GENERATION_COMMAND:
+        decoded = _decode_retry_generation(request.command)
+        if decoded.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        return _retry_generation(decoded)
     return None

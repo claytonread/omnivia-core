@@ -100,8 +100,10 @@ __all__ = [
     "read_branch",
     "read_branch_head_events",
     "read_conversation",
+    "read_generation_attempt",
     "read_generation_attempt_outcome",
     "read_generation_attempt_outcomes",
+    "read_generation_attempts",
     "read_generation_events",
     "read_generation_job",
     "read_generation_job_status_projection",
@@ -2271,6 +2273,51 @@ def read_next_queued_submission(
         (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
+
+
+_GENERATION_ATTEMPT_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "attempt_number, retry_of_attempt_id, state, provider_invocation_id, "
+    "schema_version, started_at_us, ended_at_us"
+)
+
+
+def _generation_attempt_from_row(row: tuple[Any, ...]) -> GenerationAttempt:
+    return GenerationAttempt(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        attempt_number=row[4],
+        retry_of_attempt_id=row[5],
+        state=row[6],
+        provider_invocation_id=row[7],
+        schema_version=row[8],
+        started_at_us=row[9],
+        ended_at_us=row[10],
+    )
+
+
+def read_generation_attempt(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> GenerationAttempt | None:
+    row = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_COLUMNS} FROM omnivia_chat_generation_attempts "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _generation_attempt_from_row(row)
+
+
+def read_generation_attempts(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[GenerationAttempt, ...]:
+    rows = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_COLUMNS} FROM omnivia_chat_generation_attempts "
+        "WHERE workspace_id = ? AND generation_job_id = ? ORDER BY attempt_number",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_generation_attempt_from_row(row) for row in rows)
 
 
 _GENERATION_JOB_COLUMNS = (
