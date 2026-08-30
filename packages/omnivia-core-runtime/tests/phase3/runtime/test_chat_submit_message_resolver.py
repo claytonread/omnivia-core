@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import pytest
 import test_application_audit_idempotency_migration as m1
 import test_v06_5_s0_mutation_foundation as s0
+from jsonschema import Draft202012Validator
 from omnivia_core_runtime.ownership.identity import FakeClock, SystemClock
 from omnivia_core_runtime.service import chat_provider_route
 from omnivia_core_runtime.service.application import (
@@ -28,12 +29,17 @@ from omnivia_core_runtime.service.chat_generation_executor import (
     ChatGenerationExecutor,
     GenerationExecutorConfig,
 )
-from omnivia_core_runtime.service.chat_submit import retry_generation_attempt_id
+from omnivia_core_runtime.service.chat_submit import (
+    resolve_chat_command,
+    retry_generation_attempt_id,
+)
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.main import _default_chat_generation
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.storage import chat
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 from omnivia_core.contracts.v1 import (
     ErrorResponseEnvelope,
@@ -55,8 +61,53 @@ ROOT_MESSAGE_ID = "msg-gb01-root"
 ROOT_PART_ID = "part-gb01-root-0"
 GRAPH_REVISION = 1
 SEEDED_SEQUENCE = 1
+
+#: The cold start: `CreateConversation`, then the branchless first `SubmitMessage`.
+#: Every server-owned identity below is derived from the caller's own `commandId`
+#: exactly as `service/chat_submit.py` derives it, so a test that spells one wrong
+#: fails rather than quietly asserting the resolver's own arithmetic back at itself.
+CREATE_COMMAND_ID = "cmd-cold-create"
+COLD_CONVERSATION_ID = f"{CREATE_COMMAND_ID}.conv"
+FIRST_SEND_COMMAND_ID = "cmd-cold-first"
+COLD_BRANCH_ID = f"{FIRST_SEND_COMMAND_ID}.br"
+COLD_ROOT_MESSAGE_ID = f"{FIRST_SEND_COMMAND_ID}.msg"
 BASE_US = 2_600_000_000_000_000
 WALL = datetime.fromtimestamp((BASE_US + 1_000_000) / 1_000_000, tz=UTC)
+
+#: The canonical Chat Contract v1 schema bundle, loaded the way
+#: `test_chat_snapshot.py` and `tests/chat_contract/test_fixtures.py` do:
+#: `jsonschema`/`referencing` are development-only test dependencies.
+_SCHEMAS_DIR = (
+    Path(__file__).resolve().parents[5] / "contracts" / "chat" / "v1" / "schemas"
+)
+_SCHEMA_REGISTRY = Registry().with_resources(
+    (schema["$id"], Resource.from_contents(schema, default_specification=DRAFT202012))
+    for schema in (
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(_SCHEMAS_DIR.glob("*.schema.json"))
+    )
+)
+_SUBMIT_MESSAGE_REF = (
+    "https://contracts.omnivia.dev/chat/v1/commands.schema.json#/$defs/SubmitMessageRequest"
+)
+_CREATE_CONVERSATION_REF = (
+    "https://contracts.omnivia.dev/chat/v1/"
+    "commands.schema.json#/$defs/CreateConversationRequest"
+)
+_SNAPSHOT_RESULT_REF = (
+    "https://contracts.omnivia.dev/chat/v1/"
+    "queries.schema.json#/$defs/ConversationSnapshotResult"
+)
+
+
+def _schema_errors(ref: str, document: Any) -> list[str]:
+    validator = Draft202012Validator({"$ref": ref}, registry=_SCHEMA_REGISTRY)
+    return [error.message for error in validator.iter_errors(document)]
+
+
+def _snapshot_schema_errors(document: Any) -> list[str]:
+    return _schema_errors(_SNAPSHOT_RESULT_REF, document)
+
 
 CHAT_TABLES = (
     "omnivia_chat_conversations",
@@ -338,6 +389,47 @@ def _retry_generation_command(
     return command
 
 
+def _create_conversation_command(
+    *,
+    command_id: str = CREATE_COMMAND_ID,
+    workspace_id: str = WORKSPACE_ID,
+    actor_id: str = PRINCIPAL,
+    **extra: Any,
+) -> dict[str, Any]:
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "actorId": actor_id,
+        "requestedAt": "2052-05-22T14:13:20Z",
+    }
+    command.update(extra)
+    return command
+
+
+def _first_send_command(
+    *,
+    command_id: str = FIRST_SEND_COMMAND_ID,
+    conversation_id: str = COLD_CONVERSATION_ID,
+    workspace_id: str = WORKSPACE_ID,
+    actor_id: str = PRINCIPAL,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A `SubmitMessageRequest` in the first-send variant: no expected-head group."""
+    command: dict[str, Any] = {
+        "protocolVersion": "1.0",
+        "commandId": command_id,
+        "workspaceId": workspace_id,
+        "conversationId": conversation_id,
+        "actorId": actor_id,
+        "editableParts": [{"type": "text", "payload": {"text": "first send"}}],
+        "attachmentReferences": [],
+        "contextReferences": [],
+    }
+    command.update(extra)
+    return command
+
+
 def _request(
     command: Mapping[str, Any],
     *,
@@ -345,18 +437,23 @@ def _request(
     idempotency_key: str = "idem-gb01-submit",
     request_id: str = "req-gb01-submit",
     expected_sequence: int = SEEDED_SEQUENCE,
+    expected_conversation: Any = _UNSET,
 ) -> RequestEnvelope:
+    operation_input: dict[str, Any] = {
+        "command_name": command_name,
+        "command": dict(command),
+    }
+    if expected_conversation is _UNSET:
+        operation_input["expected_conversation"] = {
+            "conversation_id": CONVERSATION_ID,
+            "graph_revision": GRAPH_REVISION,
+            "latest_conversation_sequence": expected_sequence,
+        }
+    elif expected_conversation is not None:
+        operation_input["expected_conversation"] = dict(expected_conversation)
     return s0.envelope_for(
         ENTRY,
-        operation_input={
-            "command_name": command_name,
-            "command": dict(command),
-            "expected_conversation": {
-                "conversation_id": CONVERSATION_ID,
-                "graph_revision": GRAPH_REVISION,
-                "latest_conversation_sequence": expected_sequence,
-            },
-        },
+        operation_input=operation_input,
         request_id=request_id,
         correlation_id=f"cor-{request_id}",
         trace_id=f"trc-{request_id}",
@@ -2131,3 +2228,763 @@ def test_an_unstarted_service_installs_no_executor(seeded: m1.Owned) -> None:
         }
         fields[missing] = None
         assert _default_chat_generation(SimpleNamespace(**fields)) is None, missing  # type: ignore[arg-type]
+
+
+# --- cold start: CreateConversation, then a branchless first SubmitMessage ------------
+
+
+def _create_request(
+    *,
+    command: Mapping[str, Any] | None = None,
+    idempotency_key: str = "idem-cold-create",
+    request_id: str = "req-cold-create",
+    expected_conversation: Any = None,
+) -> RequestEnvelope:
+    return _request(
+        _create_conversation_command() if command is None else command,
+        command_name="CreateConversation",
+        idempotency_key=idempotency_key,
+        request_id=request_id,
+        expected_conversation=expected_conversation,
+    )
+
+
+def _first_send_request(
+    *,
+    command: Mapping[str, Any] | None = None,
+    idempotency_key: str = "idem-cold-first",
+    request_id: str = "req-cold-first",
+    expected_conversation: Any = _UNSET,
+) -> RequestEnvelope:
+    if expected_conversation is _UNSET:
+        expected_conversation = {
+            "conversation_id": COLD_CONVERSATION_ID,
+            "graph_revision": 1,
+            "latest_conversation_sequence": 0,
+        }
+    return _request(
+        _first_send_command() if command is None else command,
+        idempotency_key=idempotency_key,
+        request_id=request_id,
+        expected_conversation=expected_conversation,
+    )
+
+
+def _create_conversation(holder: m1.Owned) -> SuccessResponseEnvelope:
+    response = _dispatcher(holder).dispatch(_create_request())
+    assert isinstance(response, SuccessResponseEnvelope), response
+    return response
+
+
+def test_create_conversation_writes_one_active_conversation_and_no_branch(
+    owned: m1.Owned,
+) -> None:
+    before = _counts(owned)
+
+    response = _create_conversation(owned)
+
+    assert response.result == {
+        "command_name": "CreateConversation",
+        "command_result": {"commandId": CREATE_COMMAND_ID, "status": "completed"},
+        "conversation_id": COLD_CONVERSATION_ID,
+    }
+    # REF-042 §9.1: no branch, no root message, no view state until the first send --
+    # and no outbox fact either, because an empty conversation has committed no graph
+    # fact to announce. The first send is the first thing there is to publish.
+    assert _counts(owned) == {
+        **before,
+        "omnivia_application_audit_events": before["omnivia_application_audit_events"] + 1,
+        "omnivia_idempotency_claims": before["omnivia_idempotency_claims"] + 1,
+        "omnivia_idempotency_outcomes": before["omnivia_idempotency_outcomes"] + 1,
+        s0.EXECUTIONS_TABLE: before[s0.EXECUTIONS_TABLE] + 1,
+        "omnivia_chat_conversations": before["omnivia_chat_conversations"] + 1,
+    }
+    conversation = chat.read_conversation(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )
+    assert conversation is not None
+    assert conversation.state == "active"
+    assert conversation.graph_revision == 1
+    assert conversation.latest_conversation_sequence == 0
+    assert conversation.default_branch_id is None
+    assert conversation.title is None
+    assert conversation.title_source is None
+    assert conversation.created_by_actor_id == PRINCIPAL
+    assert not chat.read_outbox_events_since(
+        owned.connection, workspace_id=WORKSPACE_ID, after_cursor=0
+    )
+
+
+@pytest.mark.parametrize("title", ("cold start", ""))
+def test_create_conversation_carries_a_caller_title_as_a_user_title(
+    owned: m1.Owned, title: str
+) -> None:
+    """`CreateConversationRequest.title` states no `minLength`, and
+    `graph.schema.json#/$defs/Conversation.title` sets it to `0`: an empty title is a
+    title the domain record holds, not a document this decoder may refuse."""
+    response = _dispatcher(owned).dispatch(
+        _create_request(command=_create_conversation_command(title=title))
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    conversation = chat.read_conversation(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )
+    assert conversation is not None
+    assert conversation.title == title
+    # 0029 admits `user | generated | imported`, and a caller-supplied title is the
+    # actor's own, never a generated one.
+    assert conversation.title_source == "user"
+
+
+def test_create_conversation_replay_answers_from_the_settled_outcome(
+    owned: m1.Owned,
+) -> None:
+    dispatcher = _dispatcher(owned)
+    request = _create_request()
+    first = dispatcher.dispatch(request)
+    after_first = _counts(owned)
+
+    second = dispatcher.dispatch(request)
+
+    assert isinstance(first, SuccessResponseEnvelope), first
+    assert isinstance(second, SuccessResponseEnvelope), second
+    assert second.result == first.result
+    # Only the replayed execution record moves; no second conversation.
+    assert _counts(owned) == {
+        **after_first,
+        s0.EXECUTIONS_TABLE: after_first[s0.EXECUTIONS_TABLE] + 1,
+    }
+
+
+def test_create_conversation_under_a_second_key_conflicts_without_writing(
+    owned: m1.Owned,
+) -> None:
+    """The same `commandId` under a different idempotency key is not a replay: the
+    conversation it would create is already there, so it fails closed."""
+    _create_conversation(owned)
+    after_first = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _create_request(
+            idempotency_key="idem-cold-create-again",
+            request_id="req-cold-create-again",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(owned) == after_first
+
+
+def test_create_conversation_refuses_a_foreign_actor_before_writing(
+    owned: m1.Owned,
+) -> None:
+    """`actorId` becomes the conversation's durable `createdBy`, so a command may not
+    name an author this request was not authenticated as."""
+    before = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _create_request(
+            command=_create_conversation_command(actor_id="actor-somebody-else"),
+            idempotency_key="idem-cold-create-foreign-actor",
+            request_id="req-cold-create-foreign-actor",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(owned) == before
+
+
+@pytest.mark.parametrize(
+    ("command", "request_id"),
+    (
+        (
+            {**_create_conversation_command(), "workspaceId": m1.OTHER_WORKSPACE_ID},
+            "req-cold-create-other-workspace",
+        ),
+        (
+            {**_create_conversation_command(), "requestedAt": "yesterday"},
+            "req-cold-create-bad-instant",
+        ),
+        (
+            {**_create_conversation_command(), "requestedAt": "2052-05-22T14:13:20"},
+            "req-cold-create-naive-instant",
+        ),
+        (
+            {**_create_conversation_command(), "conversationId": "conv-client-minted"},
+            "req-cold-create-client-identity",
+        ),
+        (
+            {
+                key: value
+                for key, value in _create_conversation_command().items()
+                if key != "requestedAt"
+            },
+            "req-cold-create-missing-instant",
+        ),
+    ),
+)
+def test_create_conversation_refuses_a_malformed_document_before_writing(
+    owned: m1.Owned, command: Mapping[str, Any], request_id: str
+) -> None:
+    before = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _create_request(
+            command=command,
+            idempotency_key=f"idem-{request_id}",
+            request_id=request_id,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(owned) == before
+
+
+def test_create_conversation_with_a_conversation_expectation_fails_closed(
+    owned: m1.Owned,
+) -> None:
+    """There is no conversation yet, so no revision expectation can be satisfied."""
+    before = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _create_request(
+            expected_conversation={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "graph_revision": 1,
+                "latest_conversation_sequence": 0,
+            },
+            idempotency_key="idem-cold-create-expectation",
+            request_id="req-cold-create-expectation",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(owned) == before
+
+
+def test_first_send_creates_the_root_message_branch_and_selection(
+    owned: m1.Owned,
+) -> None:
+    _create_conversation(owned)
+    before = _counts(owned)
+    generation_calls: list[Mapping[str, Any]] = []
+
+    response = _dispatcher(
+        owned, execute_generation=lambda **fields: generation_calls.append(fields)
+    ).dispatch(_first_send_request())
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    assert response.result == {
+        "command_name": "SubmitMessage",
+        "command_result": {"commandId": FIRST_SEND_COMMAND_ID, "status": "completed"},
+        "conversation_id": COLD_CONVERSATION_ID,
+    }
+    assert _counts(owned) == {
+        **before,
+        "omnivia_application_audit_events": before["omnivia_application_audit_events"] + 1,
+        "omnivia_idempotency_claims": before["omnivia_idempotency_claims"] + 1,
+        "omnivia_idempotency_outcomes": before["omnivia_idempotency_outcomes"] + 1,
+        s0.EXECUTIONS_TABLE: before[s0.EXECUTIONS_TABLE] + 1,
+        "omnivia_chat_messages": before["omnivia_chat_messages"] + 1,
+        "omnivia_chat_message_parts": before["omnivia_chat_message_parts"] + 1,
+        "omnivia_chat_message_branches": before["omnivia_chat_message_branches"] + 1,
+        "omnivia_chat_branch_head_events": before["omnivia_chat_branch_head_events"] + 1,
+        "omnivia_chat_conversation_view_states": (
+            before["omnivia_chat_conversation_view_states"] + 1
+        ),
+        "omnivia_chat_queued_submissions": before["omnivia_chat_queued_submissions"] + 1,
+        "omnivia_chat_generation_jobs": before["omnivia_chat_generation_jobs"] + 1,
+        "omnivia_chat_queue_order_projection": (
+            before["omnivia_chat_queue_order_projection"] + 1
+        ),
+        "omnivia_chat_transactional_outbox": before["omnivia_chat_transactional_outbox"] + 1,
+    }
+
+    conversation = chat.read_conversation(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )
+    assert conversation is not None
+    assert conversation.latest_conversation_sequence == 1
+    assert conversation.default_branch_id == COLD_BRANCH_ID
+    # The head event foreign-keys the conversation's own revision, so the first send
+    # advances the sequence and leaves the revision exactly where a continuation does.
+    assert conversation.graph_revision == 1
+
+    message = chat.read_messages_by_conversation_sequence(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )[0]
+    assert message.message_id == COLD_ROOT_MESSAGE_ID
+    assert message.parent_message_id is None
+    assert message.role == "user"
+    assert message.author_id == PRINCIPAL
+    assert message.created_on_branch_id == COLD_BRANCH_ID
+    assert message.conversation_sequence == 1
+
+    branch = chat.read_branch(
+        owned.connection, workspace_id=WORKSPACE_ID, branch_id=COLD_BRANCH_ID
+    )
+    assert branch is not None
+    assert branch.conversation_id == COLD_CONVERSATION_ID
+    assert branch.origin_kind == "original"
+    assert branch.state == "open"
+    assert branch.head_version == 1
+    assert branch.initial_head_message_id == COLD_ROOT_MESSAGE_ID
+    assert branch.current_head_message_id == COLD_ROOT_MESSAGE_ID
+    assert branch.created_conversation_sequence == 1
+    assert branch.created_from_branch_id is None
+    assert branch.fork_parent_message_id is None
+    assert branch.fork_source_message_id is None
+
+    events = chat.read_branch_head_events(
+        owned.connection, workspace_id=WORKSPACE_ID, branch_id=COLD_BRANCH_ID
+    )
+    assert [(event.head_version, event.cause) for event in events] == [
+        (1, "branch_created")
+    ]
+    assert events[0].previous_head_message_id is None
+    assert events[0].new_head_message_id == COLD_ROOT_MESSAGE_ID
+    assert events[0].conversation_sequence == 1
+    assert events[0].graph_revision == 1
+
+    view_state = chat.read_actor_view_state(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=COLD_CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+    )
+    assert view_state is not None
+    assert view_state.active_branch_id == COLD_BRANCH_ID
+    assert view_state.last_seen_graph_revision == 1
+    assert view_state.version == 1
+
+    job = chat.read_generation_job(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=f"{FIRST_SEND_COMMAND_ID}.gen",
+    )
+    assert job is not None
+    assert job.state == "queued"
+    assert job.branch_id == COLD_BRANCH_ID
+    assert job.trigger_message_id == COLD_ROOT_MESSAGE_ID
+
+    # `CreateConversation` announced nothing, so the first send is the workspace's
+    # first Chat outbox fact and sits at the very first cursor.
+    outbox = chat.read_outbox_events_since(
+        owned.connection, workspace_id=WORKSPACE_ID, after_cursor=0
+    )
+    assert [event.event_kind for event in outbox] == ["chat.message.committed"]
+    payload = dict(outbox[0].payload)
+    # A root message has no parent, and `null` would say it has one that is nothing.
+    assert "parentMessageId" not in payload
+    assert payload["branchId"] == COLD_BRANCH_ID
+    assert payload["headVersion"] == 1
+
+    # The same execution seam a continuation uses, with the same three identities.
+    assert generation_calls == [
+        {
+            "queued_submission_id": f"{FIRST_SEND_COMMAND_ID}.sub",
+            "generation_job_id": f"{FIRST_SEND_COMMAND_ID}.gen",
+            "trigger_message_id": COLD_ROOT_MESSAGE_ID,
+        }
+    ]
+
+
+def test_first_send_then_continuation_appends_on_the_branch_it_created(
+    owned: m1.Owned,
+) -> None:
+    """The branch a first send creates is an ordinary branch: the next send is the
+    unchanged continuation, stale-head check and all."""
+    _create_conversation(owned)
+    dispatcher = _dispatcher(owned)
+    assert isinstance(dispatcher.dispatch(_first_send_request()), SuccessResponseEnvelope)
+
+    second = dispatcher.dispatch(
+        _request(
+            _submit_command(
+                command_id="cmd-cold-second",
+                message_id="cmd-cold-second.msg",
+                expected_head_message_id=COLD_ROOT_MESSAGE_ID,
+                expected_head_version=1,
+                conversationId=COLD_CONVERSATION_ID,
+                branchId=COLD_BRANCH_ID,
+                actorId=PRINCIPAL,
+            ),
+            idempotency_key="idem-cold-second",
+            request_id="req-cold-second",
+            expected_conversation={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "graph_revision": 1,
+                "latest_conversation_sequence": 1,
+            },
+        )
+    )
+
+    assert isinstance(second, SuccessResponseEnvelope), second
+    branch = chat.read_branch(
+        owned.connection, workspace_id=WORKSPACE_ID, branch_id=COLD_BRANCH_ID
+    )
+    assert branch is not None
+    assert branch.head_version == 2
+    assert branch.current_head_message_id == "cmd-cold-second.msg"
+    assert [
+        (event.head_version, event.cause)
+        for event in chat.read_branch_head_events(
+            owned.connection, workspace_id=WORKSPACE_ID, branch_id=COLD_BRANCH_ID
+        )
+    ] == [(1, "branch_created"), (2, "user_message_appended")]
+
+
+def test_first_send_replay_writes_nothing_a_second_time(owned: m1.Owned) -> None:
+    _create_conversation(owned)
+    dispatcher = _dispatcher(owned)
+    request = _first_send_request()
+    first = dispatcher.dispatch(request)
+    after_first = _counts(owned)
+
+    second = dispatcher.dispatch(request)
+
+    assert isinstance(first, SuccessResponseEnvelope), first
+    assert isinstance(second, SuccessResponseEnvelope), second
+    assert second.result == first.result
+    assert _counts(owned) == {
+        **after_first,
+        s0.EXECUTIONS_TABLE: after_first[s0.EXECUTIONS_TABLE] + 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("command_id", "idempotency_key"),
+    (
+        # The same identity under a second key: not a replay, so it re-runs and finds
+        # the branch its own first run created.
+        (FIRST_SEND_COMMAND_ID, "idem-cold-first-again"),
+        # And a genuinely second caller, racing the same cold start.
+        ("cmd-cold-first-other", "idem-cold-first-other"),
+    ),
+    ids=("same-command-id", "second-command-id"),
+)
+def test_a_second_first_send_conflicts_and_leaves_no_partial_state(
+    owned: m1.Owned, command_id: str, idempotency_key: str
+) -> None:
+    """The branchless variant is servable exactly once per conversation: the branch
+    the first send created is read inside the fenced transaction, so the second send
+    is refused rather than appending past a head it never stated."""
+    _create_conversation(owned)
+    dispatcher = _dispatcher(owned)
+    assert isinstance(dispatcher.dispatch(_first_send_request()), SuccessResponseEnvelope)
+    after_first = _counts(owned)
+
+    response = dispatcher.dispatch(
+        _first_send_request(
+            command=_first_send_command(command_id=command_id),
+            idempotency_key=idempotency_key,
+            request_id=f"req-{idempotency_key}",
+            expected_conversation={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "graph_revision": 1,
+                "latest_conversation_sequence": 1,
+            },
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert {table: _counts(owned)[table] for table in CHAT_TABLES} == {
+        table: after_first[table] for table in CHAT_TABLES
+    }
+
+
+def test_a_fault_after_the_first_send_writes_rolls_back_every_domain_row(
+    owned: m1.Owned,
+) -> None:
+    """Not a pre-flight refusal: the whole first send is written and *then* the
+    settlement fails -- here through the seam's own result validation, the last check
+    that runs after every domain row is in. One transaction means the branch, root
+    message, head event, view state, queue and outbox rows all go back."""
+    _create_conversation(owned)
+    before = _counts(owned)
+
+    def resolve_then_fail(request: Any, context: Any) -> Any:
+        command = resolve_chat_command(request, context)
+
+        def failing(writer: Any, settlement: Any) -> Mapping[str, Any]:
+            command(writer, settlement)
+            return {"not": "a governed command result"}
+
+        return failing
+
+    response = _dispatcher(owned, resolve_command=resolve_then_fail).dispatch(
+        _first_send_request()
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert {table: _counts(owned)[table] for table in CHAT_TABLES} == {
+        table: before[table] for table in CHAT_TABLES
+    }
+    assert (
+        chat.read_branch(owned.connection, workspace_id=WORKSPACE_ID, branch_id=COLD_BRANCH_ID)
+        is None
+    )
+    conversation = chat.read_conversation(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )
+    assert conversation is not None
+    assert conversation.default_branch_id is None
+    assert conversation.latest_conversation_sequence == 0
+
+
+def test_first_send_into_a_branched_conversation_conflicts_and_rolls_back(
+    seeded: m1.Owned,
+) -> None:
+    """The seeded conversation already has a branch at a real head, so a request that
+    states no head is refused rather than appending past one it never checked."""
+    before = _counts(seeded)
+
+    response = _dispatcher(seeded).dispatch(
+        _request(
+            _first_send_command(
+                command_id="cmd-cold-into-branched",
+                conversation_id=CONVERSATION_ID,
+                actor_id=ACTOR_ID,
+            ),
+            idempotency_key="idem-cold-into-branched",
+            request_id="req-cold-into-branched",
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(seeded) == before
+
+
+def test_first_send_into_an_absent_conversation_conflicts_without_writing(
+    owned: m1.Owned,
+) -> None:
+    before = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _first_send_request(
+            command=_first_send_command(
+                command_id="cmd-cold-absent",
+                conversation_id="conv-never-created",
+            ),
+            idempotency_key="idem-cold-absent",
+            request_id="req-cold-absent",
+            expected_conversation=None,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "conflict"
+    assert _counts(owned) == before
+
+
+def test_first_send_into_another_workspaces_conversation_refuses(
+    owned: m1.Owned,
+) -> None:
+    before = _counts(owned)
+
+    response = _dispatcher(owned).dispatch(
+        _first_send_request(
+            command=_first_send_command(
+                command_id="cmd-cold-other-workspace",
+                workspace_id=m1.OTHER_WORKSPACE_ID,
+            ),
+            idempotency_key="idem-cold-other-workspace",
+            request_id="req-cold-other-workspace",
+            expected_conversation=None,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(owned) == before
+
+
+@pytest.mark.parametrize(
+    "stated",
+    (
+        ("branchId",),
+        ("expectedHeadMessageId",),
+        ("expectedHeadVersion",),
+        ("branchId", "expectedHeadMessageId"),
+        ("branchId", "expectedHeadVersion"),
+        ("expectedHeadMessageId", "expectedHeadVersion"),
+    ),
+    ids=lambda stated: "+".join(stated),
+)
+def test_a_partial_expected_head_group_is_malformed(
+    owned: m1.Owned, stated: tuple[str, ...]
+) -> None:
+    """All three or none. A caller stating one of them has a view of a head, and the
+    ones it left out are exactly the checks that would then not run."""
+    _create_conversation(owned)
+    before = _counts(owned)
+    partial = {
+        "branchId": COLD_BRANCH_ID,
+        "expectedHeadMessageId": COLD_ROOT_MESSAGE_ID,
+        "expectedHeadVersion": 1,
+    }
+    request_id = f"req-cold-partial-{'-'.join(stated)}"
+
+    response = _dispatcher(owned).dispatch(
+        _first_send_request(
+            command=_first_send_command(
+                command_id="cmd-cold-partial",
+                **{field: partial[field] for field in stated},
+            ),
+            idempotency_key=f"idem-{request_id}",
+            request_id=request_id,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "invalid_request"
+    assert _counts(owned) == before
+
+
+def test_the_cold_started_conversation_answers_a_complete_snapshot(
+    owned: m1.Owned,
+) -> None:
+    """The handoff this slice exists for: create, first send, then `chat.snapshot`
+    answers with the conversation, the path, the branch record carrying `headVersion`,
+    and the actor's view state."""
+    _create_conversation(owned)
+    dispatcher = _dispatcher(owned)
+    assert isinstance(dispatcher.dispatch(_first_send_request()), SuccessResponseEnvelope)
+
+    snapshot_entry = get_operation_metadata("chat.snapshot")
+    response = dispatcher.dispatch(
+        s0.envelope_for(
+            snapshot_entry,
+            operation_input={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "snapshot_query": {
+                    "requestId": "req-cold-snapshot",
+                    "workspaceId": WORKSPACE_ID,
+                    "conversationId": COLD_CONVERSATION_ID,
+                    "actorId": PRINCIPAL,
+                },
+            },
+            request_id="req-cold-snapshot",
+            purpose=CHAT_FAMILY_PURPOSES["chat.snapshot"],
+            workspace_id=WORKSPACE_ID,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    snapshot = response.result["snapshot"]
+    assert set(snapshot) == {"conversation", "path", "branch", "viewState"}
+    assert snapshot["conversation"]["defaultBranchId"] == COLD_BRANCH_ID
+    assert [message["messageId"] for message in snapshot["path"]["messages"]] == [
+        COLD_ROOT_MESSAGE_ID
+    ]
+    assert snapshot["branch"] == {
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": COLD_CONVERSATION_ID,
+        "branchId": COLD_BRANCH_ID,
+        "originKind": "original",
+        "initialHeadMessageId": COLD_ROOT_MESSAGE_ID,
+        "currentHeadMessageId": COLD_ROOT_MESSAGE_ID,
+        "createdBy": PRINCIPAL,
+        "createdAt": snapshot["branch"]["createdAt"],
+        "createdConversationSequence": 1,
+        "headVersion": 1,
+        "schemaVersion": 1,
+        "state": "open",
+    }
+    assert snapshot["viewState"]["activeBranchId"] == COLD_BRANCH_ID
+    # And the whole document is the governed one, checked against the frozen schema.
+    assert _snapshot_schema_errors(snapshot) == []
+
+
+def test_a_branchless_conversation_has_no_snapshot_to_answer_with(
+    owned: m1.Owned,
+) -> None:
+    """Before the first send there is no branch, no path and no view state, and
+    `ConversationSnapshotResult` requires all three: the governed `not_found` stands,
+    and the `CreateConversation` result is the host's empty authoritative state."""
+    created = _create_conversation(owned)
+    assert created.result["conversation_id"] == COLD_CONVERSATION_ID
+
+    snapshot_entry = get_operation_metadata("chat.snapshot")
+    response = _dispatcher(owned).dispatch(
+        s0.envelope_for(
+            snapshot_entry,
+            operation_input={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "snapshot_query": {
+                    "requestId": "req-cold-empty-snapshot",
+                    "workspaceId": WORKSPACE_ID,
+                    "conversationId": COLD_CONVERSATION_ID,
+                    "actorId": PRINCIPAL,
+                },
+            },
+            request_id="req-cold-empty-snapshot",
+            purpose=CHAT_FAMILY_PURPOSES["chat.snapshot"],
+            workspace_id=WORKSPACE_ID,
+        )
+    )
+
+    assert isinstance(response, ErrorResponseEnvelope), response
+    assert response.error.code == "not_found"
+
+
+# --- the widened contract itself, held to the authoritative schema --------------------
+
+
+def test_both_submit_variants_validate_against_the_frozen_command_schema() -> None:
+    """The all-or-none group is the contract's rule, not this resolver's opinion of
+    it: both variants are checked against `commands.schema.json` itself."""
+    assert _schema_errors(_SUBMIT_MESSAGE_REF, _submit_command()) == []
+    assert _schema_errors(_SUBMIT_MESSAGE_REF, _first_send_command()) == []
+    assert _schema_errors(_CREATE_CONVERSATION_REF, _create_conversation_command()) == []
+    assert (
+        _schema_errors(
+            _CREATE_CONVERSATION_REF, _create_conversation_command(title="cold start")
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "stated",
+    (
+        ("branchId",),
+        ("expectedHeadMessageId",),
+        ("expectedHeadVersion",),
+        ("branchId", "expectedHeadMessageId"),
+        ("branchId", "expectedHeadVersion"),
+        ("expectedHeadMessageId", "expectedHeadVersion"),
+    ),
+    ids=lambda stated: "+".join(stated),
+)
+def test_a_partial_expected_head_group_fails_the_frozen_command_schema(
+    stated: tuple[str, ...],
+) -> None:
+    partial = {
+        "branchId": BRANCH_ID,
+        "expectedHeadMessageId": ROOT_MESSAGE_ID,
+        "expectedHeadVersion": 1,
+    }
+    document = _first_send_command(**{field: partial[field] for field in stated})
+
+    assert _schema_errors(_SUBMIT_MESSAGE_REF, document) != []
+
+
+def test_the_widened_schema_still_refuses_what_it_always_refused() -> None:
+    """Widening the head group is the only thing that moved: a document missing a
+    member outside it is refused exactly as before."""
+    for dropped in ("editableParts", "attachmentReferences", "contextReferences", "actorId"):
+        document = {
+            key: value
+            for key, value in _first_send_command().items()
+            if key != dropped
+        }
+        assert _schema_errors(_SUBMIT_MESSAGE_REF, document) != [], dropped
+    assert _schema_errors(_SUBMIT_MESSAGE_REF, _first_send_command(title="nope")) != []

@@ -28,6 +28,23 @@ conversation this workspace does not hold, one with no branch selected, one whos
 branch head names no readable message, and one this actor has no view state for all
 refuse identically -- one `not_found` with one constant diagnostic -- so the refusal
 never becomes an oracle for which of those is the case.
+
+**A branchless conversation is therefore still `not_found`, deliberately.** REF-042
+§9.1 leaves a new Conversation with no branch until its first committed user Message,
+and `BranchPathResult` requires a `branchId` and a `headMessageId` while
+`ConversationViewState` requires an `activeBranchId` -- so the governed result has no
+spelling for "exists, empty, no branch yet". Inventing one here would mean either a
+fabricated branch identity or a fourth Core-local shape the Chat Contract does not
+publish, and both are worse than an honest refusal. A host cold-starting a
+conversation does not need this read: the `chat.command` result that created the
+conversation already names it, and that *is* the authoritative empty state until the
+branchless first `SubmitMessage` (`service/chat_submit.py`) commits the root message
+and the `original` branch, after which this snapshot answers completely.
+
+**The selected branch is published as the record, not just as the path.** `path` is
+`BranchPathResult`, a disposable projection with no `headVersion`; the optional
+`branch` member carries the durable `MessageBranch` the path was taken from, which is
+where the optimistic token a later `SubmitMessage` must state actually lives.
 """
 
 from __future__ import annotations
@@ -252,6 +269,40 @@ def _path(
     }
 
 
+def _branch(branch: Branch) -> Mapping[str, Any]:
+    """The selected branch as the durable `MessageBranch` record, not a second path.
+
+    `BranchPathResult` is a disposable projection and carries no `headVersion`, so a
+    caller that has just read a snapshot and wants to append has nowhere to read the
+    optimistic token `SubmitMessage` requires. This is that record, exactly as the row
+    holds it -- `branchId` is `path.branchId` and `currentHeadMessageId` is
+    `path.headMessageId` by construction, because both come from the one branch row
+    this read resolved.
+    """
+    document: dict[str, Any] = {
+        "workspaceId": branch.workspace_id,
+        "conversationId": branch.conversation_id,
+        "branchId": branch.branch_id,
+        "originKind": branch.origin_kind,
+        "initialHeadMessageId": branch.initial_head_message_id,
+        "currentHeadMessageId": branch.current_head_message_id,
+        "createdBy": branch.created_by_actor_id,
+        "createdAt": _timestamp(branch.created_at_us),
+        "createdConversationSequence": branch.created_conversation_sequence,
+        "headVersion": branch.head_version,
+        "schemaVersion": branch.schema_version,
+        "state": branch.state,
+    }
+    _optional(document, "createdFromBranchId", branch.created_from_branch_id)
+    _optional(document, "forkParentMessageId", branch.fork_parent_message_id)
+    _optional(document, "forkSourceMessageId", branch.fork_source_message_id)
+    if branch.archived_at_us is not None:
+        document["archivedAt"] = _timestamp(branch.archived_at_us)
+    if branch.tombstoned_at_us is not None:
+        document["tombstonedAt"] = _timestamp(branch.tombstoned_at_us)
+    return document
+
+
 def _view_state(view_state: ViewState) -> Mapping[str, Any]:
     document: dict[str, Any] = {
         "workspaceId": view_state.workspace_id,
@@ -303,6 +354,7 @@ def resolve_chat_snapshot(
         snapshot={
             "conversation": _conversation(inputs.conversation),
             "path": _path(inputs, inputs.branch, inputs.view_state),
+            "branch": _branch(inputs.branch),
             "viewState": _view_state(inputs.view_state),
         },
     ).to_wire()

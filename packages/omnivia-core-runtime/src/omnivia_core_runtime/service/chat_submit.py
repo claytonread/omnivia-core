@@ -39,6 +39,21 @@ so the rows one command wrote are addressable by the caller that wrote them with
 second read-back operation this contract does not have. That is also what makes a
 `commandId` replayed under a *different* idempotency key refuse rather than duplicate:
 the branch head it expects has already moved.
+
+**Cold start: `CreateConversation`, then a branchless first `SubmitMessage`.** REF-042
+§9.1 gives a new Conversation no branch until its first committed user Message, so
+`CreateConversation` writes exactly one active conversation row -- no branch, no
+message, no outbox fact -- and invents neither a synthetic root message nor a branch
+to hang one on. The first
+`SubmitMessage` into that conversation is then the request that has no head to state:
+the contract's expected-head group is all-or-none, and a request that omits all three
+is served only when the named active conversation genuinely has no default branch and
+no branches. That send creates the root user message, the `original` branch at head
+version 1, its `branch_created` head event, the actor's view state selecting it, and
+the same queued submission, generation job and outbox facts a continuation writes --
+one transaction, one executor, one set of rules. A request that omits *part* of the
+group is refused as malformed: a caller stating one of the three has a view of a head,
+and the two it left out are exactly the halves that would then go unchecked.
 """
 
 from __future__ import annotations
@@ -48,6 +63,7 @@ import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import (
@@ -79,6 +95,7 @@ from omnivia_core_runtime.storage.chat import (
 
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
+    "CREATE_CONVERSATION_COMMAND",
     "REORDER_QUEUED_SUBMISSION_COMMAND",
     "RETRY_GENERATION_COMMAND",
     "STOP_GENERATION_COMMAND",
@@ -88,6 +105,7 @@ __all__ = [
 ]
 
 CANCEL_QUEUED_SUBMISSION_COMMAND: Final = "CancelQueuedSubmission"
+CREATE_CONVERSATION_COMMAND: Final = "CreateConversation"
 REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
 RETRY_GENERATION_COMMAND: Final = "RetryGeneration"
 STOP_GENERATION_COMMAND: Final = "StopGeneration"
@@ -113,6 +131,14 @@ _DERIVED_IDENTIFIER_MAX: Final = 122
 _MAX_PART_PAYLOAD_BYTES: Final = 262_144
 _MAX_REFERENCE_COUNT: Final = 64
 _MAX_PARTS: Final = 4096
+#: `commands.schema.json#/$defs/CreateConversationRequest.title`. 0029 bounds the
+#: stored column at 2048 *bytes*, which 512 characters can never exceed.
+_MAX_TITLE_LENGTH: Final = 512
+#: The revision a created conversation starts at. One, not zero: the conversation row
+#: is itself the first durable structural graph fact (REF-042 §4.19), and every later
+#: branch head event this build writes cites the conversation's revision through 0029's
+#: non-deferrable foreign key rather than moving it.
+_INITIAL_GRAPH_REVISION: Final = 1
 _MAX_OPEN_CODE: Final = 128
 _MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
 
@@ -133,6 +159,20 @@ _FIELDS: Final = frozenset(
         "targetReference",
         "fromQueuedSubmissionId",
         "clientCorrelationHint",
+    }
+)
+#: `commands.schema.json#/$defs/SubmitMessageRequest`'s all-or-none expected-head
+#: group. Present in full is the continuation this command has always been; absent in
+#: full is the first send into a conversation REF-042 §9.1 leaves branchless.
+_HEAD_GROUP: Final = ("branchId", "expectedHeadMessageId", "expectedHeadVersion")
+_CREATE_CONVERSATION_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "actorId",
+        "title",
+        "requestedAt",
     }
 )
 _REORDER_FIELDS: Final = frozenset(
@@ -186,6 +226,13 @@ _MESSAGE_BRANCH: Final = (
 _MESSAGE_STALE_HEAD: Final = (
     "the branch is not at the head this command expects to append to"
 )
+_MESSAGE_ALREADY_BRANCHED: Final = (
+    "the conversation this command names already has a branch, so a first send into it "
+    "would append past a head it did not state"
+)
+_MESSAGE_CONVERSATION_EXISTS: Final = (
+    "the conversation this command would create already exists in this workspace"
+)
 
 
 def _invalid(field: str, rule: str) -> OperationError:
@@ -214,18 +261,33 @@ class _Part:
 
 @dataclass(frozen=True, slots=True)
 class _SubmitMessage:
-    """One decoded `SubmitMessageRequest`, in the variant this build serves."""
+    """One decoded `SubmitMessageRequest`, in the variant this build serves.
+
+    The three expected-head members are `None` together or set together, never one
+    without the others: :func:`_decode` refuses a partial group before constructing
+    this, so `branch_id is None` is the whole first-send test the command needs.
+    """
 
     command_id: str
     workspace_id: str
     conversation_id: str
-    branch_id: str
+    branch_id: str | None
     actor_id: str
-    expected_head_message_id: str
-    expected_head_version: int
+    expected_head_message_id: str | None
+    expected_head_version: int | None
     message_id: str
     parts: tuple[_Part, ...]
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _CreateConversation:
+    """One decoded `CreateConversationRequest`."""
+
+    command_id: str
+    workspace_id: str
+    actor_id: str
+    title: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +435,24 @@ def _array(
     return value
 
 
+def _utc_timestamp(document: Mapping[str, Any], field: str) -> None:
+    """Assert one governed `Timestamp`: RFC 3339 with an explicit offset.
+
+    Asserted rather than annotated, and asserted rather than kept: this is a required
+    member of the command's closed field set, so a document carrying something that is
+    not an instant is malformed even though nothing durable is written from it.
+    """
+    value = document.get(field)
+    if not isinstance(value, str):
+        raise _invalid(field, "is not an RFC 3339 timestamp")
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise _invalid(field, "is not an RFC 3339 timestamp") from error
+    if moment.tzinfo is None:
+        raise _invalid(field, "is not an RFC 3339 timestamp")
+
+
 def _bounded_optional_text(
     item: Mapping[str, Any], name: str, path: str, *, max_length: int
 ) -> None:
@@ -448,14 +528,29 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
     if "fromQueuedSubmissionId" in command:
         _identifier(command, "fromQueuedSubmissionId")
 
-    expected_head_version = command.get("expectedHeadVersion")
-    if (
-        not isinstance(expected_head_version, int)
-        or isinstance(expected_head_version, bool)
-        or expected_head_version < 1
-        or expected_head_version > _MAX_SAFE_INTEGER
-    ):
-        raise _invalid("expectedHeadVersion", "is not a head version")
+    # The expected-head group, all-or-none. A partial group names the *missing*
+    # member and the rule, because that is the field the caller has to supply; the
+    # ones it did state are not the defect.
+    stated = [field for field in _HEAD_GROUP if field in command]
+    if stated and len(stated) != len(_HEAD_GROUP):
+        missing = next(field for field in _HEAD_GROUP if field not in command)
+        raise _invalid(
+            missing,
+            "is required whenever any of the expected-head group is stated, and "
+            "forbidden when none of it is",
+        )
+    first_send = not stated
+
+    expected_head_version: int | None = None
+    if not first_send:
+        expected_head_version = command.get("expectedHeadVersion")
+        if (
+            not isinstance(expected_head_version, int)
+            or isinstance(expected_head_version, bool)
+            or expected_head_version < 1
+            or expected_head_version > _MAX_SAFE_INTEGER
+        ):
+            raise _invalid("expectedHeadVersion", "is not a head version")
 
     parts = command.get("editableParts")
     if (
@@ -480,13 +575,57 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         command_id=command_id,
         workspace_id=_identifier(command, "workspaceId"),
         conversation_id=_identifier(command, "conversationId"),
-        branch_id=_identifier(command, "branchId"),
+        branch_id=None if first_send else _identifier(command, "branchId"),
         actor_id=_identifier(command, "actorId"),
-        expected_head_message_id=_identifier(command, "expectedHeadMessageId"),
+        expected_head_message_id=(
+            None if first_send else _identifier(command, "expectedHeadMessageId")
+        ),
         expected_head_version=expected_head_version,
         message_id=message_id,
         parts=tuple(part for part, _ in decoded),
         content_hash=_digest(f"[{','.join(canonical for _, canonical in decoded)}]"),
+    )
+
+
+def _decode_create_conversation(command: Mapping[str, Any]) -> _CreateConversation:
+    """Decode one `CreateConversationRequest`, or refuse it as an invalid request.
+
+    Held to `commands.schema.json#/$defs/CreateConversationRequest`'s exact closed
+    field set. `requestedAt` is validated and then dropped: it is the caller's own
+    clock, and every durable instant this command writes is the seam's settlement
+    time, so keeping it would be recording a time this service did not observe.
+    """
+    unknown = sorted(set(command) - _CREATE_CONVERSATION_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+    _utc_timestamp(command, "requestedAt")
+    title = command.get("title")
+    if "title" in command and (
+        not isinstance(title, str)
+        # Zero is the floor the contract actually states: `CreateConversationRequest`
+        # carries no `minLength`, and `graph.schema.json#/$defs/Conversation.title`
+        # sets it to `0` outright, so an empty title is a title the domain record can
+        # hold and not a document this decoder may refuse.
+        or len(title) > _MAX_TITLE_LENGTH
+        # 0029 refuses a title carrying a NUL outright, and a `CHECK` tripped inside
+        # the mutation is an integrity failure where this is a malformed request.
+        or "\x00" in title
+    ):
+        raise _invalid(
+            "title", f"is not a string of at most {_MAX_TITLE_LENGTH} characters"
+        )
+    return _CreateConversation(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        actor_id=_identifier(command, "actorId"),
+        title=None if "title" not in command else str(title),
     )
 
 
@@ -585,6 +724,24 @@ def _next_outbox_cursor(connection: sqlite3.Connection, workspace_id: str) -> in
     return int(row[0])
 
 
+def _conversation_has_branch(
+    connection: sqlite3.Connection, *, workspace_id: str, conversation_id: str
+) -> bool:
+    """Whether this conversation holds any branch at all, open or terminal.
+
+    Any branch, not just an open one: the first-send variant states no head, and a
+    conversation with an archived branch has a head history a caller could and should
+    have stated. 0029's own view-state key foreign-keys a branch, so a conversation
+    with no branch also has no view state to disagree with.
+    """
+    row = connection.execute(
+        "SELECT 1 FROM omnivia_chat_message_branches "
+        "WHERE workspace_id = ? AND conversation_id = ? LIMIT 1",
+        (workspace_id, conversation_id),
+    ).fetchone()
+    return row is not None
+
+
 def _next_queue_sequence(
     connection: sqlite3.Connection, *, workspace_id: str, conversation_id: str
 ) -> int:
@@ -631,7 +788,14 @@ def _ack(command_name: str, command_id: str, conversation_id: str) -> Mapping[st
 
 
 def _submit(request: _SubmitMessage) -> ChatCommand:
-    """One decoded submission, as the command the mutation seam runs."""
+    """One decoded submission, as the command the mutation seam runs.
+
+    Two variants, one transaction and one write order. The continuation advances an
+    existing branch's head; the first send creates the branch that continuation would
+    have advanced, at head version 1, and selects it for the actor. Everything after
+    the head -- the message, its parts, the queued submission, the generation job and
+    the outbox row -- is identical, because it is the same submission either way.
+    """
 
     def command(
         writer: ChatWriter, settlement: MutationSettlementContext
@@ -644,25 +808,44 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
         )
         if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
-        branch = read_branch(
-            writer.connection,
-            workspace_id=writer.workspace_id,
-            branch_id=request.branch_id,
-        )
-        if (
-            branch is None
-            or branch.conversation_id != request.conversation_id
-            or branch.state != "open"
-        ):
-            raise ChatAggregateConflict(_MESSAGE_BRANCH)
-        if (
-            branch.head_version != request.expected_head_version
-            or branch.current_head_message_id != request.expected_head_message_id
-        ):
-            raise ChatAggregateConflict(_MESSAGE_STALE_HEAD)
+
+        stated_branch_id = request.branch_id
+        first_send = stated_branch_id is None
+        if stated_branch_id is None:
+            # A branchless conversation is what the omitted head group asserts, and it
+            # is read here rather than trusted from the request: inside the fenced
+            # transaction is the only place the answer is still true when it is used.
+            if conversation.default_branch_id is not None or _conversation_has_branch(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=request.conversation_id,
+            ):
+                raise ChatAggregateConflict(_MESSAGE_ALREADY_BRANCHED)
+            branch_id = f"{request.command_id}.br"
+            parent_message_id: str | None = None
+            head_version = 1
+        else:
+            branch = read_branch(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                branch_id=stated_branch_id,
+            )
+            if (
+                branch is None
+                or branch.conversation_id != request.conversation_id
+                or branch.state != "open"
+            ):
+                raise ChatAggregateConflict(_MESSAGE_BRANCH)
+            if (
+                branch.head_version != request.expected_head_version
+                or branch.current_head_message_id != request.expected_head_message_id
+            ):
+                raise ChatAggregateConflict(_MESSAGE_STALE_HEAD)
+            branch_id = branch.branch_id
+            parent_message_id = request.expected_head_message_id
+            head_version = branch.head_version + 1
 
         sequence = conversation.latest_conversation_sequence + 1
-        head_version = branch.head_version + 1
         queued_submission_id = f"{request.command_id}.sub"
         generation_job_id = f"{request.command_id}.gen"
         queue_sequence = _next_queue_sequence(
@@ -679,7 +862,9 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             state="active",
             title=conversation.title,
             title_source=conversation.title_source,
-            default_branch_id=conversation.default_branch_id,
+            # The first send is what gives a conversation its default branch; a
+            # continuation leaves whatever the conversation already selected alone.
+            default_branch_id=branch_id if first_send else conversation.default_branch_id,
             updated_at_us=now,
         )
         writer.append_message(
@@ -688,13 +873,13 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             role="user",
             author_type="human",
             author_id=request.actor_id,
-            parent_message_id=request.expected_head_message_id,
+            parent_message_id=parent_message_id,
             conversation_sequence=sequence,
             schema_version=1,
             content_hash=request.content_hash,
             completion_status="complete",
             visibility="standard",
-            created_on_branch_id=request.branch_id,
+            created_on_branch_id=branch_id,
             created_at_us=now,
             committed_at_us=now,
         )
@@ -712,14 +897,28 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
                 created_at_us=now,
                 provenance="human",
             )
+        if first_send:
+            # After the message and before the head event, because 0029 keys the
+            # branch's initial head to a real message row and keys the first head
+            # event to the branch's initial head.
+            writer.append_branch(
+                branch_id=branch_id,
+                conversation_id=request.conversation_id,
+                origin_kind="original",
+                initial_head_message_id=request.message_id,
+                created_by_actor_id=request.actor_id,
+                created_at_us=now,
+                created_conversation_sequence=sequence,
+                schema_version=1,
+            )
         writer.append_branch_head_event(
             event_id=f"{request.command_id}.head",
             conversation_id=request.conversation_id,
-            branch_id=request.branch_id,
+            branch_id=branch_id,
             head_version=head_version,
-            previous_head_message_id=request.expected_head_message_id,
+            previous_head_message_id=parent_message_id,
             new_head_message_id=request.message_id,
-            cause="user_message_appended",
+            cause="branch_created" if first_send else "user_message_appended",
             # The seam's own claim identity, so the durable head event names the exact
             # mutation claim that settled it.
             command_id=settlement.claim_id,
@@ -729,19 +928,32 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             occurred_at_us=now,
             schema_version=1,
         )
-        writer.update_branch_head(
-            branch_id=request.branch_id,
-            expected_head_version=branch.head_version,
-            head_version=head_version,
-            current_head_message_id=request.message_id,
-            state="open",
-        )
+        if first_send:
+            # `append_branch` already inserted the projection at head version 1 with
+            # this exact head, so there is nothing to advance -- only the actor's
+            # selection of the branch the send just created.
+            writer.insert_view_state(
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                active_branch_id=branch_id,
+                last_seen_graph_revision=conversation.graph_revision,
+                schema_version=1,
+                updated_at_us=now,
+            )
+        else:
+            writer.update_branch_head(
+                branch_id=branch_id,
+                expected_head_version=head_version - 1,
+                head_version=head_version,
+                current_head_message_id=request.message_id,
+                state="open",
+            )
         writer.append_queued_submission(
             queued_submission_id=queued_submission_id,
             conversation_id=request.conversation_id,
             actor_id=request.actor_id,
             queue_sequence=queue_sequence,
-            branch_id=request.branch_id,
+            branch_id=branch_id,
             editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
             references=(),
             idempotency_key=request.command_id,
@@ -758,7 +970,7 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
         writer.append_generation_job(
             generation_job_id=generation_job_id,
             conversation_id=request.conversation_id,
-            branch_id=request.branch_id,
+            branch_id=branch_id,
             trigger_message_id=request.message_id,
             graph_revision_observed=conversation.graph_revision,
             idempotency_key=request.command_id,
@@ -766,27 +978,80 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             created_at_us=now,
             updated_at_us=now,
         )
+        payload: dict[str, Any] = {
+            "conversationId": request.conversation_id,
+            "branchId": branch_id,
+            "messageId": request.message_id,
+            "conversationSequence": sequence,
+            "graphRevision": conversation.graph_revision,
+            "headVersion": head_version,
+            "role": "user",
+            "queuedSubmissionId": queued_submission_id,
+            "generationJobId": generation_job_id,
+        }
+        if parent_message_id is not None:
+            # A root message has no parent, and `parentMessageId: null` would state
+            # that it has one that is nothing.
+            payload["parentMessageId"] = parent_message_id
         writer.append_outbox_entry(
             outbox_cursor=_next_outbox_cursor(writer.connection, writer.workspace_id),
             domain_event_id=f"{request.command_id}.evt",
             event_kind=_OUTBOX_EVENT_KIND,
-            payload={
-                "conversationId": request.conversation_id,
-                "branchId": request.branch_id,
-                "messageId": request.message_id,
-                "parentMessageId": request.expected_head_message_id,
-                "conversationSequence": sequence,
-                "graphRevision": conversation.graph_revision,
-                "headVersion": head_version,
-                "role": "user",
-                "queuedSubmissionId": queued_submission_id,
-                "generationJobId": generation_job_id,
-            },
+            payload=payload,
             created_at_us=now,
             conversation_id=request.conversation_id,
             generation_job_id=generation_job_id,
         )
         return _ack(SUBMIT_MESSAGE_COMMAND, request.command_id, request.conversation_id)
+
+    return command
+
+
+def _create_conversation(request: _CreateConversation) -> ChatCommand:
+    """One decoded `CreateConversationRequest`, as the command the seam runs.
+
+    One conversation row, and deliberately nothing else -- no branch, no message, no
+    view state, no queued submission, no generation job, and no transactional outbox
+    row either. REF-042 §9.1 gives a new Conversation no branch until its first
+    committed user Message, so a synthetic root message or an empty branch invented
+    here would be a durable fabrication -- and the branchless first `SubmitMessage`
+    above is what closes the gap honestly. The outbox carries *committed graph* facts
+    that a delivery worker republishes to live subscribers, and an empty conversation
+    has produced none: the first send is the first thing there is to announce.
+
+    The conversation identity is derived from the caller's own `commandId`, the same
+    way every other identity this module writes is, so an honest replay answers from
+    the seam's stored outcome and a `commandId` reused under a *different* idempotency
+    key finds its conversation already there and refuses.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation_id = f"{request.command_id}.conv"
+        if (
+            read_conversation(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=conversation_id,
+            )
+            is not None
+        ):
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION_EXISTS)
+        writer.append_conversation(
+            conversation_id=conversation_id,
+            state="active",
+            graph_revision=_INITIAL_GRAPH_REVISION,
+            latest_conversation_sequence=0,
+            schema_version=1,
+            created_by_actor_id=request.actor_id,
+            created_at_us=now,
+            updated_at_us=now,
+            title=request.title,
+            title_source=None if request.title is None else "user",
+        )
+        return _ack(CREATE_CONVERSATION_COMMAND, request.command_id, conversation_id)
 
     return command
 
@@ -1139,7 +1404,22 @@ def resolve_chat_command(
     for. It is checked rather than trusted or ignored: the envelope is workspace-scoped
     through the request's selected workspace, and a payload naming a second one is a
     request this seam cannot settle honestly under either.
+
+    `CreateConversation` additionally holds `actorId` to the authenticated principal,
+    because that value becomes the conversation's durable `createdBy`: a command may
+    not name someone else as the author of a record this request is about to write.
+    The other commands here name an actor that is matched against a row this workspace
+    already holds, so the check that matters there is the one against the row.
     """
+    if request.command_name == CREATE_CONVERSATION_COMMAND:
+        create = _decode_create_conversation(request.command)
+        if create.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if create.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        return _create_conversation(create)
     if request.command_name == SUBMIT_MESSAGE_COMMAND:
         submit = _decode(request.command)
         if submit.workspace_id != context.workspace_id:

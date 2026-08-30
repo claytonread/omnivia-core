@@ -102,7 +102,7 @@ RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 159
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '9a633eb9cdb81e6f586f904c493ac405a535d8da2198561358e940ecb60b090a'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '87a0bd924205901d69f881393b0038cd6807d91ad574f6b77058320ffe95cd3e'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (

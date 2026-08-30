@@ -228,6 +228,10 @@
       "properties": {
         "conversation": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Conversation" },
         "path": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathResult" },
+        "branch": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/MessageBranch",
+          "description": "The durable MessageBranch record the resolved `path` was taken from (REF-042 §7.5). Optional, so a snapshot a consumer already accepts stays valid; present wherever the answering authority holds the record, because `headVersion` is the optimistic token a later SubmitMessage must state and `path` is a disposable projection that does not carry it (REF-042 §15.4, §21.4). Never a second branch identity: `branchId` here is `path.branchId`, and `currentHeadMessageId` is `path.headMessageId`."
+        },
         "viewState": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" }
       }
     },

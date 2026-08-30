@@ -64,6 +64,7 @@ _SCHEMA_REGISTRY = Registry().with_resources(
     )
 )
 _QUERIES_SCHEMA_ID = "https://contracts.omnivia.dev/chat/v1/queries.schema.json"
+_BRANCH_SCHEMA_ID = "https://contracts.omnivia.dev/chat/v1/branch.schema.json"
 
 
 def _schema_errors(ref: str, document: Any) -> list[str]:
@@ -129,7 +130,7 @@ def _conversation(**overrides: Any) -> Conversation:
         "workspace_id": WORKSPACE_ID,
         "conversation_id": CONVERSATION_ID,
         "title": "a titled conversation",
-        "title_source": "actor",
+        "title_source": "user",
         "state": "active",
         "default_branch_id": BRANCH_ID,
         "graph_revision": 7,
@@ -204,7 +205,9 @@ def _branch(**overrides: Any) -> Branch:
         "created_conversation_sequence": 1,
         "head_version": 2,
         "schema_version": 1,
-        "state": "active",
+        # 0029's own branch vocabulary, which has no `active`: an open branch is
+        # `open`. A row can never hold anything else, so neither can this fixture.
+        "state": "open",
         "archived_at_us": None,
         "tombstoned_at_us": None,
     }
@@ -308,7 +311,7 @@ def test_a_complete_snapshot_projects_the_whole_governed_document(
     assert wire["conversation_id"] == CONVERSATION_ID
 
     snapshot = wire["snapshot"]
-    assert set(snapshot) == {"conversation", "path", "viewState"}
+    assert set(snapshot) == {"conversation", "path", "branch", "viewState"}
     assert snapshot["conversation"] == {
         "workspaceId": WORKSPACE_ID,
         "conversationId": CONVERSATION_ID,
@@ -368,6 +371,26 @@ def test_a_complete_snapshot_projects_the_whole_governed_document(
     }
     assert "provenance" not in head["parts"][0]
 
+    # The durable branch record the path was taken from, carrying the `headVersion`
+    # the projection has nowhere to state. Optional members absent, never null.
+    assert snapshot["branch"] == {
+        "workspaceId": WORKSPACE_ID,
+        "conversationId": CONVERSATION_ID,
+        "branchId": BRANCH_ID,
+        "originKind": "original",
+        "initialHeadMessageId": ROOT_MESSAGE_ID,
+        "currentHeadMessageId": HEAD_MESSAGE_ID,
+        "createdBy": PRINCIPAL,
+        "createdAt": "2052-05-22T14:13:20Z",
+        "createdConversationSequence": 1,
+        "headVersion": 2,
+        "schemaVersion": 1,
+        "state": "open",
+    }
+    # One branch identity, not two: the record and the path agree by construction.
+    assert snapshot["branch"]["branchId"] == path["branchId"]
+    assert snapshot["branch"]["currentHeadMessageId"] == path["headMessageId"]
+
     assert snapshot["viewState"] == {
         "workspaceId": WORKSPACE_ID,
         "conversationId": CONVERSATION_ID,
@@ -402,6 +425,82 @@ def test_a_complete_snapshot_conforms_to_the_frozen_contract_schemas(
         )
         == []
     )
+    # And the branch member against its own frozen record, not only through the
+    # result that carries it.
+    assert (
+        _schema_errors(
+            f"{_BRANCH_SCHEMA_ID}#/$defs/MessageBranch", wire["snapshot"]["branch"]
+        )
+        == []
+    )
+
+
+def test_a_forked_and_archived_branch_carries_its_optional_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every optional `MessageBranch` member is emitted where the row holds one, and
+    the result still conforms."""
+    reader = _Reader(
+        _inputs(
+            branch=_branch(
+                origin_kind="message_amendment",
+                created_from_branch_id="branch-snapshot-origin",
+                fork_parent_message_id=ROOT_MESSAGE_ID,
+                fork_source_message_id=HEAD_MESSAGE_ID,
+                state="archived",
+                archived_at_us=BASE_US + 4_000_000,
+                tombstoned_at_us=BASE_US + 5_000_000,
+            )
+        )
+    )
+
+    branch = _resolve(monkeypatch, reader)["snapshot"]["branch"]
+
+    assert branch["originKind"] == "message_amendment"
+    assert branch["createdFromBranchId"] == "branch-snapshot-origin"
+    assert branch["forkParentMessageId"] == ROOT_MESSAGE_ID
+    assert branch["forkSourceMessageId"] == HEAD_MESSAGE_ID
+    assert branch["state"] == "archived"
+    assert branch["archivedAt"] == "2052-05-22T14:13:24Z"
+    assert branch["tombstonedAt"] == "2052-05-22T14:13:25Z"
+    assert _schema_errors(f"{_BRANCH_SCHEMA_ID}#/$defs/MessageBranch", branch) == []
+
+
+def test_a_conversation_with_no_branch_yet_is_still_the_governed_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold-start conversation exists but has no branch, no path and no view state
+    (REF-042 §9.1). `ConversationSnapshotResult` requires all three, so this read
+    stays the one governed refusal rather than inventing a branchless spelling the
+    Chat Contract does not publish; the host's authoritative empty state is the
+    `chat.command` result that created the conversation.
+    """
+    reader = _Reader(
+        _inputs(
+            conversation=_conversation(
+                default_branch_id=None,
+                graph_revision=1,
+                latest_conversation_sequence=0,
+                archived_at_us=None,
+                tombstoned_at_us=None,
+            ),
+            branch=None,
+            view_state=None,
+            path=(),
+            parts_by_message_id={},
+            generation_job_ids=(),
+        )
+    )
+
+    with pytest.raises(OperationError) as raised:
+        _resolve(monkeypatch, reader)
+
+    assert raised.value.code == "not_found"
+    assert raised.value.message == (
+        "no complete conversation snapshot is available for this request"
+    )
+    # Still one read: a refusal never costs a second trip to the authority.
+    assert len(reader.calls) == 1
 
 
 def test_an_actor_level_view_state_carries_no_device_id(

@@ -287,10 +287,20 @@
     },
     "SubmitMessageRequest": {
       "title": "SubmitMessageRequest",
-      "description": "Normal continuation on the actor's resolved active branch (REF-042 §9.2, §15.4). Carries expected branch head to prevent accidental append to a stale head (REF-042 §15.4, §21.4).",
+      "description": "Normal continuation on the actor's resolved active branch (REF-042 §9.2, §15.4). Carries expected branch head to prevent accidental append to a stale head (REF-042 §15.4, §21.4). The expected-head group -- `branchId`, `expectedHeadMessageId`, `expectedHeadVersion` -- is required all-or-none. All three together is the continuation this command has always been. All three absent is the first send into a Conversation that has no branch yet: REF-042 §9.1 gives a new Conversation no branch until its first committed user Message, so there is no head for the caller to state and a synthetic one would be a fabricated expectation rather than a stale-head check. Any partial group is refused: a caller that states one of the three has a view of a head, and the two it left out are exactly the halves that would go unchecked.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["actorId", "attachmentReferences", "branchId", "commandId", "contextReferences", "conversationId", "editableParts", "expectedHeadMessageId", "expectedHeadVersion", "protocolVersion", "workspaceId"],
+      "required": ["actorId", "attachmentReferences", "commandId", "contextReferences", "conversationId", "editableParts", "protocolVersion", "workspaceId"],
+      "oneOf": [
+        { "required": ["branchId", "expectedHeadMessageId", "expectedHeadVersion"] },
+        {
+          "allOf": [
+            { "not": { "required": ["branchId"] } },
+            { "not": { "required": ["expectedHeadMessageId"] } },
+            { "not": { "required": ["expectedHeadVersion"] } }
+          ]
+        }
+      ],
       "properties": {
         "protocolVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ProtocolVersion" },
         "commandId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/CommandId" },

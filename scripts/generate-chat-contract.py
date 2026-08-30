@@ -20,8 +20,23 @@
 # Verify:     python scripts/generate-chat-contract.py --check
 #
 # This never reads the Masterdocs checkout: the 13 schemas and 159 fixture
-# files under contracts/chat/v1 are this repository's own checked-in exact
-# copy of the approved bytes, and are the only source this script reads.
+# files under contracts/chat/v1 are this repository's own checked-in copy of
+# the approved bytes, and are the only source this script reads.
+#
+# Authorized widening on top of those bytes, pinned by the digest below:
+#   commands.schema.json#/$defs/SubmitMessageRequest -- the expected-head group
+#     (branchId, expectedHeadMessageId, expectedHeadVersion) moves out of
+#     `required` into an all-or-none `oneOf`, so a first send into a
+#     Conversation that REF-042 §9.1 leaves branchless can be stated without a
+#     fabricated head. Every document that validated before still validates.
+#   queries.schema.json#/$defs/ConversationSnapshotResult -- an optional
+#     `branch` member carrying the exact branch.schema.json MessageBranch the
+#     `path` was taken from, so a hosted F2b snapshot carries the `headVersion`
+#     a later optimistic submit must state. Required members are unchanged.
+# Both are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-
+# AND-MIGRATION.md §3, and both must be carried back to the Masterdocs
+# authority before the next tag: until then this tree is deliberately not
+# byte-identical to architecture-v1.4.0, and the digest is what says so.
 """Generate ``omnivia_core.chat_contract.v1.generated`` from the checked-in
 Chat Runtime Contract v1 schemas and fixtures.
 
@@ -103,13 +118,14 @@ EXPECTED_FIXTURE_CASE_COUNT = 158
 EXPECTED_FIXTURE_VALID_COUNT = 75
 EXPECTED_FIXTURE_INVALID_COUNT = 83
 
-#: Pinned once, over the exact approved bytes verified byte-for-byte against
-#: the tagged Masterdocs authority (``architecture-v1.4.0``) at copy time.
-#: Recomputed on every run by :func:`compute_resource_inventory_digest` and
-#: compared; any changed, missing or extra file under ``contracts/chat/v1``
-#: changes this digest and fails ``--check`` closed.
+#: Pinned over the approved bytes verified byte-for-byte against the tagged
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the two
+#: authorized additive widenings the header names. Recomputed on every run by
+#: :func:`compute_resource_inventory_digest` and compared; any changed, missing
+#: or extra file under ``contracts/chat/v1`` changes this digest and fails
+#: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "9a633eb9cdb81e6f586f904c493ac405a535d8da2198561358e940ecb60b090a"
+    "87a0bd924205901d69f881393b0038cd6807d91ad574f6b77058320ffe95cd3e"
 )
 
 
