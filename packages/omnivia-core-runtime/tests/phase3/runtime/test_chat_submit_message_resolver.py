@@ -2991,7 +2991,21 @@ def test_the_cold_started_conversation_answers_a_complete_snapshot(
 
     assert isinstance(response, SuccessResponseEnvelope), response
     snapshot = response.result["snapshot"]
-    assert set(snapshot) == {"conversation", "path", "branch", "viewState"}
+    assert set(snapshot) == {
+        "conversation",
+        "path",
+        "branch",
+        "viewState",
+        "queuedSubmissions",
+    }
+    # The first send also opened a queued-submission row (the generation work
+    # item every SubmitMessage opens), and it is still `queued` -- not yet
+    # claimed -- so the actor's snapshot surfaces it (W5 GB-05).
+    assert [
+        entry["queuedSubmissionId"] for entry in snapshot["queuedSubmissions"]
+    ] == [f"{FIRST_SEND_COMMAND_ID}.sub"]
+    assert snapshot["queuedSubmissions"][0]["state"] == "queued"
+    assert snapshot["queuedSubmissions"][0]["position"] == 1
     assert snapshot["conversation"]["defaultBranchId"] == COLD_BRANCH_ID
     assert [message["messageId"] for message in snapshot["path"]["messages"]] == [
         COLD_ROOT_MESSAGE_ID

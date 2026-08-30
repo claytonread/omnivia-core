@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (165 files: FIXTURE-MANIFEST.json
-#                                             plus 164 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (169 files: FIXTURE-MANIFEST.json
+#                                             plus 168 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -41,8 +41,22 @@
 #     existing event $def changes, so every document that validated before
 #     still validates; six governed fixtures (one valid, five invalid) are
 #     added with it.
-# All three are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
-# COMPATIBILITY-AND-MIGRATION.md §3, and all three must be carried back to the
+#   queries.schema.json#/$defs/QueuedSubmissionProjection -- a new $def (the
+#     actor-scoped active-queue row joined to its order projection), and
+#     queries.schema.json#/$defs/ConversationSnapshotResult gets one new
+#     optional `queuedSubmissions` member typed by it. Required members of
+#     ConversationSnapshotResult are unchanged, so every document that
+#     validated before still validates.
+#   bridge.schema.json#/$defs/BridgeSnapshotItem -- `itemKind` widens with one
+#     further member, `queued_submission`, bound to the new
+#     QueuedSubmissionProjection payload schema; the existing five members and
+#     their payload bindings are unchanged. Four governed fixtures (two valid,
+#     two invalid) are added with it: a valid and a mismatched-payload
+#     BridgeSnapshotItem, and a valid and an oversize-rejected
+#     host/chat.snapshot-page F2bCarrierEnvelope each carrying one
+#     queued_submission item.
+# All four are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
+# COMPATIBILITY-AND-MIGRATION.md §3, and all four must be carried back to the
 # Masterdocs authority before the next tag: until then this tree is
 # deliberately not byte-identical to architecture-v1.4.0, and the digest is
 # what says so.
@@ -122,19 +136,19 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 165  # FIXTURE-MANIFEST.json + 164 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 164
-EXPECTED_FIXTURE_VALID_COUNT = 76
-EXPECTED_FIXTURE_INVALID_COUNT = 88
+EXPECTED_FIXTURE_TREE_COUNT = 169  # FIXTURE-MANIFEST.json + 168 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 168
+EXPECTED_FIXTURE_VALID_COUNT = 78
+EXPECTED_FIXTURE_INVALID_COUNT = 90
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
-#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the three
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the four
 #: authorized additive widenings the header names. Recomputed on every run by
 #: :func:`compute_resource_inventory_digest` and compared; any changed, missing
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "591baa7f6ae1ea2cced35e648538e7429657b70046d6cdd31fbcfadf94d877c7"
+    "02fa6d29ae0f7a72bee5fe5f71e1fe460f1c3c5f694b0b96bd8ad806fd46095d"
 )
 
 
@@ -552,7 +566,7 @@ def render_generated_module(
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (165 files)
+#   contracts/chat/v1/fixtures/**           (169 files)
 # Governed by:
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
@@ -647,7 +661,7 @@ PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 164 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``

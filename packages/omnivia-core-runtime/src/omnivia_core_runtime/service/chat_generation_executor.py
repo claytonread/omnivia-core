@@ -349,13 +349,23 @@ class ChatGenerationExecutor:
         raise GenerationExecutorError("no executable chat generation target was supplied")
 
     def execute_next(self) -> str | None:
-        """Execute the next queued workspace item, or return ``None`` when idle."""
-        submission = chat.read_next_queued_submission(
+        """Execute the next executable queued item, or return ``None`` when idle.
+
+        Reads only rows with a matching generation job already committed
+        (:func:`chat.read_next_executable_queued_submission`): an `EnqueueMessage`
+        row is `queued` from the moment it is written, well before any
+        `SubmitMessage` drains it into a Message and opens the job that makes it
+        executable (W5 GB-05). Such a pre-submit row is therefore invisible to this
+        read rather than returned and failed -- it waits for its drain, and a later,
+        already-executable row is picked up in the meantime.
+        """
+        submission = chat.read_next_executable_queued_submission(
             self.connection, workspace_id=self.workspace_id
         )
         if submission is None:
             return None
-        # SubmitMessage creates the queued job in the same transaction as this row.
+        # The join above already proved this job exists; SubmitMessage creates it
+        # in the same transaction as the row itself (directly, or by drain).
         existing = self.connection.execute(
             "SELECT generation_job_id, trigger_message_id FROM omnivia_chat_generation_jobs "
             "WHERE workspace_id = ? AND conversation_id = ? AND idempotency_key = ?",

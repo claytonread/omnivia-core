@@ -84,7 +84,9 @@ from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
     ChatWriter,
+    QueuedSubmission,
     StaleVersion,
+    read_active_queue_for_actor,
     read_branch,
     read_conversation,
     read_generation_attempt_outcome,
@@ -100,20 +102,29 @@ from omnivia_core_runtime.storage.chat import (
 __all__ = [
     "CANCEL_QUEUED_SUBMISSION_COMMAND",
     "CREATE_CONVERSATION_COMMAND",
+    "ENQUEUE_MESSAGE_COMMAND",
     "REORDER_QUEUED_SUBMISSION_COMMAND",
     "RETRY_GENERATION_COMMAND",
     "STOP_GENERATION_COMMAND",
     "SUBMIT_MESSAGE_COMMAND",
+    "UPDATE_QUEUED_SUBMISSION_COMMAND",
     "resolve_chat_command",
     "retry_generation_attempt_id",
 ]
 
 CANCEL_QUEUED_SUBMISSION_COMMAND: Final = "CancelQueuedSubmission"
 CREATE_CONVERSATION_COMMAND: Final = "CreateConversation"
+ENQUEUE_MESSAGE_COMMAND: Final = "EnqueueMessage"
 REORDER_QUEUED_SUBMISSION_COMMAND: Final = "ReorderQueuedSubmission"
 RETRY_GENERATION_COMMAND: Final = "RetryGeneration"
 STOP_GENERATION_COMMAND: Final = "StopGeneration"
 SUBMIT_MESSAGE_COMMAND: Final = "SubmitMessage"
+UPDATE_QUEUED_SUBMISSION_COMMAND: Final = "UpdateQueuedSubmission"
+
+#: `queued-submission:<id>` is the one opaque `resultRef` shape this build mints
+#: (D07 `CommandResultEnvelope.resultRef`), naming the row `EnqueueMessage` just
+#: wrote so a caller can address it without a second read-back operation.
+_QUEUED_SUBMISSION_RESULT_REF_PREFIX: Final = "queued-submission:"
 
 #: The domain event kind the outbox row carries. A member of the Chat contract's own
 #: durable event vocabulary rather than a name invented here, because the delivery
@@ -215,11 +226,40 @@ _STOP_GENERATION_FIELDS: Final = frozenset(
     }
 )
 _RETRY_GENERATION_FIELDS: Final = _STOP_GENERATION_FIELDS
+_ENQUEUE_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "branchId",
+        "actorId",
+        "editableParts",
+        "attachmentReferences",
+        "contextReferences",
+        "targetReference",
+    }
+)
+_UPDATE_QUEUE_FIELDS: Final = frozenset(
+    {
+        "protocolVersion",
+        "commandId",
+        "workspaceId",
+        "conversationId",
+        "actorId",
+        "queuedSubmissionId",
+        "editableParts",
+        "expectedVersion",
+    }
+)
 #: The optional fields whose *presence* names work this build cannot perform. Separate
 #: from the unknown-field check: these are contract members, and a request carrying one
 #: is unimplemented rather than malformed.
-_UNSUPPORTED_FIELDS: Final = ("targetReference", "fromQueuedSubmissionId")
+_UNSUPPORTED_FIELDS: Final = ("targetReference",)
 _UNSUPPORTED_REFERENCES: Final = ("attachmentReferences", "contextReferences")
+#: `EnqueueMessageRequest` carries the same unsupported `targetReference` member as
+#: `SubmitMessageRequest`; its non-empty references are refused by the same rule.
+_ENQUEUE_UNSUPPORTED_FIELDS: Final = ("targetReference",)
 _PART_FIELDS: Final = frozenset({"type", "payload", "visibility"})
 _REFERENCE_FIELDS: Final = frozenset({"referenceId", "sourceRevision"})
 _TARGET_FIELDS: Final = frozenset({"kind", "referenceId"})
@@ -239,6 +279,18 @@ _MESSAGE_ALREADY_BRANCHED: Final = (
 )
 _MESSAGE_CONVERSATION_EXISTS: Final = (
     "the conversation this command would create already exists in this workspace"
+)
+_MESSAGE_QUEUE_ROW: Final = (
+    "the queued submission this command names is not a queued row of that conversation "
+    "and actor"
+)
+_MESSAGE_QUEUE_CONTENT: Final = (
+    "the queued submission is not updatable, or the request does not exactly match its "
+    "current content, identity or head"
+)
+_MESSAGE_QUEUE_DRAINED: Final = (
+    "the queued submission this command names has already been drained by another "
+    "SubmitMessage"
 )
 
 
@@ -285,6 +337,36 @@ class _SubmitMessage:
     message_id: str
     parts: tuple[_Part, ...]
     content_hash: str
+    from_queued_submission_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _EnqueueMessage:
+    """One decoded `EnqueueMessageRequest`, in the variant this build serves.
+
+    The Gate B slice this build serves is always a continuation: `branchId` is
+    required by the frozen request schema itself (unlike `SubmitMessage`'s
+    all-or-none group), so an offline queue row always names the open branch it
+    was composed against and this command never fabricates a branch or a head.
+    """
+
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    branch_id: str
+    actor_id: str
+    parts: tuple[_Part, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _UpdateQueuedSubmission:
+    command_id: str
+    workspace_id: str
+    conversation_id: str
+    actor_id: str
+    queued_submission_id: str
+    parts: tuple[_Part, ...]
+    expected_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,8 +614,11 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         _reference(item, f"contextReferences[{index}]")
     if "targetReference" in command:
         _target_reference(command["targetReference"])
-    if "fromQueuedSubmissionId" in command:
-        _identifier(command, "fromQueuedSubmissionId")
+    from_queued_submission_id = (
+        None
+        if "fromQueuedSubmissionId" not in command
+        else _identifier(command, "fromQueuedSubmissionId")
+    )
 
     # The expected-head group, all-or-none. A partial group names the *missing*
     # member and the rule, because that is the field the caller has to supply; the
@@ -591,6 +676,90 @@ def _decode(command: Mapping[str, Any]) -> _SubmitMessage:
         message_id=message_id,
         parts=tuple(part for part, _ in decoded),
         content_hash=_digest(f"[{','.join(canonical for _, canonical in decoded)}]"),
+        from_queued_submission_id=from_queued_submission_id,
+    )
+
+
+def _decode_enqueue(command: Mapping[str, Any]) -> _EnqueueMessage:
+    """Decode one `EnqueueMessageRequest`, or refuse it as an invalid request.
+
+    Held to `commands.schema.json#/$defs/EnqueueMessageRequest`'s exact closed
+    field set, reusing `_part`/`_reference`/`_target_reference` -- the same
+    governed per-field rules `SubmitMessage` already validates editable parts and
+    references with, so an accepted `EnqueueMessageRequest` and an accepted
+    `SubmitMessageRequest` can never disagree about what a valid part is.
+    """
+    unknown = sorted(set(command) - _ENQUEUE_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+
+    attachments = _array(
+        command, "attachmentReferences", max_items=_MAX_REFERENCE_COUNT
+    )
+    contexts = _array(command, "contextReferences", max_items=_MAX_REFERENCE_COUNT)
+    for index, item in enumerate(attachments):
+        _reference(item, f"attachmentReferences[{index}]")
+    for index, item in enumerate(contexts):
+        _reference(item, f"contextReferences[{index}]")
+    if "targetReference" in command:
+        _target_reference(command["targetReference"])
+
+    parts = command.get("editableParts")
+    if (
+        not isinstance(parts, Sequence)
+        or isinstance(parts, (str, bytes, Mapping))
+        or not 1 <= len(parts) <= _MAX_PARTS
+    ):
+        raise _invalid("editableParts", "is not an array of one to 4096 parts")
+    decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+
+    return _EnqueueMessage(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        branch_id=_identifier(command, "branchId"),
+        actor_id=_identifier(command, "actorId"),
+        parts=tuple(part for part, _ in decoded),
+    )
+
+
+def _decode_update_queue(command: Mapping[str, Any]) -> _UpdateQueuedSubmission:
+    """Decode one `UpdateQueuedSubmissionRequest`, or refuse it as an invalid request."""
+    unknown = sorted(set(command) - _UPDATE_QUEUE_FIELDS)
+    if unknown:
+        raise _invalid(unknown[0], "is not a field of this command")
+    protocol_version = command.get("protocolVersion")
+    if not isinstance(protocol_version, str):
+        raise _invalid("protocolVersion", "is not this contract's wire version")
+    try:
+        negotiate_protocol_version(protocol_version)
+    except UnsupportedProtocolVersionError as error:
+        raise _invalid("protocolVersion", "is not this contract's wire version") from error
+
+    parts = command.get("editableParts")
+    if (
+        not isinstance(parts, Sequence)
+        or isinstance(parts, (str, bytes, Mapping))
+        or not 1 <= len(parts) <= _MAX_PARTS
+    ):
+        raise _invalid("editableParts", "is not an array of one to 4096 parts")
+    decoded = tuple(_part(item, index) for index, item in enumerate(parts))
+
+    return _UpdateQueuedSubmission(
+        command_id=_derivable_identifier(command, "commandId"),
+        workspace_id=_identifier(command, "workspaceId"),
+        conversation_id=_identifier(command, "conversationId"),
+        actor_id=_identifier(command, "actorId"),
+        queued_submission_id=_identifier(command, "queuedSubmissionId"),
+        parts=tuple(part for part, _ in decoded),
+        expected_version=_positive_integer(command, "expectedVersion"),
     )
 
 
@@ -762,6 +931,52 @@ def _next_queue_sequence(
     return int(row[0])
 
 
+def _queued_content_hash(editable_parts: Sequence[Mapping[str, Any]]) -> str:
+    """The same digest `_decode`'s `content_hash` is, recomputed from a stored row.
+
+    `editable_parts` is already the exact `{type, visibility, payload}` wire shape
+    `_editable_part_wire` writes and `_verified_json_array` re-verifies as canonical
+    on read, so hashing it the same way `_decode` hashes a fresh request's parts is
+    what makes the two directly comparable: a `SubmitMessage` drain matches this
+    queue row's content if and only if the digests are equal, with no field-by-field
+    deep comparison to keep in sync with `_part`'s own canonical form.
+    """
+    canonical_parts = tuple(to_canonical_json(dict(item)) for item in editable_parts)
+    return _digest(f"[{','.join(canonical_parts)}]")
+
+
+def _drained_generation_job_id(queue_idempotency_key: str) -> str:
+    """A drain's generation job id, derived from the queue row's own correlation key.
+
+    Not from the draining `SubmitMessage`'s own `commandId`: `EnqueueMessage` and the
+    `SubmitMessage` that later drains it are different commands with different
+    ids, and this is what keeps the job addressable by the row it serves regardless
+    of which drain command opened it. `queue_idempotency_key` is already bounded to
+    `_DERIVED_IDENTIFIER_MAX` characters at `EnqueueMessage` decode time, so the
+    `.gen` suffix never exceeds 0029's 128-character identifier bound.
+    """
+    return f"{queue_idempotency_key}.gen"
+
+
+def _generation_job_exists_for_idempotency_key(
+    connection: sqlite3.Connection, *, workspace_id: str, idempotency_key: str
+) -> bool:
+    """Whether a generation job already carries this idempotency key.
+
+    The same correlation `read_next_executable_queued_submission` joins on
+    (`storage/chat.py`), used here the other way around: before opening a drain's
+    job, prove no earlier drain of the same queue row already opened one. 0029's own
+    `UNIQUE(workspace_id, idempotency_key)` on `omnivia_chat_generation_jobs` is the
+    durable backstop if this read and the later insert ever race.
+    """
+    row = connection.execute(
+        "SELECT 1 FROM omnivia_chat_generation_jobs "
+        "WHERE workspace_id = ? AND idempotency_key = ?",
+        (workspace_id, idempotency_key),
+    ).fetchone()
+    return row is not None
+
+
 def _generation_event_id(generation_job_id: str, sequence: int) -> str:
     candidate = f"{generation_job_id}.e{sequence}"
     if len(candidate) <= 128:
@@ -792,16 +1007,22 @@ def _ack(
     conversation_id: str,
     *,
     conversation_authority: ChatConversationExpectation | None = None,
+    result_ref: str | None = None,
 ) -> Mapping[str, Any]:
     """One settled command's result envelope.
 
     `conversation_authority` is stated only by a command whose post-settlement counters
     this runtime knows exactly -- it is the conversation aggregate as written, not a
     guess -- and is otherwise absent, which is the shape every existing caller reads.
+    `result_ref` is the same D07 `CommandResultEnvelope.resultRef` every other command
+    here leaves absent; `EnqueueMessage` is the one caller that states it, opaquely
+    naming the queued row this command just wrote.
     """
     return ChatCommandResult(
         command_name=command_name,
-        command_result=CommandResultEnvelope(command_id=command_id, status="completed").to_wire(),
+        command_result=CommandResultEnvelope(
+            command_id=command_id, status="completed", result_ref=result_ref
+        ).to_wire(),
         conversation_id=conversation_id,
         conversation_authority=conversation_authority,
     ).to_wire()
@@ -828,6 +1049,39 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
         )
         if conversation is None or conversation.state != "active":
             raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+
+        queued_row: QueuedSubmission | None = None
+        if request.from_queued_submission_id is not None:
+            queued_row = read_queued_submission(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                queued_submission_id=request.from_queued_submission_id,
+            )
+            if (
+                queued_row is None
+                or queued_row.conversation_id != request.conversation_id
+                or queued_row.actor_id != request.actor_id
+                or queued_row.state != "queued"
+            ):
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_ROW)
+            # `EnqueueMessage` always names an open branch (Gate B admits no
+            # branchless offline row), so a drain that omits the head group or
+            # names a different branch cannot be this row's drain.
+            if request.branch_id is None or request.branch_id != queued_row.branch_id:
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_ROW)
+            if queued_row.references or _queued_content_hash(
+                queued_row.editable_parts
+            ) != request.content_hash:
+                # A stale renderer's view of this row's content, identity or head is a
+                # governed conflict requiring resnapshot, never a silent commit of
+                # whichever content happened to arrive.
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT)
+            if _generation_job_exists_for_idempotency_key(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                idempotency_key=queued_row.idempotency_key,
+            ):
+                raise ChatAggregateConflict(_MESSAGE_QUEUE_DRAINED)
 
         stated_branch_id = request.branch_id
         first_send = stated_branch_id is None
@@ -866,13 +1120,21 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
             head_version = branch.head_version + 1
 
         sequence = conversation.latest_conversation_sequence + 1
-        queued_submission_id = f"{request.command_id}.sub"
-        generation_job_id = f"{request.command_id}.gen"
-        queue_sequence = _next_queue_sequence(
-            writer.connection,
-            workspace_id=writer.workspace_id,
-            conversation_id=request.conversation_id,
-        )
+        if queued_row is None:
+            queued_submission_id = f"{request.command_id}.sub"
+            generation_job_id = f"{request.command_id}.gen"
+            generation_job_idempotency_key = request.command_id
+        else:
+            # Reused, not re-derived: this drain writes no second queue row, and the
+            # job's idempotency key is deliberately the queue row's own -- carried
+            # forward from `EnqueueMessage`'s `commandId` rather than this drain's --
+            # so `read_next_executable_queued_submission` finds exactly this job for
+            # this row, and 0029's `UNIQUE(workspace_id, idempotency_key)` on
+            # `omnivia_chat_generation_jobs` makes a second drain of the same row
+            # impossible even if the pre-check above raced.
+            queued_submission_id = queued_row.queued_submission_id
+            generation_job_id = _drained_generation_job_id(queued_row.idempotency_key)
+            generation_job_idempotency_key = queued_row.idempotency_key
 
         writer.update_conversation(
             conversation_id=request.conversation_id,
@@ -968,32 +1230,42 @@ def _submit(request: _SubmitMessage) -> ChatCommand:
                 current_head_message_id=request.message_id,
                 state="open",
             )
-        writer.append_queued_submission(
-            queued_submission_id=queued_submission_id,
-            conversation_id=request.conversation_id,
-            actor_id=request.actor_id,
-            queue_sequence=queue_sequence,
-            branch_id=branch_id,
-            editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
-            references=(),
-            idempotency_key=request.command_id,
-            created_at_us=now,
-            updated_at_us=now,
-        )
-        writer.insert_queue_order_projection(
-            queued_submission_id=queued_submission_id,
-            conversation_id=request.conversation_id,
-            queue_position=queue_sequence,
-            updated_by_actor_id=request.actor_id,
-            updated_at_us=now,
-        )
+        if queued_row is None:
+            queue_sequence = _next_queue_sequence(
+                writer.connection,
+                workspace_id=writer.workspace_id,
+                conversation_id=request.conversation_id,
+            )
+            writer.append_queued_submission(
+                queued_submission_id=queued_submission_id,
+                conversation_id=request.conversation_id,
+                actor_id=request.actor_id,
+                queue_sequence=queue_sequence,
+                branch_id=branch_id,
+                editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
+                references=(),
+                idempotency_key=request.command_id,
+                created_at_us=now,
+                updated_at_us=now,
+            )
+            writer.insert_queue_order_projection(
+                queued_submission_id=queued_submission_id,
+                conversation_id=request.conversation_id,
+                queue_position=queue_sequence,
+                updated_by_actor_id=request.actor_id,
+                updated_at_us=now,
+            )
+        # A drain reuses the existing queue and queue-order rows and leaves them
+        # `queued`: the generation claimant still walks `queued -> claimed ->
+        # submitted` (`service/chat_generation.py`), now against the job this
+        # command opens below.
         writer.append_generation_job(
             generation_job_id=generation_job_id,
             conversation_id=request.conversation_id,
             branch_id=branch_id,
             trigger_message_id=request.message_id,
             graph_revision_observed=conversation.graph_revision,
-            idempotency_key=request.command_id,
+            idempotency_key=generation_job_idempotency_key,
             schema_version=1,
             created_at_us=now,
             updated_at_us=now,
@@ -1089,6 +1361,128 @@ def _create_conversation(request: _CreateConversation) -> ChatCommand:
     return command
 
 
+def _enqueue_message(request: _EnqueueMessage) -> ChatCommand:
+    """One decoded `EnqueueMessageRequest`, as the command the seam runs.
+
+    Writes exactly one queued-submission row and its queue-order projection, and
+    nothing else: no Message, MessagePart, GenerationJob, GenerationEvent, Attempt,
+    provider invocation or Chat outbox generation event (W5 GB-05). A queued row
+    from this command is not generation-executable -- `execute_next`
+    (`service/chat_generation_executor.py`) only ever selects a row with a matching
+    generation job already committed, and this command commits none -- until a
+    later `SubmitMessage.fromQueuedSubmissionId` drains it.
+
+    The queued submission id is derived from this command's own `commandId`, the
+    same bounded deterministic convention `SubmitMessage` derives one from its own
+    id with, so a replay under the same `commandId` answers from the seam's stored
+    outcome and a `commandId` reused under a different idempotency key finds its
+    row already there and refuses.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        now = settlement.settled_at_us
+        conversation = read_conversation(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        if conversation is None or conversation.state != "active":
+            raise ChatAggregateConflict(_MESSAGE_CONVERSATION)
+        branch = read_branch(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            branch_id=request.branch_id,
+        )
+        if (
+            branch is None
+            or branch.conversation_id != request.conversation_id
+            or branch.state != "open"
+        ):
+            raise ChatAggregateConflict(_MESSAGE_BRANCH)
+
+        queued_submission_id = f"{request.command_id}.sub"
+        queue_sequence = _next_queue_sequence(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            conversation_id=request.conversation_id,
+        )
+        writer.append_queued_submission(
+            queued_submission_id=queued_submission_id,
+            conversation_id=request.conversation_id,
+            actor_id=request.actor_id,
+            queue_sequence=queue_sequence,
+            branch_id=request.branch_id,
+            editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
+            references=(),
+            idempotency_key=request.command_id,
+            created_at_us=now,
+            updated_at_us=now,
+        )
+        writer.insert_queue_order_projection(
+            queued_submission_id=queued_submission_id,
+            conversation_id=request.conversation_id,
+            queue_position=queue_sequence,
+            updated_by_actor_id=request.actor_id,
+            updated_at_us=now,
+        )
+        return _ack(
+            ENQUEUE_MESSAGE_COMMAND,
+            request.command_id,
+            request.conversation_id,
+            result_ref=f"{_QUEUED_SUBMISSION_RESULT_REF_PREFIX}{queued_submission_id}",
+        )
+
+    return command
+
+
+def _update_queued_submission(request: _UpdateQueuedSubmission) -> ChatCommand:
+    """One decoded `UpdateQueuedSubmissionRequest`, as the command the seam runs.
+
+    CAS-updates only `editableParts` and the submission's `version`; identity,
+    order, branch, idempotency key and every other field this row carries are
+    untouched (`storage.chat.ChatWriter.update_queued_submission_content`). Only a
+    row this same workspace/conversation/actor still holds `queued` -- not yet
+    claimed for generation -- is eligible; a claimed, submitted, cancelled or
+    missing row, or a stale `expectedVersion`, is the same governed conflict with no
+    write, so a caller cannot distinguish "wrong version" from "already claimed"
+    and race a claim it cannot see.
+    """
+
+    def command(
+        writer: ChatWriter, settlement: MutationSettlementContext
+    ) -> Mapping[str, Any]:
+        submission = read_queued_submission(
+            writer.connection,
+            workspace_id=writer.workspace_id,
+            queued_submission_id=request.queued_submission_id,
+        )
+        if (
+            submission is None
+            or submission.conversation_id != request.conversation_id
+            or submission.actor_id != request.actor_id
+            or submission.state != "queued"
+        ):
+            raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT)
+        try:
+            writer.update_queued_submission_content(
+                queued_submission_id=request.queued_submission_id,
+                expected_version=request.expected_version,
+                editable_parts=tuple(_editable_part_wire(part) for part in request.parts),
+                updated_at_us=settlement.settled_at_us,
+            )
+        except StaleVersion as error:
+            raise ChatAggregateConflict(_MESSAGE_QUEUE_CONTENT) from error
+        return _ack(
+            UPDATE_QUEUED_SUBMISSION_COMMAND,
+            request.command_id,
+            request.conversation_id,
+        )
+
+    return command
+
+
 def _reorder_queued_submission(request: _ReorderQueuedSubmission) -> ChatCommand:
     def command(
         writer: ChatWriter, settlement: MutationSettlementContext
@@ -1141,6 +1535,26 @@ def _move_queue_projection(
     actor_id: str,
     now_us: int,
 ) -> None:
+    """Move one queue row to `target_position`, touching only the caller's own
+    active queue.
+
+    `_reorder_queued_submission` has already proved the moving row is
+    `actor_id`'s own and `queued`; this function additionally proves that about
+    every row it *shifts*. A conversation's `omnivia_chat_queue_order_projection`
+    keeps a position for a cancelled, submitted or another actor's row exactly as
+    long as that row keeps existing (0029 never deletes it), so reading every
+    conversation row and shifting whichever ones are in the way -- the previous
+    behaviour -- could move or reveal one of those. Only `actor_id`'s own active
+    rows (`read_active_queue_for_actor`) are candidates to shift; a `target_position`
+    occupied by anything else is a position outside the caller's mutable queue and
+    fails closed rather than moving into it or exposing that it is occupied. The
+    same is true of every position strictly *between* the row's own position and
+    `target_position`: moving between two of the caller's own positions can still
+    cross an outsider-held one in between, and shifting a caller's own row onto
+    that position would collide with the outsider's unique position rather than
+    fail this governed conflict, so every intermediate occupied position is proved
+    the caller's own before any write.
+    """
     projection = read_queue_order_projection(
         writer.connection,
         workspace_id=writer.workspace_id,
@@ -1160,15 +1574,13 @@ def _move_queue_projection(
         )
         return
 
-    rows = list(
-        read_queue_order_for_conversation(
-            writer.connection,
-            workspace_id=writer.workspace_id,
-            conversation_id=projection.conversation_id,
-        )
+    all_rows = read_queue_order_for_conversation(
+        writer.connection,
+        workspace_id=writer.workspace_id,
+        conversation_id=projection.conversation_id,
     )
-    occupied = {row.queue_position for row in rows}
-    if target_position not in occupied:
+    occupied_by_anyone = {row.queue_position for row in all_rows}
+    if target_position not in occupied_by_anyone:
         writer.update_queue_order_projection(
             queued_submission_id=queued_submission_id,
             expected_version=expected_version,
@@ -1178,7 +1590,42 @@ def _move_queue_projection(
         )
         return
 
-    free_position = max(occupied) + 1
+    own_entries = read_active_queue_for_actor(
+        writer.connection,
+        workspace_id=writer.workspace_id,
+        conversation_id=projection.conversation_id,
+        actor_id=actor_id,
+        # The contract's own queue-position ceiling (`ReorderQueuedSubmission
+        # .targetPosition`'s maximum, mirrored below in `free_position`'s bound),
+        # not the snapshot's 200-row presentation limit: this internal read must
+        # see every one of the caller's own active rows, never a page of them, or
+        # the interval check below could wrongly fail closed on a real own row it
+        # never saw.
+        limit=100_000,
+    )
+    rows = [entry.order for entry in own_entries]
+    own_positions = {row.queue_position for row in rows}
+    if target_position not in own_positions:
+        # Occupied, but not by one of the caller's own active rows: another
+        # actor's row or a terminal (cancelled/submitted) one still holding its
+        # position. Fail closed rather than revealing or displacing it.
+        raise ChatAggregateConflict("the requested queue position is not available")
+
+    old_position = projection.queue_position
+    movement_lo, movement_hi = sorted((old_position, target_position))
+    for position in occupied_by_anyone:
+        # `old_position` and `target_position` are already proved the caller's own
+        # above; every OTHER occupied position the shift below would cross must be
+        # too, or shifting a caller's own row through it would land that row on
+        # another actor's or a terminal row's unique position -- surfacing as a raw
+        # storage constraint violation rather than this governed refusal. Checked
+        # before any write, so a violation here leaves the queue untouched.
+        if movement_lo < position < movement_hi and position not in own_positions:
+            raise ChatAggregateConflict(
+                "the requested reorder would cross another actor's queue position"
+            )
+
+    free_position = max(occupied_by_anyone) + 1
     if free_position > 100_000:
         raise ChatAggregateConflict("the queued submission order has no temporary position")
 
@@ -1192,7 +1639,6 @@ def _move_queue_projection(
     )
     moving_expected += 1
 
-    old_position = projection.queue_position
     if target_position < old_position:
         shifted = sorted(
             (row for row in rows if target_position <= row.queue_position < old_position),
@@ -1462,6 +1908,24 @@ def resolve_chat_command(
         ):
             return None
         return _submit(submit)
+    if request.command_name == ENQUEUE_MESSAGE_COMMAND:
+        enqueue = _decode_enqueue(request.command)
+        if enqueue.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        if enqueue.actor_id != context.principal:
+            raise _invalid(
+                "actorId", "is not the principal this request was authenticated as"
+            )
+        if any(field in request.command for field in _ENQUEUE_UNSUPPORTED_FIELDS) or any(
+            request.command.get(field) for field in _UNSUPPORTED_REFERENCES
+        ):
+            return None
+        return _enqueue_message(enqueue)
+    if request.command_name == UPDATE_QUEUED_SUBMISSION_COMMAND:
+        update_queue = _decode_update_queue(request.command)
+        if update_queue.workspace_id != context.workspace_id:
+            raise _invalid("workspaceId", "is not the workspace this request was authorized for")
+        return _update_queued_submission(update_queue)
     if request.command_name == REORDER_QUEUED_SUBMISSION_COMMAND:
         reorder = _decode_reorder(request.command)
         if reorder.workspace_id != context.workspace_id:

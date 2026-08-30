@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 164,
-    "valid": 76,
-    "invalid": 88
+    "total": 168,
+    "valid": 78,
+    "invalid": 90
   },
   "fixtures": [
     {
@@ -855,9 +855,22 @@
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
     },
     {
+      "path": "fixtures/valid/f2b-snapshot-item-queued-submission.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind queued_submission maps its payload to queries.schema.json#/$defs/QueuedSubmissionProjection (W5 GB-05).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
       "path": "fixtures/invalid/f2b-snapshot-item-mismatched-payload-rejected.json",
       "expect": "invalid",
       "focus": "itemKind conversation with a Message-shaped payload is rejected: BridgeSnapshotItem enforces the itemKind/payload mapping, not merely an opaque object.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-queued-submission-mismatched-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind queued_submission with a Message-shaped payload is rejected: the itemKind/payload mapping is enforced for every member, not merely the closed-since-launch ones.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
       "expected_error_contains": "required"
     },
@@ -1581,6 +1594,25 @@
       "checks": [
         "f2b_encoded_envelope_within_carrier_bound"
       ]
+    },
+    {
+      "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page-queued-submission.json",
+      "expect": "valid",
+      "focus": "A host->module snapshot-page carrier whose one item is itemKind queued_submission, within the 65536-byte encoded carrier bound (W5 GB-05).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-snapshot-page-oversize-queued-submission-rejected.json",
+      "expect": "invalid",
+      "focus": "A single oversized queued_submission item's actual UTF-8 JSON encoding pushes the whole snapshot-page carrier past 65536 bytes; refused, never truncated, exactly as any other oversized carrier payload is (W5 GB-05).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ],
+      "expected_error_contains": "encoded envelope is"
     },
     {
       "path": "fixtures/valid/f2b-command-result-conflict.json",

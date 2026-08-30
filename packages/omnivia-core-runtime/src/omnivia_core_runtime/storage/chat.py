@@ -51,7 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
@@ -59,6 +59,7 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError, authorised
 
 __all__ = [
+    "ActiveQueueEntry",
     "Branch",
     "BranchHeadEvent",
     "ChatToolCall",
@@ -109,6 +110,7 @@ __all__ = [
     "insert_queue_order_projection",
     "insert_view_state",
     "read_active_draft",
+    "read_active_queue_for_actor",
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
@@ -130,6 +132,7 @@ __all__ = [
     "read_generation_text_chunks",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
+    "read_next_executable_queued_submission",
     "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
@@ -149,6 +152,7 @@ __all__ = [
     "update_outbox_delivery",
     "update_queue_order_projection",
     "update_queued_submission",
+    "update_queued_submission_content",
     "update_view_state",
 ]
 
@@ -621,6 +625,21 @@ class QueueOrderProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveQueueEntry:
+    """One actor's active (`queued`) submission, joined to its order projection.
+
+    Both optimistic tokens travel together because a caller acting on this row --
+    updating its content or reordering it -- needs both: `submission.version` for
+    :func:`update_queued_submission_content`, `order.version` for
+    :func:`update_queue_order_projection`. Never returned for a cancelled,
+    claimed, submitted or failed row, and never for another actor's.
+    """
+
+    submission: QueuedSubmission
+    order: QueueOrderProjection
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxEntry:
     workspace_id: str
     outbox_cursor: int
@@ -656,6 +675,8 @@ class ConversationSnapshotInputs:
     path: tuple[Message, ...]
     parts_by_message_id: Mapping[str, tuple[MessagePart, ...]]
     generation_job_ids: tuple[str, ...]
+    queued_submissions: tuple[ActiveQueueEntry, ...]
+    queued_submissions_truncated: bool
 
 
 # --- writer -----------------------------------------------------------------------
@@ -1756,6 +1777,57 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "queued submission", queued_submission_id)
 
+    def update_queued_submission_content(
+        self,
+        *,
+        queued_submission_id: str,
+        expected_version: int,
+        editable_parts: Sequence[Any],
+        updated_at_us: int,
+    ) -> None:
+        """CAS-update only a queued submission's editable content and version.
+
+        Distinct from :meth:`update_queued_submission`'s state-transition CAS: this
+        leaves state, claim, branch, idempotency key and every other column
+        untouched, so an actor editing their own unclaimed content can never smuggle
+        a state change through it. The `state = 'queued'` predicate is not merely
+        defensive -- a caller updating an already-claimed row must fail the same CAS
+        conflict a version mismatch does, not silently edit content generation has
+        already started reading.
+
+        Eligibility is narrower than `state = 'queued'` alone: a `SubmitMessage`
+        drain (`service/chat_submit.py`) opens this row's correlated generation job
+        -- and with it the immutable Message/parts/outbox a claim will read -- while
+        leaving the row itself `queued` until a worker claims it
+        (`read_next_executable_queued_submission`, W5 GB-05). The `NOT EXISTS`
+        clause below closes that window in the same `UPDATE` predicate rather than
+        in a pre-read: once a job correlated by this row's own
+        `(workspace_id, conversation_id, idempotency_key)` is committed, editing the
+        row's content is the same governed conflict a version mismatch is, decided
+        atomically against the row this statement is already locking.
+        """
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_queued_submissions SET editable_parts_json = ?, "
+            "version = ?, updated_at_us = ? "
+            "WHERE workspace_id = ? AND queued_submission_id = ? AND version = ? "
+            "AND state = 'queued' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM omnivia_chat_generation_jobs g "
+            "WHERE g.workspace_id = omnivia_chat_queued_submissions.workspace_id "
+            "AND g.conversation_id = omnivia_chat_queued_submissions.conversation_id "
+            "AND g.idempotency_key = omnivia_chat_queued_submissions.idempotency_key"
+            ")",
+            (
+                _canonical_json_array(editable_parts),
+                expected_version + 1,
+                updated_at_us,
+                self.workspace_id,
+                queued_submission_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "queued submission", queued_submission_id)
+
     def update_generation_job(
         self,
         *,
@@ -2463,6 +2535,20 @@ def update_queued_submission(
         writer.update_queued_submission(**fields)
 
 
+def update_queued_submission_content(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_queued_submission_content(**fields)
+
+
 def update_generation_job(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -2929,6 +3015,115 @@ def read_next_queued_submission(
         (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
+
+
+def read_next_executable_queued_submission(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> QueuedSubmission | None:
+    """Return the next claimable submission that already has a generation job.
+
+    The generation-worker counterpart to :func:`read_next_queued_submission`,
+    distinct in meaning: an `EnqueueMessage` row is `queued` from the moment it is
+    written, long before any `SubmitMessage` drains it into a committed Message and
+    opens the generation job that makes it executable. Selecting every `queued` row
+    indiscriminately would hand the worker a pre-submit row it cannot execute; this
+    read's `INNER JOIN` to `omnivia_chat_generation_jobs` -- on the conversation and
+    the submission's own `idempotency_key`, which a drain deliberately carries
+    forward from the queue row rather than from its own `commandId` (0029, W5 GB-05)
+    -- means a pre-submit row is silently absent from this read rather than
+    returned and failed, so the worker waits on it and moves on to the next
+    eligible row instead. Deterministic order among eligible rows is unchanged
+    from :func:`read_next_queued_submission`.
+
+    The join additionally requires the correlated job to still be in its freshly
+    opened state -- `state = 'queued'`, `lease_epoch = 0`, `current_attempt_id IS
+    NULL`, `last_event_sequence = 0` -- the exact initial-job predicate
+    `service/chat_generation.claim_queued_generation` itself checks before
+    claiming. A submission row only ever reads `queued` here until a claim moves
+    both it and its job together in one transaction, so this is defence in depth
+    against ever treating a claimed, retried or terminal job's row as freshly
+    executable, never a state this build's own writers can otherwise reach.
+    """
+    row = connection.execute(
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "FROM omnivia_chat_queued_submissions q "
+        "LEFT JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "JOIN omnivia_chat_generation_jobs g "
+        "ON g.workspace_id = q.workspace_id "
+        "AND g.conversation_id = q.conversation_id "
+        "AND g.idempotency_key = q.idempotency_key "
+        "AND g.state = 'queued' "
+        "AND g.lease_epoch = 0 "
+        "AND g.current_attempt_id IS NULL "
+        "AND g.last_event_sequence = 0 "
+        "WHERE q.workspace_id = ? AND q.state = 'queued' "
+        "ORDER BY COALESCE(p.queue_position, q.queue_sequence), "
+        "q.created_at_us, q.conversation_id, q.queued_submission_id "
+        "LIMIT 1",
+        (workspace_id,),
+    ).fetchone()
+    return None if row is None else _queued_submission_from_row(row)
+
+
+def read_active_queue_for_actor(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    limit: int = 200,
+) -> tuple[ActiveQueueEntry, ...]:
+    """One actor's active (`queued`) queue rows in one conversation, in order.
+
+    Joins `omnivia_chat_queued_submissions` to `omnivia_chat_queue_order_projection`
+    and returns both optimistic tokens together (freeze W5 GB-05): the submission's
+    own `version`, for a later `UpdateQueuedSubmission`, and the order projection's
+    `version`, for a later `ReorderQueuedSubmission`. Workspace-, conversation- and
+    actor-scoped, and filtered to `state = 'queued'` in SQL rather than in Python,
+    so a cancelled, claimed, submitted or failed row -- or another actor's row --
+    is never a row this function can hand back. Ordered by queue position (falling
+    back to the row's own `queued_submission_id` for a tie), which is what makes
+    this the one read both the snapshot resolver and the reorder command use.
+    """
+    rows = connection.execute(
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
+        "p.queue_position, p.version, p.updated_by_actor_id, p.updated_at_us "
+        "FROM omnivia_chat_queued_submissions q "
+        "JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "WHERE q.workspace_id = ? AND q.conversation_id = ? AND q.actor_id = ? "
+        "AND q.state = 'queued' "
+        "ORDER BY p.queue_position, q.queued_submission_id "
+        "LIMIT ?",
+        (workspace_id, conversation_id, actor_id, limit),
+    ).fetchall()
+    entries = []
+    for row in rows:
+        submission = _queued_submission_from_row(row[0:20])
+        order = QueueOrderProjection(
+            workspace_id=row[0],
+            conversation_id=row[1],
+            queued_submission_id=row[3],
+            queue_position=row[20],
+            version=row[21],
+            updated_by_actor_id=row[22],
+            updated_at_us=row[23],
+        )
+        entries.append(ActiveQueueEntry(submission=submission, order=order))
+    return tuple(entries)
 
 
 _GENERATION_ATTEMPT_COLUMNS = (
@@ -3533,6 +3728,14 @@ def read_outbox_events_since(
     return tuple(_outbox_entry_from_row(row) for row in rows)
 
 
+#: `queries.schema.json#/$defs/ConversationSnapshotResult.queuedSubmissions`'
+#: governed maximum. `read_conversation_snapshot_inputs` reads one row past it so
+#: `queued_submissions_truncated` can tell a complete queue apart from one this
+#: bound cannot represent -- the caller fails closed on the latter rather than
+#: silently answering a partial queue.
+_QUEUE_SNAPSHOT_LIMIT: Final = 200
+
+
 def read_conversation_snapshot_inputs(
     connection: sqlite3.Connection,
     *,
@@ -3637,6 +3840,14 @@ def read_conversation_snapshot_inputs(
                 )
             )
 
+            queue_rows = read_active_queue_for_actor(
+                connection,
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                actor_id=actor_id,
+                limit=_QUEUE_SNAPSHOT_LIMIT + 1,
+            )
+
             result = ConversationSnapshotInputs(
                 conversation=conversation,
                 branch=branch,
@@ -3644,6 +3855,8 @@ def read_conversation_snapshot_inputs(
                 path=tuple(path),
                 parts_by_message_id=MappingProxyType(parts),
                 generation_job_ids=job_ids,
+                queued_submissions=queue_rows[:_QUEUE_SNAPSHOT_LIMIT],
+                queued_submissions_truncated=len(queue_rows) > _QUEUE_SNAPSHOT_LIMIT,
             )
     except BaseException:
         if owns_transaction:

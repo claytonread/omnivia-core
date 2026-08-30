@@ -59,10 +59,12 @@ from typing import Any, Final
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_INVALID_REQUEST,
     ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_SIZE_LIMIT_EXCEEDED,
 )
 from omnivia_core.contracts.v1.generated import ChatSnapshotInput, ChatSnapshotResult
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
+    ActiveQueueEntry,
     Branch,
     Conversation,
     ConversationSnapshotInputs,
@@ -91,6 +93,10 @@ _STORED_DIGEST_PREFIX: Final = "sha256:"
 
 _MESSAGE_NOT_FOUND: Final = (
     "no complete conversation snapshot is available for this request"
+)
+_MESSAGE_QUEUE_OVERFLOW: Final = (
+    "the actor's active queue exceeds the bounded snapshot maximum and cannot be "
+    "answered completely"
 )
 
 
@@ -322,6 +328,35 @@ def _view_state(view_state: ViewState) -> Mapping[str, Any]:
     return document
 
 
+def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
+    """One `QueuedSubmissionProjection`: the actor's own row, joined to its order.
+
+    Deliberately narrower than the durable row it is taken from: `claimedBy`,
+    `sanitizedErrorCode`/`sanitizedErrorDetail` and `idempotencyKey` are claim and
+    execution internals, never actor-facing queue state, and are never read here.
+    `attachmentReferences`/`contextReferences` are always empty -- the Gate B slice
+    this build serves writes no other reference facts to a queued row -- which is
+    the honest answer this projection states rather than omits.
+    """
+    submission, order = entry.submission, entry.order
+    return {
+        "workspaceId": submission.workspace_id,
+        "conversationId": submission.conversation_id,
+        "actorId": submission.actor_id,
+        "queuedSubmissionId": submission.queued_submission_id,
+        "branchId": submission.branch_id,
+        "editableParts": [dict(part) for part in submission.editable_parts],
+        "attachmentReferences": [],
+        "contextReferences": [],
+        "state": "queued",
+        "version": submission.version,
+        "position": order.queue_position,
+        "orderVersion": order.version,
+        "createdAt": _timestamp(submission.created_at_us),
+        "updatedAt": _timestamp(submission.updated_at_us),
+    }
+
+
 def resolve_chat_snapshot(
     connection: sqlite3.Connection,
     request: ChatSnapshotInput,
@@ -349,12 +384,22 @@ def resolve_chat_snapshot(
         or inputs.path[-1].message_id != inputs.branch.current_head_message_id
     ):
         raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    if inputs.queued_submissions_truncated:
+        # A partial queue would misrepresent completeness to a reconnecting caller
+        # relying on it for durable order; fail closed rather than silently
+        # answering fewer rows than the actor actually has queued.
+        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_QUEUE_OVERFLOW)
+    snapshot: dict[str, Any] = {
+        "conversation": _conversation(inputs.conversation),
+        "path": _path(inputs, inputs.branch, inputs.view_state),
+        "branch": _branch(inputs.branch),
+        "viewState": _view_state(inputs.view_state),
+    }
+    if inputs.queued_submissions:
+        snapshot["queuedSubmissions"] = [
+            _queued_submission(entry) for entry in inputs.queued_submissions
+        ]
     return ChatSnapshotResult(
         conversation_id=query.conversation_id,
-        snapshot={
-            "conversation": _conversation(inputs.conversation),
-            "path": _path(inputs, inputs.branch, inputs.view_state),
-            "branch": _branch(inputs.branch),
-            "viewState": _view_state(inputs.view_state),
-        },
+        snapshot=snapshot,
     ).to_wire()

@@ -257,6 +257,8 @@ def _inputs(**overrides: Any) -> ConversationSnapshotInputs:
             HEAD_MESSAGE_ID: (_part(HEAD_MESSAGE_ID, 0, provenance=None),),
         },
         "generation_job_ids": ("gen-snapshot-1", "gen-snapshot-2"),
+        "queued_submissions": (),
+        "queued_submissions_truncated": False,
     }
     fields.update(overrides)
     return ConversationSnapshotInputs(**fields)

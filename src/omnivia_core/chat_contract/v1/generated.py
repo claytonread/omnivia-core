@@ -2,7 +2,7 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (165 files)
+#   contracts/chat/v1/fixtures/**           (169 files)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -97,12 +97,12 @@ PROTOCOL_MAJOR: Final[str] = '1'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 164 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 165
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 169
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '591baa7f6ae1ea2cced35e648538e7429657b70046d6cdd31fbcfadf94d877c7'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '02fa6d29ae0f7a72bee5fe5f71e1fe460f1c3c5f694b0b96bd8ad806fd46095d'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
