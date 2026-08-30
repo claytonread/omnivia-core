@@ -161,6 +161,17 @@
       "sha256": "e3ff1fc3c6ed3568b62aa8c38ea7106352738f3f30e5aa95954e83504e4f40e9",
       "introduced_commit": null,
       "accepted_commit": null
+    },
+    {
+      "number": 32,
+      "filename": "0032_chat_turn_step_tool_lifecycle.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 31,
+      "sha256": "00093177545c64deec6c8fb50b7b4925b480c46e0967a3be2b9dad42133da416",
+      "introduced_commit": null,
+      "accepted_commit": null
     }
   ]
 }
