@@ -49,6 +49,7 @@ import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any
 
@@ -75,6 +76,8 @@ __all__ = [
     "OutboxEntry",
     "QueueOrderProjection",
     "QueuedSubmission",
+    "RequestManifest",
+    "RequestManifestConflict",
     "StaleVersion",
     "ViewState",
     "append_branch",
@@ -90,6 +93,7 @@ __all__ = [
     "append_message_part",
     "append_outbox_entry",
     "append_queued_submission",
+    "append_request_manifest_once",
     "chat_writer",
     "insert_draft",
     "insert_generation_job_status_projection",
@@ -116,6 +120,7 @@ __all__ = [
     "read_queue_order_for_conversation",
     "read_queue_order_projection",
     "read_queued_submission",
+    "read_request_manifest",
     "transaction_local_writer",
     "update_branch_head",
     "update_conversation",
@@ -140,6 +145,16 @@ class StaleVersion(StorageError):
     """
 
 
+class RequestManifestConflict(StorageError):
+    """An attempt already has a different request manifest.
+
+    The existing row is left untouched. This is the request boundary equivalent
+    of an idempotency-key conflict: replays of the same attempt may re-use the
+    same manifest bytes, but a different manifest for that attempt must fail
+    closed before any provider invocation is attempted.
+    """
+
+
 def _reject_json_constant(token: str) -> Any:
     raise StorageError(f"a stored chat JSON value contains the non-finite constant {token!r}")
 
@@ -153,6 +168,10 @@ def _canonical_json_object(value: Mapping[str, Any]) -> str:
         raise StorageError(
             f"a chat JSON object column is not representable as canonical JSON: {error}"
         ) from error
+
+
+def _canonical_json_object_digest(value: Mapping[str, Any]) -> str:
+    return "sha256:" + sha256(_canonical_json_object(value).encode("utf-8")).hexdigest()
 
 
 def _canonical_json_array(value: Sequence[Any]) -> str:
@@ -472,6 +491,23 @@ class GenerationTextChunk:
     content_hash: str
     schema_version: int
     occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestManifest:
+    workspace_id: str
+    conversation_id: str
+    branch_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    trigger_message_id: str
+    provider_invocation_id: str
+    request_manifest_id: str
+    idempotency_key: str
+    schema_version: int
+    manifest_digest: str
+    manifest_body: Mapping[str, Any]
+    created_at_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,6 +1149,51 @@ class ChatWriter:
             ),
         )
 
+    def append_request_manifest(
+        self,
+        *,
+        conversation_id: str,
+        branch_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        trigger_message_id: str,
+        provider_invocation_id: str,
+        request_manifest_id: str,
+        idempotency_key: str,
+        manifest_body: Mapping[str, Any],
+        created_at_us: int,
+        schema_version: int = 1,
+        manifest_digest: str | None = None,
+    ) -> None:
+        digest = (
+            _canonical_json_object_digest(manifest_body)
+            if manifest_digest is None
+            else manifest_digest
+        )
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_request_manifests "
+            "(workspace_id, conversation_id, branch_id, generation_job_id, "
+            "generation_attempt_id, trigger_message_id, provider_invocation_id, "
+            "request_manifest_id, idempotency_key, schema_version, manifest_digest, "
+            "request_manifest_body_json, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                branch_id,
+                generation_job_id,
+                generation_attempt_id,
+                trigger_message_id,
+                provider_invocation_id,
+                request_manifest_id,
+                idempotency_key,
+                schema_version,
+                digest,
+                _canonical_json_object(manifest_body),
+                created_at_us,
+            ),
+        )
+
     def insert_queue_order_projection(
         self,
         *,
@@ -1749,6 +1830,76 @@ def append_generation_text_chunk(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.append_generation_text_chunk(**fields)
+
+
+def append_request_manifest_once(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    conversation_id: str,
+    branch_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    trigger_message_id: str,
+    provider_invocation_id: str,
+    request_manifest_id: str,
+    idempotency_key: str,
+    manifest_body: Mapping[str, Any],
+    created_at_us: int,
+    schema_version: int = 1,
+) -> RequestManifest:
+    """Append one attempt's manifest, or return the identical durable replay.
+
+    The idempotency boundary is the generation attempt. Re-running the same
+    attempt after a crash may see the existing manifest and continue only if the
+    canonical bytes still match; any drift in path selection, policy, model,
+    tool schemas or request options is refused before a provider can be invoked.
+    """
+    expected_digest = _canonical_json_object_digest(manifest_body)
+    existing = read_request_manifest(
+        connection,
+        workspace_id=workspace_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    if existing is not None:
+        if (
+            existing.manifest_digest != expected_digest
+            or _canonical_json_object(existing.manifest_body)
+            != _canonical_json_object(manifest_body)
+        ):
+            raise RequestManifestConflict(
+                f"generation attempt {generation_attempt_id!r} already has a different request manifest"
+            )
+        return existing
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_request_manifest(
+            conversation_id=conversation_id,
+            branch_id=branch_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            trigger_message_id=trigger_message_id,
+            provider_invocation_id=provider_invocation_id,
+            request_manifest_id=request_manifest_id,
+            idempotency_key=idempotency_key,
+            manifest_body=manifest_body,
+            manifest_digest=expected_digest,
+            created_at_us=created_at_us,
+            schema_version=schema_version,
+        )
+    appended = read_request_manifest(
+        connection,
+        workspace_id=workspace_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    if appended is None:  # pragma: no cover - the transaction just committed it
+        raise StorageError(
+            f"chat request manifest {request_manifest_id!r} did not settle"
+        )
+    return appended
 
 
 def insert_queue_order_projection(
@@ -2535,6 +2686,47 @@ def read_generation_text_chunks(
     query += " ORDER BY generation_attempt_id, chunk_ordinal"
     rows = connection.execute(query, params).fetchall()
     return tuple(_generation_text_chunk_from_row(row) for row in rows)
+
+
+_REQUEST_MANIFEST_COLUMNS = (
+    "workspace_id, conversation_id, branch_id, generation_job_id, "
+    "generation_attempt_id, trigger_message_id, provider_invocation_id, "
+    "request_manifest_id, idempotency_key, schema_version, manifest_digest, "
+    "request_manifest_body_json, created_at_us"
+)
+
+
+def _request_manifest_from_row(row: tuple[Any, ...]) -> RequestManifest:
+    body = _verified_json_object(row[11], "chat request manifest body")
+    digest = _canonical_json_object_digest(body)
+    if digest != row[10]:
+        raise StorageError("a stored chat request manifest digest does not match its body")
+    return RequestManifest(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        branch_id=row[2],
+        generation_job_id=row[3],
+        generation_attempt_id=row[4],
+        trigger_message_id=row[5],
+        provider_invocation_id=row[6],
+        request_manifest_id=row[7],
+        idempotency_key=row[8],
+        schema_version=row[9],
+        manifest_digest=row[10],
+        manifest_body=body,
+        created_at_us=row[12],
+    )
+
+
+def read_request_manifest(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> RequestManifest | None:
+    row = connection.execute(
+        f"SELECT {_REQUEST_MANIFEST_COLUMNS} FROM omnivia_chat_request_manifests "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _request_manifest_from_row(row)
 
 
 _QUEUE_ORDER_PROJECTION_COLUMNS = (
