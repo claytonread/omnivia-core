@@ -734,6 +734,12 @@
     },
     "ChatEventsResult": {
       "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatEventsResult"
+    },
+    "ChatSnapshotInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput"
+    },
+    "ChatSnapshotResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult"
     }
   }
 }
