@@ -49,6 +49,7 @@ import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Any
 
@@ -60,6 +61,10 @@ from omnivia_core_runtime.storage.connection import StorageError
 __all__ = [
     "Branch",
     "BranchHeadEvent",
+    "ChatToolCall",
+    "ChatToolResult",
+    "ChatTurn",
+    "ChatTurnStep",
     "ChatWriter",
     "Conversation",
     "Draft",
@@ -75,10 +80,16 @@ __all__ = [
     "OutboxEntry",
     "QueueOrderProjection",
     "QueuedSubmission",
+    "RequestManifest",
+    "RequestManifestConflict",
     "StaleVersion",
     "ViewState",
     "append_branch",
     "append_branch_head_event",
+    "append_chat_tool_call",
+    "append_chat_tool_result",
+    "append_chat_turn",
+    "append_chat_turn_step",
     "append_conversation",
     "append_generation_attempt",
     "append_generation_attempt_outcome",
@@ -90,6 +101,7 @@ __all__ = [
     "append_message_part",
     "append_outbox_entry",
     "append_queued_submission",
+    "append_request_manifest_once",
     "chat_writer",
     "insert_draft",
     "insert_generation_job_status_projection",
@@ -99,6 +111,12 @@ __all__ = [
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
+    "read_chat_tool_call",
+    "read_chat_tool_calls",
+    "read_chat_tool_result",
+    "read_chat_turn",
+    "read_chat_turn_by_attempt",
+    "read_chat_turn_steps",
     "read_conversation",
     "read_generation_attempt",
     "read_generation_attempt_outcome",
@@ -116,8 +134,12 @@ __all__ = [
     "read_queue_order_for_conversation",
     "read_queue_order_projection",
     "read_queued_submission",
+    "read_request_manifest",
     "transaction_local_writer",
     "update_branch_head",
+    "update_chat_tool_call",
+    "update_chat_turn",
+    "update_chat_turn_step",
     "update_conversation",
     "update_draft",
     "update_generation_job",
@@ -140,6 +162,16 @@ class StaleVersion(StorageError):
     """
 
 
+class RequestManifestConflict(StorageError):
+    """An attempt already has a different request manifest.
+
+    The existing row is left untouched. This is the request boundary equivalent
+    of an idempotency-key conflict: replays of the same attempt may re-use the
+    same manifest bytes, but a different manifest for that attempt must fail
+    closed before any provider invocation is attempted.
+    """
+
+
 def _reject_json_constant(token: str) -> Any:
     raise StorageError(f"a stored chat JSON value contains the non-finite constant {token!r}")
 
@@ -153,6 +185,10 @@ def _canonical_json_object(value: Mapping[str, Any]) -> str:
         raise StorageError(
             f"a chat JSON object column is not representable as canonical JSON: {error}"
         ) from error
+
+
+def _canonical_json_object_digest(value: Mapping[str, Any]) -> str:
+    return "sha256:" + sha256(_canonical_json_object(value).encode("utf-8")).hexdigest()
 
 
 def _canonical_json_array(value: Sequence[Any]) -> str:
@@ -472,6 +508,103 @@ class GenerationTextChunk:
     content_hash: str
     schema_version: int
     occurred_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestManifest:
+    workspace_id: str
+    conversation_id: str
+    branch_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    trigger_message_id: str
+    provider_invocation_id: str
+    request_manifest_id: str
+    idempotency_key: str
+    schema_version: int
+    manifest_digest: str
+    manifest_body: Mapping[str, Any]
+    created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurn:
+    workspace_id: str
+    conversation_id: str
+    branch_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    turn_id: str
+    state: str
+    current_step_id: str | None
+    version: int
+    schema_version: int
+    created_at_us: int
+    updated_at_us: int
+    finished_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurnStep:
+    workspace_id: str
+    conversation_id: str
+    turn_id: str
+    step_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    step_ordinal: int
+    step_kind: str
+    state: str
+    version: int
+    schema_version: int
+    created_at_us: int
+    updated_at_us: int
+    finished_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatToolCall:
+    workspace_id: str
+    conversation_id: str
+    turn_id: str
+    step_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    tool_call_id: str
+    tool_name: str
+    tool_version: str
+    registry_ref: str
+    state: str
+    policy_state: str
+    proposed_arguments: Mapping[str, Any]
+    proposed_arguments_digest: str
+    post_policy_arguments: Mapping[str, Any] | None
+    post_policy_arguments_digest: str | None
+    executed_arguments_digest: str | None
+    result_id: str | None
+    failure_code: str | None
+    version: int
+    schema_version: int
+    created_at_us: int
+    updated_at_us: int
+    finished_at_us: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatToolResult:
+    workspace_id: str
+    conversation_id: str
+    turn_id: str
+    step_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    tool_call_id: str
+    result_id: str
+    status: str
+    result_payload: Mapping[str, Any]
+    result_digest: str
+    schema_version: int
+    created_at_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1113,6 +1246,243 @@ class ChatWriter:
             ),
         )
 
+    def append_request_manifest(
+        self,
+        *,
+        conversation_id: str,
+        branch_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        trigger_message_id: str,
+        provider_invocation_id: str,
+        request_manifest_id: str,
+        idempotency_key: str,
+        manifest_body: Mapping[str, Any],
+        created_at_us: int,
+        schema_version: int = 1,
+        manifest_digest: str | None = None,
+    ) -> None:
+        digest = (
+            _canonical_json_object_digest(manifest_body)
+            if manifest_digest is None
+            else manifest_digest
+        )
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_request_manifests "
+            "(workspace_id, conversation_id, branch_id, generation_job_id, "
+            "generation_attempt_id, trigger_message_id, provider_invocation_id, "
+            "request_manifest_id, idempotency_key, schema_version, manifest_digest, "
+            "request_manifest_body_json, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                branch_id,
+                generation_job_id,
+                generation_attempt_id,
+                trigger_message_id,
+                provider_invocation_id,
+                request_manifest_id,
+                idempotency_key,
+                schema_version,
+                digest,
+                _canonical_json_object(manifest_body),
+                created_at_us,
+            ),
+        )
+
+    def append_chat_turn(
+        self,
+        *,
+        conversation_id: str,
+        branch_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        turn_id: str,
+        created_at_us: int,
+        updated_at_us: int,
+        state: str = "running",
+        current_step_id: str | None = None,
+        version: int = 1,
+        schema_version: int = 1,
+        finished_at_us: int | None = None,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_turns "
+            "(workspace_id, conversation_id, branch_id, generation_job_id, "
+            "generation_attempt_id, turn_id, state, current_step_id, version, "
+            "schema_version, created_at_us, updated_at_us, finished_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                branch_id,
+                generation_job_id,
+                generation_attempt_id,
+                turn_id,
+                state,
+                current_step_id,
+                version,
+                schema_version,
+                created_at_us,
+                updated_at_us,
+                finished_at_us,
+            ),
+        )
+
+    def append_chat_turn_step(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        step_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        step_ordinal: int,
+        step_kind: str,
+        created_at_us: int,
+        updated_at_us: int,
+        state: str = "proposed",
+        version: int = 1,
+        schema_version: int = 1,
+        finished_at_us: int | None = None,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_turn_steps "
+            "(workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+            "generation_attempt_id, step_ordinal, step_kind, state, version, "
+            "schema_version, created_at_us, updated_at_us, finished_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                turn_id,
+                step_id,
+                generation_job_id,
+                generation_attempt_id,
+                step_ordinal,
+                step_kind,
+                state,
+                version,
+                schema_version,
+                created_at_us,
+                updated_at_us,
+                finished_at_us,
+            ),
+        )
+
+    def append_chat_tool_call(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        step_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        tool_version: str,
+        registry_ref: str,
+        proposed_arguments: Mapping[str, Any],
+        created_at_us: int,
+        updated_at_us: int,
+        state: str = "proposed",
+        policy_state: str = "pending",
+        post_policy_arguments: Mapping[str, Any] | None = None,
+        executed_arguments_digest: str | None = None,
+        result_id: str | None = None,
+        failure_code: str | None = None,
+        version: int = 1,
+        schema_version: int = 1,
+        finished_at_us: int | None = None,
+    ) -> None:
+        proposed_digest = _canonical_json_object_digest(proposed_arguments)
+        post_policy_digest = (
+            None
+            if post_policy_arguments is None
+            else _canonical_json_object_digest(post_policy_arguments)
+        )
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_tool_calls "
+            "(workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+            "generation_attempt_id, tool_call_id, tool_name, tool_version, "
+            "registry_ref, state, policy_state, proposed_arguments_json, "
+            "proposed_arguments_digest, post_policy_arguments_json, "
+            "post_policy_arguments_digest, executed_arguments_digest, result_id, "
+            "failure_code, version, schema_version, created_at_us, updated_at_us, "
+            "finished_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                turn_id,
+                step_id,
+                generation_job_id,
+                generation_attempt_id,
+                tool_call_id,
+                tool_name,
+                tool_version,
+                registry_ref,
+                state,
+                policy_state,
+                _canonical_json_object(proposed_arguments),
+                proposed_digest,
+                None if post_policy_arguments is None else _canonical_json_object(post_policy_arguments),
+                post_policy_digest,
+                executed_arguments_digest,
+                result_id,
+                failure_code,
+                version,
+                schema_version,
+                created_at_us,
+                updated_at_us,
+                finished_at_us,
+            ),
+        )
+
+    def append_chat_tool_result(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        step_id: str,
+        generation_job_id: str,
+        generation_attempt_id: str,
+        tool_call_id: str,
+        result_id: str,
+        status: str,
+        result_payload: Mapping[str, Any],
+        created_at_us: int,
+        schema_version: int = 1,
+        result_digest: str | None = None,
+    ) -> None:
+        digest = (
+            _canonical_json_object_digest(result_payload)
+            if result_digest is None
+            else result_digest
+        )
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_tool_results "
+            "(workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+            "generation_attempt_id, tool_call_id, result_id, status, "
+            "result_payload_json, result_digest, schema_version, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                turn_id,
+                step_id,
+                generation_job_id,
+                generation_attempt_id,
+                tool_call_id,
+                result_id,
+                status,
+                _canonical_json_object(result_payload),
+                digest,
+                schema_version,
+                created_at_us,
+            ),
+        )
+
     def insert_queue_order_projection(
         self,
         *,
@@ -1477,6 +1847,101 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "queue order projection", queued_submission_id)
 
+    def update_chat_turn(
+        self,
+        *,
+        turn_id: str,
+        expected_version: int,
+        state: str,
+        updated_at_us: int,
+        current_step_id: str | None = None,
+        finished_at_us: int | None = None,
+    ) -> None:
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_turns SET state = ?, current_step_id = ?, "
+            "version = ?, updated_at_us = ?, finished_at_us = ? "
+            "WHERE workspace_id = ? AND turn_id = ? AND version = ?",
+            (
+                state,
+                current_step_id,
+                expected_version + 1,
+                updated_at_us,
+                finished_at_us,
+                self.workspace_id,
+                turn_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "chat turn", turn_id)
+
+    def update_chat_turn_step(
+        self,
+        *,
+        step_id: str,
+        expected_version: int,
+        state: str,
+        updated_at_us: int,
+        finished_at_us: int | None = None,
+    ) -> None:
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_turn_steps SET state = ?, version = ?, "
+            "updated_at_us = ?, finished_at_us = ? "
+            "WHERE workspace_id = ? AND step_id = ? AND version = ?",
+            (
+                state,
+                expected_version + 1,
+                updated_at_us,
+                finished_at_us,
+                self.workspace_id,
+                step_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "chat turn step", step_id)
+
+    def update_chat_tool_call(
+        self,
+        *,
+        tool_call_id: str,
+        expected_version: int,
+        state: str,
+        policy_state: str,
+        updated_at_us: int,
+        post_policy_arguments: Mapping[str, Any] | None = None,
+        executed_arguments_digest: str | None = None,
+        result_id: str | None = None,
+        failure_code: str | None = None,
+        finished_at_us: int | None = None,
+    ) -> None:
+        post_policy_digest = (
+            None
+            if post_policy_arguments is None
+            else _canonical_json_object_digest(post_policy_arguments)
+        )
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_tool_calls SET state = ?, policy_state = ?, "
+            "post_policy_arguments_json = ?, post_policy_arguments_digest = ?, "
+            "executed_arguments_digest = ?, result_id = ?, failure_code = ?, "
+            "version = ?, updated_at_us = ?, finished_at_us = ? "
+            "WHERE workspace_id = ? AND tool_call_id = ? AND version = ?",
+            (
+                state,
+                policy_state,
+                None if post_policy_arguments is None else _canonical_json_object(post_policy_arguments),
+                post_policy_digest,
+                executed_arguments_digest,
+                result_id,
+                failure_code,
+                expected_version + 1,
+                updated_at_us,
+                finished_at_us,
+                self.workspace_id,
+                tool_call_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "chat tool call", tool_call_id)
+
     def update_outbox_delivery(
         self,
         *,
@@ -1751,6 +2216,132 @@ def append_generation_text_chunk(
         writer.append_generation_text_chunk(**fields)
 
 
+def append_request_manifest_once(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    conversation_id: str,
+    branch_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    trigger_message_id: str,
+    provider_invocation_id: str,
+    request_manifest_id: str,
+    idempotency_key: str,
+    manifest_body: Mapping[str, Any],
+    created_at_us: int,
+    schema_version: int = 1,
+) -> RequestManifest:
+    """Append one attempt's manifest, or return the identical durable replay.
+
+    The idempotency boundary is the generation attempt. Re-running the same
+    attempt after a crash may see the existing manifest and continue only if the
+    canonical bytes still match; any drift in path selection, policy, model,
+    tool schemas or request options is refused before a provider can be invoked.
+    """
+    expected_digest = _canonical_json_object_digest(manifest_body)
+    existing = read_request_manifest(
+        connection,
+        workspace_id=workspace_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    if existing is not None:
+        if (
+            existing.manifest_digest != expected_digest
+            or _canonical_json_object(existing.manifest_body)
+            != _canonical_json_object(manifest_body)
+        ):
+            raise RequestManifestConflict(
+                f"generation attempt {generation_attempt_id!r} already has a different request manifest"
+            )
+        return existing
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_request_manifest(
+            conversation_id=conversation_id,
+            branch_id=branch_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            trigger_message_id=trigger_message_id,
+            provider_invocation_id=provider_invocation_id,
+            request_manifest_id=request_manifest_id,
+            idempotency_key=idempotency_key,
+            manifest_body=manifest_body,
+            manifest_digest=expected_digest,
+            created_at_us=created_at_us,
+            schema_version=schema_version,
+        )
+    appended = read_request_manifest(
+        connection,
+        workspace_id=workspace_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    if appended is None:  # pragma: no cover - the transaction just committed it
+        raise StorageError(
+            f"chat request manifest {request_manifest_id!r} did not settle"
+        )
+    return appended
+
+
+def append_chat_turn(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_chat_turn(**fields)
+
+
+def append_chat_turn_step(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_chat_turn_step(**fields)
+
+
+def append_chat_tool_call(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_chat_tool_call(**fields)
+
+
+def append_chat_tool_result(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_chat_tool_result(**fields)
+
+
 def insert_queue_order_projection(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -1889,6 +2480,48 @@ def update_queue_order_projection(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.update_queue_order_projection(**fields)
+
+
+def update_chat_turn(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_chat_turn(**fields)
+
+
+def update_chat_turn_step(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_chat_turn_step(**fields)
+
+
+def update_chat_tool_call(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_chat_tool_call(**fields)
 
 
 def update_outbox_delivery(
@@ -2535,6 +3168,251 @@ def read_generation_text_chunks(
     query += " ORDER BY generation_attempt_id, chunk_ordinal"
     rows = connection.execute(query, params).fetchall()
     return tuple(_generation_text_chunk_from_row(row) for row in rows)
+
+
+_REQUEST_MANIFEST_COLUMNS = (
+    "workspace_id, conversation_id, branch_id, generation_job_id, "
+    "generation_attempt_id, trigger_message_id, provider_invocation_id, "
+    "request_manifest_id, idempotency_key, schema_version, manifest_digest, "
+    "request_manifest_body_json, created_at_us"
+)
+
+
+def _request_manifest_from_row(row: tuple[Any, ...]) -> RequestManifest:
+    body = _verified_json_object(row[11], "chat request manifest body")
+    digest = _canonical_json_object_digest(body)
+    if digest != row[10]:
+        raise StorageError("a stored chat request manifest digest does not match its body")
+    return RequestManifest(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        branch_id=row[2],
+        generation_job_id=row[3],
+        generation_attempt_id=row[4],
+        trigger_message_id=row[5],
+        provider_invocation_id=row[6],
+        request_manifest_id=row[7],
+        idempotency_key=row[8],
+        schema_version=row[9],
+        manifest_digest=row[10],
+        manifest_body=body,
+        created_at_us=row[12],
+    )
+
+
+def read_request_manifest(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> RequestManifest | None:
+    row = connection.execute(
+        f"SELECT {_REQUEST_MANIFEST_COLUMNS} FROM omnivia_chat_request_manifests "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _request_manifest_from_row(row)
+
+
+_CHAT_TURN_COLUMNS = (
+    "workspace_id, conversation_id, branch_id, generation_job_id, "
+    "generation_attempt_id, turn_id, state, current_step_id, version, "
+    "schema_version, created_at_us, updated_at_us, finished_at_us"
+)
+
+
+def _chat_turn_from_row(row: tuple[Any, ...]) -> ChatTurn:
+    return ChatTurn(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        branch_id=row[2],
+        generation_job_id=row[3],
+        generation_attempt_id=row[4],
+        turn_id=row[5],
+        state=row[6],
+        current_step_id=row[7],
+        version=row[8],
+        schema_version=row[9],
+        created_at_us=row[10],
+        updated_at_us=row[11],
+        finished_at_us=row[12],
+    )
+
+
+def read_chat_turn(
+    connection: sqlite3.Connection, *, workspace_id: str, turn_id: str
+) -> ChatTurn | None:
+    row = connection.execute(
+        f"SELECT {_CHAT_TURN_COLUMNS} FROM omnivia_chat_turns "
+        "WHERE workspace_id = ? AND turn_id = ?",
+        (workspace_id, turn_id),
+    ).fetchone()
+    return None if row is None else _chat_turn_from_row(row)
+
+
+def read_chat_turn_by_attempt(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_job_id: str,
+    generation_attempt_id: str,
+) -> ChatTurn | None:
+    row = connection.execute(
+        f"SELECT {_CHAT_TURN_COLUMNS} FROM omnivia_chat_turns "
+        "WHERE workspace_id = ? AND generation_job_id = ? "
+        "AND generation_attempt_id = ?",
+        (workspace_id, generation_job_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _chat_turn_from_row(row)
+
+
+_CHAT_TURN_STEP_COLUMNS = (
+    "workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+    "generation_attempt_id, step_ordinal, step_kind, state, version, "
+    "schema_version, created_at_us, updated_at_us, finished_at_us"
+)
+
+
+def _chat_turn_step_from_row(row: tuple[Any, ...]) -> ChatTurnStep:
+    return ChatTurnStep(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        turn_id=row[2],
+        step_id=row[3],
+        generation_job_id=row[4],
+        generation_attempt_id=row[5],
+        step_ordinal=row[6],
+        step_kind=row[7],
+        state=row[8],
+        version=row[9],
+        schema_version=row[10],
+        created_at_us=row[11],
+        updated_at_us=row[12],
+        finished_at_us=row[13],
+    )
+
+
+def read_chat_turn_steps(
+    connection: sqlite3.Connection, *, workspace_id: str, turn_id: str
+) -> tuple[ChatTurnStep, ...]:
+    rows = connection.execute(
+        f"SELECT {_CHAT_TURN_STEP_COLUMNS} FROM omnivia_chat_turn_steps "
+        "WHERE workspace_id = ? AND turn_id = ? ORDER BY step_ordinal",
+        (workspace_id, turn_id),
+    ).fetchall()
+    return tuple(_chat_turn_step_from_row(row) for row in rows)
+
+
+_CHAT_TOOL_CALL_COLUMNS = (
+    "workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+    "generation_attempt_id, tool_call_id, tool_name, tool_version, registry_ref, "
+    "state, policy_state, proposed_arguments_json, proposed_arguments_digest, "
+    "post_policy_arguments_json, post_policy_arguments_digest, "
+    "executed_arguments_digest, result_id, failure_code, version, schema_version, "
+    "created_at_us, updated_at_us, finished_at_us"
+)
+
+
+def _chat_tool_call_from_row(row: tuple[Any, ...]) -> ChatToolCall:
+    proposed_arguments = _verified_json_object(row[12], "chat tool proposed arguments")
+    proposed_digest = _canonical_json_object_digest(proposed_arguments)
+    if proposed_digest != row[13]:
+        raise StorageError("a stored chat tool proposed-arguments digest does not match")
+    post_policy_arguments = (
+        None
+        if row[14] is None
+        else _verified_json_object(row[14], "chat tool post-policy arguments")
+    )
+    if post_policy_arguments is None:
+        if row[15] is not None:
+            raise StorageError("a stored chat tool post-policy digest has no arguments")
+    elif _canonical_json_object_digest(post_policy_arguments) != row[15]:
+        raise StorageError("a stored chat tool post-policy digest does not match")
+    return ChatToolCall(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        turn_id=row[2],
+        step_id=row[3],
+        generation_job_id=row[4],
+        generation_attempt_id=row[5],
+        tool_call_id=row[6],
+        tool_name=row[7],
+        tool_version=row[8],
+        registry_ref=row[9],
+        state=row[10],
+        policy_state=row[11],
+        proposed_arguments=proposed_arguments,
+        proposed_arguments_digest=row[13],
+        post_policy_arguments=post_policy_arguments,
+        post_policy_arguments_digest=row[15],
+        executed_arguments_digest=row[16],
+        result_id=row[17],
+        failure_code=row[18],
+        version=row[19],
+        schema_version=row[20],
+        created_at_us=row[21],
+        updated_at_us=row[22],
+        finished_at_us=row[23],
+    )
+
+
+def read_chat_tool_call(
+    connection: sqlite3.Connection, *, workspace_id: str, tool_call_id: str
+) -> ChatToolCall | None:
+    row = connection.execute(
+        f"SELECT {_CHAT_TOOL_CALL_COLUMNS} FROM omnivia_chat_tool_calls "
+        "WHERE workspace_id = ? AND tool_call_id = ?",
+        (workspace_id, tool_call_id),
+    ).fetchone()
+    return None if row is None else _chat_tool_call_from_row(row)
+
+
+def read_chat_tool_calls(
+    connection: sqlite3.Connection, *, workspace_id: str, turn_id: str
+) -> tuple[ChatToolCall, ...]:
+    rows = connection.execute(
+        f"SELECT {_CHAT_TOOL_CALL_COLUMNS} FROM omnivia_chat_tool_calls "
+        "WHERE workspace_id = ? AND turn_id = ? ORDER BY created_at_us, tool_call_id",
+        (workspace_id, turn_id),
+    ).fetchall()
+    return tuple(_chat_tool_call_from_row(row) for row in rows)
+
+
+_CHAT_TOOL_RESULT_COLUMNS = (
+    "workspace_id, conversation_id, turn_id, step_id, generation_job_id, "
+    "generation_attempt_id, tool_call_id, result_id, status, result_payload_json, "
+    "result_digest, schema_version, created_at_us"
+)
+
+
+def _chat_tool_result_from_row(row: tuple[Any, ...]) -> ChatToolResult:
+    result_payload = _verified_json_object(row[9], "chat tool result payload")
+    digest = _canonical_json_object_digest(result_payload)
+    if digest != row[10]:
+        raise StorageError("a stored chat tool result digest does not match its payload")
+    return ChatToolResult(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        turn_id=row[2],
+        step_id=row[3],
+        generation_job_id=row[4],
+        generation_attempt_id=row[5],
+        tool_call_id=row[6],
+        result_id=row[7],
+        status=row[8],
+        result_payload=result_payload,
+        result_digest=row[10],
+        schema_version=row[11],
+        created_at_us=row[12],
+    )
+
+
+def read_chat_tool_result(
+    connection: sqlite3.Connection, *, workspace_id: str, tool_call_id: str
+) -> ChatToolResult | None:
+    row = connection.execute(
+        f"SELECT {_CHAT_TOOL_RESULT_COLUMNS} FROM omnivia_chat_tool_results "
+        "WHERE workspace_id = ? AND tool_call_id = ?",
+        (workspace_id, tool_call_id),
+    ).fetchone()
+    return None if row is None else _chat_tool_result_from_row(row)
 
 
 _QUEUE_ORDER_PROJECTION_COLUMNS = (

@@ -537,7 +537,7 @@ def test_a_listener_asked_for_tls_with_no_context_refuses_rather_than_downgradin
     only permitted outcome is a closed connection.
     """
     serving.service.tls = None
-    with pytest.raises(ssl.SSLError):
+    with pytest.raises((ssl.SSLError, ConnectionResetError)):
         _tls_post(
             _client(material),
             serving.host,

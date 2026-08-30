@@ -52,13 +52,14 @@ from omnivia_core.chat_contract.v1.generated import (
     F2A_PROVIDER_EVENT_TYPES,
     RESNAPSHOT_REASONS,
 )
-from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
+from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.storage import chat
 
 __all__ = [
     "ClaimedGeneration",
     "DuplicateProviderEvent",
     "GenerationConflict",
+    "GenerationHeartbeat",
     "GenerationLifecycleError",
     "GenerationNotFound",
     "GenerationReplay",
@@ -67,6 +68,7 @@ __all__ = [
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
     "claim_queued_generation",
+    "recover_generation_attempt_lease",
     "renew_generation_lease",
     "replay_generation_events",
 ]
@@ -117,6 +119,10 @@ def _event_id(generation_job_id: str, sequence: int) -> str:
         return candidate
     digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
     return f"generation-event-{digest[:40]}"
+
+
+def _now_us(clock: Clock) -> int:
+    return int(clock.wall_time().timestamp() * 1_000_000)
 
 
 class GenerationLifecycleError(Exception):
@@ -182,6 +188,83 @@ class GenerationReplay:
     events: tuple[chat.GenerationEvent, ...] = ()
     requires_resnapshot: bool = False
     reason: str | None = None
+
+
+@dataclass(slots=True)
+class GenerationHeartbeat:
+    """Independent lease-renewal driver for one running Chat attempt.
+
+    The object writes no transcript or provider events. A caller can tick it from
+    a scheduler, timer thread or fake-clock test while the provider emits nothing;
+    the renewal itself still goes through the same guarded compare-and-set lease
+    path as event-time renewal. Ownership loss stops the heartbeat and is surfaced
+    as a conflict, so stale owners do not silently revive themselves.
+    """
+
+    connection: sqlite3.Connection
+    identity: ServiceInstanceIdentity
+    workspace_id: str
+    fencing_generation: int
+    generation_job_id: str
+    generation_attempt_id: str
+    lease_owner: str
+    clock: Clock
+    lease_duration_us: int = DEFAULT_LEASE_US
+    lease_expires_at_us: int | None = None
+    active: bool = False
+
+    def start(self, lease_expires_at_us: int | None) -> None:
+        self.lease_expires_at_us = lease_expires_at_us
+        self.active = True
+
+    def stop(self) -> None:
+        self.active = False
+
+    def tick(self) -> int | None:
+        if not self.active:
+            return self.lease_expires_at_us
+
+        job = chat.read_generation_job(
+            self.connection,
+            workspace_id=self.workspace_id,
+            generation_job_id=self.generation_job_id,
+        )
+        if job is None:
+            self.stop()
+            raise GenerationNotFound(
+                f"generation job {self.generation_job_id!r} is not in this workspace"
+            )
+        if job.state in _TERMINAL_JOB_STATES:
+            self.stop()
+            self.lease_expires_at_us = job.lease_expires_at_us
+            return self.lease_expires_at_us
+        if job.state != "running" or job.current_attempt_id != self.generation_attempt_id:
+            self.stop()
+            raise GenerationConflict(
+                f"generation job {self.generation_job_id!r} is not running this attempt"
+            )
+        if job.lease_owner != self.lease_owner:
+            self.stop()
+            raise GenerationConflict(
+                f"generation job {self.generation_job_id!r} is leased by another instance"
+            )
+
+        now_us = _now_us(self.clock)
+        expires_at_us = job.lease_expires_at_us or self.lease_expires_at_us
+        if expires_at_us is not None and now_us < expires_at_us - self.lease_duration_us // 2:
+            self.lease_expires_at_us = expires_at_us
+            return expires_at_us
+        self.lease_expires_at_us = renew_generation_lease(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=self.generation_job_id,
+            lease_owner=self.lease_owner,
+            now_us=now_us,
+            lease_duration_us=self.lease_duration_us,
+        )
+        return self.lease_expires_at_us
 
 
 # --- cursors ---------------------------------------------------------------------
@@ -516,6 +599,7 @@ def append_provider_generation_event(
     result_message_id: str | None = None,
     expected_sequence: int | None = None,
     lease_duration_us: int = DEFAULT_LEASE_US,
+    lease_owner: str | None = None,
 ) -> chat.GenerationEvent | None:
     """Fold one already-normalized provider event into this job's durable history.
 
@@ -599,6 +683,15 @@ def append_provider_generation_event(
     if effective_state != "running" or effective_attempt_id != generation_attempt_id:
         raise GenerationConflict(
             f"generation job {generation_job_id!r} is not running this attempt"
+        )
+    if (
+        lease_owner is not None
+        and job.state == "running"
+        and job.current_attempt_id == generation_attempt_id
+        and job.lease_owner != lease_owner
+    ):
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is leased by another instance"
         )
     if any(
         event.generation_attempt_id == generation_attempt_id
@@ -831,6 +924,80 @@ def renew_generation_lease(
             started_at_us=job.started_at_us,
         )
     return expires_at_us
+
+
+def recover_generation_attempt_lease(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    recovery_owner: str,
+    now_us: int,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.GenerationJob:
+    """Take over one expired running attempt under a new lease epoch.
+
+    Recovery is intentionally narrow: it does not enqueue a retry, append a
+    provider event or change transcript state. It only moves an expired running
+    attempt to a new lease owner/fence. The ``(state, lease_epoch)`` compare-and-set
+    means concurrent recovery attempts produce one winner, and stale provider
+    output from the old owner can be refused by the event append's ``lease_owner``
+    check.
+    """
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    projection = chat.read_generation_job_status_projection(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+    effective_state = projection.state if projection is not None else job.state
+    effective_attempt_id = (
+        projection.current_attempt_id if projection is not None else job.current_attempt_id
+    )
+    if effective_state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} is not running this attempt"
+        )
+    if job.lease_expires_at_us is None or job.lease_expires_at_us > now_us:
+        raise GenerationConflict(
+            f"generation job {generation_job_id!r} still has an active lease"
+        )
+
+    expires_at_us = now_us + lease_duration_us
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_generation_job(
+            generation_job_id=generation_job_id,
+            expected_state=job.state,
+            expected_lease_epoch=job.lease_epoch,
+            state=job.state,
+            lease_epoch=job.lease_epoch + 1,
+            current_attempt_id=job.current_attempt_id,
+            result_message_id=job.result_message_id,
+            lease_owner=recovery_owner,
+            lease_expires_at_us=expires_at_us,
+            heartbeat_at_us=now_us,
+            last_event_sequence=job.last_event_sequence,
+            sanitized_error_code=job.sanitized_error_code,
+            sanitized_error_detail=job.sanitized_error_detail,
+            updated_at_us=now_us,
+            started_at_us=job.started_at_us,
+            finished_at_us=job.finished_at_us,
+        )
+    recovered = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if recovered is None:  # pragma: no cover - the transaction just committed it
+        raise GenerationNotFound(f"generation job {generation_job_id!r} vanished during recovery")
+    return recovered
 
 
 def replay_generation_events(

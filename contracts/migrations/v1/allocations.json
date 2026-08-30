@@ -150,6 +150,39 @@
       "sha256": "2830f97e5e7ed8cf722665a36ea42b458927ac7ec35193ac42c12ff2c6b80ca3",
       "introduced_commit": "0c72b6651789f7695fc2afb326f4809654a4c43b",
       "accepted_commit": null
+    },
+    {
+      "number": 31,
+      "filename": "0031_chat_request_manifests.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 30,
+      "sha256": "e3ff1fc3c6ed3568b62aa8c38ea7106352738f3f30e5aa95954e83504e4f40e9",
+      "introduced_commit": "dbc23280be010318b6e0d1a2e5ae0fc43a1bbf47",
+      "accepted_commit": null
+    },
+    {
+      "number": 32,
+      "filename": "0032_chat_turn_step_tool_lifecycle.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 31,
+      "sha256": "00093177545c64deec6c8fb50b7b4925b480c46e0967a3be2b9dad42133da416",
+      "introduced_commit": "73aa21696bfe10d56141d4945475d77dfc631f5d",
+      "accepted_commit": null
+    },
+    {
+      "number": 33,
+      "filename": "0033_chat_compaction_waits_agent_runs.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 32,
+      "sha256": "19ef3ed17434670c10cefc91498d677025ab87bb0f18f2f53ac54c2ce71f7b7b",
+      "introduced_commit": "0741a368a39815ee01397980b3da5e6b17ffe4a0",
+      "accepted_commit": null
     }
   ]
 }
