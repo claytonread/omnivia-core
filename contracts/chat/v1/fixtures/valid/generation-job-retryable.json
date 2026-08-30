@@ -1,0 +1,13 @@
+{
+  "workspaceId": "ws-acme",
+  "conversationId": "conv-0001",
+  "branchId": "branch-0001-original",
+  "triggerMessageId": "msg-0001-root",
+  "jobId": "job-0002",
+  "state": "retryable",
+  "graphRevisionObserved": 1,
+  "currentAttemptId": "attempt-0002-1",
+  "schemaVersion": 1,
+  "createdAt": "2026-08-20T10:00:00Z",
+  "updatedAt": "2026-08-20T10:00:07Z"
+}

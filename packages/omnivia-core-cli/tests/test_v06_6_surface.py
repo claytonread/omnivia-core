@@ -51,6 +51,7 @@ EXPECTED_COMMANDS = (
     (("context-pack", "build"), "context_pack.build", "knowledge_retrieval"),
     (("chat", "command"), "chat.command", "chat_authoring"),
     (("chat", "events"), "chat.events", "chat_observation"),
+    (("chat", "snapshot"), "chat.snapshot", "chat_observation"),
 )
 
 EXPECTED_PROBES = (
@@ -102,7 +103,7 @@ def test_the_twenty_two_application_commands_are_declared_in_order() -> None:
         for command in APPLICATION_COMMANDS
     )
     assert declared == EXPECTED_COMMANDS
-    assert len(APPLICATION_COMMANDS) == 22
+    assert len(APPLICATION_COMMANDS) == 23
 
 
 def test_the_commands_are_a_bijection_with_the_operation_catalogue() -> None:

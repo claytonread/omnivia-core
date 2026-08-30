@@ -285,8 +285,8 @@
     },
     "GenerationJobState": {
       "title": "GenerationJobState",
-      "description": "The closed v1 Generation Job state vocabulary. `queued` and `running` are non-terminal; `succeeded`, `failed` and `cancelled` are terminal. A retry creates a new GenerationAttempt under the same Job rather than reopening a terminal Job.",
-      "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
+      "description": "The closed v1 Generation Job state vocabulary. `queued`, `running` and `retryable` are non-terminal; `succeeded`, `failed` and `cancelled` are terminal. `retryable` is a compatible-minor addition: a still-open Job projects it while its latest Attempt carries a failed terminal outcome and a further Attempt is still admissible, and appending that next Attempt projects the Job as `running` again. It never reopens a terminal Job -- final Job `failed` stays terminal, and a retry creates a new GenerationAttempt identity under the same Job rather than reopening one.",
+      "enum": ["queued", "running", "retryable", "succeeded", "failed", "cancelled"]
     },
     "GenerationAttemptState": {
       "title": "GenerationAttemptState",

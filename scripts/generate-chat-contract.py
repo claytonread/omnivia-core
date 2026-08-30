@@ -4,30 +4,39 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files: FIXTURE-MANIFEST.json
-#                                             plus 158 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (160 files: FIXTURE-MANIFEST.json
+#                                             plus 159 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
 #   proposal content-set inventory SHA-256
 #     521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2;
-#   fixture manifest SHA-256
-#     7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
 #   effective Architecture release tag architecture-v1.4.0;
-#   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974.
+#   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974;
+# amended by:
+#   the post-0029 Chat successor decision (Clayton Read), a compatible-minor
+#   addition of the non-terminal `retryable` member to `GenerationJobState`
+#   with its one governed valid fixture. Additive only: no existing member,
+#   field, operation or fixture was renamed or removed, so a v1 decoder that
+#   has never heard of `retryable` still decodes every record it decoded
+#   before. `fixture manifest SHA-256` and the counts below move with that
+#   amendment; the proposal pins above still name the original approval.
+#   fixture manifest SHA-256
+#     95c02837595d0ba370a13ee3b2b035dd7c2259cc55b1e9f50dff5f6144ce9f4f.
 #
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 159 fixture
-# files under contracts/chat/v1 are this repository's own checked-in exact
-# copy of the approved bytes, and are the only source this script reads.
+# This never reads the Masterdocs checkout: the 13 schemas and 160 fixture
+# files under contracts/chat/v1 are this repository's own checked-in copy of
+# the approved bytes as amended above, and are the only source this script
+# reads.
 """Generate ``omnivia_core.chat_contract.v1.generated`` from the checked-in
 Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 159 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 160 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -90,7 +99,7 @@ PROPOSAL_COMMIT = "04c0b2f768b8a74c515936e548c4a28fa4af514d"
 PROPOSAL_CONTENT_SET_INVENTORY_SHA256 = (
     "521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2"
 )
-FIXTURE_MANIFEST_SHA256 = "7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54"
+FIXTURE_MANIFEST_SHA256 = "95c02837595d0ba370a13ee3b2b035dd7c2259cc55b1e9f50dff5f6144ce9f4f"
 EFFECTIVE_ARCHITECTURE_TAG = "architecture-v1.4.0"
 EFFECTIVE_PAYLOAD_COMMIT = "eb14159d73c8d9339cfeb347f8de61bd67497974"
 CONTRACT_VERSION = "1.0.0-rc.1"
@@ -98,18 +107,20 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 159  # FIXTURE-MANIFEST.json + 158 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 158
-EXPECTED_FIXTURE_VALID_COUNT = 75
+EXPECTED_FIXTURE_TREE_COUNT = 160  # FIXTURE-MANIFEST.json + 159 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 159
+EXPECTED_FIXTURE_VALID_COUNT = 76
 EXPECTED_FIXTURE_INVALID_COUNT = 83
 
-#: Pinned once, over the exact approved bytes verified byte-for-byte against
-#: the tagged Masterdocs authority (``architecture-v1.4.0``) at copy time.
-#: Recomputed on every run by :func:`compute_resource_inventory_digest` and
-#: compared; any changed, missing or extra file under ``contracts/chat/v1``
-#: changes this digest and fails ``--check`` closed.
+#: Pinned over the exact bytes under ``contracts/chat/v1``: the approved
+#: content set verified byte-for-byte against the tagged Masterdocs authority
+#: (``architecture-v1.4.0``) at copy time, as amended by the post-0029 Chat
+#: successor decision recorded in this file's header. Recomputed on every run
+#: by :func:`compute_resource_inventory_digest` and compared; any changed,
+#: missing or extra file under ``contracts/chat/v1`` changes this digest and
+#: fails ``--check`` closed.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "9a633eb9cdb81e6f586f904c493ac405a535d8da2198561358e940ecb60b090a"
+    "07c044f05786fb803e5a809eabe1aad9a6e00bbf51c5c9040d530aaec55f0c51"
 )
 
 
@@ -622,7 +633,7 @@ PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 158 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 159 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``

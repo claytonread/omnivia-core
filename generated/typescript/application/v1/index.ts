@@ -2247,6 +2247,48 @@ export interface ChatEventsInput {
 }
 
 /**
+ * Input for `chat.snapshot`: the authoritative selected-path snapshot of one conversation, the
+ * answer a caller takes when `chat.events` tells it a cursor can no longer be continued.
+ * `snapshot_query` is the Chat Contract v1 `ConversationSnapshotQuery` document, carried
+ * verbatim and opaque to this envelope, for the same reason `chat.command` carries its command
+ * that way -- Chat's snapshot shape is already frozen in `contracts/chat/v1`, and restating it
+ * here would create a second, drifting copy. `conversation_id` is the addressed conversation
+ * stated natively, so authorization and audit read one identifier rather than parsing a document
+ * this boundary does not validate. Workspace-scoped through the request envelope's selected
+ * workspace, so this payload never carries a second, independent workspace identifier.
+ */
+export interface ChatSnapshotInput {
+  /**
+   * Identifier of the conversation to snapshot. Must be the conversation `snapshot_query`
+   * names.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim. Decoded and
+   * validated against the chat contract, never against this one.
+   */
+  readonly snapshot_query: JsonObject;
+}
+
+/**
+ * Result of `chat.snapshot`: the Chat Contract v1 `ConversationSnapshotResult` document the
+ * query produced -- conversation, resolved active branch path and actor view state -- carried
+ * opaquely for the same reason the request is, and echoed with the conversation it answers. A
+ * snapshot is a complete authoritative read at one revision, not a continuation, so there is no
+ * cursor to honour and no resnapshot branch to signal.
+ */
+export interface ChatSnapshotResult {
+  /**
+   * Identifier of the conversation this snapshot answers. Echoes the request.
+   */
+  readonly conversation_id: Identifier;
+  /**
+   * The Chat Contract v1 `ConversationSnapshotResult` document, carried verbatim.
+   */
+  readonly snapshot: JsonObject;
+}
+
+/**
  * Self-declared identity of the calling client. Diagnostic and compatibility input only; never
  * an authorization input.
  */
@@ -7329,6 +7371,36 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "not_found",
       "rate_limited",
       "size_limit_exceeded",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "chat.snapshot",
+    scope: { required_scopes: ["chat:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult",
+    required_capability: { id: "chat.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
       "upgrade_required",
       "workspace_migration_required",
       "workspace_not_granted",

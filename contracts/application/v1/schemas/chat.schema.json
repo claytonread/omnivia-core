@@ -170,6 +170,46 @@
         "requires_resnapshot"
       ],
       "unevaluatedProperties": false
+    },
+    "ChatSnapshotInput": {
+      "title": "ChatSnapshotInput",
+      "description": "Input for `chat.snapshot`: the authoritative selected-path snapshot of one conversation, the answer a caller takes when `chat.events` tells it a cursor can no longer be continued. `snapshot_query` is the Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim and opaque to this envelope, for the same reason `chat.command` carries its command that way -- Chat's snapshot shape is already frozen in `contracts/chat/v1`, and restating it here would create a second, drifting copy. `conversation_id` is the addressed conversation stated natively, so authorization and audit read one identifier rather than parsing a document this boundary does not validate. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation to snapshot. Must be the conversation `snapshot_query` names."
+        },
+        "snapshot_query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim. Decoded and validated against the chat contract, never against this one."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "snapshot_query"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatSnapshotResult": {
+      "title": "ChatSnapshotResult",
+      "description": "Result of `chat.snapshot`: the Chat Contract v1 `ConversationSnapshotResult` document the query produced -- conversation, resolved active branch path and actor view state -- carried opaquely for the same reason the request is, and echoed with the conversation it answers. A snapshot is a complete authoritative read at one revision, not a continuation, so there is no cursor to honour and no resnapshot branch to signal.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation this snapshot answers. Echoes the request."
+        },
+        "snapshot": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ConversationSnapshotResult` document, carried verbatim."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "snapshot"
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

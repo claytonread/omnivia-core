@@ -54,7 +54,9 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # 0024 and 0025 are the next materialized Agent Runtime candidates. 0026 is the
 # materialized Context Models candidate. 0027 is the materialized Workflow Runtime
 # candidate. 0028 is the materialized Provider Service candidate. 0029 is the
-# materialized Chat foundation candidate.
+# materialized Chat foundation candidate, and 0030 its materialized Chat
+# successor -- the recovery and queue projections the post-0029 Chat successor
+# decision (Clayton Read) authorises the Chat lane to take next.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -68,6 +70,7 @@ EXPECTED_ALLOCATION = (
     (27, "0027_workflow_runs.sql", "Workflow Runtime", "candidate"),
     (28, "0028_provider_invocations.sql", "Provider Service", "candidate"),
     (29, "0029_chat_foundation.sql", "Chat", "candidate"),
+    (30, "0030_chat_recovery_and_queue_projections.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -80,6 +83,12 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 # The two already-replayed FND-F3 candidates' exact introducing commits, each
 # pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
 # neither carries an accepted_commit.
+#: The placeholder a candidate carries between "the migration file exists" and
+#: "the commit that introduced it exists". Well-formed, so `check()` passes on
+#: shape; not a commit in this repository, so `check_history` fails closed and
+#: names it rather than letting an unpinned migration through quietly.
+PENDING_INTRODUCED_COMMIT = "0" * 40
+
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -90,6 +99,14 @@ CANDIDATE_INTRODUCED_COMMITS = {
     27: "348bb389f4b5a7b27769ba5224afb43031a6127f",
     28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
     29: "192e88b28a89c6740b302cc3646d732f45086c70",
+    # 0030 is a candidate whose introducing commit does not exist yet: the file
+    # and this claim land in the same change, and the commit that carries them
+    # cannot be named from inside itself. `PENDING_INTRODUCED_COMMIT` is the
+    # deliberate placeholder the acceptance step replaces with the real commit,
+    # exactly as every candidate above was claimed one commit after the
+    # migration it pins. Until that repin, `check_history` reports this one
+    # allocation and nothing else.
+    30: PENDING_INTRODUCED_COMMIT,
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a

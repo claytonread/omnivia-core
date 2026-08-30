@@ -1251,7 +1251,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 22 application operations, in the frozen code-point order. Runtime
+#: The exact 23 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1270,6 +1270,10 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "chat.events": FrozenOperation(
         "workspace", ("chat:read",), "none", "chat.read",
         "chat", "ChatEvents", "JOB_EVENTS", False,
+    ),
+    "chat.snapshot": FrozenOperation(
+        "workspace", ("chat:read",), "none", "chat.read",
+        "chat", "ChatSnapshot", "POINT_READ", False,
     ),
     "context_pack.build": FrozenOperation(
         "workspace", ("memory:read",), "none", "context_pack.build",

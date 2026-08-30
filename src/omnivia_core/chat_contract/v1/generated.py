@@ -7,7 +7,7 @@
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
 #   proposal content-set inventory SHA-256 521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2;
-#   fixture manifest SHA-256 7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54;
+#   fixture manifest SHA-256 95c02837595d0ba370a13ee3b2b035dd7c2259cc55b1e9f50dff5f6144ce9f4f;
 #   effective Architecture release tag architecture-v1.4.0;
 #   effective payload commit eb14159d73c8d9339cfeb347f8de61bd67497974.
 # Generator:
@@ -81,7 +81,7 @@ PROPOSAL_COMMIT: Final[str] = '04c0b2f768b8a74c515936e548c4a28fa4af514d'
 #: SHA-256 of the proposal's own ``PROPOSAL-SHA256SUMS.txt`` inventory file.
 PROPOSAL_CONTENT_SET_INVENTORY_SHA256: Final[str] = '521893fefc9d33f5507e5bde84be12713359fe1c4ec041164280096b797e2bf2'
 #: SHA-256 of ``fixtures/FIXTURE-MANIFEST.json`` at the approved bytes.
-FIXTURE_MANIFEST_SHA256: Final[str] = '7936bf32da76a66c7d479217588f56c4af20b0ed01001330dd6bc2a6d1329a54'
+FIXTURE_MANIFEST_SHA256: Final[str] = '95c02837595d0ba370a13ee3b2b035dd7c2259cc55b1e9f50dff5f6144ce9f4f'
 #: The Masterdocs Git tag this copy was read through.
 EFFECTIVE_ARCHITECTURE_TAG: Final[str] = 'architecture-v1.4.0'
 #: The exact Masterdocs payload commit ``EFFECTIVE_ARCHITECTURE_TAG`` resolves to.
@@ -97,12 +97,12 @@ PROTOCOL_MAJOR: Final[str] = '1'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 158 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 159
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 159 governed fixtures).
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 160
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '9a633eb9cdb81e6f586f904c493ac405a535d8da2198561358e940ecb60b090a'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '07c044f05786fb803e5a809eabe1aad9a6e00bbf51c5c9040d530aaec55f0c51'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (

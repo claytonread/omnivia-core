@@ -139,6 +139,17 @@
       "sha256": "56419928e082dbb8d8ef0084c4eed374c742b038b02ec35f0a7477b94225a946",
       "introduced_commit": "192e88b28a89c6740b302cc3646d732f45086c70",
       "accepted_commit": null
+    },
+    {
+      "number": 30,
+      "filename": "0030_chat_recovery_and_queue_projections.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 29,
+      "sha256": "2cac4501ac87186f60d38c5c8df3dbe0150ffe4ad0e0b4f954590c5de0c36850",
+      "introduced_commit": "0000000000000000000000000000000000000000",
+      "accepted_commit": null
     }
   ]
 }

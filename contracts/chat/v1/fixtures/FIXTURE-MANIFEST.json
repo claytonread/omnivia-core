@@ -5,8 +5,8 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 158,
-    "valid": 75,
+    "total": 159,
+    "valid": 76,
     "invalid": 83
   },
   "fixtures": [
@@ -189,6 +189,12 @@
       "path": "fixtures/valid/generation-job-succeeded.json",
       "expect": "valid",
       "focus": "GenerationJob reaching succeeded state with a linked resultMessageId.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob"
+    },
+    {
+      "path": "fixtures/valid/generation-job-retryable.json",
+      "expect": "valid",
+      "focus": "GenerationJob whose latest Attempt failed, projected as the non-terminal retryable state with no resultMessageId.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob"
     },
     {

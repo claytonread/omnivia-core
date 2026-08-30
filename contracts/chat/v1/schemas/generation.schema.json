@@ -7,7 +7,7 @@
   "$defs": {
     "GenerationJob": {
       "title": "GenerationJob",
-      "description": "Distinct from the final Message record it may produce (REF-042 §7.9, REF042-RULE-008). A failed Attempt does not require a failed assistant Message; the branch may remain headed by the triggering user Message (REF-042 §17.4).",
+      "description": "Distinct from the final Message record it may produce (REF-042 §7.9, REF042-RULE-008). A failed Attempt does not require a failed assistant Message; the branch may remain headed by the triggering user Message (REF-042 §17.4). A failed Attempt may project the still-open Job as `retryable` -- a non-terminal state naming that a further Attempt is admissible -- while final Job `failed` remains terminal and is never reopened.",
       "type": "object",
       "additionalProperties": false,
       "required": ["branchId", "conversationId", "createdAt", "graphRevisionObserved", "jobId", "schemaVersion", "state", "triggerMessageId", "updatedAt", "workspaceId"],
@@ -35,7 +35,7 @@
     },
     "GenerationAttempt": {
       "title": "GenerationAttempt",
-      "description": "One bounded execution attempt for one Generation Job, conceptually aligned to the DOC-005 §4.12 Attempt pattern by concept, not by shared schema. A retry creates a new Attempt identity (DOC-005 §4.12, DRT-INV-025) rather than reopening a terminal Job.",
+      "description": "One bounded execution attempt for one Generation Job, conceptually aligned to the DOC-005 §4.12 Attempt pattern by concept, not by shared schema. A retry creates a new Attempt identity (DOC-005 §4.12, DRT-INV-025) rather than reopening a terminal Job. The Attempt state vocabulary is unchanged: this projection composes the Attempt's durable start with its single terminal outcome fact, so `state` is `running` until that outcome exists and `endedAt` is the end timestamp the outcome binds.",
       "type": "object",
       "additionalProperties": false,
       "required": ["attemptId", "conversationId", "jobId", "schemaVersion", "startedAt", "state", "workspaceId"],

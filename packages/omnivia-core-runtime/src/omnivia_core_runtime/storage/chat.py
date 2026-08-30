@@ -1,4 +1,4 @@
-"""Durable repository over the Chat foundation tables (migration 0029, W2-R).
+"""Durable repository over the Chat foundation tables (migrations 0029 and 0030, W2-R).
 
 Row-oriented, not service-shaped: every public function reads or writes exactly
 one table's rows, using the caller-supplied identifiers and values migration 0029
@@ -40,6 +40,24 @@ and requires the stored bytes to match it exactly, so a file edited outside this
 database's own guards -- the case 0029's `CHECK` constraints do not run again on
 read -- fails with :class:`StorageError` rather than returning something that
 merely parses.
+
+Migration 0030 adds three successor projections and this module reaches them the
+same way. Two are append-only facts -- the terminal Generation Attempt outcome
+and durable generation text chunks -- and the third, the per-conversation queue
+order, is a compare-and-set projection keyed by its own `version`.
+
+Two of the reads here are *composed* rather than row-oriented, because the thing
+they answer is not one table's row. :func:`read_effective_generation_job` answers
+what a Job's state actually is: 0029's base row plus its Attempts plus each
+Attempt's terminal outcome fact. A Job whose base row is still `running` and
+whose latest Attempt failed projects as the non-terminal `retryable`; appending
+the next Attempt projects it as `running` again; a base terminal Job stays
+terminal and never projects `retryable`. :func:`read_effective_queue_order`
+answers what order a conversation's queue is actually in: the 0030 projection
+where one exists, then every queued submission the projection does not name, in
+0029's immutable `queue_sequence` order. Both fall back cleanly on a database
+that has 0030's tables but no rows in them -- which is every workspace upgraded
+from 0029 -- and neither invents a row the successor tables do not hold.
 """
 
 from __future__ import annotations
@@ -58,18 +76,26 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError
 
 __all__ = [
+    "MAX_CHUNK_BATCH",
+    "MAX_QUEUE_ORDER_MEMBERS",
     "Branch",
     "BranchHeadEvent",
     "ChatWriter",
     "Conversation",
+    "ConversationSnapshotInputs",
     "Draft",
+    "EffectiveAttempt",
+    "EffectiveJob",
     "GenerationAttempt",
+    "GenerationAttemptOutcome",
+    "GenerationChunk",
     "GenerationEvent",
     "GenerationJob",
     "Message",
     "MessageDerivation",
     "MessagePart",
     "OutboxEntry",
+    "QueueOrder",
     "QueuedSubmission",
     "StaleVersion",
     "ViewState",
@@ -77,6 +103,8 @@ __all__ = [
     "append_branch_head_event",
     "append_conversation",
     "append_generation_attempt",
+    "append_generation_attempt_outcome",
+    "append_generation_chunks",
     "append_generation_event",
     "append_generation_job",
     "append_message",
@@ -86,12 +114,19 @@ __all__ = [
     "append_queued_submission",
     "chat_writer",
     "insert_draft",
+    "insert_queue_order",
     "insert_view_state",
     "read_active_draft",
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
     "read_conversation",
+    "read_conversation_snapshot_inputs",
+    "read_effective_generation_job",
+    "read_effective_queue_order",
+    "read_generation_attempt_outcome",
+    "read_generation_attempts",
+    "read_generation_chunks",
     "read_generation_events",
     "read_generation_job",
     "read_message_parts",
@@ -99,6 +134,7 @@ __all__ = [
     "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
+    "read_queue_order",
     "read_queued_submission",
     "transaction_local_writer",
     "update_branch_head",
@@ -106,9 +142,22 @@ __all__ = [
     "update_draft",
     "update_generation_job",
     "update_outbox_delivery",
+    "update_queue_order",
     "update_queued_submission",
     "update_view_state",
 ]
+
+#: The largest chunk batch one call may append. 0030 bounds each chunk's bytes;
+#: this bounds how many a single fenced write may carry, so a caller streaming a
+#: long generation commits bounded batches rather than one unbounded transaction.
+MAX_CHUNK_BATCH = 256
+
+#: 0030's own bound on a queue order's member count, restated here so a caller is
+#: refused before the write rather than by the trigger.
+MAX_QUEUE_ORDER_MEMBERS = 1000
+
+#: The Job states 0029 writes and never reopens.
+_TERMINAL_JOB_STATES = frozenset({"succeeded", "failed", "cancelled"})
 
 
 class StaleVersion(StorageError):
@@ -177,6 +226,28 @@ def _verified_json_array(text: object, label: str) -> tuple[Any, ...]:
     if canonical != document:
         raise StorageError(f"a stored {label} is not canonical JSON")
     return tuple(decoded)
+
+
+def _canonical_queue_order(order: Sequence[str]) -> str:
+    """`order` as the exact canonical JSON array 0030's trigger will compare against.
+
+    Refused here rather than only in SQL where the refusal can name the caller's
+    mistake: a queue order is a bounded sequence of distinct submission ids, and
+    a duplicate or a non-string member is a caller error, not a storage one.
+    """
+    if isinstance(order, (str, bytes, bytearray, Mapping)) or not isinstance(order, Sequence):
+        raise StorageError("a chat queue order requires a sequence of submission identifiers")
+    members = list(order)
+    if not members or len(members) > MAX_QUEUE_ORDER_MEMBERS:
+        raise StorageError(
+            f"a chat queue order carries between 1 and {MAX_QUEUE_ORDER_MEMBERS} "
+            f"submissions, got {len(members)}"
+        )
+    if not all(isinstance(member, str) for member in members):
+        raise StorageError("a chat queue order carries submission identifiers as strings")
+    if len(set(members)) != len(members):
+        raise StorageError("a chat queue order names a submission more than once")
+    return _canonical_json_array(members)
 
 
 def _require_cas_match(cursor: sqlite3.Cursor, label: str, identifier: str) -> None:
@@ -425,6 +496,125 @@ class OutboxEntry:
     delivered_at_us: int | None
     retained_until_us: int | None
     created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationAttemptOutcome:
+    """0030's single terminal fact for one Attempt.
+
+    0029 writes an Attempt's durable start and can never revise it, so this is
+    where an Attempt's end lives: exactly one outcome per Attempt, its display-
+    safe classification where it failed or was cancelled, and the end timestamp
+    it binds.
+    """
+
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    outcome: str
+    error_class: str | None
+    error_detail: str | None
+    schema_version: int
+    ended_at_us: int
+    recorded_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationChunk:
+    workspace_id: str
+    conversation_id: str
+    generation_job_id: str
+    generation_attempt_id: str
+    chunk_ordinal: int
+    provider_event_id: str | None
+    text_content: str
+    schema_version: int
+    created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveAttempt:
+    """One Attempt as the public GenerationAttempt projection sees it.
+
+    `attempt` is 0029's immutable start row and `outcome` is 0030's terminal fact
+    where one has been appended. An Attempt written terminal under 0029 alone --
+    every pre-0030 record -- carries no outcome row and reads from its own row,
+    which is why `state` and `ended_at_us` are derived rather than read from one
+    place.
+    """
+
+    attempt: GenerationAttempt
+    outcome: GenerationAttemptOutcome | None
+
+    @property
+    def state(self) -> str:
+        return self.attempt.state if self.outcome is None else self.outcome.outcome
+
+    @property
+    def ended_at_us(self) -> int | None:
+        return self.attempt.ended_at_us if self.outcome is None else self.outcome.ended_at_us
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.state != "running"
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveJob:
+    """One Job's base row and the state it actually projects.
+
+    `state` is `job.state` except in one case: a Job whose base row is still
+    `running` and whose latest Attempt failed projects the non-terminal
+    `retryable`. Nothing here writes that state -- 0029's `state` column and its
+    transition trigger are untouched -- and a base terminal Job never projects
+    it.
+    """
+
+    job: GenerationJob
+    state: str
+    attempts: tuple[EffectiveAttempt, ...]
+
+    @property
+    def latest_attempt(self) -> EffectiveAttempt | None:
+        return self.attempts[-1] if self.attempts else None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.job.state in _TERMINAL_JOB_STATES
+
+    @property
+    def is_retryable(self) -> bool:
+        return self.state == "retryable"
+
+
+@dataclass(frozen=True, slots=True)
+class QueueOrder:
+    workspace_id: str
+    conversation_id: str
+    order: tuple[str, ...]
+    version: int
+    created_at_us: int
+    updated_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSnapshotInputs:
+    """Everything a Conversation snapshot is composed from, read at one revision.
+
+    The rows, not the contract document: this module owns no Chat Contract shape,
+    so the later handler is what turns these into a `ConversationSnapshotResult`.
+    `path` is the branch's real message path -- the parent chain walked back from
+    the branch head and reversed -- rather than every message that happens to name
+    the branch, because that chain is what the snapshot publishes.
+    """
+
+    conversation: Conversation
+    branch: Branch | None
+    view_state: ViewState | None
+    path: tuple[Message, ...]
+    parts_by_message_id: Mapping[str, tuple[MessagePart, ...]]
+    generation_job_ids: tuple[str, ...]
 
 
 # --- writer -----------------------------------------------------------------------
@@ -966,7 +1156,153 @@ class ChatWriter:
             ),
         )
 
+    def append_generation_attempt_outcome(
+        self,
+        *,
+        generation_attempt_id: str,
+        conversation_id: str,
+        generation_job_id: str,
+        outcome: str,
+        schema_version: int,
+        ended_at_us: int,
+        recorded_at_us: int,
+        error_class: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        """Append the one terminal fact for an Attempt.
+
+        0030 holds the rest: exactly one outcome per Attempt, a classification
+        required for `failed` and `cancelled` and forbidden for `succeeded`, an
+        end that cannot precede the Attempt's start, and a refusal for an Attempt
+        0029 already wrote terminal.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_generation_attempt_outcomes "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "outcome, error_class, error_detail, schema_version, ended_at_us, "
+            "recorded_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                generation_job_id,
+                generation_attempt_id,
+                outcome,
+                error_class,
+                error_detail,
+                schema_version,
+                ended_at_us,
+                recorded_at_us,
+            ),
+        )
+
+    def append_generation_chunks(
+        self,
+        *,
+        generation_attempt_id: str,
+        conversation_id: str,
+        generation_job_id: str,
+        first_ordinal: int,
+        chunks: Sequence[tuple[str, str | None]],
+        schema_version: int,
+        created_at_us: int,
+    ) -> None:
+        """Append one bounded batch of durable text chunks, in ordinal order.
+
+        `chunks` is `(text_content, provider_event_id)` pairs assigned ordinals
+        from `first_ordinal` upwards, and the batch shares one `created_at_us`
+        because it shares one commit. 0030 requires the ordinals to be contiguous
+        from one within the Attempt, deduplicates on `provider_event_id` where
+        the provider supplied one, and refuses any chunk once the Attempt has a
+        terminal outcome -- so a caller never needs a per-token transaction to
+        keep the stream honest, only a bounded batch per fenced write.
+        """
+        if not chunks:
+            raise StorageError("a chat generation chunk batch must carry at least one chunk")
+        if len(chunks) > MAX_CHUNK_BATCH:
+            raise StorageError(
+                f"a chat generation chunk batch carries at most {MAX_CHUNK_BATCH} chunks, "
+                f"got {len(chunks)}"
+            )
+        self.connection.executemany(
+            "INSERT INTO omnivia_chat_generation_chunks "
+            "(workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+            "chunk_ordinal, provider_event_id, text_content, schema_version, created_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    self.workspace_id,
+                    conversation_id,
+                    generation_job_id,
+                    generation_attempt_id,
+                    first_ordinal + offset,
+                    provider_event_id,
+                    text_content,
+                    schema_version,
+                    created_at_us,
+                )
+                for offset, (text_content, provider_event_id) in enumerate(chunks)
+            ],
+        )
+
+    def insert_queue_order(
+        self,
+        *,
+        conversation_id: str,
+        order: Sequence[str],
+        created_at_us: int,
+    ) -> None:
+        """First write of one conversation's queue order; later writes are
+        :meth:`update_queue_order`.
+
+        0030 requires the first write to be version one with `updated_at_us`
+        equal to `created_at_us`, so both are fixed here rather than accepted as
+        parameters a caller could get wrong.
+        """
+        self.connection.execute(
+            "INSERT INTO omnivia_chat_queued_submission_order "
+            "(workspace_id, conversation_id, order_json, version, created_at_us, "
+            "updated_at_us) VALUES (?, ?, ?, 1, ?, ?)",
+            (
+                self.workspace_id,
+                conversation_id,
+                _canonical_queue_order(order),
+                created_at_us,
+                created_at_us,
+            ),
+        )
+
     # --- compare-and-set: mutable projections ------------------------------------
+
+    def update_queue_order(
+        self,
+        *,
+        conversation_id: str,
+        expected_version: int,
+        order: Sequence[str],
+        updated_at_us: int,
+    ) -> None:
+        """Reorder a conversation's queue: one row, one compare-and-set, no partial
+        reorder to observe.
+
+        The whole order moves or none of it does, because the whole order is one
+        value under one `version`. 0030 separately refuses an order naming a
+        submission that is no longer `queued`, so a claimed or terminal submission
+        cannot be moved regardless of whether the expected version matched.
+        """
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_queued_submission_order SET order_json = ?, version = ?, "
+            "updated_at_us = ? "
+            "WHERE workspace_id = ? AND conversation_id = ? AND version = ?",
+            (
+                _canonical_queue_order(order),
+                expected_version + 1,
+                updated_at_us,
+                self.workspace_id,
+                conversation_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "queue order", conversation_id)
 
     def update_conversation(
         self,
@@ -1448,6 +1784,62 @@ def append_outbox_entry(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
         writer.append_outbox_entry(**fields)
+
+
+def append_generation_attempt_outcome(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_attempt_outcome(**fields)
+
+
+def append_generation_chunks(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_chunks(**fields)
+
+
+def insert_queue_order(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.insert_queue_order(**fields)
+
+
+def update_queue_order(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_queue_order(**fields)
 
 
 def update_conversation(
@@ -2049,3 +2441,339 @@ def read_outbox_events_since(
         (workspace_id, after_cursor, limit),
     ).fetchall()
     return tuple(_outbox_entry_from_row(row) for row in rows)
+
+
+# --- 0030 successor projections ---------------------------------------------------
+
+_GENERATION_ATTEMPT_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "attempt_number, retry_of_attempt_id, state, provider_invocation_id, "
+    "schema_version, started_at_us, ended_at_us"
+)
+
+
+def _generation_attempt_from_row(row: tuple[Any, ...]) -> GenerationAttempt:
+    return GenerationAttempt(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        attempt_number=row[4],
+        retry_of_attempt_id=row[5],
+        state=row[6],
+        provider_invocation_id=row[7],
+        schema_version=row[8],
+        started_at_us=row[9],
+        ended_at_us=row[10],
+    )
+
+
+def read_generation_attempts(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> tuple[GenerationAttempt, ...]:
+    """One Job's Attempts in `attempt_number` order -- 0029's contiguous sequence."""
+    rows = connection.execute(
+        f"SELECT {_GENERATION_ATTEMPT_COLUMNS} FROM omnivia_chat_generation_attempts "
+        "WHERE workspace_id = ? AND generation_job_id = ? ORDER BY attempt_number",
+        (workspace_id, generation_job_id),
+    ).fetchall()
+    return tuple(_generation_attempt_from_row(row) for row in rows)
+
+
+_ATTEMPT_OUTCOME_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "outcome, error_class, error_detail, schema_version, ended_at_us, recorded_at_us"
+)
+
+
+def _attempt_outcome_from_row(row: tuple[Any, ...]) -> GenerationAttemptOutcome:
+    return GenerationAttemptOutcome(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        outcome=row[4],
+        error_class=row[5],
+        error_detail=row[6],
+        schema_version=row[7],
+        ended_at_us=row[8],
+        recorded_at_us=row[9],
+    )
+
+
+def read_generation_attempt_outcome(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> GenerationAttemptOutcome | None:
+    row = connection.execute(
+        f"SELECT {_ATTEMPT_OUTCOME_COLUMNS} FROM omnivia_chat_generation_attempt_outcomes "
+        "WHERE workspace_id = ? AND generation_attempt_id = ?",
+        (workspace_id, generation_attempt_id),
+    ).fetchone()
+    return None if row is None else _attempt_outcome_from_row(row)
+
+
+_GENERATION_CHUNK_COLUMNS = (
+    "workspace_id, conversation_id, generation_job_id, generation_attempt_id, "
+    "chunk_ordinal, provider_event_id, text_content, schema_version, created_at_us"
+)
+
+
+def _generation_chunk_from_row(row: tuple[Any, ...]) -> GenerationChunk:
+    return GenerationChunk(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        generation_job_id=row[2],
+        generation_attempt_id=row[3],
+        chunk_ordinal=row[4],
+        provider_event_id=row[5],
+        text_content=row[6],
+        schema_version=row[7],
+        created_at_us=row[8],
+    )
+
+
+def read_generation_chunks(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    generation_attempt_id: str,
+    after_ordinal: int = 0,
+    limit: int = 256,
+) -> tuple[GenerationChunk, ...]:
+    """One Attempt's durable chunks after an ordinal, in ordinal order.
+
+    Bounded by `limit` and continued by `after_ordinal`, so replaying a long
+    generation is a series of bounded reads rather than one unbounded one.
+    `limit` is refused outside 1..`MAX_CHUNK_BATCH` rather than passed to SQL,
+    where SQLite reads a non-positive `LIMIT` as unbounded.
+    """
+    if after_ordinal < 0:
+        raise StorageError(f"after_ordinal must be >= 0, got {after_ordinal}")
+    if not 1 <= limit <= MAX_CHUNK_BATCH:
+        raise StorageError(f"limit must be between 1 and {MAX_CHUNK_BATCH}, got {limit}")
+    rows = connection.execute(
+        f"SELECT {_GENERATION_CHUNK_COLUMNS} FROM omnivia_chat_generation_chunks "
+        "WHERE workspace_id = ? AND generation_attempt_id = ? AND chunk_ordinal > ? "
+        "ORDER BY chunk_ordinal LIMIT ?",
+        (workspace_id, generation_attempt_id, after_ordinal, limit),
+    ).fetchall()
+    return tuple(_generation_chunk_from_row(row) for row in rows)
+
+
+def read_effective_generation_job(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_job_id: str
+) -> EffectiveJob | None:
+    """One Job's base row, its Attempts and the state it actually projects.
+
+    The one derived state is `retryable`: the base row still says `running`, the
+    latest Attempt has a failed terminal outcome, and a further Attempt is
+    therefore admissible. Appending that Attempt makes the latest Attempt
+    `running` again and the Job projects `running`. A base terminal Job is
+    returned with its own terminal state and never projects `retryable`, so a
+    caller reading this cannot mistake a closed Job for a retryable one.
+    """
+    job = read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        return None
+
+    attempts = tuple(
+        EffectiveAttempt(
+            attempt=attempt,
+            outcome=read_generation_attempt_outcome(
+                connection,
+                workspace_id=workspace_id,
+                generation_attempt_id=attempt.generation_attempt_id,
+            ),
+        )
+        for attempt in read_generation_attempts(
+            connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+        )
+    )
+
+    state = job.state
+    if state == "running" and attempts and attempts[-1].state == "failed":
+        state = "retryable"
+    return EffectiveJob(job=job, state=state, attempts=attempts)
+
+
+_QUEUE_ORDER_COLUMNS = (
+    "workspace_id, conversation_id, order_json, version, created_at_us, updated_at_us"
+)
+
+
+def _queue_order_from_row(row: tuple[Any, ...]) -> QueueOrder:
+    members = _verified_json_array(row[2], "chat queue order")
+    if not all(isinstance(member, str) for member in members):
+        raise StorageError("a stored chat queue order names a non-string submission identifier")
+    return QueueOrder(
+        workspace_id=row[0],
+        conversation_id=row[1],
+        order=tuple(members),
+        version=row[3],
+        created_at_us=row[4],
+        updated_at_us=row[5],
+    )
+
+
+def read_queue_order(
+    connection: sqlite3.Connection, *, workspace_id: str, conversation_id: str
+) -> QueueOrder | None:
+    """One conversation's queue-order projection, or None where none was written.
+
+    None is not disorder: a conversation with no projection row reads in 0029's
+    immutable `queue_sequence` order, which is what :func:`read_effective_queue_order`
+    does with this answer.
+    """
+    row = connection.execute(
+        f"SELECT {_QUEUE_ORDER_COLUMNS} FROM omnivia_chat_queued_submission_order "
+        "WHERE workspace_id = ? AND conversation_id = ?",
+        (workspace_id, conversation_id),
+    ).fetchone()
+    return None if row is None else _queue_order_from_row(row)
+
+
+def read_effective_queue_order(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    limit: int = 100,
+) -> tuple[QueuedSubmission, ...]:
+    """A conversation's queued submissions in the order they will actually be taken.
+
+    Projection order first, for every member the projection names that is still
+    queued, then every other queued submission in `queue_sequence` order. Both
+    halves are total and deterministic, and a workspace that has never written a
+    projection row gets exactly 0029's creation order -- which is what every
+    database upgraded from 0029 holds.
+
+    A member the projection names that is no longer queued is simply absent: the
+    read never resurrects a claimed or terminal submission, and never fabricates
+    a row for an id the queue does not hold.
+
+    `limit` slices the ordered result, not the rows the order is computed from --
+    otherwise a projection that moved the tenth submission to the front would
+    drop it from a five-row read. The row read is bounded regardless, by the same
+    constant 0030 bounds a projection's membership with.
+    """
+    if not 1 <= limit <= MAX_QUEUE_ORDER_MEMBERS:
+        raise StorageError(
+            f"limit must be between 1 and {MAX_QUEUE_ORDER_MEMBERS}, got {limit}"
+        )
+    rows = connection.execute(
+        f"SELECT {_QUEUED_SUBMISSION_COLUMNS} FROM omnivia_chat_queued_submissions "
+        "WHERE workspace_id = ? AND conversation_id = ? AND state = 'queued' "
+        "ORDER BY queue_sequence, queued_submission_id LIMIT ?",
+        (workspace_id, conversation_id, MAX_QUEUE_ORDER_MEMBERS),
+    ).fetchall()
+    queued = {
+        submission.queued_submission_id: submission
+        for submission in (_queued_submission_from_row(row) for row in rows)
+    }
+
+    projection = read_queue_order(
+        connection, workspace_id=workspace_id, conversation_id=conversation_id
+    )
+    named = [] if projection is None else [i for i in projection.order if i in queued]
+    already = set(named)
+    ordered = (*named, *(i for i in queued if i not in already))
+    return tuple(queued[identifier] for identifier in ordered[:limit])
+
+
+def read_conversation_snapshot_inputs(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    device_id: str = "",
+    branch_id: str | None = None,
+    max_path_messages: int = 200,
+) -> ConversationSnapshotInputs | None:
+    """Every row an authoritative Conversation snapshot is composed from.
+
+    Workspace-scoped throughout, and None for a conversation this workspace does
+    not hold -- the same answer :func:`read_conversation` already gives, so this
+    is no wider an existence oracle than the read it starts from.
+
+    The branch is the caller's `branch_id`, else the actor's active branch, else
+    the conversation's default branch. The path is that branch's head walked back
+    through `parent_message_id` and reversed, bounded by `max_path_messages`; a
+    chain longer than the bound is truncated at its oldest end, so the newest
+    messages -- the ones a snapshot exists to show -- are always present.
+    """
+    if not 1 <= max_path_messages <= 200:
+        raise StorageError(
+            f"max_path_messages must be between 1 and 200, got {max_path_messages}"
+        )
+    conversation = read_conversation(
+        connection, workspace_id=workspace_id, conversation_id=conversation_id
+    )
+    if conversation is None:
+        return None
+
+    view_state = read_actor_view_state(
+        connection,
+        workspace_id=workspace_id,
+        conversation_id=conversation_id,
+        actor_id=actor_id,
+        device_id=device_id,
+    )
+    selected = branch_id
+    if selected is None and view_state is not None:
+        selected = view_state.active_branch_id
+    if selected is None:
+        selected = conversation.default_branch_id
+
+    branch = (
+        None
+        if selected is None
+        else read_branch(connection, workspace_id=workspace_id, branch_id=selected)
+    )
+    if branch is not None and branch.conversation_id != conversation_id:
+        branch = None
+
+    path: list[Message] = []
+    if branch is not None:
+        message_id: str | None = branch.current_head_message_id
+        seen: set[str] = set()
+        while message_id is not None and len(path) < max_path_messages:
+            if message_id in seen:
+                break
+            seen.add(message_id)
+            row = connection.execute(
+                f"SELECT {_MESSAGE_COLUMNS} FROM omnivia_chat_messages "
+                "WHERE workspace_id = ? AND conversation_id = ? AND message_id = ?",
+                (workspace_id, conversation_id, message_id),
+            ).fetchone()
+            if row is None:
+                break
+            message = _message_from_row(row)
+            path.append(message)
+            message_id = message.parent_message_id
+    path.reverse()
+
+    parts = {
+        message.message_id: read_message_parts(
+            connection, workspace_id=workspace_id, message_id=message.message_id
+        )
+        for message in path
+    }
+    job_ids = tuple(
+        dict.fromkeys(
+            message.generation_job_id
+            for message in path
+            if message.generation_job_id is not None
+        )
+    )
+
+    return ConversationSnapshotInputs(
+        conversation=conversation,
+        branch=branch,
+        view_state=view_state,
+        path=tuple(path),
+        parts_by_message_id=MappingProxyType(parts),
+        generation_job_ids=job_ids,
+    )
