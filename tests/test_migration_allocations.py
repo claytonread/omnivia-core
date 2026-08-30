@@ -83,12 +83,6 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 # The two already-replayed FND-F3 candidates' exact introducing commits, each
 # pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
 # neither carries an accepted_commit.
-#: The placeholder a candidate carries between "the migration file exists" and
-#: "the commit that introduced it exists". Well-formed, so `check()` passes on
-#: shape; not a commit in this repository, so `check_history` fails closed and
-#: names it rather than letting an unpinned migration through quietly.
-PENDING_INTRODUCED_COMMIT = "0" * 40
-
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -99,14 +93,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     27: "348bb389f4b5a7b27769ba5224afb43031a6127f",
     28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
     29: "192e88b28a89c6740b302cc3646d732f45086c70",
-    # 0030 is a candidate whose introducing commit does not exist yet: the file
-    # and this claim land in the same change, and the commit that carries them
-    # cannot be named from inside itself. `PENDING_INTRODUCED_COMMIT` is the
-    # deliberate placeholder the acceptance step replaces with the real commit,
-    # exactly as every candidate above was claimed one commit after the
-    # migration it pins. Until that repin, `check_history` reports this one
-    # allocation and nothing else.
-    30: PENDING_INTRODUCED_COMMIT,
+    30: "8b62f51c891f69f8de1770e00ae6a18935758ddc",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
