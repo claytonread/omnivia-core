@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from omnivia_core.chat_contract.v1 import CHAT_COMMAND_NAMES
+from omnivia_core.chat_contract.v1 import CHAT_COMMAND_NAMES, ChatEvent
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
     ERROR_CODE_INTERNAL_NON_RECOVERABLE,
@@ -74,7 +74,11 @@ from omnivia_core_runtime.service.operations import (
     OperationError,
     application_refusal,
 )
-from omnivia_core_runtime.storage.chat import GenerationEvent
+from omnivia_core_runtime.storage.chat import (
+    GenerationEvent,
+    GenerationTextChunk,
+    read_generation_text_chunks,
+)
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 
 CHAT_COMMAND_OPERATION: Final = "chat.command"
@@ -91,6 +95,12 @@ _MESSAGE_NO_STORAGE: Final = (
 _MESSAGE_NO_COMMAND: Final = (
     "this build serves no implementation of the chat command this request names"
 )
+_TEXT_APPENDED: Final = "chat.generation.text_appended"
+#: `ChatEventsResult.events` and `.transport_events` are both `maxItems: 1000`, so
+#: one page is the first 1000 of the replayed suffix and the last cursor it returns
+#: is what the caller continues from. Not a new pagination field: the cursor the
+#: envelope already carries is the continuation it has always been.
+_MAX_EVENTS: Final = 1000
 _GENERATION_EXECUTOR_COMMANDS: Final = frozenset(
     {SUBMIT_MESSAGE_COMMAND, RETRY_GENERATION_COMMAND}
 )
@@ -126,6 +136,81 @@ def _event(event: GenerationEvent) -> ChatGenerationEvent:
         occurred_at=_timestamp(event.occurred_at_us),
         payload=dict(event.payload) or None,
     )
+
+
+def _transport_event(
+    event: GenerationEvent, chunks: Mapping[tuple[str, int], GenerationTextChunk]
+) -> Mapping[str, Any]:
+    """One durable event as the *Chat* contract states it, or nothing at all.
+
+    The Application projection above and this one answer for the same position and
+    are not the same document: `_event` is the sanitised lifecycle view the envelope
+    has always carried, and this is the exact `events.schema.json` transport event.
+    Construction goes through :class:`ChatEvent`, which validates the emitted
+    document against that event type's own closed branch, so a field the type does
+    not define, a required one missing, and a governed field of the wrong type are
+    all refused here rather than published.
+
+    Only the identities the event type governs are projected. The durable
+    `payload` -- provider event type, provider event id -- is never one of them, so
+    no provider metadata, hash, endpoint, model or raw body crosses this seam. The
+    generated text is the one exception the contract does define, and it is read
+    from the chunk that holds it, never from a payload that has never carried it.
+    """
+    fields: dict[str, Any] = {
+        "branchId": event.branch_id,
+        "generationJobId": event.generation_job_id,
+        "triggerMessageId": event.trigger_message_id,
+        "generationEventSequence": event.generation_event_sequence,
+    }
+    if event.generation_attempt_id is not None:
+        fields["generationAttemptId"] = event.generation_attempt_id
+    if event.result_message_id is not None:
+        fields["resultMessageId"] = event.result_message_id
+    if event.event_type == _TEXT_APPENDED:
+        ordinal = event.payload.get("chunkOrdinal")
+        if (
+            event.generation_attempt_id is None
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+        ):
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        chunk = chunks.get((event.generation_attempt_id, ordinal))
+        # The chunk is the only place the text is, and the provider event identity is
+        # what says this event orders *that* chunk. A missing chunk, or one written
+        # under a different provider event, is a torn history rather than a stream
+        # this handler may guess the text of.
+        if chunk is None or chunk.provider_event_id != event.provider_event_id:
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        # The payload states the same identity when it states it at all. Older durable
+        # history predates the key, so its absence is history rather than a tear; a
+        # key that is present but is not exactly the row's provider event id is a torn
+        # history. It stays out of `fields` either way: corroboration, not something
+        # this seam publishes.
+        if "providerEventId" in event.payload and (
+            not isinstance(event.payload["providerEventId"], str)
+            or event.payload["providerEventId"] != event.provider_event_id
+        ):
+            raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
+        fields["chunkOrdinal"] = ordinal
+        fields["textDelta"] = chunk.text_content
+    try:
+        return ChatEvent(
+            event_id=event.event_id,
+            event_type=event.event_type,
+            schema_version=event.schema_version,
+            workspace_id=event.workspace_id,
+            conversation_id=event.conversation_id,
+            occurred_at=_timestamp(event.occurred_at_us),
+            cursor=event.cursor,
+            fields=fields,
+        ).to_wire()
+    except (TypeError, ValueError):
+        # Bounded on purpose: the decode error names the field and rule it refused,
+        # and this operation answers a caller that is not entitled to either.
+        raise OperationError(
+            ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -290,9 +375,21 @@ class ChatHandlers:
             generation_job_id=request.generation_job_id,
             after_cursor=request.after_cursor,
         )
+        events = replay.events[:_MAX_EVENTS]
+        chunks: dict[tuple[str, int], GenerationTextChunk] = {}
+        if any(event.event_type == _TEXT_APPENDED for event in events):
+            chunks = {
+                (chunk.generation_attempt_id, chunk.chunk_ordinal): chunk
+                for chunk in read_generation_text_chunks(
+                    connection,
+                    workspace_id=context.workspace_id,
+                    generation_job_id=request.generation_job_id,
+                )
+            }
         return ChatEventsResult(
             generation_job_id=request.generation_job_id,
-            events=tuple(_event(event) for event in replay.events),
+            events=tuple(_event(event) for event in events),
+            transport_events=tuple(_transport_event(event, chunks) for event in events),
             requires_resnapshot=replay.requires_resnapshot,
             resnapshot_reason=replay.reason,
         ).to_wire()
