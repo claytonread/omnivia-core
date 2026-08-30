@@ -55,13 +55,14 @@ from typing import Any
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
-from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.connection import StorageError, authorised
 
 __all__ = [
     "Branch",
     "BranchHeadEvent",
     "ChatWriter",
     "Conversation",
+    "ConversationSnapshotInputs",
     "Draft",
     "GenerationAttempt",
     "GenerationAttemptOutcome",
@@ -100,6 +101,7 @@ __all__ = [
     "read_branch",
     "read_branch_head_events",
     "read_conversation",
+    "read_conversation_snapshot_inputs",
     "read_generation_attempt",
     "read_generation_attempt_outcome",
     "read_generation_attempt_outcomes",
@@ -500,6 +502,27 @@ class OutboxEntry:
     delivered_at_us: int | None
     retained_until_us: int | None
     created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSnapshotInputs:
+    """Everything an authoritative Conversation snapshot is composed from, at one
+    revision.
+
+    The rows, not a contract shape: this module owns no Chat Contract document, so
+    the caller (`service/chat_snapshot.py`) is what turns these into a
+    `ConversationSnapshotResult`. `path` is the selected branch's real message
+    path -- the parent chain walked back from the branch head and reversed --
+    rather than every message that happens to name the branch, because that chain
+    is what a snapshot publishes.
+    """
+
+    conversation: Conversation
+    branch: Branch | None
+    view_state: ViewState | None
+    path: tuple[Message, ...]
+    parts_by_message_id: Mapping[str, tuple[MessagePart, ...]]
+    generation_job_ids: tuple[str, ...]
 
 
 # --- writer -----------------------------------------------------------------------
@@ -2630,3 +2653,124 @@ def read_outbox_events_since(
         (workspace_id, after_cursor, limit),
     ).fetchall()
     return tuple(_outbox_entry_from_row(row) for row in rows)
+
+
+def read_conversation_snapshot_inputs(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    device_id: str = "",
+    branch_id: str | None = None,
+    max_path_messages: int = 200,
+) -> ConversationSnapshotInputs | None:
+    """Every row an authoritative Conversation snapshot is composed from.
+
+    Workspace-scoped throughout, and `None` for a conversation this workspace does
+    not hold -- the same answer :func:`read_conversation` already gives, so this is
+    no wider an existence oracle than the read it starts from.
+
+    The branch is the caller's `branch_id`, else the actor/device view state's
+    active branch, else the conversation's default branch. A resolved branch that
+    belongs to a different conversation is treated as absent, the same as one that
+    does not exist. The path is that branch's head walked back through
+    `parent_message_id` and reversed into chronological order, bounded by
+    `max_path_messages`; a chain longer than the bound is truncated at its oldest
+    end, so the newest messages -- the ones a snapshot exists to show -- are always
+    present. The walk stops rather than raising on a missing parent row or a cycle.
+
+    All of it -- the conversation, the view state, the branch, the message walk and
+    every message's parts -- is read inside one explicit read transaction, so a
+    concurrent write between two of these reads can never produce a snapshot whose
+    pieces disagree about the moment they were read at. A caller already holding a
+    transaction keeps it: only a transaction begun here is committed or rolled back
+    here, matching `governed.py` and `graph.py`'s own ownership rule.
+    """
+    if not 1 <= max_path_messages <= 200:
+        raise StorageError(
+            f"max_path_messages must be between 1 and 200, got {max_path_messages}"
+        )
+
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        conversation = read_conversation(
+            connection, workspace_id=workspace_id, conversation_id=conversation_id
+        )
+        if conversation is None:
+            result = None
+        else:
+            view_state = read_actor_view_state(
+                connection,
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                actor_id=actor_id,
+                device_id=device_id,
+            )
+            selected = branch_id
+            if selected is None and view_state is not None:
+                selected = view_state.active_branch_id
+            if selected is None:
+                selected = conversation.default_branch_id
+
+            branch = (
+                None
+                if selected is None
+                else read_branch(connection, workspace_id=workspace_id, branch_id=selected)
+            )
+            if branch is not None and branch.conversation_id != conversation_id:
+                branch = None
+
+            path: list[Message] = []
+            if branch is not None:
+                message_id: str | None = branch.current_head_message_id
+                seen: set[str] = set()
+                with authorised(connection, mutations=False, ddl=False) as fenced:
+                    while message_id is not None and len(path) < max_path_messages:
+                        if message_id in seen:
+                            break
+                        seen.add(message_id)
+                        row = fenced.execute(
+                            f"SELECT {_MESSAGE_COLUMNS} FROM omnivia_chat_messages "
+                            "WHERE workspace_id = ? AND conversation_id = ? "
+                            "AND message_id = ?",
+                            (workspace_id, conversation_id, message_id),
+                        ).fetchone()
+                        if row is None:
+                            break
+                        message = _message_from_row(row)
+                        path.append(message)
+                        message_id = message.parent_message_id
+            path.reverse()
+
+            parts = {
+                message.message_id: read_message_parts(
+                    connection, workspace_id=workspace_id, message_id=message.message_id
+                )
+                for message in path
+            }
+            job_ids = tuple(
+                dict.fromkeys(
+                    message.generation_job_id
+                    for message in path
+                    if message.generation_job_id is not None
+                )
+            )
+
+            result = ConversationSnapshotInputs(
+                conversation=conversation,
+                branch=branch,
+                view_state=view_state,
+                path=tuple(path),
+                parts_by_message_id=MappingProxyType(parts),
+                generation_job_ids=job_ids,
+            )
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+    return result
