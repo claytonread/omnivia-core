@@ -6887,16 +6887,21 @@ class ChatCommandInput:
 @dataclass(frozen=True, slots=True)
 class ChatEventsResult:
     """Result of `chat.events`: the durable event suffix after the requested cursor, or the
-    demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events`
-    is empty and `resnapshot_reason` states why the requested position could not be honoured;
-    a fabricated continuation is exactly what that answer exists to prevent. Events are
-    strictly increasing, duplicate-free and contiguous from the position the request
-    continued from.
+    demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, both
+    `events` and `transport_events` are empty and `resnapshot_reason` states why the
+    requested position could not be honoured; a fabricated continuation is exactly what that
+    answer exists to prevent. Events are strictly increasing, duplicate-free and contiguous
+    from the position the request continued from. The same suffix is offered in two forms:
+    `events` is the backward-compatible sanitised lifecycle projection this envelope has
+    always returned, and the optional `transport_events` is the exact Chat Contract v1
+    transport stream for the same positions. A caller that understands the chat contract
+    reads `transport_events`; one that does not keeps reading `events` unchanged.
     """
 
     generation_job_id: Identifier
     events: tuple[ChatGenerationEvent, ...]
     requires_resnapshot: bool
+    transport_events: tuple[JsonObject, ...] | None = None
     resnapshot_reason: OpenCode | None = None
 
     def to_wire(self) -> dict[str, Any]:
@@ -6908,6 +6913,8 @@ class ChatEventsResult:
         wire: dict[str, Any] = {}
         wire["generation_job_id"] = self.generation_job_id
         wire["events"] = [item.to_wire() for item in self.events]
+        if self.transport_events is not None:
+            wire["transport_events"] = [_encode_json_object(item) for item in self.transport_events]
         wire["requires_resnapshot"] = self.requires_resnapshot
         if self.resnapshot_reason is not None:
             wire["resnapshot_reason"] = self.resnapshot_reason
@@ -6933,6 +6940,21 @@ class ChatEventsResult:
             ChatGenerationEvent.from_wire(item, f"{path}.events[{index}]")
             for index, item in enumerate(field_events_items)
         )
+        field_transport_events: tuple[JsonObject, ...] | None = None
+        if "transport_events" in mapping:
+            raw_transport_events = mapping["transport_events"]
+            if raw_transport_events is None:
+                raise ContractDecodeError(
+                    f"{path}.transport_events: null is not a valid value"
+                )
+            field_transport_events_items = _decode_sequence(
+                raw_transport_events,
+                f"{path}.transport_events",
+            )
+            field_transport_events = tuple(
+                _decode_json_object(item, f"{path}.transport_events[{index}]")
+                for index, item in enumerate(field_transport_events_items)
+            )
         field_requires_resnapshot = _decode_bool(
             _require_field(mapping, "requires_resnapshot", path),
             f"{path}.requires_resnapshot",
@@ -6951,6 +6973,7 @@ class ChatEventsResult:
         return cls(
             generation_job_id=field_generation_job_id,
             events=field_events,
+            transport_events=field_transport_events,
             requires_resnapshot=field_requires_resnapshot,
             resnapshot_reason=field_resnapshot_reason,
         )

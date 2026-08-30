@@ -4107,10 +4107,15 @@ export interface ChatCommandInput {
 
 /**
  * Result of `chat.events`: the durable event suffix after the requested cursor, or the demand
- * for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events` is empty and
- * `resnapshot_reason` states why the requested position could not be honoured; a fabricated
- * continuation is exactly what that answer exists to prevent. Events are strictly increasing,
- * duplicate-free and contiguous from the position the request continued from.
+ * for a fresh snapshot -- never both. When `requires_resnapshot` is true, both `events` and
+ * `transport_events` are empty and `resnapshot_reason` states why the requested position could
+ * not be honoured; a fabricated continuation is exactly what that answer exists to prevent.
+ * Events are strictly increasing, duplicate-free and contiguous from the position the request
+ * continued from. The same suffix is offered in two forms: `events` is the backward-compatible
+ * sanitised lifecycle projection this envelope has always returned, and the optional
+ * `transport_events` is the exact Chat Contract v1 transport stream for the same positions. A
+ * caller that understands the chat contract reads `transport_events`; one that does not keeps
+ * reading `events` unchanged.
  */
 export interface ChatEventsResult {
   /**
@@ -4118,10 +4123,21 @@ export interface ChatEventsResult {
    */
   readonly generation_job_id: Identifier;
   /**
-   * The durable events after the requested cursor, in ascending sequence order. Empty when a
-   * resnapshot is required.
+   * The backward-compatible sanitised lifecycle projection of the durable events after the
+   * requested cursor, in ascending sequence order. Carries no provider content, and stays
+   * exactly what it has always been for callers that do not read `transport_events`. Empty
+   * when a resnapshot is required.
    */
   readonly events: readonly ChatGenerationEvent[];
+  /**
+   * The exact Chat Contract v1 transport stream for the same positions, in ascending sequence
+   * order. Each item is an exact Chat Contract v1 `ChatEvent` document, validated and emitted
+   * against the separately published Chat contract; this application envelope carries it
+   * opaquely and deliberately does not restate that union. Order and cursors match `events`
+   * position for position. Optional for compatibility: a result that omits it is a well-formed
+   * result. Empty when a resnapshot is required, as `events` is.
+   */
+  readonly transport_events?: readonly JsonObject[];
   /**
    * Whether the caller must take a fresh snapshot instead of continuing from the cursor it
    * presented.

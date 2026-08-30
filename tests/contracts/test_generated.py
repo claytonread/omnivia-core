@@ -19,6 +19,7 @@ from omnivia_core.contracts.v1.generated import (
     OPERATION_CATALOGUE,
     ApiError,
     CapabilityRef,
+    ChatEventsResult,
     ClientIdentity,
     ContractDecodeError,
     ErrorResponseEnvelope,
@@ -236,6 +237,62 @@ def test_absent_optional_fields_still_decode_as_none() -> None:
     must still decode as `None`, not be swept up by the new null rejection.
     """
     assert PrincipalClaim.from_wire({}) == PrincipalClaim()
+
+
+def _chat_events_wire(**extra: Any) -> dict[str, Any]:
+    return {
+        "generation_job_id": "gen-1",
+        "events": [
+            {
+                "event_id": "evt-1",
+                "event_type": "chat.generation.started",
+                "generation_event_sequence": 1,
+                "cursor": "cursor-1",
+                "occurred_at": "2026-01-01T00:00:00Z",
+            }
+        ],
+        "requires_resnapshot": False,
+        **extra,
+    }
+
+
+def test_chat_events_result_without_transport_events_still_round_trips() -> None:
+    """The pre-existing result shape is unchanged: `transport_events` is optional, so an
+    older document decodes and re-emits byte-identically.
+    """
+    wire = _chat_events_wire()
+    result = ChatEventsResult.from_wire(wire)
+    assert result.transport_events is None
+    assert result.to_wire() == wire
+
+
+def test_chat_events_result_carries_transport_events_opaquely() -> None:
+    """Each transport event is an exact Chat Contract v1 `ChatEvent` document this envelope
+    neither inspects nor reshapes, so nested content survives a decode/encode round trip.
+    """
+    transport = [
+        {
+            "event_type": "conversation.text.appended",
+            "cursor": "cursor-1",
+            "payload": {"text": "hello", "nested": {"deltas": [1, 2, 3]}},
+        }
+    ]
+    wire = _chat_events_wire(transport_events=transport)
+    result = ChatEventsResult.from_wire(wire)
+    assert result.transport_events is not None
+    assert result.to_wire() == wire
+
+
+def test_explicit_null_transport_events_is_rejected() -> None:
+    wire = _chat_events_wire(transport_events=None)
+    with pytest.raises(ContractDecodeError, match="transport_events: null is not a valid value"):
+        ChatEventsResult.from_wire(wire)
+
+
+def test_wrong_typed_transport_events_is_rejected() -> None:
+    wire = _chat_events_wire(transport_events={"not": "an array"})
+    with pytest.raises(ContractDecodeError, match="transport_events: expected an array"):
+        ChatEventsResult.from_wire(wire)
 
 
 def test_the_operation_catalogue_is_a_generated_dataclass_graph() -> None:
