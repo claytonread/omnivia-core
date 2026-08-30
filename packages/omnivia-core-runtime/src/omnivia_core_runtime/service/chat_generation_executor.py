@@ -18,14 +18,15 @@ from typing import Any, Final
 from omnivia_core.chat_contract.v1 import ProviderInvocationRequest, to_canonical_json
 from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.chat_compaction import derive_model_visible_context
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
     MAX_RESPONSE_TEXT_BYTES,
+    GenerationHeartbeat,
     GenerationLifecycleError,
     append_provider_generation_event,
     append_provider_text_delta,
     claim_queued_generation,
-    renew_generation_lease,
 )
 from omnivia_core_runtime.storage import chat
 
@@ -48,6 +49,11 @@ _SAFE_MESSAGES: Final = {
     "malformed-response": "the provider stream could not be completed safely",
 }
 _TERMINAL_PROVIDER_EVENTS: Final = frozenset({"finish", "error"})
+_PROMPT_BUNDLE: Final = {
+    "id": "core.chat.default-model-visible-context",
+    "version": 1,
+    "kind": "message-lineage",
+}
 
 
 class GenerationExecutorError(Exception):
@@ -102,13 +108,39 @@ def _next_outbox_cursor(connection: sqlite3.Connection, workspace_id: str) -> in
     return int(row[0])
 
 
-def _provider_messages(
+@dataclass(frozen=True, slots=True)
+class _ProviderContext:
+    messages: tuple[Mapping[str, Any], ...]
+    manifest_message_refs: tuple[Mapping[str, Any], ...]
+
+
+def _provider_context(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     conversation_id: str,
+    branch_id: str,
     trigger_message_id: str,
-) -> tuple[Mapping[str, Any], ...]:
+) -> _ProviderContext:
+    """Build the request projection and the matching hash/reference manifest.
+
+    The request still needs text because the provider boundary needs it. The
+    manifest does not copy that text; it records the exact ordered Message/Part
+    identities and content hashes from which the request is reconstructable.
+    """
+    compacted = derive_model_visible_context(
+        connection,
+        workspace_id=workspace_id,
+        conversation_id=conversation_id,
+        branch_id=branch_id,
+        trigger_message_id=trigger_message_id,
+    )
+    if compacted is not None:
+        return _ProviderContext(
+            compacted.messages,
+            compacted.manifest_message_refs,
+        )
+
     messages = chat.read_messages_by_conversation_sequence(
         connection, workspace_id=workspace_id, conversation_id=conversation_id
     )
@@ -126,11 +158,13 @@ def _provider_messages(
         lineage.append(message)
         current_id = message.parent_message_id
 
-    result: list[Mapping[str, Any]] = []
+    provider_messages: list[Mapping[str, Any]] = []
+    manifest_refs: list[Mapping[str, Any]] = []
     for message in reversed(lineage):
         if message.visibility != "standard" or message.completion_status != "complete":
             continue
-        parts: list[Mapping[str, Any]] = []
+        provider_parts: list[Mapping[str, Any]] = []
+        part_refs: list[Mapping[str, Any]] = []
         for part in chat.read_message_parts(
             connection, workspace_id=workspace_id, message_id=message.message_id
         ):
@@ -141,12 +175,135 @@ def _provider_messages(
                 raise GenerationExecutorError(
                     "the conversation contains a message part this executor cannot project to F2a"
                 )
-            parts.append({"kind": "text", "text": text})
-        if parts:
-            result.append({"role": message.role, "parts": parts})
-    if not result:
+            provider_parts.append({"kind": "text", "text": text})
+            part_refs.append(
+                {
+                    "partId": part.part_id,
+                    "partIndex": part.part_index,
+                    "partType": part.part_type,
+                    "schemaVersion": part.schema_version,
+                    "contentHash": part.content_hash,
+                }
+            )
+        if provider_parts:
+            provider_messages.append({"role": message.role, "parts": provider_parts})
+            manifest_refs.append(
+                {
+                    "messageId": message.message_id,
+                    "role": message.role,
+                    "conversationSequence": message.conversation_sequence,
+                    "schemaVersion": message.schema_version,
+                    "contentHash": message.content_hash,
+                    "parts": part_refs,
+                }
+            )
+    if not provider_messages:
         raise GenerationExecutorError("the conversation contains no provider-visible messages")
-    return tuple(result)
+    return _ProviderContext(tuple(provider_messages), tuple(manifest_refs))
+
+
+def _digest_json(value: Mapping[str, Any] | tuple[Mapping[str, Any], ...]) -> str:
+    document = to_canonical_json({"value": _plain_json(value)})
+    return "sha256:" + hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(nested) for key, nested in value.items()}
+    if isinstance(value, tuple):
+        return [_plain_json(nested) for nested in value]
+    if isinstance(value, list):
+        return [_plain_json(nested) for nested in value]
+    return value
+
+
+def _request_manifest_body(
+    *,
+    request: ProviderInvocationRequest,
+    job: chat.GenerationJob,
+    manifest_message_refs: tuple[Mapping[str, Any], ...],
+) -> Mapping[str, Any]:
+    response_format_digest = _digest_json(request.response_format)
+    generation_options_digest = (
+        None if request.generation_options is None else _digest_json(request.generation_options)
+    )
+    provider_options_digest = (
+        None
+        if request.provider_options_by_namespace is None
+        else _digest_json(request.provider_options_by_namespace)
+    )
+    prompt_bundle_digest = _digest_json(_PROMPT_BUNDLE)
+    body: dict[str, Any] = {
+        "schemaVersion": 1,
+        "requestManifestId": _stable_id(
+            "request-manifest", f"{job.generation_job_id}:{request.attempt_id}"
+        ),
+        "workspaceId": request.workspace_id,
+        "conversationId": request.conversation_id,
+        "branchId": job.branch_id,
+        "generationJobId": request.job_id,
+        "generationAttemptId": request.attempt_id,
+        "triggerMessageId": job.trigger_message_id,
+        "providerInvocationId": request.invocation_id,
+        "idempotencyKey": request.idempotency_key,
+        "modelVisible": {
+            "messages": list(manifest_message_refs),
+            "renderedPromptContent": "not_stored",
+            "contentPolicy": "identifiers_and_hashes_only",
+        },
+        "promptBundle": {
+            **_PROMPT_BUNDLE,
+            "digest": prompt_bundle_digest,
+        },
+        "toolDefinitions": [],
+        "route": {
+            "connectionId": request.connection_id,
+            "modelId": request.model_id,
+            "operation": request.operation,
+        },
+        "requestOptions": {
+            "responseFormatDigest": response_format_digest,
+            "generationOptionsDigest": generation_options_digest,
+            "providerOptionsByNamespaceDigest": provider_options_digest,
+            "deadlineAt": request.deadline_at,
+            "requestedAt": request.requested_at,
+            "causationId": request.causation_id,
+            "correlationId": request.correlation_id,
+        },
+        "policy": {
+            "policyRef": request.policy_ref,
+            "classificationRef": request.classification_ref,
+            "residencyRef": request.residency_ref,
+        },
+        "authorizedReferences": {
+            "context": [],
+            "attachments": [],
+            "evidence": [],
+        },
+        "retention": {
+            "class": "chat_request_manifest_v1",
+            "export": "metadata_and_hashes",
+        },
+    }
+    return body
+
+
+def _existing_manifest_timestamps(
+    connection: sqlite3.Connection, *, workspace_id: str, generation_attempt_id: str
+) -> tuple[str, str] | None:
+    existing = chat.read_request_manifest(
+        connection, workspace_id=workspace_id, generation_attempt_id=generation_attempt_id
+    )
+    if existing is None:
+        return None
+    options = existing.manifest_body.get("requestOptions")
+    if not isinstance(options, Mapping):
+        raise GenerationExecutorError("the stored request manifest is malformed")
+    requested_at = options.get("requestedAt")
+    deadline_at = options.get("deadlineAt")
+    if not isinstance(requested_at, str) or not isinstance(deadline_at, str):
+        raise GenerationExecutorError("the stored request manifest is missing request timestamps")
+    return requested_at, deadline_at
 
 
 def _message_hash(text: str) -> tuple[str, str]:
@@ -172,6 +329,7 @@ class ChatGenerationExecutor:
     clock: Clock
     invoke: ProviderStream
     config: GenerationExecutorConfig
+    heartbeat_factory: Callable[..., GenerationHeartbeat] = GenerationHeartbeat
 
     def execute(self, **fields: Any) -> None:
         """Run either a fresh queued submission or an already-opened retry attempt."""
@@ -296,6 +454,25 @@ class ChatGenerationExecutor:
         requested_at = self.clock.wall_time()
         try:
             self._resolve_route()
+            manifest_timestamps = _existing_manifest_timestamps(
+                self.connection,
+                workspace_id=self.workspace_id,
+                generation_attempt_id=attempt_id,
+            )
+            request_context = _provider_context(
+                self.connection,
+                workspace_id=self.workspace_id,
+                conversation_id=job.conversation_id,
+                branch_id=job.branch_id,
+                trigger_message_id=trigger_message_id,
+            )
+            if manifest_timestamps is None:
+                requested_at_text = _timestamp(requested_at)
+                deadline_at_text = _timestamp(
+                    requested_at + timedelta(seconds=self.config.deadline_seconds)
+                )
+            else:
+                requested_at_text, deadline_at_text = manifest_timestamps
             request = ProviderInvocationRequest(
                 invocation_id=invocation_id,
                 workspace_id=self.workspace_id,
@@ -305,23 +482,21 @@ class ChatGenerationExecutor:
                 connection_id=self.config.connection_id,
                 model_id=self.config.model_id,
                 operation="language.stream",
-                messages=_provider_messages(
-                    self.connection,
-                    workspace_id=self.workspace_id,
-                    conversation_id=job.conversation_id,
-                    trigger_message_id=trigger_message_id,
-                ),
+                messages=request_context.messages,
                 response_format={"kind": "text"},
                 policy_ref=self.config.policy_ref,
                 classification_ref=self.config.classification_ref,
                 residency_ref=self.config.residency_ref,
                 idempotency_key=job.idempotency_key,
                 correlation_id=_stable_id("correlation", job.generation_job_id),
-                deadline_at=_timestamp(
-                    requested_at + timedelta(seconds=self.config.deadline_seconds)
-                ),
-                requested_at=_timestamp(requested_at),
+                deadline_at=deadline_at_text,
+                requested_at=requested_at_text,
                 causation_id=trigger_message_id,
+            )
+            manifest_body = _request_manifest_body(
+                request=request,
+                job=job,
+                manifest_message_refs=request_context.manifest_message_refs,
             )
         except ProviderRouteUnavailable:
             # Never reached a provider at all. The lifecycle is still real -- claimed,
@@ -337,10 +512,43 @@ class ChatGenerationExecutor:
             )
             return
 
+        try:
+            chat.append_request_manifest_once(
+                self.connection,
+                self.identity,
+                workspace_id=self.workspace_id,
+                fencing_generation=self.fencing_generation,
+                conversation_id=job.conversation_id,
+                branch_id=job.branch_id,
+                generation_job_id=job.generation_job_id,
+                generation_attempt_id=attempt_id,
+                trigger_message_id=trigger_message_id,
+                provider_invocation_id=invocation_id,
+                request_manifest_id=str(manifest_body["requestManifestId"]),
+                idempotency_key=job.idempotency_key,
+                manifest_body=manifest_body,
+                created_at_us=_now_us(self.clock),
+            )
+        except chat.RequestManifestConflict as error:
+            raise GenerationExecutorError("the provider request manifest conflicts") from error
+
         text_chunks: list[str] = []
         expected_ordinal = 0
         saw_start = False
         saw_terminal = False
+        heartbeat = self.heartbeat_factory(
+            connection=self.connection,
+            identity=self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=job.generation_job_id,
+            generation_attempt_id=attempt_id,
+            lease_owner=self.identity.service_instance_id,
+            clock=self.clock,
+            lease_duration_us=self._lease_duration_us(),
+        )
+        if renew_lease:
+            heartbeat.start(lease_expires_at_us)
         durable_started = any(
             event.event_type == "chat.generation.started"
             and event.generation_attempt_id == attempt_id
@@ -357,9 +565,7 @@ class ChatGenerationExecutor:
                 # unexpired lease, so a stream that paused past the renewal point would
                 # otherwise fail on the very write that proves it is still alive.
                 if renew_lease:
-                    lease_expires_at_us = self._renew_lease_if_due(
-                        job.generation_job_id, lease_expires_at_us
-                    )
+                    lease_expires_at_us = heartbeat.tick() or lease_expires_at_us
                 event_type, expected_ordinal = self._validate_event(
                     event,
                     invocation_id=invocation_id,
@@ -423,6 +629,7 @@ class ChatGenerationExecutor:
                         provider_event=event,
                         result_message_id=result_message_id,
                         now_us=_now_us(self.clock),
+                        lease_owner=self.identity.service_instance_id,
                     )
                 elif event_type != "stream-start" or not durable_started:
                     append_provider_generation_event(
@@ -434,6 +641,7 @@ class ChatGenerationExecutor:
                         generation_attempt_id=attempt_id,
                         provider_event=event,
                         now_us=_now_us(self.clock),
+                        lease_owner=self.identity.service_instance_id,
                     )
                 if event_type in _TERMINAL_PROVIDER_EVENTS:
                     saw_terminal = True
@@ -457,6 +665,8 @@ class ChatGenerationExecutor:
                 job.generation_job_id, attempt_id, error_code="malformed-response"
             )
             return
+        finally:
+            heartbeat.stop()
 
     @staticmethod
     def _validate_event(
@@ -499,34 +709,6 @@ class ChatGenerationExecutor:
         if not self.config.connection_id or not self.config.model_id:
             raise ProviderRouteUnavailable("no provider route is configured")
 
-    def _renew_lease_if_due(self, generation_job_id: str, lease_expires_at_us: int) -> int:
-        """Heartbeat once the lease is past half-life. Returns the expiry now in force.
-
-        Half-life rather than expiry, so a renewal that is itself slow still lands
-        inside the window it is extending.
-
-        KNOWN CEILING, stated rather than hidden: this runs between events, so a single
-        gap longer than the whole lease still expires it -- there is no thread here, and
-        one would need its own connection because sqlite connections are not shared
-        across threads. Sizing the lease from the invocation deadline is what makes that
-        gap unreachable in practice; a provider that blocks past deadline + margin has
-        already broken its own contract.
-        """
-        now_us = _now_us(self.clock)
-        duration_us = self._lease_duration_us()
-        if now_us < lease_expires_at_us - duration_us // 2:
-            return lease_expires_at_us
-        return renew_generation_lease(
-            self.connection,
-            self.identity,
-            workspace_id=self.workspace_id,
-            fencing_generation=self.fencing_generation,
-            generation_job_id=generation_job_id,
-            lease_owner=self.identity.service_instance_id,
-            now_us=now_us,
-            lease_duration_us=duration_us,
-        )
-
     def _fail_generation(
         self, generation_job_id: str, attempt_id: str, *, error_code: str
     ) -> None:
@@ -565,6 +747,7 @@ class ChatGenerationExecutor:
                 "safeMessage": _SAFE_MESSAGES[error_code],
             },
             now_us=_now_us(self.clock),
+            lease_owner=self.identity.service_instance_id,
         )
 
     def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:

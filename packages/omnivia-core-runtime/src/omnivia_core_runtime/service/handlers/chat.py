@@ -207,10 +207,12 @@ def _transport_event(
         ).to_wire()
     except (TypeError, ValueError):
         # Bounded on purpose: the decode error names the field and rule it refused,
-        # and this operation answers a caller that is not entitled to either.
-        raise OperationError(
-            ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE
-        ) from None
+        # and this operation answers a caller that is not entitled to either. The
+        # `pass` is load-bearing -- `from None` would leave that text reachable on
+        # `__context__`, so the constant refusal is raised once the handler has
+        # exited and there is no exception being handled to chain to.
+        pass
+    raise OperationError(ERROR_CODE_INTERNAL_NON_RECOVERABLE, _MESSAGE_NO_STORAGE)
 
 
 @dataclass(frozen=True)

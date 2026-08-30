@@ -1,6 +1,6 @@
-"""Acceptance for migration 0031's durable Chat text transport event.
+"""Acceptance for migration 0034's durable Chat text transport event.
 
-What 0031 is: a unique consecutive successor to 0030 that rebuilds
+What 0034 is: a unique consecutive successor to 0033 that rebuilds
 `omnivia_chat_generation_events` -- SQLite cannot widen a CHECK in place -- so the
 one ordered generation lifecycle log also admits `chat.generation.text_appended`,
 an event that must name an attempt but never a result message, and whose payload
@@ -40,9 +40,9 @@ from omnivia_core_runtime.storage.migrations import (
     read_workspace_state,
 )
 
-MIGRATION_VERSION = 31
-PREDECESSOR_VERSION = 30
-MIGRATION_NAME = "0031_chat_generation_text_transport_events.sql"
+MIGRATION_VERSION = 34
+PREDECESSOR_VERSION = 33
+MIGRATION_NAME = "0034_chat_generation_text_transport_events.sql"
 
 WORKSPACE_ID = m1.WORKSPACE_ID
 EVENTS = foundation.EVENTS
@@ -54,7 +54,9 @@ EVENTS_TRIGGERS = (
     "omnivia_guard_chat_generation_events_delete",
 )
 
-# The only two differences 0031 is allowed to make to 0029's table, as literal text.
+# The only two differences 0034 is allowed to make to 0029's table, as literal text.
+# 0031-0033 add tables of their own and neither alter nor reference this one, so
+# 0029's text is still exactly what the rebuild must reproduce.
 WIDENED_EVENT_TYPES = (
     (
         "    CHECK (event_type IN ('chat.generation.queued', 'chat.generation.started',\n"
@@ -179,10 +181,21 @@ def seed_streaming_attempt(holder: m1.Owned) -> None:
         )
 
 
-def test_0031_is_the_unique_consecutive_successor_to_0030() -> None:
-    versions = [migration.version for migration in load_migrations()]
+def test_0034_is_the_unique_consecutive_successor_to_0033() -> None:
+    """One 0034, no gap and no second claimant on the number.
+
+    0031-0033 landed on the default branch while this migration was in flight, so
+    the number it is allocated is what this pins: the catalogue runs 1..34 without
+    a gap or a repeat, and exactly one file answers to 34.
+    """
+    migrations = load_migrations()
+    versions = [migration.version for migration in migrations]
     assert versions == sorted(versions)
     assert versions[:MIGRATION_VERSION] == list(range(1, MIGRATION_VERSION + 1))
+    assert versions.count(MIGRATION_VERSION) == 1
+    assert [m.name for m in migrations if m.version == MIGRATION_VERSION] == [
+        MIGRATION_NAME
+    ]
     assert MIGRATION.version == PREDECESSOR_VERSION + 1
     assert MIGRATION.name == MIGRATION_NAME
 
@@ -221,10 +234,15 @@ def test_the_index_and_the_three_guards_are_recreated_verbatim_from_0029(
         assert stored_sql(owned.connection, trigger) == without_if_not_exists(expected)
 
 
-def test_upgrading_a_0030_workspace_preserves_every_existing_event(
+def test_upgrading_a_0033_workspace_preserves_every_existing_event(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "workspace-through-0030.sqlite"
+    """A workspace migrated through 0033 -- the real predecessor -- then through 0034.
+
+    0034 is the only migration left to apply, every event row survives the rebuild
+    byte for byte, and the successor table's working name is gone from the schema.
+    """
+    path = tmp_path / "workspace-through-0033.sqlite"
     materialise_phase0_baseline(path)
 
     with m1.migration_catalogue_through(PREDECESSOR_VERSION):
@@ -255,7 +273,7 @@ def test_upgrading_a_0030_workspace_preserves_every_existing_event(
             )
         }
         assert {EVENTS, EVENTS_INDEX, *EVENTS_TRIGGERS} <= named
-        assert not [name for name in named if name.endswith("_0031")]
+        assert not [name for name in named if name.endswith("_0034")]
         assert integrity_check(connection) == []
         assert foreign_key_check(connection) == []
     finally:

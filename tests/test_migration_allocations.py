@@ -55,8 +55,9 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # materialized Context Models candidate. 0027 is the materialized Workflow Runtime
 # candidate. 0028 is the materialized Provider Service candidate. 0029 is the
 # materialized Chat foundation candidate. 0030 is the materialized Chat Gate B
-# successor-state candidate. 0031 is the materialized Chat generation text
-# transport-event candidate.
+# successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
+# is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
+# Chat compaction/waits/agent-run candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -71,7 +72,9 @@ EXPECTED_ALLOCATION = (
     (28, "0028_provider_invocations.sql", "Provider Service", "candidate"),
     (29, "0029_chat_foundation.sql", "Chat", "candidate"),
     (30, "0030_chat_gate_b_successor_state.sql", "Chat", "candidate"),
-    (31, "0031_chat_generation_text_transport_events.sql", "Chat", "candidate"),
+    (31, "0031_chat_request_manifests.sql", "Chat", "candidate"),
+    (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
+    (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -95,7 +98,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
     29: "192e88b28a89c6740b302cc3646d732f45086c70",
     30: "0c72b6651789f7695fc2afb326f4809654a4c43b",
-    31: "83007e869ba9955d9965a2e50aecd3b5e194c1bb",
+    31: "dbc23280be010318b6e0d1a2e5ae0fc43a1bbf47",
+    32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
+    33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -168,8 +173,8 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
     """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0027 are
-    candidates pinned to their introducing commits but not accepted; 0028 through
-    0031 are downstream candidates pinned the same way."""
+    candidates pinned to their introducing commits but not accepted; 0028 and 0029
+    are downstream candidates pinned the same way."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:
@@ -244,14 +249,14 @@ def _as_candidate(document: dict[str, Any], number: int) -> dict[str, Any]:
     return entry
 
 
-def _append_reserved_32(document: dict[str, Any]) -> dict[str, Any]:
+def _append_reserved_30(document: dict[str, Any]) -> dict[str, Any]:
     entry: dict[str, Any] = {
-        "number": 32,
-        "filename": "0032_reserved_followup.sql",
+        "number": 30,
+        "filename": "0030_reserved_followup.sql",
         "owner": "Future Lane",
         "repository": "omnivia-core",
         "state": "reserved",
-        "predecessor": 31,
+        "predecessor": 29,
         "sha256": None,
         "introduced_commit": None,
         "accepted_commit": None,
@@ -394,7 +399,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved entry pins a hash",
-        lambda document, present: _append_reserved_32(document).update(
+        lambda document, present: _append_reserved_30(document).update(
             {"sha256": "0" * 64}
         ),
         "must pin neither sha256 nor introduced_commit",
@@ -406,7 +411,7 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     ),
     (
         "reserved allocation carries an accepted commit",
-        lambda document, present: _append_reserved_32(document).update(
+        lambda document, present: _append_reserved_30(document).update(
             {"accepted_commit": "a" * 40}
         ),
         "accepted_commit must be null",
@@ -436,8 +441,8 @@ MUTATIONS: tuple[tuple[str, Mutation, str], ...] = (
     (
         "reserved sql appears early",
         lambda document, present: (
-            _append_reserved_32(document),
-            present.update({"0032_reserved_followup.sql": "c" * 64}),
+            _append_reserved_30(document),
+            present.update({"0030_reserved_followup.sql": "c" * 64}),
         ),
         "already exists; advance this allocation",
     ),

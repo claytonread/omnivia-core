@@ -1,6 +1,10 @@
 -- Durable Chat text transport events.
 --
--- Additive only. Migrations 0029 and 0030 remain immutable. The single fact this
+-- Additive only. Migrations 0029 through 0033 remain immutable, and none of the
+-- three that landed between this one and 0030 -- the request manifests, the
+-- turn/step/tool lifecycle and the compaction/waits/agent-run tables -- touches
+-- `omnivia_chat_generation_events` or references it, so the rebuild below is
+-- unaffected by them. The single fact this
 -- migration adds is that `omnivia_chat_generation_events` -- still the one
 -- authority for a generation job's ordered lifecycle -- also admits
 -- `chat.generation.text_appended`, the durable transport event that orders a
@@ -21,7 +25,7 @@
 -- event row carries only the metadata needed to order and identify that chunk,
 -- and transport projection joins the two on the chunk ordinal.
 
-CREATE TABLE omnivia_chat_generation_events_0031 (
+CREATE TABLE omnivia_chat_generation_events_0034 (
     workspace_id                 TEXT    NOT NULL,
     conversation_id              TEXT    NOT NULL,
     branch_id                    TEXT    NOT NULL,
@@ -128,7 +132,7 @@ CREATE TABLE omnivia_chat_generation_events_0031 (
             (workspace_id, generation_job_id, generation_attempt_id)
 ) WITHOUT ROWID;
 
-INSERT INTO omnivia_chat_generation_events_0031 (
+INSERT INTO omnivia_chat_generation_events_0034 (
     workspace_id, conversation_id, branch_id, generation_job_id, generation_attempt_id,
     event_id, event_type, generation_event_sequence, trigger_message_id,
     result_message_id, provider_event_id, cursor, payload_json, occurred_at_us,
@@ -143,7 +147,7 @@ FROM omnivia_chat_generation_events;
 
 DROP TABLE omnivia_chat_generation_events;
 
-ALTER TABLE omnivia_chat_generation_events_0031 RENAME TO omnivia_chat_generation_events;
+ALTER TABLE omnivia_chat_generation_events_0034 RENAME TO omnivia_chat_generation_events;
 
 CREATE INDEX IF NOT EXISTS omnivia_idx_chat_generation_events_order
     ON omnivia_chat_generation_events
