@@ -32,6 +32,7 @@ import test_application_audit_idempotency_migration as m1
 import test_chat_foundation_migration as chat29
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
+    fingerprint_schema,
     foreign_key_check,
     integrity_check,
     open_database,
@@ -40,6 +41,7 @@ from omnivia_core_runtime.storage.connection import (
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
     apply_pending_migrations,
+    canonical_schema_fingerprint,
     load_migrations,
     materialise_phase0_baseline,
     read_workspace_state,
@@ -269,6 +271,28 @@ def test_a_fresh_install_carries_every_successor_object_and_every_0029_object(
         assert foreign_key_check(connection) == []
     finally:
         connection.close()
+
+
+def test_a_migrated_workspace_matches_the_canonical_schema_exactly(
+    migrated: Path,
+) -> None:
+    """The readiness requirement `exact_schema_and_trigger_fingerprint` in one place.
+
+    0030 carries a comment inside a `CREATE TABLE` body. The migrator applies these
+    through `split_sql_statements`, which strips comments, so the live `sqlite_master`
+    holds the stripped text; an oracle that replayed the same file with `executescript`
+    would keep the comment and disagree on the digest while every object count matched
+    -- the exact shape that refused readiness on a freshly migrated workspace.
+    `canonical_schema_fingerprint()` therefore replays the artifacts the way they are
+    applied, and this asserts the two agree.
+    """
+    connection = open_database(migrated, OpenMode.EPHEMERAL)
+    try:
+        live = fingerprint_schema(connection)
+    finally:
+        connection.close()
+    canonical = canonical_schema_fingerprint()
+    assert live.digest == canonical.digest, (live, canonical)
 
 
 def test_no_new_object_is_named_for_forbidden_storage_concerns(migrated: Path) -> None:

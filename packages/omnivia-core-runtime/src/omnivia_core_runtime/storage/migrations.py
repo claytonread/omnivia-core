@@ -94,14 +94,28 @@ def phase0_fingerprint() -> str:
     return fingerprint_sql_script(phase0_baseline_sql())
 
 
+def _replay_frozen_artifacts(connection: sqlite3.Connection) -> None:
+    """Materialise the baseline and every migration exactly as the migrator does.
+
+    Through `execute_script`, not `executescript`, because the two do not produce
+    the same `sqlite_master`. `execute_script` splits on `split_sql_statements`,
+    which strips `--` comments, so a comment inside a `CREATE` body is absent from
+    the stored DDL of a real workspace; `executescript` hands SQLite the raw text
+    and the comment is stored. Replaying the artifacts the way they are actually
+    applied is what makes the oracle describe the schema a migrated workspace has,
+    rather than a schema no workspace ever reaches.
+    """
+    execute_script(connection, phase0_baseline_sql())
+    for migration in load_migrations():
+        execute_script(connection, migration.sql)
+
+
 @lru_cache(maxsize=1)
 def canonical_schema_tables() -> frozenset[str]:
     """Every table the frozen artifacts define, from the artifacts themselves."""
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(phase0_baseline_sql())
-        for migration in load_migrations():
-            connection.executescript(migration.sql)
+        _replay_frozen_artifacts(connection)
         return frozenset(
             str(row[0])
             for row in connection.execute(
@@ -128,9 +142,7 @@ def canonical_schema_fingerprint() -> SchemaFingerprint:
     """
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(phase0_baseline_sql())
-        for migration in load_migrations():
-            connection.executescript(migration.sql)
+        _replay_frozen_artifacts(connection)
         return fingerprint_schema(connection)
     finally:
         connection.close()
