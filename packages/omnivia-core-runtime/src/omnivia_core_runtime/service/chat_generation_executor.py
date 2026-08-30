@@ -20,10 +20,10 @@ from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
+    GenerationHeartbeat,
     GenerationLifecycleError,
     append_provider_generation_event,
     claim_queued_generation,
-    renew_generation_lease,
 )
 from omnivia_core_runtime.storage import chat
 
@@ -317,6 +317,7 @@ class ChatGenerationExecutor:
     clock: Clock
     invoke: ProviderStream
     config: GenerationExecutorConfig
+    heartbeat_factory: Callable[..., GenerationHeartbeat] = GenerationHeartbeat
 
     def execute(self, **fields: Any) -> None:
         """Run either a fresh queued submission or an already-opened retry attempt."""
@@ -522,6 +523,19 @@ class ChatGenerationExecutor:
         expected_ordinal = 0
         saw_start = False
         saw_terminal = False
+        heartbeat = self.heartbeat_factory(
+            connection=self.connection,
+            identity=self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+            generation_job_id=job.generation_job_id,
+            generation_attempt_id=attempt_id,
+            lease_owner=self.identity.service_instance_id,
+            clock=self.clock,
+            lease_duration_us=self._lease_duration_us(),
+        )
+        if renew_lease:
+            heartbeat.start(lease_expires_at_us)
         durable_started = any(
             event.event_type == "chat.generation.started"
             and event.generation_attempt_id == attempt_id
@@ -538,9 +552,7 @@ class ChatGenerationExecutor:
                 # unexpired lease, so a stream that paused past the renewal point would
                 # otherwise fail on the very write that proves it is still alive.
                 if renew_lease:
-                    lease_expires_at_us = self._renew_lease_if_due(
-                        job.generation_job_id, lease_expires_at_us
-                    )
+                    lease_expires_at_us = heartbeat.tick() or lease_expires_at_us
                 event_type, expected_ordinal = self._validate_event(
                     event,
                     invocation_id=invocation_id,
@@ -607,6 +619,7 @@ class ChatGenerationExecutor:
                         provider_event=event,
                         result_message_id=result_message_id,
                         now_us=_now_us(self.clock),
+                        lease_owner=self.identity.service_instance_id,
                     )
                 elif event_type != "stream-start" or not durable_started:
                     append_provider_generation_event(
@@ -618,6 +631,7 @@ class ChatGenerationExecutor:
                         generation_attempt_id=attempt_id,
                         provider_event=event,
                         now_us=_now_us(self.clock),
+                        lease_owner=self.identity.service_instance_id,
                     )
                 if event_type in _TERMINAL_PROVIDER_EVENTS:
                     saw_terminal = True
@@ -641,6 +655,8 @@ class ChatGenerationExecutor:
                 job.generation_job_id, attempt_id, error_code="malformed-response"
             )
             return
+        finally:
+            heartbeat.stop()
 
     @staticmethod
     def _validate_event(
@@ -683,34 +699,6 @@ class ChatGenerationExecutor:
         if not self.config.connection_id or not self.config.model_id:
             raise ProviderRouteUnavailable("no provider route is configured")
 
-    def _renew_lease_if_due(self, generation_job_id: str, lease_expires_at_us: int) -> int:
-        """Heartbeat once the lease is past half-life. Returns the expiry now in force.
-
-        Half-life rather than expiry, so a renewal that is itself slow still lands
-        inside the window it is extending.
-
-        KNOWN CEILING, stated rather than hidden: this runs between events, so a single
-        gap longer than the whole lease still expires it -- there is no thread here, and
-        one would need its own connection because sqlite connections are not shared
-        across threads. Sizing the lease from the invocation deadline is what makes that
-        gap unreachable in practice; a provider that blocks past deadline + margin has
-        already broken its own contract.
-        """
-        now_us = _now_us(self.clock)
-        duration_us = self._lease_duration_us()
-        if now_us < lease_expires_at_us - duration_us // 2:
-            return lease_expires_at_us
-        return renew_generation_lease(
-            self.connection,
-            self.identity,
-            workspace_id=self.workspace_id,
-            fencing_generation=self.fencing_generation,
-            generation_job_id=generation_job_id,
-            lease_owner=self.identity.service_instance_id,
-            now_us=now_us,
-            lease_duration_us=duration_us,
-        )
-
     def _fail_generation(
         self, generation_job_id: str, attempt_id: str, *, error_code: str
     ) -> None:
@@ -749,6 +737,7 @@ class ChatGenerationExecutor:
                 "safeMessage": _SAFE_MESSAGES[error_code],
             },
             now_us=_now_us(self.clock),
+            lease_owner=self.identity.service_instance_id,
         )
 
     def _materialize_assistant(self, *, job: chat.GenerationJob, text: str) -> str:
