@@ -55,7 +55,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # materialized Context Models candidate. 0027 is the materialized Workflow Runtime
 # candidate. 0028 is the materialized Provider Service candidate. 0029 is the
 # materialized Chat foundation candidate. 0030 is the materialized Chat Gate B
-# successor-state candidate.
+# successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
+# is the durable Chat turn/step/tool lifecycle candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -70,6 +71,8 @@ EXPECTED_ALLOCATION = (
     (28, "0028_provider_invocations.sql", "Provider Service", "candidate"),
     (29, "0029_chat_foundation.sql", "Chat", "candidate"),
     (30, "0030_chat_gate_b_successor_state.sql", "Chat", "candidate"),
+    (31, "0031_chat_request_manifests.sql", "Chat", "candidate"),
+    (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -93,6 +96,8 @@ CANDIDATE_INTRODUCED_COMMITS = {
     28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
     29: "192e88b28a89c6740b302cc3646d732f45086c70",
     30: "0c72b6651789f7695fc2afb326f4809654a4c43b",
+    31: "dbc23280be010318b6e0d1a2e5ae0fc43a1bbf47",
+    32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
