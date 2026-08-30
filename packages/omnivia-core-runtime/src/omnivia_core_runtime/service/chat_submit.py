@@ -74,7 +74,11 @@ from omnivia_core.chat_contract.v1 import (
     to_canonical_json,
 )
 from omnivia_core.contracts.v1 import ERROR_CODE_INVALID_REQUEST
-from omnivia_core.contracts.v1.generated import ChatCommandInput, ChatCommandResult
+from omnivia_core.contracts.v1.generated import (
+    ChatCommandInput,
+    ChatCommandResult,
+    ChatConversationExpectation,
+)
 from omnivia_core_runtime.service.chat_command import ChatAggregateConflict, ChatCommand
 from omnivia_core_runtime.service.mutation import MutationSettlementContext
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
@@ -139,6 +143,9 @@ _MAX_TITLE_LENGTH: Final = 512
 #: branch head event this build writes cites the conversation's revision through 0029's
 #: non-deferrable foreign key rather than moving it.
 _INITIAL_GRAPH_REVISION: Final = 1
+#: The append position a created conversation starts at. Zero, because nothing has been
+#: appended to it yet: `CreateConversation` writes no branch and no message.
+_INITIAL_CONVERSATION_SEQUENCE: Final = 0
 _MAX_OPEN_CODE: Final = 128
 _MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
 
@@ -779,11 +786,24 @@ def retry_generation_attempt_id(command_id: str, generation_job_id: str) -> str:
     return f"retry-attempt-{digest[:40]}"
 
 
-def _ack(command_name: str, command_id: str, conversation_id: str) -> Mapping[str, Any]:
+def _ack(
+    command_name: str,
+    command_id: str,
+    conversation_id: str,
+    *,
+    conversation_authority: ChatConversationExpectation | None = None,
+) -> Mapping[str, Any]:
+    """One settled command's result envelope.
+
+    `conversation_authority` is stated only by a command whose post-settlement counters
+    this runtime knows exactly -- it is the conversation aggregate as written, not a
+    guess -- and is otherwise absent, which is the shape every existing caller reads.
+    """
     return ChatCommandResult(
         command_name=command_name,
         command_result=CommandResultEnvelope(command_id=command_id, status="completed").to_wire(),
         conversation_id=conversation_id,
+        conversation_authority=conversation_authority,
     ).to_wire()
 
 
@@ -1043,7 +1063,7 @@ def _create_conversation(request: _CreateConversation) -> ChatCommand:
             conversation_id=conversation_id,
             state="active",
             graph_revision=_INITIAL_GRAPH_REVISION,
-            latest_conversation_sequence=0,
+            latest_conversation_sequence=_INITIAL_CONVERSATION_SEQUENCE,
             schema_version=1,
             created_by_actor_id=request.actor_id,
             created_at_us=now,
@@ -1051,7 +1071,20 @@ def _create_conversation(request: _CreateConversation) -> ChatCommand:
             title=request.title,
             title_source=None if request.title is None else "user",
         )
-        return _ack(CREATE_CONVERSATION_COMMAND, request.command_id, conversation_id)
+        return _ack(
+            CREATE_CONVERSATION_COMMAND,
+            request.command_id,
+            conversation_id,
+            # The empty authoritative state, stated rather than fabricated: the caller's
+            # next command -- the branchless first `SubmitMessage` -- expects exactly the
+            # counters this command just wrote, and `chat.snapshot` still answers
+            # `not_found` for a conversation that has appended nothing.
+            conversation_authority=ChatConversationExpectation(
+                conversation_id=conversation_id,
+                graph_revision=_INITIAL_GRAPH_REVISION,
+                latest_conversation_sequence=_INITIAL_CONVERSATION_SEQUENCE,
+            ),
+        )
 
     return command
 

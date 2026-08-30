@@ -71,6 +71,10 @@
         "conversation_id": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
           "description": "The conversation the settled command changed, where it changed one."
+        },
+        "conversation_authority": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation",
+          "description": "The authoritative aggregate facts for that conversation after this command settled, in the same shape the next command states as its `expected_conversation`. Present only where the runtime can state the post-settlement counters exactly; absent otherwise, which is what every existing command and peer already sends and reads. A caller carries it straight into its next optimistic command rather than fabricating counters for a conversation it has not read back."
         }
       },
       "required": [

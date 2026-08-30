@@ -47,6 +47,7 @@ from omnivia_core.contracts.v1 import (
     SuccessResponseEnvelope,
     get_operation_metadata,
 )
+from omnivia_core.contracts.v1.generated import ChatCommandResult
 
 OPERATION = "chat.command"
 ENTRY = get_operation_metadata(OPERATION)
@@ -2358,6 +2359,13 @@ def test_create_conversation_writes_one_active_conversation_and_no_branch(
         "command_name": "CreateConversation",
         "command_result": {"commandId": CREATE_COMMAND_ID, "status": "completed"},
         "conversation_id": COLD_CONVERSATION_ID,
+        # The empty authoritative state, stated by the command that wrote it, so the
+        # caller's first send expects counters it read rather than ones it invented.
+        "conversation_authority": {
+            "conversation_id": COLD_CONVERSATION_ID,
+            "graph_revision": 1,
+            "latest_conversation_sequence": 0,
+        },
     }
     # REF-042 §9.1: no branch, no root message, no view state until the first send --
     # and no outbox fact either, because an empty conversation has committed no graph
@@ -2384,6 +2392,39 @@ def test_create_conversation_writes_one_active_conversation_and_no_branch(
     assert not chat.read_outbox_events_since(
         owned.connection, workspace_id=WORKSPACE_ID, after_cursor=0
     )
+
+
+def test_create_conversation_authority_is_the_durable_row_and_stays_optional(
+    owned: m1.Owned,
+) -> None:
+    """The authority fact is read back, not asserted twice: it must agree with the
+    conversation row the command wrote, survive a contract encode/decode round trip, and
+    stay absent on a command whose post-settlement counters the runtime does not state --
+    which is what keeps it compatible for every existing peer."""
+    created = _create_conversation(owned)
+
+    decoded = ChatCommandResult.from_wire(created.result)
+    authority = decoded.conversation_authority
+    assert authority is not None
+    conversation = chat.read_conversation(
+        owned.connection, workspace_id=WORKSPACE_ID, conversation_id=COLD_CONVERSATION_ID
+    )
+    assert conversation is not None
+    assert authority.conversation_id == conversation.conversation_id
+    assert authority.graph_revision == conversation.graph_revision
+    assert authority.latest_conversation_sequence == (
+        conversation.latest_conversation_sequence
+    )
+    assert decoded.to_wire() == created.result
+
+    # The first send states no authority, and its result still decodes: absence is the
+    # compatible shape, not a hole.
+    first_send = _dispatcher(
+        owned, execute_generation=lambda **fields: None
+    ).dispatch(_first_send_request())
+    assert isinstance(first_send, SuccessResponseEnvelope), first_send
+    assert "conversation_authority" not in first_send.result
+    assert ChatCommandResult.from_wire(first_send.result).conversation_authority is None
 
 
 @pytest.mark.parametrize("title", ("cold start", ""))
@@ -2982,6 +3023,11 @@ def test_a_branchless_conversation_has_no_snapshot_to_answer_with(
     and the `CreateConversation` result is the host's empty authoritative state."""
     created = _create_conversation(owned)
     assert created.result["conversation_id"] == COLD_CONVERSATION_ID
+    assert created.result["conversation_authority"] == {
+        "conversation_id": COLD_CONVERSATION_ID,
+        "graph_revision": 1,
+        "latest_conversation_sequence": 0,
+    }
 
     snapshot_entry = get_operation_metadata("chat.snapshot")
     response = _dispatcher(owned).dispatch(

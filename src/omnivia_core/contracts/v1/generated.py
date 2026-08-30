@@ -2652,62 +2652,6 @@ class ChatConversationExpectation:
 
 
 @dataclass(frozen=True, slots=True)
-class ChatCommandResult:
-    """Result of `chat.command`: the settled command's own Chat Contract v1 result envelope,
-    echoed with the command name it answers. The chat result is carried opaquely for the same
-    reason the request is. A replayed submission returns the stored result of the command
-    that already ran, not a second settlement.
-    """
-
-    command_name: Identifier
-    command_result: JsonObject
-    conversation_id: Identifier | None = None
-
-    def to_wire(self) -> dict[str, Any]:
-        """Render this value as a JSON-compatible mapping.
-
-        Absent optional fields are omitted rather than emitted as null, so a decode/encode
-        round trip reproduces the original document exactly.
-        """
-        wire: dict[str, Any] = {}
-        wire["command_name"] = self.command_name
-        wire["command_result"] = _encode_json_object(self.command_result)
-        if self.conversation_id is not None:
-            wire["conversation_id"] = self.conversation_id
-        return wire
-
-    @classmethod
-    def from_wire(cls, payload: object, path: str = "ChatCommandResult") -> ChatCommandResult:
-        """Decode a wire payload into a ChatCommandResult.
-
-        Unknown fields are ignored so a newer peer's additive minor release still decodes
-        here. Missing required fields and wrongly typed values raise ContractDecodeError.
-        """
-        mapping = _require_mapping(payload, path)
-        field_command_name = _decode_str(
-            _require_field(mapping, "command_name", path),
-            f"{path}.command_name",
-        )
-        field_command_result = _decode_json_object(
-            _require_field(mapping, "command_result", path),
-            f"{path}.command_result",
-        )
-        field_conversation_id: Identifier | None = None
-        if "conversation_id" in mapping:
-            raw_conversation_id = mapping["conversation_id"]
-            if raw_conversation_id is None:
-                raise ContractDecodeError(
-                    f"{path}.conversation_id: null is not a valid value"
-                )
-            field_conversation_id = _decode_str(raw_conversation_id, f"{path}.conversation_id")
-        return cls(
-            command_name=field_command_name,
-            command_result=field_command_result,
-            conversation_id=field_conversation_id,
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ChatGenerationEvent:
     """One durable generation-lifecycle event, as the workspace recorded it. Provider content is
     never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
@@ -6881,6 +6825,77 @@ class ChatCommandInput:
             command_name=field_command_name,
             command=field_command,
             expected_conversation=field_expected_conversation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCommandResult:
+    """Result of `chat.command`: the settled command's own Chat Contract v1 result envelope,
+    echoed with the command name it answers. The chat result is carried opaquely for the same
+    reason the request is. A replayed submission returns the stored result of the command
+    that already ran, not a second settlement.
+    """
+
+    command_name: Identifier
+    command_result: JsonObject
+    conversation_id: Identifier | None = None
+    conversation_authority: ChatConversationExpectation | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["command_name"] = self.command_name
+        wire["command_result"] = _encode_json_object(self.command_result)
+        if self.conversation_id is not None:
+            wire["conversation_id"] = self.conversation_id
+        if self.conversation_authority is not None:
+            wire["conversation_authority"] = self.conversation_authority.to_wire()
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "ChatCommandResult") -> ChatCommandResult:
+        """Decode a wire payload into a ChatCommandResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_command_name = _decode_str(
+            _require_field(mapping, "command_name", path),
+            f"{path}.command_name",
+        )
+        field_command_result = _decode_json_object(
+            _require_field(mapping, "command_result", path),
+            f"{path}.command_result",
+        )
+        field_conversation_id: Identifier | None = None
+        if "conversation_id" in mapping:
+            raw_conversation_id = mapping["conversation_id"]
+            if raw_conversation_id is None:
+                raise ContractDecodeError(
+                    f"{path}.conversation_id: null is not a valid value"
+                )
+            field_conversation_id = _decode_str(raw_conversation_id, f"{path}.conversation_id")
+        field_conversation_authority: ChatConversationExpectation | None = None
+        if "conversation_authority" in mapping:
+            raw_conversation_authority = mapping["conversation_authority"]
+            if raw_conversation_authority is None:
+                raise ContractDecodeError(
+                    f"{path}.conversation_authority: null is not a valid value"
+                )
+            field_conversation_authority = ChatConversationExpectation.from_wire(
+                raw_conversation_authority,
+                f"{path}.conversation_authority",
+            )
+        return cls(
+            command_name=field_command_name,
+            command_result=field_command_result,
+            conversation_id=field_conversation_id,
+            conversation_authority=field_conversation_authority,
         )
 
 

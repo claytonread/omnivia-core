@@ -2174,27 +2174,6 @@ export interface ChatConversationExpectation {
 }
 
 /**
- * Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed
- * with the command name it answers. The chat result is carried opaquely for the same reason the
- * request is. A replayed submission returns the stored result of the command that already ran,
- * not a second settlement.
- */
-export interface ChatCommandResult {
-  /**
-   * The Chat Contract v1 command name this result answers. Echoes the request.
-   */
-  readonly command_name: Identifier;
-  /**
-   * The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim.
-   */
-  readonly command_result: JsonObject;
-  /**
-   * The conversation the settled command changed, where it changed one.
-   */
-  readonly conversation_id?: Identifier;
-}
-
-/**
  * One durable generation-lifecycle event, as the workspace recorded it. Provider content is
  * never carried: `payload` holds only the sanitised, closed-vocabulary fields the workspace
  * persisted, and no request body, response body, header, URL or credential has a path into it.
@@ -4103,6 +4082,36 @@ export interface ChatCommandInput {
    * existing conversation.
    */
   readonly expected_conversation?: ChatConversationExpectation;
+}
+
+/**
+ * Result of `chat.command`: the settled command's own Chat Contract v1 result envelope, echoed
+ * with the command name it answers. The chat result is carried opaquely for the same reason the
+ * request is. A replayed submission returns the stored result of the command that already ran,
+ * not a second settlement.
+ */
+export interface ChatCommandResult {
+  /**
+   * The Chat Contract v1 command name this result answers. Echoes the request.
+   */
+  readonly command_name: Identifier;
+  /**
+   * The Chat Contract v1 `CommandResultEnvelope` the command produced, carried verbatim.
+   */
+  readonly command_result: JsonObject;
+  /**
+   * The conversation the settled command changed, where it changed one.
+   */
+  readonly conversation_id?: Identifier;
+  /**
+   * The authoritative aggregate facts for that conversation after this command settled, in the
+   * same shape the next command states as its `expected_conversation`. Present only where the
+   * runtime can state the post-settlement counters exactly; absent otherwise, which is what
+   * every existing command and peer already sends and reads. A caller carries it straight into
+   * its next optimistic command rather than fabricating counters for a conversation it has not
+   * read back.
+   */
+  readonly conversation_authority?: ChatConversationExpectation;
 }
 
 /**
