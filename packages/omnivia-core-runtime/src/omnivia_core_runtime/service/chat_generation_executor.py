@@ -20,8 +20,10 @@ from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
+    MAX_RESPONSE_TEXT_BYTES,
     GenerationLifecycleError,
     append_provider_generation_event,
+    append_provider_text_delta,
     claim_queued_generation,
     renew_generation_lease,
 )
@@ -36,7 +38,6 @@ __all__ = [
 ]
 
 ProviderStream = Callable[[ProviderInvocationRequest], Iterable[Mapping[str, Any]]]
-_MAX_TEXT_BYTES: Final = 262_144
 #: Head-room between an invocation's deadline and the lease that must outlive it.
 #: A lease shorter than the deadline expires while the executor is still legitimately
 #: waiting, so the claim is sized from the deadline rather than left at the default.
@@ -160,10 +161,6 @@ def _message_hash(text: str) -> tuple[str, str]:
     )
     message_hash = "sha256:" + hashlib.sha256(message_document.encode("utf-8")).hexdigest()
     return message_hash, part_hash
-
-
-def _text_hash(text: str) -> str:
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,31 +376,28 @@ class ChatGenerationExecutor:
                     delta = event.get("delta")
                     if not isinstance(delta, str):
                         raise GenerationExecutorError("a provider text delta is malformed")
+                    # Checked here as well as in the service so an oversized stream is a
+                    # terminalized `malformed-response` rather than a lifecycle refusal
+                    # that would leave this job durably running.
                     candidate = "".join([*text_chunks, delta])
-                    if len(candidate.encode("utf-8")) > _MAX_TEXT_BYTES:
+                    if len(candidate.encode("utf-8")) > MAX_RESPONSE_TEXT_BYTES:
                         raise GenerationExecutorError("the provider response exceeds message bounds")
-                    with chat.chat_writer(
+                    # The chunk, its ordering event and the job's sequence commit
+                    # together: a crash mid-delta leaves none of them rather than a
+                    # chunk no event orders.
+                    append_provider_text_delta(
                         self.connection,
                         self.identity,
                         workspace_id=self.workspace_id,
                         fencing_generation=self.fencing_generation,
-                    ) as writer:
-                        writer.append_generation_text_chunk(
-                            conversation_id=job.conversation_id,
-                            generation_job_id=job.generation_job_id,
-                            generation_attempt_id=attempt_id,
-                            chunk_ordinal=len(text_chunks),
-                            provider_event_id=(
-                                str(event["providerEventId"])
-                                if isinstance(event.get("providerEventId"), str)
-                                else None
-                            ),
-                            text_content=delta,
-                            content_hash=_text_hash(delta),
-                            occurred_at_us=_now_us(self.clock),
-                        )
+                        generation_job_id=job.generation_job_id,
+                        generation_attempt_id=attempt_id,
+                        provider_event=event,
+                        chunk_ordinal=len(text_chunks),
+                        now_us=_now_us(self.clock),
+                    )
                     text_chunks.append(delta)
-                if event_type == "finish" and event.get("finishReason") not in {
+                elif event_type == "finish" and event.get("finishReason") not in {
                     "error",
                     "cancelled",
                 }:

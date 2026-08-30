@@ -1062,7 +1062,14 @@ def test_retry_generation_opens_successor_attempt_and_executes_provider(
 
     def provider(request: Any) -> Iterator[Any]:
         calls.append(request)
-        yield from _stream(request, ("retried answer",))
+        for event in _stream(request, ("retried answer",)):
+            # Only the delta carries a provider event id, so the durable text event's
+            # payload is the one place `providerEventId` has to appear.
+            yield (
+                {**event, "providerEventId": "provider-retry-delta-1"}
+                if event["eventType"] == "text-delta"
+                else event
+            )
 
     clock = FakeClock(wall=WALL)
     executor = ChatGenerationExecutor(
@@ -1151,19 +1158,62 @@ def test_retry_generation_opens_successor_attempt_and_executes_provider(
         message_id=updated_status.result_message_id,
     )
     assert [dict(part.payload) for part in parts] == [{"text": "retried answer"}]
+    events = chat.read_generation_events(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    # The successor attempt's delta is durable in its own right, and ordered before
+    # the terminal event that ends the attempt.
+    assert [(event.event_type, event.generation_attempt_id) for event in events] == [
+        ("chat.generation.queued", None),
+        ("chat.generation.failed", original_attempt_id),
+        ("chat.generation.started", expected_attempt_id),
+        ("chat.generation.text_appended", expected_attempt_id),
+        ("chat.generation.succeeded", expected_attempt_id),
+    ]
+    assert [event.generation_event_sequence for event in events] == [1, 2, 3, 4, 5]
+    # The text event takes a sequence of its own, so the terminal event that follows
+    # it sits one further along than it would have without it -- and the successor
+    # attempt's whole stream stays contiguous across the retry.
+    assert events[-1].generation_event_sequence == 5
+    retried_job = chat.read_generation_job(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=first.generation_job_id,
+    )
+    assert retried_job is not None
+    # `last_event_sequence` on the job row is deliberately NOT 5. 0029 never reopens a
+    # terminal job, so the row has been frozen at the first attempt's failure since
+    # sequence 2; the status projection is the live authority across a retry, and it
+    # is the one that moved. The text append respects that boundary exactly as the
+    # terminal append does -- neither writes the frozen row.
+    assert retried_job.state == "failed"
+    assert retried_job.last_event_sequence == 2
+    # The wire carried a `providerEventId`, so the payload carries it -- and still
+    # nothing else. `chunkOrdinal` restarts at zero for the successor attempt.
+    assert dict(events[3].payload) == {
+        "providerEventType": "text-delta",
+        "providerEventId": "provider-retry-delta-1",
+        "chunkOrdinal": 0,
+    }
+    assert events[3].provider_event_id == "provider-retry-delta-1"
+    assert events[3].result_message_id is None
+    assert "retried answer" not in str(
+        seeded.connection.execute(
+            "SELECT payload_json FROM omnivia_chat_generation_events "
+            "WHERE workspace_id = ? AND generation_job_id = ?",
+            (WORKSPACE_ID, first.generation_job_id),
+        ).fetchall()
+    )
     assert [
-        (event.event_type, event.generation_attempt_id)
-        for event in chat.read_generation_events(
+        (chunk.generation_attempt_id, chunk.chunk_ordinal, chunk.text_content)
+        for chunk in chat.read_generation_text_chunks(
             seeded.connection,
             workspace_id=WORKSPACE_ID,
             generation_job_id=first.generation_job_id,
         )
-    ] == [
-        ("chat.generation.queued", None),
-        ("chat.generation.failed", original_attempt_id),
-        ("chat.generation.started", expected_attempt_id),
-        ("chat.generation.succeeded", expected_attempt_id),
-    ]
+    ] == [(expected_attempt_id, 0, "retried answer")]
     assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -1379,18 +1429,38 @@ def test_submit_runs_provider_and_materialises_assistant_message(
         seeded.connection, workspace_id=WORKSPACE_ID, message_id=job.result_message_id
     )
     assert [dict(part.payload) for part in parts] == [{"text": "assistant reply"}]
-    assert [
-        event.event_type
-        for event in chat.read_generation_events(
-            seeded.connection,
-            workspace_id=WORKSPACE_ID,
-            generation_job_id=job.generation_job_id,
-        )
-    ] == [
+    events = chat.read_generation_events(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        generation_job_id=job.generation_job_id,
+    )
+    # The delta is durable, and it is durable *before* the terminal event: a replay
+    # that stopped at `succeeded` would otherwise have to invent the text it ordered.
+    assert [event.event_type for event in events] == [
         "chat.generation.queued",
         "chat.generation.started",
+        "chat.generation.text_appended",
         "chat.generation.succeeded",
     ]
+    # The job's own projection of the stream counts the text event, so a reader that
+    # resumes from `last_event_sequence` resumes after the delta rather than over it.
+    assert [event.generation_event_sequence for event in events] == [1, 2, 3, 4]
+    assert job.last_event_sequence == 4
+    # Metadata only. `chunkOrdinal` names the chunk that holds the text; the text
+    # itself never reaches `payload_json`. This provider event carries no
+    # `providerEventId`, so the payload carries none either.
+    assert dict(events[2].payload) == {
+        "providerEventType": "text-delta",
+        "chunkOrdinal": 0,
+    }
+    assert events[2].result_message_id is None
+    assert "assistant reply" not in str(
+        seeded.connection.execute(
+            "SELECT payload_json FROM omnivia_chat_generation_events "
+            "WHERE workspace_id = ? AND generation_job_id = ?",
+            (WORKSPACE_ID, job.generation_job_id),
+        ).fetchall()
+    )
     assert job.current_attempt_id is not None
     chunks = chat.read_generation_text_chunks(
         seeded.connection,
@@ -1399,6 +1469,7 @@ def test_submit_runs_provider_and_materialises_assistant_message(
         generation_attempt_id=job.current_attempt_id,
     )
     assert [chunk.text_content for chunk in chunks] == ["assistant reply"]
+    assert [chunk.chunk_ordinal for chunk in chunks] == [0]
     outcomes = chat.read_generation_attempt_outcomes(
         seeded.connection,
         workspace_id=WORKSPACE_ID,

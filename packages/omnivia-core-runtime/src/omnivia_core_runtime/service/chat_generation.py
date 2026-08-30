@@ -2,8 +2,8 @@
 
 The first bounded slice of Core's M4 generation service: claim one queued
 submission, open the durable job and attempt it runs under, fold already-normalized
-F2a provider events into the five durable generation event types migration 0029
-admits, and replay that history after a cursor.
+F2a provider events into the durable generation event types migrations 0029 and 0031
+admit, and replay that history after a cursor.
 
 **Durable rows are the only authority.** Nothing here holds process-local state, so
 a crash between any two calls loses nothing: the next call reads the queued
@@ -14,13 +14,16 @@ already-`submitted` queue row returns the job that row names, and a repeated
 provider event with the same `providerEventId` returns the durable event already
 written for it.
 
-**No provider content is ever persisted.** A provider event wire reaches this module
-having already crossed F2a, and it is still never copied into a durable row: the
-payload written is built here from a closed allow-list of contract vocabulary
-members and bounded sanitised fields (`providerEventType`, `providerEventId`,
-`finishReason`, `errorCode`, `retryable`, `statusClass`, `safeMessage`), so a raw
-request or response body, a header, a URL, a credential or an SDK object present on
-the input mapping has no path into storage even if F2a were bypassed.
+**No provider content is ever persisted in an event payload.** A provider event wire
+reaches this module having already crossed F2a, and it is still never copied into a
+durable event row: the payload written is built here from a closed allow-list of
+contract vocabulary members and bounded sanitised fields (`providerEventType`,
+`providerEventId`, `finishReason`, `errorCode`, `retryable`, `statusClass`,
+`safeMessage`, `chunkOrdinal`), so a raw request or response body, a header, a URL, a
+credential or an SDK object present on the input mapping has no path into storage even
+if F2a were bypassed. The one piece of generated text this module does persist -- a
+streamed delta -- goes to `omnivia_chat_generation_text_chunks` and only there; its
+ordering event carries the ordinal that names it, never the text.
 
 **What this lane deliberately does not do.** It does not touch the conversation
 graph: no message, no message part, no branch head event, no `graph_revision` move.
@@ -56,6 +59,7 @@ from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage import chat
 
 __all__ = [
+    "MAX_RESPONSE_TEXT_BYTES",
     "ClaimedGeneration",
     "DuplicateProviderEvent",
     "GenerationConflict",
@@ -66,6 +70,7 @@ __all__ = [
     "GenerationTerminal",
     "UnsupportedProviderEvent",
     "append_provider_generation_event",
+    "append_provider_text_delta",
     "claim_queued_generation",
     "renew_generation_lease",
     "replay_generation_events",
@@ -76,8 +81,15 @@ __all__ = [
 #: the write, so every write below that leaves a job running re-states it.
 DEFAULT_LEASE_US: Final = 60_000_000
 
+#: 0030 bounds one durable chunk's `text_content` to 262144 UTF-8 bytes, and one
+#: generation's whole response is held to the same bound: a stream that would push the
+#: assistant message past what a message part may carry is refused while it is still
+#: only a stream, rather than after the graph write fails.
+MAX_RESPONSE_TEXT_BYTES: Final = 262_144
+
 _QUEUED: Final = "chat.generation.queued"
 _STARTED: Final = "chat.generation.started"
+_TEXT_APPENDED: Final = "chat.generation.text_appended"
 _SUCCEEDED: Final = "chat.generation.succeeded"
 _FAILED: Final = "chat.generation.failed"
 _CANCELLED: Final = "chat.generation.cancelled"
@@ -92,6 +104,10 @@ _TERMINAL_JOB_STATE_OF: Final = {
     _FAILED: "failed",
     _CANCELLED: "cancelled",
 }
+
+#: 0030 bounds one chunk's `chunk_ordinal` to 0..1000000. Held here so an ordinal
+#: outside it is a refusal naming the rule rather than a CHECK naming a column.
+_MAX_CHUNK_ORDINAL: Final = 1_000_000
 
 #: 0029 bounds `sanitized_error_detail` to 4096 bytes; the contract already bounds
 #: `safeMessage` to 2048 characters. Held to the smaller of the two here.
@@ -259,10 +275,11 @@ def _durable_event(wire: Mapping[str, Any]) -> tuple[str | None, dict[str, Any]]
     """The durable event type one provider event carries, and its sanitised payload.
 
     `None` for a provider event that carries no lifecycle transition -- every text,
-    reasoning, tool and metadata event in the F2a vocabulary. Those are legal parts
-    of a trace and are simply not durable generation-lifecycle facts: 0029 closes
-    `omnivia_chat_generation_events.event_type` to the five it is, and inventing a
-    sixth here to hold a text delta would be a schema change written in Python.
+    reasoning, tool and metadata event in the F2a vocabulary. Those are legal parts of
+    a trace and are not lifecycle transitions. A `text-delta` is the one of them that
+    is nonetheless durable, through :func:`append_provider_text_delta`, which writes
+    the `chat.generation.text_appended` event 0031 admits together with the chunk that
+    holds the text; the payload this function builds for it is that event's metadata.
 
     The returned payload is built field by field from the contract's own closed
     vocabularies and bounded sanitised strings. The input mapping is never copied.
@@ -520,10 +537,12 @@ def append_provider_generation_event(
     """Fold one already-normalized provider event into this job's durable history.
 
     Returns the durable event appended, the identical one already durable for this
-    `providerEventId` (an idempotent redelivery), or `None` for a provider event
-    that carries no generation-lifecycle transition -- a text or tool delta is a
-    legal part of a trace and simply is not one of the five durable event types
-    0029 admits, so nothing is written and nothing is refused.
+    `providerEventId` (an idempotent redelivery), or `None` for a provider event that
+    carries no generation-lifecycle transition -- a reasoning or tool delta is a legal
+    part of a trace and is not a lifecycle transition, so nothing is written and
+    nothing is refused. A `text-delta` belongs to :func:`append_provider_text_delta`,
+    which writes its chunk and its ordering event as one fact; passing one here
+    writes nothing.
 
     Refusals, in the order they are decided:
 
@@ -758,6 +777,253 @@ def _existing_provider_event(
         ):
             return event
     return None
+
+
+def _text_chunk_hash(delta_bytes: bytes) -> str:
+    """0030's `content_hash` for one exact delta: `sha256:` and 64 lowercase hex."""
+    return "sha256:" + hashlib.sha256(delta_bytes).hexdigest()
+
+
+def append_provider_text_delta(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    generation_job_id: str,
+    generation_attempt_id: str,
+    provider_event: Mapping[str, Any],
+    chunk_ordinal: int,
+    now_us: int,
+    expected_sequence: int | None = None,
+    lease_duration_us: int = DEFAULT_LEASE_US,
+) -> chat.GenerationEvent:
+    """Make one streamed text delta a single durable fact, or write nothing at all.
+
+    A delta is three rows -- the chunk that holds the exact text, the
+    `chat.generation.text_appended` event that orders it, and the job's advanced
+    `last_event_sequence` under a re-stated lease -- and they are only true together.
+    Written separately, a crash between them leaves a chunk no event orders or an
+    event naming a chunk that is not there, and a replay cannot tell which. They go in
+    one `chat_writer` transaction here for exactly that reason.
+
+    The text lives in `omnivia_chat_generation_text_chunks` and nowhere else. The
+    event's payload carries only what orders and identifies that chunk --
+    `providerEventType`, the optional `providerEventId`, and `chunkOrdinal` -- so the
+    generated text is never copied into `payload_json`.
+
+    `chunk_ordinal` is the server's own zero-based position, not something the
+    provider asserted, and must be the next one this attempt is at.
+
+    Refusals, in the order they are decided, none of which leaves a row behind:
+
+    1. a wire this version cannot safely interpret, or a `delta` that is not a
+       non-empty, NUL-free, UTF-8-encodable string --
+       :class:`UnsupportedProviderEvent`;
+    2. a `providerEventId` already durable on this `(job, attempt)` whose event *or*
+       chunk would differ -- :class:`DuplicateProviderEvent`. An identical redelivery
+       returns the durable event and writes nothing, which is what makes a replayed
+       provider stream safe;
+    3. a terminal job or attempt -- :class:`GenerationTerminal` -- or a job not
+       running this attempt, or an attempt with no durable
+       `chat.generation.started` event -- :class:`GenerationConflict`;
+    4. an ordinal outside 0029's own bound or not the next one, or an
+       `expected_sequence` that is not the position the durable job is at --
+       :class:`GenerationSequenceGap`;
+    5. a response whose cumulative UTF-8 size would pass
+       :data:`MAX_RESPONSE_TEXT_BYTES` -- :class:`GenerationConflict`.
+
+    A redelivery is decided on both tables, never one: an event without its chunk, or
+    a chunk without its event, is a torn write rather than a replay, and is refused.
+    """
+    _, payload = _durable_event(provider_event)
+    if payload["providerEventType"] != "text-delta":
+        raise UnsupportedProviderEvent("provider event field 'eventType' is not 'text-delta'")
+    delta = provider_event.get("delta")
+    # 0030 holds `text_content` to a non-empty, NUL-free, encodable string. Decided
+    # here rather than left to the CHECK, for the reason the rest of this module
+    # decides its own refusals: a constraint violation is an `IntegrityError` naming a
+    # column, where a refusal names the field and the rule.
+    if not isinstance(delta, str) or not delta or "\x00" in delta:
+        raise UnsupportedProviderEvent(
+            "provider event field 'delta' is not a non-empty NUL-free string"
+        )
+    try:
+        delta_bytes = delta.encode("utf-8")
+    except UnicodeEncodeError:
+        raise UnsupportedProviderEvent("provider event field 'delta' is not encodable as UTF-8")
+    if (
+        isinstance(chunk_ordinal, bool)
+        or not isinstance(chunk_ordinal, int)
+        or not 0 <= chunk_ordinal <= _MAX_CHUNK_ORDINAL
+    ):
+        raise GenerationSequenceGap(
+            "a chunk ordinal is a zero-based integer position within the durable bound"
+        )
+    payload["chunkOrdinal"] = chunk_ordinal
+    content_hash = _text_chunk_hash(delta_bytes)
+
+    job = chat.read_generation_job(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    if job is None:
+        raise GenerationNotFound(f"generation job {generation_job_id!r} is not in this workspace")
+
+    events = chat.read_generation_events(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    chunks = chat.read_generation_text_chunks(
+        connection,
+        workspace_id=workspace_id,
+        generation_job_id=generation_job_id,
+        generation_attempt_id=generation_attempt_id,
+    )
+    provider_event_id = payload.get("providerEventId")
+    if provider_event_id is not None:
+        existing = _existing_provider_event(
+            events,
+            generation_attempt_id=generation_attempt_id,
+            provider_event_id=str(provider_event_id),
+        )
+        if existing is not None:
+            durable = next(
+                (
+                    chunk
+                    for chunk in chunks
+                    if chunk.provider_event_id == str(provider_event_id)
+                ),
+                None,
+            )
+            if (
+                existing.event_type == _TEXT_APPENDED
+                and dict(existing.payload) == payload
+                and existing.result_message_id is None
+                and durable is not None
+                and durable.chunk_ordinal == chunk_ordinal
+                and durable.text_content == delta
+                and durable.content_hash == content_hash
+            ):
+                return existing
+            raise DuplicateProviderEvent(
+                f"provider event {provider_event_id!r} is already durable on this attempt "
+                "carrying a different durable text append"
+            )
+
+    projection = chat.read_generation_job_status_projection(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    effective_state = projection.state if projection is not None else job.state
+    effective_attempt_id = (
+        projection.current_attempt_id if projection is not None else job.current_attempt_id
+    )
+    if effective_state in _TERMINAL_JOB_STATES:
+        raise GenerationTerminal(f"generation job {generation_job_id!r} already ended")
+    if effective_state != "running" or effective_attempt_id != generation_attempt_id:
+        raise GenerationConflict(f"generation job {generation_job_id!r} is not running this attempt")
+    if any(
+        event.generation_attempt_id == generation_attempt_id
+        and event.event_type in _TERMINAL_EVENT_TYPES
+        for event in events
+    ):
+        raise GenerationTerminal(f"generation attempt {generation_attempt_id!r} already ended")
+    # Text can only be appended to a stream that durably started. A `text_appended`
+    # before `started` would be a history no replay can honestly order, and the durable
+    # start is the only evidence this attempt -- not a previous one on the same job --
+    # is the one the provider is streaming.
+    if not any(
+        event.generation_attempt_id == generation_attempt_id and event.event_type == _STARTED
+        for event in events
+    ):
+        raise GenerationConflict(
+            f"generation attempt {generation_attempt_id!r} has no durable started event"
+        )
+
+    if chunk_ordinal != len(chunks):
+        raise GenerationSequenceGap(
+            f"generation attempt {generation_attempt_id!r} expects its next text chunk at "
+            f"ordinal {len(chunks)}, not {chunk_ordinal}"
+        )
+    sequence = max((event.generation_event_sequence for event in events), default=0) + 1
+    if expected_sequence is not None and expected_sequence != sequence:
+        raise GenerationSequenceGap(
+            f"generation job {generation_job_id!r} expects its next event at sequence "
+            f"{sequence}, not {expected_sequence}"
+        )
+
+    cumulative = sum(len(chunk.text_content.encode("utf-8")) for chunk in chunks) + len(delta_bytes)
+    if cumulative > MAX_RESPONSE_TEXT_BYTES:
+        raise GenerationConflict(
+            f"generation attempt {generation_attempt_id!r} would exceed the bounded "
+            "response text size"
+        )
+
+    expires_at_us = now_us + lease_duration_us
+    with chat.chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.append_generation_text_chunk(
+            conversation_id=job.conversation_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            chunk_ordinal=chunk_ordinal,
+            provider_event_id=None if provider_event_id is None else str(provider_event_id),
+            text_content=delta,
+            content_hash=content_hash,
+            occurred_at_us=now_us,
+            schema_version=1,
+        )
+        writer.append_generation_event(
+            event_id=_event_id(generation_job_id, sequence),
+            conversation_id=job.conversation_id,
+            branch_id=job.branch_id,
+            generation_job_id=generation_job_id,
+            generation_attempt_id=generation_attempt_id,
+            event_type=_TEXT_APPENDED,
+            generation_event_sequence=sequence,
+            trigger_message_id=job.trigger_message_id,
+            result_message_id=None,
+            provider_event_id=None if provider_event_id is None else str(provider_event_id),
+            cursor=_cursor(generation_job_id, sequence),
+            payload=payload,
+            occurred_at_us=now_us,
+            schema_version=1,
+        )
+        if job.state not in _TERMINAL_JOB_STATES:
+            writer.update_generation_job(
+                generation_job_id=generation_job_id,
+                expected_state=job.state,
+                expected_lease_epoch=job.lease_epoch,
+                state=job.state,
+                lease_epoch=job.lease_epoch,
+                current_attempt_id=job.current_attempt_id,
+                lease_owner=job.lease_owner,
+                lease_expires_at_us=expires_at_us,
+                heartbeat_at_us=now_us,
+                last_event_sequence=sequence,
+                updated_at_us=now_us,
+                started_at_us=job.started_at_us,
+            )
+        if projection is None:
+            writer.insert_generation_job_status_projection(
+                generation_job_id=generation_job_id,
+                conversation_id=job.conversation_id,
+                state=effective_state,
+                current_attempt_id=effective_attempt_id,
+                updated_at_us=now_us,
+            )
+        else:
+            writer.update_generation_job_status_projection(
+                generation_job_id=generation_job_id,
+                expected_version=projection.version,
+                state=effective_state,
+                current_attempt_id=effective_attempt_id,
+                updated_at_us=now_us,
+            )
+
+    appended = chat.read_generation_events(
+        connection, workspace_id=workspace_id, generation_job_id=generation_job_id
+    )
+    return appended[sequence - 1]
 
 
 # --- replay --------------------------------------------------------------------------

@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 import test_application_audit_idempotency_migration as m1
 from omnivia_core_runtime.service.chat_generation import (
+    MAX_RESPONSE_TEXT_BYTES,
     ClaimedGeneration,
     DuplicateProviderEvent,
     GenerationConflict,
@@ -41,6 +42,7 @@ from omnivia_core_runtime.service.chat_generation import (
     GenerationTerminal,
     UnsupportedProviderEvent,
     append_provider_generation_event,
+    append_provider_text_delta,
     claim_queued_generation,
     replay_generation_events,
 )
@@ -72,6 +74,7 @@ CHAT_TABLES = (
     "omnivia_chat_generation_jobs",
     "omnivia_chat_generation_attempts",
     "omnivia_chat_generation_events",
+    "omnivia_chat_generation_text_chunks",
     "omnivia_chat_transactional_outbox",
 )
 
@@ -814,3 +817,289 @@ def test_a_failed_jobs_detail_is_the_contracts_own_bounded_safe_message(
     assert job is not None
     assert "\x00" not in str(job.sanitized_error_detail)
     assert job.sanitized_error_detail == "firstsecond" + ("x" * 1013)
+
+
+# --- 7: streamed text deltas ----------------------------------------------------------
+
+
+def delta_wire(**fields: Any) -> dict[str, Any]:
+    """One F2a `text-delta` wire, with the fields this lane reads defaulted."""
+    wire: dict[str, Any] = {
+        "ordinal": 1,
+        "providerEventId": "provider-event-m4-d1",
+        "partId": "part-1",
+        "delta": "hello",
+    }
+    wire.update(fields)
+    return provider_event("text-delta", **wire)
+
+
+def append_text(
+    holder: m1.Owned,
+    provider_event_wire: Mapping[str, Any] | None = None,
+    *,
+    chunk_ordinal: int = 0,
+    now_us: int = BASE_US + 40,
+    **overrides: Any,
+) -> chat.GenerationEvent:
+    fields: dict[str, Any] = {
+        "workspace_id": WORKSPACE_ID,
+        "fencing_generation": holder.generation,
+        "generation_job_id": JOB_ID,
+        "generation_attempt_id": ATTEMPT_ID,
+        "provider_event": delta_wire() if provider_event_wire is None else provider_event_wire,
+        "chunk_ordinal": chunk_ordinal,
+        "now_us": now_us,
+    }
+    fields.update(overrides)
+    return append_provider_text_delta(holder.connection, holder.identity, **fields)
+
+
+def text_chunks(holder: m1.Owned) -> list[tuple[int, str, str | None]]:
+    return [
+        (chunk.chunk_ordinal, chunk.text_content, chunk.provider_event_id)
+        for chunk in chat.read_generation_text_chunks(
+            holder.connection,
+            workspace_id=WORKSPACE_ID,
+            generation_job_id=JOB_ID,
+            generation_attempt_id=ATTEMPT_ID,
+        )
+    ]
+
+
+def snapshot(holder: m1.Owned) -> tuple[Any, ...]:
+    """Everything a text delta could touch: rows, chunks, the job and its projection.
+
+    The job and the projection are compared whole rather than by state, so a write
+    that only moved `version`, `updated_at_us` or the lease still shows up.
+    """
+    return (
+        counts(holder.connection),
+        text_chunks(holder),
+        chat.read_generation_job(
+            holder.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+        ),
+        chat.read_generation_job_status_projection(
+            holder.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+        ),
+    )
+
+
+def started(holder: m1.Owned) -> None:
+    """Claim, and take the durable `chat.generation.started` a text delta requires."""
+    claim(holder)
+    append(holder, STREAM_START, now_us=BASE_US + 30)
+
+
+def test_text_deltas_append_ordered_chunks_and_their_ordering_events(
+    seeded: m1.Owned,
+) -> None:
+    """Two deltas: two chunks in ordinal order, two events, and no text in a payload."""
+    started(seeded)
+
+    first = append_text(seeded, delta_wire(delta="hel"), chunk_ordinal=0, now_us=BASE_US + 40)
+    second = append_text(
+        seeded,
+        delta_wire(ordinal=2, providerEventId="provider-event-m4-d2", delta="lo"),
+        chunk_ordinal=1,
+        now_us=BASE_US + 41,
+    )
+
+    assert text_chunks(seeded) == [
+        (0, "hel", "provider-event-m4-d1"),
+        (1, "lo", "provider-event-m4-d2"),
+    ]
+    assert event_types(seeded) == [
+        "chat.generation.queued",
+        "chat.generation.started",
+        "chat.generation.text_appended",
+        "chat.generation.text_appended",
+    ]
+    assert dict(first.payload) == {
+        "providerEventType": "text-delta",
+        "providerEventId": "provider-event-m4-d1",
+        "chunkOrdinal": 0,
+    }
+    assert dict(second.payload) == {
+        "providerEventType": "text-delta",
+        "providerEventId": "provider-event-m4-d2",
+        "chunkOrdinal": 1,
+    }
+    events = chat.read_generation_events(
+        seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+    )
+    assert [e.generation_event_sequence for e in events] == [1, 2, 3, 4]
+
+    job = chat.read_generation_job(
+        seeded.connection, workspace_id=WORKSPACE_ID, generation_job_id=JOB_ID
+    )
+    assert job is not None
+    assert job.state == "running"
+    assert job.last_event_sequence == 4
+    assert seeded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_a_redelivered_text_delta_replays_across_a_reopened_database(
+    seeded: m1.Owned,
+) -> None:
+    """The exact same delta, after a restart, returns its event and writes nothing."""
+    started(seeded)
+    first = append_text(seeded)
+    before = snapshot(seeded)
+    path = seeded.path
+    seeded.connection.close()
+
+    reopened = m1.take_ownership(path)
+    try:
+        again = append_text(reopened, now_us=BASE_US + 99)
+        assert again == first
+        assert snapshot(reopened) == before
+    finally:
+        reopened.connection.close()
+
+
+@pytest.mark.parametrize(
+    ("wire", "chunk_ordinal"),
+    [
+        (delta_wire(delta="different"), 0),
+        (delta_wire(), 1),
+    ],
+    ids=["changed-text", "changed-ordinal"],
+)
+def test_a_text_delta_id_carrying_a_different_durable_fact_is_refused(
+    seeded: m1.Owned, wire: Mapping[str, Any], chunk_ordinal: int
+) -> None:
+    """The same provider event id, a different chunk: refused, and nothing changes."""
+    started(seeded)
+    append_text(seeded)
+    before = snapshot(seeded)
+
+    with pytest.raises(DuplicateProviderEvent):
+        append_text(seeded, wire, chunk_ordinal=chunk_ordinal, now_us=BASE_US + 41)
+
+    assert snapshot(seeded) == before
+
+
+def test_provider_metadata_outside_the_durable_payload_is_still_a_replay(
+    seeded: m1.Owned,
+) -> None:
+    """`partId` and the F2a envelope are not durable, so changing one is not a difference.
+
+    The durable fact is the chunk and the three-field payload that orders it. A
+    redelivery whose envelope differs carries the same durable fact, so it replays
+    rather than being refused -- refusing it would make a legitimately re-emitted
+    stream unresumable.
+    """
+    started(seeded)
+    first = append_text(seeded)
+    before = snapshot(seeded)
+
+    again = append_text(
+        seeded, delta_wire(ordinal=7, partId="part-2"), now_us=BASE_US + 41
+    )
+
+    assert again == first
+    assert snapshot(seeded) == before
+
+
+def claim_only(holder: m1.Owned) -> None:
+    claim(holder)
+
+
+def start_and_finish(holder: m1.Owned) -> None:
+    started(holder)
+    commit_result_message(holder)
+    append(holder, FINISH, now_us=BASE_US + 31, result_message_id=RESULT_MESSAGE_ID)
+
+
+def start_and_fill(holder: m1.Owned) -> None:
+    started(holder)
+    append_text(holder, delta_wire(delta="x" * MAX_RESPONSE_TEXT_BYTES), chunk_ordinal=0)
+
+
+@pytest.mark.parametrize(
+    ("prepare", "kwargs", "error"),
+    [
+        (started, {"provider_event_wire": delta_wire(delta="")}, UnsupportedProviderEvent),
+        (started, {"provider_event_wire": delta_wire(delta="a\x00b")}, UnsupportedProviderEvent),
+        (started, {"provider_event_wire": delta_wire(delta="a\ud800b")}, UnsupportedProviderEvent),
+        (started, {"provider_event_wire": delta_wire(delta=7)}, UnsupportedProviderEvent),
+        (started, {"chunk_ordinal": -1}, GenerationSequenceGap),
+        (started, {"chunk_ordinal": 1_000_001}, GenerationSequenceGap),
+        (started, {"chunk_ordinal": 5}, GenerationSequenceGap),
+        (started, {"expected_sequence": 9}, GenerationSequenceGap),
+        (claim_only, {}, GenerationConflict),
+        (started, {"generation_attempt_id": "generation-attempt-m4-2"}, GenerationConflict),
+        (start_and_finish, {}, GenerationTerminal),
+        (
+            start_and_fill,
+            {
+                "provider_event_wire": delta_wire(providerEventId="provider-event-m4-d2"),
+                "chunk_ordinal": 1,
+            },
+            GenerationConflict,
+        ),
+    ],
+    ids=[
+        "empty-delta",
+        "nul-delta",
+        "surrogate-delta",
+        "non-string-delta",
+        "negative-ordinal",
+        "ordinal-past-the-durable-bound",
+        "ordinal-gap",
+        "event-sequence-gap",
+        "delta-before-started",
+        "wrong-attempt",
+        "terminal-attempt",
+        "over-the-bounded-response-size",
+    ],
+)
+def test_a_refused_text_delta_leaves_no_chunk_and_no_event(
+    seeded: m1.Owned,
+    prepare: Any,
+    kwargs: dict[str, Any],
+    error: type[Exception],
+) -> None:
+    """Every refusal is decided before the transaction: no orphan chunk, no event."""
+    prepare(seeded)
+    before = snapshot(seeded)
+    appended = len([t for t in event_types(seeded) if t == "chat.generation.text_appended"])
+
+    with pytest.raises(error):
+        append_text(seeded, now_us=BASE_US + 50, **kwargs)
+
+    assert snapshot(seeded) == before
+    assert len([t for t in event_types(seeded) if t == "chat.generation.text_appended"]) == appended
+
+
+@pytest.mark.parametrize(
+    "faulting_write",
+    ["append_generation_text_chunk", "append_generation_event"],
+)
+def test_a_fault_mid_transaction_rolls_the_whole_text_delta_back(
+    seeded: m1.Owned, monkeypatch: pytest.MonkeyPatch, faulting_write: str
+) -> None:
+    """A chunk, its event and the job's advance are one fact or none of them.
+
+    The fault is raised *after* the patched write returns, so the row really was
+    issued into the transaction before the failure -- the rollback is what removes it,
+    not a call that never happened.
+    """
+    started(seeded)
+    before = snapshot(seeded)
+    original = getattr(chat.ChatWriter, faulting_write)
+
+    def boom(self: chat.ChatWriter, **fields: Any) -> None:
+        original(self, **fields)
+        raise RuntimeError("fault after the durable write was issued")
+
+    monkeypatch.setattr(chat.ChatWriter, faulting_write, boom)
+
+    with pytest.raises(RuntimeError):
+        append_text(seeded, now_us=BASE_US + 50)
+
+    monkeypatch.undo()
+    assert snapshot(seeded) == before
+    assert "chat.generation.text_appended" not in event_types(seeded)
+    assert seeded.connection.in_transaction is False
