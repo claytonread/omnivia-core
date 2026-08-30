@@ -1530,9 +1530,9 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     default = build_application_registry()
     assert default.operations == shipped
     assert len(shipped) == 6
-    # None of the sixteen unserved operations, mutating or not.
+    # None of the seventeen unserved operations, mutating or not.
     assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 16
+    assert len(APPLICATION_OPERATIONS - shipped) == 17
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}

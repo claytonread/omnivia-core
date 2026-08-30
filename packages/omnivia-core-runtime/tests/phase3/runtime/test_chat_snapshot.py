@@ -15,7 +15,21 @@ from typing import Any
 import pytest
 import test_v06_5_s0_mutation_foundation as s0
 from jsonschema import Draft202012Validator
+from omnivia_core_runtime.ownership.identity import SystemClock
 from omnivia_core_runtime.service import chat_snapshot
+from omnivia_core_runtime.service.application import (
+    CHAT_FAMILY_PURPOSES,
+    CHAT_OBSERVATION_PURPOSE,
+    build_chat_registry,
+    chat_family_session,
+)
+from omnivia_core_runtime.service.authorization import ServiceBinding
+from omnivia_core_runtime.service.handlers import chat as chat_handler_module
+from omnivia_core_runtime.service.handlers.chat import (
+    CHAT_FAMILY_OPERATIONS,
+    CHAT_SNAPSHOT_OPERATION,
+    ChatHandlers,
+)
 from omnivia_core_runtime.service.operations import OperationContext, OperationError
 from omnivia_core_runtime.storage.chat import (
     Branch,
@@ -25,6 +39,7 @@ from omnivia_core_runtime.storage.chat import (
     MessagePart,
     ViewState,
 )
+from omnivia_core_runtime.storage.memory import random_identifier
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
@@ -476,3 +491,162 @@ def test_every_incomplete_snapshot_refuses_identically(
         "no complete conversation snapshot is available for this request"
     )
     assert len(reader.calls) == 1
+
+
+# --- 4: the handler, wired into the production Chat family ---------------------------
+
+INSTALLATION_ID = "inst-chat-snapshot"
+
+
+class _FakeService:
+    """Just what `ChatHandlers._authority()` reads: a connection and an identity."""
+
+    def __init__(self, connection: Any = None, identity: Any = None) -> None:
+        self.connection = connection
+        self.identity = identity
+
+
+def _handlers(service: Any) -> ChatHandlers:
+    session = chat_family_session(
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+    binding = ServiceBinding(installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID)
+    return ChatHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock(),
+        allocate_identifier=random_identifier,
+    )
+
+
+def test_the_handler_passes_the_decoded_request_context_and_connection_to_the_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Any, ChatSnapshotInput, OperationContext]] = []
+    sentinel_wire: Mapping[str, Any] = {"conversation_id": CONVERSATION_ID, "snapshot": {}}
+
+    def _stub(
+        connection: Any, request: ChatSnapshotInput, context: OperationContext
+    ) -> Mapping[str, Any]:
+        calls.append((connection, request, context))
+        return sentinel_wire
+
+    monkeypatch.setattr(chat_handler_module, "resolve_chat_snapshot", _stub)
+    monkeypatch.setattr(chat_handler_module, "read_guard", lambda connection: object())
+
+    connection = object()
+    context = _context()
+
+    wire = _handlers(_FakeService(connection, object())).chat_snapshot(context)
+
+    assert wire is sentinel_wire
+    assert len(calls) == 1
+    called_connection, called_request, called_context = calls[0]
+    assert called_connection is connection
+    assert called_context is context
+    assert isinstance(called_request, ChatSnapshotInput)
+    assert called_request.conversation_id == CONVERSATION_ID
+    assert called_request.snapshot_query == _query()
+
+
+def test_a_malformed_request_is_the_constant_chat_family_diagnostic_and_never_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def _stub(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(chat_handler_module, "resolve_chat_snapshot", _stub)
+    monkeypatch.setattr(chat_handler_module, "read_guard", lambda connection: object())
+
+    context = OperationContext(
+        request=s0.envelope_for(
+            ENTRY,
+            # Missing the required `snapshot_query` field: not a valid `ChatSnapshotInput`.
+            operation_input={"conversation_id": CONVERSATION_ID},
+            request_id=REQUEST_ID,
+            workspace_id=WORKSPACE_ID,
+        ),
+        principal=PRINCIPAL,
+        workspace_id=WORKSPACE_ID,
+        granted_operations=frozenset({OPERATION}),
+    )
+
+    with pytest.raises(OperationError) as raised:
+        _handlers(_FakeService(object(), object())).chat_snapshot(context)
+
+    assert raised.value.code == "invalid_request"
+    assert raised.value.message == chat_handler_module._MESSAGE_INVALID
+    assert called is False
+
+
+def test_no_authoritative_storage_refuses_before_the_resolver_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def _stub(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(chat_handler_module, "resolve_chat_snapshot", _stub)
+
+    with pytest.raises(OperationError) as raised:
+        _handlers(_FakeService()).chat_snapshot(_context())
+
+    assert raised.value.code == "internal_non_recoverable"
+    assert called is False
+
+
+def test_the_resolvers_own_operation_error_reaches_the_caller_unweakened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = OperationError("not_found", "no complete conversation snapshot is available")
+
+    def _stub(*args: Any, **kwargs: Any) -> Mapping[str, Any]:
+        raise original
+
+    monkeypatch.setattr(chat_handler_module, "resolve_chat_snapshot", _stub)
+    monkeypatch.setattr(chat_handler_module, "read_guard", lambda connection: object())
+
+    with pytest.raises(OperationError) as raised:
+        _handlers(_FakeService(object(), object())).chat_snapshot(_context())
+
+    assert raised.value is original
+    assert raised.value.code == "not_found"
+    assert raised.value.message == original.message
+
+
+def test_chat_snapshot_is_registered_as_a_chat_family_observation_operation() -> None:
+    assert CHAT_SNAPSHOT_OPERATION in CHAT_FAMILY_OPERATIONS
+    assert CHAT_FAMILY_PURPOSES[CHAT_SNAPSHOT_OPERATION] == CHAT_OBSERVATION_PURPOSE
+
+
+def test_chat_family_session_grants_chat_snapshot_under_the_observation_purpose() -> None:
+    session = chat_family_session(
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+    )
+
+    assert CHAT_SNAPSHOT_OPERATION in session.operations
+    assert "chat:read" in session.scopes
+    assert CHAT_OBSERVATION_PURPOSE in session.purposes
+
+
+def test_build_chat_registry_routes_chat_snapshot_to_the_bound_handler() -> None:
+    handlers = _handlers(_FakeService())
+
+    registry = build_chat_registry(handlers)
+
+    handler = registry.get(CHAT_SNAPSHOT_OPERATION)
+    assert handler is not None
+    assert getattr(handler, "__self__", None) is handlers
+    assert getattr(handler, "__func__", None) is ChatHandlers.chat_snapshot

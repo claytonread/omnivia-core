@@ -1,12 +1,14 @@
-"""Production handlers for ``chat.command`` and ``chat.events``.
+"""Production handlers for ``chat.command``, ``chat.events`` and ``chat.snapshot``.
 
-Two operations, and neither of them owns any Chat rule of its own. `chat.events` is
+Three operations, and none of them owns any Chat rule of its own. `chat.events` is
 the wire projection of :func:`~service.chat_generation.replay_generation_events`;
-`chat.command` is the catalogue's front door onto
-:func:`~service.chat_command.execute_chat_command`, which is itself the one mutation
-seam composed over the Chat repository. Everything that decides a request -- the
-twelve authorization checks, the server-issued grant, the fence, the audit, the claim
-and the proved replay -- already happened by the time either of these runs.
+`chat.snapshot` is the wire projection of
+:func:`~service.chat_snapshot.resolve_chat_snapshot`; `chat.command` is the
+catalogue's front door onto :func:`~service.chat_command.execute_chat_command`,
+which is itself the one mutation seam composed over the Chat repository. Everything
+that decides a request -- the twelve authorization checks, the server-issued grant,
+the fence, the audit, the claim and the proved replay -- already happened by the time
+any of these runs.
 
 **The one seam this module adds, and why it is a parameter.** `chat.command` carries a
 Chat Contract command name and that command's own request document, both opaque to the
@@ -44,6 +46,7 @@ from omnivia_core.contracts.v1.generated import (
     ChatEventsInput,
     ChatEventsResult,
     ChatGenerationEvent,
+    ChatSnapshotInput,
 )
 from omnivia_core_runtime.ownership.fencing import read_guard
 from omnivia_core_runtime.ownership.identity import Clock
@@ -58,6 +61,7 @@ from omnivia_core_runtime.service.chat_command import (
     is_governed_command_result,
 )
 from omnivia_core_runtime.service.chat_generation import replay_generation_events
+from omnivia_core_runtime.service.chat_snapshot import resolve_chat_snapshot
 from omnivia_core_runtime.service.chat_submit import (
     RETRY_GENERATION_COMMAND,
     SUBMIT_MESSAGE_COMMAND,
@@ -75,8 +79,9 @@ from omnivia_core_runtime.storage.memory import IdentifierAllocator
 
 CHAT_COMMAND_OPERATION: Final = "chat.command"
 CHAT_EVENTS_OPERATION: Final = "chat.events"
+CHAT_SNAPSHOT_OPERATION: Final = "chat.snapshot"
 CHAT_FAMILY_OPERATIONS: Final = frozenset(
-    {CHAT_COMMAND_OPERATION, CHAT_EVENTS_OPERATION}
+    {CHAT_COMMAND_OPERATION, CHAT_EVENTS_OPERATION, CHAT_SNAPSHOT_OPERATION}
 )
 
 _MESSAGE_INVALID: Final = "the request payload is not valid for this chat operation"
@@ -292,11 +297,23 @@ class ChatHandlers:
             resnapshot_reason=replay.reason,
         ).to_wire()
 
+    def chat_snapshot(self, context: OperationContext) -> Mapping[str, Any]:
+        request: ChatSnapshotInput | None = None
+        try:
+            request = ChatSnapshotInput.from_wire(context.request.input)
+        except (ContractDecodeError, ContractSemanticError):
+            pass
+        if request is None:
+            raise OperationError(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        connection, _identity, _guard = self._authority()
+        return resolve_chat_snapshot(connection, request, context)
+
 
 __all__ = [
     "CHAT_COMMAND_OPERATION",
     "CHAT_EVENTS_OPERATION",
     "CHAT_FAMILY_OPERATIONS",
+    "CHAT_SNAPSHOT_OPERATION",
     "ChatCommandResolver",
     "ChatGenerationExecution",
     "ChatHandlers",

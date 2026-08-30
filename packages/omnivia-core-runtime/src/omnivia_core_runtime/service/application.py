@@ -80,6 +80,7 @@ from omnivia_core_runtime.service.handlers.chat import (
     CHAT_COMMAND_OPERATION,
     CHAT_EVENTS_OPERATION,
     CHAT_FAMILY_OPERATIONS,
+    CHAT_SNAPSHOT_OPERATION,
     ChatCommandResolver,
     ChatGenerationExecution,
     ChatHandlers,
@@ -226,13 +227,14 @@ GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 #: The W2-F2 Chat family. Two purposes rather than one, on the same split the job
 #: family uses: the mutation is served under the purpose `MUTATION_PURPOSES` declares
 #: for it -- which is the only purpose a grant for it can ever carry -- and the durable
-#: event replay is an observation, which is not what a caller authors a conversation
-#: under.
+#: event replay and the point-in-time snapshot are both observations, which is not
+#: what a caller authors a conversation under.
 CHAT_OBSERVATION_PURPOSE: Final = "chat_observation"
 CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
         CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
         CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
+        CHAT_SNAPSHOT_OPERATION: CHAT_OBSERVATION_PURPOSE,
     }
 )
 
@@ -612,6 +614,9 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     registry.register(
         CHAT_EVENTS_OPERATION, cast(OperationHandler, handlers.chat_events)
     )
+    registry.register(
+        CHAT_SNAPSHOT_OPERATION, cast(OperationHandler, handlers.chat_snapshot)
+    )
     return registry
 
 
@@ -770,7 +775,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 22/22 complete.
+    is anything other than 23/23 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -1405,7 +1410,7 @@ def build_chat_application_dispatcher(
     transport: str = LOCAL_TRANSPORT_ADAPTER,
     record: ApplicationCallSink | None = None,
 ) -> ApplicationDispatcher:
-    """Compose the exact two-operation W2-F2 Chat family around the existing router.
+    """Compose the exact three-operation W2-F2 Chat family around the existing router.
 
     `resolve_command` is the Chat-domain mutation seam and production states the Core
     resolver `service/chat_submit.py` ships: a `SubmitMessage` in the variant this build

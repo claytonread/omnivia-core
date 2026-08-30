@@ -43,7 +43,7 @@ ARCHITECTURE_TRACEABILITY = (
     REPO_ROOT
     / "tests/fixtures/service_conformance/architecture-gate-traceability-v1.json"
 )
-CORPUS_SHA256 = "e9709a6221f734b0a077536648840c3b143e27dc0fa58298ed6bab8e125ab2db"
+CORPUS_SHA256 = "62894971397ce72234a0eb53175adcfb7383683fbb5e59131914d029c0e01b49"
 ADAPTERS = ("in_process", "ipc", "http")
 
 
@@ -96,7 +96,7 @@ def test_v06_5_s5_registry_exactly_matches_catalogue(
     surface: ProductionApplicationSurface,
 ) -> None:
     catalogue = tuple(entry.name for entry in OPERATION_CATALOGUE)
-    assert len(catalogue) == len(set(catalogue)) == 22
+    assert len(catalogue) == len(set(catalogue)) == 23
     assert surface.registry.operations == APPLICATION_OPERATIONS == frozenset(catalogue)
     assert surface.adapters == frozenset(ADAPTERS)
     surface.registry.assert_complete()
@@ -133,7 +133,7 @@ def test_v06_5_s5_every_handler_is_production_callable(
         assert handler.__module__.startswith(
             "omnivia_core_runtime.service.handlers."
         ), operation
-    assert len(identities) == 22
+    assert len(identities) == 23
     assert not any(
         token in identity.lower()
         for identity in identities.values()
@@ -198,7 +198,7 @@ def test_v06_5_s5_operation_traceability_complete() -> None:
     corpus = _document(CORPUS)
     case_names = {case["operation"] for case in corpus["cases"]}
     assert case_names == APPLICATION_OPERATIONS
-    assert len(corpus["cases"]) == 77
+    assert len(corpus["cases"]) == 78
 
 
 def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
@@ -218,7 +218,7 @@ def test_v06_5_s5_candidate_head_tree_and_corpus_digest() -> None:
     assert hashlib.sha256(CORPUS.read_bytes()).hexdigest() == CORPUS_SHA256
     operation = _document(OPERATION_TRACEABILITY)
     architecture = _document(ARCHITECTURE_TRACEABILITY)
-    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 231
+    assert operation["adapter_evidence_corpus"]["case_count"] * len(ADAPTERS) == 234
     assert architecture["operation_traceability"]["file"] == (
         "tests/fixtures/service_conformance/operation-traceability-v1.json"
     )
@@ -244,3 +244,19 @@ def test_the_production_surface_installs_the_chat_generation_executor(
     handlers = getattr(handler, "__self__", None)
     assert handlers is not None, "chat.command should route to a bound handler method"
     assert handlers.execute_generation is not None
+
+
+def test_the_production_surface_routes_chat_snapshot_to_the_same_bound_chat_handlers(
+    surface: ProductionApplicationSurface,
+) -> None:
+    """`chat.snapshot` is a read: it shares the Chat family's bound handlers object
+    with `chat.command` and `chat.events`, not a second, separately-wired instance."""
+    from omnivia_core_runtime.service.handlers.chat import ChatHandlers
+
+    command_handler = surface.registry.get("chat.command")
+    snapshot_handler = surface.registry.get("chat.snapshot")
+    assert snapshot_handler is not None
+    handlers = getattr(snapshot_handler, "__self__", None)
+    assert isinstance(handlers, ChatHandlers)
+    assert getattr(snapshot_handler, "__func__", None) is ChatHandlers.chat_snapshot
+    assert handlers is getattr(command_handler, "__self__", None)
