@@ -276,11 +276,11 @@ def record_completed_compaction(
         ):
             return _projection_context(existing)
         raise ChatCompactionConflict("compaction id already names another projection")
-    events = [
+    events: tuple[tuple[str, Mapping[str, Any]], ...] = (
         ("started", {"sourceRange": projection_body["sourceRange"]}),
         ("summary", {"summary": safe_summary}),
         ("completed", {"projectionDigest": projection_digest}),
-    ]
+    )
     with chat.chat_writer(
         connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
     ) as writer:
@@ -361,13 +361,14 @@ def _latest_projection(
     previous = connection.row_factory
     connection.row_factory = sqlite3.Row
     try:
-        return connection.execute(
+        row: sqlite3.Row | None = connection.execute(
             "SELECT * FROM omnivia_chat_model_input_projections "
             "WHERE workspace_id = ? AND conversation_id = ? AND branch_id = ? "
             "AND state = 'completed' AND source_end_sequence <= ? "
             "ORDER BY source_end_sequence DESC, completed_at_us DESC, projection_id DESC LIMIT 1",
             (workspace_id, conversation_id, branch_id, max_source_end_sequence),
         ).fetchone()
+        return row
     finally:
         connection.row_factory = previous
 
@@ -382,12 +383,14 @@ def _existing_projection(
     previous = connection.row_factory
     connection.row_factory = sqlite3.Row
     try:
-        rows = connection.execute(
-            "SELECT * FROM omnivia_chat_model_input_projections "
-            "WHERE workspace_id = ? AND (projection_id = ? OR compaction_id = ?) "
-            "ORDER BY projection_id",
-            (workspace_id, projection_id, compaction_id),
-        ).fetchall()
+        rows: list[sqlite3.Row] = list(
+            connection.execute(
+                "SELECT * FROM omnivia_chat_model_input_projections "
+                "WHERE workspace_id = ? AND (projection_id = ? OR compaction_id = ?) "
+                "ORDER BY projection_id",
+                (workspace_id, projection_id, compaction_id),
+            ).fetchall()
+        )
     finally:
         connection.row_factory = previous
     if not rows:
