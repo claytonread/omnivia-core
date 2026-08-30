@@ -70,6 +70,7 @@ from omnivia_core.contracts.v1 import (
     encode_core_safe_status,
     encode_service_probe_result,
     get_operation_metadata,
+    is_request_id,
 )
 from omnivia_core_cli.dispatch import (
     DispatchError,
@@ -332,6 +333,16 @@ def build_parser() -> argparse.ArgumentParser:
         )
         leaf.add_argument("--principal", default=None, help="the principal to claim")
         leaf.add_argument(
+            "--request-id",
+            default=None,
+            metavar="ID",
+            type=_request_id,
+            help=(
+                "the request id to send, for an input document that must name "
+                "this request (default: a fresh one)"
+            ),
+        )
+        leaf.add_argument(
             "--idempotency-key", default=None, help="make this mutation replay-safe"
         )
         leaf.add_argument(
@@ -417,6 +428,7 @@ def main(
                     payload=arguments.input_json,
                     deadline=deadline,
                     principal=arguments.principal,
+                    request_id=arguments.request_id,
                     idempotency_key=arguments.idempotency_key,
                     record_version=arguments.record_version,
                 ),
@@ -673,6 +685,20 @@ def _absolute_path(value: str) -> Path:
     if not path.is_absolute():
         raise argparse.ArgumentTypeError("must be an absolute path")
     return path
+
+
+def _request_id(value: str) -> str:
+    """`value` as a contract `RequestId`, refusing anything the envelope would not carry.
+
+    Checked here, with the contracts' own `is_request_id` rather than a pattern
+    restated locally, so a malformed id is a usage error naming the flag instead
+    of a `ValueError` from the middle of envelope construction. The value never
+    appears in the refusal: it is the caller's, and a usage error is exactly what
+    ends up in a shell history or a CI log.
+    """
+    if not is_request_id(value):
+        raise argparse.ArgumentTypeError("must be a well-formed request id")
+    return value
 
 
 def _duration_ms(value: str) -> int:

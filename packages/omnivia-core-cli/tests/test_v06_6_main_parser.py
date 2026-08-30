@@ -110,6 +110,7 @@ SECRET_BEARING = {
     "unknown-flag": ["memory", "create", f"--not-a-flag={SECRET}"],
     "unsupported-idempotency-key": [*_NO_KEY.path, "--idempotency-key", SECRET],
     "unsupported-record-version": [*_NO_VERSION.path, "--record-version", SECRET],
+    "malformed-request-id": ["memory", "get", "--request-id", f"!{SECRET}"],
 }
 
 
