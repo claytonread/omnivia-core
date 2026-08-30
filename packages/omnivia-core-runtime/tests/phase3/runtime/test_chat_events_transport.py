@@ -432,5 +432,3 @@ def test_one_page_is_the_first_thousand_and_the_last_cursor_continues(
         1004,
         1005,
     ]
-
-
