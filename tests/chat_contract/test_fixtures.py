@@ -1,4 +1,4 @@
-"""Fixture conformance for the 158 governed Chat Runtime Contract v1 fixtures.
+"""Fixture conformance for the 164 governed Chat Runtime Contract v1 fixtures.
 
 Preloads all 13 canonical schemas (``contracts/chat/v1/schemas``) into one
 Draft 2020-12 ``referencing`` registry so cross-file ``$ref``s resolve, then
@@ -941,8 +941,8 @@ def test_each_schema_is_a_valid_draft_2020_12_schema(name: str) -> None:
 
 
 def test_the_manifest_declares_the_governed_counts() -> None:
-    assert MANIFEST["counts"] == {"total": 158, "valid": 75, "invalid": 83}
-    assert len(MANIFEST["fixtures"]) == 158
+    assert MANIFEST["counts"] == {"total": 164, "valid": 76, "invalid": 88}
+    assert len(MANIFEST["fixtures"]) == 164
 
 
 def test_every_check_the_manifest_names_is_implemented() -> None:

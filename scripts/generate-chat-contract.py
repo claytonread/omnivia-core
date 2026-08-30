@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files: FIXTURE-MANIFEST.json
-#                                             plus 158 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (165 files: FIXTURE-MANIFEST.json
+#                                             plus 164 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -19,7 +19,7 @@
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 159 fixture
+# This never reads the Masterdocs checkout: the 13 schemas and 165 fixture
 # files under contracts/chat/v1 are this repository's own checked-in copy of
 # the approved bytes, and are the only source this script reads.
 #
@@ -33,16 +33,25 @@
 #     `branch` member carrying the exact branch.schema.json MessageBranch the
 #     `path` was taken from, so a hosted F2b snapshot carries the `headVersion`
 #     a later optimistic submit must state. Required members are unchanged.
-# Both are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-COMPATIBILITY-
-# AND-MIGRATION.md §3, and both must be carried back to the Masterdocs
-# authority before the next tag: until then this tree is deliberately not
-# byte-identical to architecture-v1.4.0, and the digest is what says so.
+#   events.schema.json#/$defs/GenerationTextAppendedEvent -- a new closed
+#     transport event `chat.generation.text_appended` carrying one live
+#     in-flight text delta for an in-progress Generation Attempt, added as a
+#     further member of the `ChatEvent` union with
+#     common.schema.json#/$defs/ChatEventType widened by that one member. No
+#     existing event $def changes, so every document that validated before
+#     still validates; six governed fixtures (one valid, five invalid) are
+#     added with it.
+# All three are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
+# COMPATIBILITY-AND-MIGRATION.md §3, and all three must be carried back to the
+# Masterdocs authority before the next tag: until then this tree is
+# deliberately not byte-identical to architecture-v1.4.0, and the digest is
+# what says so.
 """Generate ``omnivia_core.chat_contract.v1.generated`` from the checked-in
 Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 159 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 165 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -113,19 +122,19 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 159  # FIXTURE-MANIFEST.json + 158 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 158
-EXPECTED_FIXTURE_VALID_COUNT = 75
-EXPECTED_FIXTURE_INVALID_COUNT = 83
+EXPECTED_FIXTURE_TREE_COUNT = 165  # FIXTURE-MANIFEST.json + 164 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 164
+EXPECTED_FIXTURE_VALID_COUNT = 76
+EXPECTED_FIXTURE_INVALID_COUNT = 88
 
 #: Pinned over the approved bytes verified byte-for-byte against the tagged
-#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the two
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the three
 #: authorized additive widenings the header names. Recomputed on every run by
 #: :func:`compute_resource_inventory_digest` and compared; any changed, missing
 #: or extra file under ``contracts/chat/v1`` changes this digest and fails
 #: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "87a0bd924205901d69f881393b0038cd6807d91ad574f6b77058320ffe95cd3e"
+    "591baa7f6ae1ea2cced35e648538e7429657b70046d6cdd31fbcfadf94d877c7"
 )
 
 
@@ -543,7 +552,7 @@ def render_generated_module(
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files)
+#   contracts/chat/v1/fixtures/**           (165 files)
 # Governed by:
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
@@ -638,7 +647,7 @@ PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 158 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 164 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
@@ -657,7 +666,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     vocab_docs = {
         "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.",
         "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode), 24 members.",
-        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 15 members. Additive-decode point.",
+        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.",
         "RESNAPSHOT_REASONS": "The closed reason vocabulary for events.schema.json ResnapshotResponse.reason, 4 members.",
         "COMMAND_RESULT_STATUSES": "The closed status vocabulary for commands.schema.json CommandResultEnvelope.status, 4 members.",
         "F2A_FINISH_REASONS": "The closed v1 F2a normalised finish-reason vocabulary (provider.schema.json FinishReason), 7 members.",

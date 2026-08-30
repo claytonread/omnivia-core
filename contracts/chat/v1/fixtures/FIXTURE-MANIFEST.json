@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 158,
-    "valid": 75,
-    "invalid": 83
+    "total": 164,
+    "valid": 76,
+    "invalid": 88
   },
   "fixtures": [
     {
@@ -1617,6 +1617,47 @@
       "expect": "valid",
       "focus": "Module->host request continuing a resnapshot, carrying the exact resnapshotCursor a prior bridge.resnapshot named.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage"
+    },
+    {
+      "path": "fixtures/valid/generation-text-appended-event.json",
+      "expect": "valid",
+      "focus": "One live in-flight text delta for an in-progress Generation Attempt: job-scoped (generationEventSequence, no graph revision), minimised, carrying only the governed identity, ordering and delta fields.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-missing-required-rejected.json",
+      "expect": "invalid",
+      "focus": "chunkOrdinal and textDelta are required; a delta event that names neither is rejected rather than treated as an empty append.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-empty-delta-rejected.json",
+      "expect": "invalid",
+      "focus": "textDelta minLength:1 rejects an empty append, which would advance the stream without carrying text.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "minLength"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-oversized-delta-rejected.json",
+      "expect": "invalid",
+      "focus": "textDelta maxLength:262144 rejects an oversized delta at the contract bound; runtime additionally enforces the stricter cumulative UTF-8 byte bound.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "maxLength"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-wrong-discriminator-rejected.json",
+      "expect": "invalid",
+      "focus": "eventType const 'chat.generation.text_appended' rejects a document carrying another chat.generation.* discriminator, so the closed branch cannot be reached by the wrong event type.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-sensitive-field-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an injected Provider credential field; a minimised live delta admits no endpoint, model, header, credential, raw body or arbitrary metadata.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "additionalProperties"
     }
   ]
 }

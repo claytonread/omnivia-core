@@ -198,6 +198,7 @@
         "chat.generation.succeeded",
         "chat.generation.failed",
         "chat.generation.cancelled",
+        "chat.generation.text_appended",
         "chat.share.created",
         "chat.export.created"
       ]

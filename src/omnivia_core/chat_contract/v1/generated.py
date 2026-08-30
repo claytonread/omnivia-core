@@ -2,7 +2,7 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files)
+#   contracts/chat/v1/fixtures/**           (165 files)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -97,12 +97,12 @@ PROTOCOL_MAJOR: Final[str] = '1'
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = 13
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 158 governed fixtures).
-RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 159
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 164 governed fixtures).
+RESOURCE_FIXTURE_TREE_COUNT: Final[int] = 165
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
 #: ``compute_resource_inventory_digest``.
-RESOURCE_INVENTORY_DIGEST: Final[str] = '87a0bd924205901d69f881393b0038cd6807d91ad574f6b77058320ffe95cd3e'
+RESOURCE_INVENTORY_DIGEST: Final[str] = '591baa7f6ae1ea2cced35e648538e7429657b70046d6cdd31fbcfadf94d877c7'
 
 #: The 13 packaged schema base names (without .schema.json), sorted.
 SCHEMA_NAMES: Final[tuple[str, ...]] = (
@@ -174,7 +174,7 @@ CHAT_COMMAND_NAMES: Final[tuple[str, ...]] = (
     'ExportConversation',
 )
 
-#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 15 members. Additive-decode point.
+#: The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.
 CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.conversation.created',
     'chat.message.committed',
@@ -189,6 +189,7 @@ CHAT_EVENT_TYPES: Final[tuple[str, ...]] = (
     'chat.generation.succeeded',
     'chat.generation.failed',
     'chat.generation.cancelled',
+    'chat.generation.text_appended',
     'chat.share.created',
     'chat.export.created',
 )
@@ -479,6 +480,22 @@ CHAT_EVENT_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
             'triggerMessageId',
             'workspaceId',
         ),
+        'chat.generation.text_appended': (
+            'branchId',
+            'chunkOrdinal',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationAttemptId',
+            'generationEventSequence',
+            'generationJobId',
+            'occurredAt',
+            'schemaVersion',
+            'textDelta',
+            'triggerMessageId',
+            'workspaceId',
+        ),
         'chat.message.committed': (
             'branchId',
             'conversationId',
@@ -678,6 +695,22 @@ CHAT_EVENT_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyT
             'triggerMessageId',
             'workspaceId',
         ),
+        'chat.generation.text_appended': (
+            'branchId',
+            'chunkOrdinal',
+            'conversationId',
+            'cursor',
+            'eventId',
+            'eventType',
+            'generationAttemptId',
+            'generationEventSequence',
+            'generationJobId',
+            'occurredAt',
+            'schemaVersion',
+            'textDelta',
+            'triggerMessageId',
+            'workspaceId',
+        ),
         'chat.message.committed': (
             'conversationId',
             'conversationSequence',
@@ -747,6 +780,7 @@ CHAT_EVENT_SCHEMA_REFS: Final[Mapping[str, str]] = MappingProxyType(
         'chat.generation.queued': 'events.schema.json#/$defs/GenerationEvent',
         'chat.generation.started': 'events.schema.json#/$defs/GenerationEvent',
         'chat.generation.succeeded': 'events.schema.json#/$defs/GenerationEvent',
+        'chat.generation.text_appended': 'events.schema.json#/$defs/GenerationTextAppendedEvent',
         'chat.message.committed': 'events.schema.json#/$defs/MessageCommittedEvent',
         'chat.message.derivation_recorded': 'events.schema.json#/$defs/MessageDerivationRecordedEvent',
         'chat.message.tombstoned': 'events.schema.json#/$defs/MessageTombstonedEvent',
@@ -1376,6 +1410,9 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                     '$ref': 'events.schema.json#/$defs/GenerationEvent',
                 },
                 {
+                    '$ref': 'events.schema.json#/$defs/GenerationTextAppendedEvent',
+                },
+                {
                     '$ref': 'events.schema.json#/$defs/ShareCreatedEvent',
                 },
                 {
@@ -1537,6 +1574,74 @@ VALIDATION_SCHEMAS: Final[Mapping[str, Any]] = MappingProxyType(
                 'generationJobId',
                 'occurredAt',
                 'schemaVersion',
+                'triggerMessageId',
+                'workspaceId',
+            ],
+            'type': 'object',
+        },
+        'events.schema.json#/$defs/GenerationTextAppendedEvent': {
+            'additionalProperties': False,
+            'properties': {
+                'branchId': {
+                    '$ref': 'common.schema.json#/$defs/BranchId',
+                },
+                'chunkOrdinal': {
+                    'maximum': 1000000,
+                    'minimum': 0,
+                    'type': 'integer',
+                },
+                'conversationId': {
+                    '$ref': 'common.schema.json#/$defs/ConversationId',
+                },
+                'cursor': {
+                    '$ref': 'common.schema.json#/$defs/OpaqueCursor',
+                },
+                'eventId': {
+                    '$ref': 'common.schema.json#/$defs/TransportEventId',
+                },
+                'eventType': {
+                    'const': 'chat.generation.text_appended',
+                },
+                'generationAttemptId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationAttemptId',
+                },
+                'generationEventSequence': {
+                    '$ref': 'common.schema.json#/$defs/GenerationEventSequence',
+                },
+                'generationJobId': {
+                    '$ref': 'common.schema.json#/$defs/GenerationJobId',
+                },
+                'occurredAt': {
+                    '$ref': 'common.schema.json#/$defs/Timestamp',
+                },
+                'schemaVersion': {
+                    '$ref': 'common.schema.json#/$defs/SchemaVersion',
+                },
+                'textDelta': {
+                    'maxLength': 262144,
+                    'minLength': 1,
+                    'type': 'string',
+                },
+                'triggerMessageId': {
+                    '$ref': 'common.schema.json#/$defs/MessageId',
+                },
+                'workspaceId': {
+                    '$ref': 'common.schema.json#/$defs/WorkspaceId',
+                },
+            },
+            'required': [
+                'branchId',
+                'chunkOrdinal',
+                'conversationId',
+                'cursor',
+                'eventId',
+                'eventType',
+                'generationAttemptId',
+                'generationEventSequence',
+                'generationJobId',
+                'occurredAt',
+                'schemaVersion',
+                'textDelta',
                 'triggerMessageId',
                 'workspaceId',
             ],

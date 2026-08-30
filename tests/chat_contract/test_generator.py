@@ -62,7 +62,7 @@ def test_the_pinned_digest_matches_the_currently_computed_one() -> None:
     digest, schema_count, fixture_count = generator.compute_resource_inventory_digest()
     assert digest == generator.EXPECTED_RESOURCE_INVENTORY_DIGEST
     assert schema_count == generator.EXPECTED_SCHEMA_COUNT == 13
-    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 159
+    assert fixture_count == generator.EXPECTED_FIXTURE_TREE_COUNT == 165
 
 
 # --------------------------------------------------------------------------
@@ -128,7 +128,7 @@ def test_extract_vocabularies_returns_the_governed_counts() -> None:
     vocab = generator.extract_vocabularies()
     assert len(vocab["CHAT_COMMAND_NAMES"]) == 30
     assert len(vocab["ERROR_CODES"]) == 24
-    assert len(vocab["CHAT_EVENT_TYPES"]) == 15
+    assert len(vocab["CHAT_EVENT_TYPES"]) == 16
     assert len(vocab["F2A_PROVIDER_EVENT_TYPES"]) == 20
     assert len(vocab["F2A_FINISH_REASONS"]) == 7
     assert len(vocab["F2A_PROVIDER_ERROR_CODES"]) == 16
