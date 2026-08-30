@@ -18,6 +18,7 @@ from typing import Any, Final
 from omnivia_core.chat_contract.v1 import ProviderInvocationRequest, to_canonical_json
 from omnivia_core.chat_contract.v1.generated import F2A_PROVIDER_EVENT_TYPES
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
+from omnivia_core_runtime.service.chat_compaction import derive_model_visible_context
 from omnivia_core_runtime.service.chat_generation import (
     DEFAULT_LEASE_US,
     GenerationHeartbeat,
@@ -117,6 +118,7 @@ def _provider_context(
     *,
     workspace_id: str,
     conversation_id: str,
+    branch_id: str,
     trigger_message_id: str,
 ) -> _ProviderContext:
     """Build the request projection and the matching hash/reference manifest.
@@ -125,6 +127,19 @@ def _provider_context(
     manifest does not copy that text; it records the exact ordered Message/Part
     identities and content hashes from which the request is reconstructable.
     """
+    compacted = derive_model_visible_context(
+        connection,
+        workspace_id=workspace_id,
+        conversation_id=conversation_id,
+        branch_id=branch_id,
+        trigger_message_id=trigger_message_id,
+    )
+    if compacted is not None:
+        return _ProviderContext(
+            compacted.messages,
+            compacted.manifest_message_refs,
+        )
+
     messages = chat.read_messages_by_conversation_sequence(
         connection, workspace_id=workspace_id, conversation_id=conversation_id
     )
@@ -451,6 +466,7 @@ class ChatGenerationExecutor:
                 self.connection,
                 workspace_id=self.workspace_id,
                 conversation_id=job.conversation_id,
+                branch_id=job.branch_id,
                 trigger_message_id=trigger_message_id,
             )
             if manifest_timestamps is None:

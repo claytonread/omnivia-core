@@ -172,6 +172,17 @@
       "sha256": "00093177545c64deec6c8fb50b7b4925b480c46e0967a3be2b9dad42133da416",
       "introduced_commit": "73aa21696bfe10d56141d4945475d77dfc631f5d",
       "accepted_commit": null
+    },
+    {
+      "number": 33,
+      "filename": "0033_chat_compaction_waits_agent_runs.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 32,
+      "sha256": "19ef3ed17434670c10cefc91498d677025ab87bb0f18f2f53ac54c2ce71f7b7b",
+      "introduced_commit": "0741a368a39815ee01397980b3da5e6b17ffe4a0",
+      "accepted_commit": null
     }
   ]
 }
