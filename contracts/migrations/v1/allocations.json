@@ -183,6 +183,17 @@
       "sha256": "19ef3ed17434670c10cefc91498d677025ab87bb0f18f2f53ac54c2ce71f7b7b",
       "introduced_commit": "0741a368a39815ee01397980b3da5e6b17ffe4a0",
       "accepted_commit": null
+    },
+    {
+      "number": 34,
+      "filename": "0034_chat_generation_text_transport_events.sql",
+      "owner": "Chat",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 33,
+      "sha256": "775d8a1b776e9bb2bd254376aecff7ce1ac597b0ffceedb2f0558e785a5d567c",
+      "introduced_commit": "84fabceec3f832f7e2e40fe1e6794f98786e134e",
+      "accepted_commit": null
     }
   ]
 }
