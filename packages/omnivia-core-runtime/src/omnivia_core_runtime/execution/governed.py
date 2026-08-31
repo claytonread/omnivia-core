@@ -286,8 +286,9 @@ class HumanInteractionSettlement:
     """Settle one interaction request: at most one accepted answer, ever.
 
     The oracle holds one request and the at-most-one result settled against it. Every call
-    to :meth:`submit` rechecks the caller's *current* Permission and eligibility, then the
-    request version, then expiry, and only then looks at what is already settled -- so a
+    to :meth:`submit` checks the request version, rechecks the caller's *current*
+    Permission and eligibility, then expiry, and only then compares settlement identity
+    and looks at what is already settled -- so a
     responder who was eligible when they were asked and is not eligible now cannot settle,
     and cannot replay a settlement either. Possession of a submission grants nothing.
 
@@ -338,12 +339,6 @@ class HumanInteractionSettlement:
             raise ExecutionContractError(
                 "request_mismatch", "submission names a different request"
             )
-        if submission.idempotency_key != self._request.idempotency_key:
-            raise ExecutionRefused(
-                HUMAN_INTERACTION_OUTCOME_CONFLICT,
-                "submission carries a different idempotency key",
-            )
-
         if submission.request_version != self._request.request_version:
             raise ExecutionRefused(
                 HUMAN_INTERACTION_OUTCOME_CONFLICT,
@@ -367,6 +362,11 @@ class HumanInteractionSettlement:
             raise ExecutionRefused(
                 HUMAN_INTERACTION_OUTCOME_CONFLICT,
                 "the request had expired before this submission",
+            )
+        if submission.idempotency_key != self._request.idempotency_key:
+            raise ExecutionRefused(
+                HUMAN_INTERACTION_OUTCOME_CONFLICT,
+                "submission carries a different idempotency key",
             )
 
         settled = self._result
@@ -1034,6 +1034,10 @@ class PlaneOwnership:
         require_identifier("dispatch_id", dispatch_id)
         require_digest("payload_digest", payload_digest)
         held = self._require_current(lease_id, fencing_token, at_tick=at_tick)
+        if held.plane_role != PLANE_SCHEDULER:
+            raise ExecutionContractError(
+                "wrong_plane_role", "dispatch requires a SCHEDULER lease"
+            )
         if dispatch_id in self._dispatches:
             raise ExecutionContractError(
                 "duplicate_dispatch", "dispatch_id has already been dispatched"
@@ -1210,6 +1214,11 @@ class PlaneOwnership:
             raise ExecutionContractError(
                 "wrong_plane_role",
                 "reconciliation requires a RESOURCE_SUPERVISOR lease",
+            )
+        if held.scope != resource:
+            raise ExecutionRefused(
+                EXECUTION_PLANE_STALE_AUTHORITY,
+                "reconciliation resource does not match the held lease scope",
             )
         if observation_age > maximum_observation_age:
             raise ExecutionRefused(

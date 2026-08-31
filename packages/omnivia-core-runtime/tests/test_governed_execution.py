@@ -227,6 +227,62 @@ def test_a_mismatched_idempotency_key_refuses_before_settlement() -> None:
     assert settlement.settled is None
 
 
+def test_settlement_checks_version_current_authority_and_expiry_before_identity() -> (
+    None
+):
+    settlement = HumanInteractionSettlement(
+        _request(request_version=4, expires_at_tick=100)
+    )
+    invalid = _submission(
+        request_version=3,
+        idempotency_key="idempotency.harbour.other",
+        at_tick=100,
+    )
+
+    with pytest.raises(ExecutionRefused, match="superseded request version"):
+        settlement.submit(invalid, permission_granted=False, eligible=False)
+    with pytest.raises(ExecutionRefused, match="current Permission"):
+        settlement.submit(
+            _submission(
+                request_version=4,
+                idempotency_key="idempotency.harbour.other",
+                at_tick=100,
+            ),
+            permission_granted=False,
+            eligible=False,
+        )
+    with pytest.raises(ExecutionRefused, match="not currently eligible"):
+        settlement.submit(
+            _submission(
+                request_version=4,
+                idempotency_key="idempotency.harbour.other",
+                at_tick=100,
+            ),
+            permission_granted=True,
+            eligible=False,
+        )
+    with pytest.raises(ExecutionRefused, match="expired"):
+        settlement.submit(
+            _submission(
+                request_version=4,
+                idempotency_key="idempotency.harbour.other",
+                at_tick=100,
+            ),
+            permission_granted=True,
+            eligible=True,
+        )
+    with pytest.raises(ExecutionRefused, match="idempotency key"):
+        settlement.submit(
+            _submission(
+                request_version=4,
+                idempotency_key="idempotency.harbour.other",
+                at_tick=99,
+            ),
+            permission_granted=True,
+            eligible=True,
+        )
+
+
 def test_an_identical_replay_is_a_no_op_that_issues_no_second_continuation() -> None:
     settlement = HumanInteractionSettlement(_request())
     first = settlement.submit(_submission(), permission_granted=True, eligible=True)
@@ -710,7 +766,7 @@ def test_a_live_lease_must_expire_or_be_revoked_before_takeover() -> None:
 def test_expired_or_revoked_authority_refuses_every_write_path() -> None:
     plane = PlaneOwnership()
     grant = plane.acquire(
-        plane_role=PLANE_WORKER,
+        plane_role=PLANE_SCHEDULER,
         scope="partition.a",
         owner="node.one",
         acquired_at_tick=0,
@@ -759,9 +815,9 @@ def test_a_superseded_holder_cannot_renew() -> None:
 def test_a_stale_dispatch_refuses_with_stale_authority() -> None:
     plane = PlaneOwnership()
     first = _acquire(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
     )
-    _take_over(plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two")
+    _take_over(plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.two")
 
     with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_AUTHORITY):
         _dispatch(
@@ -816,7 +872,7 @@ def test_an_unknown_lease_is_stale_authority_rather_than_a_silent_pass() -> None
 def test_a_current_completion_is_applied() -> None:
     plane = PlaneOwnership()
     grant = _acquire(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
     )
     _dispatch(
         plane,
@@ -839,7 +895,7 @@ def test_a_current_completion_is_applied() -> None:
 def test_a_late_completion_is_evidence_only_and_is_never_applied() -> None:
     plane = PlaneOwnership()
     grant = _acquire(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
     )
     _dispatch(
         plane,
@@ -848,7 +904,7 @@ def test_a_late_completion_is_evidence_only_and_is_never_applied() -> None:
         dispatch_id="dispatch.one",
         payload_digest=_PAYLOAD,
     )
-    _take_over(plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two")
+    _take_over(plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.two")
 
     outcome = _complete(
         plane,
@@ -868,7 +924,7 @@ def test_a_late_completion_is_evidence_only_and_is_never_applied() -> None:
 def test_a_completion_is_recorded_once_and_an_unknown_dispatch_is_refused() -> None:
     plane = PlaneOwnership()
     grant = _acquire(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
     )
     _dispatch(
         plane,
@@ -993,11 +1049,19 @@ def test_a_settled_delivery_is_still_remembered_for_deduplication() -> None:
         plane.settle_delivery(dedupe_key="event.absent")
 
 
-def test_delivery_and_reconciliation_require_their_own_plane_role() -> None:
+def test_dispatch_delivery_and_reconciliation_require_their_own_plane_role() -> None:
     plane = PlaneOwnership()
     worker = _acquire(
         plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
     )
+    with pytest.raises(ExecutionContractError, match="wrong_plane_role"):
+        _dispatch(
+            plane,
+            lease_id=worker.lease_id,
+            fencing_token=worker.fencing_token,
+            dispatch_id="dispatch.one",
+            payload_digest=_PAYLOAD,
+        )
     with pytest.raises(ExecutionContractError, match="wrong_plane_role"):
         _deliver(
             plane,
@@ -1037,6 +1101,17 @@ def test_reconciliation_requires_a_current_lease_and_a_fresh_observation() -> No
     )
     assert decision.observation_age == 1_000
     assert decision.fencing_token == grant.fencing_token
+
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_AUTHORITY):
+        _reconcile(
+            plane,
+            lease_id=grant.lease_id,
+            fencing_token=grant.fencing_token,
+            resource="pool.other",
+            observation_digest=_DIGEST_A,
+            observation_age=1,
+            maximum_observation_age=1_000,
+        )
 
     with pytest.raises(ExecutionRefused, match="EXECUTION_PLANE_STALE_OBSERVATION"):
         _reconcile(
@@ -1083,7 +1158,7 @@ def _plane_transcript(mode: str) -> list[object]:
     transcript: list[object] = [plane.deployment_mode]
 
     first = _acquire(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
     )
     transcript.append(first.fencing_token)
     renewed_grant = _renew(plane, lease_id=first.lease_id, owner="node.one")
@@ -1097,7 +1172,7 @@ def _plane_transcript(mode: str) -> list[object]:
         payload_digest=_PAYLOAD,
     )
     second = _take_over(
-        plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two"
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.two"
     )
     transcript.append(second.superseded_fencing_token)
     transcript.append(tuple(entry.code for entry in plane.evidence))
