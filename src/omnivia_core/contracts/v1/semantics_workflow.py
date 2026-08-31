@@ -100,7 +100,10 @@ __all__ = [
     "validate_workflow_version_diff",
 ]
 
-WorkflowRecordValidator = Callable[[object], None]
+# A registered validator raises on refusal and is dispatched for that effect alone; a few
+# also return something useful when called directly (a binding returns its state), so the
+# return is deliberately unconstrained and `validate_workflow_record` discards it.
+WorkflowRecordValidator = Callable[[object], object]
 
 WORKFLOW_VALUE_PRESENCES: Final[tuple[str, ...]] = (
     "present",
@@ -1414,10 +1417,10 @@ def evaluate_workflow_edit_batch(
             f"{WF_EDIT_STALE_BASE}: {label}: baseRevision does not match the current revision"
         )
 
-    for operation in fields["operations"]:  # type: ignore[union-attr]
+    for operation in _sequence(fields, "operations", label):
         operation_fields = _mapping(operation, f"{label}.operations")
         operation_id = operation_fields["operationId"]
-        for precondition in operation_fields["preconditions"]:  # type: ignore[union-attr]
+        for precondition in _sequence(operation_fields, "preconditions", f"{label}.operations"):
             precondition_fields = _mapping(precondition, f"{label}.operations.preconditions")
             if precondition_check(precondition_fields) is not True:
                 raise ContractSemanticError(
@@ -1431,7 +1434,7 @@ def evaluate_workflow_edit_batch(
     accepted_revision = current_revision + 1
     operation_ids = tuple(
         _mapping(operation, f"{label}.operations")["operationId"]
-        for operation in fields["operations"]  # type: ignore[union-attr]
+        for operation in _sequence(fields, "operations", label)
     )
     return MappingProxyType(
         {
@@ -1882,7 +1885,7 @@ def validate_nested_workflow_boundary(record: object) -> None:
 
     validate_component_port_set(_present(fields, "boundaryPorts", label))
     port_ids = frozenset(
-        _mapping(port, f"{label}.boundaryPorts")["portId"]  # type: ignore[misc]
+        _identifier(_mapping(port, f"{label}.boundaryPorts"), "portId", f"{label}.boundaryPorts")
         for port in _sequence(fields, "boundaryPorts", label)
     )
 
@@ -1956,7 +1959,7 @@ def evaluate_nested_workflow_boundary(
         raise ContractSemanticError(f"{label}: at_instant is not a well-formed Timestamp")
 
     port_ids = frozenset(
-        _mapping(port, f"{label}.boundaryPorts")["portId"]  # type: ignore[misc]
+        _identifier(_mapping(port, f"{label}.boundaryPorts"), "portId", f"{label}.boundaryPorts")
         for port in _sequence(fields, "boundaryPorts", label)
     )
     bypasses = [

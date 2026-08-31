@@ -250,6 +250,8 @@ class DispatchAuditSink(Protocol):
 
 def _safe(value: object, *, capability: bool = False) -> str | None:
     """`value` if it is a canonical, bounded, non-credential identifier, else `None`."""
+    if not isinstance(value, str):
+        return None
     if capability:
         return (
             value
@@ -470,7 +472,7 @@ def authorize_dispatch(
             audit_sink, REFUSE_PERMISSION_UNAVAILABLE, context, invocation, origin
         )
 
-    if not _well_formed_permission(permission):
+    if permission is None or not _well_formed_permission(permission):
         raise _refuse(
             audit_sink, REFUSE_PERMISSION_MALFORMED, context, invocation, origin
         )
