@@ -20,6 +20,7 @@ from omnivia_core.contracts.v1.generated import (
     is_content_checksum,
     is_identifier,
     is_open_code,
+    is_release_version,
     is_timestamp,
 )
 
@@ -29,6 +30,9 @@ __all__ = [
     "COMPONENT_IMPLEMENTATION_BINDING_STATES",
     "EFFECT_DISPOSITIONS",
     "LOOP_LATE_RESULT_POLICIES",
+    "RUNTIME_BINDING_RECONCILE_OUTCOMES",
+    "RUNTIME_BINDING_REFUSAL_DIAGNOSTICS",
+    "RUNTIME_BINDING_RESUME_DECISIONS",
     "VISUAL_REVIEW_STATES",
     "WORKFLOW_DIFF_CLASSES",
     "WORKFLOW_RECORD_VALIDATORS",
@@ -40,8 +44,12 @@ __all__ = [
     "validate_branch_aggregate_policy",
     "validate_cancellation_record",
     "validate_component_implementation_binding",
+    "validate_immutable_execution_binding",
     "validate_loop_plan",
     "validate_migration_receipt",
+    "validate_runtime_binding_resume_decision",
+    "validate_runtime_definition_binding",
+    "validate_runtime_definition_binding_projection",
     "validate_simulation_result",
     "validate_start_workflow_run_readiness",
     "validate_suggested_workflow_fix",
@@ -281,6 +289,73 @@ _VERSION_DIFF_FIELDS: Final = frozenset(
     }
 )
 
+# --- T-0688 IP-06: RuntimeDefinitionBinding public contract semantics ---------
+#
+# `RuntimeDefinitionBinding` is deliberately not a T-0679 `contractName`-tagged record: it is
+# the immutable, content-addressed pin a Runtime Run executes against, not a mutable Workflow
+# authoring surface object. Carrying `contractName` (or a `legacyBinding`/partial-degraded
+# marker) would let a caller mistake it for one of the mutable records above, so those fields
+# are refused as unknown rather than merely left unchecked. It is therefore validated and
+# exposed directly and is deliberately not entered into `WORKFLOW_RECORD_VALIDATORS`: that
+# registry dispatches on `contractName`, and a real binding payload can never carry one.
+#
+# Field representation follows the vocabulary already established elsewhere in this module and
+# in :mod:`semantics_runtime`: an `*Id` field is a canonical `Identifier`
+# (:func:`is_identifier`); a `*Digest` field is a content digest (:func:`is_content_checksum`);
+# `workflowVersion` names an exact, non-floating build and is a `ReleaseVersion`
+# (:func:`is_release_version`), the same scalar
+# :class:`semantics_runtime.RunDefinitionRef.definition_version` already uses for an exact
+# pinned version; `releaseRef` names a Release by pointer, not by version scalar, so it is a
+# non-empty `Reference` mapping (:func:`_reference`) like `resourceRef`, `snapshotRef`,
+# `modelPolicySnapshotRef`, `boundBy`, `bindingRef`, `evidence`, and the reconciling actor, and
+# exactly as `component`, `implementation`, and `capability` already are in
+# `ComponentImplementationBinding` above; and each entry of `historicalExactRefs` is likewise a
+# non-empty `Reference` mapping rather than a `ReleaseVersion`, because a caller-proven exact
+# pin may itself name a Workflow Version, a Release, a definition digest, or a Component
+# implementation digest -- this projection only carries what the caller already proved, it does
+# not itself constrain which kind of exact reference that was.
+
+_RUNTIME_DEFINITION_BINDING_FIELDS: Final = frozenset(
+    {
+        "bindingSchemaVersion",
+        "bindingId",
+        "workflowId",
+        "workflowVersion",
+        "releaseRef",
+        "definitionDigest",
+        "executionProfileDigest",
+        "effectivePolicyDigest",
+        "componentImplementationDigests",
+        "resourceBindingSnapshots",
+        "modelPolicySnapshotRef",
+        "modelPolicySnapshotDigest",
+        "boundAt",
+        "boundBy",
+    }
+)
+_RESOURCE_BINDING_SNAPSHOT_FIELDS: Final = frozenset(
+    {"resourceRequirementId", "resourceRef", "snapshotRef", "snapshotDigest"}
+)
+_BINDING_SCHEMA_SUPPORTED_MAJORS: Final = frozenset({1})
+
+_PROJECTION_FIELDS: Final = frozenset(
+    {"runId", "legacyBinding", "bindingRef", "historicalExactRefs"}
+)
+
+_RESUME_DECISION_FIELDS: Final = frozenset(
+    {"decision", "runId", "evidence", "diagnostic", "decidingActor", "reason", "outcome"}
+)
+RUNTIME_BINDING_RESUME_DECISIONS: Final[tuple[str, ...]] = ("allow", "refuse", "reconcile")
+RUNTIME_BINDING_REFUSAL_DIAGNOSTICS: Final[tuple[str, ...]] = (
+    "RT_BINDING_DRIFT",
+    "RT_BINDING_REVOKED",
+)
+RUNTIME_BINDING_RECONCILE_OUTCOMES: Final[tuple[str, ...]] = (
+    "restore_exact",
+    "terminate_or_refuse",
+    "governed_new_subject",
+)
+
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
@@ -395,11 +470,19 @@ def _optional_sequence(fields: Mapping[str, object], key: str, label: str) -> Se
     return _sequence(fields, key, label)
 
 
-def _reference(fields: Mapping[str, object], key: str, label: str) -> Mapping[str, object]:
-    reference = _mapping(_present(fields, key, label), f"{label}.{key}")
+def _reference_value(value: object, label: str, empty_message: str) -> Mapping[str, object]:
+    reference = _mapping(value, label)
     if not reference:
-        raise ContractSemanticError(f"{label}: {key} must not be empty")
+        raise ContractSemanticError(empty_message)
     return reference
+
+
+def _reference(fields: Mapping[str, object], key: str, label: str) -> Mapping[str, object]:
+    return _reference_value(
+        _present(fields, key, label),
+        f"{label}.{key}",
+        f"{label}: {key} must not be empty",
+    )
 
 
 def _reference_identity(reference: Mapping[str, object]) -> str | None:
@@ -705,6 +788,162 @@ def validate_workflow_version_diff(record: object) -> None:
     for index, change in enumerate(_sequence(fields, "changes", label)):
         _mapping(change, f"{label}.changes[{index}]")
     _literal_false(fields, "runtimeCausalityClaimed", label)
+
+
+def _release_version(fields: Mapping[str, object], key: str, label: str) -> str:
+    value = _present(fields, key, label)
+    if not is_release_version(value):
+        raise ContractSemanticError(f"{label}: {key} is not a well-formed exact ReleaseVersion")
+    assert isinstance(value, str)
+    return value
+
+
+def _binding_schema_version(fields: Mapping[str, object], key: str, label: str) -> str:
+    value = _release_version(fields, key, label)
+    major = int(value.split(".", 1)[0])
+    if major not in _BINDING_SCHEMA_SUPPORTED_MAJORS:
+        raise ContractSemanticError(f"{label}: {key} major version {major} is not supported")
+    return value
+
+
+def _component_implementation_digests(
+    fields: Mapping[str, object], key: str, label: str
+) -> Mapping[str, object]:
+    digests = _mapping(_present(fields, key, label), f"{label}.{key}")
+    if not digests:
+        raise ContractSemanticError(f"{label}: {key} must not be empty")
+    for component_id, digest in digests.items():
+        if not is_identifier(component_id):
+            raise ContractSemanticError(
+                f"{label}: {key} key {component_id!r} is not a well-formed Component Identifier"
+            )
+        if not is_content_checksum(digest):
+            raise ContractSemanticError(f"{label}: {key}[{component_id!r}] is not a well-formed Digest")
+    return digests
+
+
+def _resource_binding_snapshot(entry: object, label: str) -> str:
+    fields = _mapping(entry, label)
+    _only_fields(fields, _RESOURCE_BINDING_SNAPSHOT_FIELDS, label)
+    requirement_id = _identifier(fields, "resourceRequirementId", label)
+    _reference(fields, "resourceRef", label)
+    _reference(fields, "snapshotRef", label)
+    _digest(fields, "snapshotDigest", label)
+    return requirement_id
+
+
+def validate_immutable_execution_binding(record: object) -> None:
+    """Validate the T-0688 `RuntimeDefinitionBinding` closed record.
+
+    A binding is a content-addressed pin: every digest, every exact version and every
+    Component implementation named here is what a Run actually executed against, not what
+    Workflow authoring currently publishes. `resourceBindingSnapshots` may legitimately be
+    empty -- a definition that declares no Resource requirements has none to snapshot -- but
+    whether *this* definition declares any is a fact this pure, standard-library validator has
+    no way to see without the definition itself, so an empty array is accepted structurally and
+    that cross-check is left to the Runtime integration lane.
+    """
+    label = "RuntimeDefinitionBinding"
+    fields = _mapping(record, label)
+    _only_fields(fields, _RUNTIME_DEFINITION_BINDING_FIELDS, label)
+    _binding_schema_version(fields, "bindingSchemaVersion", label)
+    _identifier(fields, "bindingId", label)
+    _identifier(fields, "workflowId", label)
+    _release_version(fields, "workflowVersion", label)
+    _reference(fields, "releaseRef", label)
+    _digest(fields, "definitionDigest", label)
+    _digest(fields, "executionProfileDigest", label)
+    _digest(fields, "effectivePolicyDigest", label)
+    _component_implementation_digests(fields, "componentImplementationDigests", label)
+    requirement_ids = [
+        _resource_binding_snapshot(entry, f"{label}.resourceBindingSnapshots[{index}]")
+        for index, entry in enumerate(_sequence(fields, "resourceBindingSnapshots", label))
+    ]
+    if len(requirement_ids) != len(set(requirement_ids)):
+        raise ContractSemanticError(
+            f"{label}: resourceBindingSnapshots must not repeat a resourceRequirementId"
+        )
+
+    has_model_ref = "modelPolicySnapshotRef" in fields
+    has_model_digest = "modelPolicySnapshotDigest" in fields
+    if has_model_ref != has_model_digest:
+        raise ContractSemanticError(
+            f"{label}: modelPolicySnapshotRef and modelPolicySnapshotDigest must both be "
+            "present or both be absent"
+        )
+    if has_model_ref:
+        _reference(fields, "modelPolicySnapshotRef", label)
+        _digest(fields, "modelPolicySnapshotDigest", label)
+
+    _timestamp(fields, "boundAt", label)
+    _reference(fields, "boundBy", label)
+
+
+# The T-0688 fixture-facing name and the canonical contract name are one validator: no wire
+# shape distinguishes them, so a second implementation would only be a second place to drift.
+validate_runtime_definition_binding = validate_immutable_execution_binding
+
+
+def validate_runtime_definition_binding_projection(record: object) -> None:
+    """Validate the T-0688 `RuntimeDefinitionBindingProjection` closed read-side record.
+
+    `legacyBinding` is the discriminator: a run bound before this projection existed names no
+    live `bindingRef` (there is nothing current to point at) and may instead carry
+    `historicalExactRefs`, prior exact release pins a caller already proved rather than a
+    binding this projection invents on the run's behalf. A non-legacy projection is the
+    opposite: it must name its live `bindingRef` and carries no historical list at all.
+    """
+    label = "RuntimeDefinitionBindingProjection"
+    fields = _mapping(record, label)
+    _only_fields(fields, _PROJECTION_FIELDS, label)
+    _identifier(fields, "runId", label)
+    legacy = _boolean(fields, "legacyBinding", label)
+
+    if legacy:
+        if "bindingRef" in fields:
+            raise ContractSemanticError(f"{label}: a legacy projection names no bindingRef")
+        for index, ref in enumerate(_optional_sequence(fields, "historicalExactRefs", label)):
+            entry_label = f"{label}.historicalExactRefs[{index}]"
+            _reference_value(ref, entry_label, f"{entry_label} must not be empty")
+    else:
+        if "historicalExactRefs" in fields:
+            raise ContractSemanticError(
+                f"{label}: a non-legacy projection names no historicalExactRefs"
+            )
+        _reference(fields, "bindingRef", label)
+
+
+def validate_runtime_binding_resume_decision(record: object) -> None:
+    """Validate the T-0688 `RuntimeBindingResumeDecision` closed record.
+
+    Exactly one of three decisions, and none of them ever carries a replacement binding: this
+    is a pure decision about resuming against the binding already recorded, never a channel for
+    swapping it. `allow` and `refuse` carry no reconciliation apparatus at all; `refuse` names
+    exactly one closed diagnostic; `reconcile` is the only branch with an actor, a reason and an
+    outcome, and it requires all three together.
+    """
+    label = "RuntimeBindingResumeDecision"
+    fields = _mapping(record, label)
+    _only_fields(fields, _RESUME_DECISION_FIELDS, label)
+    decision = _member(fields, "decision", label, RUNTIME_BINDING_RESUME_DECISIONS)
+    _identifier(fields, "runId", label)
+    _reference(fields, "evidence", label)
+
+    if decision == "allow":
+        for forbidden in ("diagnostic", "decidingActor", "reason", "outcome"):
+            if forbidden in fields:
+                raise ContractSemanticError(f"{label}: an allow decision names no {forbidden}")
+    elif decision == "refuse":
+        _member(fields, "diagnostic", label, RUNTIME_BINDING_REFUSAL_DIAGNOSTICS)
+        for forbidden in ("decidingActor", "reason", "outcome"):
+            if forbidden in fields:
+                raise ContractSemanticError(f"{label}: a refuse decision names no {forbidden}")
+    else:
+        if "diagnostic" in fields:
+            raise ContractSemanticError(f"{label}: a reconcile decision names no diagnostic")
+        _reference(fields, "decidingActor", label)
+        _string(fields, "reason", label)
+        _member(fields, "outcome", label, RUNTIME_BINDING_RECONCILE_OUTCOMES)
 
 
 WORKFLOW_RECORD_VALIDATORS: Final[Mapping[str, WorkflowRecordValidator]] = MappingProxyType(
