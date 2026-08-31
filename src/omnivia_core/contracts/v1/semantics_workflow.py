@@ -30,12 +30,17 @@ __all__ = [
     "ATTEMPT_STATES",
     "BRANCH_AGGREGATE_MODES",
     "COMPONENT_IMPLEMENTATION_BINDING_STATES",
+    "EDIT_OPERATION_KINDS",
     "EFFECT_DISPOSITIONS",
     "EFFECT_SETTLEMENT_CLASSES",
     "LOOP_LATE_RESULT_POLICIES",
+    "PORT_DELIVERY_MODES",
+    "PORT_DIRECTIONS",
+    "PORT_FAN_OUT_POLICIES",
     "RUNTIME_BINDING_RECONCILE_OUTCOMES",
     "RUNTIME_BINDING_REFUSAL_DIAGNOSTICS",
     "RUNTIME_BINDING_RESUME_DECISIONS",
+    "SELECTIVE_APPLY_DISPOSITIONS",
     "VISUAL_REVIEW_STATES",
     "WORKFLOW_DIFF_CLASSES",
     "WORKFLOW_RECORD_VALIDATORS",
@@ -43,14 +48,20 @@ __all__ = [
     "WORKFLOW_VALUE_PRESENCES",
     "WorkflowRecordValidator",
     "compute_transition_bundle_payload_digest",
+    "compute_workflow_edit_batch_payload_digest",
+    "evaluate_workflow_edit_batch",
     "validate_absent_value",
     "validate_attempt_settlement",
     "validate_branch_aggregate_policy",
     "validate_cancellation_record",
     "validate_component_implementation_binding",
+    "validate_component_port_contract",
+    "validate_component_port_set",
     "validate_immutable_execution_binding",
     "validate_loop_plan",
     "validate_migration_receipt",
+    "validate_owir_source_projection",
+    "validate_owir_source_projection_matches_revision",
     "validate_runtime_binding_resume_decision",
     "validate_runtime_definition_binding",
     "validate_runtime_definition_binding_projection",
@@ -61,6 +72,8 @@ __all__ = [
     "validate_transition_bundle",
     "validate_workflow_artifact_receipt",
     "validate_workflow_check_readiness_extension",
+    "validate_workflow_edit_batch",
+    "validate_workflow_edit_operation",
     "validate_workflow_record",
     "validate_workflow_value",
     "validate_workflow_version_diff",
@@ -1140,6 +1153,523 @@ def validate_transition_bundle(record: object) -> None:
     expected_digest = compute_transition_bundle_payload_digest(fields)
     if fields["payloadDigest"] != expected_digest:
         raise ContractSemanticError(f"{label}: payloadDigest does not match its recomputation")
+
+
+# --- T-0688 IP-08: WorkflowEditOperation / WorkflowEditBatch public contract semantics -----
+#
+# DOC-004 Appendix AD.3 and REF-004 Appendix D.1 define Workflow Definition authoring as
+# ordered atomic batches of typed operations against a stable-ID Workflow Draft. Neither
+# `WorkflowEditOperation` nor `WorkflowEditBatch` carries `contractName`: like
+# `RuntimeDefinitionBinding` and `RuntimeTransitionBundle` above, an edit batch is not a T-0679
+# mutable authoring surface object, so it is validated and exposed directly and is deliberately
+# kept out of `WORKFLOW_RECORD_VALIDATORS`.
+#
+# `evaluate_workflow_edit_batch` is a pure, standard-library evaluator: it validates shape,
+# then checks `baseRevision` against a caller-supplied `current_revision` and each
+# `EditPrecondition` through a caller-supplied `precondition_check` callable, because whether a
+# digest or absence actually holds against Draft state is a fact this module has no access to.
+# It never mutates its inputs and never partially applies a batch: every precondition of every
+# operation is checked before any accepted result is returned (AD.3.3 rules 1-3).
+
+EDIT_OPERATION_KINDS: Final[tuple[str, ...]] = (
+    "addElement",
+    "removeElement",
+    "updateElement",
+    "addConnection",
+    "removeConnection",
+    "updatePort",
+    "updateLoopPlan",
+    "updateBoundary",
+    "updateMetadata",
+)
+SELECTIVE_APPLY_DISPOSITIONS: Final[tuple[str, ...]] = ("applied", "skipped", "blocked")
+
+_EDIT_PRECONDITION_FIELDS: Final = frozenset(
+    {"preconditionKind", "targetStableId", "expectedDigest", "expectedAbsence"}
+)
+_SEMANTIC_DIFF_FIELDS: Final = frozenset(
+    {
+        "addedElements",
+        "removedElements",
+        "changedElements",
+        "addedConnections",
+        "removedConnections",
+        "changedConnections",
+        "addedPorts",
+        "removedPorts",
+        "changedPorts",
+        "addedPolicy",
+        "removedPolicy",
+        "changedPolicy",
+    }
+)
+_COMPENSATION_FIELDS: Final = frozenset({"reviewerAction", "reason"})
+_EDIT_OPERATION_FIELDS: Final = frozenset(
+    {
+        "operationId",
+        "targetStableId",
+        "operationKind",
+        "preconditions",
+        "payloadDigest",
+        "semanticDiff",
+        "inverse",
+        "compensation",
+        "selectiveApplyDisposition",
+        "diagnosticRef",
+    }
+)
+_EDIT_BATCH_FIELDS: Final = frozenset(
+    {
+        "batchSchemaVersion",
+        "batchId",
+        "draftRef",
+        "baseRevision",
+        "operations",
+        "batchPayloadDigest",
+    }
+)
+
+WF_EDIT_STALE_BASE: Final = "WF_EDIT_STALE_BASE"
+WF_EDIT_PRECONDITION_FAILED: Final = "WF_EDIT_PRECONDITION_FAILED"
+
+
+def _edit_precondition(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _EDIT_PRECONDITION_FIELDS, label)
+    _string(fields, "preconditionKind", label)
+    _identifier(fields, "targetStableId", label)
+    has_digest = "expectedDigest" in fields
+    has_absence = "expectedAbsence" in fields
+    if has_digest == has_absence:
+        raise ContractSemanticError(
+            f"{label}: exactly one of expectedDigest or expectedAbsence is required"
+        )
+    if has_digest:
+        _digest(fields, "expectedDigest", label)
+    else:
+        _literal_true(fields, "expectedAbsence", label)
+
+
+def _stable_id_list(fields: Mapping[str, object], key: str, label: str) -> list[str]:
+    ids: list[str] = []
+    for index, item in enumerate(_sequence(fields, key, label)):
+        if not is_identifier(item):
+            raise ContractSemanticError(f"{label}: {key}[{index}] is not an Identifier")
+        assert isinstance(item, str)
+        ids.append(item)
+    if len(ids) != len(set(ids)):
+        raise ContractSemanticError(f"{label}: {key} must not repeat a stable ID")
+    return ids
+
+
+def _semantic_diff(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _SEMANTIC_DIFF_FIELDS, label)
+    for key in _SEMANTIC_DIFF_FIELDS:
+        _stable_id_list(fields, key, label)
+
+
+def _compensation_descriptor(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _COMPENSATION_FIELDS, label)
+    _string(fields, "reviewerAction", label)
+    _string(fields, "reason", label)
+
+
+def _validate_workflow_edit_operation(record: object, label: str, *, allow_inverse: bool) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _EDIT_OPERATION_FIELDS, label)
+    _identifier(fields, "operationId", label)
+    _identifier(fields, "targetStableId", label)
+    kind = _member(fields, "operationKind", label, EDIT_OPERATION_KINDS)
+    preconditions = _sequence(fields, "preconditions", label)
+    for index, precondition in enumerate(preconditions):
+        _edit_precondition(precondition, f"{label}.preconditions[{index}]")
+    if not preconditions and kind != "addElement":
+        raise ContractSemanticError(f"{label}: preconditions may be empty only for addElement")
+    _digest(fields, "payloadDigest", label)
+    _semantic_diff(_present(fields, "semanticDiff", label), f"{label}.semanticDiff")
+
+    has_inverse = "inverse" in fields
+    has_compensation = "compensation" in fields
+    if not allow_inverse and has_inverse:
+        raise ContractSemanticError(f"{label}: an inverse operation must not itself carry an inverse")
+    if has_inverse == has_compensation:
+        raise ContractSemanticError(f"{label}: exactly one of inverse or compensation is required")
+    if has_compensation:
+        _compensation_descriptor(_present(fields, "compensation", label), f"{label}.compensation")
+    else:
+        _validate_workflow_edit_operation(fields["inverse"], f"{label}.inverse", allow_inverse=False)
+
+    disposition = _member(
+        fields, "selectiveApplyDisposition", label, SELECTIVE_APPLY_DISPOSITIONS
+    )
+    if disposition == "blocked":
+        _reference(fields, "diagnosticRef", label)
+    elif "diagnosticRef" in fields:
+        raise ContractSemanticError(f"{label}: {disposition} must not carry diagnosticRef")
+
+
+def validate_workflow_edit_operation(record: object) -> None:
+    """Validate the T-0688 `WorkflowEditOperation` closed record (DOC-004 §AD.3.1)."""
+    _validate_workflow_edit_operation(record, "WorkflowEditOperation", allow_inverse=True)
+
+
+def compute_workflow_edit_batch_payload_digest(record: object) -> str:
+    """Compute the T-0688 `WorkflowEditBatch.batchPayloadDigest` (DOC-004 §AD.3.2).
+
+    The digest covers Core's existing RFC 8785 canonical JSON serialization
+    (:func:`canonical_json.canonical_bytes`) of exactly `operations`, using the `sha256:`
+    content-checksum convention. It fails closed: a payload that cannot be canonically
+    serialized raises `ContractSemanticError` rather than being silently coerced or skipped.
+    """
+    label = "WorkflowEditBatch"
+    fields = _mapping(record, label)
+    operations = _present(fields, "operations", label)
+    try:
+        digest_bytes = canonical_bytes(operations, label)
+    except ContractSemanticError as error:
+        raise ContractSemanticError(
+            f"{label}: batchPayloadDigest cannot be computed: {error}"
+        ) from error
+    return f"sha256:{sha256(digest_bytes).hexdigest()}"
+
+
+def validate_workflow_edit_batch(record: object) -> None:
+    """Validate the T-0688 `WorkflowEditBatch` closed record (DOC-004 §AD.3.2)."""
+    label = "WorkflowEditBatch"
+    fields = _mapping(record, label)
+    _only_fields(fields, _EDIT_BATCH_FIELDS, label)
+    _release_version(fields, "batchSchemaVersion", label)
+    _identifier(fields, "batchId", label)
+    _reference(fields, "draftRef", label)
+    _non_negative_int(fields, "baseRevision", label)
+
+    operations = _sequence(fields, "operations", label)
+    if not operations:
+        raise ContractSemanticError(f"{label}: operations must not be empty")
+    operation_ids: list[str] = []
+    for index, operation in enumerate(operations):
+        operation_label = f"{label}.operations[{index}]"
+        _validate_workflow_edit_operation(operation, operation_label, allow_inverse=True)
+        operation_fields = _mapping(operation, operation_label)
+        operation_ids.append(operation_fields["operationId"])  # type: ignore[arg-type]
+    if len(operation_ids) != len(set(operation_ids)):
+        raise ContractSemanticError(f"{label}: operations must not repeat an operationId")
+
+    _digest(fields, "batchPayloadDigest", label)
+    expected_digest = compute_workflow_edit_batch_payload_digest(fields)
+    if fields["batchPayloadDigest"] != expected_digest:
+        raise ContractSemanticError(f"{label}: batchPayloadDigest does not match its recomputation")
+
+
+def evaluate_workflow_edit_batch(
+    batch: object,
+    *,
+    current_revision: int,
+    precondition_check: Callable[[Mapping[str, object]], bool],
+    workflow_check: Callable[[], bool],
+) -> Mapping[str, object]:
+    """Evaluate a `WorkflowEditBatch` for atomic acceptance (DOC-004 §AD.3.3, REF-004 §D.1).
+
+    Validates the batch's shape first, then refuses a stale `baseRevision` and any failing
+    `EditPrecondition` (as reported by the caller-supplied `precondition_check`) before ever
+    returning an accepted description. Never rebases, never merges, never partially applies:
+    every precondition of every operation is checked, in order, before this function returns.
+    `workflow_check` is invoked exactly once, only after every precondition has passed, and
+    still before an accepted description is returned; a false result refuses the whole batch.
+    Neither `batch` nor its members are mutated; the returned mapping is a fresh, immutable
+    description of the accepted commit.
+    """
+    validate_workflow_edit_batch(batch)
+    label = "WorkflowEditBatch"
+    fields = _mapping(batch, label)
+
+    if isinstance(current_revision, bool) or not isinstance(current_revision, int) or current_revision < 0:
+        raise ContractSemanticError(f"{label}: current_revision is not a non-negative integer")
+
+    if fields["baseRevision"] != current_revision:
+        raise ContractSemanticError(
+            f"{WF_EDIT_STALE_BASE}: {label}: baseRevision does not match the current revision"
+        )
+
+    for operation in fields["operations"]:  # type: ignore[union-attr]
+        operation_fields = _mapping(operation, f"{label}.operations")
+        operation_id = operation_fields["operationId"]
+        for precondition in operation_fields["preconditions"]:  # type: ignore[union-attr]
+            precondition_fields = _mapping(precondition, f"{label}.operations.preconditions")
+            if precondition_check(precondition_fields) is not True:
+                raise ContractSemanticError(
+                    f"{WF_EDIT_PRECONDITION_FAILED}: {label}: operation {operation_id!r} "
+                    f"precondition against {precondition_fields['targetStableId']!r} failed"
+                )
+
+    if workflow_check() is not True:
+        raise ContractSemanticError(f"{label}: Workflow Check failure refuses the batch")
+
+    accepted_revision = current_revision + 1
+    operation_ids = tuple(
+        _mapping(operation, f"{label}.operations")["operationId"]
+        for operation in fields["operations"]  # type: ignore[union-attr]
+    )
+    return MappingProxyType(
+        {
+            "batchId": fields["batchId"],
+            "acceptedRevision": accepted_revision,
+            "batchPayloadDigest": fields["batchPayloadDigest"],
+            "operationIds": operation_ids,
+        }
+    )
+
+
+# --- T-0688 IP-08: ComponentPortContract public contract semantics ------------------------
+#
+# DOC-004 Appendix AD.4 and REF-004 Appendix D.2 define a Component's ports as an exact closed
+# shape reusing the repository's existing `WorkflowValue` semantic/schema/cardinality/presence
+# vocabularies (`is_identifier`, `_reference`, `WORKFLOW_VALUE_CARDINALITIES`,
+# `WORKFLOW_VALUE_PRESENCES`) rather than inventing a second parallel vocabulary. Like
+# `RuntimeDefinitionBinding`, `RuntimeTransitionBundle`, and `WorkflowEditBatch` above, a port
+# contract carries no `contractName` and is deliberately kept out of
+# `WORKFLOW_RECORD_VALIDATORS`.
+#
+# `deliveryMode`, `driver`, and `fanOutPolicy` are optional additions: their absence is valid v1
+# behavior and semantically defaults to `whole`/`false`/`none` without this module rewriting the
+# caller's record to inject a default value.
+#
+# `dynamicDerivation`, per DOC-004 Appendix AD.4, is the exact closed three-member record
+# `{derivationExpression, resolvedPortSetDigest, derivationDigest}`. It does not itself execute
+# `derivationExpression`, and it does not carry the resolved ports: it records the
+# publication-time resolved-set digest for a port set resolved elsewhere. The complete derived
+# ports are ordinary `ComponentPortContract` records in the containing port set (AD.6 `ports`)
+# and receive the same required-field validation as any other port there; this module has no
+# preimage to recompute either digest against, so it validates format only: a non-empty
+# `derivationExpression` and two well-formed content digests. Any malformed, empty, or unknown
+# field raises `ContractSemanticError` tagged `WF_PORT_DYNAMIC_UNRESOLVED`.
+
+WF_PORT_DYNAMIC_UNRESOLVED: Final = "WF_PORT_DYNAMIC_UNRESOLVED"
+
+PORT_DELIVERY_MODES: Final[tuple[str, ...]] = ("whole", "chunked", "streamed")
+PORT_DIRECTIONS: Final[tuple[str, ...]] = ("input", "output")
+PORT_FAN_OUT_POLICIES: Final[tuple[str, ...]] = ("none", "broadcast", "partitioned")
+
+_PORT_REQUIRED_FIELDS: Final = frozenset(
+    {
+        "portId",
+        "direction",
+        "semanticType",
+        "physicalSchema",
+        "cardinality",
+        "presence",
+        "classification",
+        "lineage",
+    }
+)
+_PORT_OPTIONAL_FIELDS: Final = frozenset(
+    {"deliveryMode", "driver", "fanOutPolicy", "dynamicDerivation"}
+)
+_PORT_FIELDS: Final = _PORT_REQUIRED_FIELDS | _PORT_OPTIONAL_FIELDS
+
+_DYNAMIC_DERIVATION_FIELDS: Final = frozenset(
+    {"derivationExpression", "resolvedPortSetDigest", "derivationDigest"}
+)
+
+
+def _validate_dynamic_derivation(record: object, label: str) -> None:
+    if not isinstance(record, Mapping):
+        raise ContractSemanticError(f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: expected a mapping")
+    if any(not isinstance(key, str) for key in record):
+        raise ContractSemanticError(f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: field names must be strings")
+    unknown = sorted(set(record) - _DYNAMIC_DERIVATION_FIELDS)
+    if unknown:
+        raise ContractSemanticError(f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: unknown fields {unknown!r}")
+
+    expression = record.get("derivationExpression")
+    if isinstance(expression, bool) or not isinstance(expression, str) or not expression:
+        raise ContractSemanticError(
+            f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: derivationExpression is not a non-empty string"
+        )
+
+    if not is_content_checksum(record.get("resolvedPortSetDigest")):
+        raise ContractSemanticError(
+            f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: resolvedPortSetDigest is not a well-formed Digest"
+        )
+    if not is_content_checksum(record.get("derivationDigest")):
+        raise ContractSemanticError(
+            f"{WF_PORT_DYNAMIC_UNRESOLVED}: {label}: derivationDigest is not a well-formed Digest"
+        )
+
+
+def validate_component_port_contract(record: object) -> None:
+    """Validate the T-0688 `ComponentPortContract` closed record (DOC-004 §AD.4, REF-004 §D.2)."""
+    label = "ComponentPortContract"
+    fields = _mapping(record, label)
+    _only_fields(fields, _PORT_FIELDS, label)
+    _identifier(fields, "portId", label)
+    _member(fields, "direction", label, PORT_DIRECTIONS)
+    _identifier(fields, "semanticType", label)
+    _reference(fields, "physicalSchema", label)
+    _member(fields, "cardinality", label, WORKFLOW_VALUE_CARDINALITIES)
+    _member(fields, "presence", label, WORKFLOW_VALUE_PRESENCES)
+    _reference(fields, "classification", label)
+    _reference(fields, "lineage", label)
+
+    if "deliveryMode" in fields:
+        _member(fields, "deliveryMode", label, PORT_DELIVERY_MODES)
+    if "driver" in fields:
+        _boolean(fields, "driver", label)
+    if "fanOutPolicy" in fields:
+        _member(fields, "fanOutPolicy", label, PORT_FAN_OUT_POLICIES)
+    if "dynamicDerivation" in fields:
+        _validate_dynamic_derivation(fields["dynamicDerivation"], f"{label}.dynamicDerivation")
+
+
+def validate_component_port_set(records: object) -> None:
+    """Validate a non-empty, ordered `ComponentPortContract` collection (DOC-004 §AD.4).
+
+    Port IDs must be unique across the set, and at most one *input* port may declare
+    `driver: true`; an output port's `driver: true` does not satisfy this rule and is refused,
+    since a driver is what starts a Run and an output cannot be what starts it.
+    """
+    label = "ComponentPortSet"
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise ContractSemanticError(f"{label}: expected an array of ComponentPortContract")
+    if not records:
+        raise ContractSemanticError(f"{label}: must not be empty")
+
+    port_ids: list[str] = []
+    driver_input_count = 0
+    for index, port in enumerate(records):
+        entry_label = f"{label}[{index}]"
+        try:
+            validate_component_port_contract(port)
+        except ContractSemanticError as error:
+            raise ContractSemanticError(f"{entry_label}: {error}") from error
+        fields = _mapping(port, entry_label)
+        port_ids.append(fields["portId"])  # type: ignore[arg-type]
+        if fields.get("driver") is True:
+            if fields["direction"] != "input":
+                raise ContractSemanticError(
+                    f"{entry_label}: only an input port may declare driver: true"
+                )
+            driver_input_count += 1
+
+    if len(port_ids) != len(set(port_ids)):
+        raise ContractSemanticError(f"{label}: must not repeat a portId")
+    if driver_input_count > 1:
+        raise ContractSemanticError(f"{label}: at most one input port may declare driver: true")
+
+
+# --- T-0688 IP-08: OWIR source projection semantics (REF-004 §D.5) ------------------------
+#
+# OWIR (REF-004 §D.5) is generated, read-only, never canonical, and never round-tripped: it is
+# a stable-ID, revision-bound textual projection for review, diff and Assistant context, not an
+# authoring language. `OwirSourceProjection` records only the provenance facts §D.5 requires --
+# which exact revision and definition digest this text was generated from, that it is
+# `generated`/`readOnly`/not `canonical`, which stable IDs it projects, and a recomputable digest
+# of its own text -- so a caller can prove a projection is current and unmutated. It exposes no
+# parse/apply/merge function, because §D.5.2 forbids any path back from OWIR text to a Definition
+# change.
+
+WF_OWIR_PROJECTION_STALE: Final = "WF_OWIR_PROJECTION_STALE"
+
+_OWIR_PROJECTION_FIELDS: Final = frozenset(
+    {
+        "projectionSchemaVersion",
+        "projectionId",
+        "sourceRef",
+        "sourceRevision",
+        "sourceDefinitionDigest",
+        "generated",
+        "readOnly",
+        "canonical",
+        "stableElementIds",
+        "text",
+        "projectionDigest",
+    }
+)
+
+
+def _owir_element_line_present(text: str, stable_id: str) -> bool:
+    for line in text.splitlines():
+        if line == f"element {stable_id}":
+            return True
+    return False
+
+
+def validate_owir_source_projection(record: object) -> None:
+    """Validate the T-0688 `OwirSourceProjection` closed record (REF-004 §D.5).
+
+    Every `stableElementIds` entry must be visibly present in `text` as a complete `element
+    <stableId>` line token, not merely a substring, and `projectionDigest` must be the exact
+    recomputation of the UTF-8 bytes of `text` -- proving the projection was not silently edited
+    after generation.
+    """
+    label = "OwirSourceProjection"
+    fields = _mapping(record, label)
+    _only_fields(fields, _OWIR_PROJECTION_FIELDS, label)
+    _release_version(fields, "projectionSchemaVersion", label)
+    _identifier(fields, "projectionId", label)
+    _reference(fields, "sourceRef", label)
+    _non_negative_int(fields, "sourceRevision", label)
+    _digest(fields, "sourceDefinitionDigest", label)
+    _literal_true(fields, "generated", label)
+    _literal_true(fields, "readOnly", label)
+    _literal_false(fields, "canonical", label)
+
+    stable_ids = _sequence(fields, "stableElementIds", label)
+    if not stable_ids:
+        raise ContractSemanticError(f"{label}: stableElementIds must not be empty")
+    seen: list[str] = []
+    for index, item in enumerate(stable_ids):
+        if not is_identifier(item):
+            raise ContractSemanticError(f"{label}: stableElementIds[{index}] is not an Identifier")
+        assert isinstance(item, str)
+        seen.append(item)
+    if len(seen) != len(set(seen)):
+        raise ContractSemanticError(f"{label}: stableElementIds must not repeat a stable ID")
+
+    text = _string(fields, "text", label)
+    for stable_id in seen:
+        if not _owir_element_line_present(text, stable_id):
+            raise ContractSemanticError(
+                f"{label}: text does not carry an 'element {stable_id}' line for stableElementIds"
+            )
+
+    _digest(fields, "projectionDigest", label)
+    expected_digest = f"sha256:{sha256(text.encode('utf-8')).hexdigest()}"
+    if fields["projectionDigest"] != expected_digest:
+        raise ContractSemanticError(f"{label}: projectionDigest does not match its recomputation")
+
+
+def validate_owir_source_projection_matches_revision(
+    record: object,
+    *,
+    current_revision: int,
+    current_definition_digest: str,
+) -> None:
+    """Refuse a stale `OwirSourceProjection` (REF-004 §D.5.3: a divergent projection is a defect).
+
+    Validates the record's own shape first, then compares `sourceRevision` and
+    `sourceDefinitionDigest` against the caller-supplied current values. It never mutates or
+    silently refreshes the record; a mismatch on either value refuses with
+    `WF_OWIR_PROJECTION_STALE`, naming that the projection must be regenerated.
+    """
+    validate_owir_source_projection(record)
+    label = "OwirSourceProjection"
+    fields = _mapping(record, label)
+    if isinstance(current_revision, bool) or not isinstance(current_revision, int) or current_revision < 0:
+        raise ContractSemanticError(f"{label}: current_revision is not a non-negative integer")
+    if not is_content_checksum(current_definition_digest):
+        raise ContractSemanticError(
+            f"{label}: current_definition_digest is not a well-formed Digest"
+        )
+    if (
+        fields["sourceRevision"] != current_revision
+        or fields["sourceDefinitionDigest"] != current_definition_digest
+    ):
+        raise ContractSemanticError(
+            f"{WF_OWIR_PROJECTION_STALE}: {label}: OWIR source is stale and must be regenerated"
+        )
 
 
 WORKFLOW_RECORD_VALIDATORS: Final[Mapping[str, WorkflowRecordValidator]] = MappingProxyType(
