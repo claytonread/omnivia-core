@@ -371,17 +371,27 @@ class ServiceRunner:
         path = self.installation.runtime_for(workspace_id) / AUTHORITY_FILENAME
         if not path.is_file():
             return None
+        unreadable_authority = False
+        document: object | None = None
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            unreadable_authority = True
+        if unreadable_authority:
             raise RuntimeError(
                 f"{AUTHORITY_FILENAME} is not readable UTF-8 JSON"
-            ) from None
+            )
+        assert document is not None
+        refused_message: str | None = None
+        sources: tuple[PolicySource, ...] | None = None
         try:
             sources = load_policy_sources(document)
             resolve_effective_policy(sources)
         except DecisionRefused as refused:
-            raise RuntimeError(f"{AUTHORITY_FILENAME}: {refused}") from None
+            refused_message = f"{AUTHORITY_FILENAME}: {refused}"
+        if refused_message is not None:
+            raise RuntimeError(refused_message)
+        assert sources is not None
         return sources
 
     def _start_transport(self, serve: Callable[[ServiceRunner], None]) -> None:

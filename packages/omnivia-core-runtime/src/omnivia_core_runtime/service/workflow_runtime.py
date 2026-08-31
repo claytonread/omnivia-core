@@ -50,7 +50,7 @@ import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 from omnivia_core.contracts.v1 import (
     ERROR_CODE_DEPENDENCY_UNAVAILABLE,
@@ -220,12 +220,15 @@ class WorkflowApplicationRuntime:
 
     def workflow_inspect(self, context: OperationContext) -> Mapping[str, Any]:
         """One canonical Runtime ``Run``, projected from stored rows or refused."""
+        invalid_request = False
+        request: WorkflowInspectInput | None = None
         try:
             request = WorkflowInspectInput.from_wire(context.request.input)
         except ContractDecodeError:
-            raise application_refusal(
-                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID
-            ) from None
+            invalid_request = True
+        if invalid_request:
+            _refuse(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        assert request is not None
         run = _canonical_run(self._workflow_run(context, request.run_id))
         _require_served_projection(request.projection_version, run)
         return WorkflowInspectResult(
@@ -239,12 +242,15 @@ class WorkflowApplicationRuntime:
         disagree with the inspection of the same run would be two truths about one run,
         and the aggregate is the one that counts.
         """
+        invalid_request = False
+        request: WorkflowReviewInput | None = None
         try:
             request = WorkflowReviewInput.from_wire(context.request.input)
         except ContractDecodeError:
-            raise application_refusal(
-                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID
-            ) from None
+            invalid_request = True
+        if invalid_request:
+            _refuse(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        assert request is not None
         run = _canonical_run(self._workflow_run(context, request.run_id))
         _require_served_projection(request.projection_version, run)
         return _served(
@@ -263,12 +269,15 @@ class WorkflowApplicationRuntime:
         build cannot do that to that run" from "that run does not exist here". Nothing
         is written, and no ``run`` is returned, because nothing changed.
         """
+        invalid_request = False
+        request: WorkflowControlInput | None = None
         try:
             request = WorkflowControlInput.from_wire(context.request.input)
         except ContractDecodeError:
-            raise application_refusal(
-                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID
-            ) from None
+            invalid_request = True
+        if invalid_request:
+            _refuse(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        assert request is not None
         self._control_authority(context)
         run = _canonical_run(self._workflow_run(context, request.run_id))
         return _served(
@@ -287,14 +296,19 @@ class WorkflowApplicationRuntime:
 
     def workflow_start(self, context: OperationContext) -> Mapping[str, Any]:
         """Admit one Workflow Run through the application mutation fence."""
+        invalid_request = False
+        request: WorkflowStartInput | None = None
         try:
             request = WorkflowStartInput.from_wire(context.request.input)
         except ContractDecodeError:
-            raise application_refusal(
-                ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID
-            ) from None
+            invalid_request = True
+        if invalid_request:
+            _refuse(ERROR_CODE_INVALID_REQUEST, _MESSAGE_INVALID)
+        assert request is not None
         connection, identity, guard = self._admission_authority(context)
         decision = self.effective_policy()
+        unavailable_plan = False
+        plan: WorkflowPlan | None = None
         try:
             plan = read_workflow_plan(
                 connection,
@@ -303,9 +317,9 @@ class WorkflowApplicationRuntime:
                 workflow_version=request.definition_version,
             )
         except StorageError:
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT
-            ) from None
+            unavailable_plan = True
+        if unavailable_plan:
+            _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT)
         if plan is None:
             raise application_refusal(ERROR_CODE_NOT_FOUND, _MESSAGE_NO_PLAN)
 
@@ -313,6 +327,7 @@ class WorkflowApplicationRuntime:
         assert self.session is not None
         assert self.binding is not None
         assert self.clock is not None
+        admission_failed = False
         try:
             equivalence = idempotency_equivalence(
                 WORKFLOW_START_OPERATION,
@@ -350,9 +365,9 @@ class WorkflowApplicationRuntime:
                 materialise_claim_before_mutation=True,
             )
         except (ContractSemanticError, StorageError, sqlite3.Error):
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_ADMISSION_FAILED
-            ) from None
+            admission_failed = True
+        if admission_failed:
+            _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_ADMISSION_FAILED)
         if outcome.replayed:
             result = dict(outcome.result)
             result["admission"] = ADMISSION_REPLAYED
@@ -455,13 +470,16 @@ class WorkflowApplicationRuntime:
             raise application_refusal(
                 ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_AUTHORITY
             )
+        refused_message: str | None = None
+        policy: EffectivePolicy | None = None
         try:
-            return resolve_effective_policy(sources)
+            policy = resolve_effective_policy(sources)
         except DecisionRefused as refused:
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
-                f"{_MESSAGE_BAD_AUTHORITY}: {refused}",
-            ) from None
+            refused_message = f"{_MESSAGE_BAD_AUTHORITY}: {refused}"
+        if refused_message is not None:
+            _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, refused_message)
+        assert policy is not None
+        return policy
 
     def _workflow_run(self, context: OperationContext, run_id: str) -> RunSnapshot:
         """The stored run behind one Workflow Run identifier, or a refusal.
@@ -474,6 +492,9 @@ class WorkflowApplicationRuntime:
         in one place rather than in three that could drift apart.
         """
         connection = self._connection()
+        unavailable_run = False
+        view = None
+        snapshot = None
         try:
             view = read_workflow_run(
                 connection, workspace_id=context.workspace_id, run_id=run_id
@@ -486,9 +507,9 @@ class WorkflowApplicationRuntime:
                 )
             )
         except StorageError:
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT
-            ) from None
+            unavailable_run = True
+        if unavailable_run:
+            _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT)
         if view is None or snapshot is None:
             raise application_refusal(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
         return snapshot
@@ -582,9 +603,11 @@ def _canonical_run(snapshot: RunSnapshot) -> Run:
     try:
         validate_run(run, workspace_id=snapshot.workspace_id)
     except ContractSemanticError:
-        raise application_refusal(
-            ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT
-        ) from None
+        incoherent = True
+    else:
+        incoherent = False
+    if incoherent:
+        _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT)
     return run
 
 
@@ -682,13 +705,18 @@ def _served(
     result: Mapping[str, Any], decode: Any
 ) -> Mapping[str, Any]:
     """A result served only if its own generated decoder still accepts it."""
+    incoherent = False
     try:
         decode(result)
     except (ContractDecodeError, ContractSemanticError):
-        raise application_refusal(
-            ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT
-        ) from None
+        incoherent = True
+    if incoherent:
+        _refuse(ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_INCOHERENT)
     return result
+
+
+def _refuse(code: str, message: str) -> NoReturn:
+    raise application_refusal(code, message)
 
 
 def _valid_start_result(result: Mapping[str, Any]) -> bool:
