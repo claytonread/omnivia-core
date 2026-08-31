@@ -1,12 +1,20 @@
 """Runtime Execution Planes: a non-authoritative, package-neutral execution seam.
 
-Four modules, one seam. :mod:`profile` holds the frozen profile, executor and
+Five modules, one seam. :mod:`profile` holds the frozen profile, executor and
 session-provider descriptors plus the shared vocabulary, :mod:`planes` the
 execution-class behaviours, :mod:`registry` the static source-qualified
 registry that decides which executor or session provider build is routable,
-and :mod:`workflow` a provisional in-memory EP2 conformance oracle for
+:mod:`workflow` a provisional in-memory EP2 conformance oracle for
 workflow materialisation, routing and one run's replay-equivalent
-observations.
+observations, and :mod:`loop` the bounded loop runner and iteration-ledger
+oracle for the complete `LoopPlan`.
+
+The two loop names are two different questions and are not one ontology:
+:class:`~omnivia_core_runtime.execution.workflow.LoopDefinition` with its
+:class:`~omnivia_core_runtime.execution.workflow.LoopController` bounds a loop's
+*spend*, while :class:`~omnivia_core_runtime.execution.loop.FrozenLoopPlan` with
+its :class:`~omnivia_core_runtime.execution.loop.LoopRunner` bounds and records a
+loop's *iterations*. Neither restates the other's vocabulary.
 
 The reference vocabularies are closed and their members are spelled in exact
 uppercase -- ``AGENT``, ``APPROVED``, ``COMMAND``, ``TERMINAL`` and the rest.
@@ -18,6 +26,41 @@ or Platform, and nothing writes canonical state. Every decision it makes is a
 value returned or a refusal raised.
 """
 
+from omnivia_core_runtime.execution.loop import (
+    CANCEL_REMAINING,
+    COMPLETE_ALL,
+    DISPOSITION_CANCELLED_IN_FLIGHT,
+    DRAIN_IN_FLIGHT,
+    FAIL_LOOP,
+    ITERATION_CANCELLED,
+    ITERATION_OUTCOMES,
+    ITERATION_SKIPPED,
+    LOOP_CANCELLATION_POLICIES,
+    LOOP_MODE_PARALLEL,
+    LOOP_MODE_SEQUENTIAL,
+    LOOP_MODES,
+    LOOP_ORDER_GUARANTEES,
+    LOOP_PARTIAL_SUCCESS_POLICIES,
+    LOOP_RUNNING,
+    LOOP_SETTLED,
+    LOOP_STATES,
+    LOOP_STOPPING,
+    LOOP_ZIP_MISMATCH_POLICIES,
+    ORDER_ITERATION_IDENTITY,
+    ORDER_SETTLEMENT,
+    RECORD_AND_CONTINUE,
+    RECORD_AND_STOP_AFTER_CURRENT,
+    ZIP_PAD_WITH_ABSENT,
+    ZIP_REFUSE,
+    ZIP_TRUNCATE_TO_SHORTEST,
+    FrozenLoopPlan,
+    IterationLaunch,
+    IterationLedgerEntry,
+    LateResult,
+    LoopElement,
+    LoopRunner,
+    replay_ledger,
+)
 from omnivia_core_runtime.execution.planes import (
     LEASE_EXPIRED,
     LEASE_HELD,
@@ -163,7 +206,11 @@ __all__ = [
     "CANCELLATION_COOPERATIVE",
     "CANCELLATION_NONE",
     "CANCELLATION_POSTURES",
+    "CANCEL_REMAINING",
+    "COMPLETE_ALL",
     "CONTRACT_VERSION",
+    "DISPOSITION_CANCELLED_IN_FLIGHT",
+    "DRAIN_IN_FLIGHT",
     "ENTRY_EXECUTOR",
     "ENTRY_SESSION_PROVIDER",
     "EXECUTION_CLASSES",
@@ -178,6 +225,7 @@ __all__ = [
     "EXECUTOR_KIND_GIT",
     "EXECUTOR_KIND_INTEGRATION",
     "EXECUTOR_KIND_OTHER",
+    "FAIL_LOOP",
     "HEALTH_QUARANTINED",
     "HEALTH_READY",
     "HEALTH_STATES",
@@ -186,10 +234,26 @@ __all__ = [
     "IMPLEMENTATION_POSTURE_PURE",
     "ISOLATION_MAX",
     "ISOLATION_MIN",
+    "ITERATION_CANCELLED",
+    "ITERATION_OUTCOMES",
+    "ITERATION_SKIPPED",
     "LEASE_EXPIRED",
     "LEASE_HELD",
     "LEASE_RELEASED",
     "LEASE_STATES",
+    "LOOP_CANCELLATION_POLICIES",
+    "LOOP_MODES",
+    "LOOP_MODE_PARALLEL",
+    "LOOP_MODE_SEQUENTIAL",
+    "LOOP_ORDER_GUARANTEES",
+    "LOOP_PARTIAL_SUCCESS_POLICIES",
+    "LOOP_RUNNING",
+    "LOOP_SETTLED",
+    "LOOP_STATES",
+    "LOOP_STOPPING",
+    "LOOP_ZIP_MISMATCH_POLICIES",
+    "ORDER_ITERATION_IDENTITY",
+    "ORDER_SETTLEMENT",
     "OUTCOMES",
     "OUTCOME_FAILED",
     "OUTCOME_SUCCEEDED",
@@ -198,6 +262,8 @@ __all__ = [
     "PROFILE_TRUST_DRAFT",
     "PROFILE_TRUST_QUARANTINED",
     "PROFILE_TRUST_STATES",
+    "RECORD_AND_CONTINUE",
+    "RECORD_AND_STOP_AFTER_CURRENT",
     "REQUIRED_DISPATCH_TRUST",
     "ROUTABLE_HEALTH",
     "ROUTES",
@@ -219,6 +285,9 @@ __all__ = [
     "SESSION_UNKNOWN",
     "STATUS_CANCELLED",
     "STATUS_COMPLETED",
+    "ZIP_PAD_WITH_ABSENT",
+    "ZIP_REFUSE",
+    "ZIP_TRUNCATE_TO_SHORTEST",
     "BranchDefinition",
     "BranchObservation",
     "BranchResult",
@@ -241,10 +310,16 @@ __all__ = [
     "ExecutionLineage",
     "ExecutionRefused",
     "ExecutorDescriptor",
+    "FrozenLoopPlan",
     "GovernedDispatchPlane",
     "ImplementationHistoryEvent",
+    "IterationLaunch",
+    "IterationLedgerEntry",
+    "LateResult",
     "LoopController",
     "LoopDefinition",
+    "LoopElement",
+    "LoopRunner",
     "MaterialisedStep",
     "MaterialisedWorkflow",
     "PlanObservation",
@@ -266,4 +341,5 @@ __all__ = [
     "canonical_hash",
     "derive_id",
     "materialise_workflow",
+    "replay_ledger",
 ]
