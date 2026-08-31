@@ -12,9 +12,11 @@ HTTP, MCP, CLI, Platform, Dev, or a validation framework.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from hashlib import sha256
 from types import MappingProxyType
 from typing import Final
 
+from omnivia_core.contracts.v1.canonical_json import canonical_bytes
 from omnivia_core.contracts.v1.compatibility import ContractSemanticError
 from omnivia_core.contracts.v1.generated import (
     is_content_checksum,
@@ -29,6 +31,7 @@ __all__ = [
     "BRANCH_AGGREGATE_MODES",
     "COMPONENT_IMPLEMENTATION_BINDING_STATES",
     "EFFECT_DISPOSITIONS",
+    "EFFECT_SETTLEMENT_CLASSES",
     "LOOP_LATE_RESULT_POLICIES",
     "RUNTIME_BINDING_RECONCILE_OUTCOMES",
     "RUNTIME_BINDING_REFUSAL_DIAGNOSTICS",
@@ -39,6 +42,7 @@ __all__ = [
     "WORKFLOW_VALUE_CARDINALITIES",
     "WORKFLOW_VALUE_PRESENCES",
     "WorkflowRecordValidator",
+    "compute_transition_bundle_payload_digest",
     "validate_absent_value",
     "validate_attempt_settlement",
     "validate_branch_aggregate_policy",
@@ -50,9 +54,11 @@ __all__ = [
     "validate_runtime_binding_resume_decision",
     "validate_runtime_definition_binding",
     "validate_runtime_definition_binding_projection",
+    "validate_runtime_journal_event",
     "validate_simulation_result",
     "validate_start_workflow_run_readiness",
     "validate_suggested_workflow_fix",
+    "validate_transition_bundle",
     "validate_workflow_artifact_receipt",
     "validate_workflow_check_readiness_extension",
     "validate_workflow_record",
@@ -944,6 +950,196 @@ def validate_runtime_binding_resume_decision(record: object) -> None:
         _reference(fields, "decidingActor", label)
         _string(fields, "reason", label)
         _member(fields, "outcome", label, RUNTIME_BINDING_RECONCILE_OUTCOMES)
+
+
+# --- T-0688 IP-07: RuntimeTransitionBundle public contract semantics -------------------
+#
+# `RuntimeTransitionBundle` is, like `RuntimeDefinitionBinding` above, deliberately not a
+# T-0679 `contractName`-tagged record: it is the single write a Runtime Run applies against
+# an expected aggregate revision, not a mutable Workflow authoring surface object. It is
+# therefore validated and exposed directly and is deliberately kept out of
+# `WORKFLOW_RECORD_VALIDATORS`, which dispatches on `contractName` that a real bundle can
+# never carry. The unrelated FX-WEFT-BUNDLE red probe (`test_t0688_red_baseline.py`) invents
+# a *different* shape under the invented `contractName` `"WorkflowTransitionBundle"`; that
+# probe is refused by `validate_workflow_record` on `contractName` alone and this module never
+# touches it.
+#
+# `RuntimeJournalEvent` is the append-only entry a bundle carries. This validator checks the
+# one record's own shape and that its `runId` agrees with the enclosing bundle; it cannot
+# recompute `previousIntegrityLink` from a genesis link or a predecessor event, because doing
+# that requires the persisted Run/event context this pure, standard-library module never has
+# access to -- that recomputation belongs to the later storage verifier.
+#
+# `eventKind` reuses the repository's existing `OpenCode` open wire vocabulary
+# (:func:`is_open_code`), the same primitive `RuntimeEvent.event_kind` already validates
+# against in :mod:`semantics_runtime`, rather than inventing a second closed enumeration that
+# could drift from Runtime Appendix B.
+
+_TRANSITION_BUNDLE_FIELDS: Final = frozenset(
+    {
+        "bundleSchemaVersion",
+        "bundleId",
+        "runId",
+        "attemptRef",
+        "expectedAggregateRevision",
+        "event",
+        "boundaryResults",
+        "activations",
+        "schedulingIntents",
+        "evidenceRefs",
+        "waitConsequences",
+        "loopConsequences",
+        "effectSettlements",
+        "producedAggregateRevision",
+        "payloadDigest",
+    }
+)
+_TRANSITION_BUNDLE_SCHEMA_SUPPORTED_MAJORS: Final = frozenset({1})
+_TRANSITION_BUNDLE_PLAIN_ARRAY_FIELDS: Final = (
+    "boundaryResults",
+    "activations",
+    "schedulingIntents",
+    "waitConsequences",
+    "loopConsequences",
+)
+
+_RUNTIME_JOURNAL_EVENT_FIELDS: Final = frozenset(
+    {
+        "eventId",
+        "runId",
+        "sequence",
+        "previousIntegrityLink",
+        "eventKind",
+        "recordedAt",
+        "payloadDigest",
+    }
+)
+
+_EFFECT_SETTLEMENT_FIELDS: Final = frozenset(
+    {"effectRequestId", "settlementClass", "verifiedReceiptRef", "completionContribution"}
+)
+EFFECT_SETTLEMENT_CLASSES: Final[tuple[str, ...]] = ("committed", "not_committed", "unknown")
+
+_TRANSITION_BUNDLE_DIGEST_ALGORITHM: Final = "sha256"
+
+
+def _non_negative_int(fields: Mapping[str, object], key: str, label: str) -> int:
+    value = _present(fields, key, label)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ContractSemanticError(f"{label}: {key} is not a non-negative integer")
+    return value
+
+
+def _transition_bundle_schema_version(fields: Mapping[str, object], key: str, label: str) -> str:
+    value = _release_version(fields, key, label)
+    major = int(value.split(".", 1)[0])
+    if major not in _TRANSITION_BUNDLE_SCHEMA_SUPPORTED_MAJORS:
+        raise ContractSemanticError(f"{label}: {key} major version {major} is not supported")
+    return value
+
+
+def validate_runtime_journal_event(record: object, *, run_id: str | None = None) -> None:
+    """Validate the T-0688 `RuntimeJournalEvent` closed record.
+
+    `run_id`, when given, is the enclosing bundle's `runId`: this event's own `runId` must
+    equal it. Genesis-link recomputation and predecessor-chain verification require persisted
+    Run/event context this pure validator does not have, so a single well-formed
+    `previousIntegrityLink` digest is all that is checked here -- proving the chain itself is
+    the storage verifier's job.
+    """
+    label = "RuntimeJournalEvent"
+    fields = _mapping(record, label)
+    _only_fields(fields, _RUNTIME_JOURNAL_EVENT_FIELDS, label)
+    _identifier(fields, "eventId", label)
+    event_run_id = _identifier(fields, "runId", label)
+    _non_negative_int(fields, "sequence", label)
+    _digest(fields, "previousIntegrityLink", label)
+    _open_code(fields, "eventKind", label)
+    _timestamp(fields, "recordedAt", label)
+    _digest(fields, "payloadDigest", label)
+    if run_id is not None and event_run_id != run_id:
+        raise ContractSemanticError(f"{label}: runId does not match the enclosing bundle runId")
+
+
+def _effect_settlement(entry: object, label: str) -> None:
+    fields = _mapping(entry, label)
+    _only_fields(fields, _EFFECT_SETTLEMENT_FIELDS, label)
+    _identifier(fields, "effectRequestId", label)
+    settlement_class = _member(fields, "settlementClass", label, EFFECT_SETTLEMENT_CLASSES)
+    _reference(fields, "completionContribution", label)
+    has_receipt = "verifiedReceiptRef" in fields
+    if settlement_class == "committed":
+        if not has_receipt:
+            raise ContractSemanticError(f"{label}: committed requires verifiedReceiptRef")
+        _reference(fields, "verifiedReceiptRef", label)
+    elif has_receipt:
+        raise ContractSemanticError(f"{label}: {settlement_class} must not carry verifiedReceiptRef")
+
+
+def compute_transition_bundle_payload_digest(record: object) -> str:
+    """Compute the T-0688 `RuntimeTransitionBundle.payloadDigest`.
+
+    The digest covers Core's existing RFC 8785 canonical JSON serialization
+    (:func:`canonical_json.canonical_bytes`) of every bundle member except `payloadDigest`
+    itself, using the `sha256:` content-checksum convention. It fails closed: a member that
+    cannot be canonically serialized (a duplicate key, a non-finite number, anything outside
+    the I-JSON value domain) raises `ContractSemanticError` rather than being silently
+    coerced or skipped.
+    """
+    label = "RuntimeTransitionBundle"
+    fields = _mapping(record, label)
+    payload = {key: value for key, value in fields.items() if key != "payloadDigest"}
+    try:
+        digest_bytes = canonical_bytes(payload, label)
+    except ContractSemanticError as error:
+        raise ContractSemanticError(
+            f"{label}: payloadDigest cannot be computed: {error}"
+        ) from error
+    return f"{_TRANSITION_BUNDLE_DIGEST_ALGORITHM}:{sha256(digest_bytes).hexdigest()}"
+
+
+def validate_transition_bundle(record: object) -> None:
+    """Validate the T-0688 `RuntimeTransitionBundle` closed record.
+
+    A bundle is the single write a Runtime Run applies against the aggregate revision it
+    expected: `producedAggregateRevision` must be exactly `expectedAggregateRevision + 1`, and
+    `payloadDigest` must be the exact recomputation of :func:`compute_transition_bundle_payload_digest`
+    over every other member. It carries no `contractName` and is deliberately absent from
+    `WORKFLOW_RECORD_VALIDATORS` (see this section's module-level note).
+    """
+    label = "RuntimeTransitionBundle"
+    fields = _mapping(record, label)
+    _only_fields(fields, _TRANSITION_BUNDLE_FIELDS, label)
+    _transition_bundle_schema_version(fields, "bundleSchemaVersion", label)
+    _identifier(fields, "bundleId", label)
+    run_id = _identifier(fields, "runId", label)
+    if "attemptRef" in fields:
+        _reference(fields, "attemptRef", label)
+    expected_revision = _non_negative_int(fields, "expectedAggregateRevision", label)
+    validate_runtime_journal_event(_present(fields, "event", label), run_id=run_id)
+
+    for key in _TRANSITION_BUNDLE_PLAIN_ARRAY_FIELDS:
+        for index, entry in enumerate(_optional_sequence(fields, key, label)):
+            entry_label = f"{label}.{key}[{index}]"
+            _reference_value(entry, entry_label, f"{entry_label} must not be empty")
+
+    for index, ref in enumerate(_optional_sequence(fields, "evidenceRefs", label)):
+        entry_label = f"{label}.evidenceRefs[{index}]"
+        _reference_value(ref, entry_label, f"{entry_label} must not be empty")
+
+    for index, settlement in enumerate(_optional_sequence(fields, "effectSettlements", label)):
+        _effect_settlement(settlement, f"{label}.effectSettlements[{index}]")
+
+    produced_revision = _non_negative_int(fields, "producedAggregateRevision", label)
+    if produced_revision != expected_revision + 1:
+        raise ContractSemanticError(
+            f"{label}: producedAggregateRevision must be exactly expectedAggregateRevision + 1"
+        )
+
+    _digest(fields, "payloadDigest", label)
+    expected_digest = compute_transition_bundle_payload_digest(fields)
+    if fields["payloadDigest"] != expected_digest:
+        raise ContractSemanticError(f"{label}: payloadDigest does not match its recomputation")
 
 
 WORKFLOW_RECORD_VALIDATORS: Final[Mapping[str, WorkflowRecordValidator]] = MappingProxyType(
