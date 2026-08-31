@@ -996,7 +996,129 @@ def test_snapshot_inputs_walk_the_branch_path_oldest_to_newest_with_deduped_job_
     assert inputs.parts_by_message_id[TRIGGER_MESSAGE_ID] == ()
     # Two messages name the same job; it is reported once.
     assert inputs.generation_job_ids == (JOB_ID,)
+    assert inputs.generation_job_ids_truncated is False
     assert isinstance(inputs.parts_by_message_id, MappingProxyType)
+
+
+def test_snapshot_inputs_publish_every_durable_branch_job_not_only_referenced_ones(
+    owned: m1.Owned,
+) -> None:
+    """A job is durable from the moment `SubmitMessage` opens it, and no assistant
+    Message references it until generation produces one. The projection is the
+    branch's whole job set, deduplicated against the ids the path already names,
+    and never another branch's, conversation's or workspace's.
+    """
+    seed_conversation(owned)
+    seed_two_results_from_the_same_job(owned)
+    with writer(owned) as w:
+        # Freshly opened, still `queued`, no result Message: exactly the job a
+        # hosted controller has to prove immediately after a submit.
+        w.append_generation_job(
+            generation_job_id="generation-job-repo-live",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=SECOND_RESULT_MESSAGE_ID,
+            graph_revision_observed=2,
+            idempotency_key="generation-repo-live-key",
+            schema_version=1,
+            created_at_us=BASE_US + 60,
+            updated_at_us=BASE_US + 60,
+        )
+        w.append_branch(
+            branch_id=SECOND_BRANCH_ID,
+            conversation_id=CONVERSATION_ID,
+            origin_kind="explicit_fork",
+            initial_head_message_id=ROOT_MESSAGE_ID,
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US + 61,
+            created_conversation_sequence=1,
+            schema_version=1,
+        )
+        w.append_generation_job(
+            generation_job_id="generation-job-repo-other-branch",
+            conversation_id=CONVERSATION_ID,
+            branch_id=SECOND_BRANCH_ID,
+            trigger_message_id=ROOT_MESSAGE_ID,
+            graph_revision_observed=2,
+            idempotency_key="generation-repo-other-branch-key",
+            schema_version=1,
+            created_at_us=BASE_US + 62,
+            updated_at_us=BASE_US + 62,
+        )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert inputs is not None
+    # The referenced job stays first and is not duplicated; the unreferenced one
+    # is published beside it; the other branch's is not published at all.
+    assert inputs.generation_job_ids == (JOB_ID, "generation-job-repo-live")
+    assert inputs.generation_job_ids_truncated is False
+
+    # The same read, scoped away: another workspace or another conversation holds
+    # none of these jobs.
+    assert (
+        chat.read_branch_generation_job_ids(
+            owned.connection,
+            workspace_id=OTHER_WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+        )
+        == ()
+    )
+    assert (
+        chat.read_branch_generation_job_ids(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id="conv-repo-absent",
+            branch_id=BRANCH_ID,
+        )
+        == ()
+    )
+    assert chat.read_branch_generation_job_ids(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        branch_id=SECOND_BRANCH_ID,
+    ) == ("generation-job-repo-other-branch",)
+
+
+def test_snapshot_inputs_flag_a_branch_job_set_past_the_governed_maximum(
+    owned: m1.Owned,
+) -> None:
+    """4096 is `BranchPathResult.generationJobIds`' governed bound. One job past it
+    is reported as such rather than silently shortened -- the caller fails the whole
+    snapshot closed, because a truncated list would read as "that job does not
+    exist" to a controller proving a candidate against it.
+    """
+    seed_conversation(owned)
+    with writer(owned) as w:
+        for index in range(4097):
+            w.append_generation_job(
+                generation_job_id=f"generation-job-repo-bulk-{index:05d}",
+                conversation_id=CONVERSATION_ID,
+                branch_id=BRANCH_ID,
+                trigger_message_id=ROOT_MESSAGE_ID,
+                graph_revision_observed=2,
+                idempotency_key=f"generation-repo-bulk-key-{index:05d}",
+                schema_version=1,
+                created_at_us=BASE_US + 100 + index,
+                updated_at_us=BASE_US + 100 + index,
+            )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        branch_id=BRANCH_ID,
+    )
+    assert inputs is not None
+    assert len(inputs.generation_job_ids) == 4097
+    assert inputs.generation_job_ids_truncated is True
 
 
 def test_snapshot_inputs_bound_the_path_at_its_oldest_end(owned: m1.Owned) -> None:

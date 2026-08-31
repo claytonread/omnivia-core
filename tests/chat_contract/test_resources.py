@@ -71,8 +71,8 @@ def test_a_path_traversal_schema_name_is_refused(packaged: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_exactly_the_hundred_fifty_eight_governed_fixtures_are_listed(packaged: Path) -> None:
-    assert len(resources.list_fixture_paths()) == 164
+def test_exactly_the_governed_fixtures_are_listed(packaged: Path) -> None:
+    assert len(resources.list_fixture_paths()) == 169
 
 
 def test_fixture_paths_are_category_prefixed_and_sorted(packaged: Path) -> None:

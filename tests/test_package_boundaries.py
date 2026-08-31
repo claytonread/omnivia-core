@@ -457,12 +457,12 @@ def test_core_wheel_packages_the_approved_host_contract_resource_count() -> None
 
 
 def test_core_wheel_packages_the_approved_chat_contract_resource_count() -> None:
-    """Thirteen canonical schemas and 165 fixture-tree files (manifest plus 164
+    """Thirteen canonical schemas and 170 fixture-tree files (manifest plus 169
     governed fixtures), no more and no fewer (GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001)."""
     schemas = REPO_ROOT / "contracts" / "chat" / "v1" / "schemas"
     fixtures = REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures"
     assert len(list(schemas.rglob("*.schema.json"))) == 13
-    assert len(list(fixtures.rglob("*.json"))) == 165
+    assert len(list(fixtures.rglob("*.json"))) == 170
 
 
 # --------------------------------------------------------------------------

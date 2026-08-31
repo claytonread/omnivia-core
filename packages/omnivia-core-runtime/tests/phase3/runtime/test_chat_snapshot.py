@@ -257,6 +257,7 @@ def _inputs(**overrides: Any) -> ConversationSnapshotInputs:
             HEAD_MESSAGE_ID: (_part(HEAD_MESSAGE_ID, 0, provenance=None),),
         },
         "generation_job_ids": ("gen-snapshot-1", "gen-snapshot-2"),
+        "generation_job_ids_truncated": False,
         "queued_submissions": (),
         "queued_submissions_truncated": False,
     }
@@ -466,6 +467,25 @@ def test_a_forked_and_archived_branch_carries_its_optional_provenance(
     assert branch["archivedAt"] == "2052-05-22T14:13:24Z"
     assert branch["tombstonedAt"] == "2052-05-22T14:13:25Z"
     assert _schema_errors(f"{_BRANCH_SCHEMA_ID}#/$defs/MessageBranch", branch) == []
+
+
+def test_a_branch_job_set_past_the_bound_refuses_the_whole_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`generationJobIds` is complete or it is nothing: a controller proving a
+    candidate job against a shortened list would read "absent" for a job that
+    exists, so the read that could not be answered completely is refused entirely.
+    """
+    reader = _Reader(_inputs(generation_job_ids_truncated=True))
+
+    with pytest.raises(OperationError) as raised:
+        _resolve(monkeypatch, reader)
+
+    assert raised.value.code == "size_limit_exceeded"
+    assert raised.value.message == (
+        "the branch's generation jobs exceed the bounded snapshot maximum and "
+        "cannot be answered completely"
+    )
 
 
 def test_a_conversation_with_no_branch_yet_is_still_the_governed_not_found(

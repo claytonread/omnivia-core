@@ -71,6 +71,7 @@
         "generationJobIds": {
           "type": "array",
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+          "description": "The selected branch's complete durable Generation Job projection at `graphRevision`, not merely the ids the path's result Messages reference: a job is durable from the moment the `SubmitMessage` that triggers it commits, so a `queued` or `running` job with no result Message yet is listed here too. Deterministically ordered and duplicate-free; complete or refused, never truncated to fit `maxItems`.",
           "maxItems": 4096
         },
         "viewStateVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
@@ -222,7 +223,7 @@
     },
     "QueuedSubmissionProjection": {
       "title": "QueuedSubmissionProjection",
-      "description": "The authenticated actor's own active (`queued`) offline-queue submission, joined to its `omnivia_chat_queue_order_projection` row (W5 GB-05). Carries two distinct optimistic tokens on purpose: `version` is the submission's own content token (`UpdateQueuedSubmission.expectedVersion`), `orderVersion` is the order projection's (`ReorderQueuedSubmission.expectedVersion`); they advance independently and neither substitutes for the other. `attachmentReferences`/`contextReferences` are honestly empty and `targetReference` honestly absent for the reference/target subset this build serves. Never exposes claim owner, sanitized internal detail or idempotency key -- those are execution-claim internals, not actor-facing queue state.",
+      "description": "The authenticated actor's own active (`queued`) offline-queue submission, joined to its `omnivia_chat_queue_order_projection` row (W5 GB-05). Carries two distinct optimistic tokens on purpose: `version` is the submission's own content token (`UpdateQueuedSubmission.expectedVersion`), `orderVersion` is the order projection's (`ReorderQueuedSubmission.expectedVersion`); they advance independently and neither substitutes for the other. `attachmentReferences`/`contextReferences` are honestly empty and `targetReference` honestly absent for the reference/target subset this build serves. `generationJobId` is the row's own correlated job where one already exists, identity only. Never exposes claim owner, sanitized internal detail or idempotency key -- those are execution-claim internals, not actor-facing queue state.",
       "type": "object",
       "additionalProperties": false,
       "required": ["actorId", "attachmentReferences", "branchId", "contextReferences", "conversationId", "createdAt", "editableParts", "orderVersion", "position", "queuedSubmissionId", "state", "updatedAt", "version", "workspaceId"],
@@ -241,7 +242,11 @@
         "position": { "type": "integer", "minimum": 1, "maximum": 100000 },
         "orderVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" },
         "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
-        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" }
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "generationJobId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId",
+          "description": "The Generation Job already opened for this row, absent until one exists. A drained row keeps `state: queued` until the generation claimant advances it, so this is what tells a row still awaiting submission apart from one already handed to generation -- without it a reconnecting actor cannot avoid a duplicate drain attempt, and edit eligibility is dishonest. The queue id is Core-derived as `<source command id>.sub` and the job `SubmitMessage.fromQueuedSubmissionId` opens for it as `<source command id>.gen`; the correlation is that exact replacement, verified against a real job in the same workspace, conversation and branch. Never inferred from an id that convention did not derive, never names a missing or foreign job, and never carries claim or execution state."
+        }
       }
     },
     "ConversationSnapshotResult": {

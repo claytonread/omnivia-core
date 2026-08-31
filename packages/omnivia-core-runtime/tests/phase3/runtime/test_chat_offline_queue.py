@@ -656,73 +656,82 @@ def test_cancel_removes_row_from_snapshot_without_deleting_it(seeded: m1.Owned) 
 # --- 6. Pre-submit rows survive reconstruction, appear FIFO, don't block drain -------
 
 
+def _seed_restart_workspace(holder: m1.Owned) -> None:
+    """The GB-01 conversation, message, branch and head event, written directly.
+
+    `seeded` is connection-scoped, and these tests need a workspace file that
+    outlives one connection, so the same rows are written here against a holder
+    the caller owns.
+    """
+    with chat.chat_writer(
+        holder.connection, holder.identity, workspace_id=WORKSPACE_ID, fencing_generation=holder.generation
+    ) as writer:
+        writer.append_conversation(
+            conversation_id=CONVERSATION_ID,
+            state="active",
+            graph_revision=GRAPH_REVISION,
+            latest_conversation_sequence=0,
+            schema_version=1,
+            created_by_actor_id=PRINCIPAL,
+            created_at_us=BASE_US,
+            updated_at_us=BASE_US,
+        )
+        writer.update_conversation(
+            conversation_id=CONVERSATION_ID,
+            expected_graph_revision=GRAPH_REVISION,
+            graph_revision=GRAPH_REVISION,
+            latest_conversation_sequence=SEEDED_SEQUENCE,
+            state="active",
+            updated_at_us=BASE_US + 1,
+        )
+        writer.append_message(
+            message_id=ROOT_MESSAGE_ID,
+            conversation_id=CONVERSATION_ID,
+            role="user",
+            author_type="human",
+            author_id=PRINCIPAL,
+            conversation_sequence=SEEDED_SEQUENCE,
+            schema_version=1,
+            content_hash="sha256:" + "a" * 64,
+            completion_status="complete",
+            visibility="standard",
+            created_at_us=BASE_US + 2,
+            committed_at_us=BASE_US + 2,
+        )
+        writer.append_branch(
+            branch_id=BRANCH_ID,
+            conversation_id=CONVERSATION_ID,
+            origin_kind="original",
+            initial_head_message_id=ROOT_MESSAGE_ID,
+            created_by_actor_id=PRINCIPAL,
+            created_at_us=BASE_US + 4,
+            created_conversation_sequence=SEEDED_SEQUENCE,
+            schema_version=1,
+        )
+        writer.append_branch_head_event(
+            event_id="head-event-gb05-restart",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            head_version=1,
+            previous_head_message_id=None,
+            new_head_message_id=ROOT_MESSAGE_ID,
+            cause="branch_created",
+            command_id="command-gb05-restart-seed",
+            graph_revision=GRAPH_REVISION,
+            conversation_sequence=SEEDED_SEQUENCE,
+            actor_id=PRINCIPAL,
+            occurred_at_us=BASE_US + 4,
+            schema_version=1,
+        )
+
+
 def test_pre_submit_rows_survive_reconnection_and_dont_block_executable_work(tmp_path) -> None:
     path = tmp_path / "gb05-restart.sqlite"
     materialise_phase0_baseline(path)
     m1.bootstrap_and_migrate(path)
     holder = m1.take_ownership(path)
     try:
-        with chat.chat_writer(
-            holder.connection, holder.identity, workspace_id=WORKSPACE_ID, fencing_generation=holder.generation
-        ) as writer:
-            writer.append_conversation(
-                conversation_id=CONVERSATION_ID,
-                state="active",
-                graph_revision=GRAPH_REVISION,
-                latest_conversation_sequence=0,
-                schema_version=1,
-                created_by_actor_id=PRINCIPAL,
-                created_at_us=BASE_US,
-                updated_at_us=BASE_US,
-            )
-            writer.update_conversation(
-                conversation_id=CONVERSATION_ID,
-                expected_graph_revision=GRAPH_REVISION,
-                graph_revision=GRAPH_REVISION,
-                latest_conversation_sequence=SEEDED_SEQUENCE,
-                state="active",
-                updated_at_us=BASE_US + 1,
-            )
-            writer.append_message(
-                message_id=ROOT_MESSAGE_ID,
-                conversation_id=CONVERSATION_ID,
-                role="user",
-                author_type="human",
-                author_id=PRINCIPAL,
-                conversation_sequence=SEEDED_SEQUENCE,
-                schema_version=1,
-                content_hash="sha256:" + "a" * 64,
-                completion_status="complete",
-                visibility="standard",
-                created_at_us=BASE_US + 2,
-                committed_at_us=BASE_US + 2,
-            )
-            writer.append_branch(
-                branch_id=BRANCH_ID,
-                conversation_id=CONVERSATION_ID,
-                origin_kind="original",
-                initial_head_message_id=ROOT_MESSAGE_ID,
-                created_by_actor_id=PRINCIPAL,
-                created_at_us=BASE_US + 4,
-                created_conversation_sequence=SEEDED_SEQUENCE,
-                schema_version=1,
-            )
-            writer.append_branch_head_event(
-                event_id="head-event-gb05-restart",
-                conversation_id=CONVERSATION_ID,
-                branch_id=BRANCH_ID,
-                head_version=1,
-                previous_head_message_id=None,
-                new_head_message_id=ROOT_MESSAGE_ID,
-                cause="branch_created",
-                command_id="command-gb05-restart-seed",
-                graph_revision=GRAPH_REVISION,
-                conversation_sequence=SEEDED_SEQUENCE,
-                actor_id=PRINCIPAL,
-                occurred_at_us=BASE_US + 4,
-                schema_version=1,
-            )
-
+        _seed_restart_workspace(holder)
         _give_principal_a_view_state(holder)
         _enqueue(holder, command_id="cmd-gb05-restart-1", text="offline one")
         _enqueue(holder, command_id="cmd-gb05-restart-2", text="offline two")
@@ -1071,6 +1080,208 @@ def test_snapshot_fails_closed_when_the_active_queue_overflows_the_bound(seeded:
             _snapshot_context("req-gb05-overflow"),
         )
     assert excinfo.value.code == "size_limit_exceeded"
+
+
+# --- 9b. The queued projection carries its created job correlation ------------------
+
+
+def test_an_enqueued_row_carries_no_job_correlation_until_one_exists(seeded: m1.Owned) -> None:
+    _enqueue(seeded)
+    _give_principal_a_view_state(seeded)
+
+    entries = chat.read_active_queue_for_actor(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+    )
+    assert [entry.generation_job_id for entry in entries] == [None]
+
+    snapshot = _snapshot(seeded, request_id="req-gb05-precorrelation")
+    row = snapshot["queuedSubmissions"][0]
+    assert row["state"] == "queued"
+    assert "generationJobId" not in row
+    assert _snapshot_schema_errors(snapshot) == []
+
+
+def test_a_drained_row_stays_queued_but_names_the_job_it_was_handed_to(seeded: m1.Owned) -> None:
+    """The distinction the actor-facing queue could not previously state: a drained
+    row is left `queued` for the generation claimant to walk, so without the
+    correlation a reconnecting consumer cannot tell it from work still awaiting
+    submission and risks a duplicate drain.
+    """
+    _enqueue(seeded, text="drain me")
+    drain = _dispatcher(seeded).dispatch(
+        _request(
+            _submit_command(
+                command_id="cmd-gb05-correlated-drain",
+                message_id="cmd-gb05-correlated-drain.msg",
+                actorId=PRINCIPAL,
+                editable_parts=({"type": "text", "payload": {"text": "drain me"}},),
+                fromQueuedSubmissionId="cmd-gb05-enqueue.sub",
+            ),
+            idempotency_key="idem-gb05-correlated-drain",
+            request_id="req-gb05-correlated-drain",
+        )
+    )
+    assert isinstance(drain, SuccessResponseEnvelope), drain
+    _give_principal_a_view_state(seeded)
+
+    snapshot = _snapshot(seeded, request_id="req-gb05-correlated-snapshot")
+    row = snapshot["queuedSubmissions"][0]
+    assert row["queuedSubmissionId"] == "cmd-gb05-enqueue.sub"
+    assert row["state"] == "queued"
+    assert row["generationJobId"] == "cmd-gb05-enqueue.gen"
+    assert _snapshot_schema_errors(snapshot) == []
+
+    # And once the claimant takes the row, it leaves the active queue entirely --
+    # unchanged by this correlation.
+    claim_queued_generation(
+        seeded.connection,
+        seeded.identity,
+        workspace_id=WORKSPACE_ID,
+        fencing_generation=seeded.generation,
+        queued_submission_id="cmd-gb05-enqueue.sub",
+        generation_job_id="cmd-gb05-enqueue.gen",
+        generation_attempt_id="cmd-gb05-enqueue.attempt1",
+        trigger_message_id="cmd-gb05-correlated-drain.msg",
+        lease_owner="runner-gb05-correlated",
+        now_us=BASE_US + 6_000_000,
+    )
+    claimed_snapshot = _snapshot(seeded, request_id="req-gb05-correlated-claimed")
+    assert "queuedSubmissions" not in claimed_snapshot
+
+
+def test_the_job_correlation_survives_a_restart_so_a_consumer_can_skip_a_second_submit(
+    tmp_path,
+) -> None:
+    path = tmp_path / "gb05-correlation-restart.sqlite"
+    materialise_phase0_baseline(path)
+    m1.bootstrap_and_migrate(path)
+    holder = m1.take_ownership(path)
+    try:
+        _seed_restart_workspace(holder)
+        _give_principal_a_view_state(holder)
+        _enqueue(holder, command_id="cmd-gb05-restart-drained", text="drain across restart")
+        _enqueue(holder, command_id="cmd-gb05-restart-waiting", text="still waiting")
+        drain = _dispatcher(holder).dispatch(
+            _request(
+                _submit_command(
+                    command_id="cmd-gb05-restart-drain",
+                    message_id="cmd-gb05-restart-drain.msg",
+                    actorId=PRINCIPAL,
+                    expected_head_message_id=ROOT_MESSAGE_ID,
+                    expected_head_version=1,
+                    editable_parts=({"type": "text", "payload": {"text": "drain across restart"}},),
+                    fromQueuedSubmissionId="cmd-gb05-restart-drained.sub",
+                ),
+                idempotency_key="idem-gb05-restart-drain",
+                request_id="req-gb05-restart-drain",
+            )
+        )
+        assert isinstance(drain, SuccessResponseEnvelope), drain
+    finally:
+        holder.connection.close()
+
+    reopened = m1.take_ownership(path)
+    try:
+        snapshot = _snapshot(reopened, request_id="req-gb05-restart-correlation")
+        rows = {row["queuedSubmissionId"]: row for row in snapshot["queuedSubmissions"]}
+        # Both rows are still `queued`; only the drained one names a job, which is
+        # what lets a reconnecting consumer submit the second and skip the first.
+        assert set(rows) == {"cmd-gb05-restart-drained.sub", "cmd-gb05-restart-waiting.sub"}
+        assert rows["cmd-gb05-restart-drained.sub"]["state"] == "queued"
+        assert (
+            rows["cmd-gb05-restart-drained.sub"]["generationJobId"]
+            == "cmd-gb05-restart-drained.gen"
+        )
+        assert "generationJobId" not in rows["cmd-gb05-restart-waiting.sub"]
+        assert _snapshot_schema_errors(snapshot) == []
+    finally:
+        reopened.connection.close()
+
+
+def test_a_foreign_or_underivable_job_never_becomes_a_correlation(seeded: m1.Owned) -> None:
+    """The correlation is the exact `.sub` -> `.gen` replacement, verified against a
+    real job in the same workspace, conversation and branch. A job on another branch
+    is not this row's job, and a queue id this convention did not derive names no
+    job at all -- even where an id-shaped match happens to exist.
+    """
+    _enqueue(seeded, command_id="cmd-gb05-foreign", text="foreign branch job")
+    _give_principal_a_view_state(seeded)
+    with chat.chat_writer(
+        seeded.connection, seeded.identity, workspace_id=WORKSPACE_ID, fencing_generation=seeded.generation
+    ) as writer:
+        # The derived id exists -- on another branch of the same conversation.
+        writer.append_branch(
+            branch_id="branch-gb05-fork",
+            conversation_id=CONVERSATION_ID,
+            origin_kind="explicit_fork",
+            initial_head_message_id=ROOT_MESSAGE_ID,
+            created_by_actor_id=PRINCIPAL,
+            created_at_us=BASE_US + 10,
+            created_conversation_sequence=SEEDED_SEQUENCE,
+            schema_version=1,
+        )
+        writer.append_generation_job(
+            generation_job_id="cmd-gb05-foreign.gen",
+            conversation_id=CONVERSATION_ID,
+            branch_id="branch-gb05-fork",
+            trigger_message_id=ROOT_MESSAGE_ID,
+            graph_revision_observed=GRAPH_REVISION,
+            idempotency_key="idem-gb05-foreign-branch-job",
+            schema_version=1,
+            created_at_us=BASE_US + 11,
+            updated_at_us=BASE_US + 11,
+        )
+        # A queue id no `<source command id>.sub` derivation produced, beside a job
+        # whose id merely looks like its continuation.
+        writer.append_queued_submission(
+            queued_submission_id="queue-gb05-underivable",
+            conversation_id=CONVERSATION_ID,
+            actor_id=PRINCIPAL,
+            queue_sequence=2,
+            branch_id=BRANCH_ID,
+            editable_parts=({"type": "text", "visibility": "standard", "payload": {"text": "x"}},),
+            references=(),
+            idempotency_key="idem-gb05-underivable",
+            created_at_us=BASE_US + 12,
+            updated_at_us=BASE_US + 12,
+        )
+        writer.insert_queue_order_projection(
+            queued_submission_id="queue-gb05-underivable",
+            conversation_id=CONVERSATION_ID,
+            queue_position=2,
+            updated_by_actor_id=PRINCIPAL,
+            updated_at_us=BASE_US + 12,
+        )
+        writer.append_generation_job(
+            generation_job_id="queue-gb05-underivable.gen",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=ROOT_MESSAGE_ID,
+            graph_revision_observed=GRAPH_REVISION,
+            idempotency_key="idem-gb05-underivable-job",
+            schema_version=1,
+            created_at_us=BASE_US + 13,
+            updated_at_us=BASE_US + 13,
+        )
+
+    entries = chat.read_active_queue_for_actor(
+        seeded.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=PRINCIPAL,
+    )
+    assert [entry.submission.queued_submission_id for entry in entries] == [
+        "cmd-gb05-foreign.sub",
+        "queue-gb05-underivable",
+    ]
+    assert [entry.generation_job_id for entry in entries] == [None, None]
+
+    snapshot = _snapshot(seeded, request_id="req-gb05-foreign-correlation")
+    assert all("generationJobId" not in row for row in snapshot["queuedSubmissions"])
+    assert _snapshot_schema_errors(snapshot) == []
 
 
 # --- 10. F2b accepts the exact queued_submission item and rejects the rest ----------

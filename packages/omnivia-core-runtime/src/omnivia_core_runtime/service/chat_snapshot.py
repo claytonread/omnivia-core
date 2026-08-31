@@ -98,6 +98,10 @@ _MESSAGE_QUEUE_OVERFLOW: Final = (
     "the actor's active queue exceeds the bounded snapshot maximum and cannot be "
     "answered completely"
 )
+_MESSAGE_JOB_OVERFLOW: Final = (
+    "the branch's generation jobs exceed the bounded snapshot maximum and cannot be "
+    "answered completely"
+)
 
 
 def _invalid(field: str, rule: str) -> OperationError:
@@ -259,6 +263,12 @@ def _path(
     `divergenceMetadataByMessageId` is deliberately absent rather than empty: sibling
     position is a graph fact this read does not load, and an empty map would state
     that no message on this path diverges.
+
+    `generationJobIds` is the branch's complete durable job projection, not merely
+    the ids the path's result Messages happen to name: a job opened by the
+    `SubmitMessage` that committed the head user Message is durable and answerable
+    before any assistant Message references it, and a caller proving a candidate job
+    against this list has to be able to see it there.
     """
     return {
         "workspaceId": branch.workspace_id,
@@ -337,9 +347,16 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
     `attachmentReferences`/`contextReferences` are always empty -- the Gate B slice
     this build serves writes no other reference facts to a queued row -- which is
     the honest answer this projection states rather than omits.
+
+    `generationJobId` is the one exception to that narrowing, and it is identity
+    only: a drained row stays `state: queued` until the generation claimant advances
+    it, so without it an actor cannot tell a row still waiting to be submitted from
+    one already handed to generation, and a restart risks draining it twice. Absent
+    until a job exists, and only ever the job `storage.chat` verified for this exact
+    row (`read_active_queue_for_actor`) -- never a derived id nothing backs.
     """
     submission, order = entry.submission, entry.order
-    return {
+    document: dict[str, Any] = {
         "workspaceId": submission.workspace_id,
         "conversationId": submission.conversation_id,
         "actorId": submission.actor_id,
@@ -355,6 +372,8 @@ def _queued_submission(entry: ActiveQueueEntry) -> Mapping[str, Any]:
         "createdAt": _timestamp(submission.created_at_us),
         "updatedAt": _timestamp(submission.updated_at_us),
     }
+    _optional(document, "generationJobId", entry.generation_job_id)
+    return document
 
 
 def resolve_chat_snapshot(
@@ -384,6 +403,11 @@ def resolve_chat_snapshot(
         or inputs.path[-1].message_id != inputs.branch.current_head_message_id
     ):
         raise OperationError(ERROR_CODE_NOT_FOUND, _MESSAGE_NOT_FOUND)
+    if inputs.generation_job_ids_truncated:
+        # Same rule as the queue below: a hosted controller proves a candidate job
+        # against this list, so a shortened one would let it read "absent" for a job
+        # that exists. Refuse the whole snapshot instead.
+        raise OperationError(ERROR_CODE_SIZE_LIMIT_EXCEEDED, _MESSAGE_JOB_OVERFLOW)
     if inputs.queued_submissions_truncated:
         # A partial queue would misrepresent completeness to a reconnecting caller
         # relying on it for durable order; fail closed rather than silently

@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 168,
+    "total": 169,
     "valid": 78,
-    "invalid": 90
+    "invalid": 91
   },
   "fixtures": [
     {
@@ -857,7 +857,7 @@
     {
       "path": "fixtures/valid/f2b-snapshot-item-queued-submission.json",
       "expect": "valid",
-      "focus": "BridgeSnapshotItem itemKind queued_submission maps its payload to queries.schema.json#/$defs/QueuedSubmissionProjection (W5 GB-05).",
+      "focus": "BridgeSnapshotItem itemKind queued_submission maps its payload to queries.schema.json#/$defs/QueuedSubmissionProjection (W5 GB-05), carrying the optional generationJobId a drained row correlates to while it is still state queued.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
     },
     {
@@ -873,6 +873,13 @@
       "focus": "itemKind queued_submission with a Message-shaped payload is rejected: the itemKind/payload mapping is enforced for every member, not merely the closed-since-launch ones.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
       "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-queued-submission-malformed-generation-job-id-rejected.json",
+      "expect": "invalid",
+      "focus": "generationJobId is a WorkspaceScopedId, so a queued_submission payload naming a job in any other spelling is rejected: the correlation is an exact server-issued identifier, never free text a consumer could parse for meaning.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "does not match"
     },
     {
       "path": "fixtures/invalid/f2b-snapshot-item-arbitrary-payload-rejected.json",

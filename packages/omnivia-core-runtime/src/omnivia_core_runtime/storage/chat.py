@@ -633,10 +633,15 @@ class ActiveQueueEntry:
     :func:`update_queued_submission_content`, `order.version` for
     :func:`update_queue_order_projection`. Never returned for a cancelled,
     claimed, submitted or failed row, and never for another actor's.
+
+    `generation_job_id` is the row's own drained job where one exists and `None`
+    otherwise -- see :func:`read_active_queue_for_actor` for the exact correlation
+    and what it is verified against.
     """
 
     submission: QueuedSubmission
     order: QueueOrderProjection
+    generation_job_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +680,7 @@ class ConversationSnapshotInputs:
     path: tuple[Message, ...]
     parts_by_message_id: Mapping[str, tuple[MessagePart, ...]]
     generation_job_ids: tuple[str, ...]
+    generation_job_ids_truncated: bool
     queued_submissions: tuple[ActiveQueueEntry, ...]
     queued_submissions_truncated: bool
 
@@ -3091,6 +3097,17 @@ def read_active_queue_for_actor(
     is never a row this function can hand back. Ordered by queue position (falling
     back to the row's own `queued_submission_id` for a tie), which is what makes
     this the one read both the snapshot resolver and the reorder command use.
+
+    Each entry additionally carries the row's own generation job id where one
+    already exists. A queue id is Core-derived as `<source command id>.sub` and the
+    job `SubmitMessage.fromQueuedSubmissionId` opens for it as `<source command
+    id>.gen`, so the correlation is the exact replacement of a terminal `.sub` by
+    `.gen` -- never a prefix or fuzzy match, and never attempted at all for an id
+    this convention did not derive. The derived id is then *verified* by the join:
+    it is reported only where a real job row with that exact id exists in the same
+    workspace, conversation and branch, so a missing or foreign job is simply
+    absent rather than named. Nothing about the job beyond its identity is read --
+    claim owner, lease, state and error detail stay execution internals.
     """
     rows = connection.execute(
         "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
@@ -3098,12 +3115,20 @@ def read_active_queue_for_actor(
         "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
         "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
         "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
-        "p.queue_position, p.version, p.updated_by_actor_id, p.updated_at_us "
+        "p.queue_position, p.version, p.updated_by_actor_id, p.updated_at_us, "
+        "g.generation_job_id "
         "FROM omnivia_chat_queued_submissions q "
         "JOIN omnivia_chat_queue_order_projection p "
         "ON p.workspace_id = q.workspace_id "
         "AND p.conversation_id = q.conversation_id "
         "AND p.queued_submission_id = q.queued_submission_id "
+        "LEFT JOIN omnivia_chat_generation_jobs g "
+        "ON g.workspace_id = q.workspace_id "
+        "AND g.conversation_id = q.conversation_id "
+        "AND g.branch_id = q.branch_id "
+        "AND substr(q.queued_submission_id, -4) = '.sub' "
+        "AND g.generation_job_id = "
+        "substr(q.queued_submission_id, 1, length(q.queued_submission_id) - 4) || '.gen' "
         "WHERE q.workspace_id = ? AND q.conversation_id = ? AND q.actor_id = ? "
         "AND q.state = 'queued' "
         "ORDER BY p.queue_position, q.queued_submission_id "
@@ -3122,7 +3147,9 @@ def read_active_queue_for_actor(
             updated_by_actor_id=row[22],
             updated_at_us=row[23],
         )
-        entries.append(ActiveQueueEntry(submission=submission, order=order))
+        entries.append(
+            ActiveQueueEntry(submission=submission, order=order, generation_job_id=row[24])
+        )
     return tuple(entries)
 
 
@@ -3735,6 +3762,36 @@ def read_outbox_events_since(
 #: silently answering a partial queue.
 _QUEUE_SNAPSHOT_LIMIT: Final = 200
 
+#: `queries.schema.json#/$defs/BranchPathResult.generationJobIds`' governed
+#: maximum, read one past for the same complete-or-fail reason the queue bound is.
+_BRANCH_JOB_SNAPSHOT_LIMIT: Final = 4096
+
+
+def read_branch_generation_job_ids(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    branch_id: str,
+    limit: int = _BRANCH_JOB_SNAPSHOT_LIMIT,
+) -> tuple[str, ...]:
+    """Every durable generation job id on one branch, oldest first.
+
+    Identities only, and every one of them: a job is durable from the moment
+    `SubmitMessage` opens it, long before any assistant result Message references
+    it, so a `queued` or `running` job is here exactly as a `succeeded` one is.
+    Ordered by `(created_at_us, generation_job_id)` so the projection built from
+    this is stable across reads. Nothing else about a job -- state, lease, attempt,
+    provider content or error detail -- is read.
+    """
+    rows = connection.execute(
+        "SELECT generation_job_id FROM omnivia_chat_generation_jobs "
+        "WHERE workspace_id = ? AND conversation_id = ? AND branch_id = ? "
+        "ORDER BY created_at_us, generation_job_id LIMIT ?",
+        (workspace_id, conversation_id, branch_id, limit),
+    ).fetchall()
+    return tuple(row[0] for row in rows)
+
 
 def read_conversation_snapshot_inputs(
     connection: sqlite3.Connection,
@@ -3760,6 +3817,12 @@ def read_conversation_snapshot_inputs(
     `max_path_messages`; a chain longer than the bound is truncated at its oldest
     end, so the newest messages -- the ones a snapshot exists to show -- are always
     present. The walk stops rather than raising on a missing parent row or a cycle.
+
+    `generation_job_ids` is the selected branch's complete durable job projection --
+    the path's own job references *plus* every job row that branch holds, including
+    one still `queued` or `running` with no result Message yet. That set is complete
+    or it is nothing: one row past the governed 4096 maximum is read, and
+    `generation_job_ids_truncated` says so rather than a silently shortened list.
 
     All of it -- the conversation, the view state, the branch, the message walk and
     every message's parts -- is read inside one explicit read transaction, so a
@@ -3832,11 +3895,34 @@ def read_conversation_snapshot_inputs(
                 )
                 for message in path
             }
+            # Every durable job on the selected branch, not merely the ones a
+            # result Message already names: a job is opened in the same transaction
+            # as the user Message that triggers it, so a snapshot taken between
+            # `SubmitMessage` and the assistant reply must still publish it. Path
+            # ids stay first and in path order -- an ancestor message carried over
+            # from a forked-from branch names a job this branch does not own, and
+            # dropping it would narrow what the projection already published.
+            branch_job_ids = (
+                ()
+                if branch is None
+                else read_branch_generation_job_ids(
+                    connection,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    branch_id=branch.branch_id,
+                    limit=_BRANCH_JOB_SNAPSHOT_LIMIT + 1,
+                )
+            )
             job_ids = tuple(
                 dict.fromkeys(
-                    message.generation_job_id
-                    for message in path
-                    if message.generation_job_id is not None
+                    (
+                        *(
+                            message.generation_job_id
+                            for message in path
+                            if message.generation_job_id is not None
+                        ),
+                        *branch_job_ids,
+                    )
                 )
             )
 
@@ -3855,6 +3941,7 @@ def read_conversation_snapshot_inputs(
                 path=tuple(path),
                 parts_by_message_id=MappingProxyType(parts),
                 generation_job_ids=job_ids,
+                generation_job_ids_truncated=len(job_ids) > _BRANCH_JOB_SNAPSHOT_LIMIT,
                 queued_submissions=queue_rows[:_QUEUE_SNAPSHOT_LIMIT],
                 queued_submissions_truncated=len(queue_rows) > _QUEUE_SNAPSHOT_LIMIT,
             )

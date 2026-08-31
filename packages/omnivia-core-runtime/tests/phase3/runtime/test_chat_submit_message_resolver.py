@@ -3029,6 +3029,56 @@ def test_the_cold_started_conversation_answers_a_complete_snapshot(
     assert _snapshot_schema_errors(snapshot) == []
 
 
+def test_the_snapshot_publishes_the_submits_own_job_before_generation_begins(
+    owned: m1.Owned,
+) -> None:
+    """A `SubmitMessage` opens its generation job in the same transaction as the
+    user Message, and no assistant Message references that job until generation
+    produces one. A hosted controller taking a snapshot immediately afterwards has
+    to be able to prove the candidate job, so `path.generationJobIds` carries it
+    already -- while it is still `queued` and nothing has run.
+    """
+    _create_conversation(owned)
+    dispatcher = _dispatcher(owned)
+    assert isinstance(dispatcher.dispatch(_first_send_request()), SuccessResponseEnvelope)
+
+    job_id = f"{FIRST_SEND_COMMAND_ID}.gen"
+    job = chat.read_generation_job(
+        owned.connection, workspace_id=WORKSPACE_ID, generation_job_id=job_id
+    )
+    assert job is not None
+    assert job.state == "queued"
+    assert job.result_message_id is None
+
+    snapshot_entry = get_operation_metadata("chat.snapshot")
+    response = dispatcher.dispatch(
+        s0.envelope_for(
+            snapshot_entry,
+            operation_input={
+                "conversation_id": COLD_CONVERSATION_ID,
+                "snapshot_query": {
+                    "requestId": "req-cold-live-job-snapshot",
+                    "workspaceId": WORKSPACE_ID,
+                    "conversationId": COLD_CONVERSATION_ID,
+                    "actorId": PRINCIPAL,
+                },
+            },
+            request_id="req-cold-live-job-snapshot",
+            purpose=CHAT_FAMILY_PURPOSES["chat.snapshot"],
+            workspace_id=WORKSPACE_ID,
+        )
+    )
+
+    assert isinstance(response, SuccessResponseEnvelope), response
+    snapshot = response.result["snapshot"]
+    # No Message on the path names the job; the projection publishes it anyway.
+    assert all(
+        "generationJobId" not in message for message in snapshot["path"]["messages"]
+    )
+    assert snapshot["path"]["generationJobIds"] == [job_id]
+    assert _snapshot_schema_errors(snapshot) == []
+
+
 def test_a_branchless_conversation_has_no_snapshot_to_answer_with(
     owned: m1.Owned,
 ) -> None:
