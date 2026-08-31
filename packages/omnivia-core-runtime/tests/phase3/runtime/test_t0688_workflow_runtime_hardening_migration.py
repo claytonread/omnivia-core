@@ -16,7 +16,8 @@ its clock is cross-checked against what is already durable.
 
 Slice three: the transition bundle and the journal event it carries. They are one
 atomic pair -- either order inside one guarded transaction, never one half alone --
-fenced by aggregate revision and linked by a hash chain from a NULL genesis link.
+fenced by aggregate revision and linked by a hash chain from a per-Run genesis link
+that is a digest like every other link, never NULL.
 
 Slice four: what a run's journal is judged by afterwards. Parity against the
 existing writer, integrity verification of the chain, quarantine and release of a
@@ -402,6 +403,7 @@ BOUND_AT = "2026-01-01T00:00:00Z"
 UNGUARDED = "not authorized|unguarded INSERT on"
 APPEND_ONLY = "append-only; (UPDATE|DELETE) is never permitted"
 CONSTRAINT = "CHECK constraint failed|malformed JSON"
+NOT_NULL = "NOT NULL constraint failed"
 
 
 def digest_of(text: str) -> str:
@@ -595,9 +597,10 @@ def test_a_recorded_binding_is_immutable_even_for_its_current_owner(
 OTHER_RUN_ID = "run-0035-other"
 OTHER_JOB_ID = "job-run-0035-other"
 
-#: The event JSON a bundle carries always names a link, because the contract record
-#: has no absent form for one; the run's first event names this genesis constant
-#: while its `previous_link_digest` *column* is NULL.
+#: Every event names a link, in its JSON and in its `previous_link_digest` column
+#: alike, because the contract record has no absent form for one. The run's first
+#: event names this genesis digest; the real writer derives it per Run, and SQL
+#: checks only that it is a sha256 digest.
 GENESIS_LINK = "sha256:" + "0" * 64
 RECORDED_AT = "2026-01-01T00:00:01Z"
 
@@ -678,7 +681,7 @@ def event_row(
         "bundle_id": bundle_id_for(sequence),
         "event_id": event_id_for(sequence),
         "sequence": sequence,
-        "previous_link_digest": previous_link,
+        "previous_link_digest": previous_link or GENESIS_LINK,
         "payload_digest": digest_of(payload),
         "event_json": body,
         "event_digest": digest_of(body),
@@ -771,7 +774,7 @@ def test_the_current_owner_records_a_bundle_and_its_event_atomically(
             event["event_id"],
             event["bundle_id"],
             0,
-            None,
+            GENESIS_LINK,
             event["payload_digest"],
             event["event_json"],
             event["event_digest"],
@@ -817,7 +820,7 @@ def test_the_chain_continues_at_the_next_revision_and_links_to_its_predecessor(
     ).fetchall() == [(0, 1), (1, 2)]
     assert bound.connection.execute(
         f"SELECT sequence, previous_link_digest FROM {JOURNAL} ORDER BY sequence"
-    ).fetchall() == [(0, None), (1, link)]
+    ).fetchall() == [(0, GENESIS_LINK), (1, link)]
     assert foreign_key_check(bound.connection) == []
 
 
@@ -956,6 +959,34 @@ def test_an_event_whose_previous_link_is_not_its_predecessor_refuses(
 
 
 @pytest.mark.parametrize(
+    "previous_link,expected",
+    [
+        (None, NOT_NULL),
+        ("sha256:" + "z" * 64, CONSTRAINT),
+        ("sha256:" + "0" * 63, CONSTRAINT),
+    ],
+    ids=["null genesis link", "non-hex genesis link", "short genesis link"],
+)
+def test_a_genesis_event_without_a_well_formed_link_refuses(
+    bound: m1.Owned, previous_link: str | None, expected: str
+) -> None:
+    """Sequence zero carries a digest like every other event -- NULL is not a link.
+
+    The contract record's `previousIntegrityLink` has no absent form, so a run's
+    first event must name its per-Run genesis digest. SQL cannot recompute that
+    value, but it does refuse anything that is not a sha256 digest, and nothing
+    durable survives the refusal.
+    """
+    with pytest.raises(sqlite3.DatabaseError, match=expected):
+        record(
+            bound,
+            (BUNDLES, bundle_row()),
+            (JOURNAL, event_row(previous_link_digest=previous_link)),
+        )
+    assert counts(bound) == (0, 0)
+
+
+@pytest.mark.parametrize(
     "statement",
     [
         f"UPDATE {BUNDLES} SET produced_revision = produced_revision + 1",
@@ -979,7 +1010,6 @@ PARITY_ID = "parity-0035-one"
 INTEGRITY_ID = "integrity-0035-one"
 BOUNDARY_ID = "boundary-0035-one"
 RETENTION_AUDIT = "audit-retention"
-NOT_NULL = "NOT NULL constraint failed"
 AUDIT_REQUIRED = "audit reference must belong to its workspace"
 
 #: A digest no bundle in this suite derives, so a report naming it has diverged.

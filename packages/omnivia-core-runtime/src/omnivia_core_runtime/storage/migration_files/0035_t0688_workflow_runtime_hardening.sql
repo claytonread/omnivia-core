@@ -42,9 +42,15 @@
 -- A journal event's own `payload_digest` must equal the digest recorded against its
 -- `event_payload_json` document, its `sequence` must equal the bundle's own
 -- `expected_revision` (the revision that bundle's transition produced), and its
--- `previous_link_digest` must be NULL exactly for the run's first event
--- (`sequence = 0`) and otherwise the prior event's `event_digest` -- a hash chain a
--- reader may walk without a second index.
+-- `previous_link_digest` is never NULL: every event carries a sha256 link, matching
+-- the `previousIntegrityLink` the public `RuntimeJournalEvent` contract requires of
+-- every event including the run's first. For `sequence > 0` that link must be the
+-- prior event's `event_digest` -- a hash chain a reader may walk without a second
+-- index. For `sequence = 0` the link is the run's genesis digest, and SQL enforces
+-- its shape only: the Python writer computes it and the Python verifier recomputes
+-- it per Run, because deriving it needs SHA-256 over JCS bytes that SQLite cannot
+-- produce. SQL therefore owns digest shape, contiguity from zero, and predecessor
+-- equality after genesis; Python owns the exact genesis value.
 --
 -- A parity report is one per bundle, matching iff the existing writer's digest and
 -- the bundle-derived digest agree bit for bit. A journal integrity report is one
@@ -65,7 +71,8 @@
 -- filesystem path, or SDK type. Deliberately absent also: JCS recomputation itself --
 -- every canonical JSON column here is checked for exact canonical form and paired
 -- with its own recorded digest and byte length, but proving that digest against the
--- bytes is a Python-side responsibility this migration does not perform.
+-- bytes is a Python-side responsibility this migration does not perform, and so is
+-- recomputing a run's genesis integrity link.
 --
 -- Every comment sits between statements and never inside one, because the migrator
 -- strips comments while the canonical fingerprint replays this text verbatim.
@@ -182,7 +189,7 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_runtime_journal_events (
     bundle_id                  TEXT    NOT NULL,
     event_id                   TEXT    NOT NULL,
     sequence                   INTEGER NOT NULL,
-    previous_link_digest       TEXT,
+    previous_link_digest       TEXT    NOT NULL,
     payload_digest             TEXT    NOT NULL,
     event_json                 TEXT    NOT NULL,
     event_digest                TEXT    NOT NULL,
@@ -211,13 +218,10 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_runtime_journal_events (
            AND event_id NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(event_id, char(0)) = 0),
     CHECK (typeof(sequence) = 'integer' AND sequence BETWEEN 0 AND 1000000000),
-    CHECK (previous_link_digest IS NULL
-           OR (typeof(previous_link_digest) = 'text'
-               AND length(previous_link_digest) = 71
-               AND substr(previous_link_digest, 1, 7) = 'sha256:'
-               AND substr(previous_link_digest, 8) NOT GLOB '*[^0-9a-f]*')),
-    CHECK ((sequence = 0 AND previous_link_digest IS NULL)
-           OR (sequence > 0 AND previous_link_digest IS NOT NULL)),
+    CHECK (typeof(previous_link_digest) = 'text'
+           AND length(previous_link_digest) = 71
+           AND substr(previous_link_digest, 1, 7) = 'sha256:'
+           AND substr(previous_link_digest, 8) NOT GLOB '*[^0-9a-f]*'),
     CHECK (typeof(payload_digest) = 'text' AND length(payload_digest) = 71
            AND substr(payload_digest, 1, 7) = 'sha256:'
            AND substr(payload_digest, 8) NOT GLOB '*[^0-9a-f]*'),
