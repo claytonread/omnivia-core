@@ -714,6 +714,30 @@
     "Run": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run"
     },
+    "WorkflowStartInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput"
+    },
+    "WorkflowStartResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult"
+    },
+    "WorkflowInspectInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput"
+    },
+    "WorkflowInspectResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult"
+    },
+    "WorkflowControlInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput"
+    },
+    "WorkflowControlResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult"
+    },
+    "WorkflowReviewInput": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput"
+    },
+    "WorkflowReviewResult": {
+      "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult"
+    },
     "ResolveWait": {
       "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait"
     },

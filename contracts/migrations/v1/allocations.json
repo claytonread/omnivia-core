@@ -70,8 +70,8 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 22,
-      "sha256": "b74670225e165c054687dcafe7c8934fbf393eb4e143839b22dc7de63120dd6e",
-      "introduced_commit": "44e3ed256c38dadc54203994e209380d6e6f439f",
+      "sha256": "c5febbd848d424552d23d82e15deaa9ea8355d955f965957b2658fdb084a4c54",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
       "accepted_commit": null
     },
     {
@@ -81,8 +81,8 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 23,
-      "sha256": "bda410753b280cb5b986251a93e60eeac5673f947dad1fc9a962a949b74f2da0",
-      "introduced_commit": "e9827ae9f83188f9e9c4fc848597edf04aa67416",
+      "sha256": "27496e8ab7449841fc41cdfaf66d738f2bbfd0462c557d81bc3cbc95a04e8e3f",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
       "accepted_commit": null
     },
     {
@@ -92,8 +92,8 @@
       "repository": "omnivia-core",
       "state": "candidate",
       "predecessor": 24,
-      "sha256": "ef7fd8b7657e45b8e0fc2795114bf957e4f7a0710677e120bcd953a2b25adcdc",
-      "introduced_commit": "af25779a66e41a32dc268940caf0abc2d699ffc9",
+      "sha256": "ce6fd3434849a312fac3c81f00acdc5615f1cb32df6d25a18ebe81656823777f",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
       "accepted_commit": null
     },
     {
@@ -182,6 +182,39 @@
       "predecessor": 32,
       "sha256": "19ef3ed17434670c10cefc91498d677025ab87bb0f18f2f53ac54c2ce71f7b7b",
       "introduced_commit": "0741a368a39815ee01397980b3da5e6b17ffe4a0",
+      "accepted_commit": null
+    },
+    {
+      "number": 34,
+      "filename": "0034_workflow_step_connections.sql",
+      "owner": "Workflow Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 33,
+      "sha256": "0a22f852c1abd8f33cae3c4d5674a6a97187a400160edc307524948f95334398",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
+      "accepted_commit": null
+    },
+    {
+      "number": 35,
+      "filename": "0035_workflow_loop_iterations.sql",
+      "owner": "Workflow Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 34,
+      "sha256": "ed95213d11dfb25326518e3ccc395ee10fe6202bb8a703f8de7369d495f54da5",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
+      "accepted_commit": null
+    },
+    {
+      "number": 36,
+      "filename": "0036_workflow_readiness_facts.sql",
+      "owner": "Workflow Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 35,
+      "sha256": "f17ca60e1bb27616d750828baf52e56a9aef59c40084bcb67f14e2f44c681dcc",
+      "introduced_commit": "137651e12d126070e396a38003b6b726f4ca69d4",
       "accepted_commit": null
     }
   ]

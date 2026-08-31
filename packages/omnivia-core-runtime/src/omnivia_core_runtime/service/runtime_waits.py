@@ -340,7 +340,7 @@ def resolve_runtime_wait(
             run_status=RUN_STATUS_WAITING,
             step_status=_STEP_STATUS_WAITING,
         )
-        _require_deadline_honoured(
+        require_deadline_honoured(
             writer.connection, workspace_id, command, status, settlement.settled_at_us
         )
         # Fail-closed, after the stored identity and command shape are known to be valid:
@@ -527,7 +527,7 @@ def _run_status(connection: sqlite3.Connection, workspace_id: str, run_id: str) 
     return snapshot.status
 
 
-def _require_deadline_honoured(
+def require_deadline_honoured(
     connection: sqlite3.Connection,
     workspace_id: str,
     command: ResolveWait,
@@ -627,5 +627,6 @@ __all__ = [
     "WaitResolutionConflict",
     "WaitResolutionPolicy",
     "open_runtime_wait",
+    "require_deadline_honoured",
     "resolve_runtime_wait",
 ]

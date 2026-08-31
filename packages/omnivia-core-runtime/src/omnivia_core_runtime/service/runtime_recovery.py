@@ -115,6 +115,7 @@ class RuntimeJobRecovery:
     runtime_attempt_id: str | None = None
     wait_id: str | None = None
     adopted: bool = False
+    previous_fencing_generation: int | None = None
     requeued: bool | None = None
     detail: str | None = None
 
@@ -126,6 +127,11 @@ class RuntimeStartupRecovery:
     workspace_id: str
     fencing_generation: int
     jobs: tuple[RuntimeJobRecovery, ...]
+
+    @property
+    def adoptions(self) -> tuple[RuntimeJobRecovery, ...]:
+        """Every durable open wait this pass adopted, in the order it adopted them."""
+        return tuple(job for job in self.jobs if job.adopted)
 
     def classified(self, classification: str) -> tuple[RuntimeJobRecovery, ...]:
         """Every job the pass read as `classification`, in the order it read them."""
@@ -207,6 +213,11 @@ def recover_runtime_startup(scheduler: RuntimeScheduler) -> RuntimeStartupRecove
     return RuntimeStartupRecovery(
         workspace_id=workspace_id, fencing_generation=generation, jobs=jobs
     )
+
+
+def recover_at_startup(scheduler: RuntimeScheduler) -> RuntimeStartupRecovery:
+    """Compatibility helper used by the golden-flow startup recovery proof."""
+    return recover_runtime_startup(scheduler)
 
 
 def _classify(
@@ -384,7 +395,9 @@ def _adopt_open_wait(
         message="runtime startup recovery adopted a durable open wait",
         details=details,
     )
-    return replace(entry, adopted=True)
+    return replace(
+        entry, adopted=True, previous_fencing_generation=superseded_generation
+    )
 
 
 __all__ = [
@@ -397,5 +410,6 @@ __all__ = [
     "RUNTIME_JOB_CLASSIFICATIONS",
     "RuntimeJobRecovery",
     "RuntimeStartupRecovery",
+    "recover_at_startup",
     "recover_runtime_startup",
 ]

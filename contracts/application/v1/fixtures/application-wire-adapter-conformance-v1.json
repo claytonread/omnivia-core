@@ -2702,6 +2702,610 @@
       }
     },
     {
+      "description": "workflow.control answers a well-formed request on the success branch with an explicit Core disposition.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.control/primary-success",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "cancel",
+          "details": {
+            "reason": "operator_requested"
+          },
+          "run_id": "run-0001"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-success"
+        },
+        "result": {
+          "disposition": "accepted",
+          "run_id": "run-0001"
+        }
+      }
+    },
+    {
+      "description": "workflow.inspect answers a well-formed request with the canonical Core Runtime Run projection.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.inspect/primary-success",
+      "operation": "workflow.inspect",
+      "request": {
+        "input": {
+          "run_id": "run-0001"
+        },
+        "metadata": {
+          "request_id": "req-workflow.inspect-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:read"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.inspect"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-workflow.inspect-success"
+        },
+        "result": {
+          "projection_version": "proj-workflow-0001",
+          "run": {
+            "approvals": [],
+            "artifacts": [],
+            "audit_reference": "audit-workflow.start",
+            "budget": {
+              "budget_snapshot_id": "budget-workflow-0001",
+              "consumed_cost_units": 0,
+              "consumed_token_units": 0,
+              "max_cost_units": 1000,
+              "max_token_units": 200000,
+              "max_wall_clock_ms": 600000,
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "capability_grants": [],
+            "cleanup_receipts": [],
+            "correlations": [],
+            "created_at": "2026-08-22T09:00:00Z",
+            "definition": {
+              "definition_id": "workflow.onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.0.0"
+            },
+            "effect_intents": [],
+            "effect_receipts": [],
+            "effect_settlements": [],
+            "events": [
+              {
+                "event_kind": "run_admitted",
+                "occurred_at": "2026-08-22T09:00:00Z",
+                "run_id": "run-0001",
+                "run_status": "admitted",
+                "runtime_event_id": "event-workflow-0000",
+                "sequence": 0,
+                "workspace_id": "ws-runtime-1"
+              }
+            ],
+            "evidence": [],
+            "logical_key": "workflow-onboarding-acme",
+            "originating_operation": "workflow.start",
+            "policy": {
+              "audit_reference": "audit-workflow.start",
+              "decision_reason": "workspace_default",
+              "discovered_capabilities": [
+                "workflow.run"
+              ],
+              "granted_capabilities": [
+                "workflow.run"
+              ],
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "policy_snapshot_id": "policy-workflow-0001",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "run_id": "run-0001",
+            "status": "running",
+            "steps": [],
+            "updated_at": "2026-08-22T09:00:01Z",
+            "waits": [],
+            "workspace_id": "ws-runtime-1"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.review answers a well-formed request with production review display data derived from Core run truth.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.review/primary-success",
+      "operation": "workflow.review",
+      "request": {
+        "input": {
+          "run_id": "run-0001"
+        },
+        "metadata": {
+          "request_id": "req-workflow.review-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.review",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:read"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.review"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-workflow.review-success"
+        },
+        "result": {
+          "projection_version": "proj-workflow-review-0001",
+          "review": {
+            "summary": "adapter conformance projection"
+          },
+          "run": {
+            "approvals": [],
+            "artifacts": [],
+            "audit_reference": "audit-workflow.start",
+            "budget": {
+              "budget_snapshot_id": "budget-workflow-0001",
+              "consumed_cost_units": 0,
+              "consumed_token_units": 0,
+              "max_cost_units": 1000,
+              "max_token_units": 200000,
+              "max_wall_clock_ms": 600000,
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "capability_grants": [],
+            "cleanup_receipts": [],
+            "correlations": [],
+            "created_at": "2026-08-22T09:00:00Z",
+            "definition": {
+              "definition_id": "workflow.onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.0.0"
+            },
+            "effect_intents": [],
+            "effect_receipts": [],
+            "effect_settlements": [],
+            "events": [
+              {
+                "event_kind": "run_admitted",
+                "occurred_at": "2026-08-22T09:00:00Z",
+                "run_id": "run-0001",
+                "run_status": "admitted",
+                "runtime_event_id": "event-workflow-0000",
+                "sequence": 0,
+                "workspace_id": "ws-runtime-1"
+              }
+            ],
+            "evidence": [],
+            "logical_key": "workflow-onboarding-acme",
+            "originating_operation": "workflow.start",
+            "policy": {
+              "audit_reference": "audit-workflow.start",
+              "decision_reason": "workspace_default",
+              "discovered_capabilities": [
+                "workflow.run"
+              ],
+              "granted_capabilities": [
+                "workflow.run"
+              ],
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "policy_snapshot_id": "policy-workflow-0001",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "run_id": "run-0001",
+            "status": "running",
+            "steps": [],
+            "updated_at": "2026-08-22T09:00:01Z",
+            "waits": [],
+            "workspace_id": "ws-runtime-1"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.start answers a well-formed admission request with a canonical Runtime Run rather than preview or Simulation truth.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.start/primary-success",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "definition_id": "workflow.onboarding",
+          "definition_version": "1.0.0",
+          "input": {
+            "customer_id": "customer-0001"
+          },
+          "logical_key": "workflow-onboarding-acme"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.run",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-success"
+        },
+        "result": {
+          "admission": "created",
+          "run": {
+            "approvals": [],
+            "artifacts": [],
+            "audit_reference": "audit-workflow.start",
+            "budget": {
+              "budget_snapshot_id": "budget-workflow-0001",
+              "consumed_cost_units": 0,
+              "consumed_token_units": 0,
+              "max_cost_units": 1000,
+              "max_token_units": 200000,
+              "max_wall_clock_ms": 600000,
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "capability_grants": [],
+            "cleanup_receipts": [],
+            "correlations": [],
+            "created_at": "2026-08-22T09:00:00Z",
+            "definition": {
+              "definition_id": "workflow.onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.0.0"
+            },
+            "effect_intents": [],
+            "effect_receipts": [],
+            "effect_settlements": [],
+            "events": [
+              {
+                "event_kind": "run_admitted",
+                "occurred_at": "2026-08-22T09:00:00Z",
+                "run_id": "run-0001",
+                "run_status": "admitted",
+                "runtime_event_id": "event-workflow-0000",
+                "sequence": 0,
+                "workspace_id": "ws-runtime-1"
+              }
+            ],
+            "evidence": [],
+            "logical_key": "workflow-onboarding-acme",
+            "originating_operation": "workflow.start",
+            "policy": {
+              "audit_reference": "audit-workflow.start",
+              "decision_reason": "workspace_default",
+              "discovered_capabilities": [
+                "workflow.run"
+              ],
+              "granted_capabilities": [
+                "workflow.run"
+              ],
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "policy_snapshot_id": "policy-workflow-0001",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "run_id": "run-0001",
+            "status": "running",
+            "steps": [],
+            "updated_at": "2026-08-22T09:00:01Z",
+            "waits": [],
+            "workspace_id": "ws-runtime-1"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.control repeated with the same idempotency key and the same input: an honest replay, answered from the recorded disposition without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "workflow.control/primary-success"
+      },
+      "id": "workflow.control/honest-replay",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "cancel",
+          "details": {
+            "reason": "operator_requested"
+          },
+          "run_id": "run-0001"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-replay",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-replay"
+        },
+        "result": {
+          "disposition": "accepted",
+          "run_id": "run-0001"
+        }
+      }
+    },
+    {
+      "description": "workflow.control reusing one idempotency key for a different input: the key no longer identifies a single control request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "workflow.control/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "workflow.control/idempotency-conflict",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "release_retry",
+          "details": {
+            "reason": "operator_requested"
+          },
+          "run_id": "run-0001"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-conflict",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-conflict"
+        }
+      }
+    },
+    {
+      "description": "workflow.start repeated with the same idempotency key and the same input: an honest replay, answered with the same canonical Runtime Run rather than a second admission.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "workflow.start/primary-success"
+      },
+      "id": "workflow.start/honest-replay",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "definition_id": "workflow.onboarding",
+          "definition_version": "1.0.0",
+          "input": {
+            "customer_id": "customer-0001"
+          },
+          "logical_key": "workflow-onboarding-acme"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-replay",
+          "required_capabilities": [
+            {
+              "id": "workflow.run",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-replay"
+        },
+        "result": {
+          "admission": "created",
+          "run": {
+            "approvals": [],
+            "artifacts": [],
+            "audit_reference": "audit-workflow.start",
+            "budget": {
+              "budget_snapshot_id": "budget-workflow-0001",
+              "consumed_cost_units": 0,
+              "consumed_token_units": 0,
+              "max_cost_units": 1000,
+              "max_token_units": 200000,
+              "max_wall_clock_ms": 600000,
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "capability_grants": [],
+            "cleanup_receipts": [],
+            "correlations": [],
+            "created_at": "2026-08-22T09:00:00Z",
+            "definition": {
+              "definition_id": "workflow.onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.0.0"
+            },
+            "effect_intents": [],
+            "effect_receipts": [],
+            "effect_settlements": [],
+            "events": [
+              {
+                "event_kind": "run_admitted",
+                "occurred_at": "2026-08-22T09:00:00Z",
+                "run_id": "run-0001",
+                "run_status": "admitted",
+                "runtime_event_id": "event-workflow-0000",
+                "sequence": 0,
+                "workspace_id": "ws-runtime-1"
+              }
+            ],
+            "evidence": [],
+            "logical_key": "workflow-onboarding-acme",
+            "originating_operation": "workflow.start",
+            "policy": {
+              "audit_reference": "audit-workflow.start",
+              "decision_reason": "workspace_default",
+              "discovered_capabilities": [
+                "workflow.run"
+              ],
+              "granted_capabilities": [
+                "workflow.run"
+              ],
+              "pinned_at": "2026-08-22T09:00:00Z",
+              "policy_snapshot_id": "policy-workflow-0001",
+              "revision": 1,
+              "run_id": "run-0001",
+              "workspace_id": "ws-runtime-1"
+            },
+            "run_id": "run-0001",
+            "status": "running",
+            "steps": [],
+            "updated_at": "2026-08-22T09:00:01Z",
+            "waits": [],
+            "workspace_id": "ws-runtime-1"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.start reusing one idempotency key for a different definition input: the key no longer identifies a single admission request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "workflow.start/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "workflow.start/idempotency-conflict",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "definition_id": "workflow.onboarding",
+          "definition_version": "1.0.0",
+          "input": {
+            "customer_id": "customer-0002"
+          },
+          "logical_key": "workflow-onboarding-acme"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-conflict",
+          "required_capabilities": [
+            {
+              "id": "workflow.run",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-runtime-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-conflict"
+        }
+      }
+    },
+    {
       "description": "candidate.approve repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
       "expect": {
         "branch": "success",

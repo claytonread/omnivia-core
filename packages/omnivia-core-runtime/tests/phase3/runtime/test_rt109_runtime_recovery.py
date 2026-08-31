@@ -67,6 +67,7 @@ from omnivia_core.contracts.v1 import Approval, ResolveWait, Wait
 
 WORKSPACE_ID = m1.WORKSPACE_ID
 BASE_US = m18.BASE_US
+DIGEST = m18.DIGEST
 
 #: One claim, one suspension, one restart and one resolution, in that order. The
 #: command instants sit beside RT-104's own settlement instant because the grants these
@@ -117,6 +118,11 @@ def state_of(holder: m1.Owned) -> dict[str, list[Any]]:
         table: holder.connection.execute(f"SELECT * FROM {table}").fetchall()
         for table in STATE_TABLES
     }
+
+
+def ledger(holder: m1.Owned) -> dict[str, list[Any]]:
+    """Compatibility name for whole-ledger comparisons in the M1 golden flow."""
+    return state_of(holder)
 
 
 @dataclass
@@ -173,6 +179,25 @@ def service(tmp_path: Path) -> Iterator[Service]:
     session = Service(m1.take_ownership(path))
     yield session
     session.current.connection.close()
+
+
+@pytest.fixture
+def owned(tmp_path: Path) -> Iterator[m1.Owned]:
+    path = tmp_path / "workspace.sqlite"
+    materialise_phase0_baseline(path)
+    m1.bootstrap_and_migrate(path)
+    holder = m1.take_ownership(path)
+    yield holder
+    holder.connection.close()
+
+
+@dataclass(frozen=True)
+class Seeded:
+    """One runtime-bound job, its run and the single step the golden flow drives."""
+
+    job_id: str
+    run_id: str
+    step_id: str
 
 
 def seed_run(
@@ -252,7 +277,23 @@ def seed_run(
     )
 
 
-def scheduler_at(holder: m1.Owned, at_us: int = RECOVER_US) -> RuntimeScheduler:
+def seed(holder: m1.Owned, name: str, *, max_attempts: int = 8) -> Seeded:
+    seeded = Seeded(f"job-{name}", f"run-{name}", f"step-{name}")
+    seed_run(
+        holder,
+        job_id=seeded.job_id,
+        run_id=seeded.run_id,
+        step_id=seeded.step_id,
+        max_attempts=max_attempts,
+    )
+    return seeded
+
+
+def scheduler_at(
+    holder: m1.Owned, at_us: int = RECOVER_US, *, now_us: int | None = None
+) -> RuntimeScheduler:
+    if now_us is not None:
+        at_us = now_us
     return RuntimeScheduler(
         holder.connection,
         holder.identity,
@@ -260,6 +301,20 @@ def scheduler_at(holder: m1.Owned, at_us: int = RECOVER_US) -> RuntimeScheduler:
         holder.generation,
         clock_at(at_us),
     )
+
+
+def claim(holder: m1.Owned) -> Any:
+    claimed = scheduler_at(holder, CLAIM_US).claim_next()
+    assert claimed is not None
+    return claimed
+
+
+def restart(holder: m1.Owned, *, instance: str = "svc-rt109-successor") -> m1.Owned:
+    service = Service(holder)
+    service.restart()
+    if instance != "svc-rt109-successor":
+        return service.current
+    return service.current
 
 
 def authority(holder: m1.Owned, key: str) -> tuple[Any, Any, Any]:
@@ -297,6 +352,16 @@ def open_wait(
         clock=clock_at(at_us),
         expected=RuntimeAggregateExpectation(run_id=run_id, sequence=sequence),
     )
+
+
+def suspend(holder: m1.Owned, claimed: Any, *, wait_id: str) -> str:
+    open_wait(
+        holder,
+        run_id=claimed.run_id,
+        step_id=claimed.run_step_id,
+        wait_id=wait_id,
+    )
+    return wait_id
 
 
 def no_approval(_context: Any, _command: ResolveWait, _wait: Wait) -> Approval | None:
@@ -339,6 +404,26 @@ def resolve_wait(
 
 def classifications(result: RuntimeStartupRecovery) -> dict[str, str]:
     return {job.job_id: job.classification for job in result.jobs}
+
+
+def classification_of(result: Any, job_id: str) -> str:
+    if hasattr(result, "classifications"):
+        matched = [item for item in result.classifications if item.job_id == job_id]
+        assert len(matched) == 1, matched
+        return matched[0].classification
+    matched = [job for job in result.jobs if job.job_id == job_id]
+    assert len(matched) == 1, matched
+    return matched[0].classification
+
+
+def job_row(holder: m1.Owned, job_id: str) -> tuple[Any, ...]:
+    row = holder.connection.execute(
+        "SELECT state, fencing_generation, claimed_by_service_instance "
+        "FROM omnivia_durable_jobs WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    assert row is not None
+    return row
 
 
 def events_of(holder: m1.Owned, run_id: str) -> list[tuple[Any, ...]]:

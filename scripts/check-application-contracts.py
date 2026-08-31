@@ -24,7 +24,7 @@ required beyond the ``jsonschema``/``referencing`` dev dependency):
   semantic expectation (version/capability negotiation math, retry
   fail-safety, tolerant decode of an otherwise-invalid document, and so on);
 - the canonical ``x-omnivia-operation-catalogue`` annotation holds exactly the
-  frozen 20 application operations, in the frozen order, each strictly valid
+  frozen 26 application operations, in the frozen order, each strictly valid
   against ``OperationMetadata``, binding resolvable in-contract payload
   references, and carrying exactly the frozen scope, capability, completion,
   pagination, idempotency, precondition, audit and allowed-error posture -- with
@@ -1220,6 +1220,13 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "IMPORT_START": _IMPORT_START,
     "JOB_CONTROL": _JOB_CONTROL,
     "JOB_EVENTS": _JOB_EVENTS,
+    # Aliases, not new profiles: a workflow command is refused on exactly the
+    # JOB_CONTROL codes (a state-based refusal is a disposition, not a
+    # ``conflict``), and a workflow review reads a projection under exactly the
+    # GRAPH_READ codes. Named separately so the frozen table says which posture
+    # each workflow operation was given rather than borrowing another lane's name.
+    "WORKFLOW_MUT": _JOB_CONTROL,
+    "WORKFLOW_REVIEW": _GRAPH_READ,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1251,7 +1258,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 22 application operations, in the frozen code-point order. Runtime
+#: The exact 26 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1331,6 +1338,22 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "record.supersede": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "RecordSupersede", "GOV_MUT", False,
+    ),
+    "workflow.control": FrozenOperation(
+        "workspace", ("workflow:control",), "update", "workflow.control",
+        "runtime", "WorkflowControl", "WORKFLOW_MUT", False,
+    ),
+    "workflow.inspect": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.read",
+        "runtime", "WorkflowInspect", "POINT_READ", False,
+    ),
+    "workflow.review": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.review",
+        "runtime", "WorkflowReview", "WORKFLOW_REVIEW", False,
+    ),
+    "workflow.start": FrozenOperation(
+        "workspace", ("workflow:write",), "create", "workflow.run",
+        "runtime", "WorkflowStart", "WORKFLOW_MUT", False,
     ),
     "workspace.create": FrozenOperation(
         "installation", ("workspace:write",), "create", "workspace.write",

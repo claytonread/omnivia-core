@@ -8,6 +8,7 @@ generation, recovery before readiness, and readiness published last.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Callable
@@ -61,6 +62,14 @@ from omnivia_core_runtime.service.versions import (
     supported_workspace_versions,
     workspace_contract_version,
 )
+from omnivia_core_runtime.service.workflow_policy import (
+    AUTHORITY_FILENAME,
+    DecisionRefused,
+    PolicySource,
+    load_policy_sources,
+    resolve_effective_policy,
+)
+from omnivia_core_runtime.service.workflow_runtime import WorkflowApplicationRuntime
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
@@ -151,6 +160,8 @@ class ServiceRunner:
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
+        self.workflow_runtime = WorkflowApplicationRuntime(self)
+        self.workflow_decision_authority: tuple[PolicySource, ...] | None = None
         #: Monotonic reading of the last heartbeat this instance wrote, which is the
         #: acquisition itself until the first renewal. `None` until a lease is held,
         #: so nothing can renew before there is something to renew.
@@ -221,6 +232,10 @@ class ServiceRunner:
         )
         if not qualification.writable:
             raise RuntimeError(f"filesystem refused: {qualification.reason}")
+
+        self.workflow_decision_authority = self._read_decision_authority(
+            manifest.workspace_id
+        )
 
         self.installation.create(manifest.workspace_id)
         installation_identity = InstallationIdentity.load_or_create(
@@ -342,6 +357,32 @@ class ServiceRunner:
             unmet=(),
             reason="writable readiness published",
         )
+
+    def _read_decision_authority(
+        self, workspace_id: str
+    ) -> tuple[PolicySource, ...] | None:
+        """Read this workspace's configured Workflow authority, when present.
+
+        Absence is deliberately allowed: a service without an authority file still
+        starts, while ``workflow.start`` refuses to invent policy. A present but
+        unusable file fails startup because an operator tried to configure authority
+        and the service cannot safely serve under a half-read decision.
+        """
+        path = self.installation.runtime_for(workspace_id) / AUTHORITY_FILENAME
+        if not path.is_file():
+            return None
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError(
+                f"{AUTHORITY_FILENAME} is not readable UTF-8 JSON"
+            ) from None
+        try:
+            sources = load_policy_sources(document)
+            resolve_effective_policy(sources)
+        except DecisionRefused as refused:
+            raise RuntimeError(f"{AUTHORITY_FILENAME}: {refused}") from None
+        return sources
 
     def _start_transport(self, serve: Callable[[ServiceRunner], None]) -> None:
         """Run the transport hook without publishing its raw failure diagnostics."""

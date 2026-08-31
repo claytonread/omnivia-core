@@ -1,15 +1,17 @@
 """RT-203 successor acceptance for migration 0023's canonical effect records.
 
 What 0023 is: a unique consecutive successor to 0022, pinned by content checksum,
-whose objects are exactly three tables, two indexes and nine statement triggers; a
+whose objects are exactly four tables, two indexes and twelve statement triggers; a
 slice that applies to a pristine workspace and to a populated 0022 head without
 disturbing existing rows; and a schema whose effect facts are append-only.
 
 The rules SQL can state are stated here: an intent belongs to an open attempt of a
 running run and an issued grant, an idempotency key cannot be rebound to different
-request bytes, a receipt or settlement cannot exist without and before its intent, and
-a committed settlement names a receipt for that same intent. Capability membership
-inside the grant and provider-reference semantics stay with the contract validators.
+request bytes, a receipt or settlement cannot exist without and before its intent, an
+effect never handed to the dispatch outbox has no observation to receive, a settlement
+is made once unless explicit reconciliation appends a later answer, and a committed
+settlement names a receipt for that same intent. Capability membership inside the grant
+and provider-reference semantics stay with the contract validators.
 """
 
 from __future__ import annotations
@@ -57,9 +59,12 @@ BASE_US = m18.BASE_US
 DIGEST = m18.DIGEST
 
 INTENTS = "omnivia_runtime_effect_intents"
+DISPATCHES = "omnivia_runtime_effect_dispatches"
 RECEIPTS = "omnivia_runtime_effect_receipts"
 SETTLEMENTS = "omnivia_runtime_effect_settlements"
-TABLES = (INTENTS, RECEIPTS, SETTLEMENTS)
+TABLES = (INTENTS, DISPATCHES, RECEIPTS, SETTLEMENTS)
+RECONCILED_LATE_RECEIPT = "effect.reconciled_by_late_receipt"
+RECONCILED_NEVER_DISPATCHED = "effect.reconciled_never_dispatched"
 INDEXES = {
     "omnivia_idx_runtime_effect_intents_run",
     "omnivia_idx_runtime_effect_receipts_intent",
@@ -136,6 +141,17 @@ def intent_row(**overrides: object) -> dict[str, object]:
     return values
 
 
+def dispatch_row(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "workspace_id": WORKSPACE_ID,
+        "effect_intent_id": "effect-intent-0001",
+        "dispatch_number": 1,
+        "requested_at_us": BASE_US + 4,
+    }
+    values.update(overrides)
+    return values
+
+
 def receipt_row(**overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "workspace_id": WORKSPACE_ID,
@@ -193,8 +209,14 @@ def seed_intent(holder: m1.Owned) -> None:
         _insert(holder, INTENTS, intent_row())
 
 
-def seed_receipt(holder: m1.Owned) -> None:
+def seed_dispatch(holder: m1.Owned) -> None:
     seed_intent(holder)
+    with guarded(holder):
+        _insert(holder, DISPATCHES, dispatch_row())
+
+
+def seed_receipt(holder: m1.Owned) -> None:
+    seed_dispatch(holder)
     with guarded(holder):
         _insert(holder, RECEIPTS, receipt_row())
 
@@ -253,6 +275,7 @@ def test_effect_records_insert_only_through_the_fenced_owner(owned: m1.Owned) ->
         _insert(owned, SETTLEMENTS, settlement_row())
 
     assert owned.connection.execute(f"SELECT COUNT(*) FROM {INTENTS}").fetchone() == (1,)
+    assert owned.connection.execute(f"SELECT COUNT(*) FROM {DISPATCHES}").fetchone() == (1,)
     assert owned.connection.execute(f"SELECT COUNT(*) FROM {RECEIPTS}").fetchone() == (1,)
     assert owned.connection.execute(f"SELECT COUNT(*) FROM {SETTLEMENTS}").fetchone() == (1,)
 
@@ -307,7 +330,7 @@ def test_idempotency_key_cannot_be_rebound_to_different_request_bytes(
 def test_receipt_and_settlement_are_bound_to_their_intent_and_time(
     owned: m1.Owned,
 ) -> None:
-    seed_intent(owned)
+    seed_dispatch(owned)
     with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="predate"):
         _insert(owned, RECEIPTS, receipt_row(observed_at_us=BASE_US + 2))
 
@@ -342,7 +365,7 @@ def test_non_committed_settlement_names_no_receipt(owned: m1.Owned) -> None:
                 effect_settlement_id="effect-settlement-0002",
                 outcome="not_committed",
                 effect_receipt_id=None,
-                reason="absence_proven",
+                reason=RECONCILED_NEVER_DISPATCHED,
                 settled_at_us=BASE_US + 6,
             ),
         )
@@ -355,6 +378,7 @@ def test_non_committed_settlement_names_no_receipt(owned: m1.Owned) -> None:
                 effect_settlement_id="effect-settlement-0003",
                 outcome="unknown",
                 effect_receipt_id="effect-receipt-0001",
+                reason=RECONCILED_LATE_RECEIPT,
             ),
         )
 

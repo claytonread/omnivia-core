@@ -101,6 +101,8 @@ CONTENT_INGESTION_PURPOSE: Final = "content_ingestion"
 JOB_CONTROL_PURPOSE: Final = "job_control"
 KNOWLEDGE_GOVERNANCE_PURPOSE: Final = "knowledge_governance"
 CHAT_AUTHORING_PURPOSE: Final = "chat_authoring"
+WORKFLOW_RUN_PURPOSE: Final = "workflow_run"
+WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -110,6 +112,8 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
+        "workflow.control": WORKFLOW_CONTROL_PURPOSE,
+        "workflow.start": WORKFLOW_RUN_PURPOSE,
         "knowledge.propose": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
@@ -140,6 +144,8 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # nothing and administers nothing, so it takes the same contributor role every
         # other workspace-scoped authoring mutation here takes.
         "chat.command": WORKSPACE_CONTRIBUTOR_ROLE,
+        "workflow.control": WORKSPACE_CONTRIBUTOR_ROLE,
+        "workflow.start": WORKSPACE_CONTRIBUTOR_ROLE,
         "knowledge.propose": WORKSPACE_CONTRIBUTOR_ROLE,
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
@@ -635,6 +641,7 @@ def execute_mutation(
     validate_result: ResultValidator,
     clock: Clock,
     allocate_identifier: IdentifierAllocator | None = None,
+    materialise_claim_before_mutation: bool = False,
 ) -> MutationOutcome:
     """Run one mutation under a grant, or refuse it, leaving nothing half-written.
 
@@ -655,7 +662,10 @@ def execute_mutation(
     5. the executor allocates the settlement identities, inserts the audit event, then
        calls `mutate` with that settlement context; the result, claim, outcome and
        execution facts follow only after validation, with a final monotonic check before
-       commit. The audit is not externally visible unless every later write commits;
+       commit. Callers whose domain rows must foreign-key the claim may opt into
+       materialising the claim immediately before `mutate`; the same transaction still
+       rolls it back if the domain mutation or result validation fails. The audit and
+       any early claim are not externally visible unless every later write commits;
     6. any exception at any point leaves the transaction rolled back by
        `fenced_transaction`, taking the domain mutation and every durable settlement
        fact with it.
@@ -811,6 +821,14 @@ def execute_mutation(
                 settled_at_us,
             ),
         )
+        if materialise_claim_before_mutation:
+            _insert_claim(
+                fenced,
+                settlement,
+                grant=grant,
+                idempotency_key=key,
+                request_digest=equivalence.fingerprint,
+            )
 
         result = dict(mutate(fenced, settlement))
         if not validate_result(result):
@@ -818,21 +836,14 @@ def execute_mutation(
         outcome_json = to_canonical_json(result)
         outcome_digest = _digest(outcome_json)
 
-        fenced.execute(
-            "INSERT INTO omnivia_idempotency_claims "
-            "(claim_id, workspace_id, principal_id, operation, idempotency_key, "
-            "request_digest, audit_ref, claimed_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                settlement.claim_id,
-                grant.workspace_id,
-                grant.principal_id,
-                grant.operation,
-                key,
-                equivalence.fingerprint,
-                settlement.audit_ref,
-                settled_at_us,
-            ),
-        )
+        if not materialise_claim_before_mutation:
+            _insert_claim(
+                fenced,
+                settlement,
+                grant=grant,
+                idempotency_key=key,
+                request_digest=equivalence.fingerprint,
+            )
 
         outcome_reference: str | None = None
         inline_outcome: str | None = outcome_json
@@ -890,6 +901,31 @@ def execute_mutation(
             claim_id=settlement.claim_id,
             audit_ref=settlement.audit_ref,
         )
+
+
+def _insert_claim(
+    connection: sqlite3.Connection,
+    settlement: MutationSettlementContext,
+    *,
+    grant: MutationGrant,
+    idempotency_key: str,
+    request_digest: str,
+) -> None:
+    connection.execute(
+        "INSERT INTO omnivia_idempotency_claims "
+        "(claim_id, workspace_id, principal_id, operation, idempotency_key, "
+        "request_digest, audit_ref, claimed_at_us) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            settlement.claim_id,
+            grant.workspace_id,
+            grant.principal_id,
+            grant.operation,
+            idempotency_key,
+            request_digest,
+            settlement.audit_ref,
+            settlement.settled_at_us,
+        ),
+    )
 
 
 def _require_current(grant: MutationGrant, clock: Clock) -> int:
@@ -1090,6 +1126,8 @@ __all__ = [
     "MUTATING_OPERATIONS",
     "MUTATION_PURPOSES",
     "MUTATION_ROLES",
+    "WORKFLOW_CONTROL_PURPOSE",
+    "WORKFLOW_RUN_PURPOSE",
     "WORKSPACE_ADMINISTRATION_PURPOSE",
     "WORKSPACE_CONTRIBUTOR_ROLE",
     "DomainMutation",

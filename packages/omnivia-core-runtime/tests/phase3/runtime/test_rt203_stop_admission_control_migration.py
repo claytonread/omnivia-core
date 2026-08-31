@@ -41,9 +41,10 @@ RUN_ID = m18.RUN_ID
 BASE_US = m18.BASE_US
 
 ADMISSIONS = "omnivia_runtime_admission_decisions"
+ADMISSION_STOPS = "omnivia_runtime_admission_stops"
 STOP_REQUESTS = "omnivia_runtime_stop_requests"
 STOP_OUTCOMES = "omnivia_runtime_stop_outcomes"
-TABLES = (ADMISSIONS, STOP_REQUESTS, STOP_OUTCOMES)
+TABLES = (ADMISSIONS, ADMISSION_STOPS, STOP_REQUESTS, STOP_OUTCOMES)
 TRIGGERS = {
     f"omnivia_guard_{table.removeprefix('omnivia_')}_{statement}"
     for table in TABLES
@@ -121,6 +122,21 @@ def stop_request_row(**overrides: object) -> dict[str, object]:
         "requested_at_us": BASE_US + 1,
         "requested_by": "principal-user",
         "reason": "user_cancelled",
+        "audit_ref": m18.audit_ref_for(m18.JOB_ID),
+    }
+    values.update(overrides)
+    return values
+
+
+def admission_stop_row(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "workspace_id": WORKSPACE_ID,
+        "sequence": 0,
+        "admission_stop_id": "admission-stop-0001",
+        "state": "engaged",
+        "running_work": "release",
+        "effective_at_us": BASE_US + 1,
+        "reason": "operator.emergency_stop",
         "audit_ref": m18.audit_ref_for(m18.JOB_ID),
     }
     values.update(overrides)
@@ -279,6 +295,7 @@ def test_control_records_are_append_only(owned: m1.Owned) -> None:
             run_step_id=None,
         )
         _insert(owned, STOP_OUTCOMES, stop_outcome_row())
+        _insert(owned, ADMISSION_STOPS, admission_stop_row())
 
     for table in TABLES:
         with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="append-only"):

@@ -57,7 +57,9 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # materialized Chat foundation candidate. 0030 is the materialized Chat Gate B
 # successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
 # is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
-# Chat compaction/waits/agent-run candidate.
+# Chat compaction/waits/agent-run candidate. 0034-0036 are the Workflow Runtime
+# completion candidates -- step connections, loop iterations and readiness facts --
+# additive on 0027.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -75,6 +77,9 @@ EXPECTED_ALLOCATION = (
     (31, "0031_chat_request_manifests.sql", "Chat", "candidate"),
     (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
     (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
+    (34, "0034_workflow_step_connections.sql", "Workflow Runtime", "candidate"),
+    (35, "0035_workflow_loop_iterations.sql", "Workflow Runtime", "candidate"),
+    (36, "0036_workflow_readiness_facts.sql", "Workflow Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -84,15 +89,23 @@ FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
 ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read"
 
-# The two already-replayed FND-F3 candidates' exact introducing commits, each
-# pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
-# neither carries an accepted_commit.
+# The commit that materializes the Workflow Runtime completion migrations
+# (0034-0036) and the revised 0023-0025 Agent Runtime SQL.
+WORKFLOW_COMPLETION_COMMIT = "137651e12d126070e396a38003b6b726f4ca69d4"
+
+# Each candidate's exact introducing commit: the commit in the checked head that
+# carries that migration file with the pinned content -- not yet accepted, so none
+# carries an accepted_commit. A candidate whose SQL is revised is re-pinned to the
+# commit that materializes the revision, because the guard proves the pinned hash
+# against the blob at this commit; a stale pin over rewritten content is exactly
+# the drift it exists to catch. 0023-0025 were re-pinned that way alongside the
+# 0034-0036 Workflow Runtime completion migrations.
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
-    23: "44e3ed256c38dadc54203994e209380d6e6f439f",
-    24: "e9827ae9f83188f9e9c4fc848597edf04aa67416",
-    25: "af25779a66e41a32dc268940caf0abc2d699ffc9",
+    23: WORKFLOW_COMPLETION_COMMIT,
+    24: WORKFLOW_COMPLETION_COMMIT,
+    25: WORKFLOW_COMPLETION_COMMIT,
     26: "40348d38bde2dc3ad098b68cf9637eb8a8445535",
     27: "348bb389f4b5a7b27769ba5224afb43031a6127f",
     28: "0178c4a4aad8e92eeccc22500ab2a9432d099e27",
@@ -101,6 +114,9 @@ CANDIDATE_INTRODUCED_COMMITS = {
     31: "dbc23280be010318b6e0d1a2e5ae0fc43a1bbf47",
     32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
+    34: WORKFLOW_COMPLETION_COMMIT,
+    35: WORKFLOW_COMPLETION_COMMIT,
+    36: WORKFLOW_COMPLETION_COMMIT,
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -172,9 +188,8 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0027 are
-    candidates pinned to their introducing commits but not accepted; 0028 and 0029
-    are downstream candidates pinned the same way."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; every allocation
+    above them is a candidate pinned to its introducing commit but not accepted."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:

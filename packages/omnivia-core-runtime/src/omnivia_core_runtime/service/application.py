@@ -114,6 +114,14 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.workflow import (
+    WORKFLOW_CONTROL_OPERATION,
+    WORKFLOW_FAMILY_OPERATIONS,
+    WORKFLOW_INSPECT_OPERATION,
+    WORKFLOW_REVIEW_OPERATION,
+    WORKFLOW_START_OPERATION,
+    WorkflowHandlers,
+)
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
 from omnivia_core_runtime.service.handlers.workspace_family import (
     InstallationWorkspaceHandlers,
@@ -141,6 +149,7 @@ from omnivia_core_runtime.service.operations import (
     server_capability_snapshot,
     success,
 )
+from omnivia_core_runtime.service.workflow_runtime import WorkflowApplicationRuntime
 from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
@@ -221,6 +230,17 @@ JOB_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
 
 GOVERNANCE_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {name: MUTATION_PURPOSES[name] for name in GOVERNANCE_FAMILY_OPERATIONS}
+)
+
+WORKFLOW_OBSERVATION_PURPOSE: Final = "workflow_observation"
+WORKFLOW_REVIEW_PURPOSE: Final = "workflow_review"
+WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        WORKFLOW_START_OPERATION: MUTATION_PURPOSES[WORKFLOW_START_OPERATION],
+        WORKFLOW_INSPECT_OPERATION: WORKFLOW_OBSERVATION_PURPOSE,
+        WORKFLOW_CONTROL_OPERATION: MUTATION_PURPOSES[WORKFLOW_CONTROL_OPERATION],
+        WORKFLOW_REVIEW_OPERATION: WORKFLOW_REVIEW_PURPOSE,
+    }
 )
 
 #: The W2-F2 Chat family. Two purposes rather than one, on the same split the job
@@ -572,6 +592,57 @@ def build_governance_registry(
     return registry
 
 
+def workflow_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The Workflow application grant for one workspace."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(WORKFLOW_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=WORKFLOW_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(WORKFLOW_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_workflow_registry(
+    handlers: WorkflowHandlers,
+) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        WORKFLOW_START_OPERATION, cast(OperationHandler, handlers.workflow_start)
+    )
+    registry.register(
+        WORKFLOW_INSPECT_OPERATION, cast(OperationHandler, handlers.workflow_inspect)
+    )
+    registry.register(
+        WORKFLOW_CONTROL_OPERATION, cast(OperationHandler, handlers.workflow_control)
+    )
+    registry.register(
+        WORKFLOW_REVIEW_OPERATION, cast(OperationHandler, handlers.workflow_review)
+    )
+    return registry
+
+
 def chat_family_session(
     *, principal_id: str, installation_id: str, workspace_id: str
 ) -> AuthenticatedSession:
@@ -841,12 +912,13 @@ def compose_production_application_surface(
     memory: ApplicationDispatcher,
     jobs: ApplicationDispatcher,
     governance: ApplicationDispatcher,
+    workflow: ApplicationDispatcher,
     chat: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
     """Compose all real family handlers into the exact frozen catalogue."""
-    families = (installation, reads, memory, jobs, governance, chat)
+    families = (installation, reads, memory, jobs, governance, workflow, chat)
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
     for family in families:
@@ -1391,6 +1463,46 @@ def build_governance_application_dispatcher(
     )
 
 
+def build_workflow_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the Workflow family around its live runtime handlers."""
+    actual_clock = SystemClock() if clock is None else clock
+    session = workflow_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    if isinstance(getattr(service, "workflow_runtime", None), WorkflowApplicationRuntime):
+        service.workflow_runtime = WorkflowApplicationRuntime(
+            service=service,
+            session=session,
+            binding=binding,
+            clock=actual_clock,
+        )
+    handlers = WorkflowHandlers(service=service)
+    registry = build_workflow_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 def build_chat_application_dispatcher(
     *,
     service: Any,
@@ -1447,6 +1559,8 @@ def build_chat_application_dispatcher(
 
 __all__ = [
     "CHANNEL_TRUST",
+    "CHAT_FAMILY_PURPOSES",
+    "CHAT_OBSERVATION_PURPOSE",
     "CONTEXT_PACK_BUILD_OPERATION",
     "EVIDENCE_SEARCH_OPERATION",
     "GOVERNANCE_FAMILY_PURPOSES",
@@ -1461,6 +1575,9 @@ __all__ = [
     "MEMORY_SEARCH_OPERATION",
     "OPERATION_PURPOSES",
     "PRINCIPAL_SOURCE",
+    "WORKFLOW_FAMILY_PURPOSES",
+    "WORKFLOW_OBSERVATION_PURPOSE",
+    "WORKFLOW_REVIEW_PURPOSE",
     "WORKSPACE_INSPECTION_PURPOSE",
     "WORKSPACE_INSPECT_OPERATION",
     "ApplicationCallRecord",
@@ -1468,6 +1585,8 @@ __all__ = [
     "ApplicationDispatcher",
     "ProductionApplicationSurface",
     "build_application_registry",
+    "build_chat_application_dispatcher",
+    "build_chat_registry",
     "build_governance_application_dispatcher",
     "build_governance_registry",
     "build_installation_application_dispatcher",
@@ -1476,10 +1595,14 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_workflow_application_dispatcher",
+    "build_workflow_registry",
+    "chat_family_session",
     "compose_production_application_surface",
     "governance_family_session",
     "installation_owner_session",
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "workflow_family_session",
 ]

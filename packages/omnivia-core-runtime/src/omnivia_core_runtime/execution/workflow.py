@@ -38,6 +38,16 @@ requires both a configured outcome and the evidence kinds a
 run: replay-equivalent plan and branch observations, a cancellation fence, and
 the residual :class:`~omnivia_core_runtime.execution.planes.CapabilityProposal`
 values an ``EFFECT`` route yielded and this seam never dispatched.
+
+:class:`WorkflowDispatchPlanner` is the work-unit scaffold: it turns one
+materialised step plus a :class:`WorkflowExecutorBinding` into a sealed
+:class:`WorkUnitEnvelope`, and validates a :class:`WorkResultEnvelope` against
+it. Planning only -- nothing here runs an executor, accepts a result durably,
+applies an effect, compensates or recovers. Resolution is delegated whole to
+:class:`~omnivia_core_runtime.execution.registry.RuntimeExecutionRegistry`
+rather than re-checked here, and a route or executor family the first release
+does not serve is refused with :data:`REASON_UNSUPPORTED_FIRST_RELEASE` instead
+of being served by a stub that would fabricate behaviour it does not have.
 """
 
 from __future__ import annotations
@@ -50,15 +60,20 @@ from omnivia_core_runtime.execution.profile import (
     BUILD_TRUST_APPROVED,
     BUILD_TRUST_PROTOTYPE,
     BUILD_TRUST_STATES,
+    CONTRACT_VERSION,
     EXECUTION_CLASS_AGENT,
     EXECUTION_CLASS_DETERMINISTIC,
     EXECUTION_CLASS_EFFECT,
     EXECUTION_CLASS_WAIT,
     EXECUTION_CLASSES,
+    EXECUTOR_KIND_BROWSER,
+    EXECUTOR_KIND_INTEGRATION,
+    EXECUTOR_KINDS,
     ISOLATION_MIN,
     ContentAddressed,
     ExecutionContractError,
     ExecutionRefused,
+    ExecutorDescriptor,
     derive_id,
     require_collection,
     require_digest,
@@ -71,6 +86,7 @@ from omnivia_core_runtime.execution.registry import (
     EVENT_REGISTERED,
     EVENT_REMOVED,
     EVENT_REPLACED,
+    RuntimeExecutionRegistry,
 )
 
 _UNSEALED_CONTENT_HASH: Final = "sha256:" + "0" * 64
@@ -628,6 +644,312 @@ class StepRouter:
 
 
 # --------------------------------------------------------------------------
+# Work-unit dispatch scaffold: it plans a unit of work and never runs one
+# --------------------------------------------------------------------------
+
+#: The routes the first release plans a work unit for. Every other route is
+#: refused explicitly, because a stub that answered for a route this seam cannot
+#: yet run would be fabricating execution behaviour rather than deferring it.
+FIRST_RELEASE_ROUTES: Final[frozenset[str]] = frozenset({ROUTE_DETERMINISTIC})
+
+#: The executor families the first release plans against. ``BROWSER`` and
+#: ``INTEGRATION`` builds need a live session or a remote integration surface
+#: this scaffold does not open, so they are deferred for the same reason.
+FIRST_RELEASE_EXECUTOR_KINDS: Final[frozenset[str]] = EXECUTOR_KINDS - {
+    EXECUTOR_KIND_BROWSER,
+    EXECUTOR_KIND_INTEGRATION,
+}
+
+#: The one stable reason code both first-release deferrals carry, so a caller
+#: can tell "not yet served" apart from every other refusal without matching
+#: on a message.
+REASON_UNSUPPORTED_FIRST_RELEASE: Final = "unsupported_first_release"
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowExecutorBinding:
+    """The executor one materialised step's route is bound to, and what it must declare.
+
+    A request, not a grant: every field here is what the caller *claims*, and
+    :class:`WorkflowDispatchPlanner` matches the claim against the step's actual
+    route and hands the rest to the registry to confirm or refuse.
+    """
+
+    step_id: str
+    route: str
+    source_id: str
+    executor_id: str
+    executor_version: str
+    capability: str
+    contract_version: str = CONTRACT_VERSION
+    minimum_isolation: int = ISOLATION_MIN
+    required_reconciliation: tuple[str, ...] = ()
+    expect_content_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        require_identifier("step_id", self.step_id)
+        require_vocabulary("route", self.route, ROUTES)
+        require_identifier("source_id", self.source_id)
+        require_identifier("executor_id", self.executor_id)
+        require_version("executor_version", self.executor_version)
+        require_identifier("capability", self.capability)
+        require_version("contract_version", self.contract_version)
+        require_isolation("minimum_isolation", self.minimum_isolation)
+        require_collection(
+            "required_reconciliation", self.required_reconciliation, required=False
+        )
+        if self.expect_content_hash is not None:
+            require_digest("expect_content_hash", self.expect_content_hash)
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        """The source-qualified exact-version key the registry is asked for."""
+        return (self.source_id, self.executor_id, self.executor_version)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkUnitEnvelope(ContentAddressed):
+    """One sealed unit of work: which step of which plan, run by which exact build.
+
+    Sealing is what makes it a work unit rather than a request. The content hash
+    covers the run, the plan, the step, the route, the executor's key, build and
+    content identity and the payload digest together, so a result can only claim
+    the one unit it was minted for. The payload itself is never carried -- only
+    its digest -- so the envelope stays bounded and free-text-free.
+    """
+
+    run_id: str
+    workflow_id: str
+    workflow_hash: str
+    step_id: str
+    step_hash: str
+    sequence_index: int
+    route: str
+    source_id: str
+    executor_id: str
+    executor_version: str
+    executor_build_hash: str
+    executor_content_hash: str
+    capability: str
+    contract_version: str
+    required_isolation: int
+    payload_digest: str
+    fence: int
+    content_hash: str = _UNSEALED_CONTENT_HASH
+
+    def __post_init__(self) -> None:
+        require_identifier("run_id", self.run_id)
+        require_identifier("workflow_id", self.workflow_id)
+        require_digest("workflow_hash", self.workflow_hash)
+        require_identifier("step_id", self.step_id)
+        require_digest("step_hash", self.step_hash)
+        if self.sequence_index < 0:
+            raise ExecutionContractError(
+                "invalid_sequence", "sequence_index must not be negative"
+            )
+        require_vocabulary("route", self.route, ROUTES)
+        require_identifier("source_id", self.source_id)
+        require_identifier("executor_id", self.executor_id)
+        require_version("executor_version", self.executor_version)
+        require_digest("executor_build_hash", self.executor_build_hash)
+        require_digest("executor_content_hash", self.executor_content_hash)
+        require_identifier("capability", self.capability)
+        require_version("contract_version", self.contract_version)
+        require_isolation("required_isolation", self.required_isolation)
+        require_digest("payload_digest", self.payload_digest)
+        if self.fence < 1:
+            raise ExecutionContractError(
+                "invalid_fence", "fence must be a positive integer"
+            )
+        require_digest("content_hash", self.content_hash)
+
+    @property
+    def executor_key(self) -> tuple[str, str, str]:
+        return (self.source_id, self.executor_id, self.executor_version)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkResultEnvelope(ContentAddressed):
+    """What an executor hands back for one sealed work unit, and nothing more.
+
+    It names the unit by hash and repeats the executor identity it ran as, so a
+    result minted by a replaced build, against a superseded fence or for a
+    different unit is refusable from the two envelopes alone.
+    """
+
+    work_unit_hash: str
+    source_id: str
+    executor_id: str
+    executor_version: str
+    executor_content_hash: str
+    fence: int
+    outcome: str
+    result_digest: str
+    content_hash: str = _UNSEALED_CONTENT_HASH
+
+    def __post_init__(self) -> None:
+        require_digest("work_unit_hash", self.work_unit_hash)
+        require_identifier("source_id", self.source_id)
+        require_identifier("executor_id", self.executor_id)
+        require_version("executor_version", self.executor_version)
+        require_digest("executor_content_hash", self.executor_content_hash)
+        if self.fence < 1:
+            raise ExecutionContractError(
+                "invalid_fence", "fence must be a positive integer"
+            )
+        require_vocabulary("outcome", self.outcome, OUTCOMES)
+        require_digest("result_digest", self.result_digest)
+        require_digest("content_hash", self.content_hash)
+
+
+class WorkflowDispatchPlanner:
+    """Plans one materialised step into a sealed work unit. It never runs one.
+
+    M4-A scaffolding: every check that decides whether a step *may* run lives
+    here, and the act of running it does not exist yet -- no executor is
+    invoked, no result is durably accepted, no effect, compensation or recovery
+    happens. Executor admission is delegated whole to
+    :class:`~omnivia_core_runtime.execution.registry.RuntimeExecutionRegistry`
+    rather than re-checked, so source qualification, exact version, pinned
+    build, health, trust, isolation, contract version, capability and
+    reconciliation stay one rule in one place.
+    """
+
+    def __init__(self, registry: RuntimeExecutionRegistry) -> None:
+        self._registry = registry
+        self._router = StepRouter()
+
+    def plan(
+        self,
+        *,
+        run_id: str,
+        workflow: MaterialisedWorkflow,
+        step: MaterialisedStep,
+        binding: WorkflowExecutorBinding,
+        payload_digest: str,
+        fence: int = 1,
+    ) -> WorkUnitEnvelope:
+        """Return the sealed work unit for ``step``, or refuse before naming an executor.
+
+        The order is the contract: the plan and the step are verified and the
+        step is confirmed to belong to the plan, then the binding is matched
+        against the route the step actually has, then that route is checked
+        against what the first release serves -- and only then is the registry
+        asked to resolve anything. A mismatched binding therefore never reaches
+        an executor, and an unserved route is refused even when its executor
+        would have resolved.
+        """
+        require_identifier("run_id", run_id)
+        require_digest("payload_digest", payload_digest)
+        if fence < 1:
+            raise ExecutionContractError(
+                "invalid_fence", "fence must be a positive integer"
+            )
+        workflow.verify_content_hash()
+        step.verify_content_hash()
+        if step not in workflow.steps:
+            raise ExecutionRefused(
+                "unknown_step", "step is not part of this materialised plan"
+            )
+        route = self._router.route(step).route
+        if binding.step_id != step.step_id:
+            raise ExecutionRefused(
+                "binding_mismatch", "binding does not name the step being planned"
+            )
+        if binding.route != route:
+            raise ExecutionRefused(
+                "binding_mismatch",
+                f"binding claims route {binding.route}, step routes to {route}",
+            )
+        if route not in FIRST_RELEASE_ROUTES:
+            raise ExecutionRefused(
+                REASON_UNSUPPORTED_FIRST_RELEASE,
+                f"route {route} is not served in the first release",
+            )
+        entry = self._registry.resolve_executor(
+            binding.source_id,
+            binding.executor_id,
+            binding.executor_version,
+            capability=binding.capability,
+            contract_version=binding.contract_version,
+            required_reconciliation=binding.required_reconciliation,
+            minimum_isolation=binding.minimum_isolation,
+            expect_content_hash=binding.expect_content_hash,
+        )
+        descriptor = entry.descriptor
+        if not isinstance(descriptor, ExecutorDescriptor):
+            raise ExecutionRefused(
+                "unknown_entry", f"{'/'.join(entry.key)} is not an executor"
+            )
+        if descriptor.executor_kind not in FIRST_RELEASE_EXECUTOR_KINDS:
+            raise ExecutionRefused(
+                REASON_UNSUPPORTED_FIRST_RELEASE,
+                f"executor family {descriptor.executor_kind} is not served in "
+                "the first release",
+            )
+        return WorkUnitEnvelope(
+            run_id=run_id,
+            workflow_id=workflow.workflow_id,
+            workflow_hash=workflow.content_hash,
+            step_id=step.step_id,
+            step_hash=step.content_hash,
+            sequence_index=step.sequence_index,
+            route=route,
+            source_id=descriptor.source_id,
+            executor_id=descriptor.executor_id,
+            executor_version=descriptor.version,
+            executor_build_hash=descriptor.build_hash,
+            executor_content_hash=descriptor.content_hash,
+            capability=binding.capability,
+            contract_version=binding.contract_version,
+            required_isolation=descriptor.required_isolation,
+            payload_digest=payload_digest,
+            fence=fence,
+        ).sealed()
+
+    @staticmethod
+    def validate_result(
+        work_unit: WorkUnitEnvelope, result: WorkResultEnvelope
+    ) -> WorkResultEnvelope:
+        """Return ``result`` if it is one this work unit could have produced, else refuse.
+
+        Validation only. Returning the result is not accepting it: durable
+        acceptance, effects and compensation are later work, and this seam
+        writes nothing either way.
+        """
+        work_unit.verify_content_hash()
+        result.verify_content_hash()
+        if result.work_unit_hash != work_unit.content_hash:
+            raise ExecutionRefused(
+                "wrong_work_unit", "result does not name the work unit it claims"
+            )
+        if (
+            result.source_id,
+            result.executor_id,
+            result.executor_version,
+            result.executor_content_hash,
+        ) != (
+            work_unit.source_id,
+            work_unit.executor_id,
+            work_unit.executor_version,
+            work_unit.executor_content_hash,
+        ):
+            raise ExecutionRefused(
+                "stale_executor_identity",
+                "result names a build this work unit was not sealed for",
+            )
+        if result.fence < work_unit.fence:
+            raise ExecutionRefused(
+                "stale_fence", "result was minted against a superseded fence"
+            )
+        if result.fence > work_unit.fence:
+            raise ExecutionRefused(
+                "unknown_fence", "result claims a fence this work unit has not reached"
+            )
+        return result
+
+
+# --------------------------------------------------------------------------
 # Deterministic implementation registry: identity, version, build, fail closed
 # --------------------------------------------------------------------------
 
@@ -1141,12 +1463,15 @@ __all__ = [
     "CANCELLATION_COOPERATIVE",
     "CANCELLATION_NONE",
     "CANCELLATION_POSTURES",
+    "FIRST_RELEASE_EXECUTOR_KINDS",
+    "FIRST_RELEASE_ROUTES",
     "IMPLEMENTATION_POSTURES",
     "IMPLEMENTATION_POSTURE_PROPOSES_EFFECT",
     "IMPLEMENTATION_POSTURE_PURE",
     "OUTCOMES",
     "OUTCOME_FAILED",
     "OUTCOME_SUCCEEDED",
+    "REASON_UNSUPPORTED_FIRST_RELEASE",
     "ROUTES",
     "ROUTE_AGENT",
     "ROUTE_CHILD_WORKFLOW",
@@ -1173,6 +1498,10 @@ __all__ = [
     "RunOracle",
     "StepDefinition",
     "StepRouter",
+    "WorkResultEnvelope",
+    "WorkUnitEnvelope",
     "WorkflowDefinition",
+    "WorkflowDispatchPlanner",
+    "WorkflowExecutorBinding",
     "materialise_workflow",
 ]

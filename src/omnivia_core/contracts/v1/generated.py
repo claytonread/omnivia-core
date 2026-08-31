@@ -377,6 +377,14 @@ __all__ = [
     "WaitResolution",
     "WaitStatus",
     "Warning",
+    "WorkflowControlInput",
+    "WorkflowControlResult",
+    "WorkflowInspectInput",
+    "WorkflowInspectResult",
+    "WorkflowReviewInput",
+    "WorkflowReviewResult",
+    "WorkflowStartInput",
+    "WorkflowStartResult",
     "WorkspaceCompatibility",
     "WorkspaceCreateInput",
     "WorkspaceCreateResult",
@@ -6389,6 +6397,171 @@ class CleanupReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowStartInput:
+    """Input for `workflow.start`: admit one released Workflow definition as a canonical Runtime
+    `Run`. The request envelope supplies the workspace, authority, idempotency key and
+    purpose; this payload names only the released workflow definition, optional caller
+    logical key and opaque run input. It never accepts a caller-supplied `run_id`, status,
+    scheduler fact, policy snapshot, budget snapshot, attempt, wait or effect outcome.
+    """
+
+    definition_id: Identifier
+    definition_version: ReleaseVersion
+    logical_key: OpaqueToken | None = None
+    input: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["definition_id"] = self.definition_id
+        wire["definition_version"] = self.definition_version
+        if self.logical_key is not None:
+            wire["logical_key"] = self.logical_key
+        if self.input is not None:
+            wire["input"] = _encode_json_object(self.input)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowStartInput") -> WorkflowStartInput:
+        """Decode a wire payload into a WorkflowStartInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_definition_id = _decode_str(
+            _require_field(mapping, "definition_id", path),
+            f"{path}.definition_id",
+        )
+        field_definition_version = _decode_str(
+            _require_field(mapping, "definition_version", path),
+            f"{path}.definition_version",
+        )
+        field_logical_key: OpaqueToken | None = None
+        if "logical_key" in mapping:
+            raw_logical_key = mapping["logical_key"]
+            if raw_logical_key is None:
+                raise ContractDecodeError(
+                    f"{path}.logical_key: null is not a valid value"
+                )
+            field_logical_key = _decode_str(raw_logical_key, f"{path}.logical_key")
+        field_input: JsonObject | None = None
+        if "input" in mapping:
+            raw_input = mapping["input"]
+            if raw_input is None:
+                raise ContractDecodeError(
+                    f"{path}.input: null is not a valid value"
+                )
+            field_input = _decode_json_object(raw_input, f"{path}.input")
+        return cls(
+            definition_id=field_definition_id,
+            definition_version=field_definition_version,
+            logical_key=field_logical_key,
+            input=field_input,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowInspectInput:
+    """Input for `workflow.inspect`: read one canonical Runtime `Run` by identifier. The request
+    envelope supplies the workspace and authority; this payload carries no alternate
+    workspace and no preview, Simulation or proof-record identity.
+    """
+
+    run_id: Identifier
+    projection_version: ProjectionVersion | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run_id"] = self.run_id
+        if self.projection_version is not None:
+            wire["projection_version"] = self.projection_version
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowInspectInput") -> WorkflowInspectInput:
+        """Decode a wire payload into a WorkflowInspectInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_projection_version: ProjectionVersion | None = None
+        if "projection_version" in mapping:
+            raw_projection_version = mapping["projection_version"]
+            if raw_projection_version is None:
+                raise ContractDecodeError(
+                    f"{path}.projection_version: null is not a valid value"
+                )
+            field_projection_version = _decode_str(
+                raw_projection_version,
+                f"{path}.projection_version",
+            )
+        return cls(
+            run_id=field_run_id,
+            projection_version=field_projection_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowReviewInput:
+    """Input for `workflow.review`: build a production review projection from canonical Runtime
+    journal/projection truth for one `Run`. The request never names preview, proof or
+    Simulation records.
+    """
+
+    run_id: Identifier
+    projection_version: ProjectionVersion | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run_id"] = self.run_id
+        if self.projection_version is not None:
+            wire["projection_version"] = self.projection_version
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowReviewInput") -> WorkflowReviewInput:
+        """Decode a wire payload into a WorkflowReviewInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_projection_version: ProjectionVersion | None = None
+        if "projection_version" in mapping:
+            raw_projection_version = mapping["projection_version"]
+            if raw_projection_version is None:
+                raise ContractDecodeError(
+                    f"{path}.projection_version: null is not a valid value"
+                )
+            field_projection_version = _decode_str(
+                raw_projection_version,
+                f"{path}.projection_version",
+            )
+        return cls(
+            run_id=field_run_id,
+            projection_version=field_projection_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ResolveWait:
     """The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`.
     Deliberately outside the application job family: it is not `job.retry`, there is no
@@ -9129,6 +9302,68 @@ class EvidenceItem:
             captured_at=field_captured_at,
             authoritative=field_authoritative,
             retained=field_retained,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowControlInput:
+    """Input for `workflow.control`: request one Core-owned control action against a canonical
+    Runtime `Run`. The action is open so first-release builds can truthfully refuse
+    unsupported controls without inventing success; action-specific details are opaque unless
+    a referenced Runtime command, such as `ResolveWait`, owns the closed shape.
+    """
+
+    run_id: Identifier
+    action: OpenCode
+    resolve_wait: ResolveWait | None = None
+    details: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run_id"] = self.run_id
+        wire["action"] = self.action
+        if self.resolve_wait is not None:
+            wire["resolve_wait"] = self.resolve_wait.to_wire()
+        if self.details is not None:
+            wire["details"] = _encode_json_object(self.details)
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowControlInput") -> WorkflowControlInput:
+        """Decode a wire payload into a WorkflowControlInput.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_action = _decode_str(_require_field(mapping, "action", path), f"{path}.action")
+        field_resolve_wait: ResolveWait | None = None
+        if "resolve_wait" in mapping:
+            raw_resolve_wait = mapping["resolve_wait"]
+            if raw_resolve_wait is None:
+                raise ContractDecodeError(
+                    f"{path}.resolve_wait: null is not a valid value"
+                )
+            field_resolve_wait = ResolveWait.from_wire(raw_resolve_wait, f"{path}.resolve_wait")
+        field_details: JsonObject | None = None
+        if "details" in mapping:
+            raw_details = mapping["details"]
+            if raw_details is None:
+                raise ContractDecodeError(
+                    f"{path}.details: null is not a valid value"
+                )
+            field_details = _decode_json_object(raw_details, f"{path}.details")
+        return cls(
+            run_id=field_run_id,
+            action=field_action,
+            resolve_wait=field_resolve_wait,
+            details=field_details,
         )
 
 
@@ -12223,6 +12458,217 @@ class GovernedRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowStartResult:
+    """Result for `workflow.start`: the canonical Runtime `Run` admitted by Core. Returning the
+    run, rather than a preview id or job handle, is the boundary that prevents Platform from
+    mistaking proof, simulation or preview records for production Workflow truth.
+    """
+
+    run: Run
+    admission: OpenCode
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run"] = self.run.to_wire()
+        wire["admission"] = self.admission
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowStartResult") -> WorkflowStartResult:
+        """Decode a wire payload into a WorkflowStartResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run = Run.from_wire(_require_field(mapping, "run", path), f"{path}.run")
+        field_admission = _decode_str(
+            _require_field(mapping, "admission", path),
+            f"{path}.admission",
+        )
+        return cls(
+            run=field_run,
+            admission=field_admission,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowInspectResult:
+    """Result for `workflow.inspect`: the current canonical Runtime `Run` and optional
+    projection cursor for reconnecting to the same Core truth after restart.
+    """
+
+    run: Run
+    projection_version: ProjectionVersion | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run"] = self.run.to_wire()
+        if self.projection_version is not None:
+            wire["projection_version"] = self.projection_version
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkflowInspectResult"
+    ) -> WorkflowInspectResult:
+        """Decode a wire payload into a WorkflowInspectResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run = Run.from_wire(_require_field(mapping, "run", path), f"{path}.run")
+        field_projection_version: ProjectionVersion | None = None
+        if "projection_version" in mapping:
+            raw_projection_version = mapping["projection_version"]
+            if raw_projection_version is None:
+                raise ContractDecodeError(
+                    f"{path}.projection_version: null is not a valid value"
+                )
+            field_projection_version = _decode_str(
+                raw_projection_version,
+                f"{path}.projection_version",
+            )
+        return cls(
+            run=field_run,
+            projection_version=field_projection_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowControlResult:
+    """Result for `workflow.control`: an explicit Core disposition and, when the action changed
+    observable Runtime truth, the resulting canonical `Run`. Unsupported or audited-only
+    first-release controls must be reported through the disposition instead of faking a state
+    transition.
+    """
+
+    run_id: Identifier
+    disposition: OpenCode
+    run: Run | None = None
+    details: JsonObject | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run_id"] = self.run_id
+        wire["disposition"] = self.disposition
+        if self.run is not None:
+            wire["run"] = self.run.to_wire()
+        if self.details is not None:
+            wire["details"] = _encode_json_object(self.details)
+        return wire
+
+    @classmethod
+    def from_wire(
+        cls, payload: object, path: str = "WorkflowControlResult"
+    ) -> WorkflowControlResult:
+        """Decode a wire payload into a WorkflowControlResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run_id = _decode_str(_require_field(mapping, "run_id", path), f"{path}.run_id")
+        field_disposition = _decode_str(
+            _require_field(mapping, "disposition", path),
+            f"{path}.disposition",
+        )
+        field_run: Run | None = None
+        if "run" in mapping:
+            raw_run = mapping["run"]
+            if raw_run is None:
+                raise ContractDecodeError(
+                    f"{path}.run: null is not a valid value"
+                )
+            field_run = Run.from_wire(raw_run, f"{path}.run")
+        field_details: JsonObject | None = None
+        if "details" in mapping:
+            raw_details = mapping["details"]
+            if raw_details is None:
+                raise ContractDecodeError(
+                    f"{path}.details: null is not a valid value"
+                )
+            field_details = _decode_json_object(raw_details, f"{path}.details")
+        return cls(
+            run_id=field_run_id,
+            disposition=field_disposition,
+            run=field_run,
+            details=field_details,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowReviewResult:
+    """Result for `workflow.review`: the canonical Runtime `Run` and an opaque production review
+    projection derived from Core-owned journal/projection truth. The projection is display
+    data; the embedded Run remains the authoritative state.
+    """
+
+    run: Run
+    review: JsonObject
+    projection_version: ProjectionVersion | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """Render this value as a JSON-compatible mapping.
+
+        Absent optional fields are omitted rather than emitted as null, so a decode/encode
+        round trip reproduces the original document exactly.
+        """
+        wire: dict[str, Any] = {}
+        wire["run"] = self.run.to_wire()
+        wire["review"] = _encode_json_object(self.review)
+        if self.projection_version is not None:
+            wire["projection_version"] = self.projection_version
+        return wire
+
+    @classmethod
+    def from_wire(cls, payload: object, path: str = "WorkflowReviewResult") -> WorkflowReviewResult:
+        """Decode a wire payload into a WorkflowReviewResult.
+
+        Unknown fields are ignored so a newer peer's additive minor release still decodes
+        here. Missing required fields and wrongly typed values raise ContractDecodeError.
+        """
+        mapping = _require_mapping(payload, path)
+        field_run = Run.from_wire(_require_field(mapping, "run", path), f"{path}.run")
+        field_review = _decode_json_object(
+            _require_field(mapping, "review", path),
+            f"{path}.review",
+        )
+        field_projection_version: ProjectionVersion | None = None
+        if "projection_version" in mapping:
+            raw_projection_version = mapping["projection_version"]
+            if raw_projection_version is None:
+                raise ContractDecodeError(
+                    f"{path}.projection_version: null is not a valid value"
+                )
+            field_projection_version = _decode_str(
+                raw_projection_version,
+                f"{path}.projection_version",
+            )
+        return cls(
+            run=field_run,
+            review=field_review,
+            projection_version=field_projection_version,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ContextPackBuildResult:
     """Result of `context_pack.build`: the original query, the model-facing sections, the
     selected L0 evidence, current canonical L2 records, supporting history and L3 context
@@ -14065,6 +14511,219 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             "invalid_purpose",
             "invalid_request",
             "mutation_precondition_failed",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workflow.control",
+        scope=OperationScope(
+            required_scopes=("workflow:control",),
+            side_effect="update",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowControlInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowControlResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workflow.control",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_busy",
+            "workspace_lease_unavailable",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workflow.inspect",
+        scope=OperationScope(
+            required_scopes=("workflow:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowInspectInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowInspectResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workflow.read",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "rate_limited",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workflow.review",
+        scope=OperationScope(
+            required_scopes=("workflow:read",),
+            side_effect="none",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowReviewInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowReviewResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workflow.review",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=False,
+            required=False,
+            safe_to_retry=True,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="read"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
+            "not_found",
+            "projection_unavailable",
+            "rate_limited",
+            "size_limit_exceeded",
+            "stale_projection",
+            "upgrade_required",
+            "workspace_migration_required",
+            "workspace_not_granted",
+        ),
+    ),
+    OperationMetadata(
+        name="workflow.start",
+        scope=OperationScope(
+            required_scopes=("workflow:write",),
+            side_effect="create",
+            scope_kind="workspace",
+        ),
+        input_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowStartInput"
+        ),
+        result_schema_ref=(
+            "https://contracts.omnivia.dev/application/v1/runtime.schema.json"
+            "#/$defs/WorkflowStartResult"
+        ),
+        required_capability=CapabilityRequirement(
+            id="workflow.run",
+            minimum_version="1.0",
+            required=True,
+        ),
+        job=OperationJobMetadata(completion_mode="synchronous"),
+        pagination=OperationPaginationMetadata(paginated=False),
+        idempotency=OperationIdempotencyMetadata(
+            supports_idempotency_key=True,
+            required=True,
+            safe_to_retry=False,
+        ),
+        precondition=OperationPreconditionMetadata(
+            supports_mutation_precondition=False,
+            required=False,
+        ),
+        audit=OperationAuditMetadata(audited=True, audit_category="mutation"),
+        allowed_errors=(
+            "authentication_required",
+            "authorization_denied",
+            "cancelled",
+            "capability_not_granted",
+            "deadline_exceeded",
+            "dependency_unavailable",
+            "idempotency_conflict",
+            "incompatible_version",
+            "internal_non_recoverable",
+            "internal_recoverable",
+            "invalid_purpose",
+            "invalid_request",
             "not_found",
             "rate_limited",
             "upgrade_required",

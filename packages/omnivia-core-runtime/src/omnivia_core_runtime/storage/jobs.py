@@ -40,13 +40,6 @@ _RECOVERY_ERROR: Final[dict[str, object]] = {
     "retry_class": "retryable",
 }
 
-_STRANDED_APPLICATION_JOBS: Final = (
-    "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
-    "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
-    "WHERE m.workspace_id = ? AND j.state = 'claimed' "
-    "AND COALESCE(j.fencing_generation, 0) < ?"
-)
-
 
 @dataclass(frozen=True)
 class _RecoveredApplicationJob:
@@ -427,6 +420,41 @@ def start_import_job(
     return snapshot
 
 
+def start_workflow_run_job(
+    connection: sqlite3.Connection,
+    settlement: MutationSettlementContext,
+    *,
+    workspace_id: str,
+    job_id: str,
+    payload: Mapping[str, object],
+    created_at_us: int,
+) -> None:
+    """The durable job a Workflow Run is admitted onto, inside the caller's fence.
+
+    The two rows migration 0018's admission guard requires and nothing else: an open
+    `omnivia_durable_jobs` row and the workspace-scoped application metadata that has to
+    agree with the run about its originating operation and audit reference. No attempt
+    and no event, because nothing has executed yet -- the workflow scheduler claims this
+    job and records both when it does.
+    """
+    moment = _timestamp(created_at_us)
+    connection.execute(
+        "INSERT INTO omnivia_durable_jobs "
+        "(job_id, job_type, state, payload_json, created_at, updated_at, "
+        "fencing_generation, claimed_by_service_instance) "
+        "VALUES (?, 'workflow.run', 'queued', ?, ?, ?, NULL, NULL)",
+        (job_id, _document(payload), moment, moment),
+    )
+    connection.execute(
+        "INSERT INTO omnivia_job_application_metadata "
+        "(workspace_id, job_id, job_kind, originating_operation, audit_ref, "
+        "created_at_us, terminal_result_kind, supports_checkpoint_resume, max_attempts) "
+        "VALUES (?, ?, 'workflow.run', 'workflow.start', ?, ?, "
+        "'workflow_completion', 1, 1)",
+        (workspace_id, job_id, settlement.audit_ref, created_at_us),
+    )
+
+
 def _insert_control(
     connection: sqlite3.Connection,
     *,
@@ -675,12 +703,9 @@ def _adopt_stale_job_claim_locked(
 ) -> bool:
     """Rebind one stale durable-job claim to the current owner; caller holds the fence.
 
-    Only the claim moves. The job stays `claimed`, its running application attempt
-    stays open, and no attempt, event, control or terminal observation is written: a
-    job whose run is suspended on an unresolved durable wait was never interrupted, so
-    there is no interruption to record and nothing to requeue. Reports whether the row
-    it names was in fact a stale claim of this workspace, so a caller that classified
-    it as one and finds it is not can fail closed instead of writing on.
+    Only the claim moves. The job stays ``claimed`` and the running application
+    attempt remains open, because a run suspended on a durable wait was not
+    interrupted and must not be requeued.
     """
     updated = connection.execute(
         "UPDATE omnivia_durable_jobs SET updated_at = ?, "
@@ -712,20 +737,28 @@ def _recover_stranded_application_jobs_locked(
 ) -> tuple[_RecoveredApplicationJob, ...]:
     """Recover stale application claims; caller holds the fenced transaction.
 
-    `job_ids` narrows the recovery to an exact allowlist. `None` keeps the whole-queue
-    behaviour every existing caller relies on; a collection recovers only the stale
-    claims it names, and an empty one recovers nothing rather than widening to all.
+    `job_ids` is an exact allowlist. `None` keeps the original behaviour -- every
+    stale claim of this workspace -- while a collection narrows the sweep to those
+    identifiers, which is what a startup pass needs so a job whose run is durably
+    waiting is never swept up by a blanket recovery. Identifiers are bound as
+    parameters, an identifier this workspace does not hold as a stale claim simply
+    matches nothing, and an empty allowlist recovers nothing rather than everything.
     """
-    parameters: tuple[object, ...] = (workspace_id, fencing_generation)
-    predicate = ""
+    query = (
+        "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
+        "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
+        "WHERE m.workspace_id = ? AND j.state = 'claimed' "
+        "AND COALESCE(j.fencing_generation, 0) < ?"
+    )
+    parameters: list[object] = [workspace_id, fencing_generation]
     if job_ids is not None:
         allowed = tuple(dict.fromkeys(job_ids))
         if not allowed:
             return ()
-        predicate = f" AND j.job_id IN ({', '.join('?' for _ in allowed)})"
-        parameters = (*parameters, *allowed)
+        query += f" AND j.job_id IN ({', '.join('?' * len(allowed))})"
+        parameters.extend(allowed)
     rows = connection.execute(
-        f"{_STRANDED_APPLICATION_JOBS}{predicate} ORDER BY j.job_id", parameters
+        f"{query} ORDER BY j.job_id", tuple(parameters)
     ).fetchall()
     recovered: list[_RecoveredApplicationJob] = []
     for raw_job_id, raw_max_attempts in rows:
@@ -886,4 +919,5 @@ __all__ = [
     "request_job_retry",
     "require_staged_import_source",
     "start_import_job",
+    "start_workflow_run_job",
 ]

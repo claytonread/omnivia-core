@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import Final
@@ -165,9 +166,13 @@ __all__ = [
     "WAIT_RESOLUTION_FOR_KIND",
     "WAIT_STATUSES",
     "WAIT_STATUS_PENDING",
+    "ContextCursor",
+    "WorktreeRef",
+    "child_run_steps",
     "classify_effect_replay",
     "classify_run_replay",
     "decode_resolve_wait",
+    "deliver_context",
     "is_authoritative_source",
     "is_known_run_status",
     "is_successful_run_status",
@@ -197,6 +202,8 @@ __all__ = [
     "validate_runtime_event_stream",
     "validate_terminal_run",
     "validate_wait",
+    "validate_worktree_ref",
+    "waits_under_step",
 ]
 
 # --- bounds restated from the schema ------------------------------------------
@@ -654,6 +661,94 @@ def is_authoritative_source(source_kind: object) -> bool:
 
 
 # --- value types ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeRef:
+    """One resource target: workspace, source root and worktree identity together."""
+
+    workspace_id: str
+    source_root_id: str
+    worktree_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextCursor:
+    """A durable read position in one Run's append-only runtime event stream."""
+
+    workspace_id: str
+    run_id: str
+    run_step_id: str
+    attempt_id: str
+    next_sequence: int
+    max_items: int
+    issued_at: str
+
+
+def validate_worktree_ref(target: WorktreeRef, *, workspace_id: str) -> None:
+    """Raise unless `target` is a well-formed resource target for `workspace_id`."""
+    _require_type(target, WorktreeRef, "target")
+    assert isinstance(target, WorktreeRef)
+    if target.workspace_id != workspace_id:
+        raise ContractSemanticError("target.workspace_id must match the requested workspace")
+    _validate_workspace_id(target.workspace_id, "target.workspace_id")
+    _validate_identifier(target.source_root_id, "target.source_root_id")
+    _validate_identifier(target.worktree_id, "target.worktree_id")
+
+
+def waits_under_step(run: Run, *, run_step_id: str) -> tuple[Wait, ...]:
+    """Return the waits attached to one step of a canonical Run."""
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_known_step(run_step_id, tuple(step.run_step_id for step in run.steps), "run")
+    return tuple(wait for wait in run.waits if wait.run_step_id == run_step_id)
+
+
+def child_run_steps(run: Run, *, run_step_id: str) -> tuple[RunStep, ...]:
+    """Return child steps of `run_step_id` when the contract records parentage."""
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_known_step(run_step_id, tuple(step.run_step_id for step in run.steps), "run")
+    return ()
+
+
+def deliver_context(
+    cursor: ContextCursor, *, run: Run, workspace_id: str
+) -> tuple[tuple[RuntimeEvent, ...], ContextCursor]:
+    """Read events at or after `cursor.next_sequence` and return an advanced cursor."""
+    _require_type(run, Run, "run")
+    assert isinstance(run, Run)
+    _require_type(cursor, ContextCursor, "cursor")
+    assert isinstance(cursor, ContextCursor)
+    if cursor.workspace_id != workspace_id or run.workspace_id != workspace_id:
+        raise ContractSemanticError("cursor.workspace_id must match the requested workspace")
+    if cursor.run_id != run.run_id:
+        raise ContractSemanticError("cursor.run_id must match the run")
+    _require_known_step(
+        cursor.run_step_id, tuple(step.run_step_id for step in run.steps), "cursor"
+    )
+    if not isinstance(cursor.next_sequence, int) or cursor.next_sequence < 0:
+        raise ContractSemanticError("cursor.next_sequence must be a non-negative integer")
+    if not isinstance(cursor.max_items, int) or cursor.max_items <= 0:
+        raise ContractSemanticError("cursor.max_items must be a positive integer")
+
+    delivered = tuple(
+        event
+        for event in sorted(run.events, key=lambda item: item.sequence)
+        if event.sequence >= cursor.next_sequence
+    )[: cursor.max_items]
+    next_sequence = (
+        cursor.next_sequence if not delivered else delivered[-1].sequence + 1
+    )
+    return delivered, ContextCursor(
+        workspace_id=cursor.workspace_id,
+        run_id=cursor.run_id,
+        run_step_id=cursor.run_step_id,
+        attempt_id=cursor.attempt_id,
+        next_sequence=next_sequence,
+        max_items=cursor.max_items,
+        issued_at=run.updated_at,
+    )
 
 
 def validate_external_reference(

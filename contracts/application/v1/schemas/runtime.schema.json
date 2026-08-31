@@ -1145,6 +1145,170 @@
       ],
       "unevaluatedProperties": false
     },
+    "WorkflowStartInput": {
+      "title": "WorkflowStartInput",
+      "description": "Input for `workflow.start`: admit one released Workflow definition as a canonical Runtime `Run`. The request envelope supplies the workspace, authority, idempotency key and purpose; this payload names only the released workflow definition, optional caller logical key and opaque run input. It never accepts a caller-supplied `run_id`, status, scheduler fact, policy snapshot, budget snapshot, attempt, wait or effect outcome.",
+      "type": "object",
+      "properties": {
+        "definition_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Stable identifier of the Workflow definition to admit."
+        },
+        "definition_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ReleaseVersion",
+          "description": "Released version of the Workflow definition. Admission pins this exact version for the life of the run."
+        },
+        "logical_key": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpaqueToken",
+          "description": "Optional caller logical key for idempotent admission correlation. The server decides whether it maps to an existing run; it is never parsed as a run identifier."
+        },
+        "input": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque Workflow input document. The Runtime contract stores and reports it as input; Workflow definition validation remains Workflow-domain policy."
+        }
+      },
+      "required": ["definition_id", "definition_version"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowStartResult": {
+      "title": "WorkflowStartResult",
+      "description": "Result for `workflow.start`: the canonical Runtime `Run` admitted by Core. Returning the run, rather than a preview id or job handle, is the boundary that prevents Platform from mistaking proof, simulation or preview records for production Workflow truth.",
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run",
+          "description": "The canonical Runtime Run created or replayed by admission."
+        },
+        "admission": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open code describing whether admission created a fresh run or returned an idempotent replay, such as `created` or `replayed`."
+        }
+      },
+      "required": ["run", "admission"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowInspectInput": {
+      "title": "WorkflowInspectInput",
+      "description": "Input for `workflow.inspect`: read one canonical Runtime `Run` by identifier. The request envelope supplies the workspace and authority; this payload carries no alternate workspace and no preview, Simulation or proof-record identity.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Canonical Runtime Run identifier to inspect."
+        },
+        "projection_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion",
+          "description": "Optional projection version the caller last observed. A stale or unavailable projection is reported as an operation error, not silently refreshed from another authority."
+        }
+      },
+      "required": ["run_id"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowInspectResult": {
+      "title": "WorkflowInspectResult",
+      "description": "Result for `workflow.inspect`: the current canonical Runtime `Run` and optional projection cursor for reconnecting to the same Core truth after restart.",
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run",
+          "description": "The canonical Runtime Run projection."
+        },
+        "projection_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion",
+          "description": "Projection version represented by this result, when the serving implementation publishes one."
+        }
+      },
+      "required": ["run"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowControlInput": {
+      "title": "WorkflowControlInput",
+      "description": "Input for `workflow.control`: request one Core-owned control action against a canonical Runtime `Run`. The action is open so first-release builds can truthfully refuse unsupported controls without inventing success; action-specific details are opaque unless a referenced Runtime command, such as `ResolveWait`, owns the closed shape.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Canonical Runtime Run identifier to control."
+        },
+        "action": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open control action code, such as `cancel`, `release_retry`, `resolve_wait`, `reconcile_effect`, `record_compensation` or `classify_recovery`."
+        },
+        "resolve_wait": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/ResolveWait",
+          "description": "Closed Runtime wait-resolution command. Present only when `action` is `resolve_wait`."
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque action-specific details for first-release controls that are governed by Runtime implementation policy rather than this schema."
+        }
+      },
+      "required": ["run_id", "action"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowControlResult": {
+      "title": "WorkflowControlResult",
+      "description": "Result for `workflow.control`: an explicit Core disposition and, when the action changed observable Runtime truth, the resulting canonical `Run`. Unsupported or audited-only first-release controls must be reported through the disposition instead of faking a state transition.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Canonical Runtime Run identifier the disposition applies to."
+        },
+        "disposition": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/OpenCode",
+          "description": "Open Core disposition code, such as `accepted`, `unsupported`, `audited`, `unchanged` or `replayed`."
+        },
+        "run": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run",
+          "description": "The resulting canonical Runtime Run when the control action changed or reread Run truth."
+        },
+        "details": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque, non-authoritative explanatory details."
+        }
+      },
+      "required": ["run_id", "disposition"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowReviewInput": {
+      "title": "WorkflowReviewInput",
+      "description": "Input for `workflow.review`: build a production review projection from canonical Runtime journal/projection truth for one `Run`. The request never names preview, proof or Simulation records.",
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Canonical Runtime Run identifier to review."
+        },
+        "projection_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion",
+          "description": "Optional review projection version the caller last observed."
+        }
+      },
+      "required": ["run_id"],
+      "unevaluatedProperties": false
+    },
+    "WorkflowReviewResult": {
+      "title": "WorkflowReviewResult",
+      "description": "Result for `workflow.review`: the canonical Runtime `Run` and an opaque production review projection derived from Core-owned journal/projection truth. The projection is display data; the embedded Run remains the authoritative state.",
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/Run",
+          "description": "The canonical Runtime Run the review describes."
+        },
+        "review": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "Opaque production review projection derived by Core."
+        },
+        "projection_version": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/ProjectionVersion",
+          "description": "Projection version represented by this review, when the serving implementation publishes one."
+        }
+      },
+      "required": ["run", "review"],
+      "unevaluatedProperties": false
+    },
     "ResolveWait": {
       "title": "ResolveWait",
       "description": "The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`. Deliberately outside the application job family: it is not `job.retry`, there is no `job.resume`, it is not a `JobControl` member, and it neither requeues a job nor names one -- it carries no `job_id`, and nothing here selects a recovery. It names the wait it resolves, how it resolves it, and the resume digest the wait published, so a resolution proves it is resuming the state that was suspended. The resolution must match the wait's kind: a signal never resolves an approval, and an approval decision never resolves a timer.",

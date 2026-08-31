@@ -114,8 +114,12 @@ def reconciliation_row(**overrides: object) -> dict[str, object]:
     return values
 
 
-def seed_unknown_source(holder: m1.Owned) -> None:
-    m23.seed_intent(holder)
+def seed_unknown_source(holder: m1.Owned, *, dispatched: bool = False) -> None:
+    """Seed an unknown outcome in the intended or dispatched crash window."""
+    if dispatched:
+        m23.seed_dispatch(holder)
+    else:
+        m23.seed_intent(holder)
     with guarded(holder):
         _insert(
             holder,
@@ -139,14 +143,14 @@ def seed_not_applied_result(holder: m1.Owned) -> None:
                 effect_settlement_id="effect-settlement-0002",
                 outcome="not_committed",
                 effect_receipt_id=None,
-                reason="absence_proven",
+                reason=m23.RECONCILED_NEVER_DISPATCHED,
                 settled_at_us=BASE_US + 6,
             ),
         )
 
 
 def seed_applied_result(holder: m1.Owned) -> None:
-    seed_unknown_source(holder)
+    seed_unknown_source(holder, dispatched=True)
     with guarded(holder):
         _insert(holder, m23.RECEIPTS, m23.receipt_row(observed_at_us=BASE_US + 6))
         _insert(
@@ -156,6 +160,7 @@ def seed_applied_result(holder: m1.Owned) -> None:
                 effect_settlement_id="effect-settlement-0002",
                 outcome="committed",
                 effect_receipt_id="effect-receipt-0001",
+                reason=m23.RECONCILED_LATE_RECEIPT,
                 settled_at_us=BASE_US + 7,
             ),
         )
@@ -248,21 +253,9 @@ def test_applied_reconciliation_requires_matching_receipt_and_committed_result(
 def test_reconciliation_refuses_closed_source_or_mismatched_result(
     owned: m1.Owned,
 ) -> None:
-    m23.seed_intent(owned)
+    m23.seed_receipt(owned)
     with guarded(owned):
-        _insert(owned, m23.RECEIPTS, m23.receipt_row())
         _insert(owned, m23.SETTLEMENTS, m23.settlement_row())
-        _insert(
-            owned,
-            m23.SETTLEMENTS,
-            m23.settlement_row(
-                effect_settlement_id="effect-settlement-0002",
-                outcome="not_committed",
-                effect_receipt_id=None,
-                reason="absence_proven",
-                settled_at_us=BASE_US + 6,
-            ),
-        )
     with guarded(owned), pytest.raises(sqlite3.IntegrityError, match="unknown settlement"):
         _insert(owned, RECONCILIATIONS, reconciliation_row())
 

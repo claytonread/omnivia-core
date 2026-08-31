@@ -50,7 +50,8 @@ from omnivia_core_runtime.storage.jobs import _recover_stranded_application_jobs
 _QUEUED_RUNTIME_JOBS: Final = (
     "SELECT j.job_id, r.run_id FROM omnivia_durable_jobs j "
     "JOIN omnivia_runtime_runs r ON r.workspace_id = ? AND r.job_id = j.job_id "
-    "WHERE j.state = 'queued' ORDER BY j.created_at, j.job_id"
+    "WHERE j.state = 'queued' AND r.definition_kind <> 'workflow' "
+    "ORDER BY j.created_at, j.job_id"
 )
 
 _LATEST_RUN_STATUS: Final = (
@@ -330,10 +331,8 @@ class RuntimeScheduler:
     ) -> tuple[RuntimeRecovery, ...]:
         """Recover superseded job claims and their exact open runtime attempts.
 
-        `job_ids` narrows the pass to an exact allowlist, which is what RT-109's
-        startup classification needs: only the jobs it classified as orphaned attempts
-        may be interrupted, and a job suspended on a durable wait must not be. `None`
-        keeps the whole-queue behaviour, an empty collection recovers nothing.
+        ``job_ids`` narrows the sweep to an exact allowlist; ``None`` keeps the
+        default of every superseded claim in this workspace.
         """
         with fenced_transaction(
             self.connection,
@@ -341,19 +340,16 @@ class RuntimeScheduler:
             workspace_id=self.workspace_id,
             fencing_generation=self.fencing_generation,
         ):
-            results = self._recover_stranded_locked(job_ids=job_ids)
-        return results
+            return self._recover_stranded_locked(job_ids=job_ids)
 
     def _recover_stranded_locked(
         self, *, job_ids: Collection[str] | None = None
     ) -> tuple[RuntimeRecovery, ...]:
-        """The recovery itself, issued into a fenced transaction the caller opened.
+        """The recovery sweep itself; the caller already holds the fenced transaction.
 
-        The seam RT-109 composes with: its classification, wait adoption and orphan
-        recovery are one atomic startup pass, and it cannot reach `recover_stranded`
-        from inside that pass because `BEGIN IMMEDIATE` does not nest. Nothing is
-        weakened by it -- every statement lands in the caller's fenced transaction and
-        is covered by that transaction's entry and pre-commit validation.
+        Split out so a startup pass (RT-109) can classify, adopt and recover in one
+        transaction -- ``BEGIN IMMEDIATE`` does not nest, so such a composition
+        cannot go through :meth:`recover_stranded`.
         """
         now_us = self._now_us()
         recovered = _recover_stranded_application_jobs_locked(
@@ -415,9 +411,7 @@ class RuntimeScheduler:
             )
             step_status = "pending" if job.requeued else "failed"
             run_status = RUN_STATUS_RUNNING if job.requeued else RUN_STATUS_FAILED
-            event_kind = (
-                "attempt_interrupted" if job.requeued else "attempts_exhausted"
-            )
+            event_kind = "attempt_interrupted" if job.requeued else "attempts_exhausted"
             writer.record_step_status(
                 run_step_id=run_step_id,
                 status=step_status,
@@ -459,6 +453,13 @@ class RuntimeScheduler:
                 )
             )
         return tuple(results)
+
+    def recover_stranded_locked(
+        self, *, now_us: int, job_ids: Collection[str] | None = None
+    ) -> tuple[RuntimeRecovery, ...]:
+        """Compatibility wrapper for older tests that opened their own fence."""
+        del now_us
+        return self._recover_stranded_locked(job_ids=job_ids)
 
     def _select_claimable(self) -> tuple[str, str, str] | None:
         """Return the oldest persisted job/run/step decision, or no ready work."""

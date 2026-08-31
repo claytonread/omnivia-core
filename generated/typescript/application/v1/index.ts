@@ -3787,6 +3787,68 @@ export interface CleanupReceipt {
 }
 
 /**
+ * Input for `workflow.start`: admit one released Workflow definition as a canonical Runtime
+ * `Run`. The request envelope supplies the workspace, authority, idempotency key and purpose;
+ * this payload names only the released workflow definition, optional caller logical key and
+ * opaque run input. It never accepts a caller-supplied `run_id`, status, scheduler fact, policy
+ * snapshot, budget snapshot, attempt, wait or effect outcome.
+ */
+export interface WorkflowStartInput {
+  /**
+   * Stable identifier of the Workflow definition to admit.
+   */
+  readonly definition_id: Identifier;
+  /**
+   * Released version of the Workflow definition. Admission pins this exact version for the
+   * life of the run.
+   */
+  readonly definition_version: ReleaseVersion;
+  /**
+   * Optional caller logical key for idempotent admission correlation. The server decides
+   * whether it maps to an existing run; it is never parsed as a run identifier.
+   */
+  readonly logical_key?: OpaqueToken;
+  /**
+   * Opaque Workflow input document. The Runtime contract stores and reports it as input;
+   * Workflow definition validation remains Workflow-domain policy.
+   */
+  readonly input?: JsonObject;
+}
+
+/**
+ * Input for `workflow.inspect`: read one canonical Runtime `Run` by identifier. The request
+ * envelope supplies the workspace and authority; this payload carries no alternate workspace and
+ * no preview, Simulation or proof-record identity.
+ */
+export interface WorkflowInspectInput {
+  /**
+   * Canonical Runtime Run identifier to inspect.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Optional projection version the caller last observed. A stale or unavailable projection is
+   * reported as an operation error, not silently refreshed from another authority.
+   */
+  readonly projection_version?: ProjectionVersion;
+}
+
+/**
+ * Input for `workflow.review`: build a production review projection from canonical Runtime
+ * journal/projection truth for one `Run`. The request never names preview, proof or Simulation
+ * records.
+ */
+export interface WorkflowReviewInput {
+  /**
+   * Canonical Runtime Run identifier to review.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Optional review projection version the caller last observed.
+   */
+  readonly projection_version?: ProjectionVersion;
+}
+
+/**
  * The Runtime command that resolves exactly one durable `Wait` on one canonical `Run`.
  * Deliberately outside the application job family: it is not `job.retry`, there is no
  * `job.resume`, it is not a `JobControl` member, and it neither requeues a job nor names one --
@@ -5037,6 +5099,33 @@ export interface EvidenceItem {
    * True while this evidence is still held. Cancelling a run never sets it false.
    */
   readonly retained: boolean;
+}
+
+/**
+ * Input for `workflow.control`: request one Core-owned control action against a canonical
+ * Runtime `Run`. The action is open so first-release builds can truthfully refuse unsupported
+ * controls without inventing success; action-specific details are opaque unless a referenced
+ * Runtime command, such as `ResolveWait`, owns the closed shape.
+ */
+export interface WorkflowControlInput {
+  /**
+   * Canonical Runtime Run identifier to control.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Open control action code, such as `cancel`, `release_retry`, `resolve_wait`,
+   * `reconcile_effect`, `record_compensation` or `classify_recovery`.
+   */
+  readonly action: OpenCode;
+  /**
+   * Closed Runtime wait-resolution command. Present only when `action` is `resolve_wait`.
+   */
+  readonly resolve_wait?: ResolveWait;
+  /**
+   * Opaque action-specific details for first-release controls that are governed by Runtime
+   * implementation policy rather than this schema.
+   */
+  readonly details?: JsonObject;
 }
 
 /**
@@ -6655,6 +6744,86 @@ export interface GovernedRecord {
 }
 
 /**
+ * Result for `workflow.start`: the canonical Runtime `Run` admitted by Core. Returning the run,
+ * rather than a preview id or job handle, is the boundary that prevents Platform from mistaking
+ * proof, simulation or preview records for production Workflow truth.
+ */
+export interface WorkflowStartResult {
+  /**
+   * The canonical Runtime Run created or replayed by admission.
+   */
+  readonly run: Run;
+  /**
+   * Open code describing whether admission created a fresh run or returned an idempotent
+   * replay, such as `created` or `replayed`.
+   */
+  readonly admission: OpenCode;
+}
+
+/**
+ * Result for `workflow.inspect`: the current canonical Runtime `Run` and optional projection
+ * cursor for reconnecting to the same Core truth after restart.
+ */
+export interface WorkflowInspectResult {
+  /**
+   * The canonical Runtime Run projection.
+   */
+  readonly run: Run;
+  /**
+   * Projection version represented by this result, when the serving implementation publishes
+   * one.
+   */
+  readonly projection_version?: ProjectionVersion;
+}
+
+/**
+ * Result for `workflow.control`: an explicit Core disposition and, when the action changed
+ * observable Runtime truth, the resulting canonical `Run`. Unsupported or audited-only first-
+ * release controls must be reported through the disposition instead of faking a state
+ * transition.
+ */
+export interface WorkflowControlResult {
+  /**
+   * Canonical Runtime Run identifier the disposition applies to.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Open Core disposition code, such as `accepted`, `unsupported`, `audited`, `unchanged` or
+   * `replayed`.
+   */
+  readonly disposition: OpenCode;
+  /**
+   * The resulting canonical Runtime Run when the control action changed or reread Run truth.
+   */
+  readonly run?: Run;
+  /**
+   * Opaque, non-authoritative explanatory details.
+   */
+  readonly details?: JsonObject;
+}
+
+/**
+ * Result for `workflow.review`: the canonical Runtime `Run` and an opaque production review
+ * projection derived from Core-owned journal/projection truth. The projection is display data;
+ * the embedded Run remains the authoritative state.
+ */
+export interface WorkflowReviewResult {
+  /**
+   * The canonical Runtime Run the review describes.
+   */
+  readonly run: Run;
+  /**
+   * Opaque production review projection derived by Core.
+   */
+  readonly review: JsonObject;
+  /**
+   * Projection version represented by this review, when the serving implementation publishes
+   * one.
+   */
+  readonly projection_version?: ProjectionVersion;
+}
+
+/**
  * Result of `context_pack.build`: the original query, the model-facing sections, the selected L0
  * evidence, current canonical L2 records, supporting history and L3 context models, the exact
  * citations every section and selected item rests on, the conflicts and uncertainties the pack
@@ -7809,6 +7978,135 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_purpose",
       "invalid_request",
       "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.control",
+    scope: { required_scopes: ["workflow:control"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult",
+    required_capability: { id: "workflow.control", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.inspect",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult",
+    required_capability: { id: "workflow.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.review",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult",
+    required_capability: { id: "workflow.review", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "projection_unavailable",
+      "rate_limited",
+      "size_limit_exceeded",
+      "stale_projection",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.start",
+    scope: { required_scopes: ["workflow:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult",
+    required_capability: { id: "workflow.run", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
       "not_found",
       "rate_limited",
       "upgrade_required",

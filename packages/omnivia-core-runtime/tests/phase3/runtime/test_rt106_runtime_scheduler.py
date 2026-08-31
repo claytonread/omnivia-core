@@ -12,7 +12,8 @@ import pytest
 import test_application_audit_idempotency_migration as m1
 import test_rt102_agent_runtime_migration as m18
 import test_rt102_agent_runtime_repository as rt102
-from omnivia_core_runtime.ownership.fencing import StaleGeneration
+from omnivia_core_runtime.ownership.fencing import StaleGeneration, open_guard
+from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.runtime_scheduler import (
     RuntimeScheduler,
@@ -24,6 +25,8 @@ from omnivia_core_runtime.storage.agent_runtime import (
     append_run_step,
 )
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
+
+from omnivia_core.contracts.v1 import RunDefinitionRef
 
 WORKSPACE_ID = m18.WORKSPACE_ID
 BASE_US = m18.BASE_US
@@ -47,6 +50,7 @@ def _seed_run(
     step_id: str,
     ordinal: int = 1,
     max_attempts: int = 8,
+    definition_kind: str = "agent_component",
 ) -> None:
     audit_ref = m18.audit_ref_for(job_id)
     with m18.guarded(holder):
@@ -99,10 +103,17 @@ def _seed_run(
         holder.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=holder.generation,
-        admission=rt102.admission(
-            run_id=run_id,
-            job_id=job_id,
-            event_id=f"evt-{run_id}",
+        admission=replace(
+            rt102.admission(
+                run_id=run_id,
+                job_id=job_id,
+                event_id=f"evt-{run_id}",
+            ),
+            definition=RunDefinitionRef(
+                definition_kind=definition_kind,
+                definition_id=rt102.DEFINITION.definition_id,
+                definition_version=rt102.DEFINITION.definition_version,
+            ),
         ),
     )
     append_run_step(
@@ -124,15 +135,13 @@ def _scheduler(holder: m1.Owned) -> RuntimeScheduler:
         holder.identity,
         WORKSPACE_ID,
         holder.generation,
-        m1.FakeClock(wall=datetime.fromtimestamp((BASE_US + 1_000) / 1_000_000, UTC)),
+        FakeClock(wall=datetime.fromtimestamp((BASE_US + 1_000) / 1_000_000, UTC)),
     )
 
 
 def _takeover(holder: m1.Owned) -> m1.Owned:
     successor = m1.make_identity(instance="svc-rt106-successor", pid=6106)
-    clock = m1.FakeClock(
-        wall=datetime.fromtimestamp((BASE_US + 1_000) / 1_000_000, UTC)
-    )
+    clock = FakeClock(wall=datetime.fromtimestamp((BASE_US + 1_000) / 1_000_000, UTC))
     lease = acquire_lease(
         holder.connection,
         successor,
@@ -142,7 +151,7 @@ def _takeover(holder: m1.Owned) -> m1.Owned:
         lock_mechanism="flock",
         predecessor=holder.identity.service_instance_id,
     )
-    m1.open_guard(
+    open_guard(
         holder.connection,
         successor,
         clock=clock,
@@ -289,6 +298,24 @@ def test_runtime_failure_rolls_back_underlying_job_claim(
 
 def test_no_runnable_runtime_job_is_an_empty_poll(owned: m1.Owned) -> None:
     assert _scheduler(owned).claim_next() is None
+
+
+def test_generic_runtime_scheduler_does_not_claim_workflow_owned_runs(
+    owned: m1.Owned,
+) -> None:
+    _seed_run(
+        owned,
+        job_id="job-workflow-owned",
+        run_id="run-workflow-owned",
+        step_id="step-workflow-owned",
+        definition_kind="workflow",
+    )
+
+    assert _scheduler(owned).claim_next() is None
+    assert owned.connection.execute(
+        "SELECT state FROM omnivia_durable_jobs WHERE job_id = ?",
+        ("job-workflow-owned",),
+    ).fetchone() == ("queued",)
 
 
 def test_exact_claim_completes_job_attempt_step_and_run(owned: m1.Owned) -> None:

@@ -30,6 +30,7 @@ values and recording callables. What is asserted is the seam's own contract:
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -50,17 +51,24 @@ from omnivia_core_runtime.execution import (
     CANCELLATION_COOPERATIVE,
     CANCELLATION_NONE,
     CANCELLATION_POSTURES,
+    ENTRY_EXECUTOR,
     EXECUTION_CLASS_AGENT,
     EXECUTION_CLASS_DETERMINISTIC,
     EXECUTION_CLASS_EFFECT,
     EXECUTION_CLASS_WAIT,
     EXECUTION_CLASSES,
+    EXECUTOR_KIND_BROWSER,
+    EXECUTOR_KIND_COMMAND,
+    FIRST_RELEASE_EXECUTOR_KINDS,
+    FIRST_RELEASE_ROUTES,
+    HEALTH_READY,
     IMPLEMENTATION_POSTURE_PROPOSES_EFFECT,
     IMPLEMENTATION_POSTURE_PURE,
     IMPLEMENTATION_POSTURES,
     OUTCOME_FAILED,
     OUTCOME_SUCCEEDED,
     OUTCOMES,
+    REASON_UNSUPPORTED_FIRST_RELEASE,
     ROUTE_AGENT,
     ROUTE_CHILD_WORKFLOW,
     ROUTE_DETERMINISTIC,
@@ -77,16 +85,24 @@ from omnivia_core_runtime.execution import (
     DeterministicImplementationRegistry,
     ExecutionContractError,
     ExecutionRefused,
+    ExecutorDescriptor,
     LoopController,
     LoopDefinition,
+    MaterialisedStep,
     MaterialisedWorkflow,
     RunOracle,
+    RuntimeExecutionRegistry,
     StepDefinition,
     StepRouter,
     WorkflowDefinition,
+    WorkflowDispatchPlanner,
+    WorkflowExecutorBinding,
+    WorkResultEnvelope,
+    WorkUnitEnvelope,
     materialise_workflow,
 )
 from omnivia_core_runtime.execution import workflow as workflow_module
+from omnivia_core_runtime.execution.profile import HEALTH_CONFIGURED
 from omnivia_core_runtime.execution.registry import (
     EVENT_REGISTERED,
     EVENT_REMOVED,
@@ -99,6 +115,8 @@ BUILD = "sha256:" + "3" * 64
 OTHER_BUILD = "sha256:" + "4" * 64
 CHILD_HASH = "sha256:" + "7" * 64
 OTHER_CHILD_HASH = "sha256:" + "8" * 64
+PAYLOAD = "sha256:" + "9" * 64
+RESULT = "sha256:" + "a" * 64
 
 
 def step(
@@ -181,6 +199,88 @@ GOLDEN_ROUTES = (
     ROUTE_WAIT,
     ROUTE_CHILD_WORKFLOW,
 )
+
+
+def executor(**overrides: object) -> ExecutorDescriptor:
+    fields: dict[str, object] = {
+        "source_id": "source.core",
+        "executor_id": "executor.echo",
+        "version": "1.0.0",
+        "build_hash": BUILD,
+        "executor_kind": EXECUTOR_KIND_COMMAND,
+        "capabilities": ("component.run",),
+        "supported_contract_versions": ("1.0.0",),
+        "required_isolation": 2,
+        "trust_state": BUILD_TRUST_APPROVED,
+        "reconciliation_capabilities": (),
+        "removal_instructions_ref": DIGEST,
+    }
+    fields.update(overrides)
+    return ExecutorDescriptor(**fields).sealed()  # type: ignore[arg-type]
+
+
+def binding(**overrides: object) -> WorkflowExecutorBinding:
+    fields: dict[str, object] = {
+        "step_id": "b.compute",
+        "route": ROUTE_DETERMINISTIC,
+        "source_id": "source.core",
+        "executor_id": "executor.echo",
+        "executor_version": "1.0.0",
+        "capability": "component.run",
+    }
+    fields.update(overrides)
+    return WorkflowExecutorBinding(**fields)  # type: ignore[arg-type]
+
+
+def registry_with(
+    descriptor: ExecutorDescriptor, *, health: str = HEALTH_READY
+) -> RuntimeExecutionRegistry:
+    registry = RuntimeExecutionRegistry()
+    entry = registry.register_executor(descriptor)
+    if health != entry.health:
+        registry.set_health(ENTRY_EXECUTOR, entry.key, health)
+    return registry
+
+
+def golden_plan() -> MaterialisedWorkflow:
+    return materialise_workflow(workflow(*GOLDEN_STEPS))
+
+
+def planned(plan: MaterialisedWorkflow, step_id: str) -> MaterialisedStep:
+    return next(step for step in plan.steps if step.step_id == step_id)
+
+
+def plan_work_unit(
+    registry: RuntimeExecutionRegistry,
+    *,
+    step_id: str = "b.compute",
+    bound: WorkflowExecutorBinding | None = None,
+    fence: int = 1,
+) -> WorkUnitEnvelope:
+    plan = golden_plan()
+    return WorkflowDispatchPlanner(registry).plan(
+        run_id="run-0001",
+        workflow=plan,
+        step=planned(plan, step_id),
+        binding=bound if bound is not None else binding(step_id=step_id),
+        payload_digest=PAYLOAD,
+        fence=fence,
+    )
+
+
+def result_for(work_unit: WorkUnitEnvelope, **overrides: object) -> WorkResultEnvelope:
+    fields: dict[str, object] = {
+        "work_unit_hash": work_unit.content_hash,
+        "source_id": work_unit.source_id,
+        "executor_id": work_unit.executor_id,
+        "executor_version": work_unit.executor_version,
+        "executor_content_hash": work_unit.executor_content_hash,
+        "fence": work_unit.fence,
+        "outcome": OUTCOME_SUCCEEDED,
+        "result_digest": RESULT,
+    }
+    fields.update(overrides)
+    return WorkResultEnvelope(**fields).sealed()  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------
@@ -538,10 +638,11 @@ def test_a_removed_implementation_resolves_no_longer() -> None:
     assert registry.remove("impl.echo", "1.0.0") == implementation()
     assert registry.entries() == ()
 
-    for call in (
+    calls: tuple[Callable[[], object], ...] = (
         lambda: resolve(registry),
         lambda: registry.remove("impl.echo", "1.0.0"),
-    ):
+    )
+    for call in calls:
         with pytest.raises(ExecutionRefused) as caught:
             call()
         assert caught.value.reason == "unknown_entry"
@@ -833,13 +934,14 @@ def test_a_result_that_names_another_child_is_refused_as_wrong() -> None:
     correlator = ChildWorkflowCorrelator()
     correlator.open("run-0001", "e.child", child())
 
-    for wrong in (
-        {"child_workflow_id": "workflow.other"},
-        {"child_version": "1.0.1"},
-        {"child_workflow_hash": OTHER_CHILD_HASH},
-    ):
+    calls: tuple[Callable[[], object], ...] = (
+        lambda: accept(correlator, fence=1, child_workflow_id="workflow.other"),
+        lambda: accept(correlator, fence=1, child_version="1.0.1"),
+        lambda: accept(correlator, fence=1, child_workflow_hash=OTHER_CHILD_HASH),
+    )
+    for call in calls:
         with pytest.raises(ExecutionRefused) as caught:
-            accept(correlator, fence=1, **wrong)
+            call()
         assert caught.value.reason == "wrong_child"
 
 
@@ -864,10 +966,11 @@ def test_a_result_against_a_closed_correlation_is_refused_as_late() -> None:
     correlator.open("run-0001", "e.child", child())
     assert correlator.close("run-0001", "e.child").fence == 1
 
-    for call in (
+    calls: tuple[Callable[[], object], ...] = (
         lambda: accept(correlator, fence=1),
         lambda: correlator.close("run-0001", "e.child"),
-    ):
+    )
+    for call in calls:
         with pytest.raises(ExecutionRefused) as caught:
             call()
         assert caught.value.reason == "unknown_correlation"
@@ -996,10 +1099,11 @@ def test_a_completion_rule_configures_a_closed_outcome_and_named_evidence() -> N
         CompletionRule(("CANCELLED",), ("run.summary",))
     assert unknown.value.reason == "unknown_vocabulary_member"
 
-    for empty in (
+    empty_rules: tuple[Callable[[], object], ...] = (
         lambda: CompletionRule((), ("run.summary",)),
         lambda: CompletionRule((OUTCOME_SUCCEEDED,), ()),
-    ):
+    )
+    for empty in empty_rules:
         with pytest.raises(ExecutionContractError) as caught:
             empty()
         assert caught.value.reason == "empty_collection"
@@ -1187,6 +1291,177 @@ def test_a_run_id_is_a_bounded_identifier() -> None:
     with pytest.raises(ExecutionContractError) as caught:
         RunOracle("Run-0001")
     assert caught.value.reason == "invalid_identifier"
+
+
+# --------------------------------------------------------------------------
+# Work-unit dispatch: planned through the one registry, and fail closed
+# --------------------------------------------------------------------------
+
+
+def test_the_first_release_serves_one_route_and_defers_the_rest_explicitly() -> None:
+    assert FIRST_RELEASE_ROUTES == {ROUTE_DETERMINISTIC}
+    assert FIRST_RELEASE_ROUTES < ROUTES
+    # The two families needing a live session or a remote integration surface.
+    assert EXECUTOR_KIND_BROWSER not in FIRST_RELEASE_EXECUTOR_KINDS
+    assert EXECUTOR_KIND_COMMAND in FIRST_RELEASE_EXECUTOR_KINDS
+    assert REASON_UNSUPPORTED_FIRST_RELEASE == "unsupported_first_release"
+
+
+def test_an_unknown_executor_refuses_through_the_one_registry() -> None:
+    """No second registry: the refusal is the registry's own unknown_entry."""
+    with pytest.raises(ExecutionRefused) as caught:
+        plan_work_unit(RuntimeExecutionRegistry())
+    assert caught.value.reason == "unknown_entry"
+
+
+def test_a_mismatched_binding_refuses_before_any_executor_is_resolved() -> None:
+    """The registry is empty, so reaching it at all would refuse unknown_entry."""
+    empty = RuntimeExecutionRegistry()
+
+    for bound, reason in (
+        (binding(route=ROUTE_AGENT), "binding_mismatch"),
+        (binding(step_id="a.plan"), "binding_mismatch"),
+    ):
+        with pytest.raises(ExecutionRefused) as caught:
+            plan_work_unit(empty, bound=bound)
+        assert caught.value.reason == reason
+
+    # A step that is not in this plan at all never reaches routing either.
+    other = materialise_workflow(workflow(step("z.other"), workflow_id="workflow.other"))
+    with pytest.raises(ExecutionRefused) as foreign:
+        WorkflowDispatchPlanner(empty).plan(
+            run_id="run-0001",
+            workflow=golden_plan(),
+            step=planned(other, "z.other"),
+            binding=binding(step_id="z.other"),
+            payload_digest=PAYLOAD,
+        )
+    assert foreign.value.reason == "unknown_step"
+
+
+def test_an_unapproved_or_unhealthy_executor_refuses() -> None:
+    for descriptor, health, reason in (
+        (executor(trust_state=BUILD_TRUST_PROTOTYPE), HEALTH_READY, "unsupported_trust"),
+        (executor(), HEALTH_CONFIGURED, "unroutable_health"),
+        (
+            executor(capabilities=("component.other",)),
+            HEALTH_READY,
+            "unsupported_capability",
+        ),
+    ):
+        with pytest.raises(ExecutionRefused) as caught:
+            plan_work_unit(registry_with(descriptor, health=health))
+        assert caught.value.reason == reason
+
+
+def test_a_route_or_family_outside_the_first_release_refuses_with_one_reason() -> None:
+    """Deferred, not stubbed: nothing fabricates behaviour for what is unserved."""
+    plan = golden_plan()
+    registry = registry_with(executor())
+
+    for step_id, route in (
+        ("a.plan", ROUTE_AGENT),
+        ("c.write", ROUTE_EFFECT),
+        ("d.wait", ROUTE_WAIT),
+        ("e.child", ROUTE_CHILD_WORKFLOW),
+    ):
+        with pytest.raises(ExecutionRefused) as caught:
+            WorkflowDispatchPlanner(registry).plan(
+                run_id="run-0001",
+                workflow=plan,
+                step=planned(plan, step_id),
+                binding=binding(step_id=step_id, route=route),
+                payload_digest=PAYLOAD,
+            )
+        assert caught.value.reason == REASON_UNSUPPORTED_FIRST_RELEASE
+
+    # A served route whose executor family is not served refuses the same way.
+    browser = registry_with(executor(executor_kind=EXECUTOR_KIND_BROWSER))
+    with pytest.raises(ExecutionRefused) as family:
+        plan_work_unit(browser)
+    assert family.value.reason == REASON_UNSUPPORTED_FIRST_RELEASE
+
+
+def test_an_approved_healthy_exact_executor_seals_a_work_unit() -> None:
+    descriptor = executor()
+    plan = golden_plan()
+
+    work_unit = plan_work_unit(registry_with(descriptor))
+
+    work_unit.verify_content_hash()
+    assert work_unit.executor_key == descriptor.key
+    assert (work_unit.run_id, work_unit.step_id, work_unit.route) == (
+        "run-0001",
+        "b.compute",
+        ROUTE_DETERMINISTIC,
+    )
+    assert work_unit.workflow_hash == plan.content_hash
+    assert work_unit.step_hash == planned(plan, "b.compute").content_hash
+    assert work_unit.sequence_index == 1
+    assert work_unit.executor_build_hash == descriptor.build_hash
+    assert work_unit.executor_content_hash == descriptor.content_hash
+    assert work_unit.required_isolation == descriptor.required_isolation
+    assert (work_unit.capability, work_unit.contract_version) == (
+        "component.run",
+        "1.0.0",
+    )
+    assert work_unit.payload_digest == PAYLOAD
+
+    # Planning the same step twice seals the identical unit.
+    assert plan_work_unit(registry_with(descriptor)) == work_unit
+
+
+def test_a_result_naming_the_wrong_unit_build_or_fence_is_refused() -> None:
+    registry = registry_with(executor())
+    work_unit = plan_work_unit(registry, fence=2)
+    planner = WorkflowDispatchPlanner(registry)
+
+    assert planner.validate_result(work_unit, result_for(work_unit)).outcome == (
+        OUTCOME_SUCCEEDED
+    )
+
+    for overrides, reason in (
+        ({"work_unit_hash": OTHER_DIGEST}, "wrong_work_unit"),
+        ({"executor_content_hash": OTHER_BUILD}, "stale_executor_identity"),
+        ({"executor_version": "1.0.1"}, "stale_executor_identity"),
+        ({"fence": 1}, "stale_fence"),
+        ({"fence": 3}, "unknown_fence"),
+    ):
+        with pytest.raises(ExecutionRefused) as caught:
+            planner.validate_result(work_unit, result_for(work_unit, **overrides))
+        assert caught.value.reason == reason
+
+
+def test_a_work_unit_or_result_carries_only_bounded_validated_values() -> None:
+    registry = registry_with(executor())
+    work_unit = plan_work_unit(registry)
+
+    plan = golden_plan()
+    with pytest.raises(ExecutionContractError) as payload:
+        WorkflowDispatchPlanner(registry).plan(
+            run_id="run-0001",
+            workflow=plan,
+            step=planned(plan, "b.compute"),
+            binding=binding(),
+            payload_digest="not-a-digest",
+        )
+    assert payload.value.reason == "invalid_digest"
+
+    with pytest.raises(ExecutionContractError) as digest:
+        result_for(work_unit, result_digest="not-a-digest")
+    assert digest.value.reason == "invalid_digest"
+
+    with pytest.raises(ExecutionContractError) as fence:
+        result_for(work_unit, fence=0)
+    assert fence.value.reason == "invalid_fence"
+
+    # An edited work unit no longer verifies, so no result can be validated
+    # against the identity it is wearing.
+    with pytest.raises(ExecutionContractError) as tampered:
+        WorkflowDispatchPlanner(registry).validate_result(
+            replace(work_unit, payload_digest=OTHER_DIGEST), result_for(work_unit)
+        )
+    assert tampered.value.reason == "content_hash_mismatch"
 
 
 # --------------------------------------------------------------------------
