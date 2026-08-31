@@ -12,6 +12,7 @@ HTTP, MCP, CLI, Platform, Dev, or a validation framework.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from hashlib import sha256
 from types import MappingProxyType
 from typing import Final
@@ -28,12 +29,25 @@ from omnivia_core.contracts.v1.generated import (
 
 __all__ = [
     "ATTEMPT_STATES",
+    "BOUNDARY_AGGREGATION_OUTCOMES",
     "BRANCH_AGGREGATE_MODES",
     "COMPONENT_IMPLEMENTATION_BINDING_STATES",
     "EDIT_OPERATION_KINDS",
     "EFFECT_DISPOSITIONS",
     "EFFECT_SETTLEMENT_CLASSES",
+    "LOOP_CANCELLATION_POLICIES",
+    "LOOP_DONE_CONDITION_KINDS",
+    "LOOP_ITERATION_IDENTITY_RULE_KINDS",
+    "LOOP_ITERATION_OUTCOME_CLASSES",
     "LOOP_LATE_RESULT_POLICIES",
+    "LOOP_MODES",
+    "LOOP_ORDER_GUARANTEES",
+    "LOOP_PARTIAL_SUCCESS_POLICIES",
+    "LOOP_SOURCE_KINDS",
+    "LOOP_ZIP_MISMATCH_POLICIES",
+    "NESTED_BOUNDARY_PUBLICATION_POSTURES",
+    "NESTED_BOUNDARY_REFERENCE_KINDS",
+    "NESTED_BOUNDARY_ROLLOUT_STAGES",
     "PORT_DELIVERY_MODES",
     "PORT_DIRECTIONS",
     "PORT_FAN_OUT_POLICIES",
@@ -42,6 +56,8 @@ __all__ = [
     "RUNTIME_BINDING_RESUME_DECISIONS",
     "SELECTIVE_APPLY_DISPOSITIONS",
     "VISUAL_REVIEW_STATES",
+    "WF_LOOP_PLAN_INVALID",
+    "WF_NESTED_BOUNDARY_BYPASS",
     "WORKFLOW_DIFF_CLASSES",
     "WORKFLOW_RECORD_VALIDATORS",
     "WORKFLOW_VALUE_CARDINALITIES",
@@ -49,17 +65,22 @@ __all__ = [
     "WorkflowRecordValidator",
     "compute_transition_bundle_payload_digest",
     "compute_workflow_edit_batch_payload_digest",
+    "evaluate_nested_workflow_boundary",
     "evaluate_workflow_edit_batch",
     "validate_absent_value",
     "validate_attempt_settlement",
     "validate_branch_aggregate_policy",
     "validate_cancellation_record",
+    "validate_complete_loop_plan",
     "validate_component_implementation_binding",
     "validate_component_port_contract",
     "validate_component_port_set",
     "validate_immutable_execution_binding",
+    "validate_loop_iteration_ledger",
     "validate_loop_plan",
     "validate_migration_receipt",
+    "validate_nested_boundary_exception",
+    "validate_nested_workflow_boundary",
     "validate_owir_source_projection",
     "validate_owir_source_projection_matches_revision",
     "validate_runtime_binding_resume_decision",
@@ -1670,6 +1691,632 @@ def validate_owir_source_projection_matches_revision(
         raise ContractSemanticError(
             f"{WF_OWIR_PROJECTION_STALE}: {label}: OWIR source is stale and must be regenerated"
         )
+
+
+# --- T-0688 IP-09 / WEFT-BL-011: Nested Workflow boundary semantics -----------------------
+#
+# REF-004 §D.3 and DOC-004 §AD.7 define the Nested Workflow boundary as a *declared contract*:
+# parent and child communicate externally only through the child's declared typed boundary
+# ports, and the boundary is checked at publication and connection resolution. It is expressly
+# not enforced by a mediator: there is no controller Component, proxy node or runtime
+# interceptor here, and no field naming one -- `_only_fields` refuses any such member as
+# unknown rather than quietly accepting it.
+#
+# Like the T-0688 records above, `NestedWorkflowBoundary` carries no `contractName` and is
+# deliberately kept out of `WORKFLOW_RECORD_VALIDATORS`. It is additive: a Workflow that
+# declares no nested boundary is untouched by anything in this section.
+#
+# `evaluate_nested_workflow_boundary` is the diagnose-first rollout, and it is exactly two
+# stages. `R0` reports `warning` for every Workflow and refuses nothing. `R1` refuses
+# publication of a `new` or `republished` Version only; a `published_active` Version stays
+# pinned to the posture recorded at its publication (REF-004 §D.3.5), so an active Run keeps
+# running against its pinned Version. There is deliberately no `R2` member: this behaviour has
+# no third stage (COMPATIBILITY-AND-MIGRATION.md §4, §7).
+#
+# A diagnostic carries location only -- the parent Workflow and Version, the child stable ID,
+# and the bypassing reference's own identity and endpoints. It never carries a value, a
+# configuration mapping or a secret, because it is assembled from those named location members
+# alone and never from the caller's record wholesale.
+
+WF_NESTED_BOUNDARY_BYPASS: Final = "WF_NESTED_BOUNDARY_BYPASS"
+
+NESTED_BOUNDARY_ROLLOUT_STAGES: Final[tuple[str, ...]] = ("R0", "R1")
+NESTED_BOUNDARY_PUBLICATION_POSTURES: Final[tuple[str, ...]] = (
+    "new",
+    "republished",
+    "published_active",
+)
+
+#: Every way a child can reach outside itself. Only `connection` and `reference` can cross a
+#: declared typed boundary port at all; shared state, an ambient value and a side channel are
+#: bypasses by construction (REF-004 §D.3.1), so a claim that one of them crossed a port is
+#: refused rather than believed.
+NESTED_BOUNDARY_REFERENCE_KINDS: Final[tuple[str, ...]] = (
+    "connection",
+    "reference",
+    "shared_state",
+    "ambient_value",
+    "side_channel",
+)
+_PORT_CROSSING_REFERENCE_KINDS: Final = frozenset({"connection", "reference"})
+
+BOUNDARY_AGGREGATION_OUTCOMES: Final[tuple[str, ...]] = (
+    "satisfied",
+    "unsatisfied",
+    "indeterminate",
+)
+_BOUNDARY_AGGREGATION_DIMENSIONS: Final[tuple[str, ...]] = (
+    "policyOutcome",
+    "evidenceOutcome",
+    "completionOutcome",
+    "reviewOutcome",
+)
+_MAX_BOUNDARY_AGGREGATION_DEPTH: Final = 32
+
+_NESTED_BOUNDARY_FIELDS: Final = frozenset(
+    {
+        "boundarySchemaVersion",
+        "parentWorkflowId",
+        "parentWorkflowVersion",
+        "childWorkflowStableId",
+        "boundaryPorts",
+        "childExternalReferences",
+        "aggregation",
+    }
+)
+_CHILD_EXTERNAL_REFERENCE_FIELDS: Final = frozenset(
+    {"referenceId", "referenceKind", "fromStableId", "toStableId", "viaBoundaryPortId"}
+)
+_BOUNDARY_AGGREGATION_FIELDS: Final = frozenset(
+    {
+        *_BOUNDARY_AGGREGATION_DIMENSIONS,
+        "completionEvidence",
+        "indeterminateReason",
+        "descendantAggregations",
+    }
+)
+_NESTED_BOUNDARY_EXCEPTION_FIELDS: Final = frozenset(
+    {"exceptionId", "workflowId", "workflowVersion", "expiresAt", "decidingActor", "evidence"}
+)
+
+
+def _instant(value: str) -> datetime:
+    """Parse an already-validated `Timestamp` into an instant for ordering."""
+    return datetime.fromisoformat(value)
+
+
+def _boundary_aggregation(record: object, label: str, *, depth: int) -> Mapping[str, str]:
+    """Validate one boundary aggregation node and return its four composed outcomes.
+
+    Policy, Evidence, completion and Review aggregate *at the boundary* (REF-004 §D.3.2), so a
+    parent's posture accounts for every descendant: an indeterminate descendant outcome stays
+    explicitly indeterminate at the parent and an unsatisfied one is never absorbed as
+    satisfied. Completion remains verified rather than inferred, so a satisfied completion
+    names its Evidence.
+    """
+    if depth > _MAX_BOUNDARY_AGGREGATION_DEPTH:
+        raise ContractSemanticError(f"{label}: descendantAggregations nest beyond the bound")
+    fields = _mapping(record, label)
+    _only_fields(fields, _BOUNDARY_AGGREGATION_FIELDS, label)
+    outcomes = {
+        dimension: _member(fields, dimension, label, BOUNDARY_AGGREGATION_OUTCOMES)
+        for dimension in _BOUNDARY_AGGREGATION_DIMENSIONS
+    }
+
+    has_completion_evidence = "completionEvidence" in fields
+    if outcomes["completionOutcome"] == "satisfied":
+        if not has_completion_evidence:
+            raise ContractSemanticError(
+                f"{label}: a satisfied completionOutcome is verified and names completionEvidence"
+            )
+        _reference(fields, "completionEvidence", label)
+    elif has_completion_evidence:
+        raise ContractSemanticError(
+            f"{label}: completionEvidence is only valid for a satisfied completionOutcome"
+        )
+
+    any_indeterminate = any(outcome == "indeterminate" for outcome in outcomes.values())
+    has_reason = "indeterminateReason" in fields
+    if any_indeterminate:
+        if not has_reason:
+            raise ContractSemanticError(
+                f"{label}: an indeterminate outcome must stay explicit and name indeterminateReason"
+            )
+        _reference(fields, "indeterminateReason", label)
+    elif has_reason:
+        raise ContractSemanticError(
+            f"{label}: indeterminateReason is only valid for an indeterminate outcome"
+        )
+
+    for index, descendant in enumerate(_optional_sequence(fields, "descendantAggregations", label)):
+        child = _boundary_aggregation(
+            descendant, f"{label}.descendantAggregations[{index}]", depth=depth + 1
+        )
+        for dimension, outcome in child.items():
+            if outcome == "indeterminate" and outcomes[dimension] != "indeterminate":
+                raise ContractSemanticError(
+                    f"{label}: an indeterminate descendant {dimension} must remain "
+                    f"indeterminate at the boundary"
+                )
+            if outcome == "unsatisfied" and outcomes[dimension] == "satisfied":
+                raise ContractSemanticError(
+                    f"{label}: an unsatisfied descendant {dimension} may not aggregate as satisfied"
+                )
+    return outcomes
+
+
+def _child_external_reference(record: object, label: str, port_ids: frozenset[str]) -> tuple[str, bool]:
+    """Validate one child-to-external reference and report whether it bypasses the boundary."""
+    fields = _mapping(record, label)
+    _only_fields(fields, _CHILD_EXTERNAL_REFERENCE_FIELDS, label)
+    reference_id = _identifier(fields, "referenceId", label)
+    kind = _member(fields, "referenceKind", label, NESTED_BOUNDARY_REFERENCE_KINDS)
+    _identifier(fields, "fromStableId", label)
+    _identifier(fields, "toStableId", label)
+
+    if "viaBoundaryPortId" not in fields:
+        return reference_id, True
+    port_id = _identifier(fields, "viaBoundaryPortId", label)
+    if kind not in _PORT_CROSSING_REFERENCE_KINDS:
+        raise ContractSemanticError(
+            f"{label}: a {kind} reference crosses no declared typed boundary port"
+        )
+    return reference_id, port_id not in port_ids
+
+
+def validate_nested_workflow_boundary(record: object) -> None:
+    """Validate the T-0688 `NestedWorkflowBoundary` closed record (REF-004 §D.3, DOC-004 §AD.7).
+
+    Shape only: which references bypass the declared typed boundary ports is reported by
+    :func:`evaluate_nested_workflow_boundary`, which alone knows the rollout stage and the
+    Version's publication posture. A bypass is never a shape error here, because at `R0` a
+    bypass changes nothing at all.
+    """
+    label = "NestedWorkflowBoundary"
+    fields = _mapping(record, label)
+    _only_fields(fields, _NESTED_BOUNDARY_FIELDS, label)
+    _release_version(fields, "boundarySchemaVersion", label)
+    _identifier(fields, "parentWorkflowId", label)
+    _release_version(fields, "parentWorkflowVersion", label)
+    _identifier(fields, "childWorkflowStableId", label)
+
+    validate_component_port_set(_present(fields, "boundaryPorts", label))
+    port_ids = frozenset(
+        _mapping(port, f"{label}.boundaryPorts")["portId"]  # type: ignore[misc]
+        for port in _sequence(fields, "boundaryPorts", label)
+    )
+
+    reference_ids = [
+        _child_external_reference(
+            entry, f"{label}.childExternalReferences[{index}]", port_ids
+        )[0]
+        for index, entry in enumerate(_sequence(fields, "childExternalReferences", label))
+    ]
+    if len(reference_ids) != len(set(reference_ids)):
+        raise ContractSemanticError(f"{label}: childExternalReferences must not repeat a referenceId")
+
+    _boundary_aggregation(_present(fields, "aggregation", label), f"{label}.aggregation", depth=0)
+
+
+def validate_nested_boundary_exception(record: object) -> None:
+    """Validate the T-0688 `NestedBoundaryException` closed record (REF-004 §D.3.6).
+
+    An exception names exactly one Workflow Version, an expiry instant, the deciding actor and
+    its Evidence. Open-ended, class-wide and unattributed exceptions are refused structurally:
+    there is no wildcard Version spelling, no absent `expiresAt` and no anonymous decision.
+    Whether the expiry has already passed is a question about *when*, so it is answered by
+    :func:`evaluate_nested_workflow_boundary` against the instant it is given.
+    """
+    label = "NestedBoundaryException"
+    fields = _mapping(record, label)
+    _only_fields(fields, _NESTED_BOUNDARY_EXCEPTION_FIELDS, label)
+    _identifier(fields, "exceptionId", label)
+    _identifier(fields, "workflowId", label)
+    _release_version(fields, "workflowVersion", label)
+    _timestamp(fields, "expiresAt", label)
+    _reference(fields, "decidingActor", label)
+    _reference(fields, "evidence", label)
+
+
+def evaluate_nested_workflow_boundary(
+    boundary: object,
+    *,
+    rollout_stage: str,
+    publication_posture: str,
+    at_instant: str,
+    exceptions: Sequence[object] = (),
+) -> Mapping[str, object]:
+    """Diagnose Nested Workflow boundary bypasses and decide whether publication is refused.
+
+    Returns a frozen `{diagnostics, publicationRefused}` description. Diagnostics are ordered by
+    `referenceId` so two runs over the same boundary produce byte-identical output, carry the
+    exact `WF_NESTED_BOUNDARY_BYPASS` code, and carry location only.
+
+    Posture, exactly as sequenced by REF-004 §D.3.4-5 and the change set's §7: at `R0` every
+    diagnostic is a `warning` and nothing is refused; at `R1` a `new` or `republished` Version is
+    refused, while a `published_active` Version stays pinned to its published posture. Nothing
+    escalates beyond `R1` -- `"R2"` is not a member of `NESTED_BOUNDARY_ROLLOUT_STAGES`.
+
+    An exception suppresses refusal only when it names this exact Workflow Version, is
+    attributed, carries Evidence and has not expired at `at_instant`. It never suppresses the
+    diagnostic itself, which is still reported at `warning`.
+    """
+    validate_nested_workflow_boundary(boundary)
+    label = "NestedWorkflowBoundary"
+    fields = _mapping(boundary, label)
+
+    stage = _member({"rollout_stage": rollout_stage}, "rollout_stage", label, NESTED_BOUNDARY_ROLLOUT_STAGES)
+    posture = _member(
+        {"publication_posture": publication_posture},
+        "publication_posture",
+        label,
+        NESTED_BOUNDARY_PUBLICATION_POSTURES,
+    )
+    if not is_timestamp(at_instant):
+        raise ContractSemanticError(f"{label}: at_instant is not a well-formed Timestamp")
+
+    port_ids = frozenset(
+        _mapping(port, f"{label}.boundaryPorts")["portId"]  # type: ignore[misc]
+        for port in _sequence(fields, "boundaryPorts", label)
+    )
+    bypasses = [
+        _mapping(entry, f"{label}.childExternalReferences[{index}]")
+        for index, entry in enumerate(_sequence(fields, "childExternalReferences", label))
+        if _child_external_reference(entry, f"{label}.childExternalReferences[{index}]", port_ids)[1]
+    ]
+
+    enforcing = stage == "R1" and posture in {"new", "republished"}
+    if enforcing:
+        now = _instant(at_instant)
+        for index, exception in enumerate(exceptions):
+            validate_nested_boundary_exception(exception)
+            exception_fields = _mapping(exception, f"NestedBoundaryException[{index}]")
+            if (
+                exception_fields["workflowId"] == fields["parentWorkflowId"]
+                and exception_fields["workflowVersion"] == fields["parentWorkflowVersion"]
+                and _instant(exception_fields["expiresAt"]) > now  # type: ignore[arg-type]
+            ):
+                enforcing = False
+                break
+
+    severity = "blocker" if enforcing else "warning"
+    diagnostics = tuple(
+        MappingProxyType(
+            {
+                "code": WF_NESTED_BOUNDARY_BYPASS,
+                "severity": severity,
+                "parentWorkflowId": fields["parentWorkflowId"],
+                "parentWorkflowVersion": fields["parentWorkflowVersion"],
+                "childWorkflowStableId": fields["childWorkflowStableId"],
+                "referenceId": entry["referenceId"],
+                "referenceKind": entry["referenceKind"],
+                "fromStableId": entry["fromStableId"],
+                "toStableId": entry["toStableId"],
+            }
+        )
+        for entry in sorted(bypasses, key=lambda entry: entry["referenceId"])  # type: ignore[arg-type,return-value]
+    )
+    return MappingProxyType(
+        {
+            "diagnostics": diagnostics,
+            "publicationRefused": bool(diagnostics) and enforcing,
+        }
+    )
+
+
+# --- T-0688 IP-09 / WEFT-BL-012: complete LoopPlan and iteration ledger semantics ----------
+#
+# DOC-004 §AD.5 and REF-004 §D.4 define the complete, closed `LoopPlan`. It is a *different*
+# record from the T-0679 `LoopPlan` `validate_loop_plan` above already validates: that one is a
+# small `contractName`-tagged runtime-readiness record (frozen-at-run-start, a concurrency
+# limit, a deterministic order, an iteration-ledger requirement) and it is unchanged here, still
+# dispatched from `WORKFLOW_RECORD_VALIDATORS` on its own `contractName`. The candidate shape
+# below carries no `contractName`, is validated through its own separately named entry point,
+# and is kept out of that registry exactly as every other T-0688 candidate record is.
+#
+# Contradiction is the whole point of the closed plan, so every internal contradiction §AD.5.1
+# rule 6 names -- carry with parallel mode, zipped sources without a mismatch policy, parallel
+# mode without a concurrency bound, a non-deterministic done condition, a gather ordering
+# inconsistent with `orderGuarantee` -- refuses with the exact `WF_LOOP_PLAN_INVALID` code.
+
+WF_LOOP_PLAN_INVALID: Final = "WF_LOOP_PLAN_INVALID"
+
+LOOP_MODES: Final[tuple[str, ...]] = ("sequential", "parallel")
+LOOP_SOURCE_KINDS: Final[tuple[str, ...]] = ("collection", "stream")
+LOOP_ZIP_MISMATCH_POLICIES: Final[tuple[str, ...]] = (
+    "refuse",
+    "truncateToShortest",
+    "padWithAbsent",
+)
+LOOP_ORDER_GUARANTEES: Final[tuple[str, ...]] = ("iterationIdentityOrder", "settlementOrder")
+LOOP_CANCELLATION_POLICIES: Final[tuple[str, ...]] = (
+    "cancelRemaining",
+    "drainInFlight",
+    "completeAll",
+)
+LOOP_PARTIAL_SUCCESS_POLICIES: Final[tuple[str, ...]] = (
+    "failLoop",
+    "recordAndContinue",
+    "recordAndStopAfterCurrent",
+)
+LOOP_ITERATION_IDENTITY_RULE_KINDS: Final[tuple[str, ...]] = (
+    "sourceOrdinal",
+    "elementKeyPath",
+    "elementDigest",
+)
+LOOP_DONE_CONDITION_KINDS: Final[tuple[str, ...]] = (
+    "sourceExhausted",
+    "predicate",
+    "iterationCount",
+)
+LOOP_ITERATION_OUTCOME_CLASSES: Final[tuple[str, ...]] = (
+    "succeeded",
+    "failed",
+    "cancelled",
+    "skipped",
+    "late",
+)
+
+_COMPLETE_LOOP_PLAN_FIELDS: Final = frozenset(
+    {
+        "loopStableId",
+        "iterationIdentity",
+        "mode",
+        "source",
+        "zipSources",
+        "zipMismatchPolicy",
+        "carry",
+        "gather",
+        "done",
+        "maximumIterations",
+        "maximumConcurrency",
+        "orderGuarantee",
+        "cancellationPolicy",
+        "partialSuccessPolicy",
+    }
+)
+_ITERATION_IDENTITY_RULE_FIELDS: Final = frozenset(
+    {"ruleKind", "keyPath", "stableAcrossReplay"}
+)
+_LOOP_SOURCE_BINDING_FIELDS: Final = frozenset(
+    {"sourceKind", "sourcePortRef", "completionSignal"}
+)
+_CARRY_DECLARATION_FIELDS: Final = frozenset({"carryId", "initialValueRef"})
+_GATHER_DECLARATION_FIELDS: Final = frozenset({"gatherId", "ordering"})
+_DONE_CONDITION_FIELDS: Final = frozenset(
+    {"conditionKind", "deterministic", "predicateRef", "iterationCount"}
+)
+
+_LOOP_ITERATION_LEDGER_FIELDS: Final = frozenset(
+    {"ledgerSchemaVersion", "loopStableId", "loopSettledAt", "entries"}
+)
+_LOOP_ITERATION_ENTRY_FIELDS: Final = frozenset(
+    {
+        "iterationIdentity",
+        "outcomeClass",
+        "launchedAt",
+        "launchBundleRef",
+        "inputsDigest",
+        "carryDigest",
+        "schedulingIntentsDigest",
+        "outputsDigest",
+        "failureRef",
+        "settledAt",
+        "effectSettlements",
+        "cancellationDisposition",
+        "evidenceRef",
+        "appliedToRunState",
+    }
+)
+
+
+def _loop_invalid(label: str, message: str) -> ContractSemanticError:
+    return ContractSemanticError(f"{WF_LOOP_PLAN_INVALID}: {label}: {message}")
+
+
+def _iteration_identity_rule(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _ITERATION_IDENTITY_RULE_FIELDS, label)
+    kind = _member(fields, "ruleKind", label, LOOP_ITERATION_IDENTITY_RULE_KINDS)
+    has_key_path = "keyPath" in fields
+    if (kind == "elementKeyPath") != has_key_path:
+        raise _loop_invalid(label, "keyPath is required exactly for the elementKeyPath rule")
+    if has_key_path:
+        _string(fields, "keyPath", label)
+    if not _boolean(fields, "stableAcrossReplay", label):
+        raise _loop_invalid(label, "an iteration identity must be stable across replay")
+
+
+def _loop_source_binding(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _LOOP_SOURCE_BINDING_FIELDS, label)
+    kind = _member(fields, "sourceKind", label, LOOP_SOURCE_KINDS)
+    _reference(fields, "sourcePortRef", label)
+    has_signal = "completionSignal" in fields
+    if (kind == "stream") != has_signal:
+        raise _loop_invalid(label, "a stream source declares its completionSignal and a collection does not")
+    if has_signal:
+        _reference(fields, "completionSignal", label)
+
+
+def _done_condition(record: object, label: str) -> None:
+    fields = _mapping(record, label)
+    _only_fields(fields, _DONE_CONDITION_FIELDS, label)
+    kind = _member(fields, "conditionKind", label, LOOP_DONE_CONDITION_KINDS)
+    if not _boolean(fields, "deterministic", label):
+        raise _loop_invalid(label, "a done condition must be deterministic")
+    if ("predicate" == kind) != ("predicateRef" in fields):
+        raise _loop_invalid(label, "predicateRef is required exactly for a predicate condition")
+    if kind == "predicate":
+        _reference(fields, "predicateRef", label)
+    if ("iterationCount" == kind) != ("iterationCount" in fields):
+        raise _loop_invalid(
+            label, "iterationCount is required exactly for an iterationCount condition"
+        )
+    if kind == "iterationCount":
+        _positive_int(fields, "iterationCount", label)
+
+
+def validate_complete_loop_plan(record: object) -> None:
+    """Validate the T-0688 complete, closed `LoopPlan` (DOC-004 §AD.5, REF-004 §D.4).
+
+    Additive and separately named: the historical `contractName`-tagged `LoopPlan` record and
+    its :func:`validate_loop_plan` are untouched and keep their exact previous meaning.
+
+    Every member §AD.5 lists is covered, and every contradiction §AD.5.1 rule 6 names refuses
+    with `WF_LOOP_PLAN_INVALID`. `maximumConcurrency` is required exactly when `mode` is
+    `parallel` -- required *and* bounded, since an unbounded concurrency is not a frozen bound --
+    and is refused outright for a `sequential` plan, where the concurrency is one by definition.
+    """
+    label = "LoopPlan"
+    fields = _mapping(record, label)
+    _only_fields(fields, _COMPLETE_LOOP_PLAN_FIELDS, label)
+    _identifier(fields, "loopStableId", label)
+    _iteration_identity_rule(_present(fields, "iterationIdentity", label), f"{label}.iterationIdentity")
+    mode = _member(fields, "mode", label, LOOP_MODES)
+    _loop_source_binding(_present(fields, "source", label), f"{label}.source")
+
+    zip_sources = _optional_sequence(fields, "zipSources", label)
+    for index, entry in enumerate(zip_sources):
+        _loop_source_binding(entry, f"{label}.zipSources[{index}]")
+    if "zipSources" in fields and not zip_sources:
+        raise _loop_invalid(label, "zipSources must not be declared empty")
+    if bool(zip_sources) != ("zipMismatchPolicy" in fields):
+        raise _loop_invalid(
+            label, "zipMismatchPolicy is required exactly when zipSources are declared"
+        )
+    if zip_sources:
+        _member(fields, "zipMismatchPolicy", label, LOOP_ZIP_MISMATCH_POLICIES)
+
+    if "carry" in fields:
+        if mode != "sequential":
+            raise _loop_invalid(label, "carry is permitted only when mode is sequential")
+        carry_label = f"{label}.carry"
+        carry = _mapping(fields["carry"], carry_label)
+        _only_fields(carry, _CARRY_DECLARATION_FIELDS, carry_label)
+        _identifier(carry, "carryId", carry_label)
+        _reference(carry, "initialValueRef", carry_label)
+
+    _done_condition(_present(fields, "done", label), f"{label}.done")
+    maximum_iterations = _positive_int(fields, "maximumIterations", label)
+    order_guarantee = _member(fields, "orderGuarantee", label, LOOP_ORDER_GUARANTEES)
+
+    if "gather" in fields:
+        gather_label = f"{label}.gather"
+        gather = _mapping(fields["gather"], gather_label)
+        _only_fields(gather, _GATHER_DECLARATION_FIELDS, gather_label)
+        _identifier(gather, "gatherId", gather_label)
+        if _member(gather, "ordering", gather_label, LOOP_ORDER_GUARANTEES) != order_guarantee:
+            raise _loop_invalid(label, "gather ordering is inconsistent with orderGuarantee")
+
+    has_concurrency = "maximumConcurrency" in fields
+    if (mode == "parallel") != has_concurrency:
+        raise _loop_invalid(
+            label, "maximumConcurrency is required exactly when mode is parallel"
+        )
+    if has_concurrency and _positive_int(fields, "maximumConcurrency", label) > maximum_iterations:
+        raise _loop_invalid(label, "maximumConcurrency exceeds maximumIterations")
+
+    _member(fields, "cancellationPolicy", label, LOOP_CANCELLATION_POLICIES)
+    _member(fields, "partialSuccessPolicy", label, LOOP_PARTIAL_SUCCESS_POLICIES)
+
+
+def _loop_iteration_entry(record: object, label: str, *, loop_settled_at: str | None) -> str:
+    fields = _mapping(record, label)
+    _only_fields(fields, _LOOP_ITERATION_ENTRY_FIELDS, label)
+    identity = _identifier(fields, "iterationIdentity", label)
+    outcome = _member(fields, "outcomeClass", label, LOOP_ITERATION_OUTCOME_CLASSES)
+    launched_at = _timestamp(fields, "launchedAt", label)
+    # A launch is atomic: identity, inputs, carry and scheduling intents were recorded in
+    # exactly one `RuntimeTransitionBundle` (§AD.5.1 rule 2), so the entry names one bundle
+    # reference, never a list of them. `carryDigest` is present only for a carrying loop.
+    _reference(fields, "launchBundleRef", label)
+    _digest(fields, "inputsDigest", label)
+    _digest(fields, "schedulingIntentsDigest", label)
+    if "carryDigest" in fields:
+        _digest(fields, "carryDigest", label)
+    settled_at = _timestamp(fields, "settledAt", label)
+    if _instant(settled_at) < _instant(launched_at):
+        raise ContractSemanticError(f"{label}: settledAt precedes launchedAt")
+
+    for index, settlement in enumerate(_sequence(fields, "effectSettlements", label)):
+        _effect_settlement(settlement, f"{label}.effectSettlements[{index}]")
+
+    has_outputs = "outputsDigest" in fields
+    has_failure = "failureRef" in fields
+    if outcome in {"succeeded", "late"}:
+        if not has_outputs or has_failure:
+            raise ContractSemanticError(f"{label}: {outcome} records outputsDigest and no failureRef")
+        _digest(fields, "outputsDigest", label)
+    elif outcome == "failed":
+        if has_outputs or not has_failure:
+            raise ContractSemanticError(f"{label}: failed records failureRef and no outputsDigest")
+        _reference(fields, "failureRef", label)
+    elif has_outputs or has_failure:
+        raise ContractSemanticError(
+            f"{label}: {outcome} records neither outputsDigest nor failureRef"
+        )
+
+    has_disposition = "cancellationDisposition" in fields
+    if (outcome == "cancelled") != has_disposition:
+        raise ContractSemanticError(
+            f"{label}: cancellationDisposition is required exactly for a cancelled iteration"
+        )
+    if has_disposition:
+        _member(fields, "cancellationDisposition", label, CANCELLATION_IN_FLIGHT_STATES)
+
+    has_evidence = "evidenceRef" in fields
+    has_applied = "appliedToRunState" in fields
+    if outcome == "late":
+        if loop_settled_at is None:
+            raise ContractSemanticError(f"{label}: a late result requires a settled loop")
+        if _instant(settled_at) < _instant(loop_settled_at):
+            raise ContractSemanticError(f"{label}: a late result settles after the loop settled")
+        if not has_evidence:
+            raise ContractSemanticError(f"{label}: a late result is recorded as Evidence")
+        _reference(fields, "evidenceRef", label)
+        if not has_applied or _boolean(fields, "appliedToRunState", label):
+            raise ContractSemanticError(
+                f"{label}: a late result is marked not applied to Run state"
+            )
+    else:
+        if has_applied and not _boolean(fields, "appliedToRunState", label):
+            raise ContractSemanticError(
+                f"{label}: only a late result is marked not applied to Run state"
+            )
+        if has_evidence:
+            _reference(fields, "evidenceRef", label)
+    return identity
+
+
+def validate_loop_iteration_ledger(record: object) -> None:
+    """Validate the T-0688 complete `LoopIterationLedger` (DOC-004 §AD.5.1 rules 4-5, REF-004 §D.4.8-9).
+
+    The ledger is complete for *every* outcome class -- cancelled, failed and skipped as much as
+    succeeded -- and each entry records its launch, inputs digest, settlement instant, effect
+    settlements and, where the class calls for it, an outputs digest or a failure reference but
+    never both. Iteration identities are unique, which is what makes them usable as the
+    idempotency key for that iteration's activations and effect settlements.
+
+    A `late` entry is the one class that cannot change anything: it exists only once the loop has
+    settled, it is recorded as Evidence against its iteration identity, and it is marked not
+    applied to Run state.
+    """
+    label = "LoopIterationLedger"
+    fields = _mapping(record, label)
+    _only_fields(fields, _LOOP_ITERATION_LEDGER_FIELDS, label)
+    _release_version(fields, "ledgerSchemaVersion", label)
+    _identifier(fields, "loopStableId", label)
+    loop_settled_at = _timestamp(fields, "loopSettledAt", label) if "loopSettledAt" in fields else None
+
+    identities = [
+        _loop_iteration_entry(
+            entry, f"{label}.entries[{index}]", loop_settled_at=loop_settled_at
+        )
+        for index, entry in enumerate(_sequence(fields, "entries", label))
+    ]
+    if len(identities) != len(set(identities)):
+        raise ContractSemanticError(f"{label}: entries must not repeat an iterationIdentity")
 
 
 WORKFLOW_RECORD_VALIDATORS: Final[Mapping[str, WorkflowRecordValidator]] = MappingProxyType(
