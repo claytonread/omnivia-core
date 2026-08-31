@@ -237,10 +237,11 @@ def test_the_index_and_the_three_guards_are_recreated_verbatim_from_0029(
 def test_upgrading_a_0033_workspace_preserves_every_existing_event(
     tmp_path: Path,
 ) -> None:
-    """A workspace migrated through 0033 -- the real predecessor -- then through 0034.
+    """A workspace migrated through 0033 -- the real predecessor -- then forward.
 
-    0034 is the only migration left to apply, every event row survives the rebuild
-    byte for byte, and the successor table's working name is gone from the schema.
+    0034 is the first migration left to apply -- later ones land on tables of their
+    own -- every event row survives the rebuild byte for byte, and the successor
+    table's working name is gone from the schema.
     """
     path = tmp_path / "workspace-through-0033.sqlite"
     materialise_phase0_baseline(path)
@@ -259,8 +260,14 @@ def test_upgrading_a_0033_workspace_preserves_every_existing_event(
         finally:
             holder.connection.close()
 
+    successors = [
+        migration.version
+        for migration in load_migrations()
+        if migration.version > PREDECESSOR_VERSION
+    ]
+    assert successors[0] == MIGRATION_VERSION
     applied = apply_remaining_migrations(path)
-    assert [migration.version for migration in applied] == [MIGRATION_VERSION]
+    assert [migration.version for migration in applied] == successors
 
     connection = open_database(path, OpenMode.EPHEMERAL)
     try:
