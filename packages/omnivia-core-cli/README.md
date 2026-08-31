@@ -41,7 +41,7 @@ be reached, and cannot be added without adding it to the frozen surface first.
 ## Service administration
 
 The administrative commands are explicitly namespaced and do not change the
-22-command application surface or the 3-probe surface:
+26-command application surface or the 3-probe surface:
 
 - `service start` attaches to the selected service or uses the shared managed
   local launcher and waits for a live readiness answer.
@@ -56,7 +56,7 @@ pid, path, service-instance identity, credential, exception, or launcher output.
 Its target is derived from the explicitly selected installation-state and
 workspace id, with opaque references that reveal neither local path nor endpoint.
 
-## The 22 application commands
+## The 26 application commands
 
 Each reaches exactly one operation of the frozen `OPERATION_CATALOGUE`, one to
 one, checked at import. Each declares the purpose it calls under.
@@ -85,6 +85,10 @@ one, checked at import. Each declares the purpose it calls under.
 | `context-pack build` | `context_pack.build` | `knowledge_retrieval` |
 | `chat command` | `chat.command` | `chat_authoring` |
 | `chat events` | `chat.events` | `chat_observation` |
+| `workflow start` | `workflow.start` | `workflow_run` |
+| `workflow inspect` | `workflow.inspect` | `workflow_observation` |
+| `workflow control` | `workflow.control` | `workflow_control` |
+| `workflow review` | `workflow.review` | `workflow_review` |
 
 Options on every application command:
 

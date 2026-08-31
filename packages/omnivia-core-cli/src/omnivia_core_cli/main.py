@@ -474,7 +474,7 @@ def _run_lifecycle(
 ) -> int:
     """Run one explicit ``service`` administration command.
 
-    Application and probe counts remain exactly 20 and 3.  These three commands
+    Application and probe counts remain exactly 26 and 3.  These three commands
     are a separate administrative class and always address the explicit
     installation-state/workspace pair supplied to the root parser.
     """

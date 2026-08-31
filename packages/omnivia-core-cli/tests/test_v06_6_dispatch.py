@@ -5,7 +5,7 @@
 production takes exactly the object these tests build, and nothing here stands
 in for `dispatch_application`, `dispatch_probe` or the client's own `call`.
 
-- **The catalogue is the source of the claims.** Every one of the twenty-two
+- **The catalogue is the source of the claims.** Every one of the twenty-six
   commands is dispatched and the envelope compared against
   `get_operation_metadata(command.operation)` -- scopes by value, the
   capability requirement by *identity*, because the module's claim is that it
@@ -335,11 +335,11 @@ def test_every_probe_command_path_resolves_to_its_own_command(
     assert find_probe_command(command.path) is command
 
 
-def test_the_two_lookups_are_declared_and_cover_all_twenty_five_paths() -> None:
-    """Twenty-two application paths and three probe paths, and no path in both."""
+def test_the_two_lookups_are_declared_and_cover_all_twenty_nine_paths() -> None:
+    """Twenty-six application paths and three probe paths, and no path in both."""
     application = {command.path for command in APPLICATION_COMMANDS}
     probes = {command.path for command in PROBE_COMMANDS}
-    assert len(application) == 22
+    assert len(application) == 26
     assert len(probes) == 3
     assert not application & probes
 
@@ -479,7 +479,7 @@ def test_the_refusal_cannot_be_constructed_with_anything_in_it() -> None:
 
 
 # --------------------------------------------------------------------------
-# 2 & 3. What each of the twenty-two commands actually sends
+# 2 & 3. What each of the twenty-six commands actually sends
 # --------------------------------------------------------------------------
 
 

@@ -831,7 +831,7 @@ class SessionApplicationFallback(Protocol):
 class ProductionApplicationSurface:
     """The complete application surface, composed without collapsing authority.
 
-    The five family dispatchers deliberately retain their own server-issued
+    The seven family dispatchers deliberately retain their own server-issued
     sessions and bindings: an installation-scoped request must never inherit a
     workspace grant, and a read must never acquire mutation authority merely
     because both operations ship in one build.  This object is the single
@@ -841,7 +841,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 22/22 complete.
+    is anything other than 26/26 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -858,8 +858,8 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 6:
-            raise ValueError("the production surface requires exactly six authority families")
+        if len(distinct_routes) != 7:
+            raise ValueError("the production surface requires exactly seven authority families")
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
         if any(route.probe.grant.principal != self._principal for route in distinct_routes):

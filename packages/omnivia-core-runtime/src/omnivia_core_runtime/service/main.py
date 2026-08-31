@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 22-operation catalogue, composed from
-six separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 26-operation catalogue, composed from
+seven separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -42,6 +42,7 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
 )
@@ -242,10 +243,10 @@ def _build_production_application_surface(
     installation: ApplicationDispatcher,
     execute_chat_generation: ChatGenerationExecution | None = None,
 ) -> ProductionApplicationSurface:
-    """Compose the exact 22-operation production route for one live service.
+    """Compose the exact 26-operation production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    six authority families. The workspace service instance keeps its own
+    seven authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -295,12 +296,19 @@ def _build_production_application_surface(
         workspace_id=started.workspace_id,
         fallback=jobs,
     )
-    chat = build_chat_application_dispatcher(
+    workflow = build_workflow_application_dispatcher(
         service=started,
         principal_id=LOCAL_PRINCIPAL,
         installation_id=installation_id,
         workspace_id=started.workspace_id,
         fallback=governance,
+    )
+    chat = build_chat_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=workflow,
         execute_generation=execute_chat_generation
         if execute_chat_generation is not None
         else _default_chat_generation(started),
@@ -311,6 +319,7 @@ def _build_production_application_surface(
         memory=memory,
         jobs=jobs,
         governance=governance,
+        workflow=workflow,
         chat=chat,
         probe=probe,
     )

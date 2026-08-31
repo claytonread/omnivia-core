@@ -185,6 +185,8 @@ MUTATION_OPERATION_REFS = (
     "knowledge.propose",
     "memory.create",
     "record.supersede",
+    "workflow.control",
+    "workflow.start",
     "workspace.create",
 )
 EXPECTED_OPERATION_REFS_BY_TEST_ID = {
@@ -270,8 +272,8 @@ def test_operation_traceability_reference_resolves_to_the_existing_c0a_ledger() 
         OPERATION_TRACEABILITY["format"]
         == (TRACEABILITY["operation_traceability"]["format"])
     )
-    assert len(C0A_OPERATION_NAMES) == 22
-    assert len(set(C0A_OPERATION_NAMES)) == 22
+    assert len(C0A_OPERATION_NAMES) == 26
+    assert len(set(C0A_OPERATION_NAMES)) == 26
 
 
 def test_operation_references_are_exact_unique_deterministic_and_valid() -> None:

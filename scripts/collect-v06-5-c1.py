@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and record the exact V06-5 C1 77-by-3 semantic matrix."""
+"""Run and record the exact V06-5 C1 85-by-3 semantic matrix."""
 
 from __future__ import annotations
 
@@ -238,8 +238,8 @@ def main() -> int:
     corpus = json.loads(corpus_bytes)
     cases = corpus["cases"]
     case_ids = [case["id"] for case in cases]
-    if len(cases) != 77 or len(set(case_ids)) != 77:
-        raise SystemExit("the frozen corpus is not exactly 77 unique cases")
+    if len(cases) != 85 or len(set(case_ids)) != 85:
+        raise SystemExit("the frozen corpus is not exactly 85 unique cases")
 
     output = args.output or (
         repo.parent / "_evidence" / "omnivia-core" / "v06-5" / commit
@@ -300,15 +300,15 @@ def main() -> int:
                 }
             )
     keys = {(row["case_id"], row["adapter"]) for row in ledger}
-    if len(ledger) != 219 or len(keys) != 219:
-        raise SystemExit("C1 did not produce exactly 219 unique case/adapter rows")
+    if len(ledger) != 255 or len(keys) != 255:
+        raise SystemExit("C1 did not produce exactly 255 unique case/adapter rows")
 
-    ledger_path = output / "c1-219-semantic-ledger.json"
+    ledger_path = output / "c1-255-semantic-ledger.json"
     _write_json(
         ledger_path,
         {
             "schema": "omnivia-core.v06-5.c1-semantic-ledger.v1",
-            "summary": {"expected": 219, "passed": 219, "failed": 0},
+            "summary": {"expected": 255, "passed": 255, "failed": 0},
             "executions": ledger,
         },
     )
@@ -318,7 +318,7 @@ def main() -> int:
     suite = ET.Element(
         "testsuite",
         name="omnivia-core-v06-5-c1",
-        tests="219",
+        tests="255",
         failures="0",
         errors="0",
         skipped="0",
@@ -349,10 +349,10 @@ def main() -> int:
             "core_tree": tree,
             "corpus_path": CORPUS.as_posix(),
             "corpus_sha256": corpus_sha256,
-            "case_count": 77,
+            "case_count": 85,
             "adapters": list(ADAPTERS),
-            "expected_executions": 219,
-            "passed_executions": 219,
+            "expected_executions": 255,
+            "passed_executions": 255,
             "failed_executions": 0,
             "source_test_count": len(source_runs),
         },
@@ -364,7 +364,7 @@ def main() -> int:
         for path in checksum_paths
     )
     (output / "c1-sha256sums.txt").write_text(checksum_text)
-    print(f"C1 PASS: 219/219 semantic executions at {commit}")
+    print(f"C1 PASS: 255/255 semantic executions at {commit}")
     print(output)
     return 0
 
