@@ -6,8 +6,8 @@ locally built artifacts:
 
 1. build the ``omnivia-core`` wheel from this checkout with build isolation
    disabled (no index, no environment provisioning);
-2. read the wheel's own file list and require *exactly* the 172 approved Chat
-   Runtime Contract resources (13 schemas plus 159 fixture-tree files) under
+2. read the wheel's own file list and require *exactly* the 183 approved Chat
+   Runtime Contract resources (13 schemas plus 170 fixture-tree files) under
    ``omnivia_core/chat_contract/v1/resources/`` -- none missing, none extra;
 3. install that wheel alone into a throwaway virtual environment with
    ``--no-index --no-deps``;
@@ -219,7 +219,7 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 ) -> None:
     digests = installed_report["digests"]
     assert isinstance(digests, dict)
-    assert installed_report["fixture_count"] == 158
+    assert installed_report["fixture_count"] == 169
     for relative, digest in digests.items():
         source = CANONICAL_ROOT / "fixtures" / relative
         assert digest == hashlib.sha256(source.read_bytes()).hexdigest(), relative
@@ -228,7 +228,7 @@ def test_every_packaged_fixture_survives_packaging_byte_for_byte(
 def test_the_packaged_manifest_declares_the_governed_counts(
     installed_report: dict[str, object]
 ) -> None:
-    assert installed_report["manifest_counts"] == {"total": 158, "valid": 75, "invalid": 83}
+    assert installed_report["manifest_counts"] == {"total": 169, "valid": 78, "invalid": 91}
 
 
 def test_the_installed_bounded_codec_still_works(installed_report: dict[str, object]) -> None:

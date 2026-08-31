@@ -298,6 +298,36 @@ def test_a_workspace_that_cannot_be_started_says_so_and_exits_one(
 
 
 # --------------------------------------------------------------------------
+# 3b. `--request-id` is the id the envelope carries
+# --------------------------------------------------------------------------
+
+
+def test_a_supplied_request_id_is_the_one_the_envelope_carries() -> None:
+    """An operation whose input must name this request can be called at all.
+
+    `chat.snapshot` requires the caller's query to repeat `metadata.request_id`,
+    which is impossible unless the caller can state the id the CLI will send.
+    Correlation and trace ids follow it, as they do for a minted one.
+    """
+    transport = RecordingTransport()
+    assert invoke([*APPLICATION, "--request-id", "caller-chosen-id-05"], transport) == 0
+    metadata = sent(transport).metadata
+    assert metadata.request_id == "caller-chosen-id-05"
+    assert metadata.correlation_id == metadata.trace_id == "caller-chosen-id-05"
+
+
+def test_omitting_the_flag_still_mints_a_fresh_cli_request_id() -> None:
+    """The default is unchanged: a CLI-prefixed id, and a different one each run."""
+    minted = []
+    for _ in range(2):
+        transport = RecordingTransport()
+        assert invoke(APPLICATION, transport) == 0
+        minted.append(sent(transport).metadata.request_id)
+    assert all(identifier.startswith("cli-") for identifier in minted)
+    assert len(set(minted)) == len(minted)
+
+
+# --------------------------------------------------------------------------
 # 4. A local failure is one fixed sentence, and never on stdout
 # --------------------------------------------------------------------------
 

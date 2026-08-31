@@ -531,6 +531,126 @@
       }
     },
     {
+      "description": "chat.snapshot answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "chat.snapshot/primary-success",
+      "operation": "chat.snapshot",
+      "request": {
+        "input": {
+          "conversation_id": "conv-chat-1",
+          "snapshot_query": {
+            "actorId": "actor-alice",
+            "conversationId": "conv-chat-1",
+            "deviceId": "device-laptop-01",
+            "requestId": "req-chat-snapshot-1",
+            "workspaceId": "ws-1"
+          }
+        },
+        "metadata": {
+          "request_id": "req-chat.snapshot-success",
+          "required_capabilities": [
+            {
+              "id": "chat.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "chat:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "chat.snapshot"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-chat.snapshot-success"
+        },
+        "result": {
+          "conversation_id": "conv-chat-1",
+          "snapshot": {
+            "conversation": {
+              "conversationId": "conv-chat-1",
+              "createdAt": "2024-01-01T00:00:00Z",
+              "createdBy": "actor-alice",
+              "defaultBranchId": "branch-chat-1",
+              "graphRevision": 2,
+              "latestConversationSequence": 1,
+              "schemaVersion": 1,
+              "state": "active",
+              "title": "Supplier review",
+              "workspaceId": "ws-1"
+            },
+            "path": {
+              "branchId": "branch-chat-1",
+              "conversationId": "conv-chat-1",
+              "divergenceMetadataByMessageId": {},
+              "generationJobIds": [
+                "gen-chat-1"
+              ],
+              "graphRevision": 2,
+              "headMessageId": "msg-chat-1",
+              "messages": [
+                {
+                  "authorId": "actor-alice",
+                  "authorType": "human",
+                  "committedAt": "2024-01-01T00:00:00Z",
+                  "completionStatus": "complete",
+                  "contentHash": "4813494d137e1631bba301d5acab6e7bb7aa74ce1185d456565ef51d737677b2",
+                  "conversationId": "conv-chat-1",
+                  "conversationSequence": 1,
+                  "createdAt": "2024-01-01T00:00:00Z",
+                  "createdOnBranchId": "branch-chat-1",
+                  "messageId": "msg-chat-1",
+                  "parts": [
+                    {
+                      "contentHash": "f64551fcd6f07823cb87971cfb91446425da18286b3ab1ef935e0cbd7a69f68a",
+                      "conversationId": "conv-chat-1",
+                      "createdAt": "2024-01-01T00:00:00Z",
+                      "index": 0,
+                      "messageId": "msg-chat-1",
+                      "partId": "part-chat-1",
+                      "payload": {
+                        "text": "Review the supplier proposal"
+                      },
+                      "provenance": "human",
+                      "schemaVersion": 1,
+                      "type": "text",
+                      "visibility": "standard",
+                      "workspaceId": "ws-1"
+                    }
+                  ],
+                  "role": "user",
+                  "schemaVersion": 1,
+                  "visibility": "standard",
+                  "workspaceId": "ws-1"
+                }
+              ],
+              "workspaceId": "ws-1"
+            },
+            "viewState": {
+              "activeBranchId": "branch-chat-1",
+              "actorId": "actor-alice",
+              "conversationId": "conv-chat-1",
+              "deviceId": "device-laptop-01",
+              "focusedMessageId": "msg-chat-1",
+              "lastSeenGraphRevision": 2,
+              "schemaVersion": 1,
+              "updatedAt": "2024-01-01T00:00:00Z",
+              "version": 1,
+              "workspaceId": "ws-1"
+            }
+          }
+        }
+      },
+      "trusted": {
+        "conversation_id": "conv-chat-1",
+        "workspace_id": "ws-1"
+      }
+    },
+    {
       "description": "context_pack.build answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"

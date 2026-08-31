@@ -51,14 +51,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from omnivia_core.chat_contract.v1 import ChatContractDecodeError, to_canonical_json
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
-from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.connection import StorageError, authorised
 
 __all__ = [
+    "ActiveQueueEntry",
     "Branch",
     "BranchHeadEvent",
     "ChatToolCall",
@@ -67,6 +68,7 @@ __all__ = [
     "ChatTurnStep",
     "ChatWriter",
     "Conversation",
+    "ConversationSnapshotInputs",
     "Draft",
     "GenerationAttempt",
     "GenerationAttemptOutcome",
@@ -108,6 +110,7 @@ __all__ = [
     "insert_queue_order_projection",
     "insert_view_state",
     "read_active_draft",
+    "read_active_queue_for_actor",
     "read_actor_view_state",
     "read_branch",
     "read_branch_head_events",
@@ -118,6 +121,7 @@ __all__ = [
     "read_chat_turn_by_attempt",
     "read_chat_turn_steps",
     "read_conversation",
+    "read_conversation_snapshot_inputs",
     "read_generation_attempt",
     "read_generation_attempt_outcome",
     "read_generation_attempt_outcomes",
@@ -128,6 +132,7 @@ __all__ = [
     "read_generation_text_chunks",
     "read_message_parts",
     "read_messages_by_conversation_sequence",
+    "read_next_executable_queued_submission",
     "read_next_queued_submission",
     "read_outbox_event",
     "read_outbox_events_since",
@@ -147,6 +152,7 @@ __all__ = [
     "update_outbox_delivery",
     "update_queue_order_projection",
     "update_queued_submission",
+    "update_queued_submission_content",
     "update_view_state",
 ]
 
@@ -619,6 +625,26 @@ class QueueOrderProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ActiveQueueEntry:
+    """One actor's active (`queued`) submission, joined to its order projection.
+
+    Both optimistic tokens travel together because a caller acting on this row --
+    updating its content or reordering it -- needs both: `submission.version` for
+    :func:`update_queued_submission_content`, `order.version` for
+    :func:`update_queue_order_projection`. Never returned for a cancelled,
+    claimed, submitted or failed row, and never for another actor's.
+
+    `generation_job_id` is the row's own drained job where one exists and `None`
+    otherwise -- see :func:`read_active_queue_for_actor` for the exact correlation
+    and what it is verified against.
+    """
+
+    submission: QueuedSubmission
+    order: QueueOrderProjection
+    generation_job_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class OutboxEntry:
     workspace_id: str
     outbox_cursor: int
@@ -633,6 +659,30 @@ class OutboxEntry:
     delivered_at_us: int | None
     retained_until_us: int | None
     created_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSnapshotInputs:
+    """Everything an authoritative Conversation snapshot is composed from, at one
+    revision.
+
+    The rows, not a contract shape: this module owns no Chat Contract document, so
+    the caller (`service/chat_snapshot.py`) is what turns these into a
+    `ConversationSnapshotResult`. `path` is the selected branch's real message
+    path -- the parent chain walked back from the branch head and reversed --
+    rather than every message that happens to name the branch, because that chain
+    is what a snapshot publishes.
+    """
+
+    conversation: Conversation
+    branch: Branch | None
+    view_state: ViewState | None
+    path: tuple[Message, ...]
+    parts_by_message_id: Mapping[str, tuple[MessagePart, ...]]
+    generation_job_ids: tuple[str, ...]
+    generation_job_ids_truncated: bool
+    queued_submissions: tuple[ActiveQueueEntry, ...]
+    queued_submissions_truncated: bool
 
 
 # --- writer -----------------------------------------------------------------------
@@ -1733,6 +1783,57 @@ class ChatWriter:
         )
         _require_cas_match(cursor, "queued submission", queued_submission_id)
 
+    def update_queued_submission_content(
+        self,
+        *,
+        queued_submission_id: str,
+        expected_version: int,
+        editable_parts: Sequence[Any],
+        updated_at_us: int,
+    ) -> None:
+        """CAS-update only a queued submission's editable content and version.
+
+        Distinct from :meth:`update_queued_submission`'s state-transition CAS: this
+        leaves state, claim, branch, idempotency key and every other column
+        untouched, so an actor editing their own unclaimed content can never smuggle
+        a state change through it. The `state = 'queued'` predicate is not merely
+        defensive -- a caller updating an already-claimed row must fail the same CAS
+        conflict a version mismatch does, not silently edit content generation has
+        already started reading.
+
+        Eligibility is narrower than `state = 'queued'` alone: a `SubmitMessage`
+        drain (`service/chat_submit.py`) opens this row's correlated generation job
+        -- and with it the immutable Message/parts/outbox a claim will read -- while
+        leaving the row itself `queued` until a worker claims it
+        (`read_next_executable_queued_submission`, W5 GB-05). The `NOT EXISTS`
+        clause below closes that window in the same `UPDATE` predicate rather than
+        in a pre-read: once a job correlated by this row's own
+        `(workspace_id, conversation_id, idempotency_key)` is committed, editing the
+        row's content is the same governed conflict a version mismatch is, decided
+        atomically against the row this statement is already locking.
+        """
+        cursor = self.connection.execute(
+            "UPDATE omnivia_chat_queued_submissions SET editable_parts_json = ?, "
+            "version = ?, updated_at_us = ? "
+            "WHERE workspace_id = ? AND queued_submission_id = ? AND version = ? "
+            "AND state = 'queued' "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM omnivia_chat_generation_jobs g "
+            "WHERE g.workspace_id = omnivia_chat_queued_submissions.workspace_id "
+            "AND g.conversation_id = omnivia_chat_queued_submissions.conversation_id "
+            "AND g.idempotency_key = omnivia_chat_queued_submissions.idempotency_key"
+            ")",
+            (
+                _canonical_json_array(editable_parts),
+                expected_version + 1,
+                updated_at_us,
+                self.workspace_id,
+                queued_submission_id,
+                expected_version,
+            ),
+        )
+        _require_cas_match(cursor, "queued submission", queued_submission_id)
+
     def update_generation_job(
         self,
         *,
@@ -2440,6 +2541,20 @@ def update_queued_submission(
         writer.update_queued_submission(**fields)
 
 
+def update_queued_submission_content(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    **fields: Any,
+) -> None:
+    with chat_writer(
+        connection, identity, workspace_id=workspace_id, fencing_generation=fencing_generation
+    ) as writer:
+        writer.update_queued_submission_content(**fields)
+
+
 def update_generation_job(
     connection: sqlite3.Connection,
     identity: ServiceInstanceIdentity,
@@ -2906,6 +3021,136 @@ def read_next_queued_submission(
         (workspace_id,),
     ).fetchone()
     return None if row is None else _queued_submission_from_row(row)
+
+
+def read_next_executable_queued_submission(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> QueuedSubmission | None:
+    """Return the next claimable submission that already has a generation job.
+
+    The generation-worker counterpart to :func:`read_next_queued_submission`,
+    distinct in meaning: an `EnqueueMessage` row is `queued` from the moment it is
+    written, long before any `SubmitMessage` drains it into a committed Message and
+    opens the generation job that makes it executable. Selecting every `queued` row
+    indiscriminately would hand the worker a pre-submit row it cannot execute; this
+    read's `INNER JOIN` to `omnivia_chat_generation_jobs` -- on the conversation and
+    the submission's own `idempotency_key`, which a drain deliberately carries
+    forward from the queue row rather than from its own `commandId` (0029, W5 GB-05)
+    -- means a pre-submit row is silently absent from this read rather than
+    returned and failed, so the worker waits on it and moves on to the next
+    eligible row instead. Deterministic order among eligible rows is unchanged
+    from :func:`read_next_queued_submission`.
+
+    The join additionally requires the correlated job to still be in its freshly
+    opened state -- `state = 'queued'`, `lease_epoch = 0`, `current_attempt_id IS
+    NULL`, `last_event_sequence = 0` -- the exact initial-job predicate
+    `service/chat_generation.claim_queued_generation` itself checks before
+    claiming. A submission row only ever reads `queued` here until a claim moves
+    both it and its job together in one transaction, so this is defence in depth
+    against ever treating a claimed, retried or terminal job's row as freshly
+    executable, never a state this build's own writers can otherwise reach.
+    """
+    row = connection.execute(
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us "
+        "FROM omnivia_chat_queued_submissions q "
+        "LEFT JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "JOIN omnivia_chat_generation_jobs g "
+        "ON g.workspace_id = q.workspace_id "
+        "AND g.conversation_id = q.conversation_id "
+        "AND g.idempotency_key = q.idempotency_key "
+        "AND g.state = 'queued' "
+        "AND g.lease_epoch = 0 "
+        "AND g.current_attempt_id IS NULL "
+        "AND g.last_event_sequence = 0 "
+        "WHERE q.workspace_id = ? AND q.state = 'queued' "
+        "ORDER BY COALESCE(p.queue_position, q.queue_sequence), "
+        "q.created_at_us, q.conversation_id, q.queued_submission_id "
+        "LIMIT 1",
+        (workspace_id,),
+    ).fetchone()
+    return None if row is None else _queued_submission_from_row(row)
+
+
+def read_active_queue_for_actor(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    limit: int = 200,
+) -> tuple[ActiveQueueEntry, ...]:
+    """One actor's active (`queued`) queue rows in one conversation, in order.
+
+    Joins `omnivia_chat_queued_submissions` to `omnivia_chat_queue_order_projection`
+    and returns both optimistic tokens together (freeze W5 GB-05): the submission's
+    own `version`, for a later `UpdateQueuedSubmission`, and the order projection's
+    `version`, for a later `ReorderQueuedSubmission`. Workspace-, conversation- and
+    actor-scoped, and filtered to `state = 'queued'` in SQL rather than in Python,
+    so a cancelled, claimed, submitted or failed row -- or another actor's row --
+    is never a row this function can hand back. Ordered by queue position (falling
+    back to the row's own `queued_submission_id` for a tie), which is what makes
+    this the one read both the snapshot resolver and the reorder command use.
+
+    Each entry additionally carries the row's own generation job id where one
+    already exists. A queue id is Core-derived as `<source command id>.sub` and the
+    job `SubmitMessage.fromQueuedSubmissionId` opens for it as `<source command
+    id>.gen`, so the correlation is the exact replacement of a terminal `.sub` by
+    `.gen` -- never a prefix or fuzzy match, and never attempted at all for an id
+    this convention did not derive. The derived id is then *verified* by the join:
+    it is reported only where a real job row with that exact id exists in the same
+    workspace, conversation and branch, so a missing or foreign job is simply
+    absent rather than named. Nothing about the job beyond its identity is read --
+    claim owner, lease, state and error detail stay execution internals.
+    """
+    rows = connection.execute(
+        "SELECT q.workspace_id, q.conversation_id, q.actor_id, q.queued_submission_id, "
+        "q.queue_sequence, q.branch_id, q.editable_parts_json, q.references_json, "
+        "q.idempotency_key, q.state, q.version, q.claimed_by, q.claim_epoch, "
+        "q.claim_expires_at_us, q.submitted_message_id, q.submitted_generation_job_id, "
+        "q.sanitized_error_code, q.sanitized_error_detail, q.created_at_us, q.updated_at_us, "
+        "p.queue_position, p.version, p.updated_by_actor_id, p.updated_at_us, "
+        "g.generation_job_id "
+        "FROM omnivia_chat_queued_submissions q "
+        "JOIN omnivia_chat_queue_order_projection p "
+        "ON p.workspace_id = q.workspace_id "
+        "AND p.conversation_id = q.conversation_id "
+        "AND p.queued_submission_id = q.queued_submission_id "
+        "LEFT JOIN omnivia_chat_generation_jobs g "
+        "ON g.workspace_id = q.workspace_id "
+        "AND g.conversation_id = q.conversation_id "
+        "AND g.branch_id = q.branch_id "
+        "AND substr(q.queued_submission_id, -4) = '.sub' "
+        "AND g.generation_job_id = "
+        "substr(q.queued_submission_id, 1, length(q.queued_submission_id) - 4) || '.gen' "
+        "WHERE q.workspace_id = ? AND q.conversation_id = ? AND q.actor_id = ? "
+        "AND q.state = 'queued' "
+        "ORDER BY p.queue_position, q.queued_submission_id "
+        "LIMIT ?",
+        (workspace_id, conversation_id, actor_id, limit),
+    ).fetchall()
+    entries = []
+    for row in rows:
+        submission = _queued_submission_from_row(row[0:20])
+        order = QueueOrderProjection(
+            workspace_id=row[0],
+            conversation_id=row[1],
+            queued_submission_id=row[3],
+            queue_position=row[20],
+            version=row[21],
+            updated_by_actor_id=row[22],
+            updated_at_us=row[23],
+        )
+        entries.append(
+            ActiveQueueEntry(submission=submission, order=order, generation_job_id=row[24])
+        )
+    return tuple(entries)
 
 
 _GENERATION_ATTEMPT_COLUMNS = (
@@ -3508,3 +3753,202 @@ def read_outbox_events_since(
         (workspace_id, after_cursor, limit),
     ).fetchall()
     return tuple(_outbox_entry_from_row(row) for row in rows)
+
+
+#: `queries.schema.json#/$defs/ConversationSnapshotResult.queuedSubmissions`'
+#: governed maximum. `read_conversation_snapshot_inputs` reads one row past it so
+#: `queued_submissions_truncated` can tell a complete queue apart from one this
+#: bound cannot represent -- the caller fails closed on the latter rather than
+#: silently answering a partial queue.
+_QUEUE_SNAPSHOT_LIMIT: Final = 200
+
+#: `queries.schema.json#/$defs/BranchPathResult.generationJobIds`' governed
+#: maximum, read one past for the same complete-or-fail reason the queue bound is.
+_BRANCH_JOB_SNAPSHOT_LIMIT: Final = 4096
+
+
+def read_branch_generation_job_ids(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    branch_id: str,
+    limit: int = _BRANCH_JOB_SNAPSHOT_LIMIT,
+) -> tuple[str, ...]:
+    """Every durable generation job id on one branch, oldest first.
+
+    Identities only, and every one of them: a job is durable from the moment
+    `SubmitMessage` opens it, long before any assistant result Message references
+    it, so a `queued` or `running` job is here exactly as a `succeeded` one is.
+    Ordered by `(created_at_us, generation_job_id)` so the projection built from
+    this is stable across reads. Nothing else about a job -- state, lease, attempt,
+    provider content or error detail -- is read.
+    """
+    rows = connection.execute(
+        "SELECT generation_job_id FROM omnivia_chat_generation_jobs "
+        "WHERE workspace_id = ? AND conversation_id = ? AND branch_id = ? "
+        "ORDER BY created_at_us, generation_job_id LIMIT ?",
+        (workspace_id, conversation_id, branch_id, limit),
+    ).fetchall()
+    return tuple(row[0] for row in rows)
+
+
+def read_conversation_snapshot_inputs(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    conversation_id: str,
+    actor_id: str,
+    device_id: str = "",
+    branch_id: str | None = None,
+    max_path_messages: int = 200,
+) -> ConversationSnapshotInputs | None:
+    """Every row an authoritative Conversation snapshot is composed from.
+
+    Workspace-scoped throughout, and `None` for a conversation this workspace does
+    not hold -- the same answer :func:`read_conversation` already gives, so this is
+    no wider an existence oracle than the read it starts from.
+
+    The branch is the caller's `branch_id`, else the actor/device view state's
+    active branch, else the conversation's default branch. A resolved branch that
+    belongs to a different conversation is treated as absent, the same as one that
+    does not exist. The path is that branch's head walked back through
+    `parent_message_id` and reversed into chronological order, bounded by
+    `max_path_messages`; a chain longer than the bound is truncated at its oldest
+    end, so the newest messages -- the ones a snapshot exists to show -- are always
+    present. The walk stops rather than raising on a missing parent row or a cycle.
+
+    `generation_job_ids` is the selected branch's complete durable job projection --
+    the path's own job references *plus* every job row that branch holds, including
+    one still `queued` or `running` with no result Message yet. That set is complete
+    or it is nothing: one row past the governed 4096 maximum is read, and
+    `generation_job_ids_truncated` says so rather than a silently shortened list.
+
+    All of it -- the conversation, the view state, the branch, the message walk and
+    every message's parts -- is read inside one explicit read transaction, so a
+    concurrent write between two of these reads can never produce a snapshot whose
+    pieces disagree about the moment they were read at. A caller already holding a
+    transaction keeps it: only a transaction begun here is committed or rolled back
+    here, matching `governed.py` and `graph.py`'s own ownership rule.
+    """
+    if not 1 <= max_path_messages <= 200:
+        raise StorageError(
+            f"max_path_messages must be between 1 and 200, got {max_path_messages}"
+        )
+
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN")
+    try:
+        conversation = read_conversation(
+            connection, workspace_id=workspace_id, conversation_id=conversation_id
+        )
+        if conversation is None:
+            result = None
+        else:
+            view_state = read_actor_view_state(
+                connection,
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                actor_id=actor_id,
+                device_id=device_id,
+            )
+            selected = branch_id
+            if selected is None and view_state is not None:
+                selected = view_state.active_branch_id
+            if selected is None:
+                selected = conversation.default_branch_id
+
+            branch = (
+                None
+                if selected is None
+                else read_branch(connection, workspace_id=workspace_id, branch_id=selected)
+            )
+            if branch is not None and branch.conversation_id != conversation_id:
+                branch = None
+
+            path: list[Message] = []
+            if branch is not None:
+                message_id: str | None = branch.current_head_message_id
+                seen: set[str] = set()
+                with authorised(connection, mutations=False, ddl=False) as fenced:
+                    while message_id is not None and len(path) < max_path_messages:
+                        if message_id in seen:
+                            break
+                        seen.add(message_id)
+                        row = fenced.execute(
+                            f"SELECT {_MESSAGE_COLUMNS} FROM omnivia_chat_messages "
+                            "WHERE workspace_id = ? AND conversation_id = ? "
+                            "AND message_id = ?",
+                            (workspace_id, conversation_id, message_id),
+                        ).fetchone()
+                        if row is None:
+                            break
+                        message = _message_from_row(row)
+                        path.append(message)
+                        message_id = message.parent_message_id
+            path.reverse()
+
+            parts = {
+                message.message_id: read_message_parts(
+                    connection, workspace_id=workspace_id, message_id=message.message_id
+                )
+                for message in path
+            }
+            # Every durable job on the selected branch, not merely the ones a
+            # result Message already names: a job is opened in the same transaction
+            # as the user Message that triggers it, so a snapshot taken between
+            # `SubmitMessage` and the assistant reply must still publish it. Path
+            # ids stay first and in path order -- an ancestor message carried over
+            # from a forked-from branch names a job this branch does not own, and
+            # dropping it would narrow what the projection already published.
+            branch_job_ids = (
+                ()
+                if branch is None
+                else read_branch_generation_job_ids(
+                    connection,
+                    workspace_id=workspace_id,
+                    conversation_id=conversation_id,
+                    branch_id=branch.branch_id,
+                    limit=_BRANCH_JOB_SNAPSHOT_LIMIT + 1,
+                )
+            )
+            job_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            message.generation_job_id
+                            for message in path
+                            if message.generation_job_id is not None
+                        ),
+                        *branch_job_ids,
+                    )
+                )
+            )
+
+            queue_rows = read_active_queue_for_actor(
+                connection,
+                workspace_id=workspace_id,
+                conversation_id=conversation_id,
+                actor_id=actor_id,
+                limit=_QUEUE_SNAPSHOT_LIMIT + 1,
+            )
+
+            result = ConversationSnapshotInputs(
+                conversation=conversation,
+                branch=branch,
+                view_state=view_state,
+                path=tuple(path),
+                parts_by_message_id=MappingProxyType(parts),
+                generation_job_ids=job_ids,
+                generation_job_ids_truncated=len(job_ids) > _BRANCH_JOB_SNAPSHOT_LIMIT,
+                queued_submissions=queue_rows[:_QUEUE_SNAPSHOT_LIMIT],
+                queued_submissions_truncated=len(queue_rows) > _QUEUE_SNAPSHOT_LIMIT,
+            )
+    except BaseException:
+        if owns_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        connection.execute("COMMIT")
+    return result

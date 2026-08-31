@@ -1,7 +1,7 @@
 """omnivia-core-cli: the ``omnivia`` executable for OmniVia Core.
 
 One frozen command per invocation, parsed, called on a running Core Service and
-reported. The surface is twenty-two application commands -- one for each operation
+reported. The surface is twenty-three application commands -- one for each operation
 of the frozen ``OPERATION_CATALOGUE``, checked at import -- and three service
 probes, each reached by exactly two segments with no alias and no abbreviation.
 

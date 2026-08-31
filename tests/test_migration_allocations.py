@@ -57,7 +57,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # materialized Chat foundation candidate. 0030 is the materialized Chat Gate B
 # successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
 # is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
-# Chat compaction/waits/agent-run candidate.
+# Chat compaction/waits/agent-run candidate. 0034 is the durable Chat
+# generation-text/transport-event candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -75,6 +76,7 @@ EXPECTED_ALLOCATION = (
     (31, "0031_chat_request_manifests.sql", "Chat", "candidate"),
     (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
     (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
+    (34, "0034_chat_generation_text_transport_events.sql", "Chat", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -84,7 +86,7 @@ FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
 ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read"
 
-# The two already-replayed FND-F3 candidates' exact introducing commits, each
+# The candidates' exact introducing commits, each
 # pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
 # neither carries an accepted_commit.
 CANDIDATE_INTRODUCED_COMMITS = {
@@ -101,6 +103,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     31: "dbc23280be010318b6e0d1a2e5ae0fc43a1bbf47",
     32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
+    34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -172,9 +175,8 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0027 are
-    candidates pinned to their introducing commits but not accepted; 0028 and 0029
-    are downstream candidates pinned the same way."""
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0034 are
+    candidates pinned to their introducing commits but not accepted."""
     document = _document()
     for entry in document["allocations"]:
         if entry["number"] in INTRODUCED_COMMITS:

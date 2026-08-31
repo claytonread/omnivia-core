@@ -71,6 +71,7 @@
         "generationJobIds": {
           "type": "array",
           "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId" },
+          "description": "The selected branch's complete durable Generation Job projection at `graphRevision`, not merely the ids the path's result Messages reference: a job is durable from the moment the `SubmitMessage` that triggers it commits, so a `queued` or `running` job with no result Message yet is listed here too. Deterministically ordered and duplicate-free; complete or refused, never truncated to fit `maxItems`.",
           "maxItems": 4096
         },
         "viewStateVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" }
@@ -220,6 +221,34 @@
         "deviceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/DeviceId" }
       }
     },
+    "QueuedSubmissionProjection": {
+      "title": "QueuedSubmissionProjection",
+      "description": "The authenticated actor's own active (`queued`) offline-queue submission, joined to its `omnivia_chat_queue_order_projection` row (W5 GB-05). Carries two distinct optimistic tokens on purpose: `version` is the submission's own content token (`UpdateQueuedSubmission.expectedVersion`), `orderVersion` is the order projection's (`ReorderQueuedSubmission.expectedVersion`); they advance independently and neither substitutes for the other. `attachmentReferences`/`contextReferences` are honestly empty and `targetReference` honestly absent for the reference/target subset this build serves. `generationJobId` is the row's own correlated job where one already exists, identity only. Never exposes claim owner, sanitized internal detail or idempotency key -- those are execution-claim internals, not actor-facing queue state.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "attachmentReferences", "branchId", "contextReferences", "conversationId", "createdAt", "editableParts", "orderVersion", "position", "queuedSubmissionId", "state", "updatedAt", "version", "workspaceId"],
+      "properties": {
+        "workspaceId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/WorkspaceId" },
+        "conversationId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ConversationId" },
+        "actorId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ActorId" },
+        "queuedSubmissionId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/QueuedSubmissionId" },
+        "branchId": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/BranchId" },
+        "editableParts": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/amendment.schema.json#/$defs/EditablePartInput" }, "minItems": 1, "maxItems": 4096 },
+        "attachmentReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/AttachmentReference" }, "maxItems": 64 },
+        "contextReferences": { "type": "array", "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ContextReference" }, "maxItems": 64 },
+        "targetReference": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/TargetReference" },
+        "state": { "const": "queued" },
+        "version": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" },
+        "position": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "orderVersion": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/ViewStateVersion" },
+        "createdAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/Timestamp" },
+        "generationJobId": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/common.schema.json#/$defs/GenerationJobId",
+          "description": "The Generation Job already opened for this row, absent until one exists. A drained row keeps `state: queued` until the generation claimant advances it, so this is what tells a row still awaiting submission apart from one already handed to generation -- without it a reconnecting actor cannot avoid a duplicate drain attempt, and edit eligibility is dishonest. The queue id is Core-derived as `<source command id>.sub` and the job `SubmitMessage.fromQueuedSubmissionId` opens for it as `<source command id>.gen`; the correlation is that exact replacement, verified against a real job in the same workspace, conversation and branch. Never inferred from an id that convention did not derive, never names a missing or foreign job, and never carries claim or execution state."
+        }
+      }
+    },
     "ConversationSnapshotResult": {
       "title": "ConversationSnapshotResult",
       "type": "object",
@@ -228,7 +257,17 @@
       "properties": {
         "conversation": { "$ref": "https://contracts.omnivia.dev/chat/v1/graph.schema.json#/$defs/Conversation" },
         "path": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/BranchPathResult" },
-        "viewState": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" }
+        "branch": {
+          "$ref": "https://contracts.omnivia.dev/chat/v1/branch.schema.json#/$defs/MessageBranch",
+          "description": "The durable MessageBranch record the resolved `path` was taken from (REF-042 §7.5). Optional, so a snapshot a consumer already accepts stays valid; present wherever the answering authority holds the record, because `headVersion` is the optimistic token a later SubmitMessage must state and `path` is a disposable projection that does not carry it (REF-042 §15.4, §21.4). Never a second branch identity: `branchId` here is `path.branchId`, and `currentHeadMessageId` is `path.headMessageId`."
+        },
+        "viewState": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" },
+        "queuedSubmissions": {
+          "type": "array",
+          "items": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" },
+          "maxItems": 200,
+          "description": "The authenticated actor's own active queued submissions, ordered by `position` then `queuedSubmissionId` (W5 GB-05). Optional and compatible: an existing snapshot consumer that has never seen this field stays valid, and its absence here means the actor's active queue is empty, not that it was skipped. The answering authority MUST either state the actor's complete active queue or fail the whole snapshot closed (`size_limit_exceeded`) rather than publish a partial one bounded by this array's own `maxItems`."
+        }
       }
     },
     "MessagePageDirection": {

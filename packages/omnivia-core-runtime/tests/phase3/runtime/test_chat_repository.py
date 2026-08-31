@@ -16,6 +16,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 import test_application_audit_idempotency_migration as m1
@@ -794,7 +795,630 @@ def test_generation_events_round_trip_their_canonical_payload(owned: m1.Owned) -
     assert events[0].payload == {"event": "chat.generation.queued"}
 
 
-# --- 10. no wire drift ------------------------------------------------------------
+# --- 10. read_conversation_snapshot_inputs: the authoritative snapshot read -----
+
+
+SECOND_BRANCH_ID = "branch-repo-second"
+RESULT_MESSAGE_ID = "msg-repo-result"
+SECOND_RESULT_MESSAGE_ID = "msg-repo-result-2"
+
+
+def seed_branch_head_advance(holder: m1.Owned) -> None:
+    """Advance BRANCH_ID's head to TRIGGER_MESSAGE_ID, one message past the root."""
+    with writer(holder) as w:
+        w.update_conversation(
+            conversation_id=CONVERSATION_ID,
+            expected_graph_revision=2,
+            graph_revision=2,
+            latest_conversation_sequence=2,
+            state="active",
+            updated_at_us=BASE_US + 40,
+            title="Repository chat",
+            title_source="user",
+        )
+        w.append_message(
+            message_id=TRIGGER_MESSAGE_ID,
+            conversation_id=CONVERSATION_ID,
+            role="user",
+            author_type="human",
+            author_id=ACTOR_ID,
+            parent_message_id=ROOT_MESSAGE_ID,
+            conversation_sequence=2,
+            schema_version=1,
+            content_hash=digest("c"),
+            completion_status="complete",
+            visibility="standard",
+            created_at_us=BASE_US + 41,
+            committed_at_us=BASE_US + 41,
+        )
+        w.append_branch_head_event(
+            event_id="head-event-repo-2",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            head_version=2,
+            previous_head_message_id=ROOT_MESSAGE_ID,
+            new_head_message_id=TRIGGER_MESSAGE_ID,
+            cause="user_message_appended",
+            command_id="command-repo-2",
+            graph_revision=2,
+            conversation_sequence=2,
+            actor_id=ACTOR_ID,
+            occurred_at_us=BASE_US + 42,
+            schema_version=1,
+        )
+        w.update_branch_head(
+            branch_id=BRANCH_ID,
+            expected_head_version=1,
+            head_version=2,
+            current_head_message_id=TRIGGER_MESSAGE_ID,
+            state="open",
+        )
+
+
+def seed_two_results_from_the_same_job(holder: m1.Owned) -> None:
+    """Past TRIGGER_MESSAGE_ID: one generation job, and two assistant messages that
+    both name it -- the shape :func:`read_conversation_snapshot_inputs` must dedupe
+    rather than report twice.
+    """
+    seed_branch_head_advance(holder)
+    with writer(holder) as w:
+        w.append_generation_job(
+            generation_job_id=JOB_ID,
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=TRIGGER_MESSAGE_ID,
+            graph_revision_observed=2,
+            idempotency_key="generation-repo-snapshot-key",
+            schema_version=1,
+            created_at_us=BASE_US + 43,
+            updated_at_us=BASE_US + 43,
+        )
+        w.update_conversation(
+            conversation_id=CONVERSATION_ID,
+            expected_graph_revision=2,
+            graph_revision=2,
+            latest_conversation_sequence=4,
+            state="active",
+            updated_at_us=BASE_US + 44,
+            title="Repository chat",
+            title_source="user",
+        )
+        w.append_message(
+            message_id=RESULT_MESSAGE_ID,
+            conversation_id=CONVERSATION_ID,
+            role="assistant",
+            author_type="provider",
+            parent_message_id=TRIGGER_MESSAGE_ID,
+            conversation_sequence=3,
+            schema_version=1,
+            content_hash=digest("d"),
+            completion_status="complete",
+            visibility="standard",
+            generation_job_id=JOB_ID,
+            created_at_us=BASE_US + 45,
+            committed_at_us=BASE_US + 45,
+        )
+        w.append_message(
+            message_id=SECOND_RESULT_MESSAGE_ID,
+            conversation_id=CONVERSATION_ID,
+            role="assistant",
+            author_type="provider",
+            parent_message_id=RESULT_MESSAGE_ID,
+            conversation_sequence=4,
+            schema_version=1,
+            content_hash=digest("e"),
+            completion_status="complete",
+            visibility="standard",
+            generation_job_id=JOB_ID,
+            created_at_us=BASE_US + 46,
+            committed_at_us=BASE_US + 46,
+        )
+        w.append_branch_head_event(
+            event_id="head-event-repo-3",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            head_version=3,
+            previous_head_message_id=TRIGGER_MESSAGE_ID,
+            new_head_message_id=RESULT_MESSAGE_ID,
+            cause="assistant_message_materialised",
+            command_id="command-repo-3",
+            graph_revision=2,
+            conversation_sequence=3,
+            actor_id=ACTOR_ID,
+            occurred_at_us=BASE_US + 47,
+            schema_version=1,
+        )
+        w.update_branch_head(
+            branch_id=BRANCH_ID,
+            expected_head_version=2,
+            head_version=3,
+            current_head_message_id=RESULT_MESSAGE_ID,
+            state="open",
+        )
+        w.append_branch_head_event(
+            event_id="head-event-repo-4",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            head_version=4,
+            previous_head_message_id=RESULT_MESSAGE_ID,
+            new_head_message_id=SECOND_RESULT_MESSAGE_ID,
+            cause="assistant_message_materialised",
+            command_id="command-repo-4",
+            graph_revision=2,
+            conversation_sequence=4,
+            actor_id=ACTOR_ID,
+            occurred_at_us=BASE_US + 48,
+            schema_version=1,
+        )
+        w.update_branch_head(
+            branch_id=BRANCH_ID,
+            expected_head_version=3,
+            head_version=4,
+            current_head_message_id=SECOND_RESULT_MESSAGE_ID,
+            state="open",
+        )
+        w.insert_view_state(
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+            active_branch_id=BRANCH_ID,
+            last_seen_graph_revision=2,
+            schema_version=1,
+            updated_at_us=BASE_US + 49,
+        )
+
+
+def test_snapshot_inputs_walk_the_branch_path_oldest_to_newest_with_deduped_job_ids(
+    owned: m1.Owned,
+) -> None:
+    seed_conversation(owned)
+    seed_two_results_from_the_same_job(owned)
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert inputs is not None
+    assert inputs.conversation.conversation_id == CONVERSATION_ID
+    assert inputs.branch is not None
+    assert inputs.branch.branch_id == BRANCH_ID
+    assert inputs.view_state is not None
+    assert inputs.view_state.active_branch_id == BRANCH_ID
+    # Oldest first, ending at the branch head.
+    assert [m.message_id for m in inputs.path] == [
+        ROOT_MESSAGE_ID,
+        TRIGGER_MESSAGE_ID,
+        RESULT_MESSAGE_ID,
+        SECOND_RESULT_MESSAGE_ID,
+    ]
+    assert [p.part_id for p in inputs.parts_by_message_id[ROOT_MESSAGE_ID]] == [ROOT_PART_ID]
+    assert inputs.parts_by_message_id[TRIGGER_MESSAGE_ID] == ()
+    # Two messages name the same job; it is reported once.
+    assert inputs.generation_job_ids == (JOB_ID,)
+    assert inputs.generation_job_ids_truncated is False
+    assert isinstance(inputs.parts_by_message_id, MappingProxyType)
+
+
+def test_snapshot_inputs_publish_every_durable_branch_job_not_only_referenced_ones(
+    owned: m1.Owned,
+) -> None:
+    """A job is durable from the moment `SubmitMessage` opens it, and no assistant
+    Message references it until generation produces one. The projection is the
+    branch's whole job set, deduplicated against the ids the path already names,
+    and never another branch's, conversation's or workspace's.
+    """
+    seed_conversation(owned)
+    seed_two_results_from_the_same_job(owned)
+    with writer(owned) as w:
+        # Freshly opened, still `queued`, no result Message: exactly the job a
+        # hosted controller has to prove immediately after a submit.
+        w.append_generation_job(
+            generation_job_id="generation-job-repo-live",
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+            trigger_message_id=SECOND_RESULT_MESSAGE_ID,
+            graph_revision_observed=2,
+            idempotency_key="generation-repo-live-key",
+            schema_version=1,
+            created_at_us=BASE_US + 60,
+            updated_at_us=BASE_US + 60,
+        )
+        w.append_branch(
+            branch_id=SECOND_BRANCH_ID,
+            conversation_id=CONVERSATION_ID,
+            origin_kind="explicit_fork",
+            initial_head_message_id=ROOT_MESSAGE_ID,
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US + 61,
+            created_conversation_sequence=1,
+            schema_version=1,
+        )
+        w.append_generation_job(
+            generation_job_id="generation-job-repo-other-branch",
+            conversation_id=CONVERSATION_ID,
+            branch_id=SECOND_BRANCH_ID,
+            trigger_message_id=ROOT_MESSAGE_ID,
+            graph_revision_observed=2,
+            idempotency_key="generation-repo-other-branch-key",
+            schema_version=1,
+            created_at_us=BASE_US + 62,
+            updated_at_us=BASE_US + 62,
+        )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert inputs is not None
+    # The referenced job stays first and is not duplicated; the unreferenced one
+    # is published beside it; the other branch's is not published at all.
+    assert inputs.generation_job_ids == (JOB_ID, "generation-job-repo-live")
+    assert inputs.generation_job_ids_truncated is False
+
+    # The same read, scoped away: another workspace or another conversation holds
+    # none of these jobs.
+    assert (
+        chat.read_branch_generation_job_ids(
+            owned.connection,
+            workspace_id=OTHER_WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            branch_id=BRANCH_ID,
+        )
+        == ()
+    )
+    assert (
+        chat.read_branch_generation_job_ids(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id="conv-repo-absent",
+            branch_id=BRANCH_ID,
+        )
+        == ()
+    )
+    assert chat.read_branch_generation_job_ids(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        branch_id=SECOND_BRANCH_ID,
+    ) == ("generation-job-repo-other-branch",)
+
+
+def test_snapshot_inputs_flag_a_branch_job_set_past_the_governed_maximum(
+    owned: m1.Owned,
+) -> None:
+    """4096 is `BranchPathResult.generationJobIds`' governed bound. One job past it
+    is reported as such rather than silently shortened -- the caller fails the whole
+    snapshot closed, because a truncated list would read as "that job does not
+    exist" to a controller proving a candidate against it.
+    """
+    seed_conversation(owned)
+    with writer(owned) as w:
+        for index in range(4097):
+            w.append_generation_job(
+                generation_job_id=f"generation-job-repo-bulk-{index:05d}",
+                conversation_id=CONVERSATION_ID,
+                branch_id=BRANCH_ID,
+                trigger_message_id=ROOT_MESSAGE_ID,
+                graph_revision_observed=2,
+                idempotency_key=f"generation-repo-bulk-key-{index:05d}",
+                schema_version=1,
+                created_at_us=BASE_US + 100 + index,
+                updated_at_us=BASE_US + 100 + index,
+            )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        branch_id=BRANCH_ID,
+    )
+    assert inputs is not None
+    assert len(inputs.generation_job_ids) == 4097
+    assert inputs.generation_job_ids_truncated is True
+
+
+def test_snapshot_inputs_bound_the_path_at_its_oldest_end(owned: m1.Owned) -> None:
+    seed_conversation(owned)
+    seed_two_results_from_the_same_job(owned)
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        branch_id=BRANCH_ID,
+        max_path_messages=2,
+    )
+    assert inputs is not None
+    # The newest two messages, not the oldest two.
+    assert [m.message_id for m in inputs.path] == [RESULT_MESSAGE_ID, SECOND_RESULT_MESSAGE_ID]
+
+
+def test_snapshot_inputs_reject_out_of_bounds_max_path_messages(owned: m1.Owned) -> None:
+    seed_conversation(owned)
+    for bad_bound in (0, -1, 201):
+        with pytest.raises(StorageError, match="max_path_messages must be between 1 and 200"):
+            chat.read_conversation_snapshot_inputs(
+                owned.connection,
+                workspace_id=WORKSPACE_ID,
+                conversation_id=CONVERSATION_ID,
+                actor_id=ACTOR_ID,
+                max_path_messages=bad_bound,
+            )
+
+
+def test_snapshot_inputs_are_workspace_scoped_and_answer_none_for_an_absent_conversation(
+    owned: m1.Owned,
+) -> None:
+    seed_conversation(owned)
+    assert (
+        chat.read_conversation_snapshot_inputs(
+            owned.connection,
+            workspace_id=OTHER_WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+        )
+        is None
+    )
+    assert (
+        chat.read_conversation_snapshot_inputs(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id="conv-repo-absent",
+            actor_id=ACTOR_ID,
+        )
+        is None
+    )
+
+
+def test_snapshot_inputs_answer_without_a_branch_or_view_state(owned: m1.Owned) -> None:
+    """A conversation with no default branch and no actor view state is still a
+    conversation: the snapshot reads what exists rather than refusing.
+    """
+    with writer(owned) as w:
+        w.append_conversation(
+            conversation_id="conv-repo-no-branch",
+            state="active",
+            graph_revision=1,
+            latest_conversation_sequence=0,
+            schema_version=1,
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US,
+            updated_at_us=BASE_US,
+        )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id="conv-repo-no-branch",
+        actor_id="actor-repo-with-no-view-state",
+    )
+    assert inputs is not None
+    assert inputs.branch is None
+    assert inputs.view_state is None
+    assert inputs.path == ()
+    assert inputs.parts_by_message_id == {}
+    assert inputs.generation_job_ids == ()
+
+
+def test_snapshot_inputs_prefer_explicit_branch_then_view_state_then_default(
+    owned: m1.Owned,
+) -> None:
+    seed_conversation(owned)
+    with writer(owned) as w:
+        w.append_branch(
+            branch_id=SECOND_BRANCH_ID,
+            conversation_id=CONVERSATION_ID,
+            origin_kind="explicit_fork",
+            initial_head_message_id=ROOT_MESSAGE_ID,
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US + 5,
+            created_conversation_sequence=1,
+            schema_version=1,
+            created_from_branch_id=BRANCH_ID,
+            fork_parent_message_id=ROOT_MESSAGE_ID,
+            fork_source_message_id=ROOT_MESSAGE_ID,
+        )
+        w.update_conversation(
+            conversation_id=CONVERSATION_ID,
+            expected_graph_revision=2,
+            graph_revision=2,
+            latest_conversation_sequence=1,
+            state="active",
+            updated_at_us=BASE_US + 6,
+            title="Repository chat",
+            title_source="user",
+            default_branch_id=BRANCH_ID,
+        )
+        w.insert_view_state(
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+            active_branch_id=SECOND_BRANCH_ID,
+            last_seen_graph_revision=2,
+            schema_version=1,
+            updated_at_us=BASE_US + 7,
+        )
+
+    # An explicit branch_id wins even though this actor's view state names another.
+    explicit = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        branch_id=BRANCH_ID,
+    )
+    assert explicit is not None
+    assert explicit.branch is not None
+    assert explicit.branch.branch_id == BRANCH_ID
+
+    # No explicit branch: this actor's view state's active branch wins.
+    via_view_state = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+    )
+    assert via_view_state is not None
+    assert via_view_state.branch is not None
+    assert via_view_state.branch.branch_id == SECOND_BRANCH_ID
+
+    # No explicit branch and no view state for this actor: the conversation default wins.
+    via_default = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id="actor-repo-with-no-view-state",
+    )
+    assert via_default is not None
+    assert via_default.branch is not None
+    assert via_default.branch.branch_id == BRANCH_ID
+
+
+def test_snapshot_inputs_treat_a_branch_from_another_conversation_as_absent(
+    owned: m1.Owned,
+) -> None:
+    seed_conversation(owned)
+    with writer(owned) as w:
+        w.append_conversation(
+            conversation_id="conv-repo-other",
+            state="active",
+            graph_revision=1,
+            latest_conversation_sequence=0,
+            schema_version=1,
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US,
+            updated_at_us=BASE_US,
+        )
+        w.update_conversation(
+            conversation_id="conv-repo-other",
+            expected_graph_revision=1,
+            graph_revision=2,
+            latest_conversation_sequence=1,
+            state="active",
+            updated_at_us=BASE_US + 1,
+        )
+        w.append_message(
+            message_id="msg-repo-other-root",
+            conversation_id="conv-repo-other",
+            role="user",
+            author_type="human",
+            author_id=ACTOR_ID,
+            conversation_sequence=1,
+            schema_version=1,
+            content_hash=digest("f"),
+            completion_status="complete",
+            visibility="standard",
+            created_at_us=BASE_US + 1,
+            committed_at_us=BASE_US + 1,
+        )
+        w.append_branch(
+            branch_id="branch-repo-other",
+            conversation_id="conv-repo-other",
+            origin_kind="original",
+            initial_head_message_id="msg-repo-other-root",
+            created_by_actor_id=ACTOR_ID,
+            created_at_us=BASE_US + 2,
+            created_conversation_sequence=1,
+            schema_version=1,
+        )
+
+    inputs = chat.read_conversation_snapshot_inputs(
+        owned.connection,
+        workspace_id=WORKSPACE_ID,
+        conversation_id=CONVERSATION_ID,
+        actor_id=ACTOR_ID,
+        branch_id="branch-repo-other",
+    )
+    assert inputs is not None
+    assert inputs.branch is None
+    assert inputs.path == ()
+
+
+# --- 11. one shared read transaction owns every component read ------------------
+
+
+def test_snapshot_inputs_standalone_call_emits_one_begin_and_one_commit(
+    owned: m1.Owned,
+) -> None:
+    seed_conversation(owned)
+    statements: list[str] = []
+    owned.connection.set_trace_callback(statements.append)
+    try:
+        inputs = chat.read_conversation_snapshot_inputs(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+        )
+    finally:
+        owned.connection.set_trace_callback(None)
+    assert inputs is not None
+    assert [s for s in statements if s in ("BEGIN", "COMMIT", "ROLLBACK")] == [
+        "BEGIN",
+        "COMMIT",
+    ]
+
+
+def test_snapshot_inputs_leave_a_callers_transaction_open(owned: m1.Owned) -> None:
+    """The read ends only a transaction it opened itself."""
+    seed_conversation(owned)
+    owned.connection.execute("BEGIN")
+    try:
+        inputs = chat.read_conversation_snapshot_inputs(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+        )
+        assert inputs is not None
+        assert owned.connection.in_transaction is True
+    finally:
+        owned.connection.execute("ROLLBACK")
+
+
+def test_snapshot_inputs_roll_back_only_a_transaction_it_opened(
+    owned: m1.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_conversation(owned)
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("forced snapshot read failure")
+
+    monkeypatch.setattr(chat, "read_message_parts", broken)
+
+    # Standalone: the transaction this call opened is rolled back before it re-raises.
+    with pytest.raises(RuntimeError, match="forced snapshot read failure"):
+        chat.read_conversation_snapshot_inputs(
+            owned.connection,
+            workspace_id=WORKSPACE_ID,
+            conversation_id=CONVERSATION_ID,
+            actor_id=ACTOR_ID,
+            branch_id=BRANCH_ID,
+        )
+    assert owned.connection.in_transaction is False
+
+    # Caller-owned: the same failure leaves the caller's transaction open, because
+    # this function never opened one of its own to roll back.
+    owned.connection.execute("BEGIN")
+    try:
+        with pytest.raises(RuntimeError, match="forced snapshot read failure"):
+            chat.read_conversation_snapshot_inputs(
+                owned.connection,
+                workspace_id=WORKSPACE_ID,
+                conversation_id=CONVERSATION_ID,
+                actor_id=ACTOR_ID,
+                branch_id=BRANCH_ID,
+            )
+        assert owned.connection.in_transaction is True
+    finally:
+        owned.connection.execute("ROLLBACK")
+
+
+# --- 12. no wire drift ------------------------------------------------------------
 
 
 def test_this_lane_moved_no_public_contract() -> None:

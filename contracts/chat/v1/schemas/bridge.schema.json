@@ -173,12 +173,12 @@
     },
     "BridgeSnapshotItem": {
       "title": "BridgeSnapshotItem",
-      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`. Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`).",
+      "description": "One Chat record projected to the hosted renderer, identified by which Chat Runtime Contract record kind it carries. The bridge adds no domain meaning of its own: `payload` is required to validate against the exact already-defined Chat schema `itemKind` names, never an arbitrary or mismatched shape — `conversation` -> `graph.schema.json#/$defs/Conversation`; `message` -> `graph.schema.json#/$defs/Message`; `message_branch` -> `branch.schema.json#/$defs/MessageBranch`; `view_state` -> `viewstate.schema.json#/$defs/ConversationViewState`; `generation_job` -> `generation.schema.json#/$defs/GenerationJob`; `queued_submission` -> `queries.schema.json#/$defs/QueuedSubmissionProjection` (W5 GB-05). Every record naming `workspaceId`/`conversationId` is cross-checked against the bound context (freeze §12.9; validator `f2b_event_and_snapshot_context_consistent`). The `itemKind`/`payload` binding is total over the closed `itemKind` enum: each member names its own payload schema explicitly, so an added `itemKind` can never fall through an existing `else` and be validated against the wrong record kind.",
       "type": "object",
       "additionalProperties": false,
       "required": ["itemKind", "payload"],
       "properties": {
-        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job"] },
+        "itemKind": { "enum": ["conversation", "message", "message_branch", "view_state", "generation_job", "queued_submission"] },
         "payload": { "type": "object", "additionalProperties": true, "maxProperties": 128 }
       },
       "if": { "properties": { "itemKind": { "const": "conversation" } }, "required": ["itemKind"] },
@@ -193,7 +193,11 @@
             "if": { "properties": { "itemKind": { "const": "view_state" } }, "required": ["itemKind"] },
             "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/viewstate.schema.json#/$defs/ConversationViewState" } } },
             "else": {
-              "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" } }
+              "if": { "properties": { "itemKind": { "const": "generation_job" } }, "required": ["itemKind"] },
+              "then": { "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/generation.schema.json#/$defs/GenerationJob" } } },
+              "else": {
+                "properties": { "payload": { "$ref": "https://contracts.omnivia.dev/chat/v1/queries.schema.json#/$defs/QueuedSubmissionProjection" } }
+              }
             }
           }
         }

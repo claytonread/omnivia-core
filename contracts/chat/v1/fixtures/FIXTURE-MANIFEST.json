@@ -5,9 +5,9 @@
   "authority": "This manifest is proposal-stage Evidence only. It is not Approved, not Published, not Effective. It lists every normative valid, invalid and canonical-trace fixture in this change set.",
   "schema_host": "https://contracts.omnivia.dev/chat/v1/",
   "counts": {
-    "total": 158,
-    "valid": 75,
-    "invalid": 83
+    "total": 169,
+    "valid": 78,
+    "invalid": 91
   },
   "fixtures": [
     {
@@ -855,11 +855,31 @@
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
     },
     {
+      "path": "fixtures/valid/f2b-snapshot-item-queued-submission.json",
+      "expect": "valid",
+      "focus": "BridgeSnapshotItem itemKind queued_submission maps its payload to queries.schema.json#/$defs/QueuedSubmissionProjection (W5 GB-05), carrying the optional generationJobId a drained row correlates to while it is still state queued.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem"
+    },
+    {
       "path": "fixtures/invalid/f2b-snapshot-item-mismatched-payload-rejected.json",
       "expect": "invalid",
       "focus": "itemKind conversation with a Message-shaped payload is rejected: BridgeSnapshotItem enforces the itemKind/payload mapping, not merely an opaque object.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
       "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-queued-submission-mismatched-payload-rejected.json",
+      "expect": "invalid",
+      "focus": "itemKind queued_submission with a Message-shaped payload is rejected: the itemKind/payload mapping is enforced for every member, not merely the closed-since-launch ones.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/f2b-snapshot-item-queued-submission-malformed-generation-job-id-rejected.json",
+      "expect": "invalid",
+      "focus": "generationJobId is a WorkspaceScopedId, so a queued_submission payload naming a job in any other spelling is rejected: the correlation is an exact server-issued identifier, never free text a consumer could parse for meaning.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/BridgeSnapshotItem",
+      "expected_error_contains": "does not match"
     },
     {
       "path": "fixtures/invalid/f2b-snapshot-item-arbitrary-payload-rejected.json",
@@ -1583,6 +1603,25 @@
       ]
     },
     {
+      "path": "fixtures/valid/f2b-carrier-envelope-snapshot-page-queued-submission.json",
+      "expect": "valid",
+      "focus": "A host->module snapshot-page carrier whose one item is itemKind queued_submission, within the 65536-byte encoded carrier bound (W5 GB-05).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ]
+    },
+    {
+      "path": "fixtures/invalid/f2b-carrier-envelope-snapshot-page-oversize-queued-submission-rejected.json",
+      "expect": "invalid",
+      "focus": "A single oversized queued_submission item's actual UTF-8 JSON encoding pushes the whole snapshot-page carrier past 65536 bytes; refused, never truncated, exactly as any other oversized carrier payload is (W5 GB-05).",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/F2bCarrierEnvelope",
+      "checks": [
+        "f2b_encoded_envelope_within_carrier_bound"
+      ],
+      "expected_error_contains": "encoded envelope is"
+    },
+    {
       "path": "fixtures/valid/f2b-command-result-conflict.json",
       "expect": "valid",
       "focus": "D07 conflict semantics are preserved unchanged through the bridge: status conflict with an optional currentVersion.",
@@ -1617,6 +1656,47 @@
       "expect": "valid",
       "focus": "Module->host request continuing a resnapshot, carrying the exact resnapshotCursor a prior bridge.resnapshot named.",
       "schema_ref": "https://contracts.omnivia.dev/chat/v1/bridge.schema.json#/$defs/SnapshotRequestMessage"
+    },
+    {
+      "path": "fixtures/valid/generation-text-appended-event.json",
+      "expect": "valid",
+      "focus": "One live in-flight text delta for an in-progress Generation Attempt: job-scoped (generationEventSequence, no graph revision), minimised, carrying only the governed identity, ordering and delta fields.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-missing-required-rejected.json",
+      "expect": "invalid",
+      "focus": "chunkOrdinal and textDelta are required; a delta event that names neither is rejected rather than treated as an empty append.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "required"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-empty-delta-rejected.json",
+      "expect": "invalid",
+      "focus": "textDelta minLength:1 rejects an empty append, which would advance the stream without carrying text.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "minLength"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-oversized-delta-rejected.json",
+      "expect": "invalid",
+      "focus": "textDelta maxLength:262144 rejects an oversized delta at the contract bound; runtime additionally enforces the stricter cumulative UTF-8 byte bound.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "maxLength"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-wrong-discriminator-rejected.json",
+      "expect": "invalid",
+      "focus": "eventType const 'chat.generation.text_appended' rejects a document carrying another chat.generation.* discriminator, so the closed branch cannot be reached by the wrong event type.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "const"
+    },
+    {
+      "path": "fixtures/invalid/generation-text-appended-event-sensitive-field-rejected.json",
+      "expect": "invalid",
+      "focus": "additionalProperties:false rejects an injected Provider credential field; a minimised live delta admits no endpoint, model, header, credential, raw body or arbitrary metadata.",
+      "schema_ref": "https://contracts.omnivia.dev/chat/v1/events.schema.json#/$defs/GenerationTextAppendedEvent",
+      "expected_error_contains": "additionalProperties"
     }
   ]
 }

@@ -71,6 +71,10 @@
         "conversation_id": {
           "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
           "description": "The conversation the settled command changed, where it changed one."
+        },
+        "conversation_authority": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatConversationExpectation",
+          "description": "The authoritative aggregate facts for that conversation after this command settled, in the same shape the next command states as its `expected_conversation`. Present only where the runtime can state the post-settlement counters exactly; absent otherwise, which is what every existing command and peer already sends and reads. A caller carries it straight into its next optimistic command rather than fabricating counters for a conversation it has not read back."
         }
       },
       "required": [
@@ -140,7 +144,7 @@
     },
     "ChatEventsResult": {
       "title": "ChatEventsResult",
-      "description": "Result of `chat.events`: the durable event suffix after the requested cursor, or the demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, `events` is empty and `resnapshot_reason` states why the requested position could not be honoured; a fabricated continuation is exactly what that answer exists to prevent. Events are strictly increasing, duplicate-free and contiguous from the position the request continued from.",
+      "description": "Result of `chat.events`: the durable event suffix after the requested cursor, or the demand for a fresh snapshot -- never both. When `requires_resnapshot` is true, both `events` and `transport_events` are empty and `resnapshot_reason` states why the requested position could not be honoured; a fabricated continuation is exactly what that answer exists to prevent. Events are strictly increasing, duplicate-free and contiguous from the position the request continued from. The same suffix is offered in two forms: `events` is the backward-compatible sanitised lifecycle projection this envelope has always returned, and the optional `transport_events` is the exact Chat Contract v1 transport stream for the same positions. A caller that understands the chat contract reads `transport_events`; one that does not keeps reading `events` unchanged.",
       "type": "object",
       "properties": {
         "generation_job_id": {
@@ -149,9 +153,17 @@
         },
         "events": {
           "type": "array",
-          "description": "The durable events after the requested cursor, in ascending sequence order. Empty when a resnapshot is required.",
+          "description": "The backward-compatible sanitised lifecycle projection of the durable events after the requested cursor, in ascending sequence order. Carries no provider content, and stays exactly what it has always been for callers that do not read `transport_events`. Empty when a resnapshot is required.",
           "items": {
             "$ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatGenerationEvent"
+          },
+          "maxItems": 1000
+        },
+        "transport_events": {
+          "type": "array",
+          "description": "The exact Chat Contract v1 transport stream for the same positions, in ascending sequence order. Each item is an exact Chat Contract v1 `ChatEvent` document, validated and emitted against the separately published Chat contract; this application envelope carries it opaquely and deliberately does not restate that union. Order and cursors match `events` position for position. Optional for compatibility: a result that omits it is a well-formed result. Empty when a resnapshot is required, as `events` is.",
+          "items": {
+            "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject"
           },
           "maxItems": 1000
         },
@@ -168,6 +180,46 @@
         "generation_job_id",
         "events",
         "requires_resnapshot"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatSnapshotInput": {
+      "title": "ChatSnapshotInput",
+      "description": "Input for `chat.snapshot`: the authoritative selected-path snapshot of one conversation, the answer a caller takes when `chat.events` tells it a cursor can no longer be continued. `snapshot_query` is the Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim and opaque to this envelope, for the same reason `chat.command` carries its command that way -- Chat's snapshot shape is already frozen in `contracts/chat/v1`, and restating it here would create a second, drifting copy. `conversation_id` is the addressed conversation stated natively, so authorization and audit read one identifier rather than parsing a document this boundary does not validate. Workspace-scoped through the request envelope's selected workspace, so this payload never carries a second, independent workspace identifier.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation to snapshot. Must be the conversation `snapshot_query` names."
+        },
+        "snapshot_query": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ConversationSnapshotQuery` document, carried verbatim. Decoded and validated against the chat contract, never against this one."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "snapshot_query"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ChatSnapshotResult": {
+      "title": "ChatSnapshotResult",
+      "description": "Result of `chat.snapshot`: the Chat Contract v1 `ConversationSnapshotResult` document the query produced -- conversation, resolved active branch path and actor view state -- carried opaquely for the same reason the request is, and echoed with the conversation it answers. A snapshot is a complete authoritative read at one revision, not a continuation, so there is no cursor to honour and no resnapshot branch to signal.",
+      "type": "object",
+      "properties": {
+        "conversation_id": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/Identifier",
+          "description": "Identifier of the conversation this snapshot answers. Echoes the request."
+        },
+        "snapshot": {
+          "$ref": "https://contracts.omnivia.dev/application/v1/common.schema.json#/$defs/JsonObject",
+          "description": "The Chat Contract v1 `ConversationSnapshotResult` document, carried verbatim."
+        }
+      },
+      "required": [
+        "conversation_id",
+        "snapshot"
       ],
       "unevaluatedProperties": false
     }

@@ -1,0 +1,20 @@
+{
+  "itemKind": "queued_submission",
+  "payload": {
+    "workspaceId": "ws-acme",
+    "conversationId": "conv-0001",
+    "actorId": "actor-alice",
+    "queuedSubmissionId": "cmd-0001.sub",
+    "branchId": "branch-0001-original",
+    "editableParts": [{ "type": "text", "payload": { "text": "queued offline" } }],
+    "attachmentReferences": [],
+    "contextReferences": [],
+    "state": "queued",
+    "version": 1,
+    "position": 1,
+    "orderVersion": 1,
+    "generationJobId": "cmd-0001.gen",
+    "createdAt": "2026-08-20T10:00:00Z",
+    "updatedAt": "2026-08-20T10:00:00Z"
+  }
+}

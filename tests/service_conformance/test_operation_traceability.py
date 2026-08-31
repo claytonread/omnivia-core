@@ -13,7 +13,7 @@ yet accepted, and the architecture and newer lane plan are not yet reconciled
 on MCP coverage/naming, so the fixture records them as a single top-level
 client-surface decision -- mapping and evidence both explicitly not decided --
 never as a per-operation applicability claim. This module proves that split
-holds and stays in step with the frozen twenty-two-operation catalogue.
+holds and stays in step with the frozen twenty-three-operation catalogue.
 
 Validator, test-suite and architecture-gate traceability, and live adapter
 evidence, are later work; this module proves the index's shape, not those.
@@ -24,7 +24,7 @@ Two things this module deliberately does *not* do:
   facts are correct was decided by
   ``omnivia_core.contracts.v1.generated.OPERATION_CATALOGUE`` and is checked
   again here only for *equality* with that source, never re-derived.
-* It copies no case from the accepted 77-case adapter-wire-conformance corpus.
+* It copies no case from the accepted 78-case adapter-wire-conformance corpus.
   It proves that corpus exists and is referenced by name, and nothing more.
 
 Standard library and ``omnivia_core.contracts.v1`` only. Nothing here may
@@ -87,7 +87,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 TRACEABILITY = _load_json(FIXTURE_PATH)
 CATALOGUE_BY_NAME = {entry.name: entry for entry in OPERATION_CATALOGUE}
 #: ``(operation name, fixture entry)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of twenty-two.
+#: failure names the operation rather than an index into a list of twenty-three.
 FIXTURE_OPERATIONS: list[dict[str, Any]] = TRACEABILITY["operations"]
 FIXTURE_NAMES = [op["contract"]["name"] for op in FIXTURE_OPERATIONS]
 FIXTURE_CASES = list(zip(FIXTURE_NAMES, FIXTURE_OPERATIONS))
@@ -117,11 +117,11 @@ def test_every_fixture_operation_has_exactly_the_two_expected_top_level_keys() -
 # --------------------------------------------------------------------------
 
 
-def test_the_fixture_covers_exactly_the_frozen_twenty_operations_in_catalogue_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 22
+def test_the_fixture_covers_exactly_the_frozen_operations_in_catalogue_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 23
     assert FIXTURE_NAMES == [entry.name for entry in OPERATION_CATALOGUE]
-    assert len(FIXTURE_NAMES) == 22
-    assert len(set(FIXTURE_NAMES)) == 22
+    assert len(FIXTURE_NAMES) == 23
+    assert len(set(FIXTURE_NAMES)) == 23
 
 
 def test_the_fixture_names_no_operation_outside_the_generated_catalogue() -> None:
@@ -221,7 +221,7 @@ def test_every_client_surface_decision_is_pending_and_unevaluated(surface: str) 
 
 
 # --------------------------------------------------------------------------
-# The referenced 77-case adapter-wire-conformance corpus
+# The referenced 78-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 
@@ -232,16 +232,16 @@ def test_the_fixture_references_the_accepted_corpus_by_name_and_format() -> None
     )
     assert reference["file"].endswith(ADAPTER_CONFORMANCE_CORPUS_FILE)
     assert reference["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
-    assert reference["case_count"] == 77
+    assert reference["case_count"] == 78
 
 
-def test_the_referenced_corpus_file_exists_and_holds_exactly_77_unique_cases() -> None:
+def test_the_referenced_corpus_file_exists_and_holds_exactly_78_unique_cases() -> None:
     assert CORPUS_PATH.is_file(), f"referenced corpus is missing at {CORPUS_PATH}"
     document = _load_json(CORPUS_PATH)
     assert document["format"] == ADAPTER_CONFORMANCE_CORPUS_FORMAT
     case_ids = [case["id"] for case in document["cases"]]
-    assert len(case_ids) == 77
-    assert len(set(case_ids)) == 77
+    assert len(case_ids) == 78
+    assert len(set(case_ids)) == 78
 
 
 def test_the_fixture_copies_no_case_from_the_referenced_corpus() -> None:

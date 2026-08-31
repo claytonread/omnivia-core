@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.omnivia.dev/application/v1/operations.schema.json",
   "title": "OmniVia Core Application Contract v1 - operation metadata and catalogue",
-  "description": "The declared contract characteristics of one operation: its scope, payload schemas, required capability, side effects, and job/pagination/idempotency/precondition/audit/error posture. `x-omnivia-operation-catalogue` is the canonical catalogue of the twenty-two v1 application operations, materialized against `OperationMetadata`; the Python and TypeScript catalogues are generated from it, so it is the single source and no hand-maintained second catalogue exists. `service.health`, `service.readiness`, and `service.discover` are dedicated runtime probes (`service.schema.json`) and are deliberately not catalogue operations. Publishing the catalogue binds contract metadata only: no handler, dispatch, authorization, storage, durable-job execution, or transport behaviour is defined here. This document declares no root type; apart from the catalogue annotation it is a definition container only.",
+  "description": "The declared contract characteristics of one operation: its scope, payload schemas, required capability, side effects, and job/pagination/idempotency/precondition/audit/error posture. `x-omnivia-operation-catalogue` is the canonical catalogue of the twenty-three v1 application operations, materialized against `OperationMetadata`; the Python and TypeScript catalogues are generated from it, so it is the single source and no hand-maintained second catalogue exists. `service.health`, `service.readiness`, and `service.discover` are dedicated runtime probes (`service.schema.json`) and are deliberately not catalogue operations. Publishing the catalogue binds contract metadata only: no handler, dispatch, authorization, storage, durable-job execution, or transport behaviour is defined here. This document declares no root type; apart from the catalogue annotation it is a definition container only.",
   "x-omnivia-operation-catalogue": [
     {
       "name": "candidate.approve",
@@ -230,6 +230,60 @@
         "not_found",
         "rate_limited",
         "size_limit_exceeded",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "chat.snapshot",
+      "scope": {
+        "required_scopes": [
+          "chat:read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/chat.schema.json#/$defs/ChatSnapshotResult",
+      "required_capability": {
+        "id": "chat.read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
         "upgrade_required",
         "workspace_migration_required",
         "workspace_not_granted"

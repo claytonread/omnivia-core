@@ -1,6 +1,6 @@
 """R2a: the authenticated application authority seam.
 
-Every one of the twenty-two accepted catalogue operations goes through this file, and
+Every one of the twenty-three accepted catalogue operations goes through this file, and
 the properties proved are the ones a later slice could silently break: that a claim
 can only ever narrow what the server already granted, that installation and
 workspace scope rules and the endpoint binding are all enforced, that capability
@@ -271,7 +271,7 @@ INSTALLATION_ENTRY = INSTALLATION_ENTRIES[0]
 
 
 def test_the_catalogue_under_test_is_the_whole_accepted_catalogue() -> None:
-    assert len(CATALOGUE) == 22
+    assert len(CATALOGUE) == 23
     assert len(INSTALLATION_ENTRIES) + len(WORKSPACE_ENTRIES) == len(CATALOGUE)
 
 

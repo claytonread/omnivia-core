@@ -4,8 +4,8 @@
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files: FIXTURE-MANIFEST.json
-#                                             plus 158 governed fixtures)
+#   contracts/chat/v1/fixtures/**           (170 files: FIXTURE-MANIFEST.json
+#                                             plus 169 governed fixtures)
 # Governed by:
 #   Approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001;
 #   proposal commit 04c0b2f768b8a74c515936e548c4a28fa4af514d;
@@ -19,15 +19,63 @@
 # Regenerate: python scripts/generate-chat-contract.py
 # Verify:     python scripts/generate-chat-contract.py --check
 #
-# This never reads the Masterdocs checkout: the 13 schemas and 159 fixture
-# files under contracts/chat/v1 are this repository's own checked-in exact
-# copy of the approved bytes, and are the only source this script reads.
+# This never reads the Masterdocs checkout: the 13 schemas and 170 fixture
+# files under contracts/chat/v1 are this repository's own checked-in copy of
+# the approved bytes, and are the only source this script reads.
+#
+# Authorized widening on top of those bytes, pinned by the digest below:
+#   commands.schema.json#/$defs/SubmitMessageRequest -- the expected-head group
+#     (branchId, expectedHeadMessageId, expectedHeadVersion) moves out of
+#     `required` into an all-or-none `oneOf`, so a first send into a
+#     Conversation that REF-042 §9.1 leaves branchless can be stated without a
+#     fabricated head. Every document that validated before still validates.
+#   queries.schema.json#/$defs/ConversationSnapshotResult -- an optional
+#     `branch` member carrying the exact branch.schema.json MessageBranch the
+#     `path` was taken from, so a hosted F2b snapshot carries the `headVersion`
+#     a later optimistic submit must state. Required members are unchanged.
+#   events.schema.json#/$defs/GenerationTextAppendedEvent -- a new closed
+#     transport event `chat.generation.text_appended` carrying one live
+#     in-flight text delta for an in-progress Generation Attempt, added as a
+#     further member of the `ChatEvent` union with
+#     common.schema.json#/$defs/ChatEventType widened by that one member. No
+#     existing event $def changes, so every document that validated before
+#     still validates; six governed fixtures (one valid, five invalid) are
+#     added with it.
+#   queries.schema.json#/$defs/QueuedSubmissionProjection -- a new $def (the
+#     actor-scoped active-queue row joined to its order projection), and
+#     queries.schema.json#/$defs/ConversationSnapshotResult gets one new
+#     optional `queuedSubmissions` member typed by it. Required members of
+#     ConversationSnapshotResult are unchanged, so every document that
+#     validated before still validates. The projection additionally carries one
+#     optional `generationJobId`, the row's own already-opened Generation Job:
+#     a drained row keeps `state: queued` until the generation claimant advances
+#     it, so without it a reconnecting actor cannot tell pre-submit work from
+#     work already handed to generation. Optional, so a document without it
+#     still validates; one governed invalid fixture is added with it.
+#     queries.schema.json#/$defs/BranchPathResult.generationJobIds gains a
+#     description stating what it always meant to publish -- the selected
+#     branch's complete durable job projection, not merely the ids the path's
+#     result Messages reference. No shape change: same required array, same
+#     bound, broader truthful contents.
+#   bridge.schema.json#/$defs/BridgeSnapshotItem -- `itemKind` widens with one
+#     further member, `queued_submission`, bound to the new
+#     QueuedSubmissionProjection payload schema; the existing five members and
+#     their payload bindings are unchanged. Four governed fixtures (two valid,
+#     two invalid) are added with it: a valid and a mismatched-payload
+#     BridgeSnapshotItem, and a valid and an oversize-rejected
+#     host/chat.snapshot-page F2bCarrierEnvelope each carrying one
+#     queued_submission item.
+# All four are additive-compatible under CHAT-RUNTIME-CONTRACT-V1-
+# COMPATIBILITY-AND-MIGRATION.md §3, and all four must be carried back to the
+# Masterdocs authority before the next tag: until then this tree is
+# deliberately not byte-identical to architecture-v1.4.0, and the digest is
+# what says so.
 """Generate ``omnivia_core.chat_contract.v1.generated`` from the checked-in
 Chat Runtime Contract v1 schemas and fixtures.
 
 Verifies, deterministically:
 
-- the exact packaged resource *count* (13 schemas, 159 fixture-tree files);
+- the exact packaged resource *count* (13 schemas, 170 fixture-tree files);
 - a single pinned SHA-256 digest over every relative resource path and its
   exact byte payload, so a changed, missing or extra resource under
   ``contracts/chat/v1`` fails closed rather than silently regenerating a
@@ -98,18 +146,19 @@ PROTOCOL_VERSION = "1.0"
 PROTOCOL_MAJOR = "1"
 
 EXPECTED_SCHEMA_COUNT = 13
-EXPECTED_FIXTURE_TREE_COUNT = 159  # FIXTURE-MANIFEST.json + 158 governed fixtures
-EXPECTED_FIXTURE_CASE_COUNT = 158
-EXPECTED_FIXTURE_VALID_COUNT = 75
-EXPECTED_FIXTURE_INVALID_COUNT = 83
+EXPECTED_FIXTURE_TREE_COUNT = 170  # FIXTURE-MANIFEST.json + 169 governed fixtures
+EXPECTED_FIXTURE_CASE_COUNT = 169
+EXPECTED_FIXTURE_VALID_COUNT = 78
+EXPECTED_FIXTURE_INVALID_COUNT = 91
 
-#: Pinned once, over the exact approved bytes verified byte-for-byte against
-#: the tagged Masterdocs authority (``architecture-v1.4.0``) at copy time.
-#: Recomputed on every run by :func:`compute_resource_inventory_digest` and
-#: compared; any changed, missing or extra file under ``contracts/chat/v1``
-#: changes this digest and fails ``--check`` closed.
+#: Pinned over the approved bytes verified byte-for-byte against the tagged
+#: Masterdocs authority (``architecture-v1.4.0``) at copy time, plus the four
+#: authorized additive widenings the header names. Recomputed on every run by
+#: :func:`compute_resource_inventory_digest` and compared; any changed, missing
+#: or extra file under ``contracts/chat/v1`` changes this digest and fails
+#: ``--check`` closed. Repinned deliberately, never to make a check pass.
 EXPECTED_RESOURCE_INVENTORY_DIGEST = (
-    "9a633eb9cdb81e6f586f904c493ac405a535d8da2198561358e940ecb60b090a"
+    "0df1e61e9ea824d88df7a95fe50f9536325b15b48c33f6320606a1532ad5ce1c"
 )
 
 
@@ -527,7 +576,7 @@ def render_generated_module(
 #
 # Source of truth:
 #   contracts/chat/v1/schemas/*.schema.json (13 files)
-#   contracts/chat/v1/fixtures/**           (159 files)
+#   contracts/chat/v1/fixtures/**           (170 files)
 # Governed by:
 #   Approval {APPROVAL_ID};
 #   proposal commit {PROPOSAL_COMMIT};
@@ -622,7 +671,7 @@ PROTOCOL_MAJOR: Final[str] = {PROTOCOL_MAJOR!r}
 
 #: Exact packaged schema file count.
 RESOURCE_SCHEMA_COUNT: Final[int] = {EXPECTED_SCHEMA_COUNT!r}
-#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 158 governed fixtures).
+#: Exact packaged fixture-tree file count (FIXTURE-MANIFEST.json plus 168 governed fixtures).
 RESOURCE_FIXTURE_TREE_COUNT: Final[int] = {EXPECTED_FIXTURE_TREE_COUNT!r}
 #: Pinned SHA-256 over every relative resource path and byte payload under
 #: ``contracts/chat/v1``; see ``scripts/generate-chat-contract.py``
@@ -641,7 +690,7 @@ RESOURCE_INVENTORY_DIGEST: Final[str] = {digest!r}
     vocab_docs = {
         "CHAT_COMMAND_NAMES": "The closed v1 initial Chat command registry (commands.schema.json ChatCommandName), 30 members.",
         "ERROR_CODES": "The closed v1 shared error-code registry (common.schema.json ErrorCode), 24 members.",
-        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 15 members. Additive-decode point.",
+        "CHAT_EVENT_TYPES": "The closed v1 durable Chat transport event-type vocabulary (common.schema.json ChatEventType), 16 members. Additive-decode point.",
         "RESNAPSHOT_REASONS": "The closed reason vocabulary for events.schema.json ResnapshotResponse.reason, 4 members.",
         "COMMAND_RESULT_STATUSES": "The closed status vocabulary for commands.schema.json CommandResultEnvelope.status, 4 members.",
         "F2A_FINISH_REASONS": "The closed v1 F2a normalised finish-reason vocabulary (provider.schema.json FinishReason), 7 members.",
