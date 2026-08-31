@@ -1,14 +1,22 @@
--- Canonical EffectIntent, EffectReceipt and EffectSettlement records (RT-203 successor).
+-- Canonical EffectIntent, dispatch outbox, EffectReceipt and EffectSettlement records
+-- (RT-203 successor).
 --
--- Additive only. Three append-only tables and nine statement triggers, on top of the
+-- Additive only. Four append-only tables and twelve statement triggers, on top of the
 -- canonical runtime records migrations 0018, 0021 and 0022 added. Every row here belongs
 -- to an existing `omnivia_runtime_runs` row; nothing here creates a run, changes a run's
--- status, dispatches an effect, retries an uncertain attempt, or reconciles provider
--- state outside the canonical runtime record.
+-- status, retries an uncertain attempt, or reconciles provider state outside the
+-- canonical runtime record.
 --
 --   omnivia_runtime_effect_intents      one immutable declaration before acting
+--   omnivia_runtime_effect_dispatches   the outbox: each time a dispatch was requested
 --   omnivia_runtime_effect_receipts     one immutable observation of an intended effect
 --   omnivia_runtime_effect_settlements  an audited answer for an intended effect
+--
+-- The outbox is a table rather than a counter for the crash window it survives. Declare,
+-- dispatch, then crash before the receipt: an intent with no receipt and no dispatch row
+-- was never handed out and settles `not_committed` deterministically, while one with a
+-- dispatch row and no receipt settles `unknown`. Without the row those two are the same
+-- absence, and the difference between them is the whole of RT-205.
 --
 -- The stored shape follows the accepted v1 contract without inventing a provider store.
 -- Intent columns are the canonical selectors a runtime command needs before acting:
@@ -29,7 +37,7 @@
 -- semantically valid, remains the accepted contract validator's job because 0022 stores
 -- grants as canonical JSON rather than decomposed capability columns.
 --
--- UPDATE and DELETE abort unconditionally on all three tables, for the current fenced
+-- UPDATE and DELETE abort unconditionally on all four tables, for the current fenced
 -- owner too. Current ownership is authority to append a new fact, never to revise one.
 --
 -- Every comment in this file sits between statements and never inside one, for the
@@ -106,6 +114,31 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_effect_intents (
         REFERENCES omnivia_runtime_attempts (workspace_id, attempt_id),
     FOREIGN KEY (workspace_id, capability_grant_id)
         REFERENCES omnivia_runtime_capability_grants (workspace_id, capability_grant_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS omnivia_runtime_effect_dispatches (
+    workspace_id     TEXT    NOT NULL,
+    effect_intent_id TEXT    NOT NULL,
+    dispatch_number  INTEGER NOT NULL,
+    requested_at_us  INTEGER NOT NULL,
+
+    PRIMARY KEY (workspace_id, effect_intent_id, dispatch_number),
+
+    CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
+           AND workspace_id GLOB '[A-Za-z0-9]*'
+           AND workspace_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(workspace_id, char(0)) = 0),
+    CHECK (typeof(effect_intent_id) = 'text'
+           AND length(effect_intent_id) BETWEEN 1 AND 128
+           AND effect_intent_id GLOB '[A-Za-z0-9]*'
+           AND effect_intent_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(effect_intent_id, char(0)) = 0),
+    CHECK (typeof(dispatch_number) = 'integer'
+           AND dispatch_number BETWEEN 1 AND 256),
+    CHECK (typeof(requested_at_us) = 'integer' AND requested_at_us > 0),
+
+    FOREIGN KEY (workspace_id, effect_intent_id)
+        REFERENCES omnivia_runtime_effect_intents (workspace_id, effect_intent_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS omnivia_runtime_effect_receipts (
@@ -297,6 +330,53 @@ BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_effect_intents is append-only; DELETE is never permitted');
 END;
 
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_dispatches_insert
+BEFORE INSERT ON omnivia_runtime_effect_dispatches
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_runtime_effect_dispatches')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'))
+       OR NEW.workspace_id IS NOT (
+            SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
+    SELECT RAISE(ABORT, 'omnivia: a dispatch must not be recorded before its intent was declared')
+    WHERE NEW.requested_at_us < (
+        SELECT declared_at_us FROM omnivia_runtime_effect_intents
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: dispatch number must be contiguous within its intent')
+    WHERE NEW.dispatch_number IS NOT (
+        SELECT COALESCE(MAX(dispatch_number), 0) + 1
+        FROM omnivia_runtime_effect_dispatches
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: a settled effect is never dispatched again')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_settlements
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_dispatches_update
+BEFORE UPDATE ON omnivia_runtime_effect_dispatches
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_effect_dispatches is append-only; UPDATE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_dispatches_delete
+BEFORE DELETE ON omnivia_runtime_effect_dispatches
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_effect_dispatches is append-only; DELETE is never permitted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_receipts_insert
 BEFORE INSERT ON omnivia_runtime_effect_receipts
 BEGIN
@@ -325,6 +405,17 @@ BEGIN
         SELECT declared_at_us FROM omnivia_runtime_effect_intents
         WHERE workspace_id = NEW.workspace_id
           AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: an effect never dispatched has no observation to receive')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_dispatches
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: an effect settled not_committed cannot then be observed')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_settlements
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id
+          AND outcome = 'not_committed');
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_receipts_update
@@ -367,6 +458,15 @@ BEGIN
         SELECT declared_at_us FROM omnivia_runtime_effect_intents
         WHERE workspace_id = NEW.workspace_id
           AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: an effect settlement is made once unless explicit reconciliation appends a later answer')
+    WHERE NEW.reason NOT IN (
+        'effect.reconciled_by_late_receipt',
+        'effect.reconciled_never_dispatched'
+    )
+      AND EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_settlements
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
     SELECT RAISE(ABORT, 'omnivia: a committed settlement must name a receipt for the same intent')
     WHERE NEW.outcome = 'committed'
       AND NOT EXISTS (
@@ -375,6 +475,12 @@ BEGIN
           AND effect_receipt_id = NEW.effect_receipt_id
           AND effect_intent_id = NEW.effect_intent_id
           AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: an observed effect cannot be settled not_committed')
+    WHERE NEW.outcome = 'not_committed'
+      AND EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_receipts
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_intent_id = NEW.effect_intent_id);
     SELECT RAISE(ABORT, 'omnivia: an effect settlement audit reference must belong to its workspace')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_application_audit_events

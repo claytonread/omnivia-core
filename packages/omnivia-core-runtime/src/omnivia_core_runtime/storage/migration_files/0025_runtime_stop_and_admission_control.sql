@@ -5,6 +5,7 @@
 -- do not add a public operation, mutate a run, requeue a job, or replace the event stream.
 --
 --   omnivia_runtime_admission_decisions  one admission/refusal decision for a logical key
+--   omnivia_runtime_admission_stops      the workspace's emergency admission-stop ledger
 --   omnivia_runtime_stop_requests        one request to stop a run
 --   omnivia_runtime_stop_outcomes        the one outcome of that stop request
 --
@@ -76,13 +77,14 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_admission_decisions (
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS omnivia_runtime_stop_requests (
-    workspace_id      TEXT    NOT NULL,
-    stop_request_id   TEXT    NOT NULL,
-    run_id            TEXT    NOT NULL,
-    requested_at_us   INTEGER NOT NULL,
-    requested_by      TEXT    NOT NULL,
-    reason            TEXT    NOT NULL,
-    audit_ref         TEXT    NOT NULL,
+    workspace_id         TEXT    NOT NULL,
+    stop_request_id      TEXT    NOT NULL,
+    run_id               TEXT    NOT NULL,
+    requested_at_us      INTEGER NOT NULL,
+    requested_by         TEXT    NOT NULL,
+    reason               TEXT    NOT NULL,
+    audit_ref            TEXT    NOT NULL,
+    superseded_by_run_id TEXT,
 
     PRIMARY KEY (workspace_id, stop_request_id),
 
@@ -112,9 +114,64 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_stop_requests (
            AND audit_ref GLOB '[A-Za-z0-9]*'
            AND audit_ref NOT GLOB '*[^A-Za-z0-9._:-]*'
            AND instr(audit_ref, char(0)) = 0),
+    CHECK (superseded_by_run_id IS NULL OR (typeof(superseded_by_run_id) = 'text'
+           AND length(superseded_by_run_id) BETWEEN 1 AND 128
+           AND superseded_by_run_id GLOB '[A-Za-z0-9]*'
+           AND superseded_by_run_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(superseded_by_run_id, char(0)) = 0)),
+    CHECK ((reason = 'superseded' AND superseded_by_run_id IS NOT NULL)
+           OR (reason <> 'superseded' AND superseded_by_run_id IS NULL)),
+    CHECK (superseded_by_run_id IS NULL OR superseded_by_run_id <> run_id),
+
+    UNIQUE (workspace_id, run_id),
 
     FOREIGN KEY (workspace_id, run_id)
         REFERENCES omnivia_runtime_runs (workspace_id, run_id),
+    FOREIGN KEY (workspace_id, superseded_by_run_id)
+        REFERENCES omnivia_runtime_runs (workspace_id, run_id),
+    FOREIGN KEY (audit_ref, workspace_id)
+        REFERENCES omnivia_application_audit_events (audit_ref, workspace_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS omnivia_runtime_admission_stops (
+    workspace_id      TEXT    NOT NULL,
+    sequence          INTEGER NOT NULL,
+    admission_stop_id TEXT    NOT NULL,
+    state             TEXT    NOT NULL,
+    running_work      TEXT,
+    effective_at_us   INTEGER NOT NULL,
+    reason            TEXT    NOT NULL,
+    audit_ref         TEXT    NOT NULL,
+
+    PRIMARY KEY (workspace_id, sequence),
+
+    CHECK (typeof(workspace_id) = 'text' AND length(workspace_id) BETWEEN 1 AND 128
+           AND workspace_id GLOB '[A-Za-z0-9]*'
+           AND workspace_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(workspace_id, char(0)) = 0),
+    CHECK (typeof(sequence) = 'integer' AND sequence BETWEEN 0 AND 999),
+    CHECK (typeof(admission_stop_id) = 'text'
+           AND length(admission_stop_id) BETWEEN 1 AND 128
+           AND admission_stop_id GLOB '[A-Za-z0-9]*'
+           AND admission_stop_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(admission_stop_id, char(0)) = 0),
+    CHECK (state IN ('engaged', 'released')),
+    CHECK (running_work IS NULL OR running_work IN ('await', 'release')),
+    CHECK ((state = 'engaged' AND running_work IS NOT NULL)
+           OR (state = 'released' AND running_work IS NULL)),
+    CHECK (typeof(effective_at_us) = 'integer' AND effective_at_us > 0),
+    CHECK (typeof(reason) = 'text' AND length(reason) BETWEEN 1 AND 128
+           AND reason GLOB '[a-z]*'
+           AND reason NOT GLOB '*[^a-z0-9_.]*'
+           AND reason NOT GLOB '*.'
+           AND reason NOT GLOB '*.[^a-z]*'),
+    CHECK (typeof(audit_ref) = 'text' AND length(audit_ref) BETWEEN 1 AND 128
+           AND audit_ref GLOB '[A-Za-z0-9]*'
+           AND audit_ref NOT GLOB '*[^A-Za-z0-9._:-]*'
+           AND instr(audit_ref, char(0)) = 0),
+
+    UNIQUE (workspace_id, admission_stop_id),
+
     FOREIGN KEY (audit_ref, workspace_id)
         REFERENCES omnivia_application_audit_events (audit_ref, workspace_id)
 ) WITHOUT ROWID;
@@ -227,6 +284,20 @@ BEGIN
     WHERE NEW.requested_at_us < (
         SELECT created_at_us FROM omnivia_runtime_runs
         WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: a run that has already finished cannot be stopped')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_runtime_events
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND run_status IN ('succeeded', 'partially_completed', 'failed', 'cancelled'));
+    SELECT RAISE(ABORT, 'omnivia: a run stop must obey the engaged admission stop running-work policy')
+    WHERE EXISTS (
+        SELECT 1 FROM omnivia_runtime_admission_stops a
+        WHERE a.workspace_id = NEW.workspace_id
+          AND a.sequence = (
+            SELECT MAX(sequence) FROM omnivia_runtime_admission_stops
+            WHERE workspace_id = NEW.workspace_id)
+          AND a.state = 'engaged'
+          AND a.running_work <> NEW.requested_by);
     SELECT RAISE(ABORT, 'omnivia: stop request audit reference must belong to its workspace')
     WHERE NOT EXISTS (
         SELECT 1 FROM omnivia_application_audit_events
@@ -306,4 +377,73 @@ CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_stop_outcomes_delete
 BEFORE DELETE ON omnivia_runtime_stop_outcomes
 BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_stop_outcomes is append-only; DELETE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_admission_stops_insert
+BEFORE INSERT ON omnivia_runtime_admission_stops
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: unguarded INSERT on omnivia_runtime_admission_stops')
+    WHERE omnivia_service_writer() IS NOT 1
+       OR NOT EXISTS (
+            SELECT 1 FROM omnivia_mutation_guard g
+            JOIN omnivia_workspace_state s ON s.singleton = 1
+            JOIN omnivia_workspace_lease l ON l.singleton = 1
+            WHERE g.singleton = 1 AND g.fencing_generation = s.fencing_generation
+              AND g.workspace_id = s.workspace_id
+              AND l.fencing_generation = g.fencing_generation
+              AND l.workspace_id = g.workspace_id
+              AND l.service_instance_id = g.service_instance_id
+              AND l.lifecycle IN ('acquiring', 'held', 'draining'))
+       OR NEW.workspace_id IS NOT (
+            SELECT workspace_id FROM omnivia_workspace_state WHERE singleton = 1);
+    SELECT RAISE(ABORT, 'omnivia: admission stop sequence must be contiguous from zero')
+    WHERE NEW.sequence IS NOT (
+        SELECT COALESCE(MAX(sequence), -1) + 1 FROM omnivia_runtime_admission_stops
+        WHERE workspace_id = NEW.workspace_id);
+    SELECT RAISE(ABORT, 'omnivia: an admission stop ledger opens by engaging a stop')
+    WHERE NEW.sequence = 0 AND NEW.state <> 'engaged';
+    SELECT RAISE(ABORT, 'omnivia: an admission stop entry that restates its predecessor records nothing')
+    WHERE NEW.sequence > 0
+      AND NEW.state IS (
+        SELECT state FROM omnivia_runtime_admission_stops
+        WHERE workspace_id = NEW.workspace_id AND sequence = NEW.sequence - 1);
+    SELECT RAISE(ABORT, 'omnivia: admission stop time must not regress')
+    WHERE NEW.sequence > 0
+      AND NEW.effective_at_us < (
+        SELECT effective_at_us FROM omnivia_runtime_admission_stops
+        WHERE workspace_id = NEW.workspace_id AND sequence = NEW.sequence - 1);
+    SELECT RAISE(ABORT, 'omnivia: admission stop audit reference must belong to its workspace')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM omnivia_application_audit_events
+        WHERE audit_ref = NEW.audit_ref AND workspace_id = NEW.workspace_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_admission_stops_update
+BEFORE UPDATE ON omnivia_runtime_admission_stops
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_admission_stops is append-only; UPDATE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_admission_stops_delete
+BEFORE DELETE ON omnivia_runtime_admission_stops
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: omnivia_runtime_admission_stops is append-only; DELETE is never permitted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_runs_admission_stop_insert
+BEFORE INSERT ON omnivia_runtime_runs
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: an emergency admission stop is engaged; no run is admitted')
+    WHERE 'engaged' IS (
+        SELECT state FROM omnivia_runtime_admission_stops
+        WHERE workspace_id = NEW.workspace_id ORDER BY sequence DESC LIMIT 1);
+END;
+
+CREATE TRIGGER IF NOT EXISTS omnivia_guard_runtime_effect_intents_admission_stop_insert
+BEFORE INSERT ON omnivia_runtime_effect_intents
+BEGIN
+    SELECT RAISE(ABORT, 'omnivia: an emergency admission stop is engaged; no effect is intended')
+    WHERE 'engaged' IS (
+        SELECT state FROM omnivia_runtime_admission_stops
+        WHERE workspace_id = NEW.workspace_id ORDER BY sequence DESC LIMIT 1);
 END;

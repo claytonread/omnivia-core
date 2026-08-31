@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS omnivia_runtime_effect_reconciliations (
            AND instr(audit_ref, char(0)) = 0),
     CHECK (source_effect_settlement_id <> resulting_effect_settlement_id),
 
+    UNIQUE (workspace_id, source_effect_settlement_id),
     UNIQUE (workspace_id, resulting_effect_settlement_id),
 
     FOREIGN KEY (workspace_id, run_id)
@@ -131,7 +132,7 @@ BEGIN
           AND run_id = NEW.run_id
           AND effect_intent_id = NEW.effect_intent_id
           AND outcome = 'unknown');
-    SELECT RAISE(ABORT, 'omnivia: an effect reconciliation cannot predate its source settlement')
+    SELECT RAISE(ABORT, 'omnivia: an effect reconciliation cannot be recorded before it was settled')
     WHERE NEW.reconciled_at_us < (
         SELECT settled_at_us FROM omnivia_runtime_effect_settlements
         WHERE workspace_id = NEW.workspace_id
@@ -143,6 +144,18 @@ BEGIN
         WHERE workspace_id = NEW.workspace_id
           AND effect_receipt_id = NEW.effect_receipt_id
           AND run_id = NEW.run_id
+          AND effect_intent_id = NEW.effect_intent_id);
+    SELECT RAISE(ABORT, 'omnivia: an APPLIED reconciliation cannot predate the receipt that proves it')
+    WHERE NEW.outcome = 'APPLIED'
+      AND NEW.reconciled_at_us < (
+        SELECT observed_at_us FROM omnivia_runtime_effect_receipts
+        WHERE workspace_id = NEW.workspace_id
+          AND effect_receipt_id = NEW.effect_receipt_id);
+    SELECT RAISE(ABORT, 'omnivia: a dispatched effect cannot be reconciled NOT_APPLIED without external proof')
+    WHERE NEW.outcome = 'NOT_APPLIED'
+      AND EXISTS (
+        SELECT 1 FROM omnivia_runtime_effect_dispatches
+        WHERE workspace_id = NEW.workspace_id
           AND effect_intent_id = NEW.effect_intent_id);
     SELECT RAISE(ABORT, 'omnivia: an effect reconciliation result must be a later settlement of its own intent')
     WHERE NOT EXISTS (
