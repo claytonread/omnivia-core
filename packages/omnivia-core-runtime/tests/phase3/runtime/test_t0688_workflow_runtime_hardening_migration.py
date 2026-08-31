@@ -1446,6 +1446,126 @@ def test_a_quarantine_that_names_another_runs_evidence_refuses(
     ).fetchone() == (0,)
 
 
+# --- a quarantine with no surviving event to cite ---------------------------------
+
+CITATION_REQUIRED = "may omit its event only for a sequence gap"
+FINDING_REQUIRED = "must cite an integrity report that found a fault"
+CARRY_FORWARD = "must carry forward the event citation it holds"
+
+
+@pytest.fixture
+def gapped(paired: m1.Owned) -> m1.Owned:
+    """That run, with the `sequence_gap` report a citationless quarantine may cite."""
+    record(paired, (INTEGRITY, integrity_row("sequence_gap")))
+    return paired
+
+
+def test_a_sequence_gap_quarantine_may_hold_a_run_with_no_event_to_cite(
+    gapped: m1.Owned,
+) -> None:
+    """A journal that is gone entirely is the one fault with nothing left to name.
+
+    Requiring an event citation here would make the worst journal fault the only one
+    this schema cannot hold, so a `sequence_gap` quarantine may omit it -- and the
+    release that follows carries the same absence forward rather than inventing one.
+    """
+    before = public_run_state(gapped)
+    record(gapped, (QUARANTINE, quarantine_row(event_id=None)))
+    record(gapped, (QUARANTINE, quarantine_row(1, "released", event_id=None)))
+
+    assert gapped.connection.execute(
+        f"SELECT disposition_sequence, event_id, action, integrity_report_id "
+        f"FROM {QUARANTINE} ORDER BY disposition_sequence"
+    ).fetchall() == [
+        (0, None, "quarantined", INTEGRITY_ID),
+        (1, None, "released", None),
+    ]
+    assert public_run_state(gapped) == before
+    assert counts(gapped) == (1, 1)
+    assert foreign_key_check(gapped.connection) == []
+
+
+CITATIONLESS_REFUSALS: dict[str, tuple[str, dict[str, object], str]] = {
+    "an integrity failure with nothing named": (
+        "integrity_failure",
+        {"event_id": None},
+        CITATION_REQUIRED,
+    ),
+    "a report that found nothing": (
+        "verified",
+        {},
+        FINDING_REQUIRED,
+    ),
+    "a report that found nothing, with nothing named": (
+        "verified",
+        {"event_id": None},
+        FINDING_REQUIRED,
+    ),
+    "no report at all": (
+        "sequence_gap",
+        {"event_id": None, "integrity_report_id": None},
+        CITATION_REQUIRED,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CITATIONLESS_REFUSALS))
+def test_a_quarantine_that_omits_its_event_without_a_gap_refuses(
+    paired: m1.Owned, case: str
+) -> None:
+    outcome, overrides, expected = CITATIONLESS_REFUSALS[case]
+    record(paired, (INTEGRITY, integrity_row(outcome)))
+    with pytest.raises(sqlite3.DatabaseError, match=expected):
+        record(paired, (QUARANTINE, quarantine_row(**overrides)))
+    assert paired.connection.execute(
+        f"SELECT COUNT(*) FROM {QUARANTINE}"
+    ).fetchone() == (0,)
+
+
+def test_a_citationless_quarantine_may_not_borrow_another_runs_gap(
+    gapped: m1.Owned,
+) -> None:
+    """Run scope holds with no event named: the report still has to be this run's."""
+    seed_other_run(gapped)
+    record(
+        gapped,
+        (
+            INTEGRITY,
+            integrity_row("sequence_gap", run_id=OTHER_RUN_ID, report_id="gap-other"),
+        ),
+    )
+    with pytest.raises(sqlite3.DatabaseError, match=CITATION_REQUIRED):
+        record(
+            gapped,
+            (
+                QUARANTINE,
+                quarantine_row(event_id=None, integrity_report_id="gap-other"),
+            ),
+        )
+    assert gapped.connection.execute(
+        f"SELECT COUNT(*) FROM {QUARANTINE}"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    "held,released",
+    [(None, event_id_for(0)), (event_id_for(0), None)],
+    ids=["a release that invents a citation", "a release that drops one"],
+)
+def test_a_release_that_restates_the_citation_it_holds_refuses(
+    paired: m1.Owned, held: str | None, released: str | None
+) -> None:
+    """A release changes who decided, never what was held."""
+    outcome = "sequence_gap" if held is None else "integrity_failure"
+    record(paired, (INTEGRITY, integrity_row(outcome)))
+    record(paired, (QUARANTINE, quarantine_row(event_id=held)))
+    with pytest.raises(sqlite3.DatabaseError, match=CARRY_FORWARD):
+        record(paired, (QUARANTINE, quarantine_row(1, "released", event_id=released)))
+    assert paired.connection.execute(
+        f"SELECT COUNT(*) FROM {QUARANTINE}"
+    ).fetchone() == (1,)
+
+
 # --- recorded retention boundaries ------------------------------------------------
 
 

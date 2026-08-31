@@ -62,14 +62,45 @@ the Run's current produced head refuses with `RT_BUNDLE_REVISION_CONFLICT`. Ever
 those is a `TransitionBundleRefused` naming its own closed diagnostic, so a caller
 asserts on the code rather than on a sentence.
 
+*Parity is measured against the bytes, and only while there are two writers.* IP-07's
+:meth:`WorkflowJournalGovernanceWriter.record_transition_parity_report` compares a state
+digest the existing writer supplies against the digest of the stored bundle a verified
+read recomputed, never one a caller states for it, and records one canonical report per
+bundle. Only `R1` may record: `R0` has no bundle writer to disagree with and `R2` is no
+longer dual-write, so both refuse rather than record a comparison that means nothing.
+:func:`evaluate_parity_promotion` answers over a declared population of bundles and
+never over "whatever happens to be reported": a missing report, a diverged one or an
+empty population all block promotion.
+
+*Integrity is verified, quarantined and never repaired.*
+:meth:`WorkflowJournalGovernanceWriter.verify_journal_integrity` walks the sequence set
+the persisted bundles imply -- not the events that happen to have survived -- so a
+removed row is a `sequence_gap` at the sequence it is missing from, and a row that is
+there but cannot be believed is an `integrity_failure` at its own. `R0` observes and
+records; `R1` and `R2` append a quarantine disposition in the same fenced transaction as
+the report. Nothing here writes a new public Workflow Run state, deletes, folds,
+reconstructs or renumbers anything, and a resume against a held quarantine refuses with
+`RT_JOURNAL_QUARANTINED` rather than skipping the history it cannot verify. A release is
+explicit, attributable and fenced, and there is no statement that could release one
+Run's quarantine from another Run's decision.
+
+*A retention boundary records that a range is removable; it never removes it.*
+:meth:`WorkflowJournalGovernanceWriter.record_retention_boundary` writes one boundary
+row and no DELETE at all. A boundary that names a removed range must say the Run is not
+resumable after it, and once any boundary has said so no later boundary restores
+resumability -- :func:`read_journal_retention_posture` reads every boundary the Run
+holds, not only the newest, so a resumable-looking boundary appended afterwards cannot
+quietly undo the policy that was already recorded.
+
 Storage only. No admission service, no execution, no scheduler, no Evidence writer.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -97,6 +128,11 @@ _PLANS: Final = "omnivia_workflow_plans"
 _BINDINGS: Final = "omnivia_workflow_runtime_bindings"
 _BUNDLES: Final = "omnivia_workflow_transition_bundles"
 _JOURNAL: Final = "omnivia_workflow_runtime_journal_events"
+_PARITY: Final = "omnivia_workflow_transition_parity_reports"
+_INTEGRITY: Final = "omnivia_workflow_journal_integrity_reports"
+_QUARANTINE: Final = "omnivia_workflow_journal_quarantine_events"
+_RETENTION: Final = "omnivia_workflow_journal_retention_boundaries"
+_AUDIT: Final = "omnivia_application_audit_events"
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -1067,88 +1103,1627 @@ def read_runtime_journal_events(
     for sequence, row in enumerate(
         connection.execute(_JOURNAL_QUERY, (workspace_id, run_id))
     ):
-        (
-            event_id,
-            bundle_id,
-            row_sequence,
-            previous_link,
-            row_payload_digest,
-            document,
-            digest,
-            byte_length,
-            payload_document,
-            payload_digest,
-            payload_length,
-            recorded_at_us,
-            expected_revision,
-        ) = row
-        decoded = _verified_document(document, digest, byte_length, "journal event")
-        payload = _verified_document(
-            payload_document, payload_digest, payload_length, "journal event payload"
+        event, link = _verified_journal_row(
+            row, workspace_id=workspace_id, run_id=run_id, sequence=sequence, link=link
         )
-        try:
-            validate_runtime_journal_event(decoded, run_id=run_id)
-        except ContractSemanticError as error:
-            raise StorageError(
-                "a stored journal event is not a valid RuntimeJournalEvent"
-            ) from error
-        if (
-            decoded["eventId"] != event_id
-            or decoded["sequence"] != row_sequence
-            or decoded["previousIntegrityLink"] != previous_link
-            or decoded["payloadDigest"] != payload_digest
-            or row_payload_digest != payload_digest
-            or _instant_us(str(decoded["recordedAt"])) != recorded_at_us
-        ):
-            raise StorageError(
-                "a stored journal event disagrees with the columns it is indexed by"
-            )
-        if expected_revision is None or expected_revision != row_sequence:
-            raise StorageError(
-                "a stored journal event is not paired with the bundle whose revision it produced"
-            )
-        if row_sequence != sequence or previous_link != link:
-            raise StorageError(
-                "a stored journal event does not continue its run's integrity chain"
-            )
-        link = digest
-        events.append(
-            StoredJournalEvent(
-                decoded,
-                payload,
-                digest,
-                byte_length,
-                workspace_id,
-                run_id,
-                str(bundle_id),
-            )
-        )
+        events.append(event)
     return tuple(events)
 
 
+def _verified_journal_row(
+    row: tuple[Any, ...],
+    *,
+    workspace_id: str,
+    run_id: str,
+    sequence: int,
+    link: str,
+) -> tuple[StoredJournalEvent, str]:
+    """One `_JOURNAL_QUERY` row, believed only after all of it is recomputed.
+
+    Everything a caller of :func:`read_runtime_journal_events` relies on, in one place
+    that the background verifier reaches too: the bytes and both addresses, the public
+    contract, the columns the row is indexed by, the bundle relation the event belongs
+    to, and the position and link this event must hold in its run's chain. Returns the
+    verified event and the link the *next* sequence must name -- this event's whole
+    canonical document digest, recomputed here rather than read from a column.
+    """
+    (
+        event_id,
+        bundle_id,
+        row_sequence,
+        previous_link,
+        row_payload_digest,
+        document,
+        digest,
+        byte_length,
+        payload_document,
+        payload_digest,
+        payload_length,
+        recorded_at_us,
+        expected_revision,
+    ) = row
+    decoded = _verified_document(document, digest, byte_length, "journal event")
+    payload = _verified_document(
+        payload_document, payload_digest, payload_length, "journal event payload"
+    )
+    try:
+        validate_runtime_journal_event(decoded, run_id=run_id)
+    except ContractSemanticError as error:
+        raise StorageError(
+            "a stored journal event is not a valid RuntimeJournalEvent"
+        ) from error
+    if (
+        decoded["eventId"] != event_id
+        or decoded["sequence"] != row_sequence
+        or decoded["previousIntegrityLink"] != previous_link
+        or decoded["payloadDigest"] != payload_digest
+        or row_payload_digest != payload_digest
+        or _instant_us(str(decoded["recordedAt"])) != recorded_at_us
+    ):
+        raise StorageError(
+            "a stored journal event disagrees with the columns it is indexed by"
+        )
+    if expected_revision is None or expected_revision != row_sequence:
+        raise StorageError(
+            "a stored journal event is not paired with the bundle whose revision it produced"
+        )
+    if row_sequence != sequence or previous_link != link:
+        raise StorageError(
+            "a stored journal event does not continue its run's integrity chain"
+        )
+    event = StoredJournalEvent(
+        decoded, payload, digest, byte_length, workspace_id, run_id, str(bundle_id)
+    )
+    return event, str(digest)
+
+
+# --- T-0688 IP-07: parity, integrity, quarantine and retention ----------------------
+
+#: The one stage a parity report means anything at. `R0` runs no bundle writer, so there
+#: is no second digest to disagree with; `R2` is authoritative rather than dual-write, so
+#: a "parity" recorded there would compare the bundle against itself. Both refuse, and so
+#: does any stage outside the closed vocabulary, for the same reason the bundle writer
+#: refuses one: a stage that cannot be recognised has enabled nothing.
+_DUAL_WRITE_STAGE: Final = "R1"
+
+#: The stages at which an integrity finding quarantines rather than merely records.
+#: Stated separately from :data:`_RECORDING_STAGES` although the members coincide: that
+#: one is "may record a transition at all", this one is "must act on a finding", and a
+#: later rollout may move one without the other.
+_ENFORCING_STAGES: Final = frozenset({"R1", "R2"})
+
+#: 0035's closed parity vocabulary.
+TRANSITION_PARITY_STATUSES: Final = ("match", "diverged")
+
+#: 0035's closed verification vocabulary, and the exact diagnostic each outcome pairs
+#: with. `verified` names none, and a finding names its own code and never the other's.
+JOURNAL_INTEGRITY_OUTCOMES: Final = ("verified", "sequence_gap", "integrity_failure")
+JOURNAL_INTEGRITY_DIAGNOSTICS: Final[Mapping[str, str | None]] = MappingProxyType(
+    {
+        "verified": None,
+        "sequence_gap": "RT_JOURNAL_SEQUENCE_GAP",
+        "integrity_failure": "RT_JOURNAL_INTEGRITY_FAILURE",
+    }
+)
+
+#: 0035's closed disposition vocabulary.
+JOURNAL_QUARANTINE_ACTIONS: Final = ("quarantined", "released")
+
+#: What a refused governance write says about itself, instead of prose a caller matches.
+JOURNAL_GOVERNANCE_DIAGNOSTICS: Final = (
+    "RT_PARITY_STAGE_NOT_DUAL_WRITE",
+    "RT_PARITY_BUNDLE_MISSING",
+    "RT_PARITY_REPORT_CONFLICT",
+    "RT_JOURNAL_REPORT_CONFLICT",
+    "RT_JOURNAL_NOT_QUARANTINED",
+    "RT_RETENTION_RANGE_STILL_RESUMABLE",
+)
+
+#: Why a Run that holds durable history may still not resume. The two are separate facts
+#: with separate remedies: a quarantine is released by an explicit decision, and a
+#: retention boundary never is.
+JOURNAL_RESUME_DIAGNOSTICS: Final = (
+    "RT_JOURNAL_QUARANTINED",
+    "RT_JOURNAL_RETENTION_BOUNDARY",
+)
+
+_PARITY_QUERY: Final = f"""
+SELECT report_id, existing_writer_digest, bundle_derived_digest, status,
+       report_json, report_digest, report_byte_length, recorded_at_us
+FROM {_PARITY}
+WHERE workspace_id = ? AND run_id = ? AND bundle_id = ?
+"""
+
+_INTEGRITY_QUERY: Final = f"""
+SELECT rollout_stage, outcome, first_affected_sequence, diagnostic, observed_head,
+       report_json, report_digest, report_byte_length, verified_at_us
+FROM {_INTEGRITY}
+WHERE workspace_id = ? AND run_id = ? AND report_id = ?
+"""
+
+#: One Run's dispositions in the order they were appended, each beside the journal event
+#: it names. `LEFT JOIN`, deliberately: a disposition whose event has gone missing must
+#: reach the checks below and fail closed, not vanish and read as no quarantine at all.
+_QUARANTINE_QUERY: Final = f"""
+SELECT q.disposition_sequence, q.event_id, q.action, q.integrity_report_id,
+       q.diagnostic, q.deciding_actor, q.reason, q.recorded_at_us, e.event_id
+FROM {_QUARANTINE} q
+LEFT JOIN {_JOURNAL} e
+       ON e.workspace_id = q.workspace_id AND e.run_id = q.run_id
+      AND e.event_id = q.event_id
+WHERE q.workspace_id = ? AND q.run_id = ?
+ORDER BY q.disposition_sequence
+"""
+
+#: One Run's recorded boundaries, oldest first, each beside the workspace Audit record it
+#: names. `LEFT JOIN` for the same reason.
+_RETENTION_QUERY: Final = f"""
+SELECT b.boundary_id, b.first_removed_sequence, b.last_removed_sequence,
+       b.resumable_after, b.policy_ref, b.evidence_ref, b.audit_ref, b.recorded_at_us,
+       a.audit_ref
+FROM {_RETENTION} b
+LEFT JOIN {_AUDIT} a
+       ON a.audit_ref = b.audit_ref AND a.workspace_id = b.workspace_id
+WHERE b.workspace_id = ? AND b.run_id = ?
+ORDER BY b.recorded_at_us, b.boundary_id
+"""
+
+
+class JournalGovernanceRefused(StorageError):
+    """A refused governance write, carrying the closed diagnostic naming why.
+
+    The same shape and the same reason as :class:`TransitionBundleRefused`, and one class
+    for all four writers rather than four: a caller distinguishes a parity conflict from
+    a report conflict from a release with nothing to release by reading `diagnostic`,
+    which is exactly what four exception types would have it do anyway. A refusal 0035
+    itself issues is not one of these -- it is a `StorageError` carrying the schema's own
+    sentence, because inventing a diagnostic for it here would be this module restating a
+    rule it does not own.
+    """
+
+    def __init__(self, diagnostic: str, detail: str) -> None:
+        super().__init__(f"{detail} ({diagnostic})")
+        self.diagnostic = diagnostic
+
+
+@dataclass(frozen=True, slots=True)
+class StoredTransitionParityReport:
+    """One parity report, and the address of the bytes it was stored as."""
+
+    report: Mapping[str, object]
+    content_address: str
+    content_length_bytes: int
+    workspace_id: str
+    run_id: str
+    bundle_id: str
+    report_id: str
+    status: str
+    existing_writer_digest: str
+    bundle_derived_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParityPromotionEligibility:
+    """Whether a declared population of bundles has proven parity, and what has not.
+
+    The population is the caller's explicit declaration, never "the bundles that happen
+    to hold a report": a promotion decided over whatever was reported would be satisfied
+    by reporting nothing at all. `eligible` is true only when every declared bundle holds
+    a verified, readable report whose status is `match`, which an empty declaration does
+    not establish and never will.
+    """
+
+    run_id: str
+    eligible: bool
+    declared_bundle_ids: tuple[str, ...]
+    matched_bundle_ids: tuple[str, ...]
+    diverged_bundle_ids: tuple[str, ...]
+    unreported_bundle_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class JournalVerification:
+    """What one accepted `verify_journal_integrity` recorded, and whether it quarantined.
+
+    `disposition` is `recorded` for a pass this call made durable and `replayed` for one
+    already durable under the same report identifier and bit-for-bit the same report,
+    which appends nothing -- no second report, and no second disposition.
+    """
+
+    disposition: str
+    report_id: str
+    run_id: str
+    rollout_stage: str
+    outcome: str
+    diagnostic: str | None
+    first_affected_sequence: int | None
+    observed_head: int
+    quarantined: bool
+    content_address: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredJournalIntegrityReport:
+    """One integrity report, and the address of the bytes it was stored as."""
+
+    report: Mapping[str, object]
+    content_address: str
+    content_length_bytes: int
+    workspace_id: str
+    run_id: str
+    report_id: str
+    rollout_stage: str
+    outcome: str
+    diagnostic: str | None
+    first_affected_sequence: int | None
+    observed_head: int
+
+
+@dataclass(frozen=True, slots=True)
+class JournalQuarantineProjection:
+    """How a Run's journal quarantine currently stands, from its latest disposition.
+
+    `disposition_sequence` is `-1` for a Run that has never held one. A held quarantine
+    names the event it holds and the integrity report that found it; a released posture
+    names the actor who decided it and their reason. Nothing here is a public Workflow
+    Run state: this is a projection of an append-only disposition history, and reading it
+    writes nothing.
+    """
+
+    run_id: str
+    held: bool
+    diagnostic: str | None
+    event_id: str | None
+    integrity_report_id: str | None
+    deciding_actor: str | None
+    reason: str | None
+    disposition_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionBoundaryRecord:
+    """One recorded retention boundary, exactly as it was stored."""
+
+    boundary_id: str
+    run_id: str
+    first_removed_sequence: int | None
+    last_removed_sequence: int | None
+    resumable_after: bool
+    policy_ref: str
+    evidence_ref: str
+    audit_ref: str
+    recorded_at_us: int
+
+
+@dataclass(frozen=True, slots=True)
+class JournalRetentionPosture:
+    """Every boundary a Run holds, and whether any of them ended its resumability.
+
+    `resumable` is false when *any* recorded boundary said so, not merely the newest:
+    a boundary that removed history is a fact about what is no longer there, and a later
+    boundary that removes nothing cannot put it back. `blocking_boundary_id` names the
+    first boundary that said so, which is the policy decision an operator has to answer.
+    """
+
+    run_id: str
+    resumable: bool
+    blocking_boundary_id: str | None
+    boundaries: tuple[RetentionBoundaryRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class JournalResumeEligibility:
+    """Whether a Run may resume, and the one typed reason it may not.
+
+    Pure projection. It mutates no public Run state, and it never answers by skipping,
+    folding, inferring, reconstructing or deleting the history it could not verify.
+    """
+
+    run_id: str
+    resumable: bool
+    diagnostic: str | None
+    integrity_report_id: str | None
+    boundary_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _JournalInspection:
+    """What a verification pass observed, before any of it is recorded."""
+
+    outcome: str
+    first_affected_sequence: int | None
+    observed_head: int
+    citable_event_id: str | None
+
+
+def _stated_instant_us(value: str, subject: str) -> int:
+    """One instant a caller stated, as the exact microsecond column it is stored in.
+
+    :func:`_instant_us` is only ever called on a timestamp a public validator has already
+    accepted. These entry points take one directly from a caller, so a spelling that is
+    not a `Timestamp` at all reaches it, and `datetime.fromisoformat` raises `ValueError`
+    for it rather than the `StorageError` every other refusal here is.
+    """
+    try:
+        return _instant_us(value)
+    except ValueError as error:
+        raise StorageError(
+            f"a {subject} names an instant that is not a Timestamp: {value!r}"
+        ) from error
+
+
+#: The spellings 0035's own CHECK constraints require of these columns, recomputed on
+#: the read side for exactly the reason the digests are. A file edited under `PRAGMA
+#: ignore_check_constraints` holds rows the schema would have refused, so a reader that
+#: trusted a column's shape because a CHECK exists for it would read those rows as facts.
+_IDENTIFIER: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+_REASON: Final = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*")
+_DIGEST_SPELLING: Final = re.compile(r"sha256:[0-9a-f]{64}")
+
+#: What a parity report document holds, exactly: these members, these types, nothing
+#: else. Recorded reports are this repository's own internal documents rather than
+#: public wire records, so there is no published validator to hold one to -- and an
+#: offline editor that recomputes `report_digest` and `report_byte_length` restores the
+#: whole stored address of whatever it wrote. The shape is what is left to check.
+_PARITY_SHAPE: Final[Mapping[str, type]] = MappingProxyType(
+    {
+        "reportId": str,
+        "runId": str,
+        "bundleId": str,
+        "rolloutStage": str,
+        "existingWriterDigest": str,
+        "bundleDerivedDigest": str,
+        "status": str,
+        "recordedAt": str,
+    }
+)
+
+#: The same, for an integrity report -- whose optional members are not optional at all:
+#: a finding states both and `verified` states neither, so the outcome decides the whole
+#: shape and a document holding the wrong one for its outcome was never written here.
+_INTEGRITY_SHAPE: Final[Mapping[str, type]] = MappingProxyType(
+    {
+        "reportId": str,
+        "runId": str,
+        "rolloutStage": str,
+        "outcome": str,
+        "observedHead": int,
+        "verifiedAt": str,
+    }
+)
+_INTEGRITY_FINDING_SHAPE: Final[Mapping[str, type]] = MappingProxyType(
+    {**_INTEGRITY_SHAPE, "firstAffectedSequence": int, "diagnostic": str}
+)
+
+
+def _spelled(pattern: re.Pattern[str], value: object, subject: str) -> str:
+    """One stored scalar, held to the exact spelling its column is stored under."""
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or pattern.fullmatch(value) is None
+    ):
+        raise StorageError(
+            f"a stored {subject} is not spelled as this schema stores it"
+        )
+    return value
+
+
+def _counted(value: object, subject: str, *, minimum: int) -> int:
+    """One stored integer, held to the range its column is stored under.
+
+    `bool` is excluded explicitly: it is an `int` in Python and a distinct value domain
+    in JSON, so a posture written where a sequence belongs would otherwise read as one.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise StorageError(f"a stored {subject} is not a number this schema stores")
+    return value
+
+
+def _closed_shape(
+    decoded: Mapping[str, object], shape: Mapping[str, type], subject: str
+) -> None:
+    """Exactly these members, each of exactly this type, and nothing else at all."""
+    if set(decoded) != set(shape):
+        raise StorageError(
+            f"a stored {subject} does not hold exactly the members it is stored with"
+        )
+    for key, kind in shape.items():
+        value = decoded[key]
+        if not isinstance(value, kind) or isinstance(value, bool) is not (kind is bool):
+            raise StorageError(
+                f"a stored {subject} states {key!r} as a value of another type"
+            )
+
+
+def _record(
+    connection: sqlite3.Connection,
+    table: str,
+    row: Mapping[str, object],
+    *,
+    subject: str,
+) -> None:
+    """One INSERT, with 0035's own refusal translated instead of leaked.
+
+    Identifier shape, instant range, closed vocabularies and every relation this schema
+    requires are checked by the schema, which is the copy that runs. What a caller gets
+    back for breaking one of them is a `StorageError` naming what it was writing and what
+    the schema said, rather than a bare `sqlite3.IntegrityError` from three frames down.
+    """
+    try:
+        connection.execute(
+            f"INSERT INTO {table} ({', '.join(row)}) "
+            f"VALUES ({', '.join('?' for _ in row)})",
+            tuple(row.values()),
+        )
+    except sqlite3.DatabaseError as error:
+        raise StorageError(
+            f"the workspace schema refused this {subject}: {error}"
+        ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowJournalGovernanceWriter:
+    """The parity, integrity, quarantine and retention writes, into an open transaction.
+
+    The third writer in this module, and deliberately not a fourth set of methods on
+    either of the other two: these record judgements *about* Runs already made durable,
+    never the Run, the binding or the transition itself. Nothing here has a statement
+    that could write a public Workflow Run state, and nothing here deletes.
+    """
+
+    connection: sqlite3.Connection
+    workspace_id: str
+
+    # --- parity against the existing writer ------------------------------------------
+
+    def record_transition_parity_report(
+        self,
+        *,
+        report_id: str,
+        run_id: str,
+        bundle_id: str,
+        existing_writer_digest: str,
+        rollout_stage: str,
+        recorded_at: str,
+    ) -> StoredTransitionParityReport:
+        """Record what the two writers of one transition actually produced.
+
+        The bundle-derived digest is recomputed from the stored bundle by
+        :func:`read_transition_bundle` -- the bytes, their address, the public contract,
+        the indexed columns and the binding and event relations -- and never taken from a
+        caller, which is the whole point of the comparison. `existing_writer_digest` is
+        the only side a caller supplies, because it is the only side this repository
+        cannot recompute.
+
+        Append-only and idempotent by bundle: the exact same report replays and returns
+        what is already recorded, and a different identity or a different comparison for
+        a bundle already reported refuses with `RT_PARITY_REPORT_CONFLICT` without
+        touching the row that stands.
+        """
+        if rollout_stage != _DUAL_WRITE_STAGE:
+            raise JournalGovernanceRefused(
+                "RT_PARITY_STAGE_NOT_DUAL_WRITE",
+                "a parity report compares two writers and stage "
+                f"{rollout_stage!r} runs one",
+            )
+        stored = read_transition_bundle(
+            self.connection,
+            workspace_id=self.workspace_id,
+            run_id=run_id,
+            bundle_id=bundle_id,
+        )
+        if stored is None:
+            raise JournalGovernanceRefused(
+                "RT_PARITY_BUNDLE_MISSING",
+                f"this run holds no transition bundle {bundle_id!r} to report parity for",
+            )
+        status = (
+            "match" if existing_writer_digest == stored.content_address else "diverged"
+        )
+        report = {
+            "reportId": report_id,
+            "runId": run_id,
+            "bundleId": bundle_id,
+            "rolloutStage": rollout_stage,
+            "existingWriterDigest": existing_writer_digest,
+            "bundleDerivedDigest": stored.content_address,
+            "status": status,
+            "recordedAt": recorded_at,
+        }
+        document, digest, byte_length = _canonical_document(report)
+        recorded_at_us = _stated_instant_us(recorded_at, "parity report")
+
+        already = self.connection.execute(
+            _PARITY_QUERY, (self.workspace_id, run_id, bundle_id)
+        ).fetchone()
+        if already is not None:
+            if already[0] != report_id or already[4] != document:
+                raise JournalGovernanceRefused(
+                    "RT_PARITY_REPORT_CONFLICT",
+                    f"transition bundle {bundle_id!r} already carries parity report "
+                    f"{already[0]!r}",
+                )
+            return _verified_parity_report(
+                self.connection,
+                workspace_id=self.workspace_id,
+                run_id=run_id,
+                bundle_id=bundle_id,
+            )
+
+        _record(
+            self.connection,
+            _PARITY,
+            {
+                "workspace_id": self.workspace_id,
+                "report_id": report_id,
+                "run_id": run_id,
+                "bundle_id": bundle_id,
+                "existing_writer_digest": existing_writer_digest,
+                "bundle_derived_digest": stored.content_address,
+                "status": status,
+                "report_json": document,
+                "report_digest": digest,
+                "report_byte_length": byte_length,
+                "recorded_at_us": recorded_at_us,
+            },
+            subject="transition parity report",
+        )
+        return StoredTransitionParityReport(
+            report,
+            digest,
+            byte_length,
+            self.workspace_id,
+            run_id,
+            bundle_id,
+            report_id,
+            status,
+            existing_writer_digest,
+            stored.content_address,
+        )
+
+    # --- background journal verification ---------------------------------------------
+
+    def verify_journal_integrity(
+        self,
+        *,
+        report_id: str,
+        run_id: str,
+        rollout_stage: str,
+        verified_at: str,
+    ) -> JournalVerification:
+        """Verify one Run's journal against what its bundles say should be there.
+
+        One report, one outcome, and at `R1` and `R2` the quarantine that outcome
+        requires -- in this same transaction, so a finding that is durable is a finding
+        that is acted on. `R0` observes: it records the identical report and appends no
+        disposition, because the stage that enables nothing may not stop a Run either.
+
+        The exact same pass under the same report identifier replays as a no-op; the same
+        identifier over a different report refuses with `RT_JOURNAL_REPORT_CONFLICT`.
+        """
+        if rollout_stage not in TRANSITION_ROLLOUT_STAGES:
+            raise StorageError(
+                f"{rollout_stage!r} is not a rollout stage this schema records"
+            )
+        inspection = _inspect_journal(
+            self.connection, workspace_id=self.workspace_id, run_id=run_id
+        )
+        diagnostic = JOURNAL_INTEGRITY_DIAGNOSTICS[inspection.outcome]
+        report: dict[str, Any] = {
+            "reportId": report_id,
+            "runId": run_id,
+            "rolloutStage": rollout_stage,
+            "outcome": inspection.outcome,
+            "observedHead": inspection.observed_head,
+            "verifiedAt": verified_at,
+        }
+        if inspection.first_affected_sequence is not None:
+            report["firstAffectedSequence"] = inspection.first_affected_sequence
+        if diagnostic is not None:
+            report["diagnostic"] = diagnostic
+        document, digest, byte_length = _canonical_document(report)
+        verified_at_us = _stated_instant_us(verified_at, "journal integrity report")
+
+        already = self.connection.execute(
+            f"SELECT report_json FROM {_INTEGRITY} WHERE workspace_id = ? "
+            "AND report_id = ?",
+            (self.workspace_id, report_id),
+        ).fetchone()
+        if already is not None:
+            if already[0] != document:
+                raise JournalGovernanceRefused(
+                    "RT_JOURNAL_REPORT_CONFLICT",
+                    f"journal integrity report {report_id!r} is already recorded with a "
+                    "different verification",
+                )
+            return self._verification(
+                "replayed", report_id, run_id, rollout_stage, inspection, digest
+            )
+
+        _record(
+            self.connection,
+            _INTEGRITY,
+            {
+                "workspace_id": self.workspace_id,
+                "report_id": report_id,
+                "run_id": run_id,
+                "rollout_stage": rollout_stage,
+                "outcome": inspection.outcome,
+                "first_affected_sequence": inspection.first_affected_sequence,
+                "diagnostic": diagnostic,
+                "observed_head": inspection.observed_head,
+                "report_json": document,
+                "report_digest": digest,
+                "report_byte_length": byte_length,
+                "verified_at_us": verified_at_us,
+            },
+            subject="journal integrity report",
+        )
+        if inspection.outcome != "verified" and rollout_stage in _ENFORCING_STAGES:
+            self._quarantine(run_id, report_id, inspection, verified_at_us)
+        return self._verification(
+            "recorded", report_id, run_id, rollout_stage, inspection, digest
+        )
+
+    def _verification(
+        self,
+        disposition: str,
+        report_id: str,
+        run_id: str,
+        rollout_stage: str,
+        inspection: _JournalInspection,
+        digest: str,
+    ) -> JournalVerification:
+        held = self.connection.execute(
+            f"SELECT 1 FROM {_QUARANTINE} WHERE workspace_id = ? AND run_id = ? "
+            "AND integrity_report_id = ?",
+            (self.workspace_id, run_id, report_id),
+        ).fetchone()
+        return JournalVerification(
+            disposition,
+            report_id,
+            run_id,
+            rollout_stage,
+            inspection.outcome,
+            JOURNAL_INTEGRITY_DIAGNOSTICS[inspection.outcome],
+            inspection.first_affected_sequence,
+            inspection.observed_head,
+            held is not None,
+            digest,
+        )
+
+    def _quarantine(
+        self,
+        run_id: str,
+        report_id: str,
+        inspection: _JournalInspection,
+        recorded_at_us: int,
+    ) -> None:
+        """Hold this Run's journal, citing the report that found the fault.
+
+        The fault is cited by the event it is about where one survives, and by the Run's
+        highest-sequence surviving event where the fault is that a row is missing. A Run
+        whose journal is gone entirely has no event to name at all, and that is exactly
+        the `sequence_gap` 0035 allows a disposition to hold without one -- so the worst
+        journal fault is held and blocks resume like any other, rather than being the one
+        an enforcing stage could not act on.
+        """
+        _record(
+            self.connection,
+            _QUARANTINE,
+            {
+                "workspace_id": self.workspace_id,
+                "run_id": run_id,
+                "disposition_sequence": self._next_disposition(run_id),
+                "event_id": inspection.citable_event_id,
+                "action": "quarantined",
+                "integrity_report_id": report_id,
+                "diagnostic": "RT_JOURNAL_QUARANTINED",
+                "deciding_actor": None,
+                "reason": None,
+                "recorded_at_us": recorded_at_us,
+            },
+            subject="journal quarantine disposition",
+        )
+
+    def _next_disposition(self, run_id: str) -> int:
+        return (
+            int(
+                self.connection.execute(
+                    f"SELECT COALESCE(MAX(disposition_sequence), -1) FROM {_QUARANTINE} "
+                    "WHERE workspace_id = ? AND run_id = ?",
+                    (self.workspace_id, run_id),
+                ).fetchone()[0]
+            )
+            + 1
+        )
+
+    # --- release ---------------------------------------------------------------------
+
+    def release_journal_quarantine(
+        self, *, run_id: str, deciding_actor: str, reason: str, recorded_at: str
+    ) -> JournalQuarantineProjection:
+        """Release a held quarantine, attributably.
+
+        A release is a person's decision, so it requires an actor and a reason and 0035
+        refuses one without both. It is not a repair: it appends a disposition saying
+        this Run may proceed, and changes no journal row, no bundle and no public Run
+        state. The event released is the one currently held, read from the disposition
+        history rather than named by the caller, so a release cannot be redirected onto
+        an event -- or a Run -- other than the one actually quarantined.
+
+        Nothing to release refuses with `RT_JOURNAL_NOT_QUARANTINED`, and repeating a
+        release that already stands returns it without appending a second disposition.
+        """
+        current = read_journal_quarantine(
+            self.connection, workspace_id=self.workspace_id, run_id=run_id
+        )
+        if not current.held:
+            if (current.deciding_actor, current.reason) == (deciding_actor, reason):
+                return current
+            raise JournalGovernanceRefused(
+                "RT_JOURNAL_NOT_QUARANTINED",
+                f"run {run_id!r} holds no quarantine to release",
+            )
+        if not deciding_actor or not reason:
+            raise StorageError("a quarantine release names both an actor and a reason")
+        _record(
+            self.connection,
+            _QUARANTINE,
+            {
+                "workspace_id": self.workspace_id,
+                "run_id": run_id,
+                "disposition_sequence": current.disposition_sequence + 1,
+                "event_id": current.event_id,
+                "action": "released",
+                "integrity_report_id": None,
+                "diagnostic": None,
+                "deciding_actor": deciding_actor,
+                "reason": reason,
+                "recorded_at_us": _stated_instant_us(recorded_at, "quarantine release"),
+            },
+            subject="journal quarantine release",
+        )
+        return read_journal_quarantine(
+            self.connection, workspace_id=self.workspace_id, run_id=run_id
+        )
+
+    # --- retention -------------------------------------------------------------------
+
+    def record_retention_boundary(
+        self,
+        *,
+        boundary_id: str,
+        run_id: str,
+        first_removed_sequence: int | None = None,
+        last_removed_sequence: int | None = None,
+        resumable_after: bool,
+        policy_ref: str,
+        evidence_ref: str,
+        audit_ref: str,
+        recorded_at: str,
+    ) -> JournalRetentionPosture:
+        """Record that a range of this Run's journal is now removable. Remove nothing.
+
+        There is no DELETE in this method, in this class or in this module: a boundary is
+        a recorded policy fact, and enacting it is somebody else's write against somebody
+        else's authority. What it does decide is resumability -- a boundary that names a
+        removed range must say the Run is not resumable after it, because a Run resumed
+        across removed history would be resumed against a chain that no longer proves
+        itself.
+
+        The Audit record must already exist in this workspace; 0035's own trigger is what
+        says so, and this module has no Audit writer that could satisfy it on a caller's
+        behalf.
+        """
+        removes = (
+            first_removed_sequence is not None or last_removed_sequence is not None
+        )
+        if removes and resumable_after:
+            raise JournalGovernanceRefused(
+                "RT_RETENTION_RANGE_STILL_RESUMABLE",
+                f"retention boundary {boundary_id!r} removes journal history and cannot "
+                "leave this run resumable",
+            )
+        _record(
+            self.connection,
+            _RETENTION,
+            {
+                "workspace_id": self.workspace_id,
+                "boundary_id": boundary_id,
+                "run_id": run_id,
+                "first_removed_sequence": first_removed_sequence,
+                "last_removed_sequence": last_removed_sequence,
+                "resumable_after": int(resumable_after),
+                "policy_ref": policy_ref,
+                "evidence_ref": evidence_ref,
+                "audit_ref": audit_ref,
+                "recorded_at_us": _stated_instant_us(recorded_at, "retention boundary"),
+            },
+            subject="journal retention boundary",
+        )
+        return read_journal_retention_posture(
+            self.connection, workspace_id=self.workspace_id, run_id=run_id
+        )
+
+
+def transaction_local_journal_governance_writer(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> WorkflowJournalGovernanceWriter:
+    """The governance writes, for a caller that already holds a fenced transaction."""
+    return WorkflowJournalGovernanceWriter(connection, workspace_id)
+
+
+@contextmanager
+def workflow_journal_governance_writer(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+) -> Iterator[WorkflowJournalGovernanceWriter]:
+    """One fenced transaction, and the governance writes that may be issued into it."""
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ):
+        yield transaction_local_journal_governance_writer(
+            connection, workspace_id=workspace_id
+        )
+
+
+def record_transition_parity_report(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    report_id: str,
+    run_id: str,
+    bundle_id: str,
+    existing_writer_digest: str,
+    rollout_stage: str,
+    recorded_at: str,
+) -> StoredTransitionParityReport:
+    """Record one dual-write parity report, in its own fenced transaction."""
+    with workflow_journal_governance_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.record_transition_parity_report(
+            report_id=report_id,
+            run_id=run_id,
+            bundle_id=bundle_id,
+            existing_writer_digest=existing_writer_digest,
+            rollout_stage=rollout_stage,
+            recorded_at=recorded_at,
+        )
+
+
+def verify_journal_integrity(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    report_id: str,
+    run_id: str,
+    rollout_stage: str,
+    verified_at: str,
+) -> JournalVerification:
+    """Verify one Run's journal and record the pass, in its own fenced transaction."""
+    with workflow_journal_governance_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.verify_journal_integrity(
+            report_id=report_id,
+            run_id=run_id,
+            rollout_stage=rollout_stage,
+            verified_at=verified_at,
+        )
+
+
+def release_journal_quarantine(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    run_id: str,
+    deciding_actor: str,
+    reason: str,
+    recorded_at: str,
+) -> JournalQuarantineProjection:
+    """Release one held journal quarantine, in its own fenced transaction."""
+    with workflow_journal_governance_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.release_journal_quarantine(
+            run_id=run_id,
+            deciding_actor=deciding_actor,
+            reason=reason,
+            recorded_at=recorded_at,
+        )
+
+
+def record_retention_boundary(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    boundary_id: str,
+    run_id: str,
+    first_removed_sequence: int | None = None,
+    last_removed_sequence: int | None = None,
+    resumable_after: bool,
+    policy_ref: str,
+    evidence_ref: str,
+    audit_ref: str,
+    recorded_at: str,
+) -> JournalRetentionPosture:
+    """Record one journal retention boundary, in its own fenced transaction."""
+    with workflow_journal_governance_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.record_retention_boundary(
+            boundary_id=boundary_id,
+            run_id=run_id,
+            first_removed_sequence=first_removed_sequence,
+            last_removed_sequence=last_removed_sequence,
+            resumable_after=resumable_after,
+            policy_ref=policy_ref,
+            evidence_ref=evidence_ref,
+            audit_ref=audit_ref,
+            recorded_at=recorded_at,
+        )
+
+
+# --- governance reads -----------------------------------------------------------------
+
+
+def _inspect_journal(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> _JournalInspection:
+    """What this Run's journal actually holds, against what its bundles say it should.
+
+    The expected sequence set comes from the persisted bundles -- every revision this Run
+    has produced -- and not from the events that survived, because a verifier that
+    enumerated the survivors would find every journal complete no matter how much of it
+    had been removed. Walking that set from zero is also what separates the two findings
+    a caller has to tell apart: a sequence with no row at all is a `sequence_gap` at that
+    sequence, and a row that is there and cannot be believed is an `integrity_failure` at
+    its own. The first affected sequence wins, and verification stops there.
+
+    `observed_head` is the highest sequence a row was actually observed at, or `-1`. It
+    describes what is there, so it is not derived from the bundles.
+    """
+    head = int(
+        connection.execute(
+            f"SELECT COALESCE(MAX(produced_revision), 0) FROM {_BUNDLES} "
+            "WHERE workspace_id = ? AND run_id = ?",
+            (workspace_id, run_id),
+        ).fetchone()[0]
+    )
+    rows = {
+        row[2]: row
+        for row in connection.execute(_JOURNAL_QUERY, (workspace_id, run_id))
+        if isinstance(row[2], int)
+    }
+    observed_head = max(rows, default=-1)
+    surviving = str(rows[observed_head][0]) if rows else None
+
+    link = journal_genesis_link(run_id)
+    for sequence in range(max(head, observed_head + 1)):
+        row = rows.get(sequence)
+        if row is None:
+            return _JournalInspection(
+                "sequence_gap", sequence, observed_head, surviving
+            )
+        try:
+            _, link = _verified_journal_row(
+                row,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                sequence=sequence,
+                link=link,
+            )
+        except StorageError:
+            return _JournalInspection(
+                "integrity_failure",
+                sequence,
+                observed_head,
+                str(row[0]) if isinstance(row[0], str) else surviving,
+            )
+    return _JournalInspection("verified", None, observed_head, surviving)
+
+
+def _verified_parity_report(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str, bundle_id: str
+) -> StoredTransitionParityReport:
+    stored = read_transition_parity_report(
+        connection, workspace_id=workspace_id, run_id=run_id, bundle_id=bundle_id
+    )
+    if stored is None:  # pragma: no cover -- read inside the writing transaction
+        raise StorageError("a parity report just recorded is no longer readable")
+    return stored
+
+
+def read_transition_parity_report(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str, bundle_id: str
+) -> StoredTransitionParityReport | None:
+    """The parity report recorded for one bundle, recomputed before it is believed.
+
+    `None` means this workspace holds no report for this bundle of this Run. Everything
+    else is a `StorageError`: the bytes, the digest, the length, the canonical form, the
+    exact closed membership and scalar types of the document, the one stage a parity
+    report is ever recorded at, the spelling of every indexed scalar, the columns the row
+    is indexed by, the status against the two digests it claims to compare, and the
+    bundle itself -- whose stored bytes are re-read and re-addressed, so
+    a report that once matched a bundle edited afterwards does not keep saying `match`.
+    """
+    row = connection.execute(
+        _PARITY_QUERY, (workspace_id, run_id, bundle_id)
+    ).fetchone()
+    if row is None:
+        return None
+    (
+        report_id,
+        existing_writer_digest,
+        bundle_derived_digest,
+        status,
+        document,
+        digest,
+        byte_length,
+        recorded_at_us,
+    ) = row
+    decoded = _verified_document(
+        document, digest, byte_length, "transition parity report"
+    )
+    _closed_shape(decoded, _PARITY_SHAPE, "transition parity report")
+    if decoded["rolloutStage"] != _DUAL_WRITE_STAGE:
+        raise StorageError(
+            "a stored parity report names a stage no parity is ever recorded at"
+        )
+    _spelled(_IDENTIFIER, report_id, "parity report identifier")
+    _spelled(_DIGEST_SPELLING, existing_writer_digest, "parity report writer digest")
+    _spelled(_DIGEST_SPELLING, bundle_derived_digest, "parity report bundle digest")
+    _counted(recorded_at_us, "parity report instant", minimum=1)
+    if (
+        decoded.get("reportId") != report_id
+        or decoded.get("runId") != run_id
+        or decoded.get("bundleId") != bundle_id
+        or decoded.get("status") != status
+        or decoded.get("existingWriterDigest") != existing_writer_digest
+        or decoded.get("bundleDerivedDigest") != bundle_derived_digest
+        or _stated_instant_us(str(decoded.get("recordedAt")), "parity report")
+        != recorded_at_us
+    ):
+        raise StorageError(
+            "a stored parity report disagrees with the columns it is indexed by"
+        )
+    if status not in TRANSITION_PARITY_STATUSES or (status == "match") != (
+        existing_writer_digest == bundle_derived_digest
+    ):
+        raise StorageError(
+            "a stored parity report does not state what its digests show"
+        )
+    bundle = read_transition_bundle(
+        connection, workspace_id=workspace_id, run_id=run_id, bundle_id=bundle_id
+    )
+    if bundle is None:
+        raise StorageError(
+            "a stored parity report names a bundle that is no longer there"
+        )
+    if bundle.content_address != bundle_derived_digest:
+        raise StorageError(
+            "a stored parity report disagrees with the bundle it was derived from"
+        )
+    return StoredTransitionParityReport(
+        decoded,
+        digest,
+        byte_length,
+        workspace_id,
+        run_id,
+        bundle_id,
+        str(report_id),
+        str(status),
+        str(existing_writer_digest),
+        str(bundle_derived_digest),
+    )
+
+
+def evaluate_parity_promotion(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    declared_bundle_ids: Sequence[str],
+) -> ParityPromotionEligibility:
+    """Whether every declared bundle has proven parity, and which have not.
+
+    Pure read. A bundle with no readable report blocks promotion exactly as a diverged
+    one does, and an empty declared population is never eligible -- promoting on the
+    strength of having declared nothing is the one answer this query must never give.
+    """
+    declared = tuple(dict.fromkeys(declared_bundle_ids))
+    matched: list[str] = []
+    diverged: list[str] = []
+    unreported: list[str] = []
+    for bundle_id in declared:
+        stored = read_transition_parity_report(
+            connection, workspace_id=workspace_id, run_id=run_id, bundle_id=bundle_id
+        )
+        if stored is None:
+            unreported.append(bundle_id)
+        elif stored.status == "match":
+            matched.append(bundle_id)
+        else:
+            diverged.append(bundle_id)
+    return ParityPromotionEligibility(
+        run_id,
+        bool(declared) and not diverged and not unreported,
+        declared,
+        tuple(matched),
+        tuple(diverged),
+        tuple(unreported),
+    )
+
+
+def read_journal_integrity_report(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str, report_id: str
+) -> StoredJournalIntegrityReport | None:
+    """One recorded verification pass, recomputed before it is believed.
+
+    `None` means this workspace holds no such report for this Run. Everything else is a
+    `StorageError`: the bytes and their address, the canonical form, the closed outcome
+    and its exact diagnostic pairing, the exact closed membership and scalar types the
+    outcome requires of the document, the columns the row is indexed by, and the live
+    journal -- a report cannot name a head higher than the journal now reaches, and
+    :func:`_still_shows` re-checks the prefix it actually verified, which is how a report
+    that outlived the rows it was made about fails closed instead of standing as evidence
+    for them.
+    """
+    row = connection.execute(
+        _INTEGRITY_QUERY, (workspace_id, run_id, report_id)
+    ).fetchone()
+    if row is None:
+        return None
+    (
+        rollout_stage,
+        outcome,
+        first_affected_sequence,
+        diagnostic,
+        observed_head,
+        document,
+        digest,
+        byte_length,
+        verified_at_us,
+    ) = row
+    decoded = _verified_document(
+        document, digest, byte_length, "journal integrity report"
+    )
+    if outcome not in JOURNAL_INTEGRITY_OUTCOMES or rollout_stage not in (
+        TRANSITION_ROLLOUT_STAGES
+    ):
+        raise StorageError(
+            "a stored integrity report names an outcome or stage 0035 closed"
+        )
+    if diagnostic != JOURNAL_INTEGRITY_DIAGNOSTICS[outcome] or (
+        first_affected_sequence is None
+    ) != (outcome == "verified"):
+        raise StorageError(
+            "a stored integrity report does not pair its outcome with its diagnostic"
+        )
+    _closed_shape(
+        decoded,
+        _INTEGRITY_SHAPE
+        if decoded.get("outcome") == "verified"
+        else _INTEGRITY_FINDING_SHAPE,
+        "journal integrity report",
+    )
+    if (
+        decoded.get("reportId") != report_id
+        or decoded.get("runId") != run_id
+        or decoded.get("rolloutStage") != rollout_stage
+        or decoded.get("outcome") != outcome
+        or decoded.get("observedHead") != observed_head
+        or decoded.get("firstAffectedSequence") != first_affected_sequence
+        or decoded.get("diagnostic") != diagnostic
+        or _stated_instant_us(str(decoded.get("verifiedAt")), "integrity report")
+        != verified_at_us
+    ):
+        raise StorageError(
+            "a stored integrity report disagrees with the columns it is indexed by"
+        )
+    _spelled(_IDENTIFIER, report_id, "integrity report identifier")
+    _counted(observed_head, "integrity report head", minimum=-1)
+    _counted(verified_at_us, "integrity report instant", minimum=1)
+    if first_affected_sequence is not None:
+        _counted(first_affected_sequence, "integrity report finding", minimum=0)
+    current = connection.execute(
+        f"SELECT COALESCE(MAX(sequence), -1) FROM {_JOURNAL} "
+        "WHERE workspace_id = ? AND run_id = ?",
+        (workspace_id, run_id),
+    ).fetchone()[0]
+    if observed_head > int(current):
+        raise StorageError(
+            "a stored integrity report names a journal head this run no longer holds"
+        )
+    _still_shows(
+        connection,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        outcome=str(outcome),
+        first_affected_sequence=first_affected_sequence,
+        observed_head=int(observed_head),
+    )
+    return StoredJournalIntegrityReport(
+        decoded,
+        digest,
+        byte_length,
+        workspace_id,
+        run_id,
+        str(report_id),
+        str(rollout_stage),
+        str(outcome),
+        diagnostic,
+        first_affected_sequence,
+        int(observed_head),
+    )
+
+
+def _still_shows(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    outcome: str,
+    first_affected_sequence: int | None,
+    observed_head: int,
+) -> None:
+    """A recorded verification, re-checked against what the journal shows right now.
+
+    A report is evidence about a prefix, and a prefix keeps changing underneath it: a
+    Run that verified at head two and has since appended validly is still verified, so
+    the report stays readable and later history is not held against it. What it may
+    never do is outlive the prefix it actually verified -- a gap or an unbelievable row
+    at any sequence up to its own observed head means the pass it recorded no longer
+    describes anything, and this read fails closed rather than letting a stale `verified`
+    stand as proof of rows that have since been edited away.
+
+    A finding is held to more than that. It has to still be the same finding at the same
+    sequence, because a report cited by a quarantine is the whole reason that quarantine
+    holds: a fault silently repaired, moved or reclassified underneath it would otherwise
+    keep a hold in place under evidence that no longer means what it says.
+    """
+    inspection = _inspect_journal(connection, workspace_id=workspace_id, run_id=run_id)
+    if outcome == "verified":
+        if (
+            inspection.first_affected_sequence is not None
+            and inspection.first_affected_sequence <= observed_head
+        ):
+            raise StorageError(
+                "a stored integrity report verified a prefix this run no longer shows"
+            )
+        return
+    if (inspection.outcome, inspection.first_affected_sequence) != (
+        outcome,
+        first_affected_sequence,
+    ):
+        raise StorageError(
+            "a stored integrity report no longer states what this run's journal shows"
+        )
+
+
+def read_journal_quarantine(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> JournalQuarantineProjection:
+    """How this Run's quarantine currently stands, from the whole disposition history.
+
+    The latest disposition decides, but every disposition is verified, not only that
+    one: contiguous from zero, each row in the closed form 0035 requires of its own
+    action, each scalar spelled as its column stores it, the event it names still present
+    in this Run's journal, and -- for every held one -- the integrity report it cites
+    still readable and still a finding at the sequence it named. A release is a decision
+    appended on top of that history rather than a replacement for it, so a latest row
+    saying `released` must never be what stops an earlier quarantine, or the report that
+    quarantine stands on, from being checked. A Run with no disposition at all is not
+    held, which is a different fact from one that was released.
+    """
+    rows = connection.execute(_QUARANTINE_QUERY, (workspace_id, run_id)).fetchall()
+    latest: tuple[Any, ...] | None = None
+    for position, row in enumerate(rows):
+        (
+            disposition_sequence,
+            event_id,
+            action,
+            integrity_report_id,
+            diagnostic,
+            deciding_actor,
+            reason,
+            recorded_at_us,
+            held_event_id,
+        ) = row
+        if disposition_sequence != position:
+            raise StorageError(
+                "a stored quarantine history is not contiguous from zero"
+            )
+        if action not in JOURNAL_QUARANTINE_ACTIONS:
+            raise StorageError(
+                "a stored quarantine disposition names an unknown action"
+            )
+        held = action == "quarantined"
+        in_form = (
+            (
+                integrity_report_id is not None
+                and diagnostic == "RT_JOURNAL_QUARANTINED"
+                and deciding_actor is None
+                and reason is None
+            )
+            if held
+            else (
+                integrity_report_id is None
+                and diagnostic is None
+                and bool(deciding_actor)
+                and bool(reason)
+            )
+        )
+        if not in_form:
+            raise StorageError(
+                "a stored quarantine disposition is not in the form its action requires"
+            )
+        _counted(recorded_at_us, "quarantine disposition instant", minimum=1)
+        if not held:
+            _spelled(_IDENTIFIER, deciding_actor, "quarantine deciding actor")
+            _spelled(_REASON, reason, "quarantine release reason")
+        if event_id is not None:
+            _spelled(_IDENTIFIER, event_id, "quarantine event citation")
+        if held_event_id != event_id:
+            raise StorageError(
+                "a stored quarantine disposition names an event its run no longer holds"
+            )
+        if held:
+            _cited_finding(
+                connection,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                report_id=str(integrity_report_id),
+                event_id=event_id,
+            )
+        latest = row
+    if latest is None:
+        return JournalQuarantineProjection(
+            run_id, False, None, None, None, None, None, -1
+        )
+    (
+        disposition_sequence,
+        event_id,
+        action,
+        integrity_report_id,
+        diagnostic,
+        deciding_actor,
+        reason,
+        _recorded_at_us,
+        _held_event_id,
+    ) = latest
+    return JournalQuarantineProjection(
+        run_id,
+        action == "quarantined",
+        diagnostic,
+        None if event_id is None else str(event_id),
+        integrity_report_id,
+        deciding_actor,
+        reason,
+        int(disposition_sequence),
+    )
+
+
+def _cited_finding(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    run_id: str,
+    report_id: str,
+    event_id: object,
+) -> None:
+    """The report one held disposition stands on, read and held to what it has to say.
+
+    A quarantine is only as good as its citation, so the report is read whole -- bytes,
+    address, shape, columns, and the live journal it describes -- and then held to the
+    two things this disposition claims of it. It has to have found something, because a
+    hold citing a pass that found nothing is a hold nobody recorded; and a disposition
+    that names no event at all has to be citing the one fault that leaves none to name,
+    which is a `sequence_gap`. An `integrity_failure` is about a row that is still there,
+    so it always names it.
+    """
+    report = read_journal_integrity_report(
+        connection, workspace_id=workspace_id, run_id=run_id, report_id=report_id
+    )
+    if report is None:
+        raise StorageError(
+            "a held quarantine cites an integrity report that is no longer there"
+        )
+    if report.outcome == "verified":
+        raise StorageError(
+            "a held quarantine cites an integrity report that found nothing"
+        )
+    if event_id is None and report.outcome != "sequence_gap":
+        raise StorageError("a held quarantine names no event and cites no sequence gap")
+
+
+def read_journal_retention_posture(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> JournalRetentionPosture:
+    """Every retention boundary this Run holds, and what they leave of its resumability.
+
+    Each row is re-checked against the rules it was stored under -- a range is both ends
+    or neither and never reversed, a range means not resumable, the flag is a boolean,
+    and the Audit record it names still belongs to this workspace -- so a file edited
+    outside this database fails closed rather than reading as a Run that may resume.
+    """
+    boundaries: list[RetentionBoundaryRecord] = []
+    resumable = True
+    blocking: str | None = None
+    for row in connection.execute(_RETENTION_QUERY, (workspace_id, run_id)):
+        (
+            boundary_id,
+            first_removed_sequence,
+            last_removed_sequence,
+            resumable_after,
+            policy_ref,
+            evidence_ref,
+            audit_ref,
+            recorded_at_us,
+            held_audit_ref,
+        ) = row
+        if not isinstance(resumable_after, int) or resumable_after not in (0, 1):
+            raise StorageError(
+                "a stored retention boundary does not state whether its run may resume"
+            )
+        _spelled(_IDENTIFIER, boundary_id, "retention boundary identifier")
+        _spelled(_IDENTIFIER, policy_ref, "retention boundary policy reference")
+        _spelled(_IDENTIFIER, evidence_ref, "retention boundary evidence reference")
+        _spelled(_IDENTIFIER, audit_ref, "retention boundary audit reference")
+        _counted(recorded_at_us, "retention boundary instant", minimum=1)
+        for sequence in (first_removed_sequence, last_removed_sequence):
+            if sequence is not None:
+                _counted(sequence, "retention boundary sequence", minimum=0)
+        if (first_removed_sequence is None) != (last_removed_sequence is None) or (
+            first_removed_sequence is not None
+            and (first_removed_sequence > last_removed_sequence or resumable_after != 0)
+        ):
+            raise StorageError(
+                "a stored retention boundary does not state a removable range"
+            )
+        if held_audit_ref != audit_ref:
+            raise StorageError(
+                "a stored retention boundary names an audit record its workspace does "
+                "not hold"
+            )
+        boundaries.append(
+            RetentionBoundaryRecord(
+                str(boundary_id),
+                run_id,
+                first_removed_sequence,
+                last_removed_sequence,
+                bool(resumable_after),
+                str(policy_ref),
+                str(evidence_ref),
+                str(audit_ref),
+                int(recorded_at_us),
+            )
+        )
+        if not resumable_after and resumable:
+            resumable = False
+            blocking = str(boundary_id)
+    return JournalRetentionPosture(run_id, resumable, blocking, tuple(boundaries))
+
+
+def evaluate_journal_resume(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> JournalResumeEligibility:
+    """Whether this Run may resume, and the one typed reason it may not.
+
+    Two separate facts, checked in this order. A held quarantine refuses with
+    `RT_JOURNAL_QUARANTINED`, because an unverifiable journal is a stronger statement
+    about the same Run than a policy boundary is. A Run rendered non-resumable by a
+    recorded retention boundary refuses with `RT_JOURNAL_RETENTION_BOUNDARY`.
+
+    Read-only, in every sense: no public Run state moves, no history is skipped, folded,
+    inferred, reconstructed or deleted, and either projection failing closed on a
+    tampered file propagates rather than reading as an allow.
+    """
+    quarantine = read_journal_quarantine(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    if quarantine.held:
+        return JournalResumeEligibility(
+            run_id,
+            False,
+            "RT_JOURNAL_QUARANTINED",
+            quarantine.integrity_report_id,
+            None,
+        )
+    posture = read_journal_retention_posture(
+        connection, workspace_id=workspace_id, run_id=run_id
+    )
+    if not posture.resumable:
+        return JournalResumeEligibility(
+            run_id,
+            False,
+            "RT_JOURNAL_RETENTION_BOUNDARY",
+            None,
+            posture.blocking_boundary_id,
+        )
+    return JournalResumeEligibility(run_id, True, None, None, None)
+
+
 __all__ = [
+    "JOURNAL_GOVERNANCE_DIAGNOSTICS",
+    "JOURNAL_INTEGRITY_DIAGNOSTICS",
+    "JOURNAL_INTEGRITY_OUTCOMES",
+    "JOURNAL_QUARANTINE_ACTIONS",
+    "JOURNAL_RESUME_DIAGNOSTICS",
     "TRANSITION_BUNDLE_DIAGNOSTICS",
     "TRANSITION_BUNDLE_DISPOSITIONS",
+    "TRANSITION_PARITY_STATUSES",
     "TRANSITION_ROLLOUT_STAGES",
     "BoundRunAdmission",
+    "JournalGovernanceRefused",
+    "JournalQuarantineProjection",
+    "JournalResumeEligibility",
+    "JournalRetentionPosture",
+    "JournalVerification",
+    "ParityPromotionEligibility",
+    "RetentionBoundaryRecord",
     "StoredJournalEvent",
+    "StoredJournalIntegrityReport",
     "StoredRuntimeDefinitionBinding",
     "StoredTransitionBundle",
+    "StoredTransitionParityReport",
     "TransitionBundleOutcome",
     "TransitionBundleRefused",
     "WorkflowBindingWriter",
+    "WorkflowJournalGovernanceWriter",
     "WorkflowTransitionWriter",
     "admit_bound_run",
     "apply_transition_bundle",
     "evaluate_binding_resume",
+    "evaluate_journal_resume",
+    "evaluate_parity_promotion",
     "journal_genesis_link",
+    "read_journal_integrity_report",
+    "read_journal_quarantine",
+    "read_journal_retention_posture",
     "read_runtime_definition_binding",
     "read_runtime_definition_binding_projection",
     "read_runtime_journal_events",
     "read_transition_bundle",
+    "read_transition_parity_report",
     "reconcile_binding_decision",
+    "record_retention_boundary",
+    "record_transition_parity_report",
+    "release_journal_quarantine",
     "transaction_local_binding_writer",
+    "transaction_local_journal_governance_writer",
     "transaction_local_transition_writer",
+    "verify_journal_integrity",
     "workflow_binding_writer",
+    "workflow_journal_governance_writer",
     "workflow_transition_writer",
 ]

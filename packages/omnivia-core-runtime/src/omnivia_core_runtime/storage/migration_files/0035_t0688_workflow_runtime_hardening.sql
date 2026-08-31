@@ -57,12 +57,22 @@
 -- verification pass over one rollout stage (`R0`, `R1`, `R2`); `verified` carries no
 -- affected sequence and no diagnostic, and a finding carries both, with the
 -- diagnostic naming exactly the code its outcome allows. A quarantine event is a
--- fenced, per-run append: quarantining an event requires the integrity report that
--- found it and forbids naming an actor or a reason, and releasing one requires both
+-- fenced, per-run append: quarantining requires the integrity report that found the
+-- fault and forbids naming an actor or a reason, and releasing one requires both
 -- and forbids naming a report or a diagnostic. The event it quarantines and the
 -- report it cites must both belong to its own run, not merely to its workspace, so
 -- both are reached by a run-scoped composite foreign key over a named unique parent
--- index rather than by a workspace-scoped one. A retention boundary only ever records
+-- index rather than by a workspace-scoped one.
+--
+-- A quarantine's event citation is nullable for exactly one fault. A `sequence_gap`
+-- is the fact that a row is *not* there, and a run whose journal is missing entirely
+-- has no surviving event to cite -- so requiring one would leave the worst journal
+-- fault the only one that cannot be held. A `quarantined` row may therefore omit its
+-- event only when the same-run integrity report it cites found a `sequence_gap`; it
+-- must always cite a report that found something, and an `integrity_failure` names
+-- the surviving row it is about. A release carries forward whatever citation the
+-- disposition before it held, present or absent, so releasing changes who decided and
+-- never what was held. A retention boundary only ever records
 -- that a range is now removable; this migration deletes no journal row and no
 -- Evidence row, and a boundary that does name a removed range must record
 -- `resumable_after = 0` for it.
@@ -386,7 +396,7 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_journal_quarantine_events (
     workspace_id           TEXT    NOT NULL,
     run_id                 TEXT    NOT NULL,
     disposition_sequence   INTEGER NOT NULL,
-    event_id               TEXT    NOT NULL,
+    event_id               TEXT,
     action                 TEXT    NOT NULL,
     integrity_report_id    TEXT,
     diagnostic             TEXT,
@@ -406,10 +416,11 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_journal_quarantine_events (
            AND instr(run_id, char(0)) = 0),
     CHECK (typeof(disposition_sequence) = 'integer'
            AND disposition_sequence BETWEEN 0 AND 1000000000),
-    CHECK (typeof(event_id) = 'text' AND length(event_id) BETWEEN 1 AND 128
-           AND event_id GLOB '[A-Za-z0-9]*'
-           AND event_id NOT GLOB '*[^A-Za-z0-9._:-]*'
-           AND instr(event_id, char(0)) = 0),
+    CHECK (event_id IS NULL
+           OR (typeof(event_id) = 'text' AND length(event_id) BETWEEN 1 AND 128
+               AND event_id GLOB '[A-Za-z0-9]*'
+               AND event_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+               AND instr(event_id, char(0)) = 0)),
     CHECK (action IN ('quarantined', 'released')),
     CHECK (integrity_report_id IS NULL
            OR (typeof(integrity_report_id) = 'text'
@@ -769,6 +780,28 @@ BEGIN
         SELECT COALESCE(MAX(disposition_sequence), -1) + 1
         FROM omnivia_workflow_journal_quarantine_events
         WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: a quarantine disposition must cite an integrity report that found a fault')
+    WHERE NEW.action = 'quarantined'
+      AND EXISTS (
+        SELECT 1 FROM omnivia_workflow_journal_integrity_reports
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND report_id = NEW.integrity_report_id AND outcome = 'verified');
+    SELECT RAISE(ABORT, 'omnivia: a quarantine disposition may omit its event only for a sequence gap')
+    WHERE NEW.action = 'quarantined'
+      AND NEW.event_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM omnivia_workflow_journal_integrity_reports
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+          AND report_id = NEW.integrity_report_id AND outcome = 'sequence_gap');
+    SELECT RAISE(ABORT, 'omnivia: a quarantine release must carry forward the event citation it holds')
+    WHERE NEW.action = 'released'
+      AND EXISTS (
+        SELECT 1 FROM omnivia_workflow_journal_quarantine_events
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id)
+      AND NEW.event_id IS NOT (
+        SELECT event_id FROM omnivia_workflow_journal_quarantine_events
+        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
+        ORDER BY disposition_sequence DESC LIMIT 1);
     SELECT RAISE(ABORT, 'omnivia: a quarantine disposition cannot predate its run')
     WHERE NEW.recorded_at_us < (
         SELECT bound_at_us FROM omnivia_workflow_runs
