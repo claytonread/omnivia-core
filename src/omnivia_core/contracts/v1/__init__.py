@@ -7,7 +7,7 @@ a caller does not need to know which submodule a given name lives in. The
 submodules themselves (:mod:`generated`, :mod:`codec`, :mod:`compatibility`,
 :mod:`semantics`, :mod:`semantics_core_target`, :mod:`semantics_evidence`,
 :mod:`semantics_jobs`, :mod:`semantics_knowledge`, :mod:`semantics_operations`,
-:mod:`semantics_runtime`, :mod:`semantics_service`, :mod:`adapter`,
+:mod:`semantics_runtime`, :mod:`semantics_service`, :mod:`semantics_workflow`, :mod:`adapter`,
 :mod:`conformance`) remain importable directly for callers that prefer
 explicit provenance.
 
@@ -32,6 +32,7 @@ from . import (
     semantics_operations,
     semantics_runtime,
     semantics_service,
+    semantics_workflow,
 )
 from .adapter import (
     ApplicationWireAdapter,
