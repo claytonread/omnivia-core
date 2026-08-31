@@ -1,4 +1,4 @@
-"""T-0688 IP-06: the Workflow Run definition-binding repository (migration 0035).
+"""T-0688 IP-06/IP-07: the Workflow Run binding and transition repositories (0035).
 
 One thing, said four ways.
 
@@ -38,6 +38,30 @@ names the Evidence reference its caller supplies and is validated by the public
 validator before it is returned; this module keeps no Evidence store of its own and has
 no statement that could change a stored binding even if it wanted one.
 
+*A transition is one write too, and it is fenced by the revision it expected.* IP-07's
+:meth:`WorkflowTransitionWriter.apply_transition_bundle` records one
+`RuntimeTransitionBundle` and the single `RuntimeJournalEvent` it carries as one
+deferred-foreign-key pair, against a `StoredRuntimeDefinitionBinding` that a verified
+read produced -- so the workspace, the Run and the binding a bundle is attributed to are
+the ones already proven durable, never three identifiers a caller states alongside. The
+writer is fail-safe and closed by rollout stage: `R0` and any stage outside the closed
+set refuse before a statement is issued, `R1` may record a dual-write candidate this
+repository claims no authority or parity for, and only `R2` records as authoritative
+storage.
+
+*The chain is recomputed, never accepted.* The exact per-Run genesis link is derived
+here, from one declared preimage, by :func:`journal_genesis_link`; every sequence after
+zero must name the full canonical event document digest of its persisted predecessor.
+0035 checks digest shape, contiguity and predecessor equality, and cannot derive the
+genesis value or hash a document at all, so a wrong link, a wrong genesis or a missing
+predecessor is refused here with `RT_JOURNAL_INTEGRITY_FAILURE` before any insert. A
+bundle already recorded under the same identifier replays as a no-op when its public
+`payloadDigest` is bit-for-bit the one already stored, and refuses with
+`RT_BUNDLE_INTEGRITY_CONFLICT` when it is not; a bundle expecting a revision other than
+the Run's current produced head refuses with `RT_BUNDLE_REVISION_CONFLICT`. Every one of
+those is a `TransitionBundleRefused` naming its own closed diagnostic, so a caller
+asserts on the code rather than on a sentence.
+
 Storage only. No admission service, no execution, no scheduler, no Evidence writer.
 """
 
@@ -61,6 +85,8 @@ from omnivia_core.contracts.v1.semantics_workflow import (
     validate_runtime_binding_resume_decision,
     validate_runtime_definition_binding,
     validate_runtime_definition_binding_projection,
+    validate_runtime_journal_event,
+    validate_transition_bundle,
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
@@ -69,6 +95,8 @@ from omnivia_core_runtime.storage.connection import StorageError
 _RUNS: Final = "omnivia_workflow_runs"
 _PLANS: Final = "omnivia_workflow_plans"
 _BINDINGS: Final = "omnivia_workflow_runtime_bindings"
+_BUNDLES: Final = "omnivia_workflow_transition_bundles"
+_JOURNAL: Final = "omnivia_workflow_runtime_journal_events"
 
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -136,27 +164,65 @@ def _canonical_document(value: Mapping[str, object]) -> tuple[str, str, int]:
     return document, _digest(document), len(document.encode("utf-8"))
 
 
+def _verified_document(
+    text: object, digest: object, byte_length: object, subject: str
+) -> dict[str, Any]:
+    """One stored document, believed only after its whole address is recomputed.
+
+    The bytes, the digest, the length and the canonical spelling, in that order, then the
+    JSON value domain -- everything that has to hold before a caller may look at a member
+    at all. `subject` names the record in the refusal, because the same recomputation
+    guards a binding, a bundle, a journal event and that event's payload, and a reader
+    that cannot tell which of the four disagreed is a reader that cannot act on it.
+    """
+    if not isinstance(text, str):
+        raise StorageError(f"a stored {subject} is not text")
+    if not isinstance(digest, str) or _digest(text) != digest:
+        raise StorageError(f"a stored {subject} does not match its recorded digest")
+    if not isinstance(byte_length, int) or byte_length != len(text.encode("utf-8")):
+        raise StorageError(
+            f"a stored {subject} does not match its recorded byte length"
+        )
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise StorageError(f"a stored {subject} is not valid JSON") from error
+    if not isinstance(decoded, dict):
+        raise StorageError(f"a stored {subject} is not a JSON object")
+    try:
+        canonical = canonicalize(decoded)
+    except ContractSemanticError as error:
+        # Valid JSON is not necessarily canonicalizable: OmniVia admits a strict subset
+        # of the JSON value domain, and a document outside it -- an integer that does not
+        # round trip through binary64, a lone surrogate -- has no canonical form to
+        # compare against at all. Fail closed, like every other read-side disagreement.
+        raise StorageError(f"a stored {subject} cannot be canonicalized") from error
+    if canonical != text:
+        raise StorageError(f"a stored {subject} is not canonical JSON")
+    return decoded
+
+
 def _instant_us(value: str) -> int:
-    """The public `boundAt` timestamp as the exact microsecond column it is stored in.
+    """One public `Timestamp` as the exact microsecond column it is stored in.
 
     Two ways this conversion can be inexact, and both fail closed rather than storing a
-    different instant than the binding names. `Timestamp` allows up to nine fractional
+    different instant than the record names. `Timestamp` allows up to nine fractional
     digits while the column holds microseconds, and `datetime.fromisoformat` truncates
     the excess silently rather than refusing it; and 0035 requires a positive instant,
     which the epoch itself is not.
 
-    Only ever called on a timestamp `validate_runtime_definition_binding` has already
-    accepted, on both the write and the read path, so the calendar is known good by the
-    time it arrives and the parse itself cannot fail.
+    Only ever called on a timestamp a public validator has already accepted, on both the
+    write and the read path, so the calendar is known good by the time it arrives and the
+    parse itself cannot fail.
     """
     fraction = value.partition(".")[2].removesuffix("Z")
     if any(digit != "0" for digit in fraction[6:]):
         raise StorageError(
-            f"a binding instant finer than a microsecond cannot be stored: {value!r}"
+            f"an instant finer than a microsecond cannot be stored: {value!r}"
         )
     microseconds = (datetime.fromisoformat(value) - _EPOCH) // timedelta(microseconds=1)
     if microseconds <= 0:
-        raise StorageError(f"a binding instant is not a storable instant: {value!r}")
+        raise StorageError(f"{value!r} is not a storable instant")
     return microseconds
 
 
@@ -365,33 +431,7 @@ def read_runtime_definition_binding(
         run_bound_at_us,
         plan_definition_hash,
     ) = row
-    text = str(document)
-    if not isinstance(digest, str) or _digest(text) != digest:
-        raise StorageError(
-            "a stored runtime binding does not match its recorded digest"
-        )
-    if not isinstance(byte_length, int) or byte_length != len(text.encode("utf-8")):
-        raise StorageError(
-            "a stored runtime binding does not match its recorded byte length"
-        )
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise StorageError("a stored runtime binding is not valid JSON") from error
-    if not isinstance(decoded, dict):
-        raise StorageError("a stored runtime binding is not a JSON object")
-    try:
-        canonical = canonicalize(decoded)
-    except ContractSemanticError as error:
-        # Valid JSON is not necessarily canonicalizable: OmniVia admits a strict subset
-        # of the JSON value domain, and a document outside it -- an integer that does not
-        # round trip through binary64, a lone surrogate -- has no canonical form to
-        # compare against at all. Fail closed, like every other read-side disagreement.
-        raise StorageError(
-            "a stored runtime binding cannot be canonicalized"
-        ) from error
-    if canonical != text:
-        raise StorageError("a stored runtime binding is not canonical JSON")
+    decoded = _verified_document(document, digest, byte_length, "runtime binding")
     try:
         validate_runtime_definition_binding(decoded)
     except ContractSemanticError as error:
@@ -554,15 +594,561 @@ def reconcile_binding_decision(
     return decision
 
 
+# --- T-0688 IP-07: transition bundles and the journal they extend -------------------
+
+#: The declared sequence-zero preimage. A Run's first journal link is the `sha256:`
+#: digest of exactly the JCS canonical UTF-8 bytes of this separator beside that Run's
+#: identifier, and of nothing else -- which is what makes it derivable by any other
+#: implementation, and different for every Run, without a stored seed to go missing.
+_GENESIS_DOMAIN_SEPARATOR: Final = "omnivia.workflow-runtime.journal.genesis.v1"
+
+#: 0035's closed rollout vocabulary, and the subset this writer may record under. `R0` is
+#: the disabled stage; `R1` is the dual-write candidate, which this repository records
+#: without claiming authority or parity for it; `R2` is authoritative storage. A stage
+#: outside the vocabulary refuses for the same reason `R0` does -- a stage that cannot be
+#: recognised has enabled nothing -- which is what makes the gate closed rather than a
+#: list of stages that happen to be off.
+TRANSITION_ROLLOUT_STAGES: Final = ("R0", "R1", "R2")
+_RECORDING_STAGES: Final = frozenset({"R1", "R2"})
+
+#: What a caller asserts on, instead of reading a sentence.
+TRANSITION_BUNDLE_DISPOSITIONS: Final = ("applied", "replayed")
+TRANSITION_BUNDLE_DIAGNOSTICS: Final = (
+    "RT_BUNDLE_WRITER_DISABLED",
+    "RT_BUNDLE_INTEGRITY_CONFLICT",
+    "RT_BUNDLE_REVISION_CONFLICT",
+    "RT_JOURNAL_INTEGRITY_FAILURE",
+)
+
+#: One bundle, its journal event, and the binding row the bundle's `binding_id` names.
+#: `LEFT JOIN` for both, deliberately: a bundle whose paired event or whose binding
+#: relation has gone missing must reach the checks below and fail closed, not vanish from
+#: the result set and read as a bundle this workspace never recorded.
+_BUNDLE_QUERY: Final = f"""
+SELECT b.binding_id, b.expected_revision, b.produced_revision, b.payload_digest,
+       b.bundle_json, b.bundle_digest, b.bundle_byte_length, b.recorded_at_us,
+       e.event_json, e.sequence, n.binding_id
+FROM {_BUNDLES} b
+LEFT JOIN {_JOURNAL} e
+       ON e.workspace_id = b.workspace_id AND e.run_id = b.run_id
+      AND e.bundle_id = b.bundle_id
+LEFT JOIN {_BINDINGS} n
+       ON n.workspace_id = b.workspace_id AND n.run_id = b.run_id
+WHERE b.workspace_id = ? AND b.run_id = ? AND b.bundle_id = ?
+"""
+
+#: One Run's journal in sequence order, each event beside the bundle it belongs to.
+_JOURNAL_QUERY: Final = f"""
+SELECT e.event_id, e.bundle_id, e.sequence, e.previous_link_digest, e.payload_digest,
+       e.event_json, e.event_digest, e.event_byte_length,
+       e.event_payload_json, e.event_payload_digest, e.event_payload_byte_length,
+       e.recorded_at_us, b.expected_revision
+FROM {_JOURNAL} e
+LEFT JOIN {_BUNDLES} b
+       ON b.workspace_id = e.workspace_id AND b.run_id = e.run_id
+      AND b.bundle_id = e.bundle_id
+WHERE e.workspace_id = ? AND e.run_id = ?
+ORDER BY e.sequence
+"""
+
+
+def journal_genesis_link(run_id: str) -> str:
+    """The exact `previousIntegrityLink` this Run's sequence-zero journal event names.
+
+    Pure, and the only derivation of that value in this repository. SQL checks the shape
+    of a link and the equality of every link after the first; it cannot hash a document,
+    so the genesis value is computed here and recomputed here, from one declared preimage
+    -- the canonical JSON of the domain separator and this Run's identifier -- rather than
+    being read back from a column that could be edited to whatever a forged first event
+    happens to name.
+    """
+    return _digest(
+        canonicalize({"domainSeparator": _GENESIS_DOMAIN_SEPARATOR, "runId": run_id})
+    )
+
+
+class TransitionBundleRefused(StorageError):
+    """A refusal that carries the closed diagnostic naming why, not only prose.
+
+    A `StorageError`, so a caller that already fails closed on storage refusals keeps
+    doing so; `diagnostic` is what a caller that wants to distinguish a replay conflict
+    from a revision conflict from a broken chain reads instead of matching text. This is
+    deliberately storage-local: it is an exception attribute, not a second wire contract
+    beside the public `RuntimeTransitionBundle`.
+    """
+
+    def __init__(self, diagnostic: str, detail: str) -> None:
+        super().__init__(f"{detail} ({diagnostic})")
+        self.diagnostic = diagnostic
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionBundleOutcome:
+    """What one accepted `apply_transition_bundle` did, and to which revision.
+
+    `disposition` is `applied` for a bundle this call made durable and `replayed` for one
+    already durable under the same identifier and the same public `payloadDigest`, whose
+    revision is returned unchanged and whose journal gains no second event.
+    """
+
+    disposition: str
+    bundle_id: str
+    produced_revision: int
+    payload_digest: str
+    content_address: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredTransitionBundle:
+    """One `RuntimeTransitionBundle` and the address of the bytes it was stored as.
+
+    The same shape, and for the same reason, as :class:`StoredRuntimeDefinitionBinding`:
+    the address, the length and the keys the document was read under are properties of
+    the storage rather than members of the public contract.
+    """
+
+    bundle: Mapping[str, object]
+    content_address: str
+    content_length_bytes: int
+    workspace_id: str
+    run_id: str
+    binding_id: str
+    produced_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredJournalEvent:
+    """One `RuntimeJournalEvent`, the payload its `payloadDigest` names, and both addresses."""
+
+    event: Mapping[str, object]
+    payload: Mapping[str, object]
+    content_address: str
+    content_length_bytes: int
+    workspace_id: str
+    run_id: str
+    bundle_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowTransitionWriter:
+    """The transition writes, issued into a transaction that is already open.
+
+    The companion to :class:`WorkflowBindingWriter`, and deliberately a second type
+    rather than a third method on that one: admitting a bound Run and applying a
+    transition to one are different writes with different fencing, and a writer named for
+    bindings that also recorded journal events would misname both.
+    """
+
+    connection: sqlite3.Connection
+    workspace_id: str
+
+    def apply_transition_bundle(
+        self,
+        *,
+        binding: StoredRuntimeDefinitionBinding,
+        bundle: Mapping[str, object],
+        event_payload: Mapping[str, object],
+        rollout_stage: str,
+    ) -> TransitionBundleOutcome:
+        """Record one bundle and the journal event it carries, in the caller's transaction.
+
+        `binding` is a verified read's own record, and it -- not the caller -- is the
+        source of the workspace, the Run and the binding identifier this bundle is
+        attributed to. `event_payload` is the mapping whose canonical digest the nested
+        event's `payloadDigest` names; it is stored beside the event, and a payload whose
+        digest is not exactly that value is refused rather than stored under a digest it
+        does not have.
+
+        Every refusal below happens before a statement is issued, and the two inserts are
+        one deferred-foreign-key pair, so a refused or half-failed application leaves no
+        bundle without its event and no event without its bundle.
+        """
+        if rollout_stage not in _RECORDING_STAGES:
+            raise TransitionBundleRefused(
+                "RT_BUNDLE_WRITER_DISABLED",
+                f"the transition bundle writer records nothing at stage {rollout_stage!r}",
+            )
+        validate_transition_bundle(bundle)
+        event = dict(_mapping_member(bundle, "event"))
+        run_id = binding.run_id
+        binding_id = str(binding.binding["bindingId"])
+        if binding.workspace_id != self.workspace_id:
+            raise StorageError(
+                "a transition bundle cannot be applied against another workspace's binding"
+            )
+        if bundle["runId"] != run_id:
+            raise StorageError(
+                "a transition bundle names a run other than the one its binding was read for"
+            )
+
+        payload_document, payload_digest, payload_length = _canonical_document(
+            event_payload
+        )
+        if event["payloadDigest"] != payload_digest:
+            raise StorageError(
+                "a journal event's payloadDigest is not the digest of the payload supplied"
+            )
+        expected_revision = int(str(bundle["expectedAggregateRevision"]))
+        sequence = int(str(event["sequence"]))
+        if sequence != expected_revision:
+            raise StorageError(
+                "a journal event's sequence is not the revision its bundle expected"
+            )
+
+        bundle_id = str(bundle["bundleId"])
+        recorded = self.connection.execute(
+            f"SELECT payload_digest, produced_revision, bundle_digest FROM {_BUNDLES} "
+            "WHERE workspace_id = ? AND run_id = ? AND bundle_id = ?",
+            (self.workspace_id, run_id, bundle_id),
+        ).fetchone()
+        if recorded is not None:
+            if recorded[0] != bundle["payloadDigest"]:
+                raise TransitionBundleRefused(
+                    "RT_BUNDLE_INTEGRITY_CONFLICT",
+                    f"transition bundle {bundle_id!r} is already recorded with a "
+                    "different payload digest",
+                )
+            return TransitionBundleOutcome(
+                "replayed",
+                bundle_id,
+                int(recorded[1]),
+                str(recorded[0]),
+                str(recorded[2]),
+            )
+
+        head = int(
+            self.connection.execute(
+                f"SELECT COALESCE(MAX(produced_revision), 0) FROM {_BUNDLES} "
+                "WHERE workspace_id = ? AND run_id = ?",
+                (self.workspace_id, run_id),
+            ).fetchone()[0]
+        )
+        if expected_revision != head:
+            raise TransitionBundleRefused(
+                "RT_BUNDLE_REVISION_CONFLICT",
+                f"transition bundle {bundle_id!r} expected revision {expected_revision} "
+                f"and this run has produced {head}",
+            )
+
+        required_link = self._required_link(run_id, sequence)
+        if event["previousIntegrityLink"] != required_link:
+            raise TransitionBundleRefused(
+                "RT_JOURNAL_INTEGRITY_FAILURE",
+                f"the journal event at sequence {sequence} does not name the integrity "
+                "link its run requires",
+            )
+
+        document, digest, byte_length = _canonical_document(bundle)
+        event_document, event_digest, event_length = _canonical_document(event)
+        recorded_at_us = _instant_us(str(event["recordedAt"]))
+        self.connection.execute(
+            f"INSERT INTO {_BUNDLES} (workspace_id, run_id, bundle_id, binding_id, "
+            "expected_revision, produced_revision, payload_digest, bundle_json, "
+            "bundle_digest, bundle_byte_length, recorded_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                run_id,
+                bundle_id,
+                binding_id,
+                expected_revision,
+                int(str(bundle["producedAggregateRevision"])),
+                bundle["payloadDigest"],
+                document,
+                digest,
+                byte_length,
+                recorded_at_us,
+            ),
+        )
+        self.connection.execute(
+            f"INSERT INTO {_JOURNAL} (workspace_id, run_id, bundle_id, event_id, "
+            "sequence, previous_link_digest, payload_digest, event_json, event_digest, "
+            "event_byte_length, event_payload_json, event_payload_digest, "
+            "event_payload_byte_length, recorded_at_us) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.workspace_id,
+                run_id,
+                bundle_id,
+                str(event["eventId"]),
+                sequence,
+                required_link,
+                payload_digest,
+                event_document,
+                event_digest,
+                event_length,
+                payload_document,
+                payload_digest,
+                payload_length,
+                recorded_at_us,
+            ),
+        )
+        return TransitionBundleOutcome(
+            "applied",
+            bundle_id,
+            int(str(bundle["producedAggregateRevision"])),
+            str(bundle["payloadDigest"]),
+            digest,
+        )
+
+    def _required_link(self, run_id: str, sequence: int) -> str:
+        """The one link this sequence may name, recomputed rather than read from the event.
+
+        Sequence zero is the derived per-Run genesis link. Every sequence after it is the
+        digest of the whole canonical event document already persisted at `sequence - 1`,
+        recomputed from those bytes here rather than trusted from the predecessor's own
+        `event_digest` column, so a chain anchored to an edited column is not a chain.
+        """
+        if sequence == 0:
+            return journal_genesis_link(run_id)
+        row = self.connection.execute(
+            f"SELECT event_json, event_digest, event_byte_length FROM {_JOURNAL} "
+            "WHERE workspace_id = ? AND run_id = ? AND sequence = ?",
+            (self.workspace_id, run_id, sequence - 1),
+        ).fetchone()
+        if row is None:
+            raise TransitionBundleRefused(
+                "RT_JOURNAL_INTEGRITY_FAILURE",
+                f"this run holds no journal event at sequence {sequence - 1} to link to",
+            )
+        _verified_document(row[0], row[1], row[2], "journal event")
+        return str(row[1])
+
+
+def _mapping_member(record: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = record[key]
+    if not isinstance(value, Mapping):
+        raise StorageError(f"{key!r} is not a mapping")
+    return value
+
+
+def transaction_local_transition_writer(
+    connection: sqlite3.Connection, *, workspace_id: str
+) -> WorkflowTransitionWriter:
+    """The transition writes, for a caller that already holds a fenced transaction.
+
+    The narrow companion to :func:`workflow_transition_writer`, and it weakens no fencing
+    for the same reason :func:`transaction_local_binding_writer` does not: it opens no
+    transaction and validates no authority, so everything it issues is covered by the
+    entry and pre-commit validation of the transaction the caller opened.
+    """
+    return WorkflowTransitionWriter(connection, workspace_id)
+
+
+@contextmanager
+def workflow_transition_writer(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+) -> Iterator[WorkflowTransitionWriter]:
+    """One fenced transaction, and the transition writes that may be issued into it."""
+    with fenced_transaction(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ):
+        yield transaction_local_transition_writer(connection, workspace_id=workspace_id)
+
+
+def apply_transition_bundle(
+    connection: sqlite3.Connection,
+    identity: ServiceInstanceIdentity,
+    *,
+    workspace_id: str,
+    fencing_generation: int,
+    binding: StoredRuntimeDefinitionBinding,
+    bundle: Mapping[str, object],
+    event_payload: Mapping[str, object],
+    rollout_stage: str,
+) -> TransitionBundleOutcome:
+    """Record one transition bundle and its journal event, in its own fenced transaction."""
+    with workflow_transition_writer(
+        connection,
+        identity,
+        workspace_id=workspace_id,
+        fencing_generation=fencing_generation,
+    ) as writer:
+        return writer.apply_transition_bundle(
+            binding=binding,
+            bundle=bundle,
+            event_payload=event_payload,
+            rollout_stage=rollout_stage,
+        )
+
+
+def read_transition_bundle(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str, bundle_id: str
+) -> StoredTransitionBundle | None:
+    """One recorded bundle, recomputed before it is believed.
+
+    `None` means this workspace holds no such bundle for this Run. Everything else is a
+    `StorageError`: the bytes, the digest, the length, the canonical form, the public
+    contract, the columns the row is indexed by, the binding the bundle names, and the
+    journal event the bundle carries -- which must be the event actually persisted for it,
+    at the sequence the bundle's expected revision states.
+    """
+    row = connection.execute(
+        _BUNDLE_QUERY, (workspace_id, run_id, bundle_id)
+    ).fetchone()
+    if row is None:
+        return None
+    (
+        row_binding_id,
+        expected_revision,
+        produced_revision,
+        payload_digest,
+        document,
+        digest,
+        byte_length,
+        recorded_at_us,
+        event_document,
+        event_sequence,
+        held_binding_id,
+    ) = row
+    decoded = _verified_document(document, digest, byte_length, "transition bundle")
+    try:
+        validate_transition_bundle(decoded)
+    except ContractSemanticError as error:
+        raise StorageError(
+            "a stored transition bundle is not a valid RuntimeTransitionBundle"
+        ) from error
+    event = _mapping_member(decoded, "event")
+    if (
+        decoded["bundleId"] != bundle_id
+        or decoded["runId"] != run_id
+        or decoded["expectedAggregateRevision"] != expected_revision
+        or decoded["producedAggregateRevision"] != produced_revision
+        or decoded["payloadDigest"] != payload_digest
+        or _instant_us(str(event["recordedAt"])) != recorded_at_us
+    ):
+        raise StorageError(
+            "a stored transition bundle disagrees with the columns it is indexed by"
+        )
+    if held_binding_id is None or held_binding_id != row_binding_id:
+        raise StorageError(
+            "a stored transition bundle names a binding its run does not hold"
+        )
+    if event_document is None or event_sequence != expected_revision:
+        raise StorageError(
+            "a stored transition bundle is not paired with the journal event it carries"
+        )
+    if canonicalize(dict(event)) != event_document:
+        raise StorageError(
+            "a stored transition bundle disagrees with the journal event recorded for it"
+        )
+    return StoredTransitionBundle(
+        decoded,
+        digest,
+        byte_length,
+        workspace_id,
+        run_id,
+        str(row_binding_id),
+        int(produced_revision),
+    )
+
+
+def read_runtime_journal_events(
+    connection: sqlite3.Connection, *, workspace_id: str, run_id: str
+) -> tuple[StoredJournalEvent, ...]:
+    """One Run's journal in sequence order, with the whole chain recomputed.
+
+    An empty result means this workspace holds no journal for this Run. Anything present
+    is verified whole before any of it is returned: both documents against their own
+    digests and lengths, the event against the public contract and against the columns it
+    is indexed by, the payload against the digest the event names for it, the bundle
+    relation the event belongs to, contiguity from zero, and every integrity link --
+    genesis at sequence zero, and the predecessor's full canonical event digest after it.
+    """
+    events: list[StoredJournalEvent] = []
+    link = journal_genesis_link(run_id)
+    for sequence, row in enumerate(
+        connection.execute(_JOURNAL_QUERY, (workspace_id, run_id))
+    ):
+        (
+            event_id,
+            bundle_id,
+            row_sequence,
+            previous_link,
+            row_payload_digest,
+            document,
+            digest,
+            byte_length,
+            payload_document,
+            payload_digest,
+            payload_length,
+            recorded_at_us,
+            expected_revision,
+        ) = row
+        decoded = _verified_document(document, digest, byte_length, "journal event")
+        payload = _verified_document(
+            payload_document, payload_digest, payload_length, "journal event payload"
+        )
+        try:
+            validate_runtime_journal_event(decoded, run_id=run_id)
+        except ContractSemanticError as error:
+            raise StorageError(
+                "a stored journal event is not a valid RuntimeJournalEvent"
+            ) from error
+        if (
+            decoded["eventId"] != event_id
+            or decoded["sequence"] != row_sequence
+            or decoded["previousIntegrityLink"] != previous_link
+            or decoded["payloadDigest"] != payload_digest
+            or row_payload_digest != payload_digest
+            or _instant_us(str(decoded["recordedAt"])) != recorded_at_us
+        ):
+            raise StorageError(
+                "a stored journal event disagrees with the columns it is indexed by"
+            )
+        if expected_revision is None or expected_revision != row_sequence:
+            raise StorageError(
+                "a stored journal event is not paired with the bundle whose revision it produced"
+            )
+        if row_sequence != sequence or previous_link != link:
+            raise StorageError(
+                "a stored journal event does not continue its run's integrity chain"
+            )
+        link = digest
+        events.append(
+            StoredJournalEvent(
+                decoded,
+                payload,
+                digest,
+                byte_length,
+                workspace_id,
+                run_id,
+                str(bundle_id),
+            )
+        )
+    return tuple(events)
+
+
 __all__ = [
+    "TRANSITION_BUNDLE_DIAGNOSTICS",
+    "TRANSITION_BUNDLE_DISPOSITIONS",
+    "TRANSITION_ROLLOUT_STAGES",
     "BoundRunAdmission",
+    "StoredJournalEvent",
     "StoredRuntimeDefinitionBinding",
+    "StoredTransitionBundle",
+    "TransitionBundleOutcome",
+    "TransitionBundleRefused",
     "WorkflowBindingWriter",
+    "WorkflowTransitionWriter",
     "admit_bound_run",
+    "apply_transition_bundle",
     "evaluate_binding_resume",
+    "journal_genesis_link",
     "read_runtime_definition_binding",
     "read_runtime_definition_binding_projection",
+    "read_runtime_journal_events",
+    "read_transition_bundle",
     "reconcile_binding_decision",
     "transaction_local_binding_writer",
+    "transaction_local_transition_writer",
     "workflow_binding_writer",
+    "workflow_transition_writer",
 ]
