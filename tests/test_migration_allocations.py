@@ -58,7 +58,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
 # is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
 # Chat compaction/waits/agent-run candidate. 0034 is the durable Chat
-# generation-text/transport-event candidate.
+# generation-text/transport-event candidate. 0035 is reserved for the T-0688
+# Workflow Runtime hardening migration -- an allocation, not a file.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -77,6 +78,7 @@ EXPECTED_ALLOCATION = (
     (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
     (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
     (34, "0034_chat_generation_text_transport_events.sql", "Chat", "candidate"),
+    (35, "0035_t0688_workflow_runtime_hardening.sql", "Workflow Runtime", "reserved"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
