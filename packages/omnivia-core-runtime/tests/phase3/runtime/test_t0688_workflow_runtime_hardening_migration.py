@@ -1142,7 +1142,9 @@ def seed_other_run(holder: m1.Owned) -> None:
 
 
 def rows_of(holder: m1.Owned, table: str, order: str) -> list[tuple[object, ...]]:
-    return holder.connection.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+    return holder.connection.execute(
+        f"SELECT * FROM {table} ORDER BY {order}"
+    ).fetchall()
 
 
 def public_run_state(holder: m1.Owned) -> list[list[tuple[object, ...]]]:
@@ -1192,9 +1194,9 @@ def test_a_bundle_carries_at_most_one_parity_report(paired: m1.Owned) -> None:
     record(paired, (PARITY, parity_row()))
     with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
         record(paired, (PARITY, parity_row("diverged", report_id="parity-0035-two")))
-    assert paired.connection.execute(
-        f"SELECT report_id FROM {PARITY}"
-    ).fetchall() == [(PARITY_ID,)]
+    assert paired.connection.execute(f"SELECT report_id FROM {PARITY}").fetchall() == [
+        (PARITY_ID,)
+    ]
 
 
 PARITY_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
@@ -1221,7 +1223,9 @@ def test_a_parity_report_that_misstates_its_comparison_refuses(
     overrides, expected = PARITY_REFUSALS[case]
     with pytest.raises(sqlite3.DatabaseError, match=expected):
         record(paired, (PARITY, parity_row(**overrides)))
-    assert paired.connection.execute(f"SELECT COUNT(*) FROM {PARITY}").fetchone() == (0,)
+    assert paired.connection.execute(f"SELECT COUNT(*) FROM {PARITY}").fetchone() == (
+        0,
+    )
 
 
 # --- integrity verification of the chain ------------------------------------------
@@ -1257,9 +1261,7 @@ def test_an_integrity_report_records_one_closed_outcome_per_stage(
 
 INTEGRITY_REFUSALS: dict[str, dict[str, object]] = {
     "verified naming a sequence": integrity_row(first_affected_sequence=0),
-    "verified naming a diagnostic": integrity_row(
-        diagnostic="RT_JOURNAL_SEQUENCE_GAP"
-    ),
+    "verified naming a diagnostic": integrity_row(diagnostic="RT_JOURNAL_SEQUENCE_GAP"),
     "gap without a sequence": integrity_row(
         "sequence_gap", first_affected_sequence=None
     ),
@@ -1288,9 +1290,9 @@ def test_an_integrity_report_outside_its_closed_combinations_refuses(
     """`verified` is silent, and a finding names its own code -- never the other's."""
     with pytest.raises(sqlite3.DatabaseError, match=CONSTRAINT):
         record(paired, (INTEGRITY, INTEGRITY_REFUSALS[case]))
-    assert paired.connection.execute(f"SELECT COUNT(*) FROM {INTEGRITY}").fetchone() == (
-        0,
-    )
+    assert paired.connection.execute(
+        f"SELECT COUNT(*) FROM {INTEGRITY}"
+    ).fetchone() == (0,)
 
 
 # --- quarantine and release -------------------------------------------------------
@@ -1308,8 +1310,24 @@ def test_quarantine_and_release_append_contiguously_and_move_no_public_fact(
         f"diagnostic, deciding_actor, reason FROM {QUARANTINE} "
         "ORDER BY disposition_sequence"
     ).fetchall() == [
-        (0, event_id_for(0), "quarantined", INTEGRITY_ID, "RT_JOURNAL_QUARANTINED", None, None),
-        (1, event_id_for(0), "released", None, None, "core-service", "operator_release"),
+        (
+            0,
+            event_id_for(0),
+            "quarantined",
+            INTEGRITY_ID,
+            "RT_JOURNAL_QUARANTINED",
+            None,
+            None,
+        ),
+        (
+            1,
+            event_id_for(0),
+            "released",
+            None,
+            None,
+            "core-service",
+            "operator_release",
+        ),
     ]
     assert public_run_state(flagged) == before
     assert counts(flagged) == (1, 1)
@@ -1483,9 +1501,9 @@ def test_a_retention_boundary_that_misstates_its_range_or_refs_refuses(
     overrides, expected = RETENTION_REFUSALS[case]
     with pytest.raises(sqlite3.DatabaseError, match=expected):
         record_boundary(paired, retention_row(**overrides))
-    assert paired.connection.execute(f"SELECT COUNT(*) FROM {RETENTION}").fetchone() == (
-        0,
-    )
+    assert paired.connection.execute(
+        f"SELECT COUNT(*) FROM {RETENTION}"
+    ).fetchone() == (0,)
 
 
 # --- nothing recorded here is ever rewritten --------------------------------------
@@ -1493,7 +1511,9 @@ def test_a_retention_boundary_that_misstates_its_range_or_refs_refuses(
 
 def settle(holder: m1.Owned) -> None:
     """Every table this slice covers, populated once for the run that is bound."""
-    record(holder, (PARITY, parity_row()), (INTEGRITY, integrity_row("integrity_failure")))
+    record(
+        holder, (PARITY, parity_row()), (INTEGRITY, integrity_row("integrity_failure"))
+    )
     record(holder, (QUARANTINE, quarantine_row()))
     record_boundary(holder, retention_row())
 
