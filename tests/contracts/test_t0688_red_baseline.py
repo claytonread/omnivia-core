@@ -459,6 +459,29 @@ def test_red_baseline_loop_family_exercises_the_current_loop_plan_validator() ->
             workflow.validate_loop_plan({**copy.deepcopy(base), field: value})
 
 
+#: The IP-09 revisit. `validate_nested_workflow_boundary` (FX-WEFT-BOUNDARY, `WEFT-BL-011`) and
+#: `validate_loop_iteration_ledger` (FX-WEFT-LOOP, `WEFT-BL-012`) were absent from the whole v1
+#: semantic surface when this baseline was authored. They now exist as Core contract semantics.
+#: Neither family's probe asserted their absence -- both probe the *narrower* validator, so the
+#: characterizations above are unchanged -- but the absence itself is no longer true and is
+#: recorded here rather than left implied.
+_IP09_IMPLEMENTED_VALIDATORS: Final = (
+    "validate_nested_workflow_boundary",
+    "validate_loop_iteration_ledger",
+)
+
+
+def test_red_baseline_ip09_planned_validators_now_exist() -> None:
+    for name in _IP09_IMPLEMENTED_VALIDATORS:
+        assert callable(getattr(workflow, name))
+
+    # What remains RED for those two families: the candidate shapes carry no `contractName`, so
+    # they are still not reachable through the published T-0679 record registry.
+    registered = set(workflow.WORKFLOW_RECORD_VALIDATORS.values())
+    for name in _IP09_IMPLEMENTED_VALIDATORS:
+        assert getattr(workflow, name) not in registered
+
+
 def test_red_baseline_egress_uri_guard_cannot_see_a_connect_time_rebinding() -> None:
     """The current gateway guard is syntactic: it admits both bound addresses."""
     probe = _entry("FX-WEFT-EGRESS")["inventedInput"]["probe"]
