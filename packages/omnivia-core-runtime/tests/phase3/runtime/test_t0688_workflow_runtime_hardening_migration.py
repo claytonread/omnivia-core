@@ -1377,6 +1377,9 @@ def test_a_quarantine_disposition_may_not_skip_the_run_s_first_sequence(
     ).fetchall() == [(0,)]
 
 
+RELEASE_OUTSTANDING = "must discharge an outstanding quarantine"
+CARRY_FORWARD = "must carry forward the event citation it holds"
+
 QUARANTINE_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
     "held without its report": (
         quarantine_row(integrity_report_id=None),
@@ -1388,20 +1391,22 @@ QUARANTINE_REFUSALS: dict[str, tuple[dict[str, object], str]] = {
         CONSTRAINT,
     ),
     "held naming a reason": (quarantine_row(reason="operator_release"), CONSTRAINT),
+    # Sequence one, because a release at sequence zero discharges nothing and is refused
+    # for that instead -- a different rule, tested on its own below.
     "released naming a report": (
-        quarantine_row(0, "released", integrity_report_id=INTEGRITY_ID),
+        quarantine_row(1, "released", integrity_report_id=INTEGRITY_ID),
         CONSTRAINT,
     ),
     "released naming a diagnostic": (
-        quarantine_row(0, "released", diagnostic="RT_JOURNAL_QUARANTINED"),
+        quarantine_row(1, "released", diagnostic="RT_JOURNAL_QUARANTINED"),
         CONSTRAINT,
     ),
     "released without an actor": (
-        quarantine_row(0, "released", deciding_actor=None),
+        quarantine_row(1, "released", deciding_actor=None),
         CONSTRAINT,
     ),
     "released without a reason": (
-        quarantine_row(0, "released", reason=None),
+        quarantine_row(1, "released", reason=None),
         CONSTRAINT,
     ),
     "unknown action": (quarantine_row(0, "archived"), CONSTRAINT),
@@ -1422,11 +1427,171 @@ def test_a_quarantine_disposition_outside_its_closed_form_refuses(
     flagged: m1.Owned, case: str
 ) -> None:
     row, expected = QUARANTINE_REFUSALS[case]
+    held = row["disposition_sequence"] == 1
+    if held:
+        record(flagged, (QUARANTINE, quarantine_row()))
     with pytest.raises(sqlite3.DatabaseError, match=expected):
         record(flagged, (QUARANTINE, row))
     assert flagged.connection.execute(
         f"SELECT COUNT(*) FROM {QUARANTINE}"
+    ).fetchone() == (int(held),)
+
+
+def test_a_release_may_not_be_a_runs_first_disposition(flagged: m1.Owned) -> None:
+    """A release discharges a hold, so there has to be one to discharge.
+
+    Sequence zero is contiguous and carries no citation forward, so nothing else in this
+    trigger stops it -- and a run whose only disposition says `released` reads as a
+    decision somebody made about a quarantine that never existed.
+    """
+    with pytest.raises(sqlite3.DatabaseError, match=RELEASE_OUTSTANDING):
+        record(flagged, (QUARANTINE, quarantine_row(0, "released")))
+    assert flagged.connection.execute(
+        f"SELECT COUNT(*) FROM {QUARANTINE}"
     ).fetchone() == (0,)
+
+    record(flagged, (QUARANTINE, quarantine_row()))
+    record(flagged, (QUARANTINE, quarantine_row(1, "released")))
+    assert flagged.connection.execute(
+        f"SELECT disposition_sequence, action FROM {QUARANTINE} "
+        "ORDER BY disposition_sequence"
+    ).fetchall() == [(0, "quarantined"), (1, "released")]
+
+
+def dispositions(holder: m1.Owned) -> list[tuple[object, ...]]:
+    return [
+        tuple(row)
+        for row in holder.connection.execute(
+            f"SELECT disposition_sequence, action, event_id FROM {QUARANTINE} "
+            "ORDER BY disposition_sequence"
+        )
+    ]
+
+
+@pytest.fixture
+def twice_flagged(flagged: m1.Owned) -> m1.Owned:
+    """Two holds citing two different surviving events, the second one outstanding.
+
+    Two events, because a stack whose members all name the same row cannot show which
+    of them a release actually discharged.
+    """
+    link = str(event_row()["event_digest"])
+    record(flagged, (BUNDLES, bundle_row(1, link)), (JOURNAL, event_row(1, link)))
+    record(
+        flagged,
+        (QUARANTINE, quarantine_row(0, event_id=event_id_for(0))),
+        (QUARANTINE, quarantine_row(1, event_id=event_id_for(1))),
+    )
+    return flagged
+
+
+def test_a_release_discharges_the_latest_outstanding_hold_and_no_other(
+    twice_flagged: m1.Owned,
+) -> None:
+    """Stacked holds come off newest first, and each release names the one it takes.
+
+    A release citing a hold that is not the outstanding one is somebody answering a
+    finding that is not the one in front of them -- or answering one another release has
+    already discharged -- so the trigger refuses it either way, and the remaining stack
+    is unchanged.
+    """
+    held = dispositions(twice_flagged)
+    with pytest.raises(sqlite3.DatabaseError, match=CARRY_FORWARD):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(2, "released", event_id=event_id_for(0))),
+        )
+    assert dispositions(twice_flagged) == held
+
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(2, "released", event_id=event_id_for(1))),
+    )
+    with pytest.raises(sqlite3.DatabaseError, match=CARRY_FORWARD):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(3, "released", event_id=event_id_for(1))),
+        )
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(3, "released", event_id=event_id_for(0))),
+    )
+    assert dispositions(twice_flagged) == [
+        (0, "quarantined", event_id_for(0)),
+        (1, "quarantined", event_id_for(1)),
+        (2, "released", event_id_for(1)),
+        (3, "released", event_id_for(0)),
+    ]
+
+
+def test_a_hold_appended_after_a_release_is_the_next_one_discharged(
+    twice_flagged: m1.Owned,
+) -> None:
+    """The stack keeps its depth across a release, and the newest hold is still the top.
+
+    A run held, released and held again is the ordinary case for one that keeps failing
+    verification, and it is where a rule reading only sequence order comes apart: the
+    hold appended last comes off first, and the one under it -- appended before both
+    releases -- is what is left standing.
+    """
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(2, "released", event_id=event_id_for(1))),
+        (QUARANTINE, quarantine_row(3, event_id=event_id_for(1))),
+    )
+    standing = dispositions(twice_flagged)
+    with pytest.raises(sqlite3.DatabaseError, match=CARRY_FORWARD):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(4, "released", event_id=event_id_for(0))),
+        )
+    assert dispositions(twice_flagged) == standing
+
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(4, "released", event_id=event_id_for(1))),
+    )
+    with pytest.raises(sqlite3.DatabaseError, match=CARRY_FORWARD):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(5, "released", event_id=event_id_for(1))),
+        )
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(5, "released", event_id=event_id_for(0))),
+    )
+    with pytest.raises(sqlite3.DatabaseError, match=RELEASE_OUTSTANDING):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(6, "released", event_id=event_id_for(0))),
+        )
+    assert dispositions(twice_flagged) == [
+        (0, "quarantined", event_id_for(0)),
+        (1, "quarantined", event_id_for(1)),
+        (2, "released", event_id_for(1)),
+        (3, "quarantined", event_id_for(1)),
+        (4, "released", event_id_for(1)),
+        (5, "released", event_id_for(0)),
+    ]
+
+
+@pytest.mark.parametrize("event_id", [event_id_for(0), event_id_for(1)])
+def test_a_release_past_the_last_outstanding_hold_refuses(
+    twice_flagged: m1.Owned, event_id: str
+) -> None:
+    """Two holds are two decisions and no more; a third answers nothing left held."""
+    record(
+        twice_flagged,
+        (QUARANTINE, quarantine_row(2, "released", event_id=event_id_for(1))),
+        (QUARANTINE, quarantine_row(3, "released", event_id=event_id_for(0))),
+    )
+    discharged = dispositions(twice_flagged)
+    with pytest.raises(sqlite3.DatabaseError, match=RELEASE_OUTSTANDING):
+        record(
+            twice_flagged,
+            (QUARANTINE, quarantine_row(4, "released", event_id=event_id)),
+        )
+    assert dispositions(twice_flagged) == discharged
 
 
 @pytest.mark.parametrize(
@@ -1450,7 +1615,6 @@ def test_a_quarantine_that_names_another_runs_evidence_refuses(
 
 CITATION_REQUIRED = "may omit its event only for a sequence gap"
 FINDING_REQUIRED = "must cite an integrity report that found a fault"
-CARRY_FORWARD = "must carry forward the event citation it holds"
 
 
 @pytest.fixture

@@ -70,9 +70,18 @@
 -- fault the only one that cannot be held. A `quarantined` row may therefore omit its
 -- event only when the same-run integrity report it cites found a `sequence_gap`; it
 -- must always cite a report that found something, and an `integrity_failure` names
--- the surviving row it is about. A release carries forward whatever citation the
--- disposition before it held, present or absent, so releasing changes who decided and
--- never what was held. A retention boundary only ever records
+-- the surviving row it is about.
+--
+-- Dispositions stack, and a release discharges exactly one hold: the latest still
+-- outstanding, which is the highest-sequence `quarantined` row whose running balance
+-- of holds minus releases equals the run's balance overall. A release must carry
+-- forward that row's citation, present or absent, so releasing changes who decided and
+-- never what was held; and a release with an overall balance below one discharges
+-- nothing at all -- a run's sequence zero included -- and would leave a run reading as
+-- decided that was never held. Two findings are therefore two decisions, and no
+-- decision can be redirected onto a hold another release already answered.
+--
+-- A retention boundary only ever records
 -- that a range is now removable; this migration deletes no journal row and no
 -- Evidence row, and a boundary that does name a removed range must record
 -- `resumable_after = 0` for it.
@@ -793,15 +802,27 @@ BEGIN
         SELECT 1 FROM omnivia_workflow_journal_integrity_reports
         WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
           AND report_id = NEW.integrity_report_id AND outcome = 'sequence_gap');
+    SELECT RAISE(ABORT, 'omnivia: a quarantine release must discharge an outstanding quarantine')
+    WHERE NEW.action = 'released'
+      AND COALESCE((
+            SELECT SUM(CASE WHEN action = 'quarantined' THEN 1 ELSE -1 END)
+            FROM omnivia_workflow_journal_quarantine_events
+            WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id), 0) < 1;
     SELECT RAISE(ABORT, 'omnivia: a quarantine release must carry forward the event citation it holds')
     WHERE NEW.action = 'released'
-      AND EXISTS (
-        SELECT 1 FROM omnivia_workflow_journal_quarantine_events
-        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id)
       AND NEW.event_id IS NOT (
-        SELECT event_id FROM omnivia_workflow_journal_quarantine_events
-        WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id
-        ORDER BY disposition_sequence DESC LIMIT 1);
+        SELECT q.event_id
+        FROM omnivia_workflow_journal_quarantine_events q
+        WHERE q.workspace_id = NEW.workspace_id AND q.run_id = NEW.run_id
+          AND q.action = 'quarantined'
+          AND (SELECT SUM(CASE WHEN p.action = 'quarantined' THEN 1 ELSE -1 END)
+               FROM omnivia_workflow_journal_quarantine_events p
+               WHERE p.workspace_id = q.workspace_id AND p.run_id = q.run_id
+                 AND p.disposition_sequence <= q.disposition_sequence)
+              = (SELECT SUM(CASE WHEN r.action = 'quarantined' THEN 1 ELSE -1 END)
+                 FROM omnivia_workflow_journal_quarantine_events r
+                 WHERE r.workspace_id = q.workspace_id AND r.run_id = q.run_id)
+        ORDER BY q.disposition_sequence DESC LIMIT 1);
     SELECT RAISE(ABORT, 'omnivia: a quarantine disposition cannot predate its run')
     WHERE NEW.recorded_at_us < (
         SELECT bound_at_us FROM omnivia_workflow_runs

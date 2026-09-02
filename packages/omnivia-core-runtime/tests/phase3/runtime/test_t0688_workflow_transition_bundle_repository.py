@@ -389,6 +389,53 @@ def test_the_same_bundle_replays_without_a_second_event(
     assert counts(owned.connection) == (1, 1)
 
 
+@pytest.mark.parametrize(
+    "other",
+    [
+        bundle(0, event=journal_event(0, eventId="event-ip07-restated")),
+        bundle(1, link=link_after(0), bundleId="bundle-ip07-0"),
+    ],
+    ids=["a different event", "a different expected revision"],
+)
+def test_a_replay_is_decided_on_the_stored_bundle_not_an_indexed_digest(
+    owned: m1.Owned, bound: StoredRuntimeDefinitionBinding, other: dict[str, Any]
+) -> None:
+    """The write side believes the bytes, exactly as the read side does.
+
+    `payload_digest` is an indexed column, and a file edited outside this database can
+    hold whatever it likes there. Deciding a replay on it lets a genuinely different
+    transition -- a different nested event, a different expected revision -- arrive under
+    a recorded identifier and be answered with the recorded revision and no write at all,
+    which is a transition silently lost rather than a replay.
+    """
+    first = apply(owned, bound)
+    assert other["bundleId"] == "bundle-ip07-0"
+
+    connection = ip06.corrupt(
+        owned,
+        f"UPDATE {BUNDLES} SET payload_digest = ?",
+        other["payloadDigest"],
+        table=BUNDLES,
+        operation="update",
+    )
+    connection.close()
+    holder = m1.take_ownership(owned.path)
+    try:
+        with pytest.raises(TransitionBundleRefused) as refusal:
+            apply(holder, bound, other, payload(int(str(other["event"]["sequence"]))))
+        assert refusal.value.diagnostic == "RT_BUNDLE_INTEGRITY_CONFLICT"
+        assert counts(holder.connection) == (1, 1)
+        assert (
+            holder.connection.execute(
+                f"SELECT bundle_json FROM {BUNDLES}"
+            ).fetchone()[0]
+            == canonicalize(bundle())
+        )
+        assert first.disposition == "applied"
+    finally:
+        holder.connection.close()
+
+
 def test_the_same_identifier_over_a_different_body_is_a_conflict(
     owned: m1.Owned, bound: StoredRuntimeDefinitionBinding
 ) -> None:

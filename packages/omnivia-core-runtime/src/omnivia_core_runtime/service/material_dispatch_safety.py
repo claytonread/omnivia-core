@@ -33,10 +33,13 @@ unknown commit outcomes and unknown ledger states all fail closed, and an unknow
 commit outcome latches, because a journal answer nobody can classify is at least
 as dangerous as one that says `uncertain`.
 
-**Fencing rejects writes; it does not recall effects.** A stale generation's write
-is refused by the store and reported as :data:`STOP_STALE_FENCE`. The already-issued
-external effect is untouched by that refusal and stays untouched -- there is no
-operation here that reaches back out to undo one.
+**Fencing rejects writes; it does not recall effects.** A stale generation's ledger
+write is refused by the store and reported as :data:`STOP_STALE_FENCE`. The
+already-issued external effect is untouched by that refusal and stays untouched --
+there is no operation here that reaches back out to undo one. A stale generation
+refusing the *latch* is reported differently, because it is a different fact: the
+Attempt's own refusal is what stands and is what is returned, and
+:attr:`DispatchOutcome.latched` is `False` to say nothing made it durable.
 
 Every collaborator -- journal commit, ledger read and write, dispatch, fence
 generation -- is an argument. Nothing in this module opens a connection, reads a
@@ -46,6 +49,7 @@ rule.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, Protocol
@@ -116,6 +120,19 @@ STOP_UNKNOWN_RECONCILED_STATE: Final = "unknown_reconciled_state"
 #: fixed at construction and small enough that no caller can turn it into a loop.
 MAX_COMMIT_RETRY_LIMIT: Final = 8
 
+#: The shape an Attempt identifier may take before anything is written under it.
+#: :class:`AttemptLatch` says it holds bounded, non-secret facts only, and the stop
+#: reasons above are fixed literals that satisfy that by construction -- the Attempt
+#: identifier is the one member a caller supplies, so it is the one that has to be held
+#: to it. Bounded length and a narrow character set, which is what keeps a token, a URL
+#: or a free-text detail from arriving in durable evidence as an identifier.
+_ATTEMPT_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+#: The ceiling on a fence generation, matching the bound this repository's own schema
+#: puts on a stored counter. A fence is a monotonic generation: a negative one is not a
+#: stale generation but a malformed one, and an unbounded one is not a counter.
+MAX_FENCE: Final = 1_000_000_000
+
 
 class StaleFencingWrite(RuntimeError):
     """Raised by an :class:`AuthoritativeStore` when a stale generation writes.
@@ -142,6 +159,11 @@ class DispatchOutcome:
     `dispatched` records whether the external dispatch was *invoked* -- the call
     left this process. It is not a claim that the far side applied it; that is
     what `reconciliation_required` and the ledger state are for.
+
+    `latched` records whether *this call* made the Attempt's stop durable. A stale
+    fence is the only way a stop this module decided on fails to be written, so a
+    stopping outcome carrying `latched=False` is exactly that case: the refusal in
+    `stop_reason` still stands and is still owed, and nothing recorded it.
     """
 
     effect_id: str
@@ -149,6 +171,7 @@ class DispatchOutcome:
     commit_attempts: int
     reconciliation_required: bool
     stop_reason: str | None = None
+    latched: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +229,17 @@ class MaterialDispatchCoordinator:
             raise ValueError(
                 f"commit_retry_limit must be between 0 and {MAX_COMMIT_RETRY_LIMIT}"
             )
+        # Checked here rather than at the write, because a latch is written only on the
+        # paths that were already going wrong: an identifier refused at construction
+        # cannot become an unwritable stop at the moment the stop matters.
+        if not isinstance(attempt_id, str):
+            raise TypeError("attempt_id must be a str")
+        if _ATTEMPT_ID.fullmatch(attempt_id) is None:
+            raise ValueError("attempt_id is not a bounded, non-secret identifier")
+        if not isinstance(fence, int) or isinstance(fence, bool):
+            raise TypeError("fence must be an int")
+        if not 0 <= fence <= MAX_FENCE:
+            raise ValueError(f"fence must be between 0 and {MAX_FENCE}")
         self._attempt_id = attempt_id
         self._store = store
         self._commit_journal = commit_journal
@@ -398,13 +432,26 @@ class MaterialDispatchCoordinator:
         try:
             self._store.write_latch(latch, fence=self._fence)
         except StaleFencingWrite:
-            stop_reason = STOP_STALE_FENCE
+            # The fence refused the write; it did not answer the question the write was
+            # about. Overwriting `stop_reason` with `stale_fence` here would lose the one
+            # fact this Attempt is stopped for -- an uncertain commit, an uncertain
+            # dispatch, an exhausted retry budget -- and leave a caller with a refusal
+            # that reads as "somebody else owns this now" and no reconciliation owed.
+            # The original stands; `latched` is what says nobody recorded it.
+            return DispatchOutcome(
+                effect_id,
+                dispatched,
+                commit_attempts,
+                reconciliation_required,
+                stop_reason,
+            )
         return DispatchOutcome(
             effect_id,
             dispatched,
             commit_attempts,
             reconciliation_required,
             stop_reason,
+            latched=True,
         )
 
 
@@ -414,3 +461,49 @@ def _stop_for_commit(outcome: str) -> str:
     if outcome == COMMIT_UNCERTAIN:
         return STOP_COMMIT_UNCERTAIN
     return STOP_UNKNOWN_COMMIT_OUTCOME
+
+
+#: The closed vocabularies, the bounds, the collaborator seams and the three audit
+#: values -- and nothing else. Declared so the module's surface is a decision rather
+#: than whatever happens not to start with an underscore.
+__all__ = [
+    "COMMIT_COMMITTED",
+    "COMMIT_FAILED",
+    "COMMIT_OUTCOMES",
+    "COMMIT_UNCERTAIN",
+    "COMPUTATION_CLASSES",
+    "COMPUTATION_MATERIAL",
+    "COMPUTATION_PURE",
+    "DISPATCHABLE_EFFECT_STATES",
+    "EFFECT_ISSUED_UNKNOWN",
+    "EFFECT_PREDECLARED",
+    "EFFECT_PROVED_NOT_APPLIED",
+    "EFFECT_SETTLED_APPLIED",
+    "EFFECT_STATES",
+    "JOURNAL_PHASE_INTENT",
+    "JOURNAL_PHASE_RECEIPT",
+    "MAX_COMMIT_RETRY_LIMIT",
+    "MAX_FENCE",
+    "RECONCILED_EFFECT_STATES",
+    "STOP_ATTEMPT_LATCHED",
+    "STOP_COMMIT_RETRIES_EXHAUSTED",
+    "STOP_COMMIT_UNCERTAIN",
+    "STOP_DISPATCH_UNCERTAIN",
+    "STOP_EFFECT_NOT_DECLARED",
+    "STOP_EFFECT_NOT_DISPATCHABLE",
+    "STOP_EFFECT_NOT_RECONCILABLE",
+    "STOP_PURE_NOT_PERMITTED_WHILE_LATCHED",
+    "STOP_STALE_FENCE",
+    "STOP_UNKNOWN_COMMIT_OUTCOME",
+    "STOP_UNKNOWN_COMPUTATION_CLASS",
+    "STOP_UNKNOWN_EFFECT_STATE",
+    "STOP_UNKNOWN_RECONCILED_STATE",
+    "AttemptLatch",
+    "AuthoritativeStore",
+    "CommitJournal",
+    "ComputationDecision",
+    "DispatchEffect",
+    "DispatchOutcome",
+    "MaterialDispatchCoordinator",
+    "StaleFencingWrite",
+]

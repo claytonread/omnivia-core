@@ -31,6 +31,7 @@ from omnivia_core_runtime.service.material_dispatch_safety import (
     JOURNAL_PHASE_INTENT,
     JOURNAL_PHASE_RECEIPT,
     MAX_COMMIT_RETRY_LIMIT,
+    MAX_FENCE,
     STOP_ATTEMPT_LATCHED,
     STOP_COMMIT_RETRIES_EXHAUSTED,
     STOP_COMMIT_UNCERTAIN,
@@ -411,6 +412,41 @@ def test_a_stale_fence_rejects_the_write_without_recalling_the_external_effect()
     assert world.issued == [EFFECT], "fencing cannot recall an issued effect"
 
 
+def test_a_stale_fence_refusing_the_latch_does_not_erase_the_refusal_it_carried():
+    """The fence answers who may write, never what this Attempt is stopped for.
+
+    An uncertain commit is the stop, and reconciliation is what it owes. Replacing that
+    with `stale_fence` would hand a caller a refusal that reads as somebody else's
+    ownership, with nothing left saying the disposition is indeterminate -- so the
+    original stop stands, and `latched` is what says nothing recorded it.
+    """
+    store = _predeclared(EFFECT)
+    store.generation = FENCE + 1
+    journal, world = FakeJournal(intent=COMMIT_UNCERTAIN), FakeWorld()
+
+    outcome = _coordinator(store, journal, world, fence=FENCE).dispatch_material(EFFECT)
+
+    assert outcome.stop_reason == STOP_COMMIT_UNCERTAIN
+    assert outcome.reconciliation_required is True
+    assert outcome.latched is False
+    assert store.rejected_writes == [(ATTEMPT, FENCE)]
+    assert store.latches == {}
+    assert world.issued == []
+    assert store.effects[EFFECT] == EFFECT_PREDECLARED
+
+
+def test_a_recorded_latch_says_so():
+    """The other half of the same fact: a current fence writes it, and reports it."""
+    store = _predeclared(EFFECT)
+    outcome = _coordinator(
+        store, FakeJournal(intent=COMMIT_UNCERTAIN), FakeWorld()
+    ).dispatch_material(EFFECT)
+
+    assert outcome.stop_reason == STOP_COMMIT_UNCERTAIN
+    assert outcome.latched is True
+    assert store.latches[ATTEMPT].stop_reason == STOP_COMMIT_UNCERTAIN
+
+
 def test_a_stale_fence_cannot_newly_dispatch():
     store = _predeclared(EFFECT)
     store.generation = FENCE + 1
@@ -542,6 +578,58 @@ def test_a_non_integer_retry_budget_is_refused_at_construction(limit):
         _coordinator(FakeStore(), commit_retry_limit=limit)
 
 
+@pytest.mark.parametrize(
+    "attempt_id",
+    [
+        "",
+        "attempt t0688 a",
+        "-attempt-t0688-a",
+        "attempt/t0688/a",
+        "attempt\nt0688",
+        "Bearer sk-live-0123456789abcdef",
+        "a" * 129,
+    ],
+    ids=[
+        "empty",
+        "spaced",
+        "leading punctuation",
+        "pathlike",
+        "newline",
+        "a credential",
+        "unbounded",
+    ],
+)
+def test_an_unbounded_or_secret_bearing_attempt_id_is_refused_at_construction(
+    attempt_id,
+):
+    """A latch is durable evidence, so what may be written into one is decided first.
+
+    Refusing here rather than at `write_latch` is the point: a latch is only ever
+    written on a path that has already gone wrong, so an identifier that could not be
+    stored would first be discovered at the moment the stop had to become durable.
+    """
+    with pytest.raises(ValueError):
+        _coordinator(FakeStore(), attempt_id=attempt_id)
+
+
+@pytest.mark.parametrize("attempt_id", [None, 7, b"attempt-t0688-a"])
+def test_a_non_text_attempt_id_is_refused_at_construction(attempt_id):
+    with pytest.raises(TypeError):
+        _coordinator(FakeStore(), attempt_id=attempt_id)
+
+
+@pytest.mark.parametrize("fence", [-1, MAX_FENCE + 1])
+def test_a_negative_or_unbounded_fence_is_refused_at_construction(fence):
+    with pytest.raises(ValueError):
+        _coordinator(FakeStore(), fence=fence)
+
+
+@pytest.mark.parametrize("fence", [8.0, True, "8", None])
+def test_a_non_integer_fence_is_refused_at_construction(fence):
+    with pytest.raises(TypeError):
+        _coordinator(FakeStore(), fence=fence)
+
+
 def test_the_audit_value_is_immutable_and_carries_only_bounded_facts():
     outcome = _coordinator(_predeclared(EFFECT)).dispatch_material(EFFECT)
 
@@ -551,6 +639,7 @@ def test_the_audit_value_is_immutable_and_carries_only_bounded_facts():
         "commit_attempts",
         "reconciliation_required",
         "stop_reason",
+        "latched",
     }
     with pytest.raises(AttributeError):
         outcome.dispatched = False  # type: ignore[misc]

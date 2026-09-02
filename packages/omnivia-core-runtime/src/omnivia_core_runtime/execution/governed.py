@@ -58,6 +58,9 @@ AUTONOMY_PROFILE_REFUSED: Final = "AUTONOMY_PROFILE_REFUSED"
 EXECUTION_PLANE_STALE_AUTHORITY: Final = "EXECUTION_PLANE_STALE_AUTHORITY"
 EXECUTION_PLANE_LATE_RESULT: Final = "EXECUTION_PLANE_LATE_RESULT"
 EXECUTION_PLANE_OWNERSHIP_TAKEOVER: Final = "EXECUTION_PLANE_OWNERSHIP_TAKEOVER"
+EXECUTION_PLANE_ALREADY_OWNED: Final = "EXECUTION_PLANE_ALREADY_OWNED"
+EXECUTION_PLANE_NOT_OWNED: Final = "EXECUTION_PLANE_NOT_OWNED"
+EXECUTION_PLANE_STALE_OBSERVATION: Final = "EXECUTION_PLANE_STALE_OBSERVATION"
 LISTENER_SATURATED: Final = "LISTENER_SATURATED"
 
 DEPLOYMENT_LOCAL: Final = "LOCAL"
@@ -584,7 +587,8 @@ def resolve_autonomy(
 
     Refuses with ``AUTONOMY_PROFILE_REFUSED`` when Permission is denied, when any of the four
     intersections is empty (or was never narrowed by any source at all, which grants nothing
-    rather than everything), or when a requested spend exceeds the resolved minimum.
+    rather than everything), when no source bounds one of the four numeric dimensions, or
+    when a requested spend exceeds the resolved minimum.
     Permission denial is checked first and is never traded off against a wide bound.
     """
     require_deployment_mode(deployment_mode)
@@ -624,14 +628,24 @@ def resolve_autonomy(
     approval = tuple(
         sorted({entry for source in ordered for entry in source.approval_required})
     )
-    bounds = tuple(
-        min(
+    resolved_bounds: list[int] = []
+    for name in BOUND_DIMENSIONS:
+        declared = [
             value
             for value in (getattr(source, name) for source in ordered)
             if value is not None
-        )
-        for name in BOUND_DIMENSIONS
-    )
+        ]
+        if not declared:
+            # Seven supplied sources may all decline to bound a dimension, and the
+            # bounded default that would have bounded it is only substituted for a source
+            # kind nobody supplied. Unbounded is not a resolution, and it refuses through
+            # the same declared channel every other refusal here does rather than
+            # escaping as whatever `min` of nothing happens to raise.
+            raise ExecutionRefused(
+                AUTONOMY_PROFILE_REFUSED, f"no source bounds {name}"
+            )
+        resolved_bounds.append(min(declared))
+    bounds = tuple(resolved_bounds)
 
     if requested is not None:
         if not isinstance(requested, RequestedSpend):
@@ -873,7 +887,7 @@ class PlaneOwnership:
             )
         if (plane_role, scope) in self._owned:
             raise ExecutionRefused(
-                "EXECUTION_PLANE_ALREADY_OWNED",
+                EXECUTION_PLANE_ALREADY_OWNED,
                 "the scope is already owned; renew or take over instead",
             )
         lease_id = derive_id("lease", plane_role, scope, owner, str(self._next_token))
@@ -956,7 +970,7 @@ class PlaneOwnership:
         current_id = self._owned.get((plane_role, scope))
         if current_id is None:
             raise ExecutionRefused(
-                "EXECUTION_PLANE_NOT_OWNED", "there is no lease to take over"
+                EXECUTION_PLANE_NOT_OWNED, "there is no lease to take over"
             )
         superseded = self._leases[current_id]
         if not superseded.revoked and at_tick < superseded.expires_at_tick:
@@ -1074,6 +1088,14 @@ class PlaneOwnership:
         honest answer is that it was seen and not applied -- so it returns
         ``applied=False`` carrying ``EXECUTION_PLANE_LATE_RESULT`` Evidence rather than
         vanishing into an exception the caller might swallow.
+
+        Late is *lost authority*, not *advanced authority*. ``fencing_token`` is the
+        dispatch-time token the worker was handed and reports back, so it is compared to
+        the dispatch's own token; the lease's current token is deliberately not compared,
+        because the holder renewing while work is in flight is the ordinary case and is
+        the one thing a renewal must not turn into a discarded result. What still makes a
+        completion late is the lease being gone, superseded by a takeover, revoked or
+        expired -- every way the authority the dispatch was admitted under actually ended.
         """
         require_identifier("dispatch_id", dispatch_id)
         _require_ordinal("fencing_token", fencing_token)
@@ -1091,7 +1113,6 @@ class PlaneOwnership:
         current = (
             held is not None
             and self._owned.get((held.plane_role, held.scope)) == state.lease_id
-            and held.fencing_token == fencing_token
             and state.fencing_token == fencing_token
             and not held.revoked
             and at_tick < held.expires_at_tick
@@ -1222,7 +1243,7 @@ class PlaneOwnership:
             )
         if observation_age > maximum_observation_age:
             raise ExecutionRefused(
-                "EXECUTION_PLANE_STALE_OBSERVATION",
+                EXECUTION_PLANE_STALE_OBSERVATION,
                 "the observation is older than the declared freshness bound",
             )
         return ReconciliationDecision(
@@ -1256,9 +1277,12 @@ __all__ = [
     "EFFECT_PURE",
     "EFFECT_RECOMPUTABLE",
     "EFFECT_SNAPSHOT_BOUND_READ",
+    "EXECUTION_PLANE_ALREADY_OWNED",
     "EXECUTION_PLANE_LATE_RESULT",
+    "EXECUTION_PLANE_NOT_OWNED",
     "EXECUTION_PLANE_OWNERSHIP_TAKEOVER",
     "EXECUTION_PLANE_STALE_AUTHORITY",
+    "EXECUTION_PLANE_STALE_OBSERVATION",
     "HUMAN_INTERACTION_OUTCOME_CONFLICT",
     "INTERACTION_APPROVAL",
     "INTERACTION_HANDOFF",

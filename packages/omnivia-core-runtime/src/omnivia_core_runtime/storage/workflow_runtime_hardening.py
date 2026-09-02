@@ -55,9 +55,11 @@ zero must name the full canonical event document digest of its persisted predece
 0035 checks digest shape, contiguity and predecessor equality, and cannot derive the
 genesis value or hash a document at all, so a wrong link, a wrong genesis or a missing
 predecessor is refused here with `RT_JOURNAL_INTEGRITY_FAILURE` before any insert. A
-bundle already recorded under the same identifier replays as a no-op when its public
-`payloadDigest` is bit-for-bit the one already stored, and refuses with
-`RT_BUNDLE_INTEGRITY_CONFLICT` when it is not; a bundle expecting a revision other than
+bundle already recorded under the same identifier replays as a no-op when its whole
+canonical document is bit-for-bit the one already stored, and refuses with
+`RT_BUNDLE_INTEGRITY_CONFLICT` when any of it differs -- the revision it expected and
+the event it carries included, because agreeing on `payloadDigest` is not being the same
+transition; a bundle expecting a revision other than
 the Run's current produced head refuses with `RT_BUNDLE_REVISION_CONFLICT`. Every one of
 those is a `TransitionBundleRefused` naming its own closed diagnostic, so a caller
 asserts on the code rather than on a sentence.
@@ -81,8 +83,9 @@ records; `R1` and `R2` append a quarantine disposition in the same fenced transa
 the report. Nothing here writes a new public Workflow Run state, deletes, folds,
 reconstructs or renumbers anything, and a resume against a held quarantine refuses with
 `RT_JOURNAL_QUARANTINED` rather than skipping the history it cannot verify. A release is
-explicit, attributable and fenced, and there is no statement that could release one
-Run's quarantine from another Run's decision.
+explicit, attributable and fenced; there is no statement that could release one Run's
+quarantine from another Run's decision, and one decision discharges one hold, so a Run
+held for two distinct findings stays held until both have been answered.
 
 *A retention boundary records that a range is removable; it never removes it.*
 :meth:`WorkflowJournalGovernanceWriter.record_retention_boundary` writes one boundary
@@ -723,8 +726,9 @@ class TransitionBundleOutcome:
     """What one accepted `apply_transition_bundle` did, and to which revision.
 
     `disposition` is `applied` for a bundle this call made durable and `replayed` for one
-    already durable under the same identifier and the same public `payloadDigest`, whose
-    revision is returned unchanged and whose journal gains no second event.
+    already durable under the same identifier and bit-for-bit the same canonical
+    document, whose revision is returned unchanged and whose journal gains no second
+    event.
     """
 
     disposition: str
@@ -832,24 +836,31 @@ class WorkflowTransitionWriter:
             )
 
         bundle_id = str(bundle["bundleId"])
+        document, digest, byte_length = _canonical_document(bundle)
         recorded = self.connection.execute(
-            f"SELECT payload_digest, produced_revision, bundle_digest FROM {_BUNDLES} "
+            f"SELECT bundle_json, produced_revision FROM {_BUNDLES} "
             "WHERE workspace_id = ? AND run_id = ? AND bundle_id = ?",
             (self.workspace_id, run_id, bundle_id),
         ).fetchone()
         if recorded is not None:
-            if recorded[0] != bundle["payloadDigest"]:
+            # The whole canonical document, not the two members a replay happens to be
+            # keyed by. `payloadDigest` addresses the transition's payload and says
+            # nothing about the revision the bundle expected or the event it carries, so
+            # a second bundle agreeing on it and disagreeing on either of those is a
+            # different transition arriving under a recorded identifier -- which is the
+            # conflict this diagnostic exists for, not a replay.
+            if recorded[0] != document:
                 raise TransitionBundleRefused(
                     "RT_BUNDLE_INTEGRITY_CONFLICT",
-                    f"transition bundle {bundle_id!r} is already recorded with a "
-                    "different payload digest",
+                    f"transition bundle {bundle_id!r} is already recorded as a "
+                    "different bundle",
                 )
             return TransitionBundleOutcome(
                 "replayed",
                 bundle_id,
                 int(recorded[1]),
-                str(recorded[0]),
-                str(recorded[2]),
+                str(bundle["payloadDigest"]),
+                digest,
             )
 
         head = int(
@@ -1361,13 +1372,16 @@ class StoredJournalIntegrityReport:
 
 @dataclass(frozen=True, slots=True)
 class JournalQuarantineProjection:
-    """How a Run's journal quarantine currently stands, from its latest disposition.
+    """How a Run's journal quarantine currently stands, across its whole history.
 
-    `disposition_sequence` is `-1` for a Run that has never held one. A held quarantine
-    names the event it holds and the integrity report that found it; a released posture
-    names the actor who decided it and their reason. Nothing here is a public Workflow
-    Run state: this is a projection of an append-only disposition history, and reading it
-    writes nothing.
+    `held` is true while more quarantines have been appended than releases, so two
+    findings need two decisions. `disposition_sequence` is the whole history's latest --
+    what the next appended disposition must follow -- and is `-1` for a Run that has
+    never held one. A held posture names the *outstanding* quarantine: the event it holds
+    and the integrity report that found it, never one a release has already discharged. A
+    released posture names the actor who decided it and their reason.
+    Nothing here is a public Workflow Run state: this is a projection of an append-only
+    disposition history, and reading it writes nothing.
     """
 
     run_id: str
@@ -1852,6 +1866,11 @@ class WorkflowJournalGovernanceWriter:
         state. The event released is the one currently held, read from the disposition
         history rather than named by the caller, so a release cannot be redirected onto
         an event -- or a Run -- other than the one actually quarantined.
+
+        One decision discharges one hold: the latest outstanding. A Run quarantined by
+        two distinct integrity reports is still held after this returns, and the
+        projection it returns cites the older hold that is now the outstanding one --
+        answering that finding is a second decision by a person who has seen it.
 
         Nothing to release refuses with `RT_JOURNAL_NOT_QUARANTINED`, and repeating a
         release that already stands returns it without appending a second disposition.
@@ -2435,18 +2454,36 @@ def read_journal_quarantine(
 ) -> JournalQuarantineProjection:
     """How this Run's quarantine currently stands, from the whole disposition history.
 
-    The latest disposition decides, but every disposition is verified, not only that
-    one: contiguous from zero, each row in the closed form 0035 requires of its own
-    action, each scalar spelled as its column stores it, the event it names still present
-    in this Run's journal, and -- for every held one -- the integrity report it cites
-    still readable and still a finding at the sequence it named. A release is a decision
-    appended on top of that history rather than a replacement for it, so a latest row
-    saying `released` must never be what stops an earlier quarantine, or the report that
-    quarantine stands on, from being checked. A Run with no disposition at all is not
-    held, which is a different fact from one that was released.
+    Holds stack, and each release discharges the one still outstanding when it was
+    appended -- the latest, since that is the only one it could have been about. A Run
+    whose journal was verified twice and found faulty twice holds two quarantines citing
+    two distinct integrity reports; the first release answers the second finding and
+    leaves this Run held, citing the first finding's report and event, and the second
+    release answers that one. Reading only the latest disposition would let one decision
+    silently discharge every fault recorded before it, including ones the decider never
+    saw -- and would then cite the discharged hold as the reason this Run is still held.
+
+    Every disposition is verified, not only the latest: contiguous from zero, each row in
+    the closed form 0035 requires of its own action, each scalar spelled as its column
+    stores it, the event it names still present in this Run's journal, and -- for every
+    held one -- the integrity report it cites still readable and still a finding at the
+    sequence it named. A release is a decision appended on top of that history rather
+    than a replacement for it, so a latest row saying `released` must never be what stops
+    an earlier quarantine, or the report that quarantine stands on, from being checked. A
+    release with no hold left to discharge, or one citing an event that is not the hold it
+    stands on, is a history 0035 refuses to write and this read refuses to believe. A Run
+    with no disposition at all is not held, which is a different fact from one that was
+    released.
+
+    Fail-closed has a cost, and it is stated rather than hidden: verifying every held
+    disposition's citation re-reads and re-addresses this Run's whole journal once per
+    hold, so this read is O(holds * journal length * event size). Journals are bounded by
+    a Run's transitions and holds are rare, and making it cheaper is a measured
+    performance lane's work, not something to trade the verification for here.
     """
     rows = connection.execute(_QUARANTINE_QUERY, (workspace_id, run_id)).fetchall()
     latest: tuple[Any, ...] | None = None
+    outstanding: list[tuple[Any, ...]] = []
     for position, row in enumerate(rows):
         (
             disposition_sequence,
@@ -2505,31 +2542,45 @@ def read_journal_quarantine(
                 report_id=str(integrity_report_id),
                 event_id=event_id,
             )
+            outstanding.append(row)
+        elif not outstanding:
+            raise StorageError(
+                "a stored quarantine history releases a hold it does not hold"
+            )
+        elif outstanding.pop()[1] != event_id:
+            raise StorageError(
+                "a stored quarantine release does not cite the hold it discharges"
+            )
         latest = row
     if latest is None:
         return JournalQuarantineProjection(
             run_id, False, None, None, None, None, None, -1
         )
+    # The hold still outstanding while there is one -- the latest, since each release
+    # discharged the latest standing when it was appended -- and the decision that
+    # discharged the last of them once there is not. `disposition_sequence` stays the
+    # whole history's, because that is what the next appended disposition has to follow.
+    current = outstanding[-1] if outstanding else latest
     (
-        disposition_sequence,
+        _disposition_sequence,
         event_id,
-        action,
+        _action,
         integrity_report_id,
         diagnostic,
         deciding_actor,
         reason,
         _recorded_at_us,
         _held_event_id,
-    ) = latest
+    ) = current
     return JournalQuarantineProjection(
         run_id,
-        action == "quarantined",
+        bool(outstanding),
         diagnostic,
         None if event_id is None else str(event_id),
         integrity_report_id,
         deciding_actor,
         reason,
-        int(disposition_sequence),
+        int(latest[0]),
     )
 
 

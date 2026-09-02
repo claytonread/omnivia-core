@@ -45,9 +45,12 @@ from omnivia_core_runtime.execution import (
     DEPLOYMENT_MODES,
     EFFECT_EXTERNAL_EFFECT,
     EFFECT_INTERNAL_WRITE,
+    EXECUTION_PLANE_ALREADY_OWNED,
     EXECUTION_PLANE_LATE_RESULT,
+    EXECUTION_PLANE_NOT_OWNED,
     EXECUTION_PLANE_OWNERSHIP_TAKEOVER,
     EXECUTION_PLANE_STALE_AUTHORITY,
+    EXECUTION_PLANE_STALE_OBSERVATION,
     HUMAN_INTERACTION_OUTCOME_CONFLICT,
     INTERACTION_APPROVAL,
     INTERACTION_KINDS,
@@ -607,6 +610,40 @@ def test_a_duplicate_source_kind_is_refused_rather_than_merged() -> None:
         )
 
 
+@pytest.mark.parametrize("dimension", BOUND_DIMENSIONS)
+def test_a_numeric_dimension_no_source_bounds_refuses_through_the_declared_channel(
+    dimension: str,
+) -> None:
+    """Unbounded is not a resolution, and it refuses the way every refusal here does.
+
+    The bounded default only stands in for a source kind nobody supplied, so all seven
+    supplied and all seven declining to bound one dimension leaves it undeclared. That
+    has to fail closed with ``AUTONOMY_PROFILE_REFUSED`` rather than escaping as whatever
+    folding no values happens to raise.
+    """
+    bounds: dict[str, object] = {
+        name: 10 for name in BOUND_DIMENSIONS if name != dimension
+    }
+    sources = tuple(_wide_source(kind, **bounds) for kind in AUTONOMY_SOURCE_ORDER)
+
+    with pytest.raises(ExecutionRefused) as refusal:
+        resolve_autonomy(sources, permission_granted=True)
+    assert refusal.value.reason == AUTONOMY_PROFILE_REFUSED
+    assert dimension in str(refusal.value)
+
+
+def test_one_source_bounding_a_dimension_is_enough_to_resolve_it() -> None:
+    """The refusal above is about nobody declaring it, not about most sources not."""
+    bounds = dict.fromkeys(BOUND_DIMENSIONS, 10)
+    first, *rest = AUTONOMY_SOURCE_ORDER
+    sources = (_wide_source(first, **bounds),) + tuple(
+        _wide_source(kind) for kind in rest
+    )
+
+    resolved = resolve_autonomy(sources, permission_granted=True)
+    assert [getattr(resolved, name) for name in BOUND_DIMENSIONS] == [10, 10, 10, 10]
+
+
 def test_autonomy_sources_validate_eagerly() -> None:
     with pytest.raises(ExecutionContractError, match="unknown_vocabulary_member"):
         _source("QUARRY_DEFAULTS")
@@ -793,12 +830,12 @@ def test_an_unheld_scope_cannot_be_taken_over_and_a_held_one_cannot_be_acquired(
     None
 ):
     plane = PlaneOwnership()
-    with pytest.raises(ExecutionRefused, match="EXECUTION_PLANE_NOT_OWNED"):
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_NOT_OWNED):
         _take_over(
             plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two"
         )
     _acquire(plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.one")
-    with pytest.raises(ExecutionRefused, match="EXECUTION_PLANE_ALREADY_OWNED"):
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_ALREADY_OWNED):
         _acquire(plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two")
 
 
@@ -890,6 +927,107 @@ def test_a_current_completion_is_applied() -> None:
     assert outcome.applied is True
     assert outcome.evidence is None
     assert plane.evidence == ()
+
+
+def test_a_renewal_while_work_is_in_flight_does_not_discard_its_completion() -> None:
+    """Renewing is what a live holder does; discarding its own results is not.
+
+    The dispatch was admitted under the token the worker was handed, and that is the
+    token it reports back. Requiring it to equal the lease's *current* token would make
+    every ordinary renewal turn every in-flight completion into a late result.
+    """
+    plane = PlaneOwnership()
+    grant = _acquire(
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
+    )
+    _dispatch(
+        plane,
+        lease_id=grant.lease_id,
+        fencing_token=grant.fencing_token,
+        dispatch_id="dispatch.one",
+        payload_digest=_PAYLOAD,
+    )
+    renewed = _renew(plane, lease_id=grant.lease_id, owner="node.one")
+    assert renewed.fencing_token > grant.fencing_token
+
+    outcome = _complete(
+        plane,
+        dispatch_id="dispatch.one",
+        fencing_token=grant.fencing_token,
+        outcome=OUTCOME_SUCCEEDED,
+    )
+    assert outcome.applied is True
+    assert outcome.evidence is None
+    assert plane.evidence == ()
+
+
+def test_a_completion_reporting_a_token_its_dispatch_never_held_is_late() -> None:
+    """The exemption is for the dispatch's own token, not for any current one."""
+    plane = PlaneOwnership()
+    grant = _acquire(
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
+    )
+    _dispatch(
+        plane,
+        lease_id=grant.lease_id,
+        fencing_token=grant.fencing_token,
+        dispatch_id="dispatch.one",
+        payload_digest=_PAYLOAD,
+    )
+    renewed = _renew(plane, lease_id=grant.lease_id, owner="node.one")
+
+    outcome = _complete(
+        plane,
+        dispatch_id="dispatch.one",
+        fencing_token=renewed.fencing_token,
+        outcome=OUTCOME_SUCCEEDED,
+    )
+    assert outcome.applied is False
+    assert outcome.evidence is not None
+    assert outcome.evidence.code == EXECUTION_PLANE_LATE_RESULT
+
+
+@pytest.mark.parametrize("ending", ["revoked", "expired", "taken over"])
+def test_a_renewal_admits_no_completion_once_the_authority_actually_ended(
+    ending: str,
+) -> None:
+    """Every way a lease really ends still fences the work dispatched under it."""
+    plane = PlaneOwnership()
+    grant = _acquire(
+        plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.one"
+    )
+    _dispatch(
+        plane,
+        lease_id=grant.lease_id,
+        fencing_token=grant.fencing_token,
+        dispatch_id="dispatch.one",
+        payload_digest=_PAYLOAD,
+    )
+    renewed = _renew(plane, lease_id=grant.lease_id, owner="node.one")
+
+    at_tick = 20
+    if ending == "revoked":
+        plane.revoke(
+            lease_id=grant.lease_id,
+            fencing_token=renewed.fencing_token,
+            at_tick=at_tick,
+        )
+    elif ending == "expired":
+        at_tick = renewed.expires_at_tick
+    else:
+        _take_over(
+            plane, plane_role=PLANE_SCHEDULER, scope="partition.a", owner="node.two"
+        )
+
+    outcome = plane.complete(
+        dispatch_id="dispatch.one",
+        fencing_token=grant.fencing_token,
+        outcome=OUTCOME_SUCCEEDED,
+        at_tick=at_tick,
+    )
+    assert outcome.applied is False
+    assert outcome.evidence is not None
+    assert outcome.evidence.code == EXECUTION_PLANE_LATE_RESULT
 
 
 def test_a_late_completion_is_evidence_only_and_is_never_applied() -> None:
@@ -1113,7 +1251,7 @@ def test_reconciliation_requires_a_current_lease_and_a_fresh_observation() -> No
             maximum_observation_age=1_000,
         )
 
-    with pytest.raises(ExecutionRefused, match="EXECUTION_PLANE_STALE_OBSERVATION"):
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_OBSERVATION):
         _reconcile(
             plane,
             lease_id=grant.lease_id,
@@ -1140,6 +1278,44 @@ def test_reconciliation_requires_a_current_lease_and_a_fresh_observation() -> No
             observation_age=10,
             maximum_observation_age=1_000,
         )
+
+
+def test_every_refusal_code_this_seam_raises_is_one_it_also_names() -> None:
+    """A code a caller matches on is exported, not a literal at the raise site.
+
+    The refusal `reason` is the whole of the contract a caller can hold: matching one by
+    retyping its spelling is a second copy that drifts silently the first time either
+    side is edited.
+    """
+    plane = PlaneOwnership()
+    with pytest.raises(ExecutionRefused) as unheld:
+        _take_over(
+            plane, plane_role=PLANE_WORKER, scope="partition.a", owner="node.two"
+        )
+    grant = _acquire(
+        plane, plane_role=PLANE_RESOURCE_SUPERVISOR, scope="pool.harbour", owner="one"
+    )
+    with pytest.raises(ExecutionRefused) as owned:
+        _acquire(
+            plane,
+            plane_role=PLANE_RESOURCE_SUPERVISOR,
+            scope="pool.harbour",
+            owner="two",
+        )
+    with pytest.raises(ExecutionRefused) as stale:
+        _reconcile(
+            plane,
+            lease_id=grant.lease_id,
+            fencing_token=grant.fencing_token,
+            resource="pool.harbour",
+            observation_digest=_DIGEST_A,
+            observation_age=2,
+            maximum_observation_age=1,
+        )
+
+    assert unheld.value.reason == EXECUTION_PLANE_NOT_OWNED
+    assert owned.value.reason == EXECUTION_PLANE_ALREADY_OWNED
+    assert stale.value.reason == EXECUTION_PLANE_STALE_OBSERVATION
 
 
 def test_the_oracle_validates_its_own_construction() -> None:

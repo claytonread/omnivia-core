@@ -97,6 +97,7 @@ CHAIN = 3
 
 PARITY_ID = "parity-ip07g-one"
 REPORT_ID = "integrity-ip07g-one"
+SECOND_REPORT_ID = "integrity-ip07g-two"
 BOUNDARY_ID = "boundary-ip07g-one"
 RETENTION_AUDIT = "audit-ip07g-retention"
 
@@ -1531,6 +1532,138 @@ def test_the_same_release_again_appends_no_second_disposition(
     again = release(quarantined)
     assert again == first
     assert counts(quarantined.connection)[2] == 2
+
+
+def test_one_release_discharges_the_latest_hold_and_leaves_the_rest_standing(
+    quarantined: m1.Owned,
+) -> None:
+    """Two findings are two decisions, and a release is a decision about one of them.
+
+    A verification pass that finds a second fault holds this Run again under a second
+    integrity report. Reading only the latest disposition would let one person's release
+    -- made about the fault they were shown -- discharge a hold nobody ever answered;
+    citing the latest disposition would then hand the released hold back as the reason
+    this Run is still held. The identity in the projection is the report and the event of
+    the hold actually outstanding, at every step.
+    """
+    surviving = chain_event(CHAIN - 1)["eventId"]
+    first_hold = quarantine_of(quarantined)
+    assert (first_hold.integrity_report_id, first_hold.event_id) == (
+        REPORT_ID,
+        surviving,
+    )
+
+    second = verify(quarantined, report_id=SECOND_REPORT_ID)
+    assert second.quarantined is True
+    assert counts(quarantined.connection) == (0, 2, 2, 0)
+    second_hold = quarantine_of(quarantined)
+    assert (second_hold.held, second_hold.integrity_report_id) == (
+        True,
+        SECOND_REPORT_ID,
+    )
+
+    still_held = release(quarantined)
+    assert still_held.held is True
+    assert still_held.integrity_report_id == REPORT_ID
+    assert still_held.event_id == surviving
+    assert still_held.diagnostic == "RT_JOURNAL_QUARANTINED"
+    assert still_held.deciding_actor is None
+    assert still_held.reason is None
+    assert still_held.disposition_sequence == 2
+    assert still_held == quarantine_of(quarantined)
+    assert resume_of(quarantined).resumable is False
+    assert resume_of(quarantined).diagnostic == "RT_JOURNAL_QUARANTINED"
+
+    freed = release(quarantined, actor="core-auditor")
+    assert freed.held is False
+    assert freed.deciding_actor == "core-auditor"
+    assert freed.integrity_report_id is None
+    assert freed.disposition_sequence == 3
+    assert freed == quarantine_of(quarantined)
+    assert resume_of(quarantined).resumable is True
+    assert quarantined.connection.execute(
+        f"SELECT action, event_id, deciding_actor FROM {QUARANTINE} "
+        "ORDER BY disposition_sequence"
+    ).fetchall() == [
+        ("quarantined", surviving, None),
+        ("quarantined", surviving, None),
+        ("released", surviving, ACTOR),
+        ("released", surviving, "core-auditor"),
+    ]
+
+
+def test_a_release_past_the_last_of_a_stack_of_holds_refuses(
+    quarantined: m1.Owned,
+) -> None:
+    """As many decisions as findings, and the one after that has nothing left to answer."""
+    verify(quarantined, report_id=SECOND_REPORT_ID)
+    release(quarantined)
+    release(quarantined, actor="core-auditor")
+    assert counts(quarantined.connection)[2] == 4
+
+    with pytest.raises(JournalGovernanceRefused) as refusal:
+        release(quarantined, actor="core-reviewer")
+    assert refusal.value.diagnostic == "RT_JOURNAL_NOT_QUARANTINED"
+    assert counts(quarantined.connection)[2] == 4
+    assert quarantine_of(quarantined).held is False
+
+
+def quarantine_insert(sequence: int, action: str, event_id: str | None) -> str:
+    """One disposition, spelled for a file edited past 0035's own trigger."""
+    decided = (
+        f"'{REPORT_ID}', 'RT_JOURNAL_QUARANTINED', NULL, NULL"
+        if action == "quarantined"
+        else f"NULL, NULL, '{ACTOR}', '{REASON}'"
+    )
+    return (
+        f"INSERT INTO {QUARANTINE} (workspace_id, run_id, disposition_sequence, "
+        "event_id, action, integrity_report_id, diagnostic, deciding_actor, reason, "
+        f"recorded_at_us) VALUES ('{WORKSPACE_ID}', '{RUN_ID}', {sequence}, "
+        f"{'NULL' if event_id is None else repr(event_id)}, '{action}', {decided}, "
+        f"{ip07.RECORDED_BASE_US + 300 + sequence})"
+    )
+
+
+def test_a_release_that_discharges_no_hold_fails_closed(
+    owned: m1.Owned, journalled: StoredRuntimeDefinitionBinding
+) -> None:
+    """0035 refuses to write one, and a file edited outside it is not believed either."""
+    holder = reopen(
+        owned, drop(QUARANTINE, "insert"), quarantine_insert(0, "released", None)
+    )
+    try:
+        with pytest.raises(StorageError, match="releases a hold it does not hold"):
+            quarantine_of(holder)
+        with pytest.raises(StorageError, match="releases a hold it does not hold"):
+            resume_of(holder)
+    finally:
+        holder.connection.close()
+
+
+def test_a_release_that_discharges_a_hold_it_does_not_cite_fails_closed(
+    quarantined: m1.Owned,
+) -> None:
+    """Holds come off newest first, so a release naming an older one is not believed.
+
+    0035's trigger refuses to write this history; a file edited outside it holds a
+    release that reads as answering the first finding while the second stands unanswered,
+    which is a decision nobody made about a fault nobody saw.
+    """
+    held = chain_event(CHAIN - 1)["eventId"]
+    older = chain_event(0)["eventId"]
+    holder = reopen(
+        quarantined,
+        drop(QUARANTINE, "insert"),
+        quarantine_insert(1, "quarantined", older),
+        quarantine_insert(2, "released", held),
+    )
+    try:
+        with pytest.raises(StorageError, match="does not cite the hold it discharges"):
+            quarantine_of(holder)
+        with pytest.raises(StorageError, match="does not cite the hold it discharges"):
+            resume_of(holder)
+    finally:
+        holder.connection.close()
 
 
 def test_a_release_with_nothing_held_refuses(
