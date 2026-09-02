@@ -81,6 +81,14 @@
 -- decided that was never held. Two findings are therefore two decisions, and no
 -- decision can be redirected onto a hold another release already answered.
 --
+-- A release therefore carries the identity of the decision it is, and a `quarantined`
+-- row never does. Stacked holds are exactly where a retry stops being harmless: with two
+-- outstanding, the run is still held after the first release, so a redelivered request
+-- reads as a fresh decision and pops the second hold -- discharging a finding whoever
+-- decided the first one never saw. `decision_id` is what makes the second append a
+-- duplicate rather than a decision, enforced by a unique index below so that the schema
+-- refuses it whether or not the writer thought to check.
+--
 -- A retention boundary only ever records
 -- that a range is now removable; this migration deletes no journal row and no
 -- Evidence row, and a boundary that does name a removed range must record
@@ -411,6 +419,7 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_journal_quarantine_events (
     diagnostic             TEXT,
     deciding_actor         TEXT,
     reason                 TEXT,
+    decision_id            TEXT,
     recorded_at_us         INTEGER NOT NULL,
 
     PRIMARY KEY (workspace_id, run_id, disposition_sequence),
@@ -450,13 +459,20 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_journal_quarantine_events (
                AND reason NOT GLOB '*[^a-z0-9_.]*'
                AND reason NOT GLOB '*.'
                AND reason NOT GLOB '*.[^a-z]*')),
+    CHECK (decision_id IS NULL
+           OR (typeof(decision_id) = 'text' AND length(decision_id) BETWEEN 1 AND 128
+               AND decision_id GLOB '[A-Za-z0-9]*'
+               AND decision_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+               AND instr(decision_id, char(0)) = 0)),
     CHECK ((action = 'quarantined'
             AND integrity_report_id IS NOT NULL
             AND diagnostic IS 'RT_JOURNAL_QUARANTINED'
-            AND deciding_actor IS NULL AND reason IS NULL)
+            AND deciding_actor IS NULL AND reason IS NULL
+            AND decision_id IS NULL)
            OR (action = 'released'
                AND integrity_report_id IS NULL AND diagnostic IS NULL
-               AND deciding_actor IS NOT NULL AND reason IS NOT NULL)),
+               AND deciding_actor IS NOT NULL AND reason IS NOT NULL
+               AND decision_id IS NOT NULL)),
     CHECK (typeof(recorded_at_us) = 'integer' AND recorded_at_us > 0),
 
     FOREIGN KEY (workspace_id, run_id)
@@ -525,7 +541,7 @@ CREATE TABLE IF NOT EXISTS omnivia_workflow_journal_retention_boundaries (
         REFERENCES omnivia_application_audit_events (audit_ref, workspace_id)
 ) WITHOUT ROWID;
 
--- Nine named indexes: the parent keys the composite foreign keys need, the
+-- Ten named indexes: the parent keys the composite foreign keys need, the
 -- uniqueness rules that would otherwise live in an implicit `sqlite_autoindex_*`, and
 -- the ordered-read paths a later reader walks. They are declared by name rather than
 -- as inline `UNIQUE` clauses where a name is not already required by SQLite for a
@@ -545,6 +561,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS omnivia_idx_workflow_journal_integrity_reports
     ON omnivia_workflow_journal_integrity_reports (workspace_id, run_id, report_id);
 CREATE INDEX IF NOT EXISTS omnivia_idx_workflow_journal_quarantine_events_event
     ON omnivia_workflow_journal_quarantine_events (workspace_id, run_id, event_id);
+-- One decision, one release. `decision_id` is null on every `quarantined` row and SQLite
+-- treats nulls in a unique index as distinct, so this constrains exactly the releases: a
+-- second append under a decision already recorded is refused by the schema, whether it
+-- arrives from this repository's retry path or from a writer that never consulted one.
+CREATE UNIQUE INDEX IF NOT EXISTS omnivia_idx_workflow_journal_quarantine_events_decision
+    ON omnivia_workflow_journal_quarantine_events (workspace_id, run_id, decision_id);
 CREATE INDEX IF NOT EXISTS omnivia_idx_workflow_journal_retention_boundaries_run
     ON omnivia_workflow_journal_retention_boundaries (workspace_id, run_id, recorded_at_us);
 CREATE INDEX IF NOT EXISTS omnivia_idx_workflow_transition_parity_reports_run

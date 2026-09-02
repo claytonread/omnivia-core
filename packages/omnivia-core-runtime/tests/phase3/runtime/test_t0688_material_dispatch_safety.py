@@ -39,6 +39,7 @@ from omnivia_core_runtime.service.material_dispatch_safety import (
     STOP_EFFECT_NOT_DECLARED,
     STOP_EFFECT_NOT_DISPATCHABLE,
     STOP_EFFECT_NOT_RECONCILABLE,
+    STOP_EFFECT_STATE_RACED,
     STOP_PURE_NOT_PERMITTED_WHILE_LATCHED,
     STOP_STALE_FENCE,
     STOP_UNKNOWN_COMMIT_OUTCOME,
@@ -79,6 +80,15 @@ class FakeStore:
     def write_effect_state(self, effect_id, state, *, fence):
         self._check(effect_id, fence)
         self.effects[effect_id] = state
+
+    def compare_and_set_effect_state(self, effect_id, *, expected, desired, fence):
+        # Fencing is asked first: a stale generation is refused whether or not it
+        # would have won the race. A losing contender leaves the ledger untouched.
+        self._check(effect_id, fence)
+        if self.effects.get(effect_id) != expected:
+            return False
+        self.effects[effect_id] = desired
+        return True
 
     def read_latch(self, attempt_id):
         return self.latches.get(attempt_id)
@@ -643,3 +653,109 @@ def test_the_audit_value_is_immutable_and_carries_only_bounded_facts():
     }
     with pytest.raises(AttributeError):
         outcome.dispatched = False  # type: ignore[misc]
+
+
+# --- 9. two contenders on one generation --------------------------------------
+
+
+class _RacingStore(FakeStore):
+    """A store whose ledger is moved by somebody else between a read and its write.
+
+    `interlopers` maps an effect identity to the state a concurrent contender has
+    already written by the time this Attempt tries to claim it. Exactly the window a
+    read-then-write leaves open, made deterministic: no threads, no sleeps, one
+    scripted interleaving.
+    """
+
+    def __init__(self, **interlopers: str) -> None:
+        super().__init__()
+        self.interlopers = dict(interlopers)
+
+    def compare_and_set_effect_state(self, effect_id, *, expected, desired, fence):
+        moved = self.interlopers.pop(effect_id, None)
+        if moved is not None:
+            self.effects[effect_id] = moved
+        return super().compare_and_set_effect_state(
+            effect_id, expected=expected, desired=desired, fence=fence
+        )
+
+
+def test_two_same_generation_contenders_cannot_both_issue_one_effect():
+    """The regression for the read-then-write dispatch gate.
+
+    Both contenders read `predeclared` and both concluded the identity was
+    dispatchable -- neither is stale, so fencing separates nothing. The one that did
+    not move the ledger stops before the world is touched, and owes no reconciliation:
+    it issued nothing, and the winner holds the obligation for what it issued.
+    """
+    store = _RacingStore(**{EFFECT: EFFECT_ISSUED_UNKNOWN})
+    store.effects[EFFECT] = EFFECT_PREDECLARED
+    journal, world = FakeJournal(), FakeWorld()
+
+    outcome = _coordinator(store, journal, world).dispatch_material(EFFECT)
+
+    assert outcome == DispatchOutcome(EFFECT, False, 1, False, STOP_EFFECT_STATE_RACED)
+    assert world.issued == []
+    assert store.effects[EFFECT] == EFFECT_ISSUED_UNKNOWN
+    assert journal.count(JOURNAL_PHASE_RECEIPT) == 0
+    assert store.read_latch(ATTEMPT) is None
+
+
+def test_an_answer_landing_under_a_live_dispatch_is_reconciled_not_overwritten():
+    """The receipt write is a claim about an identity somebody else has answered.
+
+    Two claims about one effect is exactly a reconciliation, so this Attempt latches
+    with the obligation rather than settling the ledger by assertion.
+    """
+    store = FakeStore()
+    store.effects[EFFECT] = EFFECT_PREDECLARED
+    journal, world = FakeJournal(), FakeWorld()
+    coordinator = _coordinator(store, journal, world)
+    # The interloper answers only the second compare-and-set: this Attempt's claim to
+    # `issued_unknown` wins, and its settlement after the receipt does not.
+    original = store.compare_and_set_effect_state
+
+    def racing(effect_id, *, expected, desired, fence):
+        if desired == EFFECT_SETTLED_APPLIED:
+            store.effects[effect_id] = EFFECT_PROVED_NOT_APPLIED
+        return original(effect_id, expected=expected, desired=desired, fence=fence)
+
+    store.compare_and_set_effect_state = racing  # type: ignore[method-assign]
+
+    outcome = coordinator.dispatch_material(EFFECT)
+
+    assert outcome == DispatchOutcome(
+        EFFECT, True, 2, True, STOP_EFFECT_STATE_RACED, latched=True
+    )
+    assert world.issued == [EFFECT]
+    assert store.effects[EFFECT] == EFFECT_PROVED_NOT_APPLIED
+    latch = store.read_latch(ATTEMPT)
+    assert latch is not None and latch.reconciliation_required is True
+
+
+def test_a_stale_reconcile_cannot_walk_a_settled_effect_back_to_dispatchable():
+    """The regression for the read-then-write reconcile gate.
+
+    A reconciler read `issued_unknown`, and by the time it wrote, the effect had been
+    verified applied. A blind write of `proved_not_applied` would put a terminal,
+    verified effect back into `DISPATCHABLE_EFFECT_STATES` and licence a second
+    dispatch of it -- so the write is refused and the terminal answer stands.
+    """
+    store = _RacingStore(**{EFFECT: EFFECT_SETTLED_APPLIED})
+    store.effects[EFFECT] = EFFECT_ISSUED_UNKNOWN
+    world = FakeWorld()
+    coordinator = _coordinator(store, FakeJournal(), world)
+
+    outcome = coordinator.reconcile(EFFECT, EFFECT_PROVED_NOT_APPLIED)
+
+    assert outcome == DispatchOutcome(EFFECT, False, 0, False, STOP_EFFECT_NOT_RECONCILABLE)
+    assert store.effects[EFFECT] == EFFECT_SETTLED_APPLIED
+    assert world.issued == []
+    # And the effect stays undispatchable, which is the fact the refusal protects.
+    assert (
+        _coordinator(store, FakeJournal(), world, attempt_id=OTHER_ATTEMPT)
+        .dispatch_material(EFFECT)
+        .stop_reason
+        == STOP_EFFECT_NOT_DISPATCHABLE
+    )
+    assert world.issued == []

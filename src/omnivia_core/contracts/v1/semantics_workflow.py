@@ -64,6 +64,7 @@ __all__ = [
     "WORKFLOW_VALUE_CARDINALITIES",
     "WORKFLOW_VALUE_PRESENCES",
     "WorkflowRecordValidator",
+    "compute_scheduling_intents_digest",
     "compute_transition_bundle_payload_digest",
     "compute_workflow_edit_batch_payload_digest",
     "evaluate_nested_workflow_boundary",
@@ -1136,6 +1137,27 @@ def compute_transition_bundle_payload_digest(record: object) -> str:
     return f"{_TRANSITION_BUNDLE_DIGEST_ALGORITHM}:{sha256(digest_bytes).hexdigest()}"
 
 
+def compute_scheduling_intents_digest(intents: Sequence[object]) -> str:
+    """Compute a `LoopIterationLedger` entry's `schedulingIntentsDigest`.
+
+    The same RFC 8785 canonical bytes and the same `sha256:` content-checksum convention
+    :func:`compute_transition_bundle_payload_digest` uses, over the intents in the order
+    they were recorded -- order is a member of what was launched, not an incidental
+    serialization detail, so it is inside the digest.
+
+    Public because a runtime that records the intents and a validator that checks the
+    digest have to agree on this exactly; two spellings of it would be two digests.
+    """
+    label = "LoopIterationLedger"
+    try:
+        digest_bytes = canonical_bytes(list(intents), label)
+    except ContractSemanticError as error:
+        raise ContractSemanticError(
+            f"{label}: schedulingIntentsDigest cannot be computed: {error}"
+        ) from error
+    return f"{_TRANSITION_BUNDLE_DIGEST_ALGORITHM}:{sha256(digest_bytes).hexdigest()}"
+
+
 def validate_transition_bundle(record: object) -> None:
     """Validate the T-0688 `RuntimeTransitionBundle` closed record.
 
@@ -2117,16 +2139,20 @@ _LOOP_ITERATION_ENTRY_FIELDS: Final = frozenset(
         "launchBundleRef",
         "inputsDigest",
         "carryDigest",
+        "schedulingIntents",
         "schedulingIntentsDigest",
         "outputsDigest",
         "failureRef",
+        "resultingCarryDigest",
         "settledAt",
         "effectSettlements",
         "cancellationDisposition",
         "evidenceRef",
         "appliedToRunState",
+        "lateEvidence",
     }
 )
+_LATE_EVIDENCE_FIELDS: Final = frozenset({"evidenceRef", "appliedToRunState"})
 
 
 def _loop_invalid(label: str, message: str) -> ContractSemanticError:
@@ -2290,9 +2316,25 @@ def _loop_iteration_entry(
     # reference, never a list of them. `carryDigest` is present only for a carrying loop.
     _reference(fields, "launchBundleRef", label)
     _digest(fields, "inputsDigest", label)
-    _digest(fields, "schedulingIntentsDigest", label)
+    intents_digest = _digest(fields, "schedulingIntentsDigest", label)
     if "carryDigest" in fields:
         _digest(fields, "carryDigest", label)
+    # The intents themselves are optional and additive: a producer that carries only the
+    # digest is exactly as valid as it was. A producer that carries both is held to the
+    # one rule that makes the pair worth carrying -- the digest is the digest *of these
+    # intents*, so a launch cannot be replayed from a list the record's own digest
+    # disowns.
+    if "schedulingIntents" in fields:
+        intents = _sequence(fields, "schedulingIntents", label)
+        for index, intent in enumerate(intents):
+            if not is_identifier(intent):
+                raise ContractSemanticError(
+                    f"{label}: schedulingIntents[{index}] is not a well-formed Identifier"
+                )
+        if compute_scheduling_intents_digest(intents) != intents_digest:
+            raise ContractSemanticError(
+                f"{label}: schedulingIntentsDigest is not the digest of schedulingIntents"
+            )
     settled_at = _timestamp(fields, "settledAt", label)
     if _instant(settled_at) < _instant(launched_at):
         raise ContractSemanticError(f"{label}: settledAt precedes launchedAt")
@@ -2320,6 +2362,16 @@ def _loop_iteration_entry(
             f"{label}: {outcome} records neither outputsDigest nor failureRef"
         )
 
+    # Only a succeeded iteration produces a carry, exactly as only a succeeded one produces
+    # outputs: a failed, cancelled or skipped iteration that recorded one would advance the
+    # loop's carry off work that did not complete.
+    if "resultingCarryDigest" in fields:
+        if outcome != "succeeded":
+            raise ContractSemanticError(
+                f"{label}: only a succeeded iteration records a resultingCarryDigest"
+            )
+        _digest(fields, "resultingCarryDigest", label)
+
     has_disposition = "cancellationDisposition" in fields
     if (outcome == "cancelled") != has_disposition:
         raise ContractSemanticError(
@@ -2327,6 +2379,24 @@ def _loop_iteration_entry(
         )
     if has_disposition:
         _member(fields, "cancellationDisposition", label, CANCELLATION_IN_FLIGHT_STATES)
+
+    # A late result recorded *against* an iteration that already settled, rather than as an
+    # entry of its own. Both shapes are real and they answer different questions: a `late`
+    # entry is a result for an iteration this ledger has no other record of, and
+    # `lateEvidence` is one for an iteration it does -- which cannot be a second entry,
+    # because iteration identities are unique here and ordinals are contiguous. Either way
+    # it is Evidence and is never applied to Run state.
+    if "lateEvidence" in fields:
+        if loop_settled_at is None:
+            raise ContractSemanticError(f"{label}: late evidence requires a settled loop")
+        if outcome == "late":
+            raise ContractSemanticError(
+                f"{label}: a late entry records its Evidence directly, not as lateEvidence"
+            )
+        late_evidence = _mapping(fields["lateEvidence"], f"{label}.lateEvidence")
+        _only_fields(late_evidence, _LATE_EVIDENCE_FIELDS, f"{label}.lateEvidence")
+        _reference(late_evidence, "evidenceRef", f"{label}.lateEvidence")
+        _literal_false(late_evidence, "appliedToRunState", f"{label}.lateEvidence")
 
     has_evidence = "evidenceRef" in fields
     has_applied = "appliedToRunState" in fields

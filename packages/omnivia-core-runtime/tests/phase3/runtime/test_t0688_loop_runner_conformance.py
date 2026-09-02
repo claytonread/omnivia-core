@@ -24,7 +24,7 @@ behaviour as the runtime seam owes it:
 - a nested loop's identities are namespace-safe against a sibling's;
 - all three cancellation policies and all three partial-success policies behave as
   declared, and cancellation never rolls back an effect settlement;
-- a late result is Evidence only: it never mutates the ledger, is never applied to
+- a late result is Evidence only: it moves no recorded entry, is never applied to
   Run state, and an unknown or duplicate one fails closed.
 """
 
@@ -56,9 +56,12 @@ from omnivia_core_runtime.execution import (
     OUTCOME_SUCCEEDED,
     RECORD_AND_CONTINUE,
     RECORD_AND_STOP_AFTER_CURRENT,
+    SETTLEMENT_COMMITTED,
+    SETTLEMENT_NOT_COMMITTED,
     ZIP_PAD_WITH_ABSENT,
     ZIP_REFUSE,
     ZIP_TRUNCATE_TO_SHORTEST,
+    EffectSettlement,
     ExecutionContractError,
     ExecutionRefused,
     FrozenLoopPlan,
@@ -92,6 +95,17 @@ def element(key: str) -> LoopElement:
 
 def source(*keys: str) -> tuple[LoopElement, ...]:
     return tuple(element(key) for key in keys)
+
+
+def settlement(request_id: str, **overrides: object) -> EffectSettlement:
+    """Return one settled effect, ``not_committed`` so it carries no receipt."""
+    fields: dict[str, object] = {
+        "effect_request_id": request_id,
+        "settlement_class": SETTLEMENT_NOT_COMMITTED,
+        "completion_contribution": "required",
+    }
+    fields.update(overrides)
+    return EffectSettlement(**fields)  # type: ignore[arg-type]
 
 
 def sequential_plan(**overrides: object) -> FrozenLoopPlan:
@@ -516,14 +530,22 @@ def test_a_ledger_entry_refuses_a_malformed_optional_digest(field: str) -> None:
 
 
 def test_a_ledger_entry_refuses_a_malformed_effect_settlement() -> None:
-    with pytest.raises(ExecutionContractError) as error:
-        in_flight_entry(effect_settlements=("NOT-LOWERCASE",))
-    assert error.value.reason == "invalid_identifier"
+    """Two shapes, two refusals: a malformed member, and a member that is not one."""
+    with pytest.raises(ExecutionContractError) as member:
+        in_flight_entry(effect_settlements=(settlement("NOT-LOWERCASE"),))
+    assert member.value.reason == "invalid_identifier"
+
+    # A bare request id is no longer a settlement; it is refused as the shape it is.
+    with pytest.raises(ExecutionContractError) as shape:
+        in_flight_entry(effect_settlements=("effect-a",))
+    assert shape.value.reason == "invalid_effect_settlement"
 
 
 def test_a_ledger_entry_refuses_a_duplicate_effect_settlement() -> None:
     with pytest.raises(ExecutionContractError) as error:
-        in_flight_entry(effect_settlements=("effect-a", "effect-a"))
+        in_flight_entry(
+            effect_settlements=(settlement("effect-a"), settlement("effect-a"))
+        )
     assert error.value.reason == "duplicate_entry"
 
 
@@ -1159,13 +1181,21 @@ def test_cancellation_never_rolls_back_a_recorded_effect_settlement() -> None:
     runner = LoopRunner(plan, source("a", "b", "c"))
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    runner.record_effect_settlement(runner.ledger.entries[0].iteration_identity, "effect-a")
-    runner.record_effect_settlement(runner.ledger.entries[0].iteration_identity, "effect-b")
+    committed = settlement(
+        "effect-a",
+        settlement_class=SETTLEMENT_COMMITTED,
+        verified_receipt_ref="receipt-a",
+    )
+    unknown = settlement("effect-b")
+    identity = runner.ledger.entries[0].iteration_identity
+    runner.record_effect_settlement(identity, committed)
+    runner.record_effect_settlement(identity, unknown)
 
     runner.cancel()
 
     assert runner.ledger.entries[0].outcome == ITERATION_CANCELLED
-    assert runner.ledger.entries[0].effect_settlements == ("effect-a", "effect-b")
+    # Whole records survive, not bare ids: the committed one keeps its receipt.
+    assert runner.ledger.entries[0].effect_settlements == (committed, unknown)
 
 
 def test_a_settled_iteration_records_no_further_effect_settlement() -> None:
@@ -1174,21 +1204,32 @@ def test_a_settled_iteration_records_no_further_effect_settlement() -> None:
     succeed(runner, entry)
 
     with pytest.raises(ExecutionRefused) as refusal:
-        runner.record_effect_settlement(entry.iteration_identity, "effect-a")
+        runner.record_effect_settlement(
+            entry.iteration_identity, settlement("effect-a")
+        )
 
     assert refusal.value.reason == "iteration_already_settled"
 
 
 def test_the_same_effect_settlement_is_never_recorded_twice() -> None:
+    """The effect request is the idempotency key, so a redelivery is refused whole."""
     runner = LoopRunner(sequential_plan(), source("a", "b"))
     entry = launch_next(runner)
-    runner.record_effect_settlement(entry.iteration_identity, "effect-a")
+    first = settlement("effect-a")
+    runner.record_effect_settlement(entry.iteration_identity, first)
 
     with pytest.raises(ExecutionRefused) as refusal:
-        runner.record_effect_settlement(entry.iteration_identity, "effect-a")
+        runner.record_effect_settlement(
+            entry.iteration_identity,
+            settlement(
+                "effect-a",
+                settlement_class=SETTLEMENT_COMMITTED,
+                verified_receipt_ref="receipt-a",
+            ),
+        )
 
     assert refusal.value.reason == "duplicate_effect_settlement"
-    assert runner.ledger.entries[0].effect_settlements == ("effect-a",)
+    assert runner.ledger.entries[0].effect_settlements == (first,)
 
 
 def test_an_effect_settlement_against_an_unknown_iteration_is_refused() -> None:
@@ -1196,7 +1237,9 @@ def test_an_effect_settlement_against_an_unknown_iteration_is_refused() -> None:
     launch_next(runner)
 
     with pytest.raises(ExecutionRefused) as refusal:
-        runner.record_effect_settlement(canonical_hash("elsewhere"), "effect-a")
+        runner.record_effect_settlement(
+            canonical_hash("elsewhere"), settlement("effect-a")
+        )
 
     assert refusal.value.reason == "unknown_iteration"
 
@@ -1280,7 +1323,11 @@ def test_a_late_result_is_evidence_only_and_never_mutates_the_ledger() -> None:
         before.entries[0].iteration_identity, evidence_ref="evidence-1"
     )
 
-    assert runner.ledger == before
+    # No entry moved and the posture did not change. The late result is recorded
+    # beside them, which is the only place it survives the crash the ledger records.
+    assert runner.ledger.entries == before.entries
+    assert runner.ledger.cancellation_requested == before.cancellation_requested
+    assert runner.ledger.late_results == (late,)
     assert runner.late_results == (late,)
     assert late.applied_to_run_state is False
     assert late.iteration_identity == before.entries[0].iteration_identity
@@ -1336,13 +1383,13 @@ def test_a_duplicate_late_result_for_one_iteration_is_refused() -> None:
 
 
 def test_a_replayed_late_result_is_admitted_against_the_replayed_ledger() -> None:
+    """The ledger carries them, so handing it back is the whole of the resume."""
     runner = settled_runner()
     identity = runner.ledger.entries[0].iteration_identity
     late = runner.record_late_result(identity, evidence_ref="evidence-1")
+    assert runner.ledger.late_results == (late,)
 
-    resumed = replay_ledger(
-        sequential_plan(), source("a"), runner.ledger, late_results=(late,)
-    )
+    resumed = replay_ledger(sequential_plan(), source("a"), runner.ledger)
 
     assert resumed.late_results == (late,)
     assert resumed.ledger == runner.ledger
@@ -1353,11 +1400,10 @@ def test_a_replayed_late_result_for_an_unknown_iteration_is_refused() -> None:
     stray = LateResult(
         iteration_identity=canonical_hash("elsewhere"), evidence_ref="evidence-1"
     )
+    forged = replace(runner.ledger, late_results=(stray,))
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(
-            sequential_plan(), source("a"), runner.ledger, late_results=(stray,)
-        )
+        replay_ledger(sequential_plan(), source("a"), forged)
 
     assert refusal.value.reason == "unknown_iteration"
 
@@ -1393,22 +1439,34 @@ def test_the_package_all_is_exactly_what_the_package_exports() -> None:
 
 
 def test_the_loop_oracle_imports_no_storage_scheduler_recovery_or_platform() -> None:
-    """An allowlist, not a denylist: a new coupling has to be added here first."""
+    """An allowlist, not a denylist: a new coupling has to be added here first.
+
+    ``omnivia_core`` is on it for the same reason it is on ``profile``'s: a public
+    contract is what this seam is an oracle *for*. It is admitted one module deep
+    rather than as a package, so the allowance covers the contract layer and nothing
+    a contract import could smuggle in beside it.
+    """
     allowed = {
         "__future__",
+        "collections",
         "dataclasses",
         "typing",
+        "omnivia_core",
         "omnivia_core_runtime",
     }
     source_path = Path(loop_module.__file__ or "")
-    imported: set[str] = set()
+    modules: set[str] = set()
     for node in ast.walk(ast.parse(source_path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
+            modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported.add(node.module.split(".")[0])
+            modules.add(node.module)
+    imported = {module.split(".")[0] for module in modules}
 
     assert imported <= allowed, imported - allowed
+    for module in modules:
+        if module.split(".")[0] == "omnivia_core":
+            assert module.startswith("omnivia_core.contracts.v1."), module
     text = source_path.read_text(encoding="utf-8")
     assert "omnivia_core_runtime.storage" not in text
     assert "omnivia_core_runtime.service" not in text

@@ -657,6 +657,50 @@ def test_autonomy_sources_validate_eagerly() -> None:
         _source(SOURCE_POLICY, maximum_steps=-1)
 
 
+def test_an_autonomy_source_freezes_every_collection_a_caller_hands_it() -> None:
+    """The regression for caller-mutable authorization inputs.
+
+    A deserializer hands scopes in as lists. Retained by reference, the list the source
+    was validated and digested against is the same object the caller still holds -- so
+    appending to it after the resolution widens the effective scope of a Run that was
+    resolved, and digested, against a narrower one.
+    """
+    action = ["draft"]
+    approvals = [EFFECT_EXTERNAL_EFFECT]
+    source = _source(
+        SOURCE_POLICY,
+        action_scope=action,
+        resource_scope=["index"],
+        model_scope=["slate"],
+        knowledge_scope=["corpus.a"],
+        approval_required=approvals,
+    )
+    assert source.action_scope == ("draft",)
+    assert source.approval_required == (EFFECT_EXTERNAL_EFFECT,)
+
+    resolved = resolve_autonomy((source,), permission_granted=True)
+    action.append("publish")
+    approvals.clear()
+
+    assert source.action_scope == ("draft",)
+    assert source.approval_required == (EFFECT_EXTERNAL_EFFECT,)
+    assert resolved.action_scope == ("draft",)
+    assert resolved.approval_required == (EFFECT_EXTERNAL_EFFECT,)
+    # And the frozen snapshot still resolves to the identical digest it was taken over.
+    assert (
+        resolve_autonomy((source,), permission_granted=True).resolution_digest
+        == resolved.resolution_digest
+    )
+
+
+def test_an_autonomy_source_refuses_a_string_where_a_collection_belongs() -> None:
+    """A `str` is a sequence of one-character identifiers, and every one of them would
+    validate. Freezing it into a tuple would turn one mistyped scope into a scope of
+    single letters, so it is refused rather than copied."""
+    with pytest.raises(ExecutionContractError, match="invalid_collection"):
+        _source(SOURCE_POLICY, action_scope="draft")
+
+
 # --- plane ownership -------------------------------------------------------------------
 
 
@@ -690,6 +734,10 @@ def _complete(plane: PlaneOwnership, **fields: object) -> CompletionOutcome:
 
 def _deliver(plane: PlaneOwnership, **fields: object) -> DeliveryDecision:
     return plane.deliver(at_tick=20, **fields)  # type: ignore[arg-type]
+
+
+def _settle_delivery(plane: PlaneOwnership, **fields: object) -> int:
+    return plane.settle_delivery(at_tick=20, **fields)  # type: ignore[arg-type]
 
 
 def _reconcile(plane: PlaneOwnership, **fields: object) -> ReconciliationDecision:
@@ -1153,7 +1201,10 @@ def test_a_listener_sheds_new_work_at_bounded_capacity() -> None:
     )
     assert duplicate.disposition == DELIVERY_DUPLICATE
 
-    assert plane.settle_delivery(dedupe_key="event.0") == 1
+    settled = _settle_delivery(
+        plane, lease_id=lease_id, fencing_token=token, dedupe_key="event.0"
+    )
+    assert settled == 1
     admitted = _deliver(
         plane,
         lease_id=lease_id,
@@ -1174,7 +1225,9 @@ def test_a_settled_delivery_is_still_remembered_for_deduplication() -> None:
         delivery_id="delivery.one",
         dedupe_key="event.one",
     )
-    plane.settle_delivery(dedupe_key="event.one")
+    _settle_delivery(
+        plane, lease_id=lease_id, fencing_token=token, dedupe_key="event.one"
+    )
     repeat = _deliver(
         plane,
         lease_id=lease_id,
@@ -1184,7 +1237,106 @@ def test_a_settled_delivery_is_still_remembered_for_deduplication() -> None:
     )
     assert repeat.disposition == DELIVERY_DUPLICATE
     with pytest.raises(ExecutionContractError, match="unknown_delivery"):
-        plane.settle_delivery(dedupe_key="event.absent")
+        _settle_delivery(
+            plane, lease_id=lease_id, fencing_token=token, dedupe_key="event.absent"
+        )
+
+
+def test_an_expired_listener_cannot_release_its_successors_capacity() -> None:
+    """The regression for the unfenced settlement.
+
+    One listener admits work and then expires; a successor takes the scope over and fills
+    the bound with work of its own. The expired listener then settles the delivery it
+    remembers. Unfenced, that hands back a slot the successor is holding -- and the
+    successor, still believing it is at capacity, would go on to admit one more delivery
+    than its bound allows.
+    """
+    plane = PlaneOwnership(listener_capacity=1)
+    first = _acquire(
+        plane, plane_role=PLANE_LISTENER, scope="stream.harbour", owner="node.one"
+    )
+    _deliver(
+        plane,
+        lease_id=first.lease_id,
+        fencing_token=first.fencing_token,
+        delivery_id="delivery.one",
+        dedupe_key="event.one",
+    )
+    second = _take_over(
+        plane, plane_role=PLANE_LISTENER, scope="stream.harbour", owner="node.two"
+    )
+
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_AUTHORITY):
+        plane.settle_delivery(
+            lease_id=first.lease_id,
+            fencing_token=first.fencing_token,
+            dedupe_key="event.one",
+            at_tick=120,
+        )
+
+    # Nothing moved: the successor still sees the slot as taken and sheds new work.
+    with pytest.raises(ExecutionRefused, match=LISTENER_SATURATED):
+        plane.deliver(
+            lease_id=second.lease_id,
+            fencing_token=second.fencing_token,
+            delivery_id="delivery.two",
+            dedupe_key="event.two",
+            at_tick=120,
+        )
+
+
+def test_only_the_admitting_listener_scope_settles_its_own_delivery() -> None:
+    """A current lease is not enough: it has to be the *right* current lease.
+
+    A worker lease and a listener lease over another scope are both live and both foreign
+    to the delivery, and neither may release its capacity.
+    """
+    plane = PlaneOwnership(listener_capacity=2)
+    lease_id, token = _listener_lease(plane)
+    _deliver(
+        plane,
+        lease_id=lease_id,
+        fencing_token=token,
+        delivery_id="delivery.one",
+        dedupe_key="event.one",
+    )
+    elsewhere = _acquire(
+        plane, plane_role=PLANE_LISTENER, scope="stream.quay", owner="node.two"
+    )
+    worker = _acquire(
+        plane, plane_role=PLANE_WORKER, scope="stream.harbour", owner="node.three"
+    )
+
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_AUTHORITY):
+        _settle_delivery(
+            plane,
+            lease_id=elsewhere.lease_id,
+            fencing_token=elsewhere.fencing_token,
+            dedupe_key="event.one",
+        )
+    with pytest.raises(ExecutionContractError, match="wrong_plane_role"):
+        _settle_delivery(
+            plane,
+            lease_id=worker.lease_id,
+            fencing_token=worker.fencing_token,
+            dedupe_key="event.one",
+        )
+    # A superseded fencing token from the holder itself is refused for the same reason.
+    renewed = _renew(plane, lease_id=lease_id, owner="node.one")
+    with pytest.raises(ExecutionRefused, match=EXECUTION_PLANE_STALE_AUTHORITY):
+        _settle_delivery(
+            plane, lease_id=lease_id, fencing_token=token, dedupe_key="event.one"
+        )
+
+    assert (
+        _settle_delivery(
+            plane,
+            lease_id=lease_id,
+            fencing_token=renewed.fencing_token,
+            dedupe_key="event.one",
+        )
+        == 0
+    )
 
 
 def test_dispatch_delivery_and_reconciliation_require_their_own_plane_role() -> None:

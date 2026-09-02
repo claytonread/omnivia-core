@@ -33,14 +33,25 @@ no others:
   preserving every member of the atomic launch, scheduling intents included.
 
 The ledger is the recovery record, and it is the *only* recovery record -- which is
-why the loop's own cancellation posture is a member of :class:`LoopLedger` and not a
-flag on the runner. Replaying a ledger re-derives every recorded identity, refuses one
-that is not contiguous in ordinal launch order or whose settlement sequences are not
-``1..n``, never relaunches an iteration it already records, replays the recorded
-cancellation through the plan's declared policy, and folds the carry forward out of the
-recorded entries themselves -- so a resumed runner does not need an ambient caller to
-hand it back the carry or the cancellation it had before the crash, and refuses a
-caller-supplied carry that disagrees with the one the ledger replays.
+why the loop's own cancellation posture and its late results are members of
+:class:`LoopLedger` and not state beside the runner. Replaying a ledger re-derives every
+recorded identity, refuses one that is not contiguous in ordinal launch order or whose
+settlement sequences are not ``1..n``, refuses a history no live runner could have
+written -- a cancelled iteration under a policy that never cancels one, an in-flight
+population past the frozen concurrency bound -- never relaunches an iteration it already
+records, replays the recorded cancellation through the plan's declared policy, and folds
+the carry forward out of the recorded entries themselves. So a resumed runner does not
+need an ambient caller to hand it back the carry, the cancellation or the late results it
+had before the crash, and it refuses a caller-supplied carry that disagrees with the one
+the ledger replays.
+
+And the ledger is durable rather than merely in-process. :func:`loop_ledger_document` and
+:func:`loop_ledger_from_document` are its closed I-JSON form, round-tripped through RFC
+8785 canonical bytes; :func:`to_loop_iteration_ledger` and
+:func:`from_loop_iteration_ledger` are the lossless seam to the Core
+`LoopIterationLedger`, which carries the same facts plus the wall-clock members a pure
+oracle never holds. Handing a runner its own object graph back and calling that a restore
+proves nothing: nothing was ever serialized, so every member survives trivially.
 
 Two deliberate absences. The plan's ``done`` condition is not evaluated here --
 a predicate over run values needs the run values, which this seam never holds --
@@ -52,9 +63,13 @@ no clock and a replay has to reproduce the order exactly; the wall-clock
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
+from omnivia_core.contracts.v1.semantics_workflow import (
+    compute_scheduling_intents_digest,
+)
 from omnivia_core_runtime.execution.profile import (
     ExecutionContractError,
     ExecutionRefused,
@@ -164,6 +179,28 @@ DISPOSITION_CANCELLED_IN_FLIGHT: Final = "CANCELLED_IN_FLIGHT"
 #: element key, which is why every resolved key and identity is checked for
 #: duplicates before a single iteration is planned.
 _PAD_KEY_PREFIX: Final = "pad-"
+
+#: The three classes one settled effect may be recorded in, spelled exactly as the Core
+#: `EffectSettlement` spells them, so the runtime record and the durable one name the
+#: same three things rather than two vocabularies that have to be mapped.
+SETTLEMENT_COMMITTED: Final = "committed"
+SETTLEMENT_NOT_COMMITTED: Final = "not_committed"
+SETTLEMENT_UNKNOWN: Final = "unknown"
+
+EFFECT_SETTLEMENT_CLASSES: Final[frozenset[str]] = frozenset(
+    {SETTLEMENT_COMMITTED, SETTLEMENT_NOT_COMMITTED, SETTLEMENT_UNKNOWN}
+)
+
+#: The exact version this seam writes and reads its canonical ledger document as. A
+#: document is refused unless it names this, because a record whose shape is guessed is
+#: not a durable record.
+LOOP_LEDGER_SCHEMA_VERSION: Final = "1.0.0"
+
+#: The bound on one iteration's recorded effect settlements. The same bound
+#: :func:`~omnivia_core_runtime.execution.profile.require_collection` puts on every other
+#: declared collection in this seam, restated here because these entries are records
+#: rather than identifiers and so cannot go through it.
+_MAX_EFFECT_SETTLEMENTS: Final = 64
 
 
 # --------------------------------------------------------------------------
@@ -323,6 +360,65 @@ class IterationLaunch:
 
 
 @dataclass(frozen=True, slots=True)
+class EffectSettlement:
+    """One effect this iteration settled: which effect, in which class, on what evidence.
+
+    The same four members the Core `EffectSettlement` carries, and held to the same rule:
+    a verified receipt exists exactly for a `committed` settlement, because a receipt is
+    the thing that *makes* a settlement committed, and a `not_committed` or `unknown` one
+    carrying a receipt is two contradictory claims about one effect.
+
+    Recording only the effect request id -- which is what this seam used to do -- loses
+    exactly the members a durable record needs: replayed from a bare id, every settled
+    effect reads as the same unclassified fact, and an `unknown` disposition becomes
+    indistinguishable from a committed one with its receipt thrown away.
+    """
+
+    effect_request_id: str
+    settlement_class: str
+    completion_contribution: str
+    verified_receipt_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        require_identifier("effect_request_id", self.effect_request_id)
+        require_vocabulary(
+            "settlement_class", self.settlement_class, EFFECT_SETTLEMENT_CLASSES
+        )
+        require_identifier("completion_contribution", self.completion_contribution)
+        committed = self.settlement_class == SETTLEMENT_COMMITTED
+        if committed != (self.verified_receipt_ref is not None):
+            raise ExecutionContractError(
+                "invalid_effect_settlement",
+                "a verified receipt is recorded exactly for a committed settlement",
+            )
+        if self.verified_receipt_ref is not None:
+            require_identifier("verified_receipt_ref", self.verified_receipt_ref)
+
+
+def _require_effect_settlements(
+    values: tuple[EffectSettlement, ...],
+) -> tuple[EffectSettlement, ...]:
+    """Bound one entry's settlements and refuse a second settlement of one effect."""
+    if not isinstance(values, tuple) or not all(
+        isinstance(value, EffectSettlement) for value in values
+    ):
+        raise ExecutionContractError(
+            "invalid_effect_settlement",
+            "effect_settlements is not a tuple of EffectSettlement",
+        )
+    if len(values) > _MAX_EFFECT_SETTLEMENTS:
+        raise ExecutionContractError(
+            "collection_too_large", "effect_settlements exceeds its bound"
+        )
+    requests = [value.effect_request_id for value in values]
+    if len(set(requests)) != len(requests):
+        raise ExecutionContractError(
+            "duplicate_entry", "effect_settlements settles the same effect twice"
+        )
+    return values
+
+
+@dataclass(frozen=True, slots=True)
 class IterationLedgerEntry:
     """One iteration's complete record: launched, then settled in exactly one class.
 
@@ -344,7 +440,7 @@ class IterationLedgerEntry:
     outputs_digest: str | None = None
     failure_reason: str | None = None
     settlement_sequence: int | None = None
-    effect_settlements: tuple[str, ...] = ()
+    effect_settlements: tuple[EffectSettlement, ...] = ()
     cancellation_disposition: str | None = None
     resulting_carry_digest: str | None = None
 
@@ -364,9 +460,7 @@ class IterationLedgerEntry:
         require_collection(
             "scheduling_intents", self.scheduling_intents, required=False
         )
-        require_collection(
-            "effect_settlements", self.effect_settlements, required=False
-        )
+        _require_effect_settlements(self.effect_settlements)
         if self.outcome is not None:
             require_vocabulary("outcome", self.outcome, ITERATION_OUTCOMES)
         self._validate_settlement()
@@ -443,31 +537,6 @@ class IterationLedgerEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class LoopLedger:
-    """The whole durable recovery record: the loop's own posture, and its entries.
-
-    Cancellation is a fact about the *loop* rather than about any one iteration -- a
-    ``DRAIN_IN_FLIGHT`` cancellation settles nothing at all, so no entry can carry it --
-    which is why it lives here beside the entries and not in the process that requested
-    it. A process-only cancellation is lost in the crash it is meant to survive, and the
-    resumed loop then plans exactly the launches the cancellation stopped.
-
-    Handing this one value back to :func:`replay_ledger` is the whole of a resume, which
-    is what keeps the ledger the only recovery record: there is no second thing a caller
-    can forget to carry across the crash.
-    """
-
-    entries: tuple[IterationLedgerEntry, ...] = ()
-    cancellation_requested: bool = False
-
-
-#: The record of a loop that has not started: no entries, and nothing cancelled. It is a
-#: module-level value because :class:`LoopLedger` is frozen, so one instance is every
-#: instance of it, and because a default that is a call is a default nobody can share.
-EMPTY_LOOP_LEDGER: Final = LoopLedger()
-
-
-@dataclass(frozen=True, slots=True)
 class LateResult:
     """A result that arrived after the loop settled: Evidence, and nothing else.
 
@@ -487,6 +556,39 @@ class LateResult:
                 "late_result_applied",
                 "a late result is Evidence and is never applied to Run state",
             )
+
+
+@dataclass(frozen=True, slots=True)
+class LoopLedger:
+    """The whole durable recovery record: the loop's own posture, and its entries.
+
+    Cancellation is a fact about the *loop* rather than about any one iteration -- a
+    ``DRAIN_IN_FLIGHT`` cancellation settles nothing at all, so no entry can carry it --
+    which is why it lives here beside the entries and not in the process that requested
+    it. A process-only cancellation is lost in the crash it is meant to survive, and the
+    resumed loop then plans exactly the launches the cancellation stopped.
+
+    Handing this one value back to :func:`replay_ledger` is the whole of a resume, which
+    is what keeps the ledger the only recovery record: there is no second thing a caller
+    can forget to carry across the crash.
+
+    Late results live here for exactly that reason. They were a separate argument to the
+    runner, which made them a second thing to carry: a resume that dropped them replayed a
+    settled loop that had never seen a late result, and admitted the same one again as if
+    it were new. The carry is not a member because it is *derived* -- every launch records
+    the carry it consumed and every settled iteration the carry it produced, so the loop's
+    current carry folds out of the entries and cannot disagree with them.
+    """
+
+    entries: tuple[IterationLedgerEntry, ...] = ()
+    cancellation_requested: bool = False
+    late_results: tuple[LateResult, ...] = ()
+
+
+#: The record of a loop that has not started: no entries, and nothing cancelled. It is a
+#: module-level value because :class:`LoopLedger` is frozen, so one instance is every
+#: instance of it, and because a default that is a call is a default nobody can share.
+EMPTY_LOOP_LEDGER: Final = LoopLedger()
 
 
 # --------------------------------------------------------------------------
@@ -585,6 +687,10 @@ class LoopRunner:
     resume replays it through the plan's declared cancellation policy, so a resumed
     ``CANCEL_REMAINING`` or ``DRAIN_IN_FLIGHT`` loop plans no launch its live runner
     would not have planned, and a resumed ``COMPLETE_ALL`` loop still finishes.
+
+    It carries the late results too, which is why there is no argument for them. They
+    were one, and a resume that dropped it replayed a settled loop that had never seen a
+    late result -- and then admitted the same one again as if it were new.
     """
 
     def __init__(
@@ -595,7 +701,6 @@ class LoopRunner:
         zip_sources: tuple[tuple[LoopElement, ...], ...] = (),
         ledger: LoopLedger = EMPTY_LOOP_LEDGER,
         carry_digest: str | None = None,
-        late_results: tuple[LateResult, ...] = (),
     ) -> None:
         self.plan = plan
         self._elements = _resolve_elements(plan, source, zip_sources)
@@ -632,7 +737,7 @@ class LoopRunner:
             # as an uncancelled loop.
             self.cancel()
         self._refresh()
-        for late in late_results:
+        for late in ledger.late_results:
             self._admit_late(late)
 
     # -- replay ------------------------------------------------------------
@@ -736,6 +841,12 @@ class LoopRunner:
         the cancellation stopped. The Core `LoopIterationLedger` refuses that shape too,
         so the durable record and this replay agree on what a cancellation looks like.
 
+        The frozen concurrency bound is a bound on the live runner, so it is a bound on
+        any ledger a live runner could have written. A recorded population of unsettled
+        iterations larger than ``maximum_concurrency`` is a history :meth:`record_launch`
+        refuses to produce, and believing it would resume a loop already over its bound
+        and then let it launch further from there.
+
         A ``CANCEL_REMAINING`` sweep is the last thing that settles: it cancels every
         iteration still in flight in one pass and the loop launches nothing after it. So
         a ledger that settles anything else after the first cancellation records a
@@ -747,20 +858,35 @@ class LoopRunner:
                 "settlement_not_contiguous",
                 "the ledger's settlement sequences are not 1..n without gap or repeat",
             )
-        if not cancellation_requested and any(
-            entry.outcome == ITERATION_CANCELLED for entry in self._entries
-        ):
+        in_flight = sum(1 for entry in self._entries if not entry.is_settled)
+        if in_flight > self.plan.maximum_concurrency:
+            raise ExecutionRefused(
+                "concurrency_exhausted",
+                "the ledger records more iterations in flight than the frozen bound",
+            )
+        cancelled = [
+            entry for entry in self._entries if entry.outcome == ITERATION_CANCELLED
+        ]
+        if cancelled and not cancellation_requested:
             raise ExecutionRefused(
                 "cancellation_not_recorded",
                 "the ledger settles an iteration cancelled but records no cancellation",
             )
-        if self.plan.cancellation_policy != CANCEL_REMAINING:
-            return
+        if cancelled and self.plan.cancellation_policy != CANCEL_REMAINING:
+            # `DRAIN_IN_FLIGHT` leaves the in-flight iterations to settle normally and
+            # `COMPLETE_ALL` lets the loop finish, so neither policy has any path that
+            # produces a cancelled entry -- :meth:`cancel` only sweeps under
+            # `CANCEL_REMAINING` and :meth:`settle` refuses `CANCELLED` outright. A
+            # ledger carrying one under either policy was not written by this seam, and
+            # resuming it would replay a settlement its own plan cannot account for.
+            raise ExecutionRefused(
+                "cancellation_not_possible",
+                f"a {self.plan.cancellation_policy} plan settles no iteration cancelled",
+            )
         swept = [
             entry.settlement_sequence
-            for entry in self._entries
-            if entry.outcome == ITERATION_CANCELLED
-            and entry.settlement_sequence is not None
+            for entry in cancelled
+            if entry.settlement_sequence is not None
         ]
         if not swept:
             return
@@ -786,7 +912,9 @@ class LoopRunner:
         Handing exactly this value back to :func:`replay_ledger` reconstructs this
         runner, which is the whole of the recovery story.
         """
-        return LoopLedger(tuple(self._entries), self._cancellation_requested)
+        return LoopLedger(
+            tuple(self._entries), self._cancellation_requested, tuple(self._late)
+        )
 
     @property
     def late_results(self) -> tuple[LateResult, ...]:
@@ -1005,7 +1133,7 @@ class LoopRunner:
         )
 
     def record_effect_settlement(
-        self, iteration_identity: str, effect_request_id: str
+        self, iteration_identity: str, settlement: EffectSettlement
     ) -> None:
         """Record one effect this iteration has already settled.
 
@@ -1013,9 +1141,14 @@ class LoopRunner:
         cancellation is not rollback, so an effect already issued stays recorded
         against its iteration whatever the iteration goes on to settle as. The same
         effect request is never recorded twice, because the iteration identity plus
-        the effect request id is the idempotency key for that settlement.
+        the effect request id is the idempotency key for that settlement -- so a
+        redelivery of the same settlement refuses rather than appending a second one
+        that would then disagree with the first about its class or its receipt.
         """
-        require_identifier("effect_request_id", effect_request_id)
+        if not isinstance(settlement, EffectSettlement):
+            raise ExecutionContractError(
+                "invalid_effect_settlement", "settlement is not an EffectSettlement"
+            )
         index = self._index_of(iteration_identity)
         entry = self._entries[index]
         if entry.is_settled:
@@ -1023,13 +1156,16 @@ class LoopRunner:
                 "iteration_already_settled",
                 "a settled iteration records no further effect",
             )
-        if effect_request_id in entry.effect_settlements:
+        if any(
+            recorded.effect_request_id == settlement.effect_request_id
+            for recorded in entry.effect_settlements
+        ):
             raise ExecutionRefused(
                 "duplicate_effect_settlement",
                 "the iteration already records this effect settlement",
             )
         self._entries[index] = replace(
-            entry, effect_settlements=(*entry.effect_settlements, effect_request_id)
+            entry, effect_settlements=(*entry.effect_settlements, settlement)
         )
 
     def settle(
@@ -1202,17 +1338,526 @@ def replay_ledger(
     *,
     zip_sources: tuple[tuple[LoopElement, ...], ...] = (),
     carry_digest: str | None = None,
-    late_results: tuple[LateResult, ...] = (),
 ) -> LoopRunner:
     """Return a runner resumed from ``ledger``: same identities, same carry, same posture,
-    no relaunch."""
+    same late results, no relaunch."""
     return LoopRunner(
         plan,
         source,
         zip_sources=zip_sources,
         ledger=ledger,
         carry_digest=carry_digest,
+    )
+
+
+# --------------------------------------------------------------------------
+# The canonical document, and the seam to the Core `LoopIterationLedger`
+# --------------------------------------------------------------------------
+#
+# Two conversions, one record. :func:`loop_ledger_document` and
+# :func:`loop_ledger_from_document` are the *durable* form: one closed I-JSON document
+# that survives a process boundary, holding every member a resume reads and nothing a
+# resume has to be handed separately. :func:`to_loop_iteration_ledger` and
+# :func:`from_loop_iteration_ledger` are the seam to the Core record, which carries the
+# same facts plus the three wall-clock members a clock-free oracle never holds.
+#
+# Handing a runner's own object graph to a "restore" and calling that durability proves
+# nothing: the objects were never serialized, so every member survives trivially,
+# including the ones no serializer would have written. Both directions here go through
+# RFC 8785 canonical bytes for exactly that reason.
+
+
+def _member(fields: Mapping[str, object], key: str, label: str) -> object:
+    if key not in fields:
+        raise ExecutionContractError("invalid_document", f"{label} is missing {key}")
+    return fields[key]
+
+
+def _document(value: object, label: str, allowed: frozenset[str]) -> Mapping[str, object]:
+    """Return ``value`` as a closed mapping, refusing an unknown or non-string key."""
+    if not isinstance(value, Mapping):
+        raise ExecutionContractError("invalid_document", f"{label} is not a mapping")
+    unknown = sorted(key for key in value if not isinstance(key, str) or key not in allowed)
+    if unknown:
+        raise ExecutionContractError(
+            "invalid_document", f"{label} carries unknown members {unknown!r}"
+        )
+    return value
+
+
+def _text(fields: Mapping[str, object], key: str, label: str) -> str:
+    value = _member(fields, key, label)
+    if not isinstance(value, str):
+        raise ExecutionContractError("invalid_document", f"{label}.{key} is not a string")
+    return value
+
+
+def _optional_text(fields: Mapping[str, object], key: str, label: str) -> str | None:
+    value = _member(fields, key, label)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ExecutionContractError(
+            "invalid_document", f"{label}.{key} is not a string or null"
+        )
+    return value
+
+
+def _flag(fields: Mapping[str, object], key: str, label: str) -> bool:
+    value = _member(fields, key, label)
+    if not isinstance(value, bool):
+        raise ExecutionContractError("invalid_document", f"{label}.{key} is not a boolean")
+    return value
+
+
+def _count(fields: Mapping[str, object], key: str, label: str) -> int:
+    value = _member(fields, key, label)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ExecutionContractError("invalid_document", f"{label}.{key} is not an integer")
+    return value
+
+
+def _optional_count(fields: Mapping[str, object], key: str, label: str) -> int | None:
+    value = _member(fields, key, label)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ExecutionContractError(
+            "invalid_document", f"{label}.{key} is not an integer or null"
+        )
+    return value
+
+
+def _array(fields: Mapping[str, object], key: str, label: str) -> Sequence[object]:
+    value = _member(fields, key, label)
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ExecutionContractError("invalid_document", f"{label}.{key} is not an array")
+    return value
+
+
+def _texts(fields: Mapping[str, object], key: str, label: str) -> tuple[str, ...]:
+    values = _array(fields, key, label)
+    for index, value in enumerate(values):
+        if not isinstance(value, str):
+            raise ExecutionContractError(
+                "invalid_document", f"{label}.{key}[{index}] is not a string"
+            )
+    return tuple(str(value) for value in values)
+
+
+_LEDGER_MEMBERS: Final[frozenset[str]] = frozenset(
+    {"ledgerSchemaVersion", "cancellationRequested", "entries", "lateResults"}
+)
+_ENTRY_MEMBERS: Final[frozenset[str]] = frozenset(
+    {
+        "iterationIdentity",
+        "ordinal",
+        "inputsDigest",
+        "carryDigest",
+        "schedulingIntents",
+        "outcome",
+        "outputsDigest",
+        "failureReason",
+        "settlementSequence",
+        "effectSettlements",
+        "cancellationDisposition",
+        "resultingCarryDigest",
+    }
+)
+_SETTLEMENT_MEMBERS: Final[frozenset[str]] = frozenset(
+    {
+        "effectRequestId",
+        "settlementClass",
+        "completionContribution",
+        "verifiedReceiptRef",
+    }
+)
+_LATE_MEMBERS: Final[frozenset[str]] = frozenset(
+    {"iterationIdentity", "evidenceRef", "appliedToRunState"}
+)
+
+
+def _settlement_document(settlement: EffectSettlement) -> dict[str, object]:
+    return {
+        "effectRequestId": settlement.effect_request_id,
+        "settlementClass": settlement.settlement_class,
+        "completionContribution": settlement.completion_contribution,
+        "verifiedReceiptRef": settlement.verified_receipt_ref,
+    }
+
+
+def _entry_document(entry: IterationLedgerEntry) -> dict[str, object]:
+    return {
+        "iterationIdentity": entry.iteration_identity,
+        "ordinal": entry.ordinal,
+        "inputsDigest": entry.inputs_digest,
+        "carryDigest": entry.carry_digest,
+        "schedulingIntents": list(entry.scheduling_intents),
+        "outcome": entry.outcome,
+        "outputsDigest": entry.outputs_digest,
+        "failureReason": entry.failure_reason,
+        "settlementSequence": entry.settlement_sequence,
+        "effectSettlements": [
+            _settlement_document(settlement) for settlement in entry.effect_settlements
+        ],
+        "cancellationDisposition": entry.cancellation_disposition,
+        "resultingCarryDigest": entry.resulting_carry_digest,
+    }
+
+
+def loop_ledger_document(ledger: LoopLedger) -> dict[str, object]:
+    """Return the whole recovery record as one closed I-JSON document.
+
+    Every member is written every time, ``null`` included, so the document's shape is a
+    property of the schema version rather than of which fields this particular loop
+    happened to use -- and so two ledgers that differ only in an absent member serialize
+    to two documents rather than to the same one.
+    """
+    if not isinstance(ledger, LoopLedger):
+        raise ExecutionContractError("invalid_ledger", "ledger is not a LoopLedger")
+    return {
+        "ledgerSchemaVersion": LOOP_LEDGER_SCHEMA_VERSION,
+        "cancellationRequested": ledger.cancellation_requested,
+        "entries": [_entry_document(entry) for entry in ledger.entries],
+        "lateResults": [
+            {
+                "iterationIdentity": late.iteration_identity,
+                "evidenceRef": late.evidence_ref,
+                "appliedToRunState": late.applied_to_run_state,
+            }
+            for late in ledger.late_results
+        ],
+    }
+
+
+def loop_ledger_from_document(document: object) -> LoopLedger:
+    """Rebuild the recovery record from its canonical document, or refuse it.
+
+    Every value is re-validated on the way in by the same ``__post_init__`` a live runner
+    builds through, so a restored ledger is held to exactly the rules a produced one is.
+    A document naming another schema version is refused rather than read on a guess.
+    """
+    label = "LoopLedgerDocument"
+    fields = _document(document, label, _LEDGER_MEMBERS)
+    version = _text(fields, "ledgerSchemaVersion", label)
+    if version != LOOP_LEDGER_SCHEMA_VERSION:
+        raise ExecutionContractError(
+            "unsupported_schema_version",
+            f"{label}.ledgerSchemaVersion {version!r} is not {LOOP_LEDGER_SCHEMA_VERSION}",
+        )
+    entries = tuple(
+        _entry_from_document(entry, f"{label}.entries[{index}]")
+        for index, entry in enumerate(_array(fields, "entries", label))
+    )
+    late_results = tuple(
+        _late_from_document(late, f"{label}.lateResults[{index}]")
+        for index, late in enumerate(_array(fields, "lateResults", label))
+    )
+    return LoopLedger(
+        entries=entries,
+        cancellation_requested=_flag(fields, "cancellationRequested", label),
         late_results=late_results,
+    )
+
+
+def _entry_from_document(value: object, label: str) -> IterationLedgerEntry:
+    fields = _document(value, label, _ENTRY_MEMBERS)
+    return IterationLedgerEntry(
+        iteration_identity=_text(fields, "iterationIdentity", label),
+        ordinal=_count(fields, "ordinal", label),
+        inputs_digest=_text(fields, "inputsDigest", label),
+        carry_digest=_optional_text(fields, "carryDigest", label),
+        scheduling_intents=_texts(fields, "schedulingIntents", label),
+        outcome=_optional_text(fields, "outcome", label),
+        outputs_digest=_optional_text(fields, "outputsDigest", label),
+        failure_reason=_optional_text(fields, "failureReason", label),
+        settlement_sequence=_optional_count(fields, "settlementSequence", label),
+        effect_settlements=tuple(
+            _settlement_from_document(entry, f"{label}.effectSettlements[{index}]")
+            for index, entry in enumerate(_array(fields, "effectSettlements", label))
+        ),
+        cancellation_disposition=_optional_text(fields, "cancellationDisposition", label),
+        resulting_carry_digest=_optional_text(fields, "resultingCarryDigest", label),
+    )
+
+
+def _settlement_from_document(value: object, label: str) -> EffectSettlement:
+    fields = _document(value, label, _SETTLEMENT_MEMBERS)
+    return EffectSettlement(
+        effect_request_id=_text(fields, "effectRequestId", label),
+        settlement_class=_text(fields, "settlementClass", label),
+        completion_contribution=_text(fields, "completionContribution", label),
+        verified_receipt_ref=_optional_text(fields, "verifiedReceiptRef", label),
+    )
+
+
+def _late_from_document(value: object, label: str) -> LateResult:
+    fields = _document(value, label, _LATE_MEMBERS)
+    return LateResult(
+        iteration_identity=_text(fields, "iterationIdentity", label),
+        evidence_ref=_text(fields, "evidenceRef", label),
+        applied_to_run_state=_flag(fields, "appliedToRunState", label),
+    )
+
+
+#: Runtime outcome to the Core `LoopIterationLedger` outcome class, and back. The two
+#: vocabularies are the same four facts in two spellings, so the mapping is stated once
+#: rather than reimplemented at each call.
+_CORE_OUTCOME_CLASSES: Final[Mapping[str, str]] = {
+    OUTCOME_SUCCEEDED: "succeeded",
+    OUTCOME_FAILED: "failed",
+    ITERATION_CANCELLED: "cancelled",
+    ITERATION_SKIPPED: "skipped",
+}
+_RUNTIME_OUTCOMES: Final[Mapping[str, str]] = {
+    core: runtime for runtime, core in _CORE_OUTCOME_CLASSES.items()
+}
+
+
+@dataclass(frozen=True, slots=True)
+class IterationWitness:
+    """The three members the Core record carries and this clock-free oracle never holds.
+
+    A pure oracle has no clock and orders settlement by a sequence, and it never writes a
+    bundle, so the launch's bundle reference and the two wall-clock instants have to come
+    from the writer that did. They are one explicit, required argument per iteration
+    rather than an ambient default, because a conversion that invented an instant would be
+    making up part of the durable record.
+    """
+
+    launch_bundle_ref: str
+    launched_at: str
+    settled_at: str
+
+    def __post_init__(self) -> None:
+        require_identifier("launch_bundle_ref", self.launch_bundle_ref)
+        for name in ("launched_at", "settled_at"):
+            value: str = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ExecutionContractError(
+                    "invalid_witness", f"{name} is not a recorded instant"
+                )
+
+
+def _reference(identity: str) -> dict[str, object]:
+    return {"referenceId": identity}
+
+
+def _settlement_from_record(value: object, label: str) -> EffectSettlement:
+    """One Core `EffectSettlement` back as the runtime value it converts to."""
+    if not isinstance(value, Mapping):
+        raise ExecutionContractError("invalid_document", f"{label} is not a mapping")
+    receipt = value.get("verifiedReceiptRef")
+    return EffectSettlement(
+        effect_request_id=_text(value, "effectRequestId", label),
+        settlement_class=_text(value, "settlementClass", label),
+        completion_contribution=_referenced(
+            value.get("completionContribution"), f"{label}.completionContribution"
+        ),
+        verified_receipt_ref=(
+            None
+            if receipt is None
+            else _referenced(receipt, f"{label}.verifiedReceiptRef")
+        ),
+    )
+
+
+def _referenced(value: object, label: str) -> str:
+    reference = value if isinstance(value, Mapping) else None
+    identity = None if reference is None else reference.get("referenceId")
+    if not isinstance(identity, str):
+        raise ExecutionContractError(
+            "invalid_reference", f"{label} does not name a referenceId"
+        )
+    return identity
+
+
+def to_loop_iteration_ledger(
+    plan: FrozenLoopPlan,
+    ledger: LoopLedger,
+    *,
+    witnesses: Mapping[str, IterationWitness],
+    loop_settled_at: str,
+) -> dict[str, object]:
+    """Convert one recovery record into the Core `LoopIterationLedger` record.
+
+    Lossless: every member of every entry crosses, including the two the Core record grew
+    an additive home for -- the scheduling intents themselves beside their digest, and the
+    carry a succeeded iteration produced. A late result crosses as `lateEvidence` on the
+    entry it is about rather than as a second entry, because it always names an iteration
+    this ledger already records and the Core record requires unique identities and
+    contiguous ordinals.
+
+    Refuses a ledger with an iteration still in flight. Every Core entry states an outcome
+    class, a settlement sequence and a settled instant, so there is no shape for an
+    unsettled iteration there; converting one would mean inventing a settlement.
+    """
+    if not isinstance(ledger, LoopLedger):
+        raise ExecutionContractError("invalid_ledger", "ledger is not a LoopLedger")
+    unsettled = [entry.iteration_identity for entry in ledger.entries if not entry.is_settled]
+    if unsettled:
+        raise ExecutionRefused(
+            "loop_not_settled",
+            "a ledger with an iteration still in flight has no Core record",
+        )
+    evidence = {
+        late.iteration_identity: late.evidence_ref for late in ledger.late_results
+    }
+    entries: list[dict[str, object]] = []
+    for entry in ledger.entries:
+        witness = witnesses.get(entry.iteration_identity)
+        if witness is None:
+            raise ExecutionContractError(
+                "missing_witness",
+                "every recorded iteration needs its launch bundle and instants",
+            )
+        record: dict[str, object] = {
+            "iterationIdentity": entry.iteration_identity,
+            "ordinal": entry.ordinal,
+            "settlementSequence": entry.settlement_sequence,
+            "outcomeClass": _CORE_OUTCOME_CLASSES[str(entry.outcome)],
+            "launchedAt": witness.launched_at,
+            "launchBundleRef": _reference(witness.launch_bundle_ref),
+            "inputsDigest": entry.inputs_digest,
+            "schedulingIntents": list(entry.scheduling_intents),
+            "schedulingIntentsDigest": compute_scheduling_intents_digest(
+                list(entry.scheduling_intents)
+            ),
+            "settledAt": witness.settled_at,
+            "effectSettlements": [
+                {
+                    "effectRequestId": settlement.effect_request_id,
+                    "settlementClass": settlement.settlement_class,
+                    "completionContribution": _reference(
+                        settlement.completion_contribution
+                    ),
+                    **(
+                        {
+                            "verifiedReceiptRef": _reference(
+                                settlement.verified_receipt_ref
+                            )
+                        }
+                        if settlement.verified_receipt_ref is not None
+                        else {}
+                    ),
+                }
+                for settlement in entry.effect_settlements
+            ],
+        }
+        if entry.carry_digest is not None:
+            record["carryDigest"] = entry.carry_digest
+        if entry.outputs_digest is not None:
+            record["outputsDigest"] = entry.outputs_digest
+        if entry.failure_reason is not None:
+            record["failureRef"] = _reference(entry.failure_reason)
+        if entry.resulting_carry_digest is not None:
+            record["resultingCarryDigest"] = entry.resulting_carry_digest
+        if entry.cancellation_disposition is not None:
+            record["cancellationDisposition"] = entry.cancellation_disposition
+        late_ref = evidence.get(entry.iteration_identity)
+        if late_ref is not None:
+            record["lateEvidence"] = {
+                "evidenceRef": _reference(late_ref),
+                "appliedToRunState": False,
+            }
+        entries.append(record)
+    return {
+        "ledgerSchemaVersion": LOOP_LEDGER_SCHEMA_VERSION,
+        "loopStableId": plan.loop_stable_id,
+        "cancellationRequested": ledger.cancellation_requested,
+        "loopSettledAt": loop_settled_at,
+        "entries": entries,
+    }
+
+
+def from_loop_iteration_ledger(record: object) -> LoopLedger:
+    """Recover the runtime record from a Core `LoopIterationLedger`.
+
+    The inverse of :func:`to_loop_iteration_ledger` over every runtime member, which is
+    what "lossless" is worth stating as a function rather than as a claim: the two
+    together are a round trip a test can assert on. The Core-only members -- the bundle
+    reference and the two instants -- are read straight off the record and are not
+    reconstructed here, because this seam has nowhere to put them.
+    """
+    label = "LoopIterationLedger"
+    if not isinstance(record, Mapping):
+        raise ExecutionContractError("invalid_document", f"{label} is not a mapping")
+    entries: list[IterationLedgerEntry] = []
+    late_results: list[LateResult] = []
+    for index, value in enumerate(_array(record, "entries", label)):
+        entry_label = f"{label}.entries[{index}]"
+        if not isinstance(value, Mapping):
+            raise ExecutionContractError(
+                "invalid_document", f"{entry_label} is not a mapping"
+            )
+        outcome_class = _text(value, "outcomeClass", entry_label)
+        if outcome_class not in _RUNTIME_OUTCOMES:
+            raise ExecutionContractError(
+                "invalid_document",
+                f"{entry_label}.outcomeClass {outcome_class!r} has no runtime outcome",
+            )
+        failure = value.get("failureRef")
+        settlements = tuple(
+            _settlement_from_record(settlement, f"{entry_label}.effectSettlements[{at}]")
+            for at, settlement in enumerate(
+                _array(value, "effectSettlements", entry_label)
+            )
+        )
+        entries.append(
+            IterationLedgerEntry(
+                iteration_identity=_text(value, "iterationIdentity", entry_label),
+                ordinal=_count(value, "ordinal", entry_label),
+                inputs_digest=_text(value, "inputsDigest", entry_label),
+                carry_digest=(
+                    None if "carryDigest" not in value else _text(value, "carryDigest", entry_label)
+                ),
+                scheduling_intents=_texts(value, "schedulingIntents", entry_label),
+                outcome=_RUNTIME_OUTCOMES[outcome_class],
+                outputs_digest=(
+                    None
+                    if "outputsDigest" not in value
+                    else _text(value, "outputsDigest", entry_label)
+                ),
+                failure_reason=(
+                    None
+                    if failure is None
+                    else _referenced(failure, f"{entry_label}.failureRef")
+                ),
+                settlement_sequence=_count(value, "settlementSequence", entry_label),
+                effect_settlements=settlements,
+                cancellation_disposition=(
+                    None
+                    if "cancellationDisposition" not in value
+                    else _text(value, "cancellationDisposition", entry_label)
+                ),
+                resulting_carry_digest=(
+                    None
+                    if "resultingCarryDigest" not in value
+                    else _text(value, "resultingCarryDigest", entry_label)
+                ),
+            )
+        )
+        late = value.get("lateEvidence")
+        if late is not None:
+            if not isinstance(late, Mapping):
+                raise ExecutionContractError(
+                    "invalid_document", f"{entry_label}.lateEvidence is not a mapping"
+                )
+            late_results.append(
+                LateResult(
+                    iteration_identity=_text(value, "iterationIdentity", entry_label),
+                    evidence_ref=_referenced(
+                        late.get("evidenceRef"), f"{entry_label}.lateEvidence.evidenceRef"
+                    ),
+                    applied_to_run_state=_flag(
+                        late, "appliedToRunState", f"{entry_label}.lateEvidence"
+                    ),
+                )
+            )
+    return LoopLedger(
+        entries=tuple(entries),
+        cancellation_requested=_flag(record, "cancellationRequested", label),
+        late_results=tuple(late_results),
     )
 
 
@@ -1221,12 +1866,14 @@ __all__ = [
     "COMPLETE_ALL",
     "DISPOSITION_CANCELLED_IN_FLIGHT",
     "DRAIN_IN_FLIGHT",
+    "EFFECT_SETTLEMENT_CLASSES",
     "EMPTY_LOOP_LEDGER",
     "FAIL_LOOP",
     "ITERATION_CANCELLED",
     "ITERATION_OUTCOMES",
     "ITERATION_SKIPPED",
     "LOOP_CANCELLATION_POLICIES",
+    "LOOP_LEDGER_SCHEMA_VERSION",
     "LOOP_MODES",
     "LOOP_MODE_PARALLEL",
     "LOOP_MODE_SEQUENTIAL",
@@ -1246,15 +1893,24 @@ __all__ = [
     "ORDER_SETTLEMENT",
     "RECORD_AND_CONTINUE",
     "RECORD_AND_STOP_AFTER_CURRENT",
+    "SETTLEMENT_COMMITTED",
+    "SETTLEMENT_NOT_COMMITTED",
+    "SETTLEMENT_UNKNOWN",
     "ZIP_PAD_WITH_ABSENT",
     "ZIP_REFUSE",
     "ZIP_TRUNCATE_TO_SHORTEST",
+    "EffectSettlement",
     "FrozenLoopPlan",
     "IterationLaunch",
     "IterationLedgerEntry",
+    "IterationWitness",
     "LateResult",
     "LoopElement",
     "LoopLedger",
     "LoopRunner",
+    "from_loop_iteration_ledger",
+    "loop_ledger_document",
+    "loop_ledger_from_document",
     "replay_ledger",
+    "to_loop_iteration_ledger",
 ]

@@ -3,7 +3,7 @@
 Slice one: what 0035 *is* as a migration, before anything writes through it. It is
 the unique consecutive successor to 0034; its text is DDL only, so no row that was
 durable at 0034 is rewritten and no binding is backfilled; and what it adds is
-exactly seven append-only tables, nine named indexes and three guards per table.
+exactly seven append-only tables, ten named indexes and three guards per table.
 A populated 0034 head reaching 0035 keeps every prior workflow fact, gains seven
 empty tables, and stays clean under integrity_check, foreign_key_check, the
 canonical schema fingerprint, reopen and a verified backup/restore round trip.
@@ -105,6 +105,7 @@ INDEXES = {
     "omnivia_idx_workflow_journal_integrity_reports_run",
     "omnivia_idx_workflow_journal_integrity_reports_run_report",
     "omnivia_idx_workflow_journal_quarantine_events_event",
+    "omnivia_idx_workflow_journal_quarantine_events_decision",
     "omnivia_idx_workflow_journal_retention_boundaries_run",
     "omnivia_idx_workflow_transition_parity_reports_run",
 }
@@ -238,7 +239,7 @@ def test_every_statement_creates_a_new_object_and_none_writes_or_rebuilds() -> N
     assert created["TABLE"] == list(TABLES)
     assert set(created["INDEX"]) == INDEXES
     assert set(created["TRIGGER"]) == TRIGGERS
-    assert len(created["INDEX"]) == 9
+    assert len(created["INDEX"]) == 10
     assert len(created["TRIGGER"]) == len(TABLES) * 3 == 21
 
 
@@ -269,7 +270,7 @@ def test_applying_0035_adds_exactly_the_expected_objects(tmp_path: Path) -> None
     assert after["table"] - before["table"] == set(TABLES)
     assert after["trigger"] - before["trigger"] == TRIGGERS
     # SQLite names an implicit index for each UNIQUE table constraint; only the
-    # nine declared by name are this migration's own inventory.
+    # ten declared by name are this migration's own inventory.
     added_indexes = after["index"] - before["index"]
     assert INDEXES <= added_indexes
     assert {name for name in added_indexes if not name.startswith("sqlite_")} == INDEXES
@@ -1096,6 +1097,9 @@ def quarantine_row(
         "diagnostic": "RT_JOURNAL_QUARANTINED" if held else None,
         "deciding_actor": None if held else "core-service",
         "reason": None if held else "operator_release",
+        # One decision, one release: a hold carries no decision identity, and each
+        # release carries its own, unique per run under 0035's index.
+        "decision_id": None if held else f"decision-0035-{sequence}",
         "recorded_at_us": BOUND_AT_US + 40 + sequence,
     }
     row.update(overrides)
@@ -1375,6 +1379,33 @@ def test_a_quarantine_disposition_may_not_skip_the_run_s_first_sequence(
     assert flagged.connection.execute(
         f"SELECT disposition_sequence FROM {QUARANTINE}"
     ).fetchall() == [(0,)]
+
+
+def test_one_decision_identity_appends_at_most_one_release(flagged: m1.Owned) -> None:
+    """The database boundary for the non-idempotent release.
+
+    Stacked holds leave a run held after its first release, so a redelivered request
+    reads as a fresh decision and pops the second hold -- discharging a finding whoever
+    decided the first one never saw. The identity is what makes the second append a
+    duplicate, and the constraint is the schema's so that a writer which never read the
+    disposition history is held to it too.
+    """
+    record(flagged, (QUARANTINE, quarantine_row()))
+    record(flagged, (QUARANTINE, quarantine_row(1)))
+    record(flagged, (QUARANTINE, quarantine_row(2, "released", decision_id="d-one")))
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        record(
+            flagged, (QUARANTINE, quarantine_row(3, "released", decision_id="d-one"))
+        )
+
+    # A second finding answered by a second decision is a second identity, and lands.
+    record(flagged, (QUARANTINE, quarantine_row(3, "released", decision_id="d-two")))
+    # Holds carry no identity at all, so many of them coexist under the same index.
+    assert flagged.connection.execute(
+        f"SELECT decision_id FROM {QUARANTINE} ORDER BY disposition_sequence"
+    ).fetchall() == [(None,), (None,), ("d-one",), ("d-two",)]
+    assert foreign_key_check(flagged.connection) == []
 
 
 RELEASE_OUTSTANDING = "must discharge an outstanding quarantine"

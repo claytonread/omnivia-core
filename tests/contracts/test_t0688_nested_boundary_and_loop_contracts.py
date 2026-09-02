@@ -1131,6 +1131,102 @@ def test_a_carrying_iteration_records_its_carry_digest() -> None:
         )
 
 
+def test_only_a_succeeded_iteration_records_the_carry_it_produced() -> None:
+    """`resultingCarryDigest` is additive and optional, and bound to the one class that
+    can produce a carry: an iteration that did not complete cannot advance the loop's."""
+    workflow.validate_loop_iteration_ledger(
+        _ledger([_entry(resultingCarryDigest=_DIGEST)])
+    )
+    workflow.validate_loop_iteration_ledger(_ledger([_entry()]))
+    skipped = {
+        key: value for key, value in _entry().items() if key != "outputsDigest"
+    } | {"outcomeClass": "skipped", "resultingCarryDigest": _DIGEST}
+    with pytest.raises(
+        ContractSemanticError, match="only a succeeded iteration records a resulting"
+    ):
+        workflow.validate_loop_iteration_ledger(_ledger([skipped]))
+    with pytest.raises(
+        ContractSemanticError, match="resultingCarryDigest is not a well-formed Digest"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger([_entry(resultingCarryDigest="carry-1")])
+        )
+
+
+def test_recorded_scheduling_intents_must_be_the_ones_the_digest_covers() -> None:
+    """The regression for a launch replayed from intents the record's own digest disowns.
+
+    A producer carrying only the digest is exactly as valid as it was -- the intents are
+    additive. One carrying both is held to the pair being consistent, which is the only
+    thing that makes the list worth reading instead of the digest.
+    """
+    intents = ["intent-alpha", "intent-beta"]
+    digest = workflow.compute_scheduling_intents_digest(intents)
+    workflow.validate_loop_iteration_ledger(
+        _ledger(
+            [_entry(schedulingIntents=intents, schedulingIntentsDigest=digest)]
+        )
+    )
+    # Order is inside the digest: the same set launched in another order is another launch.
+    with pytest.raises(
+        ContractSemanticError, match="schedulingIntentsDigest is not the digest"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger(
+                [
+                    _entry(
+                        schedulingIntents=list(reversed(intents)),
+                        schedulingIntentsDigest=digest,
+                    )
+                ]
+            )
+        )
+    with pytest.raises(
+        ContractSemanticError, match="schedulingIntents\\[1\\] is not a well-formed"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger([_entry(schedulingIntents=["intent-alpha", 7])])
+        )
+
+
+def test_late_evidence_attaches_to_the_iteration_it_is_about() -> None:
+    """A late result for an iteration the ledger already records cannot be a second
+    entry -- identities are unique and ordinals contiguous -- so it is recorded against
+    the entry, and is still Evidence that was never applied to Run state."""
+    evidence = {"evidenceRef": {"evidenceId": "ev-t0688-late-2"}, "appliedToRunState": False}
+    workflow.validate_loop_iteration_ledger(
+        _ledger([_entry(lateEvidence=evidence)], loopSettledAt=_LATER)
+    )
+    with pytest.raises(
+        ContractSemanticError, match="late evidence requires a settled loop"
+    ):
+        workflow.validate_loop_iteration_ledger(_ledger([_entry(lateEvidence=evidence)]))
+    with pytest.raises(ContractSemanticError, match="appliedToRunState must be false"):
+        workflow.validate_loop_iteration_ledger(
+            _ledger(
+                [
+                    _entry(
+                        lateEvidence={**evidence, "appliedToRunState": True}
+                    )
+                ],
+                loopSettledAt=_LATER,
+            )
+        )
+    with pytest.raises(ContractSemanticError, match="unknown fields"):
+        workflow.validate_loop_iteration_ledger(
+            _ledger(
+                [_entry(lateEvidence={**evidence, "appliedAt": _NOW})],
+                loopSettledAt=_LATER,
+            )
+        )
+    with pytest.raises(
+        ContractSemanticError, match="a late entry records its Evidence directly"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger([_late_entry(lateEvidence=evidence)], loopSettledAt=_NOW)
+        )
+
+
 def test_settlement_never_precedes_launch() -> None:
     with pytest.raises(ContractSemanticError, match="settledAt precedes launchedAt"):
         workflow.validate_loop_iteration_ledger(

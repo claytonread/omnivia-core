@@ -306,6 +306,7 @@ def release(
     actor: str = ACTOR,
     reason: str = REASON,
     recorded_at: str = RELEASED_AT,
+    decision_id: str | None = None,
     generation: int | None = None,
 ) -> Any:
     return release_journal_quarantine(
@@ -317,6 +318,7 @@ def release(
         deciding_actor=actor,
         reason=reason,
         recorded_at=recorded_at,
+        decision_id=decision_id,
     )
 
 
@@ -1535,6 +1537,61 @@ def test_the_same_release_again_appends_no_second_disposition(
     assert counts(quarantined.connection)[2] == 2
 
 
+def test_a_retried_release_over_stacked_holds_discharges_no_second_hold(
+    quarantined: m1.Owned,
+) -> None:
+    """The regression for the non-idempotent release.
+
+    Stacked holds are where a retry stops being harmless. With two outstanding, the Run
+    is *still held* after the first release, so a redelivered request -- same actor, same
+    reason, same instant -- read as a fresh decision and popped the second hold,
+    discharging a finding whoever decided the first one never saw.
+
+    An exact retry now replays the one result it already produced and appends nothing.
+    The Run stays held, and the hold it stays held under is the one nobody has answered.
+    """
+    verify(quarantined, report_id=SECOND_REPORT_ID)
+    assert counts(quarantined.connection) == (0, 2, 2, 0)
+
+    still_held = release(quarantined)
+    assert (still_held.held, still_held.integrity_report_id) == (True, REPORT_ID)
+
+    for _ in range(3):
+        replayed = release(quarantined)
+        assert replayed == still_held
+
+    assert counts(quarantined.connection) == (0, 2, 3, 0)
+    assert quarantined.connection.execute(
+        f"SELECT action FROM {QUARANTINE} ORDER BY disposition_sequence"
+    ).fetchall() == [("quarantined",), ("quarantined",), ("released",)]
+    assert quarantine_of(quarantined).held is True
+    assert resume_of(quarantined).resumable is False
+
+    # Answering the second finding is a second decision, and it says so.
+    freed = release(quarantined, decision_id="decision-second-finding")
+    assert freed.held is False
+    assert (freed.deciding_actor, freed.reason) == (ACTOR, REASON)
+    assert counts(quarantined.connection) == (0, 2, 4, 0)
+    assert resume_of(quarantined).resumable is True
+
+
+def test_a_recorded_decision_identity_may_not_stand_on_other_terms(
+    quarantined: m1.Owned,
+) -> None:
+    """Two decisions cannot share one identity: the second is a conflict, not a retry."""
+    release(quarantined, decision_id="decision-one")
+
+    with pytest.raises(JournalGovernanceRefused) as refusal:
+        release(quarantined, decision_id="decision-one", actor="core-auditor")
+    assert refusal.value.diagnostic == "RT_JOURNAL_RELEASE_CONFLICT"
+    assert counts(quarantined.connection)[2] == 2
+
+    with pytest.raises(JournalGovernanceRefused) as reason_refusal:
+        release(quarantined, decision_id="decision-one", reason="other_reason")
+    assert reason_refusal.value.diagnostic == "RT_JOURNAL_RELEASE_CONFLICT"
+    assert counts(quarantined.connection)[2] == 2
+
+
 def test_one_release_discharges_the_latest_hold_and_leaves_the_rest_standing(
     quarantined: m1.Owned,
 ) -> None:
@@ -1612,14 +1669,14 @@ def test_a_release_past_the_last_of_a_stack_of_holds_refuses(
 def quarantine_insert(sequence: int, action: str, event_id: str | None) -> str:
     """One disposition, spelled for a file edited past 0035's own trigger."""
     decided = (
-        f"'{REPORT_ID}', 'RT_JOURNAL_QUARANTINED', NULL, NULL"
+        f"'{REPORT_ID}', 'RT_JOURNAL_QUARANTINED', NULL, NULL, NULL"
         if action == "quarantined"
-        else f"NULL, NULL, '{ACTOR}', '{REASON}'"
+        else f"NULL, NULL, '{ACTOR}', '{REASON}', 'decision-ip07g-{sequence}'"
     )
     return (
         f"INSERT INTO {QUARANTINE} (workspace_id, run_id, disposition_sequence, "
         "event_id, action, integrity_report_id, diagnostic, deciding_actor, reason, "
-        f"recorded_at_us) VALUES ('{WORKSPACE_ID}', '{RUN_ID}', {sequence}, "
+        f"decision_id, recorded_at_us) VALUES ('{WORKSPACE_ID}', '{RUN_ID}', {sequence}, "
         f"{'NULL' if event_id is None else repr(event_id)}, '{action}', {decided}, "
         f"{ip07.RECORDED_BASE_US + 300 + sequence})"
     )

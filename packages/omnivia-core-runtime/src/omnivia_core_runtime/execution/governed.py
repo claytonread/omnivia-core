@@ -36,6 +36,7 @@ reproduce the same answer. The wall-clock instants belong to the Core records in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -280,6 +281,23 @@ def _require_flag(field_name: str, value: bool) -> bool:
     return value
 
 
+def _freeze_collection(instance: object, field_name: str) -> None:
+    """Replace one declared collection with an immutable tuple copy, in place.
+
+    A ``str`` is refused rather than copied: it is a sequence of one-character entries, and
+    every one of those characters is a well-formed identifier, so a mistyped scope would
+    validate as a scope of single letters instead of failing closed.
+    """
+    declared = getattr(instance, field_name)
+    if declared is None or isinstance(declared, tuple):
+        return
+    if isinstance(declared, (str, bytes)) or not isinstance(declared, Sequence):
+        raise ExecutionContractError(
+            "invalid_collection", f"{field_name} is not a sequence of entries"
+        )
+    object.__setattr__(instance, field_name, tuple(declared))
+
+
 def require_deployment_mode(value: str) -> str:
     """Return ``value`` if it names a deployment mode; it never changes an answer."""
     return require_vocabulary("deployment_mode", value, DEPLOYMENT_MODES)
@@ -453,6 +471,12 @@ class AutonomySource:
     what an explicit bounded default contributes and what an intersection must not treat as
     the empty set. An empty tuple is the opposite and is a real declaration: it narrows the
     dimension to nothing, and the resolution refuses.
+
+    Every authorization-bearing collection is frozen into a tuple *before* it is validated,
+    hashed or resolved. A deserializer hands these in as lists, and a list retained by
+    reference is a scope a caller can widen after the resolution digest was taken over it --
+    so the value a source declares and the value it is held to are made the same object here,
+    once, rather than at each of the three places that later read it.
     """
 
     source_kind: str
@@ -470,6 +494,8 @@ class AutonomySource:
     maximum_steps: int | None = None
 
     def __post_init__(self) -> None:
+        for name in (*SCOPE_DIMENSIONS, "approval_required"):
+            _freeze_collection(self, name)
         require_vocabulary("source_kind", self.source_kind, AUTONOMY_SOURCE_KINDS)
         require_identifier("source_ref", self.source_ref)
         require_identifier("snapshot_ref", self.snapshot_ref)
@@ -812,7 +838,10 @@ class PlaneOwnership:
         self._leases: dict[str, _LeaseState] = {}
         self._owned: dict[tuple[str, str], str] = {}
         self._dispatches: dict[str, _DispatchState] = {}
-        self._deliveries: dict[str, str] = {}
+        # `dedupe_key -> (delivery_id, admitting listener scope)`. The scope is kept because
+        # settling is a write to in-flight state and has to be fenced against the *same*
+        # authority the delivery was admitted under, not merely against some current lease.
+        self._deliveries: dict[str, tuple[str, str]] = {}
         self._in_flight: set[str] = set()
         self._evidence: list[Evidence] = []
 
@@ -1162,9 +1191,10 @@ class PlaneOwnership:
             raise ExecutionContractError(
                 "wrong_plane_role", "delivery requires a LISTENER lease"
             )
-        if dedupe_key in self._deliveries:
+        admitted = self._deliveries.get(dedupe_key)
+        if admitted is not None:
             return DeliveryDecision(
-                delivery_id=self._deliveries[dedupe_key],
+                delivery_id=admitted[0],
                 dedupe_key=dedupe_key,
                 disposition=DELIVERY_DUPLICATE,
                 in_flight=len(self._in_flight),
@@ -1187,7 +1217,7 @@ class PlaneOwnership:
             raise ExecutionRefused(
                 LISTENER_SATURATED, "the listener is at its bounded delivery capacity"
             )
-        self._deliveries[dedupe_key] = delivery_id
+        self._deliveries[dedupe_key] = (delivery_id, held.scope)
         self._in_flight.add(dedupe_key)
         return DeliveryDecision(
             delivery_id=delivery_id,
@@ -1197,16 +1227,38 @@ class PlaneOwnership:
             capacity=self._listener_capacity,
         )
 
-    def settle_delivery(self, *, dedupe_key: str) -> int:
-        """Release one in-flight delivery and return the remaining in-flight count.
+    def settle_delivery(
+        self, *, lease_id: str, fencing_token: int, dedupe_key: str, at_tick: int
+    ) -> int:
+        """Release one in-flight delivery under a current lease, and return what remains.
+
+        Fenced by exactly the check :meth:`deliver` admitted the delivery under, and for
+        exactly the same reason. Releasing capacity is a write to in-flight state: an
+        expired or superseded listener that could still settle would hand its successor's
+        capacity back to whatever the successor had already admitted under it, and the
+        successor would then over-admit against a bound it believes it is respecting. So a
+        stale lease, a stale fencing token, a lease over another plane role and a lease over
+        another listener's scope all refuse *before* anything is discarded, and a refused
+        call leaves the in-flight set byte-identical.
 
         The dedupe record itself is kept: a delivery that has been settled is still a
         delivery that has been seen, and forgetting it would let the same source event be
         delivered twice.
         """
         require_identifier("dedupe_key", dedupe_key)
-        if dedupe_key not in self._deliveries:
+        held = self._require_current(lease_id, fencing_token, at_tick=at_tick)
+        if held.plane_role != PLANE_LISTENER:
+            raise ExecutionContractError(
+                "wrong_plane_role", "delivery settlement requires a LISTENER lease"
+            )
+        admitted = self._deliveries.get(dedupe_key)
+        if admitted is None:
             raise ExecutionContractError("unknown_delivery", "no such delivery")
+        if admitted[1] != held.scope:
+            raise ExecutionRefused(
+                EXECUTION_PLANE_STALE_AUTHORITY,
+                "the delivery was admitted under another listener scope",
+            )
         self._in_flight.discard(dedupe_key)
         return len(self._in_flight)
 

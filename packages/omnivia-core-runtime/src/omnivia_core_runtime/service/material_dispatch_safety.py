@@ -33,6 +33,17 @@ unknown commit outcomes and unknown ledger states all fail closed, and an unknow
 commit outcome latches, because a journal answer nobody can classify is at least
 as dangerous as one that says `uncertain`.
 
+**Every state-changing ledger write is a compare-and-set, not a read then a
+write.** Two contenders on the same fence generation both read `predeclared`,
+both conclude the identity is dispatchable, and -- with a blind write -- both
+issue the effect. Fencing cannot separate them: neither is stale. So the gate is
+:meth:`AuthoritativeStore.compare_and_set_effect_state`, which admits exactly the
+one that moved the state, and the loser stops with :data:`STOP_EFFECT_STATE_RACED`
+having issued nothing. The same seam is what stops a reconciler holding a stale
+read from writing over an answer already given: it moves `issued_unknown` and
+only `issued_unknown`, so a `settled_applied` can never be walked back into a
+dispatchable state.
+
 **Fencing rejects writes; it does not recall effects.** A stale generation's ledger
 write is refused by the store and reported as :data:`STOP_STALE_FENCE`. The
 already-issued external effect is untouched by that refusal and stays untouched --
@@ -109,6 +120,7 @@ STOP_DISPATCH_UNCERTAIN: Final = "dispatch_uncertain"
 STOP_EFFECT_NOT_DECLARED: Final = "effect_not_declared"
 STOP_EFFECT_NOT_DISPATCHABLE: Final = "effect_not_dispatchable"
 STOP_EFFECT_NOT_RECONCILABLE: Final = "effect_not_reconcilable"
+STOP_EFFECT_STATE_RACED: Final = "effect_state_raced"
 STOP_PURE_NOT_PERMITTED_WHILE_LATCHED: Final = "pure_not_permitted_while_latched"
 STOP_STALE_FENCE: Final = "stale_fence"
 STOP_UNKNOWN_COMMIT_OUTCOME: Final = "unknown_commit_outcome"
@@ -193,6 +205,26 @@ class AuthoritativeStore(Protocol):
     def read_effect_state(self, effect_id: str) -> str | None: ...
 
     def write_effect_state(self, effect_id: str, state: str, *, fence: int) -> None: ...
+
+    def compare_and_set_effect_state(
+        self, effect_id: str, *, expected: str, desired: str, fence: int
+    ) -> bool:
+        """Move `effect_id` from `expected` to `desired` atomically. Report the winner.
+
+        Returns `True` when this call performed the transition and `False` when the
+        stored state was not `expected` -- including when the identity is missing.
+        A `False` return must leave the ledger exactly as it found it.
+
+        This is the gate every state-changing ledger write here goes through, because
+        a read followed by a write is two decisions and the world can change between
+        them: two contenders on the same fence generation both read `predeclared`,
+        both conclude "dispatchable", and both issue the external effect the whole
+        module exists to issue once. A stale generation is a different failure with a
+        different answer (:class:`StaleFencingWrite`), and this does not replace it --
+        fencing rejects an owner who has lost authority, and this rejects an owner who
+        still has it and simply lost the race.
+        """
+        ...
 
     def read_latch(self, attempt_id: str) -> AttemptLatch | None: ...
 
@@ -332,13 +364,25 @@ class MaterialDispatchCoordinator:
 
         # The ledger records the possibility of an effect *before* the effect can
         # happen. Dispatching first would leave a window with a live effect and no
-        # authoritative trace of it.
+        # authoritative trace of it. The claim is compare-and-set from the exact state
+        # read above rather than a blind write, so the read that decided "dispatchable"
+        # and the write that acts on it are one decision: a second contender on this
+        # same fence generation finds the state already moved and never reaches the
+        # dispatch below. Losing that race owes no reconciliation -- this Attempt issued
+        # nothing, and the winner holds the obligation for what it issued.
         try:
-            self._store.write_effect_state(
-                effect_id, EFFECT_ISSUED_UNKNOWN, fence=self._fence
+            claimed = self._store.compare_and_set_effect_state(
+                effect_id,
+                expected=state,
+                desired=EFFECT_ISSUED_UNKNOWN,
+                fence=self._fence,
             )
         except StaleFencingWrite:
             return DispatchOutcome(effect_id, False, attempts, False, STOP_STALE_FENCE)
+        if not claimed:
+            return DispatchOutcome(
+                effect_id, False, attempts, False, STOP_EFFECT_STATE_RACED
+            )
 
         try:
             self._dispatch_effect(effect_id)
@@ -367,11 +411,27 @@ class MaterialDispatchCoordinator:
             )
 
         try:
-            self._store.write_effect_state(
-                effect_id, EFFECT_SETTLED_APPLIED, fence=self._fence
+            settled = self._store.compare_and_set_effect_state(
+                effect_id,
+                expected=EFFECT_ISSUED_UNKNOWN,
+                desired=EFFECT_SETTLED_APPLIED,
+                fence=self._fence,
             )
         except StaleFencingWrite:
             return DispatchOutcome(effect_id, True, attempts, True, STOP_STALE_FENCE)
+        if not settled:
+            # Something else answered the identity while this dispatch was in flight, so
+            # the receipt this Attempt holds and the answer the ledger now carries are
+            # two claims about one effect. That is exactly a reconciliation, and
+            # overwriting the ledger with this Attempt's answer would resolve it by
+            # assertion.
+            return self._latched_outcome(
+                effect_id,
+                dispatched=True,
+                commit_attempts=attempts,
+                reconciliation_required=True,
+                stop_reason=STOP_EFFECT_STATE_RACED,
+            )
         return DispatchOutcome(effect_id, True, attempts, False)
 
     def reconcile(self, effect_id: str, resolved_state: str) -> DispatchOutcome:
@@ -401,9 +461,23 @@ class MaterialDispatchCoordinator:
                 effect_id, False, 0, False, STOP_EFFECT_NOT_RECONCILABLE
             )
         try:
-            self._store.write_effect_state(effect_id, resolved_state, fence=self._fence)
+            resolved = self._store.compare_and_set_effect_state(
+                effect_id,
+                expected=EFFECT_ISSUED_UNKNOWN,
+                desired=resolved_state,
+                fence=self._fence,
+            )
         except StaleFencingWrite:
             return DispatchOutcome(effect_id, False, 0, True, STOP_STALE_FENCE)
+        if not resolved:
+            # The read above said `issued_unknown` and the ledger no longer does, so a
+            # concurrent answer already closed this question. Refusing here is what stops
+            # a reconciler holding a stale read from writing `proved_not_applied` over a
+            # `settled_applied` -- which would put a terminal, verified effect back into
+            # `DISPATCHABLE_EFFECT_STATES` and licence a second dispatch of it.
+            return DispatchOutcome(
+                effect_id, False, 0, False, STOP_EFFECT_NOT_RECONCILABLE
+            )
         return DispatchOutcome(effect_id, False, 0, False)
 
     def _commit(self, effect_id: str, phase: str) -> tuple[str, int]:
@@ -492,6 +566,7 @@ __all__ = [
     "STOP_EFFECT_NOT_DECLARED",
     "STOP_EFFECT_NOT_DISPATCHABLE",
     "STOP_EFFECT_NOT_RECONCILABLE",
+    "STOP_EFFECT_STATE_RACED",
     "STOP_PURE_NOT_PERMITTED_WHILE_LATCHED",
     "STOP_STALE_FENCE",
     "STOP_UNKNOWN_COMMIT_OUTCOME",

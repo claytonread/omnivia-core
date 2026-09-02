@@ -28,13 +28,14 @@ seam's own contract:
   rollback;
 - an ``IterationLedgerEntry`` refuses every outcome/output/failure/sequence/
   cancellation incoherence;
-- a late result is Evidence only: the ledger is unchanged, and an unknown or
+- a late result is Evidence only: it moves no recorded entry, and an unknown or
   duplicate late result fails closed.
 """
 
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -69,9 +70,12 @@ from omnivia_core_runtime.execution import (
     OUTCOME_SUCCEEDED,
     RECORD_AND_CONTINUE,
     RECORD_AND_STOP_AFTER_CURRENT,
+    SETTLEMENT_COMMITTED,
+    SETTLEMENT_NOT_COMMITTED,
     ZIP_PAD_WITH_ABSENT,
     ZIP_REFUSE,
     ZIP_TRUNCATE_TO_SHORTEST,
+    EffectSettlement,
     ExecutionContractError,
     ExecutionRefused,
     FrozenLoopPlan,
@@ -104,6 +108,17 @@ def _elements(*keys: str) -> tuple[LoopElement, ...]:
     return tuple(
         LoopElement(key=key, payload_digest=_digest(f"payload:{key}")) for key in keys
     )
+
+
+def _settlement(request_id: str, **overrides: object) -> EffectSettlement:
+    """Return one settled effect, ``not_committed`` so it carries no receipt."""
+    fields: dict[str, object] = {
+        "effect_request_id": request_id,
+        "settlement_class": SETTLEMENT_NOT_COMMITTED,
+        "completion_contribution": "required",
+    }
+    fields.update(overrides)
+    return EffectSettlement(**fields)  # type: ignore[arg-type]
 
 
 def _sequential(**overrides: object) -> FrozenLoopPlan:
@@ -180,17 +195,34 @@ def test_the_package_export_list_is_unique_and_covers_every_loop_name() -> None:
 
 
 def test_the_loop_oracle_imports_no_storage_scheduler_recovery_or_platform() -> None:
-    """An allowlist, not a denylist: a new coupling has to be added here first."""
-    allowed = {"__future__", "dataclasses", "typing", "omnivia_core_runtime"}
+    """An allowlist, not a denylist: a new coupling has to be added here first.
+
+    ``omnivia_core`` is on it for the same reason it is on ``profile``'s: a public
+    contract is what this seam is an oracle *for*. It is admitted one module deep
+    rather than as a package, so the allowance covers the contract layer and nothing
+    a contract import could smuggle in beside it.
+    """
+    allowed = {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "typing",
+        "omnivia_core",
+        "omnivia_core_runtime",
+    }
     source = Path(loop_module.__file__ or "")
-    imported: set[str] = set()
+    modules: set[str] = set()
     for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
+            modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported.add(node.module.split(".")[0])
+            modules.add(node.module)
+    imported = {module.split(".")[0] for module in modules}
 
     assert imported <= allowed, imported - allowed
+    for module in modules:
+        if module.split(".")[0] == "omnivia_core":
+            assert module.startswith("omnivia_core.contracts.v1."), module
     text = source.read_text(encoding="utf-8")
     assert "omnivia_core_runtime.storage" not in text
     assert "omnivia_core_runtime.service" not in text
@@ -1047,6 +1079,15 @@ def test_a_source_within_the_bound_settles_the_loop_without_a_failure() -> None:
 # --------------------------------------------------------------------------
 
 
+#: The one effect ``_cancellable`` settles before the cancellation lands, committed and
+#: with its receipt, so what survives the cancellation is a whole record and not an id.
+_SETTLED_EFFECT = _settlement(
+    "effect.request.1",
+    settlement_class=SETTLEMENT_COMMITTED,
+    verified_receipt_ref="receipt.request.1",
+)
+
+
 def _cancellable(policy: str) -> tuple[LoopRunner, IterationLaunch, IterationLaunch]:
     """Return a parallel runner with two iterations in flight and one effect settled."""
     plan = _parallel(
@@ -1056,7 +1097,7 @@ def _cancellable(policy: str) -> tuple[LoopRunner, IterationLaunch, IterationLau
     first, second = runner.plan_launches()
     runner.record_launch(first)
     runner.record_launch(second)
-    runner.record_effect_settlement(first.iteration_identity, "effect.request.1")
+    runner.record_effect_settlement(first.iteration_identity, _SETTLED_EFFECT)
     return runner, first, second
 
 
@@ -1075,8 +1116,9 @@ def test_cancel_remaining_settles_every_in_flight_iteration_as_cancelled() -> No
         assert entry.cancellation_disposition == DISPOSITION_CANCELLED_IN_FLIGHT
         assert entry.settlement_sequence is not None and entry.settlement_sequence > 0
         assert entry.outputs_digest is None and entry.failure_reason is None
-    # Cancellation is not rollback: the already-settled effect stays recorded.
-    assert runner.ledger.entries[0].effect_settlements == ("effect.request.1",)
+    # Cancellation is not rollback: the already-settled effect stays recorded whole,
+    # class and receipt included.
+    assert runner.ledger.entries[0].effect_settlements == (_SETTLED_EFFECT,)
     assert runner.in_flight == ()
     assert runner.state == LOOP_SETTLED
     assert runner.plan_launches() == ()
@@ -1106,7 +1148,7 @@ def test_drain_in_flight_stops_launching_and_lets_the_in_flight_iterations_settl
 
     assert runner.state == LOOP_SETTLED
     assert len(runner.ledger.entries) == 2, "no further iteration is launched after the request"
-    assert runner.ledger.entries[0].effect_settlements == ("effect.request.1",)
+    assert runner.ledger.entries[0].effect_settlements == (_SETTLED_EFFECT,)
 
 
 def test_complete_all_records_the_request_and_lets_the_loop_finish() -> None:
@@ -1137,23 +1179,38 @@ def test_complete_all_records_the_request_and_lets_the_loop_finish() -> None:
         )
     assert len(runner.ledger.entries) == 4
     assert runner.state == LOOP_SETTLED
-    assert runner.ledger.entries[0].effect_settlements == ("effect.request.1",)
+    assert runner.ledger.entries[0].effect_settlements == (_SETTLED_EFFECT,)
 
 
 def test_an_effect_settlement_is_recorded_once_and_only_while_in_flight() -> None:
     runner, first, _second = _cancellable(CANCEL_REMAINING)
 
+    # The idempotency key is the effect request, so a redelivery that disagrees about
+    # the class or the receipt is still the same settlement and is still refused.
     with pytest.raises(ExecutionRefused) as duplicate:
-        runner.record_effect_settlement(first.iteration_identity, "effect.request.1")
+        runner.record_effect_settlement(
+            first.iteration_identity, _settlement("effect.request.1")
+        )
     assert duplicate.value.reason == "duplicate_effect_settlement"
 
     with pytest.raises(ExecutionRefused) as unknown:
-        runner.record_effect_settlement(_digest("nowhere"), "effect.request.2")
+        runner.record_effect_settlement(
+            _digest("nowhere"), _settlement("effect.request.2")
+        )
     assert unknown.value.reason == "unknown_iteration"
+
+    with pytest.raises(ExecutionContractError) as shape:
+        runner.record_effect_settlement(
+            first.iteration_identity,
+            "effect.request.2",  # type: ignore[arg-type]
+        )
+    assert shape.value.reason == "invalid_effect_settlement"
 
     runner.cancel()
     with pytest.raises(ExecutionRefused) as settled:
-        runner.record_effect_settlement(first.iteration_identity, "effect.request.2")
+        runner.record_effect_settlement(
+            first.iteration_identity, _settlement("effect.request.2")
+        )
     assert settled.value.reason == "iteration_already_settled"
 
 
@@ -1389,8 +1446,19 @@ _ENTRY: dict[str, object] = {
         ),
         ({"outcome": "DONE"}, "unknown_vocabulary_member"),
         ({"scheduling_intents": ("lease.a", "lease.a")}, "duplicate_entry"),
-        ({"effect_settlements": ("effect.a", "effect.a")}, "duplicate_entry"),
-        ({"effect_settlements": ("EFFECT",)}, "invalid_identifier"),
+        (
+            {"effect_settlements": (_settlement("effect.a"), _settlement("effect.a"))},
+            "duplicate_entry",
+        ),
+        # A bare request id is no longer a settlement, and is refused as the shape it is
+        # rather than being read as a malformed identifier.
+        ({"effect_settlements": ("effect.a",)}, "invalid_effect_settlement"),
+        # Deferred, because a malformed member refuses in the settlement's own
+        # constructor -- before the entry that would have held it exists.
+        (
+            lambda: {"effect_settlements": (_settlement("EFFECT"),)},
+            "invalid_identifier",
+        ),
         # An unsettled entry records no settlement of any kind.
         ({"outputs_digest": _GOOD}, "invalid_settlement"),
         ({"failure_reason": "step_failed"}, "invalid_settlement"),
@@ -1511,10 +1579,12 @@ _ENTRY: dict[str, object] = {
     ],
 )
 def test_an_iteration_ledger_entry_refuses_every_incoherent_combination(
-    overrides: dict[str, object], reason: str
+    overrides: dict[str, object] | Callable[[], dict[str, object]], reason: str
 ) -> None:
     with pytest.raises(ExecutionContractError) as error:
-        IterationLedgerEntry(**{**_ENTRY, **overrides})  # type: ignore[arg-type]
+        # A callable case builds its own malformed member inside the refusal.
+        fields = overrides() if callable(overrides) else overrides
+        IterationLedgerEntry(**{**_ENTRY, **fields})  # type: ignore[arg-type]
     assert error.value.reason == reason
 
 
@@ -1543,7 +1613,14 @@ def test_an_iteration_ledger_entry_refuses_every_incoherent_combination(
             "outcome": ITERATION_CANCELLED,
             "cancellation_disposition": DISPOSITION_CANCELLED_IN_FLIGHT,
             "settlement_sequence": 4,
-            "effect_settlements": ("effect.a", "effect.b"),
+            "effect_settlements": (
+                _settlement("effect.a"),
+                _settlement(
+                    "effect.b",
+                    settlement_class=SETTLEMENT_COMMITTED,
+                    verified_receipt_ref="receipt.b",
+                ),
+            ),
         },
         {"outcome": ITERATION_SKIPPED, "settlement_sequence": 5},
     ],
@@ -1584,7 +1661,12 @@ def test_a_late_result_is_evidence_only_and_leaves_the_ledger_unchanged() -> Non
     assert late == LateResult(identity, "evidence.late.1", applied_to_run_state=False)
     assert late.applied_to_run_state is False
     assert runner.late_results == (late,)
-    assert runner.ledger == before, "the ledger is not touched by a late result"
+    # The settled record is untouched: no entry moved and the posture did not change.
+    # The late result is recorded beside them, which is the only place it can survive a
+    # crash without becoming a second thing a resume has to be handed.
+    assert runner.ledger.entries == before.entries
+    assert runner.ledger.cancellation_requested == before.cancellation_requested
+    assert runner.ledger.late_results == (late,)
     assert runner.ledger.entries[0].outputs_digest == _digest("o")
     assert runner.gather() == (_digest("o"),)
 
@@ -1626,16 +1708,18 @@ def test_a_late_result_can_never_be_declared_applied_to_run_state() -> None:
 
 
 def test_a_replayed_runner_admits_the_late_results_it_is_constructed_with() -> None:
+    """They are carried by the ledger, so there is no second argument to forget."""
     plan = _sequential()
     source = _elements("a")
     ledger = _run_prefix(plan, source, settled=1, launched=0)
     late = LateResult(plan.iteration_identity("a"), "evidence.late.1")
+    recorded = replace(ledger, late_results=(late,))
 
-    resumed = replay_ledger(plan, source, ledger, late_results=(late,))
+    resumed = replay_ledger(plan, source, recorded)
 
     assert resumed.settled
     assert resumed.late_results == (late,)
-    assert resumed.ledger == ledger
+    assert resumed.ledger == recorded
 
 
 # --------------------------------------------------------------------------

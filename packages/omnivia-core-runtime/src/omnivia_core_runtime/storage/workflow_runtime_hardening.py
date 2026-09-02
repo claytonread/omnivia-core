@@ -90,7 +90,10 @@ that only stops the reader is a hold a writer walks straight past. A release is
 explicit, attributable and fenced; there is no statement that could release one Run's
 quarantine from another Run's decision, and one decision discharges one hold, so a Run
 held for two distinct findings stays held until both have been answered -- and stays
-unwritable until then too.
+unwritable until then too. A decision carries its own identity, so a redelivered release
+replays the one result it already produced instead of discharging the next hold down,
+and a repeated identity on different terms refuses; 0035's unique index enforces the
+same rule under any writer.
 
 *A retention boundary records that a range is removable; it never removes it.*
 :meth:`WorkflowJournalGovernanceWriter.record_retention_boundary` writes one boundary
@@ -1248,6 +1251,7 @@ JOURNAL_GOVERNANCE_DIAGNOSTICS: Final = (
     "RT_PARITY_REPORT_CONFLICT",
     "RT_JOURNAL_REPORT_CONFLICT",
     "RT_JOURNAL_NOT_QUARANTINED",
+    "RT_JOURNAL_RELEASE_CONFLICT",
     "RT_RETENTION_RANGE_STILL_RESUMABLE",
 )
 
@@ -1278,7 +1282,8 @@ WHERE workspace_id = ? AND run_id = ? AND report_id = ?
 #: reach the checks below and fail closed, not vanish and read as no quarantine at all.
 _QUARANTINE_QUERY: Final = f"""
 SELECT q.disposition_sequence, q.event_id, q.action, q.integrity_report_id,
-       q.diagnostic, q.deciding_actor, q.reason, q.recorded_at_us, e.event_id
+       q.diagnostic, q.deciding_actor, q.reason, q.decision_id, q.recorded_at_us,
+       e.event_id
 FROM {_QUARANTINE} q
 LEFT JOIN {_JOURNAL} e
        ON e.workspace_id = q.workspace_id AND e.run_id = q.run_id
@@ -1485,6 +1490,18 @@ def _stated_instant_us(value: str, subject: str) -> int:
         raise StorageError(
             f"a {subject} names an instant that is not a Timestamp: {value!r}"
         ) from error
+
+
+def _release_decision_id(run_id: str, deciding_actor: str, reason: str) -> str:
+    """The canonical identity of one quarantine-release decision.
+
+    Over the request and nothing else -- never over the hold the request would discharge.
+    The hold moves as releases land, so an identity that included it would give a retry a
+    *different* identity from the call it repeats, which is precisely how a redelivery
+    ends up discharging the next hold down.
+    """
+    preimage = chr(31).join(("release", run_id, deciding_actor, reason))
+    return sha256(preimage.encode("utf-8")).hexdigest()
 
 
 #: The spellings 0035's own CHECK constraints require of these columns, recomputed on
@@ -1877,9 +1894,15 @@ class WorkflowJournalGovernanceWriter:
     # --- release ---------------------------------------------------------------------
 
     def release_journal_quarantine(
-        self, *, run_id: str, deciding_actor: str, reason: str, recorded_at: str
+        self,
+        *,
+        run_id: str,
+        deciding_actor: str,
+        reason: str,
+        recorded_at: str,
+        decision_id: str | None = None,
     ) -> JournalQuarantineProjection:
-        """Release a held quarantine, attributably.
+        """Release a held quarantine, attributably and exactly once per decision.
 
         A release is a person's decision, so it requires an actor and a reason and 0035
         refuses one without both. It is not a repair: it appends a disposition saying
@@ -1893,21 +1916,52 @@ class WorkflowJournalGovernanceWriter:
         projection it returns cites the older hold that is now the outstanding one --
         answering that finding is a second decision by a person who has seen it.
 
-        Nothing to release refuses with `RT_JOURNAL_NOT_QUARANTINED`, and repeating a
-        release that already stands returns it without appending a second disposition.
+        **A decision has an identity, and a retry is not a second decision.** Stacked
+        holds are where that matters: with two outstanding, the Run is still held after
+        the first release, so a redelivered request -- the same actor, the same reason --
+        used to read as a fresh decision and discharge the second hold, answering a
+        finding the decider had never seen. Every release therefore carries a
+        `decision_id`. Supplied, it is the caller's own idempotency key; omitted, it is
+        derived canonically from the run, the actor and the reason, so an exact retry
+        derives the same identity and replays rather than appends. A request repeating a
+        recorded identity with different terms is a conflict and refuses with
+        `RT_JOURNAL_RELEASE_CONFLICT`, because two decisions cannot share one identity.
+        The uniqueness is 0035's, not this method's: the schema refuses a second append
+        under a recorded identity even from a writer that never read this history.
+
+        Answering a *second* finding is a second decision and needs a second identity --
+        a distinct `decision_id`, stated by whoever saw the second finding. That is the
+        intended cost: an unstated second release by the same actor for the same reason
+        is exactly the redelivery this refuses to act on twice.
+
+        Nothing to release refuses with `RT_JOURNAL_NOT_QUARANTINED`, unless this exact
+        decision is the one already recorded, which replays.
         """
+        if not deciding_actor or not reason:
+            raise StorageError("a quarantine release names both an actor and a reason")
+        decision = decision_id or _release_decision_id(run_id, deciding_actor, reason)
+        recorded = self.connection.execute(
+            f"SELECT deciding_actor, reason FROM {_QUARANTINE} "
+            "WHERE workspace_id = ? AND run_id = ? AND decision_id = ?",
+            (self.workspace_id, run_id, decision),
+        ).fetchone()
+        if recorded is not None:
+            if tuple(recorded) != (deciding_actor, reason):
+                raise JournalGovernanceRefused(
+                    "RT_JOURNAL_RELEASE_CONFLICT",
+                    f"release {decision!r} already stands on other terms",
+                )
+            return read_journal_quarantine(
+                self.connection, workspace_id=self.workspace_id, run_id=run_id
+            )
         current = read_journal_quarantine(
             self.connection, workspace_id=self.workspace_id, run_id=run_id
         )
         if not current.held:
-            if (current.deciding_actor, current.reason) == (deciding_actor, reason):
-                return current
             raise JournalGovernanceRefused(
                 "RT_JOURNAL_NOT_QUARANTINED",
                 f"run {run_id!r} holds no quarantine to release",
             )
-        if not deciding_actor or not reason:
-            raise StorageError("a quarantine release names both an actor and a reason")
         _record(
             self.connection,
             _QUARANTINE,
@@ -1921,6 +1975,7 @@ class WorkflowJournalGovernanceWriter:
                 "diagnostic": None,
                 "deciding_actor": deciding_actor,
                 "reason": reason,
+                "decision_id": decision,
                 "recorded_at_us": _stated_instant_us(recorded_at, "quarantine release"),
             },
             subject="journal quarantine release",
@@ -2081,6 +2136,7 @@ def release_journal_quarantine(
     deciding_actor: str,
     reason: str,
     recorded_at: str,
+    decision_id: str | None = None,
 ) -> JournalQuarantineProjection:
     """Release one held journal quarantine, in its own fenced transaction."""
     with workflow_journal_governance_writer(
@@ -2094,6 +2150,7 @@ def release_journal_quarantine(
             deciding_actor=deciding_actor,
             reason=reason,
             recorded_at=recorded_at,
+            decision_id=decision_id,
         )
 
 
@@ -2505,6 +2562,7 @@ def read_journal_quarantine(
     rows = connection.execute(_QUARANTINE_QUERY, (workspace_id, run_id)).fetchall()
     latest: tuple[Any, ...] | None = None
     outstanding: list[tuple[Any, ...]] = []
+    decisions: set[str] = set()
     for position, row in enumerate(rows):
         (
             disposition_sequence,
@@ -2514,6 +2572,7 @@ def read_journal_quarantine(
             diagnostic,
             deciding_actor,
             reason,
+            decision_id,
             recorded_at_us,
             held_event_id,
         ) = row
@@ -2532,6 +2591,7 @@ def read_journal_quarantine(
                 and diagnostic == "RT_JOURNAL_QUARANTINED"
                 and deciding_actor is None
                 and reason is None
+                and decision_id is None
             )
             if held
             else (
@@ -2539,6 +2599,7 @@ def read_journal_quarantine(
                 and diagnostic is None
                 and bool(deciding_actor)
                 and bool(reason)
+                and bool(decision_id)
             )
         )
         if not in_form:
@@ -2549,6 +2610,15 @@ def read_journal_quarantine(
         if not held:
             _spelled(_IDENTIFIER, deciding_actor, "quarantine deciding actor")
             _spelled(_REASON, reason, "quarantine release reason")
+            _spelled(_IDENTIFIER, decision_id, "quarantine release decision")
+            if decision_id in decisions:
+                # The unique index below 0035 refuses this, so reaching it means the
+                # history was written by something that bypassed the schema. Fail closed
+                # rather than believe a run whose releases cannot be told apart.
+                raise StorageError(
+                    "a stored quarantine history records one release decision twice"
+                )
+            decisions.add(str(decision_id))
         if event_id is not None:
             _spelled(_IDENTIFIER, event_id, "quarantine event citation")
         if held_event_id != event_id:
@@ -2590,6 +2660,7 @@ def read_journal_quarantine(
         diagnostic,
         deciding_actor,
         reason,
+        _decision_id,
         _recorded_at_us,
         _held_event_id,
     ) = current
