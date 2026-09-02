@@ -58,7 +58,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # successor-state candidate. 0031 is the Chat request-manifest candidate. 0032
 # is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
 # Chat compaction/waits/agent-run candidate. 0034 is the durable Chat
-# generation-text/transport-event candidate.
+# generation-text/transport-event candidate. 0035 is the materialized T-0688
+# Workflow Runtime hardening candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -77,6 +78,7 @@ EXPECTED_ALLOCATION = (
     (32, "0032_chat_turn_step_tool_lifecycle.sql", "Chat", "candidate"),
     (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
     (34, "0034_chat_generation_text_transport_events.sql", "Chat", "candidate"),
+    (35, "0035_t0688_workflow_runtime_hardening.sql", "Workflow Runtime", "candidate"),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -86,9 +88,14 @@ FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
 ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read"
 
-# The candidates' exact introducing commits, each
-# pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
-# neither carries an accepted_commit.
+# The candidates' exact introducing commits, each pinned as the commit that
+# carries the authority's pinned content for that migration file in the checked
+# head -- the fact `check_history` verifies. For a migration whose content is
+# later repaired that is the repairing commit, not its first appearance: 0035 was
+# first written by 1326b10, repinned to the T-0688 release repair 8873985, and
+# repinned again to the T-0691 quarantine-write repair 5177d67, and repinned to
+# the T-0692 retry-idempotency repair 0ca4ddf, which is where its bb268eb7…
+# content lives. None are accepted, so none carries an accepted_commit.
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -104,6 +111,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
     34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
+    35: "0ca4ddfa6fc37cec315e640e32ffe6f3a4c3d462",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -175,7 +183,7 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0034 are
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0035 are
     candidates pinned to their introducing commits but not accepted."""
     document = _document()
     for entry in document["allocations"]:

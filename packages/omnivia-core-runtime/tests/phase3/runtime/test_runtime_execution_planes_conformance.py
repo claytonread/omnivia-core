@@ -1513,6 +1513,8 @@ def test_the_seam_imports_no_storage_scheduler_recovery_or_platform() -> None:
 
     assert [source.name for source in sources] == [
         "__init__.py",
+        "governed.py",
+        "loop.py",
         "planes.py",
         "profile.py",
         "registry.py",

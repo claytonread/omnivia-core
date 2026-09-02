@@ -5,11 +5,12 @@ types and frozen vocabulary, the tolerant production codec, and the pure
 version/capability compatibility semantics, all re-exported from one place so
 a caller does not need to know which submodule a given name lives in. The
 submodules themselves (:mod:`generated`, :mod:`codec`, :mod:`compatibility`,
-:mod:`semantics`, :mod:`semantics_core_target`, :mod:`semantics_evidence`,
-:mod:`semantics_jobs`, :mod:`semantics_knowledge`, :mod:`semantics_operations`,
-:mod:`semantics_runtime`, :mod:`semantics_service`, :mod:`adapter`,
-:mod:`conformance`) remain importable directly for callers that prefer
-explicit provenance.
+:mod:`semantics`, :mod:`semantics_component`, :mod:`semantics_core_target`,
+:mod:`semantics_evidence`, :mod:`semantics_governed_execution`,
+:mod:`semantics_jobs`, :mod:`semantics_knowledge`,
+:mod:`semantics_operations`, :mod:`semantics_runtime`, :mod:`semantics_service`,
+:mod:`semantics_workflow`, :mod:`adapter`, :mod:`conformance`) remain importable
+directly for callers that prefer explicit provenance.
 
 Standard library only. Nothing under ``omnivia_core.contracts.v1`` may depend
 on runtime, storage, HTTP, MCP, CLI, Platform, Dev, or a validation framework.
@@ -33,6 +34,11 @@ from . import (
     semantics_runtime,
     semantics_service,
 )
+from . import semantics_component as semantics_component
+from . import (
+    semantics_governed_execution as semantics_governed_execution,
+)
+from . import semantics_workflow as semantics_workflow
 from .adapter import (
     ApplicationWireAdapter,
     InProcessFakeAdapter,
@@ -1483,6 +1489,7 @@ __all__ = [
     "semantics",
     "semantics_core_target",
     "semantics_evidence",
+    "semantics_governed_execution",
     "semantics_jobs",
     "semantics_knowledge",
     "semantics_operations",

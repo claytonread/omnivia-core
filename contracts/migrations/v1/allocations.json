@@ -194,6 +194,17 @@
       "sha256": "775d8a1b776e9bb2bd254376aecff7ce1ac597b0ffceedb2f0558e785a5d567c",
       "introduced_commit": "84fabceec3f832f7e2e40fe1e6794f98786e134e",
       "accepted_commit": null
+    },
+    {
+      "number": 35,
+      "filename": "0035_t0688_workflow_runtime_hardening.sql",
+      "owner": "Workflow Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 34,
+      "sha256": "bb268eb7c4458905776945f04456406f4382133092ba05062ed785e0da4adbce",
+      "introduced_commit": "0ca4ddfa6fc37cec315e640e32ffe6f3a4c3d462",
+      "accepted_commit": null
     }
   ]
 }
