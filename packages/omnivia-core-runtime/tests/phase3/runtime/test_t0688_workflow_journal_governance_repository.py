@@ -58,6 +58,7 @@ from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.storage.workflow_runtime_hardening import (
     JournalGovernanceRefused,
     StoredRuntimeDefinitionBinding,
+    TransitionBundleRefused,
     evaluate_journal_resume,
     evaluate_parity_promotion,
     journal_genesis_link,
@@ -2188,3 +2189,164 @@ def test_a_verified_backup_restores_every_judgement_that_still_reads(
         ) == recorded
     finally:
         connection.close()
+
+
+# --- T-0691: a held quarantine refuses the write, not only the read ---------------------
+
+
+@pytest.fixture
+def held(
+    owned: m1.Owned, journalled: StoredRuntimeDefinitionBinding
+) -> Iterator[tuple[m1.Owned, StoredRuntimeDefinitionBinding]]:
+    """A quarantined run whose chain head still links, so a write can actually be tried.
+
+    The fault is at sequence one and the head is sequence two, so the next transition
+    would link cleanly and nothing but the quarantine stands between a caller and the
+    chain. That is what makes every refusal below a fact about the hold rather than an
+    accident of the fault that caused it -- and what lets the released case go on to
+    write for real instead of merely failing differently.
+    """
+    holder = reopen(
+        owned,
+        "PRAGMA ignore_check_constraints = ON",
+        drop(JOURNAL, "update"),
+        corrupted_journal_edits()["event digest"],
+    )
+    verify(holder, stage="R1")
+    assert quarantine_of(holder).held is True
+    yield holder, journalled
+    holder.connection.close()
+
+
+def next_transition(
+    holder: m1.Owned, binding: StoredRuntimeDefinitionBinding
+) -> Any:
+    """The transition this run would take next if nothing were holding it."""
+    return ip07.apply(
+        holder, binding, chain_bundle(CHAIN), ip07.payload(CHAIN), stage="R2"
+    )
+
+
+def durable_state(holder: m1.Owned) -> tuple[Any, ...]:
+    """Everything a refused write must have left exactly where it was."""
+    return (
+        ip07.counts(holder.connection),
+        counts(holder.connection),
+        durable_history(holder.connection),
+        public_run_state(holder.connection),
+    )
+
+
+def test_a_held_quarantine_refuses_the_transition_that_would_extend_its_chain(
+    held: tuple[m1.Owned, StoredRuntimeDefinitionBinding],
+) -> None:
+    """The finding this pins: the hold used to stop only the reader.
+
+    `evaluate_journal_resume` reported `RT_JOURNAL_QUARANTINED` and a caller that never
+    asked applied the next bundle anyway, extending a chain nobody had been able to
+    verify. The refusal now happens on the write, carries the same diagnostic, and
+    leaves the bundle table, the journal, the governance records and the public Run
+    exactly as they were.
+    """
+    holder, binding = held
+    before = durable_state(holder)
+
+    with pytest.raises(TransitionBundleRefused) as refusal:
+        next_transition(holder, binding)
+
+    assert refusal.value.diagnostic == "RT_JOURNAL_QUARANTINED"
+    assert durable_state(holder) == before
+    assert resume_of(holder).diagnostic == "RT_JOURNAL_QUARANTINED"
+
+
+def test_a_replay_of_a_recorded_bundle_is_refused_while_the_hold_stands(
+    held: tuple[m1.Owned, StoredRuntimeDefinitionBinding],
+) -> None:
+    """Confirming a replay means reading the chain the hold says nobody can verify."""
+    holder, binding = held
+    before = durable_state(holder)
+
+    with pytest.raises(TransitionBundleRefused) as refusal:
+        ip07.apply(holder, binding, chain_bundle(0), ip07.payload(0), stage="R2")
+
+    assert refusal.value.diagnostic == "RT_JOURNAL_QUARANTINED"
+    assert durable_state(holder) == before
+
+
+def test_writes_resume_only_once_the_whole_quarantine_stack_is_released(
+    held: tuple[m1.Owned, StoredRuntimeDefinitionBinding],
+) -> None:
+    """One decision discharges one hold, so a partial release is still a held run."""
+    holder, binding = held
+    assert verify(holder, report_id=SECOND_REPORT_ID).quarantined is True
+    before = durable_state(holder)
+
+    release(holder)
+    assert quarantine_of(holder).held is True
+    with pytest.raises(TransitionBundleRefused) as still_held:
+        next_transition(holder, binding)
+    assert still_held.value.diagnostic == "RT_JOURNAL_QUARANTINED"
+    assert ip07.counts(holder.connection) == before[0]
+
+    release(holder, actor="core-auditor", recorded_at=BOUNDARY_AT)
+    assert quarantine_of(holder).held is False
+
+    outcome = next_transition(holder, binding)
+
+    assert outcome.disposition == "applied"
+    assert ip07.counts(holder.connection) == (CHAIN + 1, CHAIN + 1)
+    assert resume_of(holder).resumable is True
+
+
+def test_a_superseded_writer_never_reaches_a_quarantined_run_at_all(
+    held: tuple[m1.Owned, StoredRuntimeDefinitionBinding],
+) -> None:
+    """A real takeover, and the transition the superseded generation would have made.
+
+    The generation is the one this workspace actually left behind when the next service
+    took it, not an invented number. Two facts stand between that writer and the chain
+    and the test proves both: the fence refuses the superseded generation, and the hold
+    is still standing for the service that took over.
+    """
+    holder, binding = held
+    superseded = holder.generation
+    successor = reopen(holder)
+    try:
+        assert successor.generation > superseded
+        before = durable_state(successor)
+
+        with pytest.raises(StaleGeneration):
+            ip07.apply(
+                successor,
+                binding,
+                chain_bundle(CHAIN),
+                ip07.payload(CHAIN),
+                generation=superseded,
+            )
+        assert durable_state(successor) == before
+
+        with pytest.raises(TransitionBundleRefused) as refusal:
+            next_transition(successor, binding)
+        assert refusal.value.diagnostic == "RT_JOURNAL_QUARANTINED"
+        assert durable_state(successor) == before
+    finally:
+        successor.connection.close()
+
+
+def test_one_runs_quarantine_never_blocks_another_runs_transition(
+    held: tuple[m1.Owned, StoredRuntimeDefinitionBinding],
+) -> None:
+    """The refusal is run-scoped, like every other fact about a quarantine.
+
+    `seed_other_run` binds a second Run in this same workspace and applies its first
+    transition for real, so a guard that read the workspace rather than the Run would
+    abort here rather than pass.
+    """
+    holder, _binding = held
+
+    seed_other_run(holder)
+
+    assert quarantine_of(holder, OTHER_RUN_ID).held is False
+    assert resume_of(holder, OTHER_RUN_ID).resumable is True
+    assert quarantine_of(holder).held is True
+    assert resume_of(holder).diagnostic == "RT_JOURNAL_QUARANTINED"

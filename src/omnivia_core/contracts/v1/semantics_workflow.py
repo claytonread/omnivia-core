@@ -40,6 +40,7 @@ __all__ = [
     "LOOP_ITERATION_IDENTITY_RULE_KINDS",
     "LOOP_ITERATION_OUTCOME_CLASSES",
     "LOOP_LATE_RESULT_POLICIES",
+    "LOOP_MAXIMUM_ITERATIONS",
     "LOOP_MODES",
     "LOOP_ORDER_GUARANTEES",
     "LOOP_PARTIAL_SUCCESS_POLICIES",
@@ -2024,6 +2025,13 @@ def evaluate_nested_workflow_boundary(
 
 WF_LOOP_PLAN_INVALID: Final = "WF_LOOP_PLAN_INVALID"
 
+#: The iteration ceiling a runtime may freeze a plan against, and the same number the
+#: runtime loop seam bounds `maximum_iterations` by. It is stated here so a plan the
+#: runtime would refuse to freeze is refused at the contract instead of validating
+#: cleanly and failing later at binding time, where the refusal is a Run's problem
+#: rather than an author's.
+LOOP_MAXIMUM_ITERATIONS: Final = 10_000
+
 LOOP_MODES: Final[tuple[str, ...]] = ("sequential", "parallel")
 LOOP_SOURCE_KINDS: Final[tuple[str, ...]] = ("collection", "stream")
 LOOP_ZIP_MISMATCH_POLICIES: Final[tuple[str, ...]] = (
@@ -2091,11 +2099,19 @@ _DONE_CONDITION_FIELDS: Final = frozenset(
 )
 
 _LOOP_ITERATION_LEDGER_FIELDS: Final = frozenset(
-    {"ledgerSchemaVersion", "loopStableId", "loopSettledAt", "entries"}
+    {
+        "ledgerSchemaVersion",
+        "loopStableId",
+        "cancellationRequested",
+        "loopSettledAt",
+        "entries",
+    }
 )
 _LOOP_ITERATION_ENTRY_FIELDS: Final = frozenset(
     {
         "iterationIdentity",
+        "ordinal",
+        "settlementSequence",
         "outcomeClass",
         "launchedAt",
         "launchBundleRef",
@@ -2142,7 +2158,7 @@ def _loop_source_binding(record: object, label: str) -> None:
         _reference(fields, "completionSignal", label)
 
 
-def _done_condition(record: object, label: str) -> None:
+def _done_condition(record: object, label: str, *, maximum_iterations: int) -> None:
     fields = _mapping(record, label)
     _only_fields(fields, _DONE_CONDITION_FIELDS, label)
     kind = _member(fields, "conditionKind", label, LOOP_DONE_CONDITION_KINDS)
@@ -2156,8 +2172,14 @@ def _done_condition(record: object, label: str) -> None:
         raise _loop_invalid(
             label, "iterationCount is required exactly for an iterationCount condition"
         )
-    if kind == "iterationCount":
-        _positive_int(fields, "iterationCount", label)
+    # A count the frozen bound stops the loop reaching is a condition that can never
+    # fire -- the loop fails on its bound instead -- which is exactly the internal
+    # contradiction §AD.5.1 rule 6 is about, not a harmlessly generous number.
+    if (
+        kind == "iterationCount"
+        and _positive_int(fields, "iterationCount", label) > maximum_iterations
+    ):
+        raise _loop_invalid(label, "iterationCount exceeds maximumIterations")
 
 
 def validate_complete_loop_plan(record: object) -> None:
@@ -2170,6 +2192,11 @@ def validate_complete_loop_plan(record: object) -> None:
     with `WF_LOOP_PLAN_INVALID`. `maximumConcurrency` is required exactly when `mode` is
     `parallel` -- required *and* bounded, since an unbounded concurrency is not a frozen bound --
     and is refused outright for a `sequential` plan, where the concurrency is one by definition.
+
+    The iteration bound is bounded in turn, by `LOOP_MAXIMUM_ITERATIONS`, and an `iterationCount`
+    done condition is bounded by the plan's own `maximumIterations`: a bound no runtime will
+    freeze, and a done condition the bound stops the loop ever reaching, are both contradictions
+    stated in numbers rather than in members.
     """
     label = "LoopPlan"
     fields = _mapping(record, label)
@@ -2200,8 +2227,16 @@ def validate_complete_loop_plan(record: object) -> None:
         _identifier(carry, "carryId", carry_label)
         _reference(carry, "initialValueRef", carry_label)
 
-    _done_condition(_present(fields, "done", label), f"{label}.done")
     maximum_iterations = _positive_int(fields, "maximumIterations", label)
+    if maximum_iterations > LOOP_MAXIMUM_ITERATIONS:
+        raise _loop_invalid(
+            label, f"maximumIterations exceeds the bound of {LOOP_MAXIMUM_ITERATIONS}"
+        )
+    _done_condition(
+        _present(fields, "done", label),
+        f"{label}.done",
+        maximum_iterations=maximum_iterations,
+    )
     order_guarantee = _member(fields, "orderGuarantee", label, LOOP_ORDER_GUARANTEES)
 
     if "gather" in fields:
@@ -2224,11 +2259,31 @@ def validate_complete_loop_plan(record: object) -> None:
     _member(fields, "partialSuccessPolicy", label, LOOP_PARTIAL_SUCCESS_POLICIES)
 
 
-def _loop_iteration_entry(record: object, label: str, *, loop_settled_at: str | None) -> str:
+def _loop_iteration_entry(
+    record: object,
+    label: str,
+    *,
+    loop_settled_at: str | None,
+    cancellation_requested: bool,
+) -> tuple[str, int, int]:
     fields = _mapping(record, label)
     _only_fields(fields, _LOOP_ITERATION_ENTRY_FIELDS, label)
     identity = _identifier(fields, "iterationIdentity", label)
+    # `launchedAt` and `settledAt` are wall-clock instants and two of them can be equal,
+    # so they order nothing on their own. `ordinal` is the canonical launch order and
+    # `settlementSequence` the canonical settlement order, and a replay reproduces both
+    # exactly -- which is what makes a `settlementOrder` gather reproducible at all.
+    ordinal = _non_negative_int(fields, "ordinal", label)
+    if ordinal >= LOOP_MAXIMUM_ITERATIONS:
+        raise ContractSemanticError(
+            f"{label}: ordinal is beyond the bound of {LOOP_MAXIMUM_ITERATIONS} iterations"
+        )
+    settlement_sequence = _positive_int(fields, "settlementSequence", label)
     outcome = _member(fields, "outcomeClass", label, LOOP_ITERATION_OUTCOME_CLASSES)
+    if outcome == "cancelled" and not cancellation_requested:
+        raise ContractSemanticError(
+            f"{label}: a cancelled iteration requires a loop whose cancellation was requested"
+        )
     launched_at = _timestamp(fields, "launchedAt", label)
     # A launch is atomic: identity, inputs, carry and scheduling intents were recorded in
     # exactly one `RuntimeTransitionBundle` (§AD.5.1 rule 2), so the entry names one bundle
@@ -2241,6 +2296,11 @@ def _loop_iteration_entry(record: object, label: str, *, loop_settled_at: str | 
     settled_at = _timestamp(fields, "settledAt", label)
     if _instant(settled_at) < _instant(launched_at):
         raise ContractSemanticError(f"{label}: settledAt precedes launchedAt")
+    # A settled loop launches nothing more. An entry claiming a launch after the loop
+    # settled is not a record of anything that happened, and believing it would let a
+    # forged ledger extend a loop that is already over.
+    if loop_settled_at is not None and _instant(launched_at) > _instant(loop_settled_at):
+        raise ContractSemanticError(f"{label}: an iteration cannot launch after the loop settled")
 
     for index, settlement in enumerate(_sequence(fields, "effectSettlements", label)):
         _effect_settlement(settlement, f"{label}.effectSettlements[{index}]")
@@ -2289,7 +2349,11 @@ def _loop_iteration_entry(record: object, label: str, *, loop_settled_at: str | 
             )
         if has_evidence:
             _reference(fields, "evidenceRef", label)
-    return identity
+        if loop_settled_at is not None and _instant(settled_at) > _instant(loop_settled_at):
+            raise ContractSemanticError(
+                f"{label}: only a late result settles after the loop settled"
+            )
+    return identity, ordinal, settlement_sequence
 
 
 def validate_loop_iteration_ledger(record: object) -> None:
@@ -2304,22 +2368,45 @@ def validate_loop_iteration_ledger(record: object) -> None:
     A `late` entry is the one class that cannot change anything: it exists only once the loop has
     settled, it is recorded as Evidence against its iteration identity, and it is marked not
     applied to Run state.
+
+    The ledger carries the two orderings a replay has to reproduce and the one loop-level fact no
+    entry can hold. `ordinal` is the canonical launch order and runs `0, 1, 2, ...` with no hole,
+    no repeat and nothing past the iteration bound, because a ledger that has been re-sorted or
+    has had a launch dropped is not the record of what happened. `settlementSequence` is the
+    canonical settlement order and covers the entries exactly once as `1..n`, because wall-clock
+    instants can tie and a `settlementOrder` gather read from tied instants is not reproducible.
+    `cancellationRequested` is the loop's own cancellation posture: a `drainInFlight` cancellation
+    settles no iteration as `cancelled`, so nothing in the entries could record it, and a recovery
+    record that cannot state it hands back a loop whose cancellation did not survive the crash.
     """
     label = "LoopIterationLedger"
     fields = _mapping(record, label)
     _only_fields(fields, _LOOP_ITERATION_LEDGER_FIELDS, label)
     _release_version(fields, "ledgerSchemaVersion", label)
     _identifier(fields, "loopStableId", label)
+    cancellation_requested = _boolean(fields, "cancellationRequested", label)
     loop_settled_at = _timestamp(fields, "loopSettledAt", label) if "loopSettledAt" in fields else None
 
-    identities = [
+    entries = [
         _loop_iteration_entry(
-            entry, f"{label}.entries[{index}]", loop_settled_at=loop_settled_at
+            entry,
+            f"{label}.entries[{index}]",
+            loop_settled_at=loop_settled_at,
+            cancellation_requested=cancellation_requested,
         )
         for index, entry in enumerate(_sequence(fields, "entries", label))
     ]
+    identities = [identity for identity, _, _ in entries]
     if len(identities) != len(set(identities)):
         raise ContractSemanticError(f"{label}: entries must not repeat an iterationIdentity")
+    if [ordinal for _, ordinal, _ in entries] != list(range(len(entries))):
+        raise ContractSemanticError(
+            f"{label}: entries are not contiguous from zero in ordinal launch order"
+        )
+    if sorted(sequence for _, _, sequence in entries) != list(range(1, len(entries) + 1)):
+        raise ContractSemanticError(
+            f"{label}: settlementSequence does not cover the entries exactly once from one"
+        )
 
 
 WORKFLOW_RECORD_VALIDATORS: Final[Mapping[str, WorkflowRecordValidator]] = MappingProxyType(

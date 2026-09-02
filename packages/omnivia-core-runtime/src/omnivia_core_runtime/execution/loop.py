@@ -32,13 +32,15 @@ no others:
   cancelled, failed and skipped iterations as much as successful ones, and
   preserving every member of the atomic launch, scheduling intents included.
 
-The ledger is the recovery record, and it is the *only* recovery record. Replaying
-it re-derives every recorded identity, refuses a ledger that is not contiguous in
-ordinal launch order, never relaunches an iteration it already records, and folds
-the carry forward out of the recorded entries themselves -- so a resumed runner
-does not need an ambient caller to hand it back the carry it had before the crash,
-and refuses a caller-supplied carry that disagrees with the one the ledger
-replays.
+The ledger is the recovery record, and it is the *only* recovery record -- which is
+why the loop's own cancellation posture is a member of :class:`LoopLedger` and not a
+flag on the runner. Replaying a ledger re-derives every recorded identity, refuses one
+that is not contiguous in ordinal launch order or whose settlement sequences are not
+``1..n``, never relaunches an iteration it already records, replays the recorded
+cancellation through the plan's declared policy, and folds the carry forward out of the
+recorded entries themselves -- so a resumed runner does not need an ambient caller to
+hand it back the carry or the cancellation it had before the crash, and refuses a
+caller-supplied carry that disagrees with the one the ledger replays.
 
 Two deliberate absences. The plan's ``done`` condition is not evaluated here --
 a predicate over run values needs the run values, which this seam never holds --
@@ -132,6 +134,24 @@ LOOP_SETTLED: Final = "SETTLED"
 
 LOOP_STATES: Final[frozenset[str]] = frozenset(
     {LOOP_RUNNING, LOOP_STOPPING, LOOP_SETTLED}
+)
+
+#: The loop's *own* terminal outcome, which is a different question from any one
+#: iteration's. It is stated rather than inferred, because inferring it from a null
+#: failure reason is exactly what let a cancelled, truncated loop read as a clean
+#: success and hand back a partial gather as if it were the whole one.
+LOOP_OUTCOME_SUCCEEDED: Final = "SUCCEEDED"
+LOOP_OUTCOME_FAILED: Final = "FAILED"
+LOOP_OUTCOME_CANCELLED: Final = "CANCELLED"
+LOOP_OUTCOME_INCOMPLETE: Final = "INCOMPLETE"
+
+LOOP_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {
+        LOOP_OUTCOME_SUCCEEDED,
+        LOOP_OUTCOME_FAILED,
+        LOOP_OUTCOME_CANCELLED,
+        LOOP_OUTCOME_INCOMPLETE,
+    }
 )
 
 #: The disposition recorded against an iteration cancelled in flight. Cancellation
@@ -423,6 +443,31 @@ class IterationLedgerEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class LoopLedger:
+    """The whole durable recovery record: the loop's own posture, and its entries.
+
+    Cancellation is a fact about the *loop* rather than about any one iteration -- a
+    ``DRAIN_IN_FLIGHT`` cancellation settles nothing at all, so no entry can carry it --
+    which is why it lives here beside the entries and not in the process that requested
+    it. A process-only cancellation is lost in the crash it is meant to survive, and the
+    resumed loop then plans exactly the launches the cancellation stopped.
+
+    Handing this one value back to :func:`replay_ledger` is the whole of a resume, which
+    is what keeps the ledger the only recovery record: there is no second thing a caller
+    can forget to carry across the crash.
+    """
+
+    entries: tuple[IterationLedgerEntry, ...] = ()
+    cancellation_requested: bool = False
+
+
+#: The record of a loop that has not started: no entries, and nothing cancelled. It is a
+#: module-level value because :class:`LoopLedger` is frozen, so one instance is every
+#: instance of it, and because a default that is a call is a default nobody can share.
+EMPTY_LOOP_LEDGER: Final = LoopLedger()
+
+
+@dataclass(frozen=True, slots=True)
 class LateResult:
     """A result that arrived after the loop settled: Evidence, and nothing else.
 
@@ -535,6 +580,11 @@ class LoopRunner:
     ledger already records the carry every recorded launch consumed and every
     settled iteration produced. Supplying one that disagrees with the ledger is
     refused rather than preferred over the record.
+
+    The ledger carries the loop's own cancellation posture beside its entries, and a
+    resume replays it through the plan's declared cancellation policy, so a resumed
+    ``CANCEL_REMAINING`` or ``DRAIN_IN_FLIGHT`` loop plans no launch its live runner
+    would not have planned, and a resumed ``COMPLETE_ALL`` loop still finishes.
     """
 
     def __init__(
@@ -543,7 +593,7 @@ class LoopRunner:
         source: tuple[LoopElement, ...],
         *,
         zip_sources: tuple[tuple[LoopElement, ...], ...] = (),
-        ledger: tuple[IterationLedgerEntry, ...] = (),
+        ledger: LoopLedger = EMPTY_LOOP_LEDGER,
         carry_digest: str | None = None,
         late_results: tuple[LateResult, ...] = (),
     ) -> None:
@@ -565,14 +615,22 @@ class LoopRunner:
                     "invalid_loop_plan", "a carry digest requires a carrying plan"
                 )
             require_digest("carry_digest", carry_digest)
-        elif plan.carry_enabled and not ledger:
+        elif plan.carry_enabled and not ledger.entries:
             raise ExecutionContractError(
                 "invalid_loop_plan",
                 "a new carrying loop requires its frozen initial carry digest",
             )
 
-        for entry in ledger:
+        for entry in ledger.entries:
             self._replay(entry)
+        self._require_replayable_ledger(ledger.cancellation_requested)
+        if ledger.cancellation_requested:
+            # The recorded posture, applied through the same policy the live runner
+            # applied it through, so the two cannot drift: a sweep that already settled
+            # every in-flight iteration finds nothing left to settle and changes no byte
+            # of the ledger, and one interrupted mid-sweep completes rather than resuming
+            # as an uncancelled loop.
+            self.cancel()
         self._refresh()
         for late in late_results:
             self._admit_late(late)
@@ -662,12 +720,73 @@ class LoopRunner:
                 "a recorded launch does not carry the carry the ledger replays",
             )
 
+    def _require_replayable_ledger(self, cancellation_requested: bool) -> None:
+        """Refuse a ledger no live runner could have produced.
+
+        A live runner numbers settlements ``1, 2, 3, ...`` with no gap and no repeat, so
+        a ledger carrying a hole, a repeat or a sequence beyond the settlements it
+        records is not the order anything settled in -- and under ``SETTLEMENT_ORDER``
+        that order *is* the gather order, so believing it would silently reorder results.
+
+        A cancelled iteration is likewise something only a cancelled loop produces, since
+        :meth:`settle` refuses ``CANCELLED`` and :meth:`cancel` is the one thing that
+        records it. A ledger carrying cancelled entries under a posture that says nothing
+        was cancelled is the same fail-open as a lost cancellation and is refused for the
+        same reason: believed, it resumes as a running loop and plans exactly the launches
+        the cancellation stopped. The Core `LoopIterationLedger` refuses that shape too,
+        so the durable record and this replay agree on what a cancellation looks like.
+
+        A ``CANCEL_REMAINING`` sweep is the last thing that settles: it cancels every
+        iteration still in flight in one pass and the loop launches nothing after it. So
+        a ledger that settles anything else after the first cancellation records a
+        settlement that happened after the loop stopped, which is not a thing that
+        happens.
+        """
+        if self._sequences != set(range(1, len(self._sequences) + 1)):
+            raise ExecutionRefused(
+                "settlement_not_contiguous",
+                "the ledger's settlement sequences are not 1..n without gap or repeat",
+            )
+        if not cancellation_requested and any(
+            entry.outcome == ITERATION_CANCELLED for entry in self._entries
+        ):
+            raise ExecutionRefused(
+                "cancellation_not_recorded",
+                "the ledger settles an iteration cancelled but records no cancellation",
+            )
+        if self.plan.cancellation_policy != CANCEL_REMAINING:
+            return
+        swept = [
+            entry.settlement_sequence
+            for entry in self._entries
+            if entry.outcome == ITERATION_CANCELLED
+            and entry.settlement_sequence is not None
+        ]
+        if not swept:
+            return
+        first_cancellation = min(swept)
+        for entry in self._entries:
+            if (
+                entry.settlement_sequence is not None
+                and entry.settlement_sequence > first_cancellation
+                and entry.outcome != ITERATION_CANCELLED
+            ):
+                raise ExecutionRefused(
+                    "settlement_after_stop",
+                    "the ledger settles an iteration after the cancellation swept the loop",
+                )
+
     # -- observation -------------------------------------------------------
 
     @property
-    def ledger(self) -> tuple[IterationLedgerEntry, ...]:
-        """The complete iteration ledger, in ordinal launch order."""
-        return tuple(self._entries)
+    def ledger(self) -> LoopLedger:
+        """The complete recovery record: the loop's posture, and its entries in ordinal
+        launch order.
+
+        Handing exactly this value back to :func:`replay_ledger` reconstructs this
+        runner, which is the whole of the recovery story.
+        """
+        return LoopLedger(tuple(self._entries), self._cancellation_requested)
 
     @property
     def late_results(self) -> tuple[LateResult, ...]:
@@ -697,8 +816,68 @@ class LoopRunner:
     def in_flight(self) -> tuple[IterationLedgerEntry, ...]:
         return tuple(entry for entry in self._entries if not entry.is_settled)
 
-    def gather(self) -> tuple[str, ...]:
-        """Return the succeeded iterations' output digests in the guaranteed order."""
+    @property
+    def outcome(self) -> str | None:
+        """The settled loop's own terminal outcome, or ``None`` while it still runs.
+
+        ``FAILED`` covers both the failure a ``FAIL_LOOP`` plan records and a loop
+        truncated by its own frozen iteration bound. ``CANCELLED`` is the declared
+        outcome of a cancellation, which is not a failure and does not pretend to be one.
+        ``INCOMPLETE`` is the loop that neither failed nor was cancelled and still did
+        not run clean: a ``RECORD_AND_STOP_AFTER_CURRENT`` plan that stopped on a failed
+        iteration, or a ``RECORD_AND_CONTINUE`` plan that finished with one recorded.
+        Their partial-success policies are preserved exactly -- neither loop *failed* --
+        but neither is a clean success either, and the gather each hands back is a
+        prefix of the answer rather than the answer.
+
+        ``SUCCEEDED`` is therefore the narrow claim it sounds like: every iteration this
+        plan could reach was launched, and none of them failed. A caller reads this
+        rather than inferring success from a null failure reason, which is what let a
+        truncated loop pass for a complete one.
+        """
+        if self._state != LOOP_SETTLED:
+            return None
+        if self._failure_reason is not None:
+            return LOOP_OUTCOME_FAILED
+        if self._cancellation_requested:
+            return LOOP_OUTCOME_CANCELLED
+        reachable = min(len(self._elements), self.plan.maximum_iterations)
+        if len(self._entries) < reachable or any(
+            entry.outcome == OUTCOME_FAILED for entry in self._entries
+        ):
+            return LOOP_OUTCOME_INCOMPLETE
+        return LOOP_OUTCOME_SUCCEEDED
+
+    def gather(self, *, partial: bool = False) -> tuple[str, ...]:
+        """Return the succeeded iterations' output digests in the guaranteed order.
+
+        A failed loop has no gather to hand out at all. Its succeeded iterations are
+        still in the ledger and still readable there, but the gather is the loop's
+        *result*, and handing back the surviving prefix of a loop that failed or was
+        truncated by its own bound presents an incomplete answer as a complete one.
+
+        An ``INCOMPLETE`` loop is refused too, and ``partial=True`` is how a caller asks
+        for its prefix anyway. That keeps ``RECORD_AND_CONTINUE`` and
+        ``RECORD_AND_STOP_AFTER_CURRENT`` exactly as declared -- their partial result is
+        still consumable -- while making the caller state that a partial is what it is
+        taking, which is the whole difference between a declared partial and a truncated
+        loop mistaken for a complete one.
+
+        A ``CANCELLED`` loop is neither: a partial gather is precisely what
+        ``CANCEL_REMAINING`` and ``DRAIN_IN_FLIGHT`` declare, and :attr:`outcome` says so
+        without the caller having to ask. Nor is a loop still running, whose gather is a
+        reading of the ledger so far rather than a result.
+        """
+        if self._failure_reason is not None:
+            raise ExecutionRefused(
+                "loop_failed",
+                f"a loop that failed with {self._failure_reason!r} has no gather",
+            )
+        if not partial and self.outcome == LOOP_OUTCOME_INCOMPLETE:
+            raise ExecutionRefused(
+                "loop_incomplete",
+                "a loop that did not run every iteration clean has no whole gather",
+            )
         succeeded = [
             entry for entry in self._entries if entry.outcome == OUTCOME_SUCCEEDED
         ]
@@ -867,8 +1046,20 @@ class LoopRunner:
         ``resulting_carry_digest`` is the carry this iteration produced. It is stored
         on the settled entry rather than only on the runner, which is what lets a
         resume fold the carry out of the ledger instead of being handed it.
+
+        ``CANCELLED`` is not settleable here. An iteration is cancelled by the loop's
+        declared cancellation policy through :meth:`cancel` and by nothing else, so that
+        a cancelled entry in the ledger is always the record of a cancelled *loop* --
+        which is what makes the loop-level posture reconstructible from the ledger
+        rather than a claim the ledger cannot support. An iteration deliberately not run
+        is ``SKIPPED``.
         """
         require_vocabulary("outcome", outcome, ITERATION_OUTCOMES)
+        if outcome == ITERATION_CANCELLED:
+            raise ExecutionRefused(
+                "cancellation_not_a_settlement",
+                "an iteration is cancelled by the loop's cancellation policy, not settled cancelled",
+            )
         index = self._index_of(iteration_identity)
         entry = self._entries[index]
         if entry.is_settled:
@@ -888,11 +1079,6 @@ class LoopRunner:
             failure_reason=failure_reason,
             settlement_sequence=self._sequence + 1,
             resulting_carry_digest=resulting_carry_digest,
-            cancellation_disposition=(
-                DISPOSITION_CANCELLED_IN_FLIGHT
-                if outcome == ITERATION_CANCELLED
-                else None
-            ),
         )
         self._sequence += 1
         self._sequences.add(self._sequence)
@@ -923,6 +1109,10 @@ class LoopRunner:
         ones to settle normally; ``COMPLETE_ALL`` records the request and lets the
         loop finish. None of the three unwinds a recorded effect settlement:
         cancellation is not rollback.
+
+        Idempotent, which is what lets a resume reconstruct the recorded posture by
+        replaying this same method: a second call over an already-swept ledger settles
+        nothing further and leaves every recorded byte where it was.
         """
         self._cancellation_requested = True
         if self.plan.cancellation_policy == COMPLETE_ALL:
@@ -995,22 +1185,27 @@ class LoopRunner:
             self._failure_reason is None
             and len(self._elements) > self.plan.maximum_iterations
             and launched >= self.plan.maximum_iterations
-            and not self._cancellation_requested
         ):
             # An iteration beyond the frozen bound fails the loop; it never extends it.
+            # Independent of cancellation, because the bound is a property of the plan
+            # and not of what the caller did afterwards: a source the plan cannot cover
+            # was over-long before anyone cancelled anything, and letting a cancellation
+            # clear the overflow made a truncated loop settle clean live and fail on
+            # replay of its own ledger.
             self._failure_reason = "maximum_iterations_exceeded"
 
 
 def replay_ledger(
     plan: FrozenLoopPlan,
     source: tuple[LoopElement, ...],
-    ledger: tuple[IterationLedgerEntry, ...],
+    ledger: LoopLedger,
     *,
     zip_sources: tuple[tuple[LoopElement, ...], ...] = (),
     carry_digest: str | None = None,
     late_results: tuple[LateResult, ...] = (),
 ) -> LoopRunner:
-    """Return a runner resumed from ``ledger``: same identities, same carry, no relaunch."""
+    """Return a runner resumed from ``ledger``: same identities, same carry, same posture,
+    no relaunch."""
     return LoopRunner(
         plan,
         source,
@@ -1026,6 +1221,7 @@ __all__ = [
     "COMPLETE_ALL",
     "DISPOSITION_CANCELLED_IN_FLIGHT",
     "DRAIN_IN_FLIGHT",
+    "EMPTY_LOOP_LEDGER",
     "FAIL_LOOP",
     "ITERATION_CANCELLED",
     "ITERATION_OUTCOMES",
@@ -1035,6 +1231,11 @@ __all__ = [
     "LOOP_MODE_PARALLEL",
     "LOOP_MODE_SEQUENTIAL",
     "LOOP_ORDER_GUARANTEES",
+    "LOOP_OUTCOMES",
+    "LOOP_OUTCOME_CANCELLED",
+    "LOOP_OUTCOME_FAILED",
+    "LOOP_OUTCOME_INCOMPLETE",
+    "LOOP_OUTCOME_SUCCEEDED",
     "LOOP_PARTIAL_SUCCESS_POLICIES",
     "LOOP_RUNNING",
     "LOOP_SETTLED",
@@ -1053,6 +1254,7 @@ __all__ = [
     "IterationLedgerEntry",
     "LateResult",
     "LoopElement",
+    "LoopLedger",
     "LoopRunner",
     "replay_ledger",
 ]

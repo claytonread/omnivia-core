@@ -1867,3 +1867,76 @@ def test_the_fully_populated_runtime_schema_stays_sound(paired: m1.Owned) -> Non
         paired.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         for table in TABLES
     ] == [2, 2, 2, 1, 2, 1, 1]
+
+
+# --- T-0691: the quarantine is enforced by the database, not only by the repository ----
+
+QUARANTINED_WRITE = "holding a journal quarantine records no"
+
+
+def continue_the_chain(holder: m1.Owned) -> None:
+    """Write the pair this run would take next if nothing were holding it."""
+    link = str(event_row()["event_digest"])
+    record(holder, (BUNDLES, bundle_row(1, link)), (JOURNAL, event_row(1, link)))
+
+
+@pytest.fixture
+def quarantined(flagged: m1.Owned) -> m1.Owned:
+    """That run's first pair, its integrity finding, and the hold appended over both."""
+    record(flagged, (QUARANTINE, quarantine_row()))
+    return flagged
+
+
+def test_a_held_quarantine_refuses_the_pair_that_would_extend_the_chain(
+    quarantined: m1.Owned,
+) -> None:
+    """The repository check is not the only thing standing here.
+
+    A caller that goes round `apply_transition_bundle` and writes these two rows itself
+    would otherwise advance a chain nobody has been able to verify, which makes the
+    hold advisory. The trigger aborts the transaction, so neither half survives.
+    """
+    before = public_run_state(quarantined)
+
+    with pytest.raises(sqlite3.DatabaseError, match=QUARANTINED_WRITE):
+        continue_the_chain(quarantined)
+
+    assert counts(quarantined) == (1, 1)
+    assert public_run_state(quarantined) == before
+    assert foreign_key_check(quarantined.connection) == []
+
+
+def test_a_held_quarantine_refuses_a_journal_event_written_on_its_own(
+    quarantined: m1.Owned,
+) -> None:
+    """The event is the chain, so the guard is on the event and not only on its bundle."""
+    link = str(event_row()["event_digest"])
+    with pytest.raises(sqlite3.DatabaseError, match=QUARANTINED_WRITE):
+        record(quarantined, (JOURNAL, event_row(1, link)))
+    assert counts(quarantined) == (1, 1)
+
+
+def test_the_chain_continues_again_only_once_every_hold_is_released(
+    quarantined: m1.Owned,
+) -> None:
+    """Holds stack and each release discharges one, so a partial release still holds."""
+    record(quarantined, (QUARANTINE, quarantine_row(1)))
+    record(quarantined, (QUARANTINE, quarantine_row(2, "released")))
+
+    with pytest.raises(sqlite3.DatabaseError, match=QUARANTINED_WRITE):
+        continue_the_chain(quarantined)
+    assert counts(quarantined) == (1, 1)
+
+    record(quarantined, (QUARANTINE, quarantine_row(3, "released")))
+    continue_the_chain(quarantined)
+
+    assert counts(quarantined) == (2, 2)
+    assert foreign_key_check(quarantined.connection) == []
+
+
+def test_one_runs_hold_never_refuses_another_runs_pair(quarantined: m1.Owned) -> None:
+    """The running balance is read per run, so a second run writes as it always did."""
+    seed_other_run(quarantined)
+
+    assert counts(quarantined) == (2, 2)
+    assert foreign_key_check(quarantined.connection) == []

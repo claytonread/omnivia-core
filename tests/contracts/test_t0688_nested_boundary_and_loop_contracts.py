@@ -283,6 +283,24 @@ def test_boundary_aggregation_refuses_unbounded_nesting() -> None:
         workflow.validate_nested_workflow_boundary(_boundary(aggregation=node))
 
 
+def test_boundary_aggregation_nesting_is_pinned_at_the_limit_and_one_past_it() -> None:
+    """A bound that is only tested far past its edge is a bound nobody has located.
+
+    The deepest accepted chain and the first refused one differ by exactly one level,
+    so a change to the depth is a test failure rather than a silent widening.
+    """
+
+    def chain(depth: int) -> dict[str, Any]:
+        node = _aggregation()
+        for _ in range(depth):
+            node = _aggregation(descendantAggregations=[node])
+        return node
+
+    workflow.validate_nested_workflow_boundary(_boundary(aggregation=chain(32)))
+    with pytest.raises(ContractSemanticError, match="nest beyond the bound"):
+        workflow.validate_nested_workflow_boundary(_boundary(aggregation=chain(33)))
+
+
 # --------------------------------------------------------------------------
 # Rollout: every stage x posture branch
 # --------------------------------------------------------------------------
@@ -733,6 +751,31 @@ def test_the_concurrency_bound_is_bounded_by_the_iteration_bound() -> None:
     )
 
 
+def test_the_iteration_bound_is_bounded_at_the_limit_and_beyond_it() -> None:
+    """The bound a runtime will actually freeze, pinned at the limit and one past it.
+
+    Stated here rather than left to binding time, where the refusal lands on a Run
+    instead of on the author who wrote the number.
+    """
+    limit = workflow.LOOP_MAXIMUM_ITERATIONS
+    assert limit == 10_000
+    workflow.validate_complete_loop_plan(_plan(maximumIterations=limit))
+    _assert_loop_invalid(
+        _plan(maximumIterations=limit + 1),
+        f"maximumIterations exceeds the bound of {limit}",
+    )
+
+
+def test_an_iteration_count_condition_is_bounded_by_the_iteration_bound() -> None:
+    """A count the frozen bound stops the loop reaching is a condition that never fires."""
+    at_bound = {"conditionKind": "iterationCount", "deterministic": True, "iterationCount": 12}
+    workflow.validate_complete_loop_plan(_plan(maximumIterations=12, done=at_bound))
+    _assert_loop_invalid(
+        _plan(maximumIterations=12, done={**at_bound, "iterationCount": 13}),
+        "iterationCount exceeds maximumIterations",
+    )
+
+
 @pytest.mark.parametrize("value", [0, -1, True])
 def test_the_concurrency_bound_must_be_a_positive_integer(value: Any) -> None:
     with pytest.raises(
@@ -827,6 +870,8 @@ def test_the_candidate_shapes_stay_out_of_the_record_registry() -> None:
 def _entry(identity: str = "iteration-t0688-1", **overrides: Any) -> dict[str, Any]:
     record: dict[str, Any] = {
         "iterationIdentity": identity,
+        "ordinal": 0,
+        "settlementSequence": 1,
         "outcomeClass": "succeeded",
         "launchedAt": _EARLIER,
         "launchBundleRef": {"bundleId": "bundle-t0688-launch-1"},
@@ -846,10 +891,23 @@ def _ledger(
     record: dict[str, Any] = {
         "ledgerSchemaVersion": "1.0.0",
         "loopStableId": "loop-t0688-berth-sweep",
+        "cancellationRequested": False,
         "entries": [_entry()] if entries is None else entries,
     }
     record.update(overrides)
     return record
+
+
+def _ordered(*entries: dict[str, Any]) -> list[dict[str, Any]]:
+    """The same entries, numbered the way a live loop numbers them.
+
+    Launch order is the position; settlement order follows it, which is the sequential
+    case. A test about the orderings themselves states them instead of calling this.
+    """
+    return [
+        {**entry, "ordinal": position, "settlementSequence": position + 1}
+        for position, entry in enumerate(entries)
+    ]
 
 
 def _late_entry(**overrides: Any) -> dict[str, Any]:
@@ -901,7 +959,9 @@ def test_the_ledger_is_complete_for_every_outcome_class() -> None:
     for entry in entries:
         if entry.get("outputsDigest") is None:
             entry.pop("outputsDigest")
-    workflow.validate_loop_iteration_ledger(_ledger(entries, loopSettledAt=_NOW))
+    workflow.validate_loop_iteration_ledger(
+        _ledger(_ordered(*entries), cancellationRequested=True, loopSettledAt=_NOW)
+    )
 
 
 def test_the_ledger_is_a_closed_shape() -> None:
@@ -926,6 +986,8 @@ def test_iteration_identities_are_stable_and_unique() -> None:
     "field",
     [
         "iterationIdentity",
+        "ordinal",
+        "settlementSequence",
         "outcomeClass",
         "launchedAt",
         "launchBundleRef",
@@ -940,6 +1002,123 @@ def test_an_entry_records_its_atomic_launch_and_settlement(field: str) -> None:
     del record[field]
     with pytest.raises(ContractSemanticError, match=f"missing {field}"):
         workflow.validate_loop_iteration_ledger(_ledger([record]))
+
+
+def test_the_ledger_records_the_loops_own_cancellation_posture() -> None:
+    """A `drainInFlight` cancellation settles no iteration, so no entry can carry it.
+
+    The posture is a member of the ledger for exactly that reason, and it is required
+    rather than optional: a recovery record that may omit it is one a resume can read as
+    an uncancelled loop and go on to plan the launches the cancellation stopped.
+    """
+    without_posture = {
+        key: value for key, value in _ledger().items() if key != "cancellationRequested"
+    }
+    with pytest.raises(ContractSemanticError, match="missing cancellationRequested"):
+        workflow.validate_loop_iteration_ledger(without_posture)
+    with pytest.raises(
+        ContractSemanticError, match="cancellationRequested is not a boolean"
+    ):
+        workflow.validate_loop_iteration_ledger(_ledger(cancellationRequested="yes"))
+
+    drained = _ledger(cancellationRequested=True, loopSettledAt=_NOW)
+    workflow.validate_loop_iteration_ledger(drained)
+
+
+def test_a_cancelled_iteration_requires_a_cancelled_loop() -> None:
+    cancelled = _entry(
+        outcomeClass="cancelled", cancellationDisposition="acknowledged"
+    )
+    cancelled.pop("outputsDigest")
+    with pytest.raises(
+        ContractSemanticError, match="a cancelled iteration requires a loop"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger([cancelled], cancellationRequested=False)
+        )
+    workflow.validate_loop_iteration_ledger(
+        _ledger([cancelled], cancellationRequested=True)
+    )
+
+
+def test_entries_are_contiguous_from_zero_in_ordinal_launch_order() -> None:
+    """A re-sorted ledger, or one with a launch dropped, is not the record of a run."""
+    first, second = _entry("iteration-t0688-1"), _entry("iteration-t0688-2")
+    workflow.validate_loop_iteration_ledger(_ledger(_ordered(first, second)))
+
+    for ordinals in ((0, 2), (1, 0), (1, 2), (0, 0)):
+        broken = [
+            {**entry, "ordinal": ordinal, "settlementSequence": position + 1}
+            for position, (entry, ordinal) in enumerate(
+                zip((first, second), ordinals, strict=True)
+            )
+        ]
+        with pytest.raises(
+            ContractSemanticError, match="not contiguous from zero in ordinal"
+        ):
+            workflow.validate_loop_iteration_ledger(_ledger(broken))
+
+
+def test_a_ledger_may_not_record_more_iterations_than_the_bound_allows() -> None:
+    """Ordinals run from zero, so the ordinal bound is the ledger's length bound.
+
+    Pinned at the limit and one past it: without it, contiguity alone would admit a
+    ledger of any length at all, which is the one thing a frozen iteration bound exists
+    to make impossible.
+    """
+    limit = workflow.LOOP_MAXIMUM_ITERATIONS
+    assert limit == 10_000
+    entries = [
+        _entry(f"iteration-t0688-{ordinal}", ordinal=ordinal, settlementSequence=ordinal + 1)
+        for ordinal in range(limit)
+    ]
+    workflow.validate_loop_iteration_ledger(_ledger(entries))
+
+    entries.append(
+        _entry(f"iteration-t0688-{limit}", ordinal=limit, settlementSequence=limit + 1)
+    )
+    with pytest.raises(ContractSemanticError, match="ordinal is beyond the bound"):
+        workflow.validate_loop_iteration_ledger(_ledger(entries))
+
+
+def test_settlement_sequences_cover_the_entries_exactly_once_from_one() -> None:
+    """Wall-clock instants tie; the settlement sequence is what a replay reproduces."""
+    first, second = _entry("iteration-t0688-1"), _entry("iteration-t0688-2")
+    for sequences in ((1, 1), (1, 3), (0, 1), (2, 3)):
+        broken = [
+            {**entry, "ordinal": position, "settlementSequence": sequence}
+            for position, (entry, sequence) in enumerate(
+                zip((first, second), sequences, strict=True)
+            )
+        ]
+        with pytest.raises(ContractSemanticError, match="settlementSequence"):
+            workflow.validate_loop_iteration_ledger(_ledger(broken))
+
+    # Out of ordinal order is not out of order: a parallel loop settles that way.
+    workflow.validate_loop_iteration_ledger(
+        _ledger(
+            [
+                {**first, "ordinal": 0, "settlementSequence": 2},
+                {**second, "ordinal": 1, "settlementSequence": 1},
+            ]
+        )
+    )
+
+
+def test_no_entry_launches_or_settles_after_the_loop_did() -> None:
+    """A settled loop launches nothing more, and only a late result settles after it."""
+    with pytest.raises(ContractSemanticError, match="cannot launch after the loop"):
+        workflow.validate_loop_iteration_ledger(
+            _ledger(
+                [_entry(launchedAt=_LATER, settledAt=_LATER)], loopSettledAt=_NOW
+            )
+        )
+    with pytest.raises(
+        ContractSemanticError, match="only a late result settles after the loop settled"
+    ):
+        workflow.validate_loop_iteration_ledger(
+            _ledger([_entry(settledAt=_LATER)], loopSettledAt=_NOW)
+        )
 
 
 def test_a_carrying_iteration_records_its_carry_digest() -> None:
@@ -998,7 +1177,10 @@ def test_an_unsettled_outcome_records_neither_outputs_nor_failure(outcome: str) 
         match=f"{outcome} records neither outputsDigest nor failureRef",
     ):
         workflow.validate_loop_iteration_ledger(
-            _ledger([_entry(outcomeClass=outcome, **disposition)])
+            _ledger(
+                [_entry(outcomeClass=outcome, **disposition)],
+                cancellationRequested=outcome == "cancelled",
+            )
         )
 
 
@@ -1012,7 +1194,9 @@ def test_cancellation_disposition_is_required_exactly_for_a_cancelled_iteration(
     with pytest.raises(
         ContractSemanticError, match="cancellationDisposition is required exactly"
     ):
-        workflow.validate_loop_iteration_ledger(_ledger([cancelled]))
+        workflow.validate_loop_iteration_ledger(
+            _ledger([cancelled], cancellationRequested=True)
+        )
     with pytest.raises(
         ContractSemanticError, match="cancellationDisposition is required exactly"
     ):
@@ -1086,7 +1270,7 @@ def test_effect_settlements_are_validated_per_entry() -> None:
 
 
 def test_ledger_validation_does_not_mutate_the_record() -> None:
-    record = _ledger([_entry(), _late_entry()], loopSettledAt=_NOW)
+    record = _ledger(_ordered(_entry(), _late_entry()), loopSettledAt=_NOW)
     before = copy.deepcopy(record)
     workflow.validate_loop_iteration_ledger(record)
     assert record == before

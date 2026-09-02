@@ -597,6 +597,12 @@ BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_workflow_runtime_bindings is append-only; DELETE is never permitted');
 END;
 
+-- A quarantined run's chain is the one chain nobody has been able to verify, so
+-- nothing extends it while a hold stands. Holds stack and each release discharges one,
+-- so the posture is the running balance and not the latest row: a run held twice and
+-- released once is still held. Enforced in this trigger and in the journal event's,
+-- rather than in the repository alone, because a caller issuing the INSERT by any other
+-- route would otherwise advance an untrusted chain past a check it never asked.
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_workflow_transition_bundles_insert
 BEFORE INSERT ON omnivia_workflow_transition_bundles
 BEGIN
@@ -632,6 +638,10 @@ BEGIN
     WHERE NEW.recorded_at_us < (
         SELECT bound_at_us FROM omnivia_workflow_runtime_bindings
         WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: a run holding a journal quarantine records no transition bundle')
+    WHERE (SELECT COALESCE(SUM(CASE WHEN action = 'quarantined' THEN 1 ELSE -1 END), 0)
+             FROM omnivia_workflow_journal_quarantine_events
+            WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id) > 0;
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_workflow_transition_bundles_update
@@ -646,6 +656,9 @@ BEGIN
     SELECT RAISE(ABORT, 'omnivia: omnivia_workflow_transition_bundles is append-only; DELETE is never permitted');
 END;
 
+-- The quarantine guard is repeated here, on the event rather than on its bundle,
+-- because the event is the chain: a guard only on the bundle leaves the chain itself
+-- reachable by a caller that writes this row directly.
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_workflow_runtime_journal_events_insert
 BEFORE INSERT ON omnivia_workflow_runtime_journal_events
 BEGIN
@@ -682,6 +695,10 @@ BEGIN
     WHERE NEW.recorded_at_us < (
         SELECT bound_at_us FROM omnivia_workflow_runs
         WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id);
+    SELECT RAISE(ABORT, 'omnivia: a run holding a journal quarantine records no journal event')
+    WHERE (SELECT COALESCE(SUM(CASE WHEN action = 'quarantined' THEN 1 ELSE -1 END), 0)
+             FROM omnivia_workflow_journal_quarantine_events
+            WHERE workspace_id = NEW.workspace_id AND run_id = NEW.run_id) > 0;
 END;
 
 CREATE TRIGGER IF NOT EXISTS omnivia_guard_workflow_runtime_journal_events_update

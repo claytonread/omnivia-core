@@ -46,6 +46,7 @@ from omnivia_core_runtime.execution import (
     ITERATION_SKIPPED,
     LOOP_MODE_PARALLEL,
     LOOP_MODE_SEQUENTIAL,
+    LOOP_OUTCOME_INCOMPLETE,
     LOOP_RUNNING,
     LOOP_SETTLED,
     LOOP_STOPPING,
@@ -65,6 +66,7 @@ from omnivia_core_runtime.execution import (
     IterationLedgerEntry,
     LateResult,
     LoopElement,
+    LoopLedger,
     LoopRunner,
     canonical_hash,
     replay_ledger,
@@ -188,7 +190,7 @@ def test_planning_never_returns_an_iteration_the_ledger_already_records() -> Non
     first, second = runner.plan_launches()
     runner.record_launch(first)
     runner.record_launch(second)
-    succeed(runner, runner.ledger[0])
+    succeed(runner, runner.ledger.entries[0])
 
     wave = runner.plan_launches()
 
@@ -434,7 +436,7 @@ def test_record_launch_preserves_the_scheduling_intents_in_the_ledger() -> None:
     assert entry.scheduling_intents_digest == canonical_hash(
         ["wake-timer", "budget-hold"]
     )
-    assert runner.ledger[0].scheduling_intents == ("wake-timer", "budget-hold")
+    assert runner.ledger.entries[0].scheduling_intents == ("wake-timer", "budget-hold")
 
 
 def test_the_scheduling_intents_survive_a_settlement_and_a_replay() -> None:
@@ -445,7 +447,7 @@ def test_the_scheduling_intents_survive_a_settlement_and_a_replay() -> None:
 
     resumed = replay_ledger(plan, source("a", "b"), runner.ledger)
 
-    assert resumed.ledger[0].scheduling_intents == ("wake-timer",)
+    assert resumed.ledger.entries[0].scheduling_intents == ("wake-timer",)
 
 
 def test_a_launch_with_a_malformed_or_duplicated_scheduling_intent_is_refused() -> None:
@@ -469,7 +471,7 @@ def test_a_relaunch_carrying_different_scheduling_intents_is_still_refused() -> 
         runner.record_launch(replace(launch, scheduling_intents=("budget-hold",)))
 
     assert refusal.value.reason == "iteration_already_launched"
-    assert runner.ledger[0].scheduling_intents == ("wake-timer",)
+    assert runner.ledger.entries[0].scheduling_intents == ("wake-timer",)
 
 
 def test_a_launch_out_of_ordinal_order_is_refused_rather_than_leaving_a_hole() -> None:
@@ -596,7 +598,9 @@ def test_a_ledger_entry_refuses_an_incoherent_settlement(
 ) -> None:
     with pytest.raises(ExecutionContractError) as error:
         in_flight_entry(**overrides)
-    assert error.value.reason in {"invalid_settlement", "unknown_vocabulary_member"}
+    # Named exactly: every case above is an incoherent settlement, and accepting a
+    # second reason here would let one that failed on its vocabulary pass as one.
+    assert error.value.reason == "invalid_settlement"
 
 
 def test_a_ledger_entry_admits_the_coherent_settlements() -> None:
@@ -630,7 +634,7 @@ def test_a_settlement_refusal_leaves_the_settlement_sequence_untouched() -> None
     with pytest.raises(ExecutionContractError):
         runner.settle(entry.iteration_identity, outcome=OUTCOME_SUCCEEDED)
 
-    settled = succeed(runner, runner.ledger[0])
+    settled = succeed(runner, runner.ledger.entries[0])
     assert settled.settlement_sequence == 1
 
 
@@ -649,7 +653,7 @@ def test_carry_threads_from_one_settled_iteration_into_the_next_launch() -> None
 
     assert runner.carry_digest == CARRY_ONE
     assert runner.plan_launches()[0].carry_digest == CARRY_ONE
-    assert runner.ledger[0].resulting_carry_digest == CARRY_ONE
+    assert runner.ledger.entries[0].resulting_carry_digest == CARRY_ONE
 
 
 def test_a_new_carrying_loop_requires_its_frozen_initial_carry() -> None:
@@ -668,7 +672,7 @@ def test_a_replayed_carrying_ledger_must_record_its_initial_carry() -> None:
     )
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, source("a"), (entry,))
+        replay_ledger(plan, source("a"), LoopLedger((entry,)))
 
     assert refusal.value.reason == "carry_drift"
 
@@ -690,7 +694,7 @@ def test_a_crash_and_resume_launches_the_next_iteration_with_the_carry_before_it
     assert next_launch.ordinal == 2
     assert next_launch.carry_digest == CARRY_TWO
     resumed.record_launch(next_launch)
-    assert resumed.ledger[2].carry_digest == CARRY_TWO
+    assert resumed.ledger.entries[2].carry_digest == CARRY_TWO
 
 
 def test_a_resume_refuses_a_caller_supplied_carry_that_disagrees_with_the_ledger() -> (
@@ -716,10 +720,10 @@ def test_a_replay_refuses_a_recorded_launch_whose_carry_is_not_the_folded_one() 
     runner = LoopRunner(plan, source("a", "b"), carry_digest=CARRY_ZERO)
     succeed(runner, launch_next(runner), resulting_carry_digest=CARRY_ONE)
     launch_next(runner)
-    drifted = (runner.ledger[0], replace(runner.ledger[1], carry_digest=CARRY_TWO))
+    drifted = (runner.ledger.entries[0], replace(runner.ledger.entries[1], carry_digest=CARRY_TWO))
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, source("a", "b"), drifted)
+        replay_ledger(plan, source("a", "b"), LoopLedger(drifted))
 
     assert refusal.value.reason == "carry_drift"
 
@@ -750,7 +754,9 @@ def test_a_non_carrying_plan_refuses_a_launch_and_a_ledger_that_carry_one() -> N
     recorded = launch_next(runner)
     with pytest.raises(ExecutionRefused) as replayed:
         replay_ledger(
-            plan, source("a", "b"), (replace(recorded, carry_digest=CARRY_ZERO),)
+            plan,
+            source("a", "b"),
+            LoopLedger((replace(recorded, carry_digest=CARRY_ZERO),)),
         )
     assert replayed.value.reason == "carry_drift"
 
@@ -779,14 +785,14 @@ def test_a_carrying_plan_must_be_sequential() -> None:
 
 
 def three_element_ledger() -> tuple[
-    FrozenLoopPlan, tuple[LoopElement, ...], tuple[IterationLedgerEntry, ...]
+    FrozenLoopPlan, tuple[LoopElement, ...], LoopLedger
 ]:
     plan = parallel_plan(maximum_concurrency=3)
     elements = source("a", "b", "c")
     runner = LoopRunner(plan, elements)
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    for entry in runner.ledger:
+    for entry in runner.ledger.entries:
         succeed(runner, entry)
     return plan, elements, runner.ledger
 
@@ -805,7 +811,7 @@ def test_a_ledger_with_a_hole_is_refused() -> None:
     plan, elements, ledger = three_element_ledger()
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, (ledger[0], ledger[2]))
+        replay_ledger(plan, elements, LoopLedger((ledger.entries[0], ledger.entries[2])))
 
     assert refusal.value.reason == "ledger_not_contiguous"
 
@@ -814,7 +820,7 @@ def test_a_ledger_with_an_arbitrary_skipped_prefix_is_refused() -> None:
     plan, elements, ledger = three_element_ledger()
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, ledger[1:])
+        replay_ledger(plan, elements, LoopLedger(ledger.entries[1:]))
 
     assert refusal.value.reason == "ledger_not_contiguous"
 
@@ -823,7 +829,11 @@ def test_a_reordered_ledger_is_refused_rather_than_silently_sorted() -> None:
     plan, elements, ledger = three_element_ledger()
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, (ledger[1], ledger[0], ledger[2]))
+        replay_ledger(
+            plan,
+            elements,
+            LoopLedger((ledger.entries[1], ledger.entries[0], ledger.entries[2])),
+        )
 
     assert refusal.value.reason == "ledger_not_contiguous"
 
@@ -834,14 +844,14 @@ def test_a_replay_never_relaunches_a_settled_or_in_flight_iteration() -> None:
     runner = LoopRunner(plan, elements)
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    succeed(runner, runner.ledger[0])
+    succeed(runner, runner.ledger.entries[0])
 
     resumed = replay_ledger(plan, elements, runner.ledger)
 
     # Ordinal 1 is still in flight, so exactly one slot of headroom remains and it
     # goes to the first ordinal the ledger does not record.
     assert [launch.ordinal for launch in resumed.plan_launches()] == [2]
-    for recorded in resumed.ledger:
+    for recorded in resumed.ledger.entries:
         with pytest.raises(ExecutionRefused) as refusal:
             resumed.record_launch(
                 IterationLaunch(
@@ -857,20 +867,20 @@ def test_a_replay_never_relaunches_a_settled_or_in_flight_iteration() -> None:
 
 def test_a_replay_refuses_a_renamed_iteration_identity() -> None:
     plan, elements, ledger = three_element_ledger()
-    renamed = (replace(ledger[0], iteration_identity=canonical_hash("elsewhere")),)
+    renamed = (replace(ledger.entries[0], iteration_identity=canonical_hash("elsewhere")),)
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, renamed)
+        replay_ledger(plan, elements, LoopLedger(renamed))
 
     assert refusal.value.reason == "iteration_identity_drift"
 
 
 def test_a_replay_refuses_a_drifted_inputs_digest() -> None:
     plan, elements, ledger = three_element_ledger()
-    drifted = (replace(ledger[0], inputs_digest=canonical_hash("elsewhere")),)
+    drifted = (replace(ledger.entries[0], inputs_digest=canonical_hash("elsewhere")),)
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, drifted)
+        replay_ledger(plan, elements, LoopLedger(drifted))
 
     assert refusal.value.reason == "iteration_identity_drift"
 
@@ -887,13 +897,13 @@ def test_a_replay_refuses_a_ledger_recorded_against_a_different_source() -> None
 def test_a_replay_refuses_two_iterations_settled_at_the_same_sequence() -> None:
     plan, elements, ledger = three_element_ledger()
     collided = (
-        ledger[0],
-        replace(ledger[1], settlement_sequence=ledger[0].settlement_sequence),
-        ledger[2],
+        ledger.entries[0],
+        replace(ledger.entries[1], settlement_sequence=ledger.entries[0].settlement_sequence),
+        ledger.entries[2],
     )
 
     with pytest.raises(ExecutionRefused) as refusal:
-        replay_ledger(plan, elements, collided)
+        replay_ledger(plan, elements, LoopLedger(collided))
 
     assert refusal.value.reason == "duplicate_settlement_sequence"
 
@@ -927,7 +937,7 @@ def test_maximum_iteration_overflow_fails_the_loop_rather_than_extending_it() ->
     assert runner.state == LOOP_SETTLED
     assert runner.plan_launches() == ()
     assert runner.failure_reason == "maximum_iterations_exceeded"
-    assert len(runner.ledger) == 2
+    assert len(runner.ledger.entries) == 2
 
 
 def test_a_source_within_the_frozen_bound_settles_without_a_failure() -> None:
@@ -941,22 +951,35 @@ def test_a_source_within_the_frozen_bound_settles_without_a_failure() -> None:
 
 
 def test_a_launch_beyond_the_frozen_bound_is_refused() -> None:
-    plan = sequential_plan(maximum_iterations=1)
-    runner = LoopRunner(plan, source("a", "b"))
+    """The frozen bound itself, and no other guard standing in for it.
+
+    A sequential plan settles at its bound, so the refusal a settled loop gives is
+    `loop_not_launching` and the bound is never reached. Keeping an iteration in flight
+    under a parallel plan holds the loop `RUNNING` with concurrency headroom left and the
+    ledger contiguous at the refused ordinal, so `loop_exhausted` is the only guard the
+    launch can reach -- and the assertion names it rather than accepting either.
+    """
+    plan = parallel_plan(maximum_iterations=2, maximum_concurrency=2)
+    runner = LoopRunner(plan, source("a", "b", "c"))
     succeed(runner, launch_next(runner))
+    launch_next(runner)
+
+    assert runner.state == LOOP_RUNNING
+    assert len(runner.in_flight) == 1 < plan.maximum_concurrency
 
     with pytest.raises(ExecutionRefused) as refusal:
         runner.record_launch(
             IterationLaunch(
-                iteration_identity=plan.iteration_identity("b"),
-                ordinal=1,
-                inputs_digest=canonical_hash("payload:b"),
+                iteration_identity=plan.iteration_identity("c"),
+                ordinal=2,
+                inputs_digest=canonical_hash("payload:c"),
                 carry_digest=None,
                 scheduling_intents=(),
             )
         )
 
-    assert refusal.value.reason in {"loop_not_launching", "loop_exhausted"}
+    assert refusal.value.reason == "loop_exhausted"
+    assert len(runner.ledger.entries) == 2
 
 
 def test_an_invalid_frozen_bound_is_refused_at_the_plan() -> None:
@@ -988,7 +1011,7 @@ def test_record_and_continue_keeps_launching_after_a_failed_iteration() -> None:
         runner.record_launch(launch)
 
     runner.settle(
-        runner.ledger[0].iteration_identity,
+        runner.ledger.entries[0].iteration_identity,
         outcome=OUTCOME_FAILED,
         failure_reason="boom",
     )
@@ -1009,7 +1032,7 @@ def test_record_and_stop_after_current_stops_future_launch_after_the_current_wav
         runner.record_launch(launch)
 
     runner.settle(
-        runner.ledger[0].iteration_identity,
+        runner.ledger.entries[0].iteration_identity,
         outcome=OUTCOME_FAILED,
         failure_reason="boom",
     )
@@ -1019,10 +1042,10 @@ def test_record_and_stop_after_current_stops_future_launch_after_the_current_wav
     assert runner.plan_launches() == ()
     assert len(runner.in_flight) == 1
 
-    succeed(runner, runner.ledger[1])
+    succeed(runner, runner.ledger.entries[1])
     assert runner.state == LOOP_SETTLED
     assert runner.failure_reason is None
-    assert len(runner.ledger) == 2
+    assert len(runner.ledger.entries) == 2
 
 
 def test_fail_loop_records_the_failure_and_stops_the_loop() -> None:
@@ -1032,7 +1055,7 @@ def test_fail_loop_records_the_failure_and_stops_the_loop() -> None:
         runner.record_launch(launch)
 
     runner.settle(
-        runner.ledger[0].iteration_identity,
+        runner.ledger.entries[0].iteration_identity,
         outcome=OUTCOME_FAILED,
         failure_reason="boom",
     )
@@ -1041,7 +1064,7 @@ def test_fail_loop_records_the_failure_and_stops_the_loop() -> None:
     assert runner.failure_reason == "iteration_failed"
     assert runner.plan_launches() == ()
 
-    succeed(runner, runner.ledger[1])
+    succeed(runner, runner.ledger.entries[1])
     assert runner.state == LOOP_SETTLED
     assert runner.failure_reason == "iteration_failed"
 
@@ -1099,11 +1122,11 @@ def test_drain_in_flight_stops_launching_and_lets_the_in_flight_settle_normally(
     assert len(runner.in_flight) == 2
     assert runner.plan_launches() == ()
 
-    succeed(runner, runner.ledger[0])
-    succeed(runner, runner.ledger[1])
+    succeed(runner, runner.ledger.entries[0])
+    succeed(runner, runner.ledger.entries[1])
 
     assert runner.state == LOOP_SETTLED
-    assert [entry.outcome for entry in runner.ledger] == [
+    assert [entry.outcome for entry in runner.ledger.entries] == [
         OUTCOME_SUCCEEDED,
         OUTCOME_SUCCEEDED,
     ]
@@ -1119,16 +1142,16 @@ def test_complete_all_records_the_request_and_lets_the_loop_finish() -> None:
     assert runner.cancellation_requested is True
     assert runner.state == LOOP_RUNNING
 
-    succeed(runner, runner.ledger[0])
-    succeed(runner, runner.ledger[1])
+    succeed(runner, runner.ledger.entries[0])
+    succeed(runner, runner.ledger.entries[1])
     assert [launch.ordinal for launch in runner.plan_launches()] == [2, 3]
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    succeed(runner, runner.ledger[2])
-    succeed(runner, runner.ledger[3])
+    succeed(runner, runner.ledger.entries[2])
+    succeed(runner, runner.ledger.entries[3])
 
     assert runner.state == LOOP_SETTLED
-    assert len(runner.ledger) == 4
+    assert len(runner.ledger.entries) == 4
 
 
 def test_cancellation_never_rolls_back_a_recorded_effect_settlement() -> None:
@@ -1136,13 +1159,13 @@ def test_cancellation_never_rolls_back_a_recorded_effect_settlement() -> None:
     runner = LoopRunner(plan, source("a", "b", "c"))
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    runner.record_effect_settlement(runner.ledger[0].iteration_identity, "effect-a")
-    runner.record_effect_settlement(runner.ledger[0].iteration_identity, "effect-b")
+    runner.record_effect_settlement(runner.ledger.entries[0].iteration_identity, "effect-a")
+    runner.record_effect_settlement(runner.ledger.entries[0].iteration_identity, "effect-b")
 
     runner.cancel()
 
-    assert runner.ledger[0].outcome == ITERATION_CANCELLED
-    assert runner.ledger[0].effect_settlements == ("effect-a", "effect-b")
+    assert runner.ledger.entries[0].outcome == ITERATION_CANCELLED
+    assert runner.ledger.entries[0].effect_settlements == ("effect-a", "effect-b")
 
 
 def test_a_settled_iteration_records_no_further_effect_settlement() -> None:
@@ -1165,7 +1188,7 @@ def test_the_same_effect_settlement_is_never_recorded_twice() -> None:
         runner.record_effect_settlement(entry.iteration_identity, "effect-a")
 
     assert refusal.value.reason == "duplicate_effect_settlement"
-    assert runner.ledger[0].effect_settlements == ("effect-a",)
+    assert runner.ledger.entries[0].effect_settlements == ("effect-a",)
 
 
 def test_an_effect_settlement_against_an_unknown_iteration_is_refused() -> None:
@@ -1207,8 +1230,8 @@ def test_gather_follows_the_declared_order_guarantee(
         runner.record_launch(launch)
 
     # Settled out of ordinal order on purpose.
-    succeed(runner, runner.ledger[1])
-    succeed(runner, runner.ledger[0])
+    succeed(runner, runner.ledger.entries[1])
+    succeed(runner, runner.ledger.entries[0])
 
     assert runner.gather() == tuple(
         canonical_hash(f"out:{ordinal}") for ordinal in expected_ordinals
@@ -1220,15 +1243,21 @@ def test_gather_omits_every_iteration_that_did_not_succeed() -> None:
     runner = LoopRunner(plan, source("a", "b", "c"))
     for launch in runner.plan_launches():
         runner.record_launch(launch)
-    succeed(runner, runner.ledger[0])
+    succeed(runner, runner.ledger.entries[0])
     runner.settle(
-        runner.ledger[1].iteration_identity,
+        runner.ledger.entries[1].iteration_identity,
         outcome=OUTCOME_FAILED,
         failure_reason="boom",
     )
-    runner.settle(runner.ledger[2].iteration_identity, outcome=ITERATION_SKIPPED)
+    runner.settle(runner.ledger.entries[2].iteration_identity, outcome=ITERATION_SKIPPED)
 
-    assert runner.gather() == (canonical_hash("out:0"),)
+    # A recorded failure makes the loop `INCOMPLETE`, so the prefix is handed back only
+    # to a caller that asked for a partial one -- the omission itself is unchanged.
+    assert runner.outcome == LOOP_OUTCOME_INCOMPLETE
+    with pytest.raises(ExecutionRefused) as refusal:
+        runner.gather()
+    assert refusal.value.reason == "loop_incomplete"
+    assert runner.gather(partial=True) == (canonical_hash("out:0"),)
 
 
 # --------------------------------------------------------------------------
@@ -1248,16 +1277,16 @@ def test_a_late_result_is_evidence_only_and_never_mutates_the_ledger() -> None:
     before = runner.ledger
 
     late = runner.record_late_result(
-        before[0].iteration_identity, evidence_ref="evidence-1"
+        before.entries[0].iteration_identity, evidence_ref="evidence-1"
     )
 
     assert runner.ledger == before
     assert runner.late_results == (late,)
     assert late.applied_to_run_state is False
-    assert late.iteration_identity == before[0].iteration_identity
+    assert late.iteration_identity == before.entries[0].iteration_identity
     # Nothing about the settled iteration moved.
-    assert runner.ledger[0].outcome == OUTCOME_SUCCEEDED
-    assert runner.ledger[0].outputs_digest == canonical_hash("out:0")
+    assert runner.ledger.entries[0].outcome == OUTCOME_SUCCEEDED
+    assert runner.ledger.entries[0].outputs_digest == canonical_hash("out:0")
     assert runner.gather() == (canonical_hash("out:0"),)
 
 
@@ -1296,7 +1325,7 @@ def test_a_late_result_for_an_unknown_iteration_is_refused() -> None:
 
 def test_a_duplicate_late_result_for_one_iteration_is_refused() -> None:
     runner = settled_runner()
-    identity = runner.ledger[0].iteration_identity
+    identity = runner.ledger.entries[0].iteration_identity
     runner.record_late_result(identity, evidence_ref="evidence-1")
 
     with pytest.raises(ExecutionRefused) as refusal:
@@ -1308,7 +1337,7 @@ def test_a_duplicate_late_result_for_one_iteration_is_refused() -> None:
 
 def test_a_replayed_late_result_is_admitted_against_the_replayed_ledger() -> None:
     runner = settled_runner()
-    identity = runner.ledger[0].iteration_identity
+    identity = runner.ledger.entries[0].iteration_identity
     late = runner.record_late_result(identity, evidence_ref="evidence-1")
 
     resumed = replay_ledger(

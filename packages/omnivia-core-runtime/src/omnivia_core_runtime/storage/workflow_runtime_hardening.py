@@ -81,11 +81,16 @@ removed row is a `sequence_gap` at the sequence it is missing from, and a row th
 there but cannot be believed is an `integrity_failure` at its own. `R0` observes and
 records; `R1` and `R2` append a quarantine disposition in the same fenced transaction as
 the report. Nothing here writes a new public Workflow Run state, deletes, folds,
-reconstructs or renumbers anything, and a resume against a held quarantine refuses with
-`RT_JOURNAL_QUARANTINED` rather than skipping the history it cannot verify. A release is
+reconstructs or renumbers anything, and a held quarantine refuses with
+`RT_JOURNAL_QUARANTINED` rather than skipping the history it cannot verify. It refuses
+both directions: a resume, and -- in
+:meth:`WorkflowTransitionWriter.apply_transition_bundle` and again in 0035's own insert
+guards -- any write that would extend the chain the quarantine holds, because a hold
+that only stops the reader is a hold a writer walks straight past. A release is
 explicit, attributable and fenced; there is no statement that could release one Run's
 quarantine from another Run's decision, and one decision discharges one hold, so a Run
-held for two distinct findings stays held until both have been answered.
+held for two distinct findings stays held until both have been answered -- and stays
+unwritable until then too.
 
 *A retention boundary records that a range is removable; it never removes it.*
 :meth:`WorkflowJournalGovernanceWriter.record_retention_boundary` writes one boundary
@@ -657,6 +662,7 @@ TRANSITION_BUNDLE_DIAGNOSTICS: Final = (
     "RT_BUNDLE_INTEGRITY_CONFLICT",
     "RT_BUNDLE_REVISION_CONFLICT",
     "RT_JOURNAL_INTEGRITY_FAILURE",
+    "RT_JOURNAL_QUARANTINED",
 )
 
 #: One bundle, its journal event, and the binding row the bundle's `binding_id` names.
@@ -799,6 +805,14 @@ class WorkflowTransitionWriter:
         digest is not exactly that value is refused rather than stored under a digest it
         does not have.
 
+        A Run holding a journal quarantine records nothing at all here. `RT_JOURNAL_QUARANTINED`
+        was a read-only posture -- :func:`evaluate_journal_resume` reported it and a caller
+        that did not ask advanced the chain anyway -- and an advisory hold on an
+        unverifiable journal holds nothing. The refusal is checked here *and* enforced in
+        0035's own insert guards, so it is not a check a lower-level caller can route
+        around. It covers the replay path too: confirming a replay means reading the very
+        chain the quarantine says nobody has been able to verify.
+
         Every refusal below happens before a statement is issued, and the two inserts are
         one deferred-foreign-key pair, so a refused or half-failed application leaves no
         bundle without its event and no event without its bundle.
@@ -819,6 +833,13 @@ class WorkflowTransitionWriter:
         if bundle["runId"] != run_id:
             raise StorageError(
                 "a transition bundle names a run other than the one its binding was read for"
+            )
+        if read_journal_quarantine(
+            self.connection, workspace_id=self.workspace_id, run_id=run_id
+        ).held:
+            raise TransitionBundleRefused(
+                "RT_JOURNAL_QUARANTINED",
+                f"run {run_id!r} holds a journal quarantine and records no transition",
             )
 
         payload_document, payload_digest, payload_length = _canonical_document(
