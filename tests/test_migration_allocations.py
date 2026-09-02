@@ -92,9 +92,10 @@ DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clay
 # carries the authority's pinned content for that migration file in the checked
 # head -- the fact `check_history` verifies. For a migration whose content is
 # later repaired that is the repairing commit, not its first appearance: 0035 was
-# first written by 1326b10 and repinned to the T-0688 release repair 8873985,
-# which is where its 6e819ede… content lives. None are accepted, so none carries
-# an accepted_commit.
+# first written by 1326b10, repinned to the T-0688 release repair 8873985, and
+# repinned again to the T-0691 quarantine-write repair 5177d67, which is where
+# its e31fa409… content lives. None are accepted, so none carries an
+# accepted_commit.
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -110,7 +111,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
     34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
-    35: "887398582ffbaa852e5eb2d34d867081adc0386e",
+    35: "5177d6745ed1ac87e63d7cdd918772cce61f271c",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
