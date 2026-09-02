@@ -88,9 +88,13 @@ FROZEN_SOURCE_HEAD = "23c6a82dc8128ceec202fc6202b65abf4e2b2aa3"
 ACCEPTED_COMMIT = FROZEN_SOURCE_HEAD
 DECISION = "T-0660 / Option B successor / Runtime Execution Planes FND-F3 / Clayton Read"
 
-# The candidates' exact introducing commits, each
-# pinned as the commit that first introduced each migration file in the checked head -- not yet accepted, so
-# neither carries an accepted_commit.
+# The candidates' exact introducing commits, each pinned as the commit that
+# carries the authority's pinned content for that migration file in the checked
+# head -- the fact `check_history` verifies. For a migration whose content is
+# later repaired that is the repairing commit, not its first appearance: 0035 was
+# first written by 1326b10 and repinned to the T-0688 release repair 8873985,
+# which is where its 6e819ede… content lives. None are accepted, so none carries
+# an accepted_commit.
 CANDIDATE_INTRODUCED_COMMITS = {
     21: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
     22: "0b0d8ba56466debfaa440dcb39ad4f5ebd6077b2",
@@ -106,7 +110,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     32: "73aa21696bfe10d56141d4945475d77dfc631f5d",
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
     34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
-    35: "bfa5a241ac0d65ab96e060691a2db09c250f0a5f",
+    35: "887398582ffbaa852e5eb2d34d867081adc0386e",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
