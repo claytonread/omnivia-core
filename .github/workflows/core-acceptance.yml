@@ -39,8 +39,17 @@ jobs:
     runs-on: ubuntu-latest
     # 45 left no margin: a full suite that took 40m05s left 78 seconds for the
     # benchmarks, Ruff, mypy, Swift and the diff checks that follow it, so the
-    # gate reported a timeout for work that had passed.
-    timeout-minutes: 60
+    # gate reported a timeout for work that had passed. 60 then repeated the
+    # same failure mode on a legitimately slower shared runner: run
+    # 33738650542 made steady, uncancelled progress on the full suite -- 62%
+    # at 09:31, 73% at 09:41, 80% at 10:01, 87% at 10:15, 89% at 10:24 -- and
+    # was still short of the remaining benchmarks/Ruff/mypy/diff steps when
+    # the 60-minute ceiling cancelled it at 10:24:39, even though a preceding
+    # accepted run on this gate had finished in 33m39s. 120 restores the same
+    # kind of margin over a legitimately slow run that 60 restored over the
+    # 40m05s run above, without weakening the gate: every command below is
+    # unchanged, and a run that hangs still gets cancelled, just later.
+    timeout-minutes: 120
     permissions:
       contents: read
 
