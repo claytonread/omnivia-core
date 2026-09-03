@@ -685,6 +685,47 @@ def test_an_exhausted_attempt_budget_fails_the_step_the_run_and_the_job(
     assert statuses(owned, step_id(run_id, "b-write")) == ["pending"]
 
 
+def test_each_step_inherits_the_whole_budget_rather_than_sharing_one(
+    owned: m1.Owned,
+) -> None:
+    """A retry spent on one step does not shorten the next step's budget.
+
+    `runtime_attempt_number` is the ordinal within its own step -- 0018 numbers attempts
+    per `run_step_id` and the frozen `Attempt` contract says the same -- so holding it to
+    the job's `max_attempts` gives every step that ceiling independently. The distinguishing
+    case is exactly this one: the first step spends a retry and then succeeds, and if the
+    budget were instead a run-wide pool the second step would have one retry left and
+    exhaust at attempt 2. It does not; it exhausts at 3, the same ceiling the first step had.
+    """
+    _dispatcher, run_id = started(owned)
+    live = scheduler(owned)
+    first = live.claim_next()
+    assert first is not None and first.run_step_id == step_id(run_id, "a-plan")
+
+    retried = live.fail(first, failure=RETRYABLE)
+    assert retried is not None and retried.runtime_attempt_number == 2
+    claim = live.complete(retried, result_kind="runtime_completion", result={"ok": True})
+
+    assert claim is not None
+    assert claim.run_step_id == step_id(run_id, "b-write")
+    assert claim.runtime_attempt_number == 1
+    for expected in (2, 3):
+        claim = live.fail(claim, failure=RETRYABLE)
+        assert claim is not None and claim.runtime_attempt_number == expected
+    assert live.fail(claim, failure=RETRYABLE) is None
+
+    assert count(
+        owned, ATTEMPTS, "run_step_id = ?", step_id(run_id, "a-plan")
+    ) == 2
+    assert count(
+        owned, ATTEMPTS, "run_step_id = ?", step_id(run_id, "b-write")
+    ) == 3
+    assert statuses(owned, step_id(run_id, "a-plan"))[-1] == "succeeded"
+    assert statuses(owned, step_id(run_id, "b-write"))[-1] == "failed"
+    assert run_status(owned, run_id) == "failed"
+    assert job_state(owned, run_id) == "failed"
+
+
 def test_a_non_retryable_failure_fails_the_run_without_spending_the_budget(
     owned: m1.Owned,
 ) -> None:

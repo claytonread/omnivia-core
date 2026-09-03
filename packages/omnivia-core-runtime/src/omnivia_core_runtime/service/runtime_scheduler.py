@@ -105,7 +105,8 @@ _NEXT_RUNTIME_ATTEMPT_NUMBER: Final = (
 
 #: The attempt budget the durable job already states, which is the bound a retry is held
 #: to. Read rather than configured here: 0010 stores it per job and enforces it on the
-#: application attempt, so a second bound in Python could only disagree with it.
+#: application attempt, so a second bound in Python could only disagree with it. Every
+#: step of the run inherits it in full and independently -- see :meth:`RuntimeScheduler.fail`.
 _JOB_ATTEMPT_BUDGET: Final = (
     "SELECT max_attempts FROM omnivia_job_application_metadata "
     "WHERE workspace_id = ? AND job_id = ?"
@@ -422,6 +423,18 @@ class RuntimeScheduler:
         when a stated retry class contradicts a frozen error code. A failure that is
         either non-retryable or out of budget fails the step, the run and the durable job
         together.
+
+        **That budget is inherited by each step in full, not spent across the run.** The
+        number compared against it is `runtime_attempt_number`, and both 0018 and the
+        frozen `Attempt` contract define that as the ordinal *within its step* -- numbered
+        `1..N` per `run_step_id`, with nothing counting attempts across a run. So a step
+        that follows a retried one opens at 1 and holds the whole budget. That is the same
+        shape the application layer already holds itself to: 0010's trigger, RT-109's
+        requeue rule and `JobControl` recovery all compare one lineage's own contiguous
+        counter against the job's ceiling, never a sum spent by other lineages. A run-wide
+        aggregate would be a different policy needing a run-wide counter, and no schema,
+        contract or accepted test states one. The retry loop still terminates: steps are
+        finite and each step's ceiling is.
 
         A retry reopens *the same step* inside this transaction: its status moves through
         `pending` back to `running` under a new attempt, which is the only spelling 0018

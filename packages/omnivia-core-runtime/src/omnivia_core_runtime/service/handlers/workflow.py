@@ -97,11 +97,13 @@ from omnivia_core.contracts.v1 import (
     ERROR_CODE_NOT_FOUND,
     WAIT_RESOLUTION_CANCELLED,
     WAIT_STATUS_PENDING,
+    Approval,
     ContractDecodeError,
     ContractSemanticError,
     JobReference,
     ResolveWait,
     RunDefinitionRef,
+    Wait,
     WorkflowCompletion,
     WorkflowControlInput,
     WorkflowControlResult,
@@ -125,6 +127,7 @@ from omnivia_core_runtime.ownership.fencing import MutationGuard, read_guard
 from omnivia_core_runtime.ownership.identity import Clock
 from omnivia_core_runtime.service.authorization import (
     AuthenticatedSession,
+    AuthorizedApplicationContext,
     ServiceBinding,
 )
 from omnivia_core_runtime.service.mutation import (
@@ -725,11 +728,6 @@ class WorkflowHandlers:
         resolution: str,
     ) -> AuditedOperationResult:
         connection, identity, _guard = self._authority()
-        if self.wait_policy is None:
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
-                "this build has no authority to decide whether a wait may be resolved",
-            )
         self._view(connection, context.workspace_id, request.run_id)
         # The resume digest is the stored wait's own, read here rather than stated by
         # the caller or minted here. It addresses the state the step resumes from, so
@@ -796,7 +794,7 @@ class WorkflowHandlers:
                 context=context.authorization,
                 equivalence=equivalence,
                 command=command,
-                policy=self.wait_policy,
+                policy=self._require_wait_policy,
                 runtime_event_id=self.allocate_identifier("rtev"),
                 validate_result=_valid_control_result,
                 clock=self.clock,
@@ -808,6 +806,31 @@ class WorkflowHandlers:
         except WaitResolutionConflict as error:
             raise application_refusal(ERROR_CODE_CONFLICT, str(error)) from error
         return AuditedOperationResult(outcome.result, outcome.audit_ref)
+
+    def _require_wait_policy(
+        self,
+        context: AuthorizedApplicationContext,
+        command: ResolveWait,
+        wait: Wait,
+    ) -> Approval | None:
+        """The configured policy, refused only for a settlement that actually needs one.
+
+        Passed to `resolve_runtime_wait` as the policy seam itself, rather than checked
+        before calling it, so this refusal is reached only from inside the fenced
+        settlement the mutation seam runs for a request it holds no stored answer for.
+        An idempotency-key replay of an already-committed resolution is answered from
+        that stored outcome without this seam running at all -- exactly as `_release`
+        is never consulted for a replayed `workflow.start` -- so a policy dependency
+        that has since gone absent cannot hide a resolution this workspace already
+        settled. A genuinely new resolution still fails closed: absent, this build
+        cannot say whether it may be performed.
+        """
+        if self.wait_policy is None:
+            raise application_refusal(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE,
+                "this build has no authority to decide whether a wait may be resolved",
+            )
+        return self.wait_policy(context, command, wait)
 
     # -- workflow.review -------------------------------------------------------------
 

@@ -619,6 +619,14 @@ def test_unreadable_runtime_history_blocks_readiness(
     untested is the wiring in `_recover`: that the exception actually reaches
     readiness as a failed `migrations_and_jobs_recovered` precondition instead of
     propagating raw or being swallowed.
+
+    So the refusal is read off `report.reason`, which names which of `start()`'s two
+    exits produced it. `_recover` catching the `StorageError` and answering `False` is
+    what makes `publish_readiness` raise `ReadinessRefused`, and that raise is the only
+    thing in the build that spells this reason. A raw propagation would instead be caught
+    by `start()`'s generic handler, which reports the exception's own message against a
+    readiness record nothing had published -- a not-ready report with the same failed
+    state, which is exactly the outcome these assertions would otherwise accept.
     """
     from omnivia_core_runtime.service.runtime_scheduler import RuntimeSchedulingError
 
@@ -637,6 +645,12 @@ def test_unreadable_runtime_history_blocks_readiness(
     assert "migrations_and_jobs_recovered" in report.unmet
     assert runner.lifecycle.state is ServiceState.FAILED
     assert runner.runtime_recovery is None, "a refused pass must not report a verdict"
+    assert report.reason.startswith(
+        "writable readiness refused; unmet preconditions:"
+    ), report.to_dict()
+    # And that precondition alone, so this is the RT-109 pass being refused rather than
+    # a readiness record no startup step ever reached.
+    assert report.unmet == ("migrations_and_jobs_recovered",), report.to_dict()
 
 
 # LC-11

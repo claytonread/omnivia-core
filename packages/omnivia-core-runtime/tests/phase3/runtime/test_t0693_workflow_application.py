@@ -937,11 +937,18 @@ def test_control_arguments_must_match_the_action_they_accompany(
 
 
 def test_resolving_a_wait_without_a_policy_authority_refuses(
-    owned: m1.Owned,
+    owned: m1.Owned, clock: FakeClock
 ) -> None:
-    """A build that cannot decide whether a resolution is permitted must not perform one."""
-    served = dispatcher(owned, releases=(release(),))
+    """A build that cannot decide whether a resolution is permitted must not perform one.
+
+    The wait is a real, pending one -- opened by `_suspend` exactly as a live suspension
+    would be -- so this proves the fail-closed refusal itself, not merely that a
+    not-found wait short-circuits before the policy is ever reached.
+    """
+    served = dispatcher(owned, releases=(release(),), clock=clock)
     run_id = run_id_of(start(served))
+    _suspend(owned, run_id)
+    clock.advance_wall(1.0)
 
     response = served.dispatch(
         request(
@@ -949,7 +956,7 @@ def test_resolving_a_wait_without_a_policy_authority_refuses(
             {
                 "run_id": run_id,
                 "action": "resolve_wait",
-                "wait_id": "wait-1",
+                "wait_id": "wait-t0693-1",
                 "resolution": "external_signal",
             },
             request_id="req-resolve",
@@ -958,6 +965,69 @@ def test_resolving_a_wait_without_a_policy_authority_refuses(
     )
 
     assert code(response) == "dependency_unavailable"
+    # A wait is pending exactly until `omnivia_runtime_wait_resolutions` names it, so an
+    # empty table is the whole proof that this refusal wrote nothing.
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_runtime_wait_resolutions"
+    ).fetchone() == (0,)
+
+
+def test_a_retry_replays_a_committed_wait_resolution_with_no_policy_authority_left(
+    owned: m1.Owned, clock: FakeClock
+) -> None:
+    """A resolution that committed is answered from its stored outcome, policy or not.
+
+    Mirrors `test_a_retry_replays_a_committed_start_with_no_release_authority_left`: the
+    dangerous shape is a caller whose first `resolve_wait` committed a resumed run but
+    lost the response. If the policy seam were consulted before the mutation seam
+    recognises the replay, that caller's retry would refuse with `dependency_unavailable`
+    once the policy has since gone absent -- hiding the resolution this workspace already
+    settled. The policy is consulted from inside the settlement the mutation seam runs
+    only when it holds no stored answer, so a replay never asks it anything.
+    """
+    served = dispatcher(
+        owned, releases=(release(),), wait_policy=lambda *args, **kwargs: None, clock=clock
+    )
+    run_id = run_id_of(start(served))
+    _suspend(owned, run_id)
+    clock.advance_wall(1.0)
+    payload = {
+        "run_id": run_id,
+        "action": "resolve_wait",
+        "wait_id": "wait-t0693-1",
+        "resolution": "external_signal",
+        "reason": "operator.resolved",
+    }
+    first = served.dispatch(
+        request(
+            WORKFLOW_CONTROL_OPERATION,
+            payload,
+            request_id="req-resolve-retry",
+            idempotency_key="idem-resolve-retry",
+        )
+    )
+    assert isinstance(first, SuccessResponseEnvelope), _error(first)
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a replayed resolution must not consult the policy seam")
+
+    retried = dispatcher(
+        owned, tag="retry", releases=(release(),), wait_policy=refuse, clock=clock
+    )
+    again = retried.dispatch(
+        request(
+            WORKFLOW_CONTROL_OPERATION,
+            payload,
+            request_id="req-resolve-retry",
+            idempotency_key="idem-resolve-retry",
+        )
+    )
+
+    assert isinstance(again, SuccessResponseEnvelope), _error(again)
+    assert again.result == first.result
+    assert owned.connection.execute(
+        "SELECT COUNT(*) FROM omnivia_runtime_wait_resolutions"
+    ).fetchone() == (1,)
 
 
 def test_resolving_a_wait_this_run_does_not_hold_is_not_found(
@@ -1140,6 +1210,7 @@ REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
         "workflow_control",
         "_cancel",
         "_resolve_wait",
+        "_require_wait_policy",
     ),
     WORKFLOW_REVIEW_OPERATION: ("_authority", "_decode", "_view", "workflow_review"),
 }
