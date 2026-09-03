@@ -269,14 +269,30 @@ def test_an_unknown_optional_field_decodes_tolerantly() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_import_start_is_the_only_durable_job_starting_operation() -> None:
-    asynchronous = [e for e in OPERATION_CATALOGUE if e.job.completion_mode != "synchronous"]
-    assert [e.name for e in asynchronous] == ["import.start"]
-    entry = asynchronous[0]
-    assert entry.job.completion_mode == "always_returns_job"
-    assert entry.job.job_kind == "ingestion.import"
-    assert entry.job.terminal_result_schema_ref == (
+def test_exactly_the_two_durable_job_starting_operations_declare_their_job() -> None:
+    """Two operations start durable work, and each says which kind and how it ends.
+
+    `import.start` runs the import on the request it was given; `workflow.start` admits a
+    Run for the scheduler to pick up. Both leave the caller holding a job they did not
+    watch finish, which is the whole reason the mode exists -- and neither may declare it
+    without naming the `job_kind` a caller would look the job up under and the schema its
+    terminal success is readable as.
+    """
+    asynchronous = {
+        e.name: e.job for e in OPERATION_CATALOGUE if e.job.completion_mode != "synchronous"
+    }
+
+    assert sorted(asynchronous) == ["import.start", "workflow.start"]
+    assert all(job.completion_mode == "always_returns_job" for job in asynchronous.values())
+    assert asynchronous["import.start"].job_kind == "ingestion.import"
+    assert asynchronous["import.start"].terminal_result_schema_ref == (
         f"{BASE_URI}jobs.schema.json#/$defs/ImportCompletionResult"
+    )
+    assert asynchronous["workflow.start"].job_kind == "workflow.execute"
+    # The Run's own evidence-gated decision, not a second ending invented for the job:
+    # `workflow.inspect` publishes exactly this shape for the same Run.
+    assert asynchronous["workflow.start"].terminal_result_schema_ref == (
+        f"{BASE_URI}runtime.schema.json#/$defs/WorkflowCompletion"
     )
 
 

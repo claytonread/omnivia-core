@@ -42,6 +42,7 @@ import ast
 import inspect
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -63,8 +64,10 @@ from omnivia_core_runtime.ownership.fencing import StaleGeneration
 from omnivia_core_runtime.ownership.identity import FakeClock
 from omnivia_core_runtime.ownership.lease import acquire_lease
 from omnivia_core_runtime.service.application import (
+    JOB_FAMILY_PURPOSES,
     WORKFLOW_FAMILY_PURPOSES,
     ApplicationDispatcher,
+    build_job_application_dispatcher,
     build_workflow_application_dispatcher,
 )
 from omnivia_core_runtime.service.authorization import Grant
@@ -77,6 +80,10 @@ from omnivia_core_runtime.service.handlers.workflow import (
     WORKFLOW_START_OPERATION,
     WorkflowRelease,
 )
+from omnivia_core_runtime.service.jobs import (
+    claim_application_job,
+    fail_application_job,
+)
 from omnivia_core_runtime.service.operations import SERVICE_OPERATIONS
 from omnivia_core_runtime.service.runtime_recovery import (
     CLASSIFICATION_NO_OPEN_ATTEMPT,
@@ -85,11 +92,14 @@ from omnivia_core_runtime.service.runtime_recovery import (
 from omnivia_core_runtime.service.workflow_runtime import workflow_runtime_scheduler
 from omnivia_core_runtime.storage.agent_runtime import (
     append_run_event,
+    read_run,
     read_run_sequence,
     runtime_writer,
 )
+from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.storage.retrieval import CONFIGURED_LOCAL_OWNER
+from omnivia_core_runtime.storage.runtime_stop import STOP_OUTCOME_REJECTED
 
 from omnivia_core import contracts as _contracts_package
 from omnivia_core.contracts.v1 import (
@@ -119,6 +129,7 @@ PLANS = m27.PLANS
 BINDINGS = ip06.BINDINGS
 EVENTS = "omnivia_runtime_events"
 STOP_REQUESTS = "omnivia_runtime_stop_requests"
+STOP_OUTCOMES = "omnivia_runtime_stop_outcomes"
 DURABLE_JOBS = "omnivia_durable_jobs"
 
 
@@ -346,6 +357,32 @@ def test_a_start_seals_the_plan_admits_the_run_and_binds_them(
         "WHERE workspace_id = ? AND run_id = ? ORDER BY ordinal",
         (WORKSPACE_ID, str(projection["run_id"])),
     ).fetchall() == [(1, "workflow.deterministic"), (2, "workflow.deterministic")]
+
+
+def test_a_start_names_the_job_its_run_is_carried_by_first_and_on_replay(
+    owned: m1.Owned,
+) -> None:
+    """The catalogue declares this operation `always_returns_job`, so every start says which.
+
+    The reference is read off the persisted run's own `job_id` rather than assumed from
+    the run identifier, so a replay answers with the first call's job instead of minting a
+    second reference for a caller who started nothing.
+    """
+    served = dispatcher(owned, releases=(release(),))
+
+    first = start(served)
+    again = start(served)
+
+    assert isinstance(first, SuccessResponseEnvelope), _error(first)
+    assert isinstance(again, SuccessResponseEnvelope), _error(again)
+    stored = read_run(
+        owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id_of(first)
+    )
+    assert stored is not None
+    assert first.metadata.job is not None
+    assert first.metadata.job.job_id == stored.job_id
+    assert again.metadata.job == first.metadata.job
+    assert count(owned, DURABLE_JOBS) == 1
 
 
 def test_a_build_with_no_release_authority_refuses_and_writes_nothing(
@@ -726,6 +763,68 @@ def test_cancelling_a_terminal_run_settles_as_ignored_and_touches_no_stream(
     assert (
         read_run_sequence(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
         == after_first
+    )
+
+
+def test_a_stop_outcome_this_build_cannot_report_refuses_the_whole_transaction(
+    owned: m1.Owned, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rejected` is not `ignored_already_terminal`, and is not reported as one.
+
+    A rejected stop changed nothing, and neither did an ignored already-terminal one --
+    but only the second means the run has finished. So the ledger's own outcome is read
+    through a mapping that publishes exactly the two dispositions this build can state,
+    and anything else raises before either history is published. The stop rows and the
+    `cancelled` event the real writer had already issued go with the transaction, so the
+    run is left exactly where the cancellation found it.
+    """
+    served = dispatcher(owned, releases=(release(),))
+    run_id = run_id_of(start(served))
+    stored = read_run(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
+    assert stored is not None
+    before = read_run_sequence(
+        owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id
+    )
+    honest = workflow_handlers.transaction_local_stop_writer
+
+    def rejecting(connection: Any, *, workspace_id: str) -> Any:
+        writer = honest(connection, workspace_id=workspace_id)
+
+        class _Rejecting:
+            """The real ledger's writes, reported under an outcome this build cannot state."""
+
+            def stop_run(self, request: Any, **settlement: Any) -> Any:
+                return replace(
+                    writer.stop_run(request, **settlement),
+                    outcome=STOP_OUTCOME_REJECTED,
+                )
+
+        return _Rejecting()
+
+    monkeypatch.setattr(
+        workflow_handlers, "transaction_local_stop_writer", rejecting
+    )
+
+    # It escapes as `StorageError` rather than as a response envelope, which is this
+    # repository's existing posture for a durable record this build cannot state: no
+    # handler and no dispatcher catches it. What is held here is what it left behind.
+    with pytest.raises(StorageError, match="rejected"):
+        cancel(served, run_id)
+
+    assert count(owned, STOP_REQUESTS) == count(owned, STOP_OUTCOMES) == 0
+    assert (
+        read_run_sequence(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
+        == before
+    )
+    settled = read_run(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
+    assert settled is not None
+    # Not published as `ignored_already_terminal`, and not made terminal to match one.
+    assert settled.status == stored.status
+    assert (
+        owned.connection.execute(
+            f"SELECT state FROM {DURABLE_JOBS} WHERE job_id = ?", (stored.job_id,)
+        ).fetchone()[0]
+        == "queued"
     )
 
 
@@ -1199,6 +1298,180 @@ def test_a_started_run_is_queued_work_the_scheduler_can_claim(
         "AND run_id = ?",
         (WORKSPACE_ID, run_id),
     ).fetchone() == (2,)
+
+
+# --- the generic job family, over the job a Run is carried by ------------------------
+
+
+def job_dispatcher(
+    holder: m1.Owned, *, tag: str = "t0693-jobs", clock: FakeClock | None = None
+) -> ApplicationDispatcher:
+    """The real S3 job family, over the same workspace and the same durable rows."""
+    return build_job_application_dispatcher(
+        service=holder,
+        principal_id=PRINCIPAL,
+        installation_id=INSTALLATION_ID,
+        workspace_id=WORKSPACE_ID,
+        fallback=fallback(),
+        clock=FakeClock(wall=WALL) if clock is None else clock,
+        allocate_identifier=allocator(tag),
+    )
+
+
+def job_request(
+    operation: str,
+    operation_input: Mapping[str, object],
+    *,
+    request_id: str,
+    idempotency_key: str | None = None,
+) -> RequestEnvelope:
+    """One job-family request, under that family's own purpose rather than this one's."""
+    return s0.envelope_for(
+        get_operation_metadata(operation),
+        operation_input=operation_input,
+        request_id=request_id,
+        correlation_id=f"cor-{request_id}",
+        trace_id=f"trc-{request_id}",
+        idempotency_key=idempotency_key,
+        purpose=JOB_FAMILY_PURPOSES[operation],
+        workspace_id=WORKSPACE_ID,
+    )
+
+
+def job_facts(holder: m1.Owned, *, run_id: str, job_id: str) -> tuple[Any, ...]:
+    """Everything a control that actually did something would have moved."""
+    read = holder.connection.execute
+    return (
+        read(
+            f"SELECT state FROM {DURABLE_JOBS} WHERE job_id = ?", (job_id,)
+        ).fetchall(),
+        read(
+            "SELECT sequence, state FROM omnivia_job_events "
+            "WHERE workspace_id = ? AND job_id = ? ORDER BY sequence",
+            (WORKSPACE_ID, job_id),
+        ).fetchall(),
+        read(
+            "SELECT attempt_number, state FROM omnivia_job_attempts "
+            "WHERE workspace_id = ? AND job_id = ? ORDER BY attempt_number",
+            (WORKSPACE_ID, job_id),
+        ).fetchall(),
+        read(
+            "SELECT terminal_observation_number, terminal_state "
+            "FROM omnivia_job_terminal_observations "
+            "WHERE workspace_id = ? AND job_id = ? "
+            "ORDER BY terminal_observation_number",
+            (WORKSPACE_ID, job_id),
+        ).fetchall(),
+        count(holder, EVENTS),
+        read_run_sequence(holder.connection, workspace_id=WORKSPACE_ID, run_id=run_id),
+    )
+
+
+def test_the_generic_job_family_steers_no_workflow_run(owned: m1.Owned) -> None:
+    """Generic job controls refuse a Workflow Run's carrying job in every state."""
+    clock = FakeClock(wall=WALL)
+    served = dispatcher(owned, releases=(release(),))
+    run_id = run_id_of(start(served))
+    stored = read_run(owned.connection, workspace_id=WORKSPACE_ID, run_id=run_id)
+    assert stored is not None
+    jobs = job_dispatcher(owned, clock=clock)
+    projected = result(
+        served.dispatch(
+            request(
+                WORKFLOW_INSPECT_OPERATION,
+                {"run_id": run_id},
+                request_id="req-jobs-inspect-before",
+            )
+        )
+    )
+
+    before = job_facts(owned, run_id=run_id, job_id=stored.job_id)
+    queued = result(
+        jobs.dispatch(
+            job_request(
+                "job.cancel",
+                {"job_id": stored.job_id},
+                request_id="req-jobs-cancel-queued",
+                idempotency_key="idem-jobs-cancel-queued",
+            )
+        )
+    )
+    assert queued["cancellation_disposition"] == "not_cancellable"
+    assert queued["job"]["identity"]["job_kind"] == workflow_handlers.WORKFLOW_JOB_KIND
+    assert queued["job"]["state"] == "queued"
+    assert queued["job"]["control"] == {
+        "cancellation": "not_cancellable",
+        "recovery": "not_retryable",
+    }
+    assert job_facts(owned, run_id=run_id, job_id=stored.job_id) == before
+
+    clock.advance_wall(10)
+    assert (
+        claim_application_job(
+            owned.connection,
+            owned.identity,
+            workspace_id=WORKSPACE_ID,
+            fencing_generation=owned.generation,
+            clock=clock,
+            job_id=stored.job_id,
+        )
+        is not None
+    )
+    claimed = job_facts(owned, run_id=run_id, job_id=stored.job_id)
+    running = result(
+        jobs.dispatch(
+            job_request(
+                "job.cancel",
+                {"job_id": stored.job_id},
+                request_id="req-jobs-cancel-running",
+                idempotency_key="idem-jobs-cancel-running",
+            )
+        )
+    )
+    assert running["cancellation_disposition"] == "not_cancellable"
+    assert running["job"]["state"] == "running"
+    assert running["job"]["control"]["cancellation"] == "not_cancellable"
+    assert job_facts(owned, run_id=run_id, job_id=stored.job_id) == claimed
+
+    clock.advance_wall(10)
+    fail_application_job(
+        owned.connection,
+        owned.identity,
+        workspace_id=WORKSPACE_ID,
+        job_id=stored.job_id,
+        fencing_generation=owned.generation,
+        clock=clock,
+        error={
+            "code": "internal_recoverable",
+            "message": "transient",
+            "retry_class": "retryable",
+        },
+    )
+    failed = job_facts(owned, run_id=run_id, job_id=stored.job_id)
+    retried = result(
+        jobs.dispatch(
+            job_request(
+                "job.retry",
+                {"job_id": stored.job_id},
+                request_id="req-jobs-retry-failed",
+                idempotency_key="idem-jobs-retry-failed",
+            )
+        )
+    )
+    assert retried["recovery_disposition"] == "not_retryable"
+    assert retried["job"]["state"] == "failed"
+    assert retried["job"]["control"]["recovery"] == "not_retryable"
+    assert job_facts(owned, run_id=run_id, job_id=stored.job_id) == failed
+
+    assert result(
+        served.dispatch(
+            request(
+                WORKFLOW_INSPECT_OPERATION,
+                {"run_id": run_id},
+                request_id="req-jobs-inspect-after",
+            )
+        )
+    )["run"] == projected["run"]
 
 
 def test_resolving_a_pending_wait_goes_through_the_runtime_wait_authority(

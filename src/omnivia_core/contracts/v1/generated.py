@@ -15214,7 +15214,14 @@ OPERATION_CATALOGUE: Final[tuple[OperationMetadata, ...]] = (
             minimum_version="1.0",
             required=True,
         ),
-        job=OperationJobMetadata(completion_mode="synchronous"),
+        job=OperationJobMetadata(
+            completion_mode="always_returns_job",
+            job_kind="workflow.execute",
+            terminal_result_schema_ref=(
+                "https://contracts.omnivia.dev/application/v1/"
+                "runtime.schema.json#/$defs/WorkflowCompletion"
+            ),
+        ),
         pagination=OperationPaginationMetadata(paginated=False),
         idempotency=OperationIdempotencyMetadata(
             supports_idempotency_key=True,

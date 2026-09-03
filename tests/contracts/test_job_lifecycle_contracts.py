@@ -2060,11 +2060,11 @@ def test_an_unknown_cancellation_availability_grants_no_cancellation() -> None:
     [
         ("succeeded", "cancellable", "not_retryable"),
         ("succeeded", "not_cancellable", "retryable"),
-        ("running", "not_cancellable", "not_retryable"),
+        ("running", "cancelled", "not_retryable"),
         ("failed", "not_cancellable", "resumable"),
         ("cancelled", "cancellable", "not_retryable"),
     ],
-    ids=["succeeded-cancellable", "succeeded-retryable", "running-uncancellable",
+    ids=["succeeded-cancellable", "succeeded-retryable", "running-cancelled",
          "failed-resumable", "cancelled-cancellable"],
 )
 def test_a_known_state_still_rejects_a_known_contradictory_availability(
@@ -2077,6 +2077,21 @@ def test_a_known_state_still_rejects_a_known_contradictory_availability(
         sem_jobs.validate_job_handle(
             _handle(state=state, cancellation=cancellation, recovery=recovery)
         )
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "succeeded", "failed", "cancelled"])
+def test_withholding_cancellation_is_legal_in_every_state(state: str) -> None:
+    """Cancellability is not a function of state alone, so `not_cancellable` never lies.
+
+    A job whose *kind* is steered by its own operation rather than by `job.cancel` -- a
+    `workflow.execute` job, cancelled through `workflow.control` -- withholds cancellation
+    while queued, running and cancelled alike. The asymmetry with `cancellable` is the
+    point: withholding a control can only under-promise, while offering one on a finished
+    job promises what cannot exist.
+    """
+    sem_jobs.validate_job_handle(
+        _handle(state=state, cancellation="not_cancellable", recovery="not_retryable")
+    )
 
 
 @pytest.mark.parametrize("disposition", ["not_retryable", "future.unseen"])

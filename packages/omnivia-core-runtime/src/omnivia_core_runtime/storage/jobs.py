@@ -40,6 +40,27 @@ _RECOVERY_ERROR: Final[dict[str, object]] = {
     "retry_class": "retryable",
 }
 
+#: The job kinds the generic `job.cancel` / `job.retry` family may act on, keyed by the
+#: durable `job_kind` migration 0015 records for every application job.
+#:
+#: An allowlist, and fail-closed by construction: a kind absent from it is *inspectable*
+#: through `job.get` and `job.events` and *controllable* through nothing here. That is the
+#: whole policy, and it is stated once so a snapshot and a control request cannot disagree
+#: about it.
+#:
+#: `workflow.execute` is deliberately absent. A Workflow Run is steered by
+#: `workflow.control`, which releases the run's open attempt and unresolved wait, goes
+#: through the durable stop ledger and settles the carrying job in one transaction. A
+#: generic `job.cancel` reaches none of that: it would record a cancellation-pending event
+#: against a job whose Run knows nothing of it, and `job.retry` would requeue a job whose
+#: canonical Run is terminal -- both are exactly the divergence RT-109 reads as
+#: `contradictory_history`. Refusing here is not a missing feature; the operation that can
+#: honestly do this work already exists.
+#:
+#: A kind added to the schema later is refused until it is listed, which is the direction a
+#: control policy should fail in.
+_CONTROLLABLE_JOB_KINDS: Final = frozenset({"ingestion.import"})
+
 _STRANDED_APPLICATION_JOBS: Final = (
     "SELECT j.job_id, m.max_attempts FROM omnivia_durable_jobs j "
     "JOIN omnivia_job_application_metadata m ON m.job_id = j.job_id "
@@ -171,11 +192,19 @@ def _control(
     *,
     workspace_id: str,
     job_id: str,
+    job_kind: str,
     state: str,
     attempts: tuple[JobAttempt, ...],
     supports_checkpoint_resume: bool,
     max_attempts: int,
 ) -> JobControl:
+    if job_kind not in _CONTROLLABLE_JOB_KINDS:
+        # Before the state is consulted at all, because for these kinds the state does not
+        # decide the answer: no state of a `workflow.execute` job makes it steerable from
+        # here, and a handle that advertised otherwise -- `cancellable` while queued,
+        # `retryable` after a retryable attempt error -- would be offering a control this
+        # module refuses to perform a moment later.
+        return JobControl(cancellation="not_cancellable", recovery="not_retryable")
     if state == "cancelled":
         cancellation = "cancelled"
     elif state in {"succeeded", "failed"}:
@@ -269,6 +298,7 @@ def read_application_job_snapshot(
             connection,
             workspace_id=workspace_id,
             job_id=job_id,
+            job_kind=identity.job_kind,
             state=state,
             attempts=history,
             supports_checkpoint_resume=bool(row[5]),
@@ -489,6 +519,11 @@ def request_job_cancellation(
     source_state = str(handle["state"])
     control = handle["control"]
     assert isinstance(control, Mapping)
+    # Decided from the handle this job actually published, never from its state directly, so
+    # the control policy `_control` applies -- including the `_CONTROLLABLE_JOB_KINDS`
+    # allowlist -- is the policy enforced here. A kind that publishes `not_cancellable`
+    # therefore lands on a refusal or a no-op, and neither branch writes an event, requeues
+    # the job, or touches the Run the job carries.
     available = str(control["cancellation"])
     if available == "cancellable":
         disposition = "cancellation_requested"
@@ -553,6 +588,9 @@ def request_job_retry(
     source_state = str(handle["state"])
     control = handle["control"]
     assert isinstance(control, Mapping)
+    # As in `request_job_cancellation`: the published handle is the single source of the
+    # control policy, so a kind the allowlist withholds recovery from can only reach
+    # `not_retryable`, which requeues nothing.
     recovery = str(control["recovery"])
     if source_state == "failed" and recovery == "retryable":
         disposition = "retry_scheduled"

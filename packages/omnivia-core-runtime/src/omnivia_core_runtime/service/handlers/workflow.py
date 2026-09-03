@@ -98,6 +98,7 @@ from omnivia_core.contracts.v1 import (
     WAIT_STATUS_PENDING,
     ContractDecodeError,
     ContractSemanticError,
+    JobReference,
     ResolveWait,
     RunDefinitionRef,
     WorkflowCompletion,
@@ -156,6 +157,7 @@ from omnivia_core_runtime.storage.connection import StorageError
 from omnivia_core_runtime.storage.memory import IdentifierAllocator
 from omnivia_core_runtime.storage.runtime_stop import (
     STOP_OUTCOME_ACCEPTED,
+    STOP_OUTCOME_IGNORED_ALREADY_TERMINAL,
     RunStopRequest,
     transaction_local_stop_writer,
 )
@@ -195,6 +197,21 @@ CONTROL_ACTION_RESOLVE_WAIT: Final = "resolve_wait"
 DISPOSITION_CANCELLATION_ACCEPTED: Final = "cancellation_accepted"
 DISPOSITION_ALREADY_TERMINAL: Final = "cancellation_ignored_already_terminal"
 DISPOSITION_WAIT_RESOLVED: Final = "wait_resolved"
+
+#: Every stop-ledger outcome this operation knows how to report, and its exact reading.
+#:
+#: Exhaustive by construction rather than by an `else`. The two entries here are the two
+#: outcomes a cancellation may honestly publish; `rejected` -- and any outcome a later
+#: build of the ledger adds -- is *absent*, so it reaches the miss branch and refuses
+#: instead of being folded into `ignored_already_terminal`. A rejected stop changed
+#: nothing and a run that was already finished changed nothing either, which is exactly
+#: why the difference matters: only one of them means the run is terminal, and reporting a
+#: refusal as an ignored already-terminal cancellation tells the caller their run has
+#: finished when the ledger never said so.
+_CANCELLATION_DISPOSITIONS: Final[Mapping[str, str]] = {
+    STOP_OUTCOME_ACCEPTED: DISPOSITION_CANCELLATION_ACCEPTED,
+    STOP_OUTCOME_IGNORED_ALREADY_TERMINAL: DISPOSITION_ALREADY_TERMINAL,
+}
 
 _EVENT_KIND_ADMITTED: Final = "run_admitted"
 _BINDING_SCHEMA_VERSION: Final = "1.0.0"
@@ -456,7 +473,42 @@ class WorkflowHandlers:
             clock=self.clock,
             allocate_identifier=self.allocate_identifier,
         )
-        return AuditedOperationResult(outcome.result, outcome.audit_ref)
+        # Every `workflow.start` that succeeds has started durable work, so every one of
+        # them says which -- the catalogue declares this operation `always_returns_job`,
+        # and a response that named no job would leave the caller with a Run id and no way
+        # to reach the generic job surface carrying it.
+        #
+        # Derived from the *persisted* result rather than from the request: the run id
+        # comes off the bytes `execute_mutation` validated and stored, and the job id is
+        # then read from that run's own durable row. A replay therefore answers with the
+        # first call's job, not a second one, and no value a caller sent reaches this
+        # reference.
+        return AuditedOperationResult(
+            outcome.result,
+            audit_reference=outcome.audit_ref,
+            job_reference=JobReference(
+                job_id=self._run_job_id(
+                    connection,
+                    context.workspace_id,
+                    WorkflowStartResult.from_wire(outcome.result).run.run_id,
+                )
+            ),
+        )
+
+    def _run_job_id(self, connection: Any, workspace_id: str, run_id: str) -> str:
+        """The durable job the named Run is carried by, read rather than assumed.
+
+        Migration 0018 makes `omnivia_runtime_runs.job_id` a foreign key into the
+        application job metadata, so this is the one authority on the pairing. Reading it
+        is what keeps the published reference true if a Run ever stops being allocated the
+        same identifier as its job.
+        """
+        snapshot = read_run(connection, workspace_id=workspace_id, run_id=run_id)
+        if snapshot is None:  # pragma: no cover - the mutation just persisted this run
+            raise StorageError(
+                f"workspace {workspace_id!r} holds no run {run_id!r} to reference a job for"
+            )
+        return snapshot.job_id
 
     # -- workflow.inspect ------------------------------------------------------------
 
@@ -601,6 +653,17 @@ class WorkflowHandlers:
             # admits this terminal observation through the accepted stop request, its
             # outcome and this operation's own `workflow.control` audit, so the lane
             # never has to write a `job.cancel` control it did not perform.
+            #
+            # Read before either history is published, so an outcome this build cannot
+            # state refuses the whole transaction rather than settling a job under a
+            # disposition nothing decided.
+            disposition = _CANCELLATION_DISPOSITIONS.get(settled.outcome)
+            if disposition is None:
+                raise StorageError(
+                    f"the stop ledger settled run {request.run_id!r} as "
+                    f"{settled.outcome!r}, which this build cannot report as a "
+                    "workflow cancellation disposition"
+                )
             if settled.outcome == STOP_OUTCOME_ACCEPTED:
                 _cancel_durable_job(
                     fenced,
@@ -617,12 +680,7 @@ class WorkflowHandlers:
             if view is None:  # pragma: no cover - read above proved it is here
                 raise StorageError("a workflow run vanished mid-cancellation")
             return WorkflowControlResult(
-                run=_run_projection(view),
-                disposition=(
-                    DISPOSITION_CANCELLATION_ACCEPTED
-                    if settled.outcome == STOP_OUTCOME_ACCEPTED
-                    else DISPOSITION_ALREADY_TERMINAL
-                ),
+                run=_run_projection(view), disposition=disposition
             ).to_wire()
 
         outcome = execute_mutation(

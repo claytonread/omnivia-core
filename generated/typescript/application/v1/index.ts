@@ -3254,8 +3254,10 @@ export interface OperationJobMetadata {
    * Reference to the JSON Schema governing `JobTerminalSuccess.result` for the job this
    * operation starts. This is what makes terminal success typed rather than opaque:
    * `result_kind` names the shape and this reference resolves it. Present exactly when
-   * `completion_mode` entails a durable job: in the v1 catalogue that is `import.start` alone,
-   * bound to `ImportCompletionResult`. A synchronous operation omits it, along with
+   * `completion_mode` entails a durable job: in the v1 catalogue that is `import.start`, bound
+   * to `ImportCompletionResult`, and `workflow.start`, bound to `WorkflowCompletion` -- the
+   * same evidence-gated decision the Run itself publishes, so the job's terminal success and
+   * its Run cannot state two different endings. A synchronous operation omits it, along with
    * `job_kind`.
    */
   readonly terminal_result_schema_ref?: SchemaReference;
@@ -8496,7 +8498,11 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
     input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput",
     result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult",
     required_capability: { id: "workflow.write", minimum_version: "1.0", required: true },
-    job: { completion_mode: "synchronous" },
+    job: {
+      completion_mode: "always_returns_job",
+      job_kind: "workflow.execute",
+      terminal_result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowCompletion",
+    },
     pagination: { paginated: false },
     idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
     precondition: { supports_mutation_precondition: false, required: false },

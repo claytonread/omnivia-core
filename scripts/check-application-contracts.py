@@ -1369,6 +1369,7 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "workflow.start": FrozenOperation(
         "workspace", ("workflow:write",), "create", "workflow.write",
         "runtime", "WorkflowStart", "WORKFLOW_START", False,
+        job_kind="workflow.execute", terminal_result="WorkflowCompletion",
     ),
     "workspace.create": FrozenOperation(
         "installation", ("workspace:write",), "create", "workspace.write",
