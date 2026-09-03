@@ -1338,8 +1338,10 @@ def _check_response_metadata_semantics(
     one inside a result. The synchronous-completion rule says an operation the
     catalogue completes synchronously must not announce a job -- a caller reading
     one would believe asynchronous work had begun, and that is no less misleading
-    on a failure than on a success. `import.start` is excluded because it
-    genuinely does start a job, and has its own rule for saying so.
+    on a failure than on a success. An operation the catalogue declares
+    ``always_returns_job`` is excluded because it genuinely does start a job, and
+    has its own rule for saying so in
+    ``_check_response_job_reference_correlation``.
     """
     _check_nested_semantics(case, envelope.metadata, "response metadata")
     if get_operation_metadata(case.operation).job.completion_mode == "synchronous":
@@ -1394,6 +1396,11 @@ def _check_response_branch_and_error(
             case, decoded_result, state, restates_an_earlier_outcome
         )
         _record_job_origin_facts(case, decoded_input, decoded_result, state)
+        # Every durable-job starter, not only the ones that own a frozen result
+        # validator, and on the success branch alone: a refusal started no job, so
+        # an error or an idempotency conflict has none to reference.
+        if operation.job.completion_mode == "always_returns_job":
+            _check_response_job_reference_correlation(case, envelope, decoded_result)
         _check_declared_result_semantics(
             case, envelope, decoded_input, decoded_result, restates_an_earlier_outcome,
             state,
@@ -2080,6 +2087,24 @@ def _check_result_belongs_to_the_selected_workspace(
     walk(result, "")
 
 
+#: Where an operation the catalogue declares ``always_returns_job`` states, in
+#: its own result, the identifier its ``ResponseMetadata.job`` must name.
+#:
+#: The two starters do not carry that identifier in the same shape, so the rule
+#: reads each result the way that result is written. `import.start` returns the
+#: job handle itself. `workflow.start` returns a Run, and a Run is carried by the
+#: durable job it is allocated alongside under the same identifier
+#: (``omnivia_runtime_runs.job_id``), so the run id is what its reference names.
+#:
+#: A durable-job-starting operation absent from this table is a gap in the rule
+#: rather than an operation exempt from it, and is reported as one: silently
+#: skipping the correlation is the divergence this check exists to prevent.
+_JOB_STARTING_RESULT_IDENTIFIER: Final[Mapping[str, tuple[str, ...]]] = {
+    "import.start": ("job", "identity", "job_id"),
+    "workflow.start": ("run", "run_id"),
+}
+
+
 def _check_response_job_reference_correlation(
     case: AdapterConformanceCase,
     envelope: SuccessResponseEnvelope,
@@ -2087,29 +2112,52 @@ def _check_response_job_reference_correlation(
 ) -> None:
     """The response must reference the job and audit its own result describes.
 
-    `import.start` states which job it started twice -- once in the result handle
-    and once in ``ResponseMetadata.job`` -- and a caller that held one id while
-    tracking the other would be watching the wrong job. The frozen validator
-    makes this check for a fresh call, but cannot run against an honest replay
-    (it also requires a non-terminal job, which a replay may legitimately have
-    outlived), so conformance owns the correlation for both paths here.
+    An operation the catalogue declares ``always_returns_job`` has started durable
+    work whenever it succeeds, so every success -- a fresh call and an honest
+    replay alike -- states which job in ``ResponseMetadata.job``, and states it
+    twice: once there and once as the identifier its own result carries. A caller
+    that held one id while tracking the other would be watching the wrong job, and
+    a success that named no job at all would leave the caller with a result and no
+    way to reach the generic job surface carrying it. An absent reference fails
+    this correlation exactly as a mismatched one does.
+
+    Gated on the catalogue's completion mode rather than on an operation name:
+    `import.start`'s frozen validator makes the same check for a fresh call but
+    cannot run against a replay (it also requires a non-terminal job, which a
+    replay may legitimately have outlived), and `workflow.start` has no frozen
+    result validator at all -- so naming operations here is what let a second
+    durable-job starter join the catalogue with the correlation silently unchecked.
 
     The response audit reference and the immutable job identity are likewise two
-    statements about the one audited mutation that created the job. Relational,
-    and owned here for the same reason the request/response identifier
-    correlation is: both checks bind two halves of one envelope rather than
-    judging a value against the contract's own rules.
+    statements about the one audited mutation that created the job, wherever a
+    result carries a full job identity to state it. Relational, and owned here for
+    the same reason the request/response identifier correlation is: both checks
+    bind two halves of one envelope rather than judging a value against the
+    contract's own rules.
     """
-    reference = envelope.metadata.job
-    referenced = getattr(reference, "job_id", None)
-    identity = getattr(getattr(decoded_result, "job", None), "identity", None)
-    described = getattr(identity, "job_id", None)
+    path = _JOB_STARTING_RESULT_IDENTIFIER.get(case.operation)
+    if path is None:
+        raise AdapterConformanceError(
+            case.id,
+            f"{case.operation!r} always returns a job, but no rule says which identifier "
+            "in its result the response job reference must name",
+        )
+    described: Any = decoded_result
+    for attribute in path:
+        described = getattr(described, attribute, None)
+    referenced = getattr(envelope.metadata.job, "job_id", None)
     if referenced != described:
         raise AdapterConformanceError(
             case.id,
             f"response metadata references job {referenced!r} but its result describes "
             f"{described!r}",
         )
+    # A result that returns the job handle states the audited mutation that created
+    # the job a second time; one that returns a Run does not, so there is no second
+    # statement to hold it to.
+    identity = getattr(getattr(decoded_result, "job", None), "identity", None)
+    if identity is None:
+        return
     response_audit = envelope.metadata.audit_reference
     described_audit = getattr(identity, "audit_reference", None)
     if response_audit != described_audit:
@@ -2161,9 +2209,7 @@ def _check_declared_result_semantics(
     validator = _RESULT_SEMANTICS.get(case.operation)
     if validator is None:
         return
-    if case.operation == "import.start":
-        _check_response_job_reference_correlation(case, envelope, decoded_result)
-    elif case.operation == "job.cancel":
+    if case.operation == "job.cancel":
         _check_job_cancel_availability_correlation(case, decoded_result)
     # A fresh-result validator judges a mutation against the handle it acted on.
     # An honest replay performed no mutation, so running it here would reject a

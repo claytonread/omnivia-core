@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from omnivia_core.contracts.v1 import resources
+from omnivia_core.contracts.v1 import conformance, resources
 from omnivia_core.contracts.v1.adapter import (
     ApplicationWireAdapter,
     InProcessFakeAdapter,
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "62011786b92f354515147d4e50657d62d8ec7d972f0bf77dccdbe1433c5e9265"
+        "1f5050e1c4a1b26faf4432de2e5b2e6ba336efbabbda7df1296f65523475a532"
     )
 
 
@@ -2210,6 +2210,91 @@ def test_import_start_audit_reference_must_match_its_job_identity(
         else [_case(corpus, selected.replay_of), changed]
     )
     with pytest.raises(AdapterConformanceError, match="metadata audit reference"):
+        run_adapter_conformance(_fake(tuple(cases)), cases)
+
+
+#: Every catalogue operation that always returns a job, with its two success
+#: exchanges. Derived from the catalogue rather than listed, so an operation that
+#: becomes a durable-job starter is held to the rule the day it does.
+_JOB_STARTING_SUCCESSES = [
+    (name, suffix)
+    for name, entry in sorted(CATALOGUE.items())
+    if entry.job.completion_mode == "always_returns_job"
+    for suffix in ("primary-success", "honest-replay")
+]
+
+
+def _with_origin(
+    corpus: tuple[AdapterConformanceCase, ...], changed: AdapterConformanceCase
+) -> list[AdapterConformanceCase]:
+    """`changed`, preceded by the exchange it replays when it replays one."""
+    return (
+        [changed]
+        if changed.replay_of is None
+        else [_case(corpus, changed.replay_of), changed]
+    )
+
+
+def test_every_durable_job_starter_states_which_result_identifier_its_reference_names() -> (
+    None
+):
+    """A starter the rule cannot read is a gap in the rule, not an exemption."""
+    assert {name for name, _ in _JOB_STARTING_SUCCESSES} == set(
+        conformance._JOB_STARTING_RESULT_IDENTIFIER
+    )
+
+
+@pytest.mark.parametrize(("operation", "suffix"), _JOB_STARTING_SUCCESSES)
+def test_an_operation_that_always_returns_a_job_names_one_on_every_success(
+    corpus: tuple[AdapterConformanceCase, ...], operation: str, suffix: str
+) -> None:
+    """Both starters, both success exchanges, and the replay no less than the call.
+
+    `workflow.start` became `always_returns_job` while the corpus still recorded
+    it answering with no `ResponseMetadata.job` at all, and nothing noticed: the
+    only positive job-reference rule named `import.start`.
+    """
+    selected = _case(corpus, f"{operation}/{suffix}")
+    response = copy.deepcopy(dict(selected.response))
+    response["metadata"].pop("job", None)
+    cases = _with_origin(corpus, dataclasses.replace(selected, response=response))
+    with pytest.raises(AdapterConformanceError, match="references job None"):
+        run_adapter_conformance(_fake(tuple(cases)), cases)
+
+
+@pytest.mark.parametrize("suffix", ["primary-success", "honest-replay"])
+def test_a_workflow_start_reference_must_name_the_job_carrying_its_run(
+    corpus: tuple[AdapterConformanceCase, ...], suffix: str
+) -> None:
+    """The Run and the durable job carrying it are allocated the one identifier."""
+    selected = _case(corpus, f"workflow.start/{suffix}")
+    response = copy.deepcopy(dict(selected.response))
+    response["metadata"]["job"] = {"job_id": "job-elsewhere"}
+    cases = _with_origin(corpus, dataclasses.replace(selected, response=response))
+    with pytest.raises(
+        AdapterConformanceError,
+        match=re.escape("references job 'job-elsewhere' but its result describes"),
+    ):
+        run_adapter_conformance(_fake(tuple(cases)), cases)
+
+
+def test_a_refused_start_needs_no_job_reference(
+    corpus: tuple[AdapterConformanceCase, ...],
+) -> None:
+    """A conflict started nothing, so it has no job to name."""
+    conflict = _case(corpus, "workflow.start/idempotency-conflict")
+    assert "job" not in conflict.response["metadata"]
+    cases = [_case(corpus, conflict.replay_of or ""), conflict]
+    assert run_adapter_conformance(_fake(tuple(cases)), cases) == 2
+
+
+def test_a_starter_the_rule_cannot_read_is_refused_rather_than_skipped(
+    corpus: tuple[AdapterConformanceCase, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: an unreadable starter must not certify itself by default."""
+    monkeypatch.setattr(conformance, "_JOB_STARTING_RESULT_IDENTIFIER", {})
+    cases = [_case(corpus, "workflow.start/primary-success")]
+    with pytest.raises(AdapterConformanceError, match="no rule says which identifier"):
         run_adapter_conformance(_fake(tuple(cases)), cases)
 
 

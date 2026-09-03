@@ -2906,6 +2906,9 @@
       "response": {
         "metadata": {
           "audit_reference": "audit-workflow.start",
+          "job": {
+            "job_id": "run-workflow-1"
+          },
           "request_id": "req-workflow.start-success"
         },
         "result": {
@@ -4684,6 +4687,9 @@
       "response": {
         "metadata": {
           "audit_reference": "audit-workflow.start",
+          "job": {
+            "job_id": "run-workflow-1"
+          },
           "request_id": "req-workflow.start-replay"
         },
         "result": {
