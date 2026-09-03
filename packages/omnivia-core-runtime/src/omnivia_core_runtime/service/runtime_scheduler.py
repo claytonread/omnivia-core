@@ -9,6 +9,24 @@ neither does.
 This slice deliberately models the Core service's scheduling claim.  Worker-protocol
 leases and their independent expiry belong to the WorkerAdapter slice (RT-108); the
 authority here is the existing workspace lease plus its monotonic fencing generation.
+
+**One claim covers one run, not one step.** A run with several steps is settled step by
+step through :meth:`RuntimeScheduler.complete` and :meth:`RuntimeScheduler.fail`, and
+each of them opens the next attempt *inside the transaction that closed the previous
+one*. That is deliberate and it is what the schema requires: 0010 admits a second
+application attempt only after the first one failed or was cancelled, so a run cannot be
+walked by requeuing its durable job between steps, and RT-109 reads a claimed job with no
+open runtime attempt as contradictory history. Settling and advancing together means the
+invariant those two rules share -- *a claimed runtime-bound job has exactly one open
+attempt, or a wait holding its step* -- is never momentarily false, not even inside a
+transaction that crashes.
+
+**What a definition may say about its own steps.** :data:`RuntimeStepPlan` is the one
+seam a bound definition gets: whether a step's dependencies are satisfied, and a hook to
+record that a step was reached. It is optional and absent by default, so a run with no
+such plan behaves exactly as it did -- the first runnable step in ordinal order. It
+cannot invent a step, a route or an ordinal, because it is consulted about steps that are
+already open.
 """
 
 from __future__ import annotations
@@ -17,7 +35,7 @@ import sqlite3
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Final
+from typing import Final, Protocol
 
 from omnivia_core.contracts.v1 import (
     ATTEMPT_STATUS_FAILED,
@@ -29,6 +47,7 @@ from omnivia_core.contracts.v1 import (
     RUN_STEP_TERMINAL_STATUSES,
     RUN_TERMINAL_STATUSES,
     ApiError,
+    is_error_retryable,
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
@@ -58,7 +77,7 @@ _LATEST_RUN_STATUS: Final = (
     "WHERE workspace_id = ? AND run_id = ? ORDER BY sequence DESC LIMIT 1"
 )
 
-_FIRST_RUNNABLE_STEP: Final = (
+_RUNNABLE_STEPS: Final = (
     "SELECT s.run_step_id FROM omnivia_runtime_run_steps s "
     "WHERE s.workspace_id = ? AND s.run_id = ? "
     "AND (SELECT status FROM omnivia_runtime_run_step_states "
@@ -76,7 +95,7 @@ _FIRST_RUNNABLE_STEP: Final = (
     "    ON wr.workspace_id = w.workspace_id AND wr.wait_id = w.wait_id "
     "  WHERE w.workspace_id = s.workspace_id AND w.run_step_id = s.run_step_id "
     "    AND wr.wait_id IS NULL) "
-    "ORDER BY s.ordinal, s.run_step_id LIMIT 1"
+    "ORDER BY s.ordinal, s.run_step_id"
 )
 
 _NEXT_RUNTIME_ATTEMPT_NUMBER: Final = (
@@ -84,9 +103,77 @@ _NEXT_RUNTIME_ATTEMPT_NUMBER: Final = (
     "WHERE workspace_id = ? AND run_step_id = ?"
 )
 
+#: The attempt budget the durable job already states, which is the bound a retry is held
+#: to. Read rather than configured here: 0010 stores it per job and enforces it on the
+#: application attempt, so a second bound in Python could only disagree with it. Every
+#: step of the run inherits it in full and independently -- see :meth:`RuntimeScheduler.fail`.
+_JOB_ATTEMPT_BUDGET: Final = (
+    "SELECT max_attempts FROM omnivia_job_application_metadata "
+    "WHERE workspace_id = ? AND job_id = ?"
+)
+
+_OPEN_APPLICATION_ATTEMPT: Final = (
+    "SELECT attempt_number FROM omnivia_job_attempts "
+    "WHERE workspace_id = ? AND job_id = ? AND state = 'running' "
+    "ORDER BY attempt_number DESC LIMIT 1"
+)
+
+_RUN_JOB: Final = (
+    "SELECT job_id FROM omnivia_runtime_runs WHERE workspace_id = ? AND run_id = ?"
+)
+
+_OPEN_RUNTIME_ATTEMPTS: Final = (
+    "SELECT a.attempt_id, a.run_step_id, a.attempt_number, a.started_at_us "
+    "FROM omnivia_runtime_attempts a "
+    "LEFT JOIN omnivia_runtime_attempt_outcomes o "
+    "  ON o.workspace_id = a.workspace_id AND o.attempt_id = a.attempt_id "
+    "WHERE a.workspace_id = ? AND a.run_id = ? AND o.attempt_id IS NULL "
+    "ORDER BY a.attempt_id"
+)
+
+_EVENT_ATTEMPT_STARTED: Final = "attempt_started"
+_EVENT_STEP_SUCCEEDED: Final = "step_succeeded"
+_EVENT_ATTEMPT_RETRIED: Final = "attempt_retried"
+_EVENT_RUN_SUCCEEDED: Final = "run_succeeded"
+_EVENT_RUN_FAILED: Final = "run_failed"
+
+_STEP_STATUS_PENDING: Final = "pending"
+_STEP_STATUS_RUNNING: Final = "running"
+_STEP_STATUS_SUCCEEDED: Final = "succeeded"
+_STEP_STATUS_FAILED: Final = "failed"
+
 
 class RuntimeSchedulingError(StorageError):
     """A selected runtime-bound job has corrupt or contradictory history."""
+
+
+class RuntimeStepPlan(Protocol):
+    """What the definition a run is bound to says about the steps already open for it.
+
+    Two questions, and deliberately no third. `ready` decides whether an open, pending
+    step may be claimed *now*, which is the one thing the generic runnable-step query
+    cannot know: it reads statuses, attempts and waits, and a definition's dependency
+    edges live in the definition. `observe` is told that a step was reached, so a
+    definition that records observations records them at the instant its step actually
+    started rather than at the instant its run was admitted.
+
+    Neither may open a step, choose an ordinal, or state a route. Those are the sealed
+    definition's, fixed before the run existed, and a scheduler that could re-decide them
+    could publish an execution the run was never planned as.
+    """
+
+    def ready(
+        self, connection: sqlite3.Connection, *, run_id: str, run_step_id: str
+    ) -> bool: ...
+
+    def observe(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        run_step_id: str,
+        observed_at_us: int,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +219,7 @@ class RuntimeScheduler:
     workspace_id: str
     fencing_generation: int
     clock: Clock
+    plan: RuntimeStepPlan | None = None
 
     def claim_next(self) -> RuntimeClaim | None:
         """Atomically claim the oldest runnable runtime-bound durable job.
@@ -162,88 +250,95 @@ class RuntimeScheduler:
                     f"job {job_id!r} was selected but could not be claimed"
                 )
 
-            attempt_row = self.connection.execute(
-                _NEXT_RUNTIME_ATTEMPT_NUMBER, (self.workspace_id, run_step_id)
-            ).fetchone()
-            if attempt_row is None:  # pragma: no cover - aggregate always returns
-                raise RuntimeSchedulingError("runtime attempt allocation returned no row")
-            runtime_attempt_number = int(attempt_row[0])
-            runtime_attempt_id = _lineage_id(
-                "runtime_attempt",
-                self.workspace_id,
-                run_id,
-                run_step_id,
-                str(runtime_attempt_number),
-                job_id,
-            )
-            event_sequence = (
-                read_run_sequence(
-                    self.connection, workspace_id=self.workspace_id, run_id=run_id
-                )
-                + 1
-            )
-            runtime_event_id = _lineage_id(
-                "runtime_event",
-                self.workspace_id,
-                run_id,
-                str(event_sequence),
-                run_step_id,
-                job_id,
-            )
-
-            writer = transaction_local_writer(
-                self.connection, workspace_id=self.workspace_id
-            )
-            writer.record_step_status(
-                run_step_id=run_step_id,
-                status="running",
-                observed_at_us=claimed.now_us,
-            )
-            writer.start_attempt(
-                attempt_id=runtime_attempt_id,
+            claim = self._open_attempt(
                 run_id=run_id,
+                job_id=job_id,
                 run_step_id=run_step_id,
-                attempt_number=runtime_attempt_number,
-                started_at_us=claimed.now_us,
-            )
-            writer.append_run_event(
-                run_id=run_id,
-                runtime_event_id=runtime_event_id,
-                occurred_at_us=claimed.now_us,
-                event_kind="attempt_started",
-                run_status="running",
-                run_step_id=run_step_id,
+                application_attempt_number=claimed.attempt_number,
+                now_us=claimed.now_us,
+                event_kind=_EVENT_ATTEMPT_STARTED,
                 message="runtime scheduler claimed the next runnable attempt",
-                details={
-                    "workspace_id": self.workspace_id,
-                    "run_id": run_id,
-                    "job_id": job_id,
-                    "run_step_id": run_step_id,
-                    "runtime_attempt_id": runtime_attempt_id,
-                    "runtime_attempt_number": runtime_attempt_number,
-                    "application_attempt_number": claimed.attempt_number,
-                    "service_instance_id": self.identity.service_instance_id,
-                    "fencing_generation": self.fencing_generation,
-                },
             )
 
+        return claim
+
+    def resume_claim(self, run_id: str) -> RuntimeClaim | None:
+        """The claim this instance already holds over one run, rebuilt from stored rows.
+
+        A restart keeps the workspace and loses the process. What survives is exactly a
+        `RuntimeClaim`'s content -- the claimed durable job, its running application
+        attempt, and the run's single open runtime attempt -- so the object a settlement
+        needs is read back rather than reissued. Nothing is written and nothing is
+        re-decided: a run whose claim is not held here at this generation, or whose
+        history does not state exactly one open attempt, has no claim to resume and
+        answers `None`.
+
+        This is what lets an adopted run continue after the pass that adopted it. Without
+        it a run recovered by RT-109 would be correctly recovered and permanently
+        unfinishable, because every settlement is addressed by the claim that opened the
+        attempt it settles.
+        """
+        bound = self.connection.execute(
+            _RUN_JOB, (self.workspace_id, run_id)
+        ).fetchone()
+        if bound is None:
+            return None
+        job_id = str(bound[0])
+        job = read_job(self.connection, job_id)
+        if (
+            job is None
+            or job.state != JobState.CLAIMED.value
+            or job.claimed_by_service_instance != self.identity.service_instance_id
+            or job.fencing_generation != self.fencing_generation
+        ):
+            return None
+        application = self.connection.execute(
+            _OPEN_APPLICATION_ATTEMPT, (self.workspace_id, job_id)
+        ).fetchone()
+        if application is None:
+            return None
+        open_attempts = self.connection.execute(
+            _OPEN_RUNTIME_ATTEMPTS, (self.workspace_id, run_id)
+        ).fetchall()
+        if len(open_attempts) != 1:
+            return None
+        attempt_id, run_step_id, attempt_number, started_at_us = open_attempts[0]
         return RuntimeClaim(
             workspace_id=self.workspace_id,
             run_id=run_id,
             job_id=job_id,
-            run_step_id=run_step_id,
-            runtime_attempt_id=runtime_attempt_id,
-            runtime_attempt_number=runtime_attempt_number,
-            application_attempt_number=claimed.attempt_number,
+            run_step_id=str(run_step_id),
+            runtime_attempt_id=str(attempt_id),
+            runtime_attempt_number=int(attempt_number),
+            application_attempt_number=int(application[0]),
             service_instance_id=self.identity.service_instance_id,
             fencing_generation=self.fencing_generation,
-            claimed_at_us=claimed.now_us,
+            claimed_at_us=int(started_at_us),
         )
 
     def complete(
         self, claim: RuntimeClaim, *, result_kind: str, result: Mapping[str, object]
-    ) -> None:
-        """Settle the exact claimed attempt and its durable job as succeeded."""
+    ) -> RuntimeClaim | None:
+        """Settle the exact claimed attempt, and either advance the run or finish it.
+
+        The claimed step succeeds either way. What differs is what that means for the
+        run: a run whose steps are now all terminal is settled as succeeded together with
+        its durable job, and a run with work left has its next dependency-ready step
+        claimed in this same transaction. The returned claim is that next one, and `None`
+        says the run is finished.
+
+        Advancing here rather than in a second call is the schema's requirement, not a
+        convenience. 0010 admits another application attempt only after the previous one
+        failed or was cancelled, so a successful step cannot release and re-take the
+        durable job; and RT-109 reads a claimed job whose run holds no open attempt as
+        contradictory history, so the gap between two steps must not be observable. Both
+        are satisfied by never leaving one.
+
+        A run whose remaining steps are all blocked is a refusal, not a silent stall: the
+        transaction rolls back, this step is not recorded as succeeded, and the caller is
+        told the run cannot proceed rather than left holding a claim over a run nothing
+        will ever pick up.
+        """
         self._require_scheduler_claim(claim)
         with fenced_transaction(
             self.connection,
@@ -251,6 +346,7 @@ class RuntimeScheduler:
             workspace_id=self.workspace_id,
             fencing_generation=self.fencing_generation,
         ):
+            self._require_live_run(claim)
             self._require_open_claim(claim)
             now_us = self._now_us()
             writer = transaction_local_writer(
@@ -263,20 +359,32 @@ class RuntimeScheduler:
             )
             writer.record_step_status(
                 run_step_id=claim.run_step_id,
-                status="succeeded",
+                status=_STEP_STATUS_SUCCEEDED,
                 observed_at_us=now_us,
-            )
-            steps = read_run_steps(
-                self.connection, workspace_id=self.workspace_id, run_id=claim.run_id
             )
             unfinished = [
                 step.run_step_id
-                for step in steps
+                for step in read_run_steps(
+                    self.connection, workspace_id=self.workspace_id, run_id=claim.run_id
+                )
                 if step.status not in RUN_STEP_TERMINAL_STATUSES
             ]
             if unfinished:
-                raise RuntimeSchedulingError(
-                    f"run {claim.run_id!r} still has unfinished steps {unfinished!r}"
+                nxt = self._ready_step(claim.run_id)
+                if nxt is None:
+                    raise RuntimeSchedulingError(
+                        f"run {claim.run_id!r} has unfinished steps {unfinished!r} and "
+                        "none of them is ready to run"
+                    )
+                return self._open_attempt(
+                    run_id=claim.run_id,
+                    job_id=claim.job_id,
+                    run_step_id=nxt,
+                    application_attempt_number=claim.application_attempt_number,
+                    now_us=now_us,
+                    event_kind=_EVENT_STEP_SUCCEEDED,
+                    message="runtime scheduler advanced to the next ready step",
+                    settled_step_id=claim.run_step_id,
                 )
             _terminalize_application_job(
                 self.connection,
@@ -290,40 +398,113 @@ class RuntimeScheduler:
                 result=result,
                 _transaction_open=True,
             )
-            event_sequence = (
-                read_run_sequence(
-                    self.connection, workspace_id=self.workspace_id, run_id=claim.run_id
-                )
-                + 1
-            )
-            runtime_event_id = _lineage_id(
-                "runtime_event",
-                self.workspace_id,
-                claim.run_id,
-                str(event_sequence),
-                claim.run_step_id,
-                claim.job_id,
-            )
-            writer.append_run_event(
-                run_id=claim.run_id,
-                runtime_event_id=runtime_event_id,
-                occurred_at_us=now_us,
-                event_kind="run_succeeded",
+            self._append_event(
+                claim,
+                now_us=now_us,
+                event_kind=_EVENT_RUN_SUCCEEDED,
                 run_status=RUN_STATUS_SUCCEEDED,
-                run_step_id=claim.run_step_id,
                 message="runtime scheduler settled the run as succeeded",
-                details={
-                    "workspace_id": self.workspace_id,
-                    "run_id": claim.run_id,
-                    "job_id": claim.job_id,
-                    "run_step_id": claim.run_step_id,
-                    "runtime_attempt_id": claim.runtime_attempt_id,
-                    "runtime_attempt_number": claim.runtime_attempt_number,
-                    "application_attempt_number": claim.application_attempt_number,
-                    "service_instance_id": self.identity.service_instance_id,
-                    "fencing_generation": self.fencing_generation,
-                },
             )
+        return None
+
+    def fail(
+        self,
+        claim: RuntimeClaim,
+        *,
+        failure: ApiError,
+        result_kind: str | None = None,
+        result: Mapping[str, object] | None = None,
+    ) -> RuntimeClaim | None:
+        """Settle the exact claimed attempt as failed, and retry it or fail the run.
+
+        The bound is the durable job's own `max_attempts`, read from
+        `omnivia_job_application_metadata` rather than configured here, and the
+        retryability is the accepted contract's -- `is_error_retryable`, which fails safe
+        when a stated retry class contradicts a frozen error code. A failure that is
+        either non-retryable or out of budget fails the step, the run and the durable job
+        together.
+
+        **That budget is inherited by each step in full, not spent across the run.** The
+        number compared against it is `runtime_attempt_number`, and both 0018 and the
+        frozen `Attempt` contract define that as the ordinal *within its step* -- numbered
+        `1..N` per `run_step_id`, with nothing counting attempts across a run. So a step
+        that follows a retried one opens at 1 and holds the whole budget. That is the same
+        shape the application layer already holds itself to: 0010's trigger, RT-109's
+        requeue rule and `JobControl` recovery all compare one lineage's own contiguous
+        counter against the job's ceiling, never a sum spent by other lineages. A run-wide
+        aggregate would be a different policy needing a run-wide counter, and no schema,
+        contract or accepted test states one. The retry loop still terminates: steps are
+        finite and each step's ceiling is.
+
+        A retry reopens *the same step* inside this transaction: its status moves through
+        `pending` back to `running` under a new attempt, which is the only spelling 0018
+        admits -- a step state may not restate its predecessor, and a step marked `failed`
+        is final. So a retried step is never momentarily a step nothing holds.
+        """
+        self._require_scheduler_claim(claim)
+        with fenced_transaction(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.fencing_generation,
+        ):
+            self._require_live_run(claim)
+            self._require_open_claim(claim)
+            now_us = self._now_us()
+            writer = transaction_local_writer(
+                self.connection, workspace_id=self.workspace_id
+            )
+            writer.finish_attempt(
+                attempt_id=claim.runtime_attempt_id,
+                status=ATTEMPT_STATUS_FAILED,
+                finished_at_us=now_us,
+                failure=failure,
+            )
+            if is_error_retryable(failure) and (
+                claim.runtime_attempt_number < self._attempt_budget(claim.job_id)
+            ):
+                writer.record_step_status(
+                    run_step_id=claim.run_step_id,
+                    status=_STEP_STATUS_PENDING,
+                    observed_at_us=now_us,
+                )
+                return self._open_attempt(
+                    run_id=claim.run_id,
+                    job_id=claim.job_id,
+                    run_step_id=claim.run_step_id,
+                    application_attempt_number=claim.application_attempt_number,
+                    now_us=now_us,
+                    event_kind=_EVENT_ATTEMPT_RETRIED,
+                    message="runtime scheduler retried a failed attempt",
+                    failure=failure,
+                )
+            writer.record_step_status(
+                run_step_id=claim.run_step_id,
+                status=_STEP_STATUS_FAILED,
+                observed_at_us=now_us,
+            )
+            _terminalize_application_job(
+                self.connection,
+                self.identity,
+                workspace_id=self.workspace_id,
+                job_id=claim.job_id,
+                fencing_generation=self.fencing_generation,
+                clock=self.clock,
+                state="failed",
+                result_kind=result_kind,
+                result=result,
+                error=failure.to_wire(),
+                _transaction_open=True,
+            )
+            self._append_event(
+                claim,
+                now_us=now_us,
+                event_kind=_EVENT_RUN_FAILED,
+                run_status=RUN_STATUS_FAILED,
+                message="runtime scheduler settled the run as failed",
+                failure=failure,
+            )
+        return None
 
     def recover_stranded(
         self, *, job_ids: Collection[str] | None = None
@@ -477,12 +658,192 @@ class RuntimeScheduler:
                 )
             if str(status_row[0]) in RUN_TERMINAL_STATUSES:
                 continue
-            step_row = self.connection.execute(
-                _FIRST_RUNNABLE_STEP, (self.workspace_id, run_id)
-            ).fetchone()
-            if step_row is not None:
-                return job_id, run_id, str(step_row[0])
+            run_step_id = self._ready_step(run_id)
+            if run_step_id is not None:
+                return job_id, run_id, run_step_id
         return None
+
+    def _ready_step(self, run_id: str) -> str | None:
+        """The first runnable step of one run its bound definition will admit now.
+
+        Runnable is the generic reading -- pending, no open attempt, no unresolved wait,
+        lowest ordinal first -- and readiness is what the definition adds to it. Without a
+        plan every runnable step is ready, which is the behaviour a run bound to no
+        definition-level dependency graph has always had.
+        """
+        for row in self.connection.execute(
+            _RUNNABLE_STEPS, (self.workspace_id, run_id)
+        ).fetchall():
+            run_step_id = str(row[0])
+            if self.plan is None or self.plan.ready(
+                self.connection, run_id=run_id, run_step_id=run_step_id
+            ):
+                return run_step_id
+        return None
+
+    def _open_attempt(
+        self,
+        *,
+        run_id: str,
+        job_id: str,
+        run_step_id: str,
+        application_attempt_number: int,
+        now_us: int,
+        event_kind: str,
+        message: str,
+        settled_step_id: str | None = None,
+        failure: ApiError | None = None,
+    ) -> RuntimeClaim:
+        """Open one runtime attempt over one step, and record that it started.
+
+        The single place an attempt is opened, so a first claim, an advance to the next
+        step and a retry all write the same three rows in the same order under the same
+        derived lineage. `settled_step_id` names the step whose settlement produced this
+        attempt, where one did, so the event that opens a step also states the step it
+        followed rather than leaving the order to be inferred from timestamps.
+        """
+        attempt_row = self.connection.execute(
+            _NEXT_RUNTIME_ATTEMPT_NUMBER, (self.workspace_id, run_step_id)
+        ).fetchone()
+        if attempt_row is None:  # pragma: no cover - aggregate always returns
+            raise RuntimeSchedulingError("runtime attempt allocation returned no row")
+        attempt_number = int(attempt_row[0])
+        attempt_id = _lineage_id(
+            "runtime_attempt",
+            self.workspace_id,
+            run_id,
+            run_step_id,
+            str(attempt_number),
+            job_id,
+        )
+        writer = transaction_local_writer(
+            self.connection, workspace_id=self.workspace_id
+        )
+        writer.record_step_status(
+            run_step_id=run_step_id,
+            status=_STEP_STATUS_RUNNING,
+            observed_at_us=now_us,
+        )
+        writer.start_attempt(
+            attempt_id=attempt_id,
+            run_id=run_id,
+            run_step_id=run_step_id,
+            attempt_number=attempt_number,
+            started_at_us=now_us,
+        )
+        if self.plan is not None:
+            self.plan.observe(
+                self.connection,
+                run_id=run_id,
+                run_step_id=run_step_id,
+                observed_at_us=now_us,
+            )
+        claim = RuntimeClaim(
+            workspace_id=self.workspace_id,
+            run_id=run_id,
+            job_id=job_id,
+            run_step_id=run_step_id,
+            runtime_attempt_id=attempt_id,
+            runtime_attempt_number=attempt_number,
+            application_attempt_number=application_attempt_number,
+            service_instance_id=self.identity.service_instance_id,
+            fencing_generation=self.fencing_generation,
+            claimed_at_us=now_us,
+        )
+        self._append_event(
+            claim,
+            now_us=now_us,
+            event_kind=event_kind,
+            run_status=RUN_STATUS_RUNNING,
+            message=message,
+            settled_step_id=settled_step_id,
+            failure=failure,
+        )
+        return claim
+
+    def _append_event(
+        self,
+        claim: RuntimeClaim,
+        *,
+        now_us: int,
+        event_kind: str,
+        run_status: str,
+        message: str,
+        settled_step_id: str | None = None,
+        failure: ApiError | None = None,
+    ) -> None:
+        """One entry on the run's stream, carrying the lineage this claim was made under."""
+        event_sequence = (
+            read_run_sequence(
+                self.connection, workspace_id=self.workspace_id, run_id=claim.run_id
+            )
+            + 1
+        )
+        details: dict[str, object] = {
+            "workspace_id": self.workspace_id,
+            "run_id": claim.run_id,
+            "job_id": claim.job_id,
+            "run_step_id": claim.run_step_id,
+            "runtime_attempt_id": claim.runtime_attempt_id,
+            "runtime_attempt_number": claim.runtime_attempt_number,
+            "application_attempt_number": claim.application_attempt_number,
+            "service_instance_id": self.identity.service_instance_id,
+            "fencing_generation": self.fencing_generation,
+        }
+        if settled_step_id is not None:
+            details["settled_run_step_id"] = settled_step_id
+        if failure is not None:
+            details["failure"] = dict(failure.to_wire())
+        transaction_local_writer(
+            self.connection, workspace_id=self.workspace_id
+        ).append_run_event(
+            run_id=claim.run_id,
+            runtime_event_id=_lineage_id(
+                "runtime_event",
+                self.workspace_id,
+                claim.run_id,
+                str(event_sequence),
+                claim.run_step_id,
+                claim.job_id,
+            ),
+            occurred_at_us=now_us,
+            event_kind=event_kind,
+            run_status=run_status,
+            run_step_id=claim.run_step_id,
+            message=message,
+            details=details,
+        )
+
+    def _attempt_budget(self, job_id: str) -> int:
+        row = self.connection.execute(
+            _JOB_ATTEMPT_BUDGET, (self.workspace_id, job_id)
+        ).fetchone()
+        if row is None:
+            raise RuntimeSchedulingError(
+                f"job {job_id!r} states no attempt budget to hold a retry to"
+            )
+        return int(row[0])
+
+    def _require_live_run(self, claim: RuntimeClaim) -> None:
+        """Refuse to settle a run that has already finished, before any write.
+
+        0018 refuses an event after a terminal one, so this would fail anyway -- as an
+        integrity error, after the attempt outcome and step status had been written and
+        were about to be rolled back. Reading the status first turns "a cancelled run
+        cannot be settled" into a typed refusal a caller can act on, and it is the check
+        that makes a cancellation actually block a settlement racing it.
+        """
+        row = self.connection.execute(
+            _LATEST_RUN_STATUS, (self.workspace_id, claim.run_id)
+        ).fetchone()
+        if row is None:
+            raise RuntimeSchedulingError(
+                f"run {claim.run_id!r} has no event stream to read its status from"
+            )
+        if str(row[0]) in RUN_TERMINAL_STATUSES:
+            raise RuntimeSchedulingError(
+                f"run {claim.run_id!r} is {str(row[0])!r} and admits no further settlement"
+            )
 
     def _now_us(self) -> int:
         return int(self.clock.wall_time().timestamp() * 1_000_000)
@@ -548,4 +909,5 @@ __all__ = [
     "RuntimeRecovery",
     "RuntimeScheduler",
     "RuntimeSchedulingError",
+    "RuntimeStepPlan",
 ]

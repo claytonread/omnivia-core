@@ -2,8 +2,8 @@
 
 This process owns and advertises one writable workspace and participates in the
 single fenced catalogue authority for its installation. The production
-application surface is the exact frozen 22-operation catalogue, composed from
-six separate authority families. Health, readiness and discovery remain
+application surface is the exact frozen 27-operation catalogue, composed from
+seven separate authority families. Health, readiness and discovery remain
 distinct from product operations, per ADR-037, and stay on the probe dispatcher.
 
 **One console script, four kinds of process.** `--managed-start` (R004-08) does
@@ -42,6 +42,7 @@ from omnivia_core_runtime.service.application import (
     build_governance_application_dispatcher,
     build_job_application_dispatcher,
     build_memory_application_dispatcher,
+    build_workflow_application_dispatcher,
     compose_production_application_surface,
     local_owner_session,
 )
@@ -58,6 +59,7 @@ from omnivia_core_runtime.service.chat_generation_executor import (
 from omnivia_core_runtime.service.chat_provider_route import provider_route_from_env
 from omnivia_core_runtime.service.dispatch import Dispatcher
 from omnivia_core_runtime.service.handlers.chat import ChatGenerationExecution
+from omnivia_core_runtime.service.handlers.workflow import WorkflowReleaseResolver
 from omnivia_core_runtime.service.http_transport import (
     CredentialResolver,
     HttpBind,
@@ -80,6 +82,7 @@ from omnivia_core_runtime.service.operations import (
 from omnivia_core_runtime.service.probes import ProbeRouter, ServiceFacts
 from omnivia_core_runtime.service.protocol import DocumentRouter
 from omnivia_core_runtime.service.runner import ServiceRunner, ServiceSettings
+from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.service.source_capture import (
     SourceCaptureRefused,
     SourceCaptureResult,
@@ -241,11 +244,13 @@ def _build_production_application_surface(
     probe: Dispatcher,
     installation: ApplicationDispatcher,
     execute_chat_generation: ChatGenerationExecution | None = None,
+    resolve_workflow_release: WorkflowReleaseResolver | None = None,
+    workflow_wait_policy: WaitResolutionPolicy | None = None,
 ) -> ProductionApplicationSurface:
-    """Compose the exact 22-operation production route for one live service.
+    """Compose the exact production route for one live service.
 
     The global installation catalogue supplies the installation id used by all
-    six authority families. The workspace service instance keeps its own
+    seven authority families. The workspace service instance keeps its own
     service identity and fencing generation; those facts do not become
     installation authority merely because both authorities live in one process.
 
@@ -305,6 +310,31 @@ def _build_production_application_surface(
         if execute_chat_generation is not None
         else _default_chat_generation(started),
     )
+    # The two Workflow authority seams, injected rather than resolved here.
+    #
+    # This repository ships neither a release catalogue nor an approval store, so the
+    # *default* build passes neither and `workflow.start` and `workflow.control`'s
+    # `resolve_wait` refuse at the domain step with `dependency_unavailable` -- a served,
+    # typed refusal rather than an absence from the catalogue, with the other two
+    # Workflow operations fully served because reading a Run needs no such authority.
+    #
+    # They are parameters and not constants because a deployment that *does* have those
+    # authorities installs them here, and the whole Workflow lane below this point --
+    # admission, exact-version binding, the sealed plan's runtime steps, the scheduler
+    # that claims them and the recovery that adopts them -- is then live against them
+    # with nothing else to change. Fabricating either would be worse than refusing: an
+    # invented release binds a Run to material nobody published, and an invented policy
+    # resolves a wait nobody approved.
+    workflow = build_workflow_application_dispatcher(
+        service=started,
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=installation_id,
+        workspace_id=started.workspace_id,
+        fallback=chat,
+        clock=started.clock,
+        resolve_release=resolve_workflow_release,
+        wait_policy=workflow_wait_policy,
+    )
     return compose_production_application_surface(
         installation=installation,
         reads=reads,
@@ -312,6 +342,7 @@ def _build_production_application_surface(
         jobs=jobs,
         governance=governance,
         chat=chat,
+        workflow=workflow,
         probe=probe,
     )
 
@@ -601,8 +632,22 @@ def main(
     argv: list[str] | None = None,
     *,
     resolve_credential: CredentialResolver | None = None,
+    resolve_workflow_release: WorkflowReleaseResolver | None = None,
+    workflow_wait_policy: WaitResolutionPolicy | None = None,
 ) -> int:
     """Own one workspace until told to stop.
+
+    `resolve_workflow_release` and `workflow_wait_policy` are the two Workflow authority
+    seams, and they are parameters for exactly the reason `resolve_credential` is: this
+    lane ships no release catalogue and no approval store, so whoever embeds this service
+    supplies them. Passed, `workflow.start` binds a Run to the material that authority
+    states and `workflow.control`'s `resolve_wait` resolves what that policy permits, and
+    everything under them -- the sealed plan's canonical steps, the scheduler that claims
+    them, the recovery that adopts them across a restart -- is live with nothing further
+    to configure. Omitted, as the console-script entry point omits them, both operations
+    refuse with `dependency_unavailable` after the grant and before any write, which is
+    the honest answer for a build that cannot say what a Run would be executing or
+    whether a resolution was approved.
 
     `resolve_credential` is the trusted credential resolver seam. It is a parameter
     rather than something read from the environment or a file because this lane
@@ -749,6 +794,8 @@ def main(
             started=started,
             probe=dispatcher,
             installation=installation,
+            resolve_workflow_release=resolve_workflow_release,
+            workflow_wait_policy=workflow_wait_policy,
         )
         # One router, handed to both transports. That is the whole of how HTTP shares
         # the probe router and the application dispatcher rather than growing its own:

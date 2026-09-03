@@ -279,6 +279,13 @@ def _contradiction(
     Each rule names a pair of facts this codebase writes in one transaction and can
     therefore never have written apart. Meeting them apart means something outside
     these paths changed one of them, which is not a state to repair from.
+
+    That includes cancellation, which is why no stop-ledger record is consulted here.
+    `workflow.control` settles the canonical run and the durable job in one fenced
+    transaction -- migration 0036 admits the `cancelled` terminal observation through
+    that same accepted stop -- so a cancelled run beside a live job is not something the
+    cancellation path can produce. Excusing the pair because a stop was recorded would
+    hide exactly the half-written history this classification exists to report.
     """
     job_terminal = job_state in _TERMINAL_JOB_STATES
     run_terminal = snapshot.status in RUN_TERMINAL_STATUSES

@@ -1009,7 +1009,17 @@ def _validate_job_control(control: object, state: str, label: str = "control") -
     job actually stands: a succeeded job offers no control at all, a failed one offers
     recovery but not cancellation, a cancelled one is already cancelled and may be
     resumable, and a job still queued or running is cancellable (or already has a
-    cancellation pending) but has nothing to recover from yet.
+    cancellation pending) unless something other than its state refuses cancellation, and
+    has nothing to recover from yet.
+
+    `not_cancellable` is that exception, and is legal in *every* state. Cancellability is not
+    a function of state alone: a job whose kind is steered by its own operation rather than
+    by `job.cancel` -- a `workflow.execute` job, cancelled through `workflow.control` --
+    refuses cancellation while queued, running and cancelled alike, and a handle saying so is
+    making a true statement this rule must not overrule. The asymmetry is deliberate:
+    `not_cancellable` withholds a control and can only ever under-promise, whereas
+    `cancellable` on a finished job promises one that cannot exist. `not_retryable` is the
+    same value on the recovery side and has always been legal in every state.
 
     An unknown state is judged only for shape, and so is an unknown *availability*. This
     build cannot know what controls a state it has never seen permits, nor what an
@@ -1035,6 +1045,7 @@ def _validate_job_control(control: object, state: str, label: str = "control") -
             {
                 JOB_CANCELLATION_AVAILABILITY_CANCELLABLE,
                 JOB_CANCELLATION_AVAILABILITY_CANCELLATION_PENDING,
+                JOB_CANCELLATION_AVAILABILITY_NOT_CANCELLABLE,
             }
         )
         allowed_recovery = frozenset({JOB_RECOVERY_AVAILABILITY_NOT_RETRYABLE})
@@ -1047,7 +1058,12 @@ def _validate_job_control(control: object, state: str, label: str = "control") -
             {JOB_RECOVERY_AVAILABILITY_RETRYABLE, JOB_RECOVERY_AVAILABILITY_NOT_RETRYABLE}
         )
     else:
-        allowed_cancellation = frozenset({JOB_CANCELLATION_AVAILABILITY_CANCELLED})
+        allowed_cancellation = frozenset(
+            {
+                JOB_CANCELLATION_AVAILABILITY_CANCELLED,
+                JOB_CANCELLATION_AVAILABILITY_NOT_CANCELLABLE,
+            }
+        )
         allowed_recovery = frozenset(
             {JOB_RECOVERY_AVAILABILITY_RESUMABLE, JOB_RECOVERY_AVAILABILITY_NOT_RETRYABLE}
         )

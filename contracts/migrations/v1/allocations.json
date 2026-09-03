@@ -205,6 +205,17 @@
       "sha256": "bb268eb7c4458905776945f04456406f4382133092ba05062ed785e0da4adbce",
       "introduced_commit": "0ca4ddfa6fc37cec315e640e32ffe6f3a4c3d462",
       "accepted_commit": null
+    },
+    {
+      "number": 36,
+      "filename": "0036_workflow_control_cancellation_lineage.sql",
+      "owner": "Workflow Runtime",
+      "repository": "omnivia-core",
+      "state": "candidate",
+      "predecessor": 35,
+      "sha256": "5eb74bfce6c2d1f4b357207e3256636c75b99dfdd225e6ab6e56697221127e73",
+      "introduced_commit": "9c6a83ea966e8aa4456bed6f05e0a00693069d17",
+      "accepted_commit": null
     }
   ]
 }

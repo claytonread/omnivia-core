@@ -151,6 +151,22 @@ class WaitPolicyDenied(MutationDenied):
     """
 
 
+#: How a caller turns the resolution this module recorded into the answer *its* operation
+#: is defined to give, inside the same fenced transaction and after the resolution has
+#: been written to it.
+#:
+#: Optional, and absent by default, so every existing caller still receives and stores
+#: exactly the mapping below. It exists because an operation whose public result is a
+#: projection of the run -- `workflow.control`'s is -- otherwise has to read that run
+#: *after* the commit and wrap the stored answer outside the idempotent boundary: the
+#: bytes the seam replays would then be this module's answer rather than the operation's,
+#: and a replay would rebuild its wrapper from a run that has since moved on. Handed the
+#: fenced connection and the resolution, it returns what the seam validates, stores and
+#: replays, so the public answer and the durable one are the same bytes.
+WaitResolutionProjection = Callable[
+    [sqlite3.Connection, Mapping[str, Any]], Mapping[str, Any]
+]
+
 #: The mandatory fail-closed decision seam for one resolution, handed the authorized
 #: context, the command and the *stored* wait -- never a wait the request supplied.
 #:
@@ -274,6 +290,7 @@ def resolve_runtime_wait(
     validate_result: ResultValidator,
     clock: Clock,
     expected: RuntimeAggregateExpectation,
+    project_result: WaitResolutionProjection | None = None,
     event_kind: str = _EVENT_KIND_WAIT_RESOLVED,
     message: str | None = None,
 ) -> MutationOutcome:
@@ -286,9 +303,21 @@ def resolve_runtime_wait(
     before its deadline, or an outcome arrives after one; or the wait already holds a
     *different* resolution. The one case that is not a refusal is a second key carrying
     the *same* resolution, which is answered from the stored one without a second write.
+
+    `project_result` is the optional seam described at
+    :data:`WaitResolutionProjection`. It runs on both the first settlement and the
+    replay, so one operation answers one way; absent, this returns the resolution
+    itself, which is what every caller before it received.
     """
 
     _require_expected_run(expected, command.run_id)
+
+    def projected(
+        connection: sqlite3.Connection, resolution: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return resolution if project_result is None else project_result(
+            connection, resolution
+        )
 
     def settle(
         writer: RuntimeWriter, settlement: MutationSettlementContext
@@ -330,7 +359,7 @@ def resolve_runtime_wait(
                     approval=approval,
                     run_status=RUN_STATUS_WAITING,
                 )
-            return result
+            return projected(writer.connection, result)
 
         _require_active_attempt(
             writer.connection,
@@ -378,8 +407,14 @@ def resolve_runtime_wait(
             run_step_id=wait.run_step_id,
             message=message,
         )
-        return _resolution_result(
-            wait, status=status, reason=command.reason, approval_id=command.approval_id
+        return projected(
+            writer.connection,
+            _resolution_result(
+                wait,
+                status=status,
+                reason=command.reason,
+                approval_id=command.approval_id,
+            ),
         )
 
     return execute_runtime_command(
@@ -626,6 +661,7 @@ __all__ = [
     "WaitPolicyDenied",
     "WaitResolutionConflict",
     "WaitResolutionPolicy",
+    "WaitResolutionProjection",
     "open_runtime_wait",
     "resolve_runtime_wait",
 ]

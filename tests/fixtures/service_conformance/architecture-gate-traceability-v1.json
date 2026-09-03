@@ -172,6 +172,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"
@@ -265,6 +269,8 @@
         "knowledge.propose",
         "memory.create",
         "record.supersede",
+        "workflow.control",
+        "workflow.start",
         "workspace.create"
       ]
     },
@@ -284,6 +290,8 @@
         "knowledge.propose",
         "memory.create",
         "record.supersede",
+        "workflow.control",
+        "workflow.start",
         "workspace.create"
       ]
     },
@@ -338,6 +346,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"
@@ -370,6 +382,10 @@
         "memory.list",
         "memory.search",
         "record.supersede",
+        "workflow.control",
+        "workflow.inspect",
+        "workflow.review",
+        "workflow.start",
         "workspace.create",
         "workspace.inspect",
         "workspace.list"

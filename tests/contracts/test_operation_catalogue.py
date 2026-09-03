@@ -76,7 +76,7 @@ def _load_schema(name: str) -> dict[str, Any]:
 FROZEN = _load_fixture()
 FROZEN_NAMES = [entry["name"] for entry in FROZEN]
 #: ``(name, expected wire object)`` for the data-driven per-operation tests, so a
-#: failure names the operation rather than an index into a list of twenty-three.
+#: failure names the operation rather than an index into a list of twenty-seven.
 FROZEN_CASES = list(zip(FROZEN_NAMES, FROZEN))
 FROZEN_BY_NAME = dict(FROZEN_CASES)
 
@@ -138,19 +138,19 @@ def _valid_metadata_for(name: str, entry: dict[str, Any]) -> RequestMetadata:
 # --------------------------------------------------------------------------
 
 
-def test_the_catalogue_holds_exactly_the_frozen_twenty_three_operations_in_order() -> None:
-    assert len(OPERATION_CATALOGUE) == 23
+def test_the_catalogue_holds_exactly_the_frozen_twenty_seven_operations_in_order() -> None:
+    assert len(OPERATION_CATALOGUE) == 27
     assert [entry.name for entry in OPERATION_CATALOGUE] == FROZEN_NAMES
     assert FROZEN_NAMES == sorted(FROZEN_NAMES)
-    assert len(set(FROZEN_NAMES)) == 23
+    assert len(set(FROZEN_NAMES)) == 27
 
 
-def test_two_operations_are_installation_scoped_and_twenty_one_are_workspace_scoped() -> None:
+def test_two_operations_are_installation_scoped_and_twenty_five_are_workspace_scoped() -> None:
     installation = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "installation"]
     workspace = [e.name for e in OPERATION_CATALOGUE if e.scope.scope_kind == "workspace"]
     assert installation == ["workspace.create", "workspace.list"]
-    assert len(workspace) == 21
-    assert len(installation) + len(workspace) == 23
+    assert len(workspace) == 25
+    assert len(installation) + len(workspace) == 27
 
 
 @pytest.mark.parametrize("name", NON_OPERATIONS)
@@ -175,8 +175,8 @@ def _emitted_typescript_catalogue() -> list[dict[str, Any]]:
     """Parse the emitted TypeScript catalogue literal into plain Python values.
 
     Checking only the sequence of emitted ``name:`` lines would pass against an
-    artifact whose every other field had drifted -- and against a 23rd entry
-    appended after the frozen twenty-three. The literal is delimited exactly rather
+    artifact whose every other field had drifted -- and against a 28th entry
+    appended after the frozen twenty-seven. The literal is delimited exactly rather
     than sliced to end-of-file, so a truncated or unterminated artifact fails
     here instead of being silently accepted.
     """
@@ -269,14 +269,30 @@ def test_an_unknown_optional_field_decodes_tolerantly() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_import_start_is_the_only_durable_job_starting_operation() -> None:
-    asynchronous = [e for e in OPERATION_CATALOGUE if e.job.completion_mode != "synchronous"]
-    assert [e.name for e in asynchronous] == ["import.start"]
-    entry = asynchronous[0]
-    assert entry.job.completion_mode == "always_returns_job"
-    assert entry.job.job_kind == "ingestion.import"
-    assert entry.job.terminal_result_schema_ref == (
+def test_exactly_the_two_durable_job_starting_operations_declare_their_job() -> None:
+    """Two operations start durable work, and each says which kind and how it ends.
+
+    `import.start` runs the import on the request it was given; `workflow.start` admits a
+    Run for the scheduler to pick up. Both leave the caller holding a job they did not
+    watch finish, which is the whole reason the mode exists -- and neither may declare it
+    without naming the `job_kind` a caller would look the job up under and the schema its
+    terminal success is readable as.
+    """
+    asynchronous = {
+        e.name: e.job for e in OPERATION_CATALOGUE if e.job.completion_mode != "synchronous"
+    }
+
+    assert sorted(asynchronous) == ["import.start", "workflow.start"]
+    assert all(job.completion_mode == "always_returns_job" for job in asynchronous.values())
+    assert asynchronous["import.start"].job_kind == "ingestion.import"
+    assert asynchronous["import.start"].terminal_result_schema_ref == (
         f"{BASE_URI}jobs.schema.json#/$defs/ImportCompletionResult"
+    )
+    assert asynchronous["workflow.start"].job_kind == "workflow.execute"
+    # The Run's own evidence-gated decision, not a second ending invented for the job:
+    # `workflow.inspect` publishes exactly this shape for the same Run.
+    assert asynchronous["workflow.start"].terminal_result_schema_ref == (
+        f"{BASE_URI}runtime.schema.json#/$defs/WorkflowCompletion"
     )
 
 
@@ -880,11 +896,11 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
     it is the one representation nothing else can catch drifting.
     """
     installation = _documented_operations("Two are installation-scoped:")
-    workspace = _documented_operations("Twenty-one are workspace-scoped:")
+    workspace = _documented_operations("Twenty-five are workspace-scoped:")
     documented = installation + workspace
 
     assert sorted(documented) == FROZEN_NAMES
-    assert len(documented) == len(set(documented)) == 23
+    assert len(documented) == len(set(documented)) == 27
     assert installation == [
         entry.name for entry in OPERATION_CATALOGUE if entry.scope.scope_kind == "installation"
     ]
@@ -896,6 +912,6 @@ def test_the_readme_publishes_exactly_the_frozen_catalogue() -> None:
 @pytest.mark.parametrize("name", NON_OPERATIONS)
 def test_the_readme_operation_list_names_no_probe_and_no_job_resume(name: str) -> None:
     documented = _documented_operations("Two are installation-scoped:") + _documented_operations(
-        "Twenty-one are workspace-scoped:"
+        "Twenty-five are workspace-scoped:"
     )
     assert name not in documented

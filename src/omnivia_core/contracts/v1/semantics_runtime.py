@@ -165,6 +165,16 @@ __all__ = [
     "WAIT_RESOLUTION_FOR_KIND",
     "WAIT_STATUSES",
     "WAIT_STATUS_PENDING",
+    "WORKFLOW_COMPLETION_OUTCOMES",
+    "WORKFLOW_CONTROL_ACTIONS",
+    "WORKFLOW_CONTROL_DISPOSITIONS",
+    "WORKFLOW_RESUME_DIAGNOSTICS",
+    "WORKFLOW_RUN_STATES",
+    "WORKFLOW_RUN_STATE_CREATED",
+    "WORKFLOW_RUN_STATE_INDETERMINATE",
+    "WORKFLOW_RUN_STATE_QUEUED",
+    "WORKFLOW_RUN_TERMINAL_STATES",
+    "WORKFLOW_STEP_ROUTES",
     "classify_effect_replay",
     "classify_run_replay",
     "decode_resolve_wait",
@@ -414,6 +424,66 @@ EFFECT_OUTCOMES: Final[tuple[str, ...]] = (
 CLEANUP_OUTCOMES: Final[tuple[str, ...]] = ("released", "not_required", "failed")
 
 RUN_DEFINITION_KINDS: Final[tuple[str, ...]] = ("agent_component", "workflow")
+
+# --- the Workflow surface's own closed vocabularies -----------------------------------
+#
+# Six vocabularies, restated here for the same reason every other one on this page is:
+# a value the schema publishes and this library has never heard of decodes, validates
+# structurally, and is then treated as unknown by every fail-safe reader. They describe
+# the *Workflow* reading of a canonical Run -- its projected state, its plan's routes,
+# what a control actually did, how it completed, and why its journal forbids
+# resuming -- and none of them is a second durable column.
+
+WORKFLOW_RUN_STATE_CREATED: Final = "created"
+WORKFLOW_RUN_STATE_QUEUED: Final = "queued"
+WORKFLOW_RUN_STATE_INDETERMINATE: Final = "indeterminate"
+
+WORKFLOW_RUN_STATES: Final[tuple[str, ...]] = (
+    WORKFLOW_RUN_STATE_CREATED,
+    WORKFLOW_RUN_STATE_QUEUED,
+    "running",
+    "waiting",
+    "completed",
+    "failed",
+    "cancelled",
+    WORKFLOW_RUN_STATE_INDETERMINATE,
+)
+
+WORKFLOW_RUN_TERMINAL_STATES: Final[tuple[str, ...]] = (
+    "completed",
+    "failed",
+    "cancelled",
+)
+"""The three states a Workflow Run never leaves.
+
+`indeterminate` is deliberately absent, exactly as `uncertain` is absent from
+:data:`RUN_TERMINAL_STATUSES` and for the same reason: an unreconciled run is an open
+question, and calling it finished would licence the blind retry the uncertainty exists
+to forbid.
+"""
+
+WORKFLOW_STEP_ROUTES: Final[tuple[str, ...]] = (
+    "AGENT",
+    "DETERMINISTIC",
+    "EFFECT",
+    "WAIT",
+    "CHILD_WORKFLOW",
+)
+
+WORKFLOW_CONTROL_ACTIONS: Final[tuple[str, ...]] = ("cancel", "resolve_wait")
+
+WORKFLOW_CONTROL_DISPOSITIONS: Final[tuple[str, ...]] = (
+    "cancellation_accepted",
+    "cancellation_ignored_already_terminal",
+    "wait_resolved",
+)
+
+WORKFLOW_COMPLETION_OUTCOMES: Final[tuple[str, ...]] = ("SUCCEEDED", "FAILED")
+
+WORKFLOW_RESUME_DIAGNOSTICS: Final[tuple[str, ...]] = (
+    "RT_JOURNAL_QUARANTINED",
+    "RT_JOURNAL_RETENTION_BOUNDARY",
+)
 
 RUNTIME_AUTHORITATIVE_SOURCE_KIND: Final = "runtime"
 RUNTIME_SOURCE_KINDS: Final[tuple[str, ...]] = (

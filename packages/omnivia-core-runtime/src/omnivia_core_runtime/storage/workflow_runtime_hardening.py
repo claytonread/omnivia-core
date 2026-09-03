@@ -273,8 +273,13 @@ def _instant_us(value: str) -> int:
     return microseconds
 
 
-def _bound_material(binding: Mapping[str, object]) -> str:
-    """The canonical bytes of exactly the material a resume compares."""
+def bound_material(binding: Mapping[str, object]) -> str:
+    """The canonical bytes of exactly the material a resume compares.
+
+    Public because admission has the same question as resume: two bindings under one
+    Run identity are the same binding when this is equal, and a second answer to that
+    question -- a field list copied into another module -- is a field list that drifts.
+    """
     return canonicalize(
         {key: binding[key] for key in _BOUND_MATERIAL_FIELDS if key in binding}
     )
@@ -603,7 +608,7 @@ def evaluate_binding_resume(
     decision: dict[str, Any] = {"runId": stored.run_id, "evidence": evidence}
     if any(state != _AVAILABLE for state in material_states.values()):
         decision |= {"decision": "refuse", "diagnostic": "RT_BINDING_REVOKED"}
-    elif _bound_material(stored.binding) != _bound_material(resolved):
+    elif bound_material(stored.binding) != bound_material(resolved):
         decision |= {"decision": "refuse", "diagnostic": "RT_BINDING_DRIFT"}
     else:
         decision["decision"] = "allow"
@@ -2846,6 +2851,7 @@ __all__ = [
     "WorkflowTransitionWriter",
     "admit_bound_run",
     "apply_transition_bundle",
+    "bound_material",
     "evaluate_binding_resume",
     "evaluate_journal_resume",
     "evaluate_parity_promotion",
