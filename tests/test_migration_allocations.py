@@ -59,7 +59,8 @@ AUTHORITY = REPO_ROOT / "contracts" / "migrations" / "v1" / "allocations.json"
 # is the durable Chat turn/step/tool lifecycle candidate. 0033 is the durable
 # Chat compaction/waits/agent-run candidate. 0034 is the durable Chat
 # generation-text/transport-event candidate. 0035 is the materialized T-0688
-# Workflow Runtime hardening candidate.
+# Workflow Runtime hardening candidate. 0036 is the materialized T-0693 Workflow
+# Runtime cancellation-lineage candidate.
 EXPECTED_ALLOCATION = (
     (18, "0018_agent_runtime_records.sql", "Agent Runtime", "accepted"),
     (19, "0019_artifact_evidence_cleanup_records.sql", "Agent Runtime", "accepted"),
@@ -79,6 +80,12 @@ EXPECTED_ALLOCATION = (
     (33, "0033_chat_compaction_waits_agent_runs.sql", "Chat", "candidate"),
     (34, "0034_chat_generation_text_transport_events.sql", "Chat", "candidate"),
     (35, "0035_t0688_workflow_runtime_hardening.sql", "Workflow Runtime", "candidate"),
+    (
+        36,
+        "0036_workflow_control_cancellation_lineage.sql",
+        "Workflow Runtime",
+        "candidate",
+    ),
 )
 
 ACCEPTED_PREDECESSOR = (17, "0017_connector_sync_state.sql")
@@ -112,6 +119,7 @@ CANDIDATE_INTRODUCED_COMMITS = {
     33: "0741a368a39815ee01397980b3da5e6b17ffe4a0",
     34: "84fabceec3f832f7e2e40fe1e6794f98786e134e",
     35: "0ca4ddfa6fc37cec315e640e32ffe6f3a4c3d462",
+    36: "9c6a83ea966e8aa4456bed6f05e0a00693069d17",
 }
 
 # The Agent Runtime lane's three introducing commits, each preserved as a
@@ -183,7 +191,7 @@ def test_every_allocation_belongs_to_this_repository() -> None:
 
 
 def test_agent_runtime_migrations_are_accepted_at_the_frozen_landing() -> None:
-    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0035 are
+    """T-0660 accepts 0018-0020 at PR #88's default-branch merge; 0021-0036 are
     candidates pinned to their introducing commits but not accepted."""
     document = _document()
     for entry in document["allocations"]:
