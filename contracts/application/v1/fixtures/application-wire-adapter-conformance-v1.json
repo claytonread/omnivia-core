@@ -2672,6 +2672,266 @@
       }
     },
     {
+      "description": "workflow.control answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.control/primary-success",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "cancel",
+          "reason": "operator.cancelled",
+          "run_id": "run-workflow-1"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-success"
+        },
+        "result": {
+          "disposition": "cancellation_accepted",
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "cancelled",
+            "state": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.inspect answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.inspect/primary-success",
+      "operation": "workflow.inspect",
+      "request": {
+        "input": {
+          "run_id": "run-workflow-1"
+        },
+        "metadata": {
+          "request_id": "req-workflow.inspect-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.inspect"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-workflow.inspect-success"
+        },
+        "result": {
+          "observations": [
+            {
+              "observed_at": "2026-07-30T00:00:00Z",
+              "route": "DETERMINISTIC",
+              "sequence_index": 0,
+              "step_id": "step-1"
+            }
+          ],
+          "plan": [
+            {
+              "component_id": "cmp-extract",
+              "component_version": "2.0.1",
+              "materialised_step_digest": "sha256:4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f",
+              "route": "DETERMINISTIC",
+              "sequence_index": 0,
+              "step_definition_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "step_id": "step-1"
+            }
+          ],
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "running",
+            "state": "running"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.review answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.review/primary-success",
+      "operation": "workflow.review",
+      "request": {
+        "input": {
+          "run_id": "run-workflow-1"
+        },
+        "metadata": {
+          "request_id": "req-workflow.review-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.read",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:read"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.review"
+      },
+      "response": {
+        "metadata": {
+          "request_id": "req-workflow.review-success"
+        },
+        "result": {
+          "journal": [
+            {
+              "bundle_id": "bundle-1",
+              "event": {
+                "eventId": "event-1",
+                "eventKind": "run.admitted",
+                "payloadDigest": "sha256:7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+                "previousIntegrityLink": "sha256:6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f",
+                "recordedAt": "2026-07-30T00:00:00Z",
+                "runId": "run-workflow-1",
+                "sequence": 0
+              },
+              "event_digest": "sha256:5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f",
+              "sequence": 0
+            }
+          ],
+          "resumable": true,
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "running",
+            "state": "running"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.start answers a well-formed request on the success branch.",
+      "expect": {
+        "branch": "success"
+      },
+      "id": "workflow.start/primary-success",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "workflow_id": "wf-onboarding",
+          "workflow_version": "1.4.0"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-success",
+          "required_capabilities": [
+            {
+              "id": "workflow.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-success"
+        },
+        "result": {
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "admitted",
+            "state": "queued"
+          }
+        }
+      }
+    },
+    {
       "description": "workspace.create answers a well-formed request on the success branch.",
       "expect": {
         "branch": "success"
@@ -4280,6 +4540,217 @@
         "metadata": {
           "audit_reference": "audit-record.supersede",
           "request_id": "req-record.supersede-conflict"
+        }
+      }
+    },
+    {
+      "description": "workflow.control repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "workflow.control/primary-success"
+      },
+      "id": "workflow.control/honest-replay",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "cancel",
+          "reason": "operator.cancelled",
+          "run_id": "run-workflow-1"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-replay",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-replay"
+        },
+        "result": {
+          "disposition": "cancellation_accepted",
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "cancelled",
+            "state": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.control reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "workflow.control/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "workflow.control/idempotency-conflict",
+      "operation": "workflow.control",
+      "request": {
+        "input": {
+          "action": "cancel",
+          "reason": "operator.cancelled",
+          "run_id": "run-workflow-1-b"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.control",
+          "request_id": "req-workflow.control-conflict",
+          "required_capabilities": [
+            {
+              "id": "workflow.control",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:control"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.control"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-workflow.control",
+          "request_id": "req-workflow.control-conflict"
+        }
+      }
+    },
+    {
+      "description": "workflow.start repeated with the same idempotency key and the same input: an honest replay, answered from the recorded outcome without mutating again.",
+      "expect": {
+        "branch": "success",
+        "idempotency": "replay",
+        "replay_of": "workflow.start/primary-success"
+      },
+      "id": "workflow.start/honest-replay",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "workflow_id": "wf-onboarding",
+          "workflow_version": "1.4.0"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-replay",
+          "required_capabilities": [
+            {
+              "id": "workflow.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-replay"
+        },
+        "result": {
+          "run": {
+            "binding": {
+              "bindingRef": {
+                "bindingDigest": "sha256:2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f",
+                "bindingId": "binding-workflow-1"
+              },
+              "legacyBinding": false,
+              "runId": "run-workflow-1"
+            },
+            "definition": {
+              "definition_id": "wf-onboarding",
+              "definition_kind": "workflow",
+              "definition_version": "1.4.0"
+            },
+            "plan_digest": "sha256:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+            "run_id": "run-workflow-1",
+            "run_status": "admitted",
+            "state": "queued"
+          }
+        }
+      }
+    },
+    {
+      "description": "workflow.start reusing one idempotency key for a different input: the key no longer identifies a single request, so the call is refused rather than resolved.",
+      "expect": {
+        "branch": "error",
+        "error_code": "idempotency_conflict",
+        "idempotency": "idempotency_conflict",
+        "replay_of": "workflow.start/primary-success",
+        "retry_class": "non_retryable"
+      },
+      "id": "workflow.start/idempotency-conflict",
+      "operation": "workflow.start",
+      "request": {
+        "input": {
+          "workflow_id": "wf-onboarding",
+          "workflow_version": "2.0.0"
+        },
+        "metadata": {
+          "idempotency_key": "idem-workflow.start",
+          "request_id": "req-workflow.start-conflict",
+          "required_capabilities": [
+            {
+              "id": "workflow.write",
+              "minimum_version": "1.0",
+              "required": true
+            }
+          ],
+          "scopes": [
+            "workflow:write"
+          ],
+          "workspace_id": "ws-1"
+        },
+        "operation": "workflow.start"
+      },
+      "response": {
+        "error": {
+          "code": "idempotency_conflict",
+          "message": "This idempotency key was already used for a different request.",
+          "retry_class": "non_retryable"
+        },
+        "metadata": {
+          "audit_reference": "audit-workflow.start",
+          "request_id": "req-workflow.start-conflict"
         }
       }
     },

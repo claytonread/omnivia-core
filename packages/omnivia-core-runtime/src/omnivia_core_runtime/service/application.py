@@ -115,6 +115,15 @@ from omnivia_core_runtime.service.handlers.memory import (
     HmacContinuationTokenCodec,
     MemoryHandlers,
 )
+from omnivia_core_runtime.service.handlers.workflow import (
+    WORKFLOW_CONTROL_OPERATION,
+    WORKFLOW_FAMILY_OPERATIONS,
+    WORKFLOW_INSPECT_OPERATION,
+    WORKFLOW_REVIEW_OPERATION,
+    WORKFLOW_START_OPERATION,
+    WorkflowHandlers,
+    WorkflowReleaseResolver,
+)
 from omnivia_core_runtime.service.handlers.workspace import workspace_inspect
 from omnivia_core_runtime.service.handlers.workspace_family import (
     InstallationWorkspaceHandlers,
@@ -142,6 +151,7 @@ from omnivia_core_runtime.service.operations import (
     server_capability_snapshot,
     success,
 )
+from omnivia_core_runtime.service.runtime_waits import WaitResolutionPolicy
 from omnivia_core_runtime.storage.memory import IdentifierAllocator, random_identifier
 from omnivia_core_runtime.storage.retrieval import local_owner_label_grant
 
@@ -235,6 +245,21 @@ CHAT_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         CHAT_COMMAND_OPERATION: MUTATION_PURPOSES[CHAT_COMMAND_OPERATION],
         CHAT_EVENTS_OPERATION: CHAT_OBSERVATION_PURPOSE,
         CHAT_SNAPSHOT_OPERATION: CHAT_OBSERVATION_PURPOSE,
+    }
+)
+
+#: The T-0693 Workflow family. Three purposes on the same split the job and Chat
+#: families use: starting a Run and controlling one are separate mutations under
+#: separate `MUTATION_PURPOSES` entries -- admitting work and stopping it are not one
+#: authority -- and inspecting or reviewing a Run is an observation, which is not what
+#: a caller starts one under.
+WORKFLOW_OBSERVATION_PURPOSE: Final = "workflow_observation"
+WORKFLOW_FAMILY_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        WORKFLOW_START_OPERATION: MUTATION_PURPOSES[WORKFLOW_START_OPERATION],
+        WORKFLOW_CONTROL_OPERATION: MUTATION_PURPOSES[WORKFLOW_CONTROL_OPERATION],
+        WORKFLOW_INSPECT_OPERATION: WORKFLOW_OBSERVATION_PURPOSE,
+        WORKFLOW_REVIEW_OPERATION: WORKFLOW_OBSERVATION_PURPOSE,
     }
 )
 
@@ -620,6 +645,55 @@ def build_chat_registry(handlers: ChatHandlers) -> ApplicationOperationRegistry:
     return registry
 
 
+def workflow_family_session(
+    *, principal_id: str, installation_id: str, workspace_id: str
+) -> AuthenticatedSession:
+    """The T-0693 contributor grant for one workspace's Workflow surface."""
+    entries = tuple(
+        get_operation_metadata(name) for name in sorted(WORKFLOW_FAMILY_OPERATIONS)
+    )
+    return AuthenticatedSession(
+        principal_id=principal_id,
+        roles=frozenset({WORKSPACE_CONTRIBUTOR_ROLE}),
+        installations=frozenset({installation_id}),
+        workspaces=frozenset({workspace_id}),
+        operations=WORKFLOW_FAMILY_OPERATIONS,
+        scopes=frozenset(
+            scope for entry in entries for scope in entry.scope.required_scopes
+        ),
+        purposes=frozenset(WORKFLOW_FAMILY_PURPOSES.values()),
+        capabilities=tuple(
+            sorted(
+                {
+                    CapabilityRef(
+                        id=entry.required_capability.id,
+                        version=entry.required_capability.minimum_version,
+                    )
+                    for entry in entries
+                },
+                key=lambda ref: (ref.id, ref.version),
+            )
+        ),
+    )
+
+
+def build_workflow_registry(handlers: WorkflowHandlers) -> ApplicationOperationRegistry:
+    registry = ApplicationOperationRegistry()
+    registry.register(
+        WORKFLOW_START_OPERATION, cast(OperationHandler, handlers.workflow_start)
+    )
+    registry.register(
+        WORKFLOW_INSPECT_OPERATION, cast(OperationHandler, handlers.workflow_inspect)
+    )
+    registry.register(
+        WORKFLOW_CONTROL_OPERATION, cast(OperationHandler, handlers.workflow_control)
+    )
+    registry.register(
+        WORKFLOW_REVIEW_OPERATION, cast(OperationHandler, handlers.workflow_review)
+    )
+    return registry
+
+
 def build_application_registry(
     *, additional: Mapping[str, OperationHandler] | None = None
 ) -> ApplicationOperationRegistry:
@@ -765,7 +839,7 @@ class SessionApplicationFallback(Protocol):
 class ProductionApplicationSurface:
     """The complete application surface, composed without collapsing authority.
 
-    The five family dispatchers deliberately retain their own server-issued
+    The family dispatchers deliberately retain their own server-issued
     sessions and bindings: an installation-scoped request must never inherit a
     workspace grant, and a read must never acquire mutation authority merely
     because both operations ship in one build.  This object is the single
@@ -775,7 +849,7 @@ class ProductionApplicationSurface:
 
     A handler is registered twice, absent, or outside the frozen catalogue is a
     construction error.  The resulting surface therefore cannot start while it
-    is anything other than 23/23 complete.
+    is anything other than 27/27 complete.
     """
 
     registry: ApplicationOperationRegistry
@@ -792,8 +866,10 @@ class ProductionApplicationSurface:
                 "the production application routes do not exactly match the registry"
             )
         distinct_routes = tuple({id(route): route for route in routes.values()}.values())
-        if len(distinct_routes) != 6:
-            raise ValueError("the production surface requires exactly six authority families")
+        if len(distinct_routes) != 7:
+            raise ValueError(
+                "the production surface requires exactly seven authority families"
+            )
         if any(route.grant.principal != self._principal for route in distinct_routes):
             raise ValueError("every production application family must act as one principal")
         if any(route.probe.grant.principal != self._principal for route in distinct_routes):
@@ -847,11 +923,12 @@ def compose_production_application_surface(
     jobs: ApplicationDispatcher,
     governance: ApplicationDispatcher,
     chat: ApplicationDispatcher,
+    workflow: ApplicationDispatcher,
     probe: ApplicationFallback,
     adapters: frozenset[str] = frozenset({"in_process", "ipc", "http"}),
 ) -> ProductionApplicationSurface:
     """Compose all real family handlers into the exact frozen catalogue."""
-    families = (installation, reads, memory, jobs, governance, chat)
+    families = (installation, reads, memory, jobs, governance, chat, workflow)
     registry = ApplicationOperationRegistry()
     routes: dict[str, ApplicationDispatcher] = {}
     for family in families:
@@ -1450,6 +1527,59 @@ def build_chat_application_dispatcher(
     )
 
 
+def build_workflow_application_dispatcher(
+    *,
+    service: Any,
+    principal_id: str,
+    installation_id: str,
+    workspace_id: str,
+    fallback: ApplicationFallback,
+    clock: Clock | None = None,
+    allocate_identifier: IdentifierAllocator = random_identifier,
+    resolve_release: WorkflowReleaseResolver | None = None,
+    wait_policy: WaitResolutionPolicy | None = None,
+    transport: str = LOCAL_TRANSPORT_ADAPTER,
+    record: ApplicationCallSink | None = None,
+) -> ApplicationDispatcher:
+    """Compose the exact four-operation T-0693 Workflow family around the router.
+
+    `resolve_release` is the release authority seam and production states whatever
+    authority the installation actually has: this repository ships none, so the
+    default is absent and `workflow.start` refuses at the domain step -- after the
+    grant, before any write -- rather than binding a Run to material nobody released.
+    `wait_policy` is the same posture for `resolve_wait`: a build that cannot decide
+    whether a resolution is permitted must not perform one. Both refusals leave every
+    other operation fully served: reading a Run needs neither seam, and cancelling one
+    goes through the durable stop ledger rather than through either.
+    """
+    session = workflow_family_session(
+        principal_id=principal_id,
+        installation_id=installation_id,
+        workspace_id=workspace_id,
+    )
+    binding = ServiceBinding(installation_id=installation_id, workspace_id=workspace_id)
+    handlers = WorkflowHandlers(
+        service=service,
+        session=session,
+        binding=binding,
+        clock=SystemClock() if clock is None else clock,
+        allocate_identifier=allocate_identifier,
+        resolve_release=resolve_release,
+        wait_policy=wait_policy,
+    )
+    registry = build_workflow_registry(handlers)
+    return ApplicationDispatcher(
+        registry=registry,
+        session=session,
+        binding=binding,
+        supported_capabilities=server_capability_snapshot(registry),
+        transport=transport,
+        probe=fallback,
+        record=record,
+        service=service,
+    )
+
+
 __all__ = [
     "CHANNEL_TRUST",
     "CONTEXT_PACK_BUILD_OPERATION",
@@ -1481,10 +1611,13 @@ __all__ = [
     "build_job_registry",
     "build_memory_application_dispatcher",
     "build_memory_registry",
+    "build_workflow_application_dispatcher",
+    "build_workflow_registry",
     "compose_production_application_surface",
     "governance_family_session",
     "installation_owner_session",
     "job_family_session",
     "local_owner_session",
     "memory_family_session",
+    "workflow_family_session",
 ]

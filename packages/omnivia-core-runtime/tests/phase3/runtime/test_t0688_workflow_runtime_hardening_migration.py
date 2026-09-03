@@ -176,19 +176,25 @@ def named_objects(connection: object) -> dict[str, set[str]]:
     }
 
 
-def advance_to_head(path: Path) -> list[Migration]:
-    """Advance an already-bootstrapped workspace through the real migrator."""
+def advance_through_0035(path: Path) -> list[Migration]:
+    """Advance an already-bootstrapped workspace through the real migrator, to 0035.
+
+    Narrowed to this migration's own version rather than to whatever the repository's
+    head happens to be, so what these tests measure stays "what 0035 does to a 0034
+    head" once a successor exists. The migrator itself is the real one.
+    """
     maintenance = open_database(path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
         state = read_workspace_state(maintenance)
         assert state is not None
-        return apply_pending_migrations(
-            maintenance,
-            mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=m1.SERVICE_INSTANCE,
-            fencing_generation=state.fencing_generation,
-            workspace_id=WORKSPACE_ID,
-        )
+        with m1.migration_catalogue_through(MIGRATION_VERSION):
+            return apply_pending_migrations(
+                maintenance,
+                mode=OpenMode.EXCLUSIVE_MAINTENANCE,
+                service_instance_id=m1.SERVICE_INSTANCE,
+                fencing_generation=state.fencing_generation,
+                workspace_id=WORKSPACE_ID,
+            )
     finally:
         maintenance.close()
 
@@ -257,7 +263,7 @@ def test_applying_0035_adds_exactly_the_expected_objects(tmp_path: Path) -> None
         finally:
             connection.close()
 
-    assert [m.version for m in advance_to_head(path)] == [MIGRATION_VERSION]
+    assert [m.version for m in advance_through_0035(path)] == [MIGRATION_VERSION]
 
     connection = open_database(path, OpenMode.EPHEMERAL)
     try:
@@ -298,7 +304,7 @@ def test_a_populated_0034_head_keeps_every_prior_fact_and_gains_no_binding(
             holder.connection.close()
 
     assert runs and plans
-    assert [m.version for m in advance_to_head(path)] == [MIGRATION_VERSION]
+    assert [m.version for m in advance_through_0035(path)] == [MIGRATION_VERSION]
 
     connection = open_database(path, OpenMode.EPHEMERAL)
     try:

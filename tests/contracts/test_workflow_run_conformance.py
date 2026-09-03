@@ -568,7 +568,7 @@ def test_oversized_results_are_promoted_through_import_start() -> None:
 
 def test_core_exposes_no_operation_over_run_state() -> None:
     assert FORBIDDEN_RUN_STATE_OPERATIONS.isdisjoint(CATALOGUE)
-    assert len(CATALOGUE) == len(OPERATION_CATALOGUE) == 23
+    assert len(CATALOGUE) == len(OPERATION_CATALOGUE) == 27
     scaffolding = RECIPES_BY_CASE["RUN-V-24"]
     assert scaffolding.operation is None
     with pytest.raises(IngressRecipeError, match="outside the catalogue"):

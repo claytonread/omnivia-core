@@ -1767,6 +1767,189 @@ export function isRunDefinitionKind(value: unknown): value is RunDefinitionKind 
 }
 
 /**
+ * Where a Workflow Run stands, as a projection of the canonical `Run` it is bound to. Eight
+ * states and no ninth durable column: `created` is bound with no step opened, `queued` is bound
+ * with its steps opened, and the remaining six are `RunStatus` read in Workflow terms --
+ * `partially_completed` reads as `failed`, because a run that reached the end without succeeding
+ * is not a success. `indeterminate` is deliberately not terminal, exactly as `uncertain` is not:
+ * an unreconciled run is an open question, and calling it finished would licence the blind retry
+ * the uncertainty exists to forbid. Closed at the schema and open on the wire, with the same
+ * fail-safe reading as `RunStatus`.
+ */
+export type WorkflowRunState = string;
+
+/**
+ * The closed `WorkflowRunState` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_RUN_STATE_VALUES = [
+  "created",
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "indeterminate",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowRunState`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowRunState(value: unknown): value is WorkflowRunState {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_RUN_STATE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The reference route one materialised plan step resolves to. The first four are exactly the
+ * execution classes a profile runs; `CHILD_WORKFLOW` is the one route no execution class names,
+ * because delegating to another Workflow is not a shape of work a profile itself runs. Closed at
+ * the schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowStepRoute = string;
+
+/**
+ * The closed `WorkflowStepRoute` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_STEP_ROUTE_VALUES = [
+  "AGENT",
+  "DETERMINISTIC",
+  "EFFECT",
+  "WAIT",
+  "CHILD_WORKFLOW",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowStepRoute`. The generated decoders do not call
+ * this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowStepRoute(value: unknown): value is WorkflowStepRoute {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_STEP_ROUTE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Which control one `workflow.control` request asks for: `cancel` requests the Run stop through
+ * the durable stop ledger, and `resolve_wait` resolves one durable `Wait` through the runtime
+ * wait authority. An action outside this vocabulary is refused explicitly rather than answered
+ * with a fabricated success. Closed at the schema and open on the wire, with the same fail-safe
+ * reading as `RunStatus`.
+ */
+export type WorkflowControlAction = string;
+
+/**
+ * The closed `WorkflowControlAction` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_CONTROL_ACTION_VALUES = [
+  "cancel",
+  "resolve_wait",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowControlAction`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowControlAction(value: unknown): value is WorkflowControlAction {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_CONTROL_ACTION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * What one `workflow.control` call did. `cancellation_accepted` appended the cancellation the
+ * outcome names; `cancellation_ignored_already_terminal` found a finished Run and left its event
+ * stream untouched, which is a successful idempotent control result rather than a `conflict`;
+ * `wait_resolved` closed one durable `Wait`. Closed at the schema and open on the wire, with the
+ * same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowControlDisposition = string;
+
+/**
+ * The closed `WorkflowControlDisposition` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_CONTROL_DISPOSITION_VALUES = [
+  "cancellation_accepted",
+  "cancellation_ignored_already_terminal",
+  "wait_resolved",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowControlDisposition`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowControlDisposition(value: unknown): value is WorkflowControlDisposition {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_CONTROL_DISPOSITION_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The single evidence-gated completion decision recorded for one Workflow Run. Closed at the
+ * schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowCompletionOutcome = string;
+
+/**
+ * The closed `WorkflowCompletionOutcome` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_COMPLETION_OUTCOME_VALUES = [
+  "SUCCEEDED",
+  "FAILED",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowCompletionOutcome`. The generated decoders do
+ * not call this -- decoding stays tolerant and preserves an unrecognized value -- and this is
+ * the primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowCompletionOutcome(value: unknown): value is WorkflowCompletionOutcome {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_COMPLETION_OUTCOME_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * The one typed reason a Workflow Run may not resume: `RT_JOURNAL_QUARANTINED` means its journal
+ * is held on an unanswered integrity finding, and `RT_JOURNAL_RETENTION_BOUNDARY` means a
+ * recorded boundary removed history the Run cannot resume without. Neither is answered by
+ * skipping, folding or reconstructing the history that could not be verified. Closed at the
+ * schema and open on the wire, with the same fail-safe reading as `RunStatus`.
+ */
+export type WorkflowResumeDiagnostic = string;
+
+/**
+ * The closed `WorkflowResumeDiagnostic` vocabulary, emitted from the schema's `enum`.
+ */
+export const WORKFLOW_RESUME_DIAGNOSTIC_VALUES = [
+  "RT_JOURNAL_QUARANTINED",
+  "RT_JOURNAL_RETENTION_BOUNDARY",
+] as const;
+
+/**
+ * Return whether a value is a declared `WorkflowResumeDiagnostic`. The generated decoders do not
+ * call this -- decoding stays tolerant and preserves an unrecognized value -- and this is the
+ * primitive a caller enforcing the closed domain validates with.
+ */
+export function isWorkflowResumeDiagnostic(value: unknown): value is WorkflowResumeDiagnostic {
+  return (
+    typeof value === "string" &&
+    (WORKFLOW_RESUME_DIAGNOSTIC_VALUES as readonly string[]).includes(value)
+  );
+}
+
+/**
  * Open, dot-namespaced code naming which runtime probe is being requested or answered. The
  * frozen, currently known probe kinds are exactly `service.health`, `service.readiness`, and
  * `service.discover`. Open by design so a compatible minor release can add probe kinds without
@@ -3856,6 +4039,186 @@ export interface ResolveWait {
 }
 
 /**
+ * One step of a sealed Workflow plan, exactly as it was materialised. `sequence_index` is the
+ * materialised order, which is derived from the declared dependencies rather than from the
+ * authoring order, and both digests are content addresses: `step_definition_digest` names the
+ * authored step this materialises, `materialised_step_digest` names this step itself.
+ */
+export interface WorkflowPlanStep {
+  /**
+   * Stable identifier of this step within its plan.
+   */
+  readonly step_id: Identifier;
+  /**
+   * The Component this step executes.
+   */
+  readonly component_id: Identifier;
+  /**
+   * The released version of that Component.
+   */
+  readonly component_version: ReleaseVersion;
+  /**
+   * The reference route this step resolves to.
+   */
+  readonly route: WorkflowStepRoute;
+  /**
+   * This step's position in the materialised order.
+   */
+  readonly sequence_index: number;
+  /**
+   * Content address of the authored step this materialises.
+   */
+  readonly step_definition_digest: ContentChecksum;
+  /**
+   * Content address of this materialised step.
+   */
+  readonly materialised_step_digest: ContentChecksum;
+}
+
+/**
+ * One durable, replay-safe record that a plan step was reached. Observations are what make a
+ * Workflow Run report an execution rather than a plan: a step that carries none has not been
+ * reached, and a second observation contradicting the one recorded is refused rather than
+ * applied.
+ */
+export interface WorkflowStepObservation {
+  /**
+   * The step that was reached.
+   */
+  readonly step_id: Identifier;
+  /**
+   * The route it was reached on.
+   */
+  readonly route: WorkflowStepRoute;
+  /**
+   * The materialised position it was reached at.
+   */
+  readonly sequence_index: number;
+  /**
+   * When the observation was recorded.
+   */
+  readonly observed_at: Timestamp;
+}
+
+/**
+ * The single evidence-gated completion decision for one Workflow Run. Present only once a
+ * decision has actually been recorded; a Run still running carries none rather than a
+ * provisional one.
+ */
+export interface WorkflowCompletion {
+  /**
+   * What was decided.
+   */
+  readonly outcome: WorkflowCompletionOutcome;
+  /**
+   * When it was decided.
+   */
+  readonly decided_at: Timestamp;
+  /**
+   * The audit event this decision is attributable to.
+   */
+  readonly audit_reference: AuditReference;
+}
+
+/**
+ * One verified entry of a Workflow Run's hash-chained runtime journal. The `event` is the public
+ * `RuntimeJournalEvent` carried verbatim, and `event_digest` is the address of exactly the
+ * canonical bytes it was stored as. Entries are returned in contiguous sequence order from zero
+ * or not at all: a chain that could not be recomputed whole is refused rather than returned with
+ * its gap silently closed.
+ */
+export interface WorkflowJournalEntry {
+  /**
+   * This entry's position in the Run's journal.
+   */
+  readonly sequence: number;
+  /**
+   * The transition bundle this entry was recorded with.
+   */
+  readonly bundle_id: Identifier;
+  /**
+   * The `RuntimeJournalEvent`, carried verbatim.
+   */
+  readonly event: JsonObject;
+  /**
+   * Content address of the canonical event bytes.
+   */
+  readonly event_digest: ContentChecksum;
+}
+
+/**
+ * Input for `workflow.start`. Names one released Workflow version to run. Workspace-scoped
+ * through the request envelope's selected workspace, so this payload never carries a second,
+ * independent workspace identifier. There is no definition, plan, binding or logical-key member.
+ * A caller that could state the material it runs against could state material nobody released,
+ * so the plan is sealed and the binding is resolved server-side from the exact release this
+ * names; and a Run's logical identity is the request's own `idempotency_key`, which migration
+ * 0018 requires them to be equal to, so stating it twice could only introduce a disagreement.
+ */
+export interface WorkflowStartInput {
+  /**
+   * The Workflow to run.
+   */
+  readonly workflow_id: Identifier;
+  /**
+   * The released version of it to run.
+   */
+  readonly workflow_version: ReleaseVersion;
+}
+
+/**
+ * Input for `workflow.inspect`. Names one Workflow Run. Workspace-scoped through the request
+ * envelope's selected workspace, so a Run of another workspace is invisible rather than merely
+ * unlikely to be asked for.
+ */
+export interface WorkflowInspectInput {
+  /**
+   * The Workflow Run to read.
+   */
+  readonly run_id: Identifier;
+}
+
+/**
+ * Input for `workflow.control`. Names one Workflow Run and one control to apply to it. `wait_id`
+ * and `resolution` are required by `resolve_wait` and forbidden by `cancel`; `reason` is
+ * recorded on the control's own outcome and is never an authorization input. Workspace-scoped
+ * through the request envelope's selected workspace.
+ */
+export interface WorkflowControlInput {
+  /**
+   * The Workflow Run to control.
+   */
+  readonly run_id: Identifier;
+  /**
+   * Which control to apply.
+   */
+  readonly action: WorkflowControlAction;
+  /**
+   * Open code naming why the caller is asking, such as `operator.cancelled`.
+   */
+  readonly reason?: OpenCode;
+  /**
+   * The durable `Wait` to resolve. Required by `resolve_wait`.
+   */
+  readonly wait_id?: Identifier;
+  /**
+   * How to resolve that wait, paired to its kind. Required by `resolve_wait`.
+   */
+  readonly resolution?: WaitResolution;
+}
+
+/**
+ * Input for `workflow.review`. Names one Workflow Run. Workspace-scoped through the request
+ * envelope's selected workspace.
+ */
+export interface WorkflowReviewInput {
+  /**
+   * The Workflow Run to review.
+   */
+  readonly run_id: Identifier;
+}
+
+/**
  * A request to answer one runtime probe. Deliberately distinct from `RequestEnvelope`: it
  * carries no `operation`, no `input`, and no workspace or authority scoping, because a probe
  * must be answerable before those concepts apply.
@@ -5107,6 +5470,42 @@ export interface EvidenceItem {
 }
 
 /**
+ * The current durable truth about one Workflow Run: what it is bound to, where it stands, and
+ * the binding a verified read produced for it. Every field is read from storage; none is
+ * simulated, previewed or inferred. `state` and `run_status` are two readings of one fact and
+ * never two facts -- the state is a projection of the status and the Run's step ledger -- and
+ * `binding` is the public `RuntimeDefinitionBindingProjection`, carried opaquely because the
+ * binding lane owns its shape.
+ */
+export interface WorkflowRunProjection {
+  /**
+   * The canonical Run this Workflow Run is.
+   */
+  readonly run_id: Identifier;
+  /**
+   * The exact Workflow and released version this Run executes.
+   */
+  readonly definition: RunDefinitionRef;
+  /**
+   * Content address of the sealed plan this Run is bound to.
+   */
+  readonly plan_digest: ContentChecksum;
+  /**
+   * Where this Run stands, in Workflow terms.
+   */
+  readonly state: WorkflowRunState;
+  /**
+   * The canonical Runtime status the state is projected from.
+   */
+  readonly run_status: RunStatus;
+  /**
+   * The `RuntimeDefinitionBindingProjection` a verified read produced for this Run, carried
+   * verbatim.
+   */
+  readonly binding: JsonObject;
+}
+
+/**
  * The published coordination facts a client needs to find one running service instance and
  * decide whether it can talk to it, before any request is sent. Coordination data only: a
  * descriptor carries no bearer credential or token, no granted or effective capability
@@ -5853,6 +6252,88 @@ export interface RunStep {
    * The wait holding this step, present exactly when the step is `waiting`.
    */
   readonly wait_id?: Identifier;
+}
+
+/**
+ * Result of `workflow.start`: the Run as it now stands durably. There is no admitted-versus-
+ * replayed member, because an honest replay is answered from the stored bytes of the first call
+ * and so could not carry a different one; the Run this names is the caller's Run either way.
+ */
+export interface WorkflowStartResult {
+  /**
+   * The Run this call bound or replayed.
+   */
+  readonly run: WorkflowRunProjection;
+}
+
+/**
+ * Result of `workflow.inspect`: one Run's current durable truth. The sealed plan it is bound to,
+ * every step observation actually recorded against it, and the projection of where it stands.
+ * Never a preview and never a simulation: an unobserved step is absent rather than predicted,
+ * and a state is read from the durable event stream rather than computed from what the plan
+ * would do next.
+ */
+export interface WorkflowInspectResult {
+  /**
+   * Where this Run stands.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * The sealed plan, in materialised order.
+   */
+  readonly plan: readonly WorkflowPlanStep[];
+  /**
+   * Every step observation recorded against this Run.
+   */
+  readonly observations: readonly WorkflowStepObservation[];
+}
+
+/**
+ * Result of `workflow.control`: what the call did, and the Run as it now stands. A state-based
+ * refusal is a successful, idempotent control result rather than an API error -- a Run already
+ * finished settles as `cancellation_ignored_already_terminal` with its stream untouched, and is
+ * never reported as `conflict` merely for being terminal. An unsupported action is refused as
+ * `invalid_request` rather than answered with a fabricated success.
+ */
+export interface WorkflowControlResult {
+  /**
+   * The Run after this call.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * What this call actually did.
+   */
+  readonly disposition: WorkflowControlDisposition;
+}
+
+/**
+ * Result of `workflow.review`: one deterministic projection of a Run's durable history. The
+ * verified journal in contiguous sequence order, whether the Run may resume and the one typed
+ * reason it may not, and the evidence-gated completion decision if one has been recorded.
+ * Deterministic in the strict sense: the same durable rows produce the same projection, because
+ * every field is read rather than sampled, timed or ranked.
+ */
+export interface WorkflowReviewResult {
+  /**
+   * Where this Run stands.
+   */
+  readonly run: WorkflowRunProjection;
+  /**
+   * The Run's verified journal, in contiguous sequence order.
+   */
+  readonly journal: readonly WorkflowJournalEntry[];
+  /**
+   * Whether this Run's history permits it to resume.
+   */
+  readonly resumable: boolean;
+  /**
+   * The one typed reason it may not. Present exactly when `resumable` is false.
+   */
+  readonly resume_diagnostic?: WorkflowResumeDiagnostic;
+  /**
+   * The recorded completion decision, if there is one.
+   */
+  readonly completion?: WorkflowCompletion;
 }
 
 /**
@@ -7906,6 +8387,133 @@ export const OPERATION_CATALOGUE: readonly OperationMetadata[] = [
       "invalid_purpose",
       "invalid_request",
       "mutation_precondition_failed",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.control",
+    scope: { required_scopes: ["workflow:control"], side_effect: "update", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult",
+    required_capability: { id: "workflow.control", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "conflict",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_busy",
+      "workspace_lease_unavailable",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.inspect",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult",
+    required_capability: { id: "workflow.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.review",
+    scope: { required_scopes: ["workflow:read"], side_effect: "none", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult",
+    required_capability: { id: "workflow.read", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: false, required: false, safe_to_retry: true },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "read" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
+      "not_found",
+      "rate_limited",
+      "upgrade_required",
+      "workspace_migration_required",
+      "workspace_not_granted",
+    ],
+  },
+  {
+    name: "workflow.start",
+    scope: { required_scopes: ["workflow:write"], side_effect: "create", scope_kind: "workspace" },
+    input_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput",
+    result_schema_ref: "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult",
+    required_capability: { id: "workflow.write", minimum_version: "1.0", required: true },
+    job: { completion_mode: "synchronous" },
+    pagination: { paginated: false },
+    idempotency: { supports_idempotency_key: true, required: true, safe_to_retry: false },
+    precondition: { supports_mutation_precondition: false, required: false },
+    audit: { audited: true, audit_category: "mutation" },
+    allowed_errors: [
+      "authentication_required",
+      "authorization_denied",
+      "cancelled",
+      "capability_not_granted",
+      "deadline_exceeded",
+      "dependency_unavailable",
+      "idempotency_conflict",
+      "incompatible_version",
+      "internal_non_recoverable",
+      "internal_recoverable",
+      "invalid_purpose",
+      "invalid_request",
       "not_found",
       "rate_limited",
       "upgrade_required",

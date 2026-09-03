@@ -1135,6 +1135,229 @@
       ]
     },
     {
+      "name": "workflow.control",
+      "scope": {
+        "required_scopes": [
+          "workflow:control"
+        ],
+        "side_effect": "update",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowControlResult",
+      "required_capability": {
+        "id": "workflow.control",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "conflict",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "workflow.inspect",
+      "scope": {
+        "required_scopes": [
+          "workflow:read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowInspectResult",
+      "required_capability": {
+        "id": "workflow.read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "workflow.review",
+      "scope": {
+        "required_scopes": [
+          "workflow:read"
+        ],
+        "side_effect": "none",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowReviewResult",
+      "required_capability": {
+        "id": "workflow.read",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": false,
+        "required": false,
+        "safe_to_retry": true
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "read"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
+      "name": "workflow.start",
+      "scope": {
+        "required_scopes": [
+          "workflow:write"
+        ],
+        "side_effect": "create",
+        "scope_kind": "workspace"
+      },
+      "input_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartInput",
+      "result_schema_ref": "https://contracts.omnivia.dev/application/v1/runtime.schema.json#/$defs/WorkflowStartResult",
+      "required_capability": {
+        "id": "workflow.write",
+        "minimum_version": "1.0",
+        "required": true
+      },
+      "job": {
+        "completion_mode": "synchronous"
+      },
+      "pagination": {
+        "paginated": false
+      },
+      "idempotency": {
+        "supports_idempotency_key": true,
+        "required": true,
+        "safe_to_retry": false
+      },
+      "precondition": {
+        "supports_mutation_precondition": false,
+        "required": false
+      },
+      "audit": {
+        "audited": true,
+        "audit_category": "mutation"
+      },
+      "allowed_errors": [
+        "authentication_required",
+        "authorization_denied",
+        "cancelled",
+        "capability_not_granted",
+        "deadline_exceeded",
+        "dependency_unavailable",
+        "idempotency_conflict",
+        "incompatible_version",
+        "internal_non_recoverable",
+        "internal_recoverable",
+        "invalid_purpose",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "upgrade_required",
+        "workspace_busy",
+        "workspace_lease_unavailable",
+        "workspace_migration_required",
+        "workspace_not_granted"
+      ]
+    },
+    {
       "name": "workspace.create",
       "scope": {
         "required_scopes": [

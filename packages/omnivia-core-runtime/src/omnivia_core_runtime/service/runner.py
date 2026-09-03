@@ -53,6 +53,11 @@ from omnivia_core_runtime.service.lifecycle import (
     ServiceState,
 )
 from omnivia_core_runtime.service.probes import ServiceFacts
+from omnivia_core_runtime.service.runtime_recovery import (
+    RuntimeStartupRecovery,
+    recover_runtime_startup,
+)
+from omnivia_core_runtime.service.runtime_scheduler import RuntimeScheduler
 from omnivia_core_runtime.service.versions import (
     API_VERSION,
     PROTOCOL_VERSION,
@@ -61,9 +66,11 @@ from omnivia_core_runtime.service.versions import (
     supported_workspace_versions,
     workspace_contract_version,
 )
+from omnivia_core_runtime.service.workflow_runtime import workflow_runtime_scheduler
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import (
     OpenMode,
+    StorageError,
     integrity_check,
     open_database,
 )
@@ -151,6 +158,10 @@ class ServiceRunner:
         self.generation: int | None = None
         self.workspace_id: str | None = None
         self.workspace_format_ordinal: str | None = None
+        #: What the fenced runtime startup pass found and repaired, once it has run.
+        #: `None` before startup and for an instance whose recovery refused, so a reader
+        #: can tell "nothing was found" from "the pass never reached a verdict".
+        self.runtime_recovery: RuntimeStartupRecovery | None = None
         #: Monotonic reading of the last heartbeat this instance wrote, which is the
         #: acquisition itself until the first renewal. `None` until a lease is held,
         #: so nothing can renew before there is something to renew.
@@ -474,11 +485,54 @@ class ServiceRunner:
             migrations_and_jobs_recovered=recovered,
         )
 
+    def runtime_scheduler(self) -> RuntimeScheduler | None:
+        """The scheduler this instance runs canonical Runs with, or `None` before startup.
+
+        One accessor rather than a construction at each call site, because a scheduler is
+        only ever this instance's: it carries the exclusive connection, this service
+        identity and the generation the lease granted, and a second one built from
+        anything else would be a writer this workspace has not authorised. It is composed
+        with the Workflow step plan, so a Workflow Run's dependencies are respected and an
+        `agent_component` Run behaves exactly as it did.
+
+        This is the seam a caller drives execution through -- and the one recovery
+        already uses, which is what makes it reachable rather than a constructor tests
+        happen to know about.
+        """
+        if self.connection is None or self.identity is None or self.generation is None:
+            return None
+        if self.workspace_id is None:  # pragma: no cover - set before the connection is
+            return None
+        return workflow_runtime_scheduler(
+            self.connection,
+            self.identity,
+            workspace_id=self.workspace_id,
+            fencing_generation=self.generation,
+            clock=self.clock,
+        )
+
     def _recover(self, connection: sqlite3.Connection) -> bool:
-        """Recover interrupted migrations and durable jobs.
+        """Recover interrupted migrations, runtime-bound runs and durable jobs.
 
         Any job left `claimed` by a previous generation is returned to `queued`: its
         claimant cannot still be running, because a new generation exists.
+
+        **The runtime pass runs first, and the order is the safety property.** RT-109
+        classifies every runtime-bound job from persisted evidence and repairs the two
+        repairable states: a stale claim over a run suspended on a durable `Wait` is
+        *adopted*, preserving the wait, its step and its running attempt so the wait's own
+        resolution still resumes them, and an orphaned attempt is recovered through the
+        bounded scheduler recovery. The blanket application sweep below cannot tell those
+        apart -- it requeues every stale claim -- so running it first would fail the
+        attempt a durable wait is still holding and destroy the suspension. Afterwards,
+        every runtime-bound job it would have swept is either adopted at this generation
+        or already recovered, so the sweep passes over them.
+
+        **A pass that cannot read the history refuses readiness rather than continuing.**
+        `RuntimeSchedulingError` is raised for evidence this build cannot classify at all,
+        and serving a workspace whose runtime history could not be read would be serving
+        one whose Runs may be claimed twice. `contradictory_history` is not that: it is a
+        classification, reported and left alone, and it does not stop the service.
         """
         attempts = connection.execute(
             "SELECT COUNT(*) FROM omnivia_migration_attempts WHERE outcome = 'started'"
@@ -489,6 +543,16 @@ class ServiceRunner:
         assert self.generation is not None
         assert self.identity is not None
         assert self.workspace_id is not None
+
+        scheduler = self.runtime_scheduler()
+        assert scheduler is not None
+        try:
+            self.runtime_recovery = recover_runtime_startup(scheduler)
+        except StorageError:
+            # `RuntimeSchedulingError` is one of these, which is the whole point: a
+            # runtime history this build cannot read and a storage refusal underneath it
+            # are the same fact about this workspace, and both leave recovery unproven.
+            return False
 
         # `omnivia_durable_jobs` is a guarded table, so requeuing is a fenced write
         # like any other. It ran as a bare transaction before, which worked only

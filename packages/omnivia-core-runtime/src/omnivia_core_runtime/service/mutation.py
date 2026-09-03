@@ -101,6 +101,12 @@ CONTENT_INGESTION_PURPOSE: Final = "content_ingestion"
 JOB_CONTROL_PURPOSE: Final = "job_control"
 KNOWLEDGE_GOVERNANCE_PURPOSE: Final = "knowledge_governance"
 CHAT_AUTHORING_PURPOSE: Final = "chat_authoring"
+WORKFLOW_EXECUTION_PURPOSE: Final = "workflow_execution"
+#: Deliberately not `JOB_CONTROL_PURPOSE`. Cancelling a Workflow Run and cancelling a
+#: durable job are different acts on different records -- a stop request against the
+#: canonical Runtime stream, not a scheduler row -- and one purpose covering both would
+#: let a grant issued for either be presented for the other.
+WORKFLOW_CONTROL_PURPOSE: Final = "workflow_control"
 
 MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -110,6 +116,8 @@ MUTATION_PURPOSES: Final[Mapping[str, str]] = MappingProxyType(
         "job.cancel": JOB_CONTROL_PURPOSE,
         "job.retry": JOB_CONTROL_PURPOSE,
         "chat.command": CHAT_AUTHORING_PURPOSE,
+        "workflow.start": WORKFLOW_EXECUTION_PURPOSE,
+        "workflow.control": WORKFLOW_CONTROL_PURPOSE,
         "knowledge.propose": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.approve": KNOWLEDGE_GOVERNANCE_PURPOSE,
         "candidate.reject": KNOWLEDGE_GOVERNANCE_PURPOSE,
@@ -140,6 +148,11 @@ MUTATION_ROLES: Final[Mapping[str, str]] = MappingProxyType(
         # nothing and administers nothing, so it takes the same contributor role every
         # other workspace-scoped authoring mutation here takes.
         "chat.command": WORKSPACE_CONTRIBUTOR_ROLE,
+        # Starting and controlling a Workflow Run in one workspace is contributor work
+        # in exactly the sense authoring content is: it reviews nothing and administers
+        # nothing, and it never reaches outside the workspace it names.
+        "workflow.start": WORKSPACE_CONTRIBUTOR_ROLE,
+        "workflow.control": WORKSPACE_CONTRIBUTOR_ROLE,
         "knowledge.propose": WORKSPACE_CONTRIBUTOR_ROLE,
         "candidate.approve": KNOWLEDGE_REVIEWER_ROLE,
         "candidate.reject": KNOWLEDGE_REVIEWER_ROLE,
@@ -789,9 +802,19 @@ def execute_mutation(
         if len(authority_json) > _MAX_GRANTED_AUTHORITY:
             raise MutationSeamFault(_MESSAGE_UNSTORABLE_RESULT)
 
-        # The audit precedes the domain callback so an M3 candidate can satisfy its
-        # immediate audit foreign key. It is still invisible unless this transaction
-        # commits, and every later failure rolls it back with the domain rows.
+        # The audit and the claim both precede the domain callback so a domain write
+        # can satisfy its immediate foreign key or trigger against them. The audit has
+        # always been here for an M3 candidate; the claim joined it because migration
+        # 0018 refuses to admit a canonical Run whose `claim_id` names no claim -- and
+        # requires that claim's `idempotency_key` to be the Run's own `logical_key` --
+        # so a domain mutation that admits a Run cannot run before the claim exists.
+        #
+        # Nothing moves *out* of the transaction and no value is computed earlier than
+        # it was: every column of the claim is known before `mutate` is called, because
+        # a claim records the request rather than its answer. The *outcome* still
+        # follows the mutation, which is where the answer actually is. Both rows stay
+        # invisible unless this transaction commits, and every later failure rolls them
+        # back with the domain rows.
         fenced.execute(
             "INSERT INTO omnivia_application_audit_events "
             "(audit_ref, workspace_id, principal_id, operation, purpose, request_id, "
@@ -812,12 +835,6 @@ def execute_mutation(
             ),
         )
 
-        result = dict(mutate(fenced, settlement))
-        if not validate_result(result):
-            raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
-        outcome_json = to_canonical_json(result)
-        outcome_digest = _digest(outcome_json)
-
         fenced.execute(
             "INSERT INTO omnivia_idempotency_claims "
             "(claim_id, workspace_id, principal_id, operation, idempotency_key, "
@@ -833,6 +850,12 @@ def execute_mutation(
                 settled_at_us,
             ),
         )
+
+        result = dict(mutate(fenced, settlement))
+        if not validate_result(result):
+            raise MutationSeamFault(_MESSAGE_RESULT_REJECTED)
+        outcome_json = to_canonical_json(result)
+        outcome_digest = _digest(outcome_json)
 
         outcome_reference: str | None = None
         inline_outcome: str | None = outcome_json

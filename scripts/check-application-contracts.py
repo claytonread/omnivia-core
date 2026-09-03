@@ -1203,6 +1203,22 @@ _JOB_CONTROL: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
 _JOB_EVENTS: tuple[str, ...] = tuple(
     sorted((*_BASE_WORKSPACE, "not_found", "size_limit_exceeded"))
 )
+#: Deliberately includes ``not_found``, which ``CREATE_MUT`` does not: starting a
+#: Workflow Run names an exact released Workflow version, and a release authority that
+#: serves no such version is a ``not_found`` about the thing the caller named. Every
+#: other ``CREATE_MUT`` operation creates a record from the request alone and has no
+#: prior thing to fail to find.
+_WORKFLOW_START: tuple[str, ...] = tuple(sorted((*_CREATE_MUT, "not_found")))
+#: Deliberately includes ``conflict``, which ``JOB_CONTROL`` excludes. The reason
+#: ``job.cancel`` and ``job.retry`` exclude it holds for this operation's ``cancel``
+#: too -- a finished Run settles as ``cancellation_ignored_already_terminal``, an
+#: explicit disposition rather than an error -- but ``resolve_wait`` is a second action
+#: with a second refusal: a resolution the wait authority re-checks against the stored
+#: wait and the run's status and rejects is a state conflict, and reporting it as
+#: anything else would report a resolution nothing performed.
+_WORKFLOW_CONTROL: tuple[str, ...] = tuple(
+    sorted((*_CREATE_MUT, "conflict", "not_found"))
+)
 
 ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "BASE_INSTALL": _BASE_INSTALL,
@@ -1220,6 +1236,8 @@ ERROR_PROFILES: dict[str, tuple[str, ...]] = {
     "IMPORT_START": _IMPORT_START,
     "JOB_CONTROL": _JOB_CONTROL,
     "JOB_EVENTS": _JOB_EVENTS,
+    "WORKFLOW_START": _WORKFLOW_START,
+    "WORKFLOW_CONTROL": _WORKFLOW_CONTROL,
 }
 
 OPERATION_CATALOGUE_ANNOTATION = "x-omnivia-operation-catalogue"
@@ -1251,7 +1269,7 @@ class FrozenOperation(NamedTuple):
     terminal_result: str | None = None
 
 
-#: The exact 23 application operations, in the frozen code-point order. Runtime
+#: The exact 27 application operations, in the frozen code-point order. Runtime
 #: probes (``service.health``, ``service.readiness``, ``service.discover``) are a
 #: separate contract and are absent by construction; there is no ``job.resume``.
 FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
@@ -1335,6 +1353,22 @@ FROZEN_OPERATIONS: dict[str, FrozenOperation] = {
     "record.supersede": FrozenOperation(
         "workspace", ("memory:write",), "update", "knowledge.govern",
         "knowledge", "RecordSupersede", "GOV_MUT", False,
+    ),
+    "workflow.control": FrozenOperation(
+        "workspace", ("workflow:control",), "update", "workflow.control",
+        "runtime", "WorkflowControl", "WORKFLOW_CONTROL", False,
+    ),
+    "workflow.inspect": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.read",
+        "runtime", "WorkflowInspect", "POINT_READ", False,
+    ),
+    "workflow.review": FrozenOperation(
+        "workspace", ("workflow:read",), "none", "workflow.read",
+        "runtime", "WorkflowReview", "POINT_READ", False,
+    ),
+    "workflow.start": FrozenOperation(
+        "workspace", ("workflow:write",), "create", "workflow.write",
+        "runtime", "WorkflowStart", "WORKFLOW_START", False,
     ),
     "workspace.create": FrozenOperation(
         "installation", ("workspace:write",), "create", "workspace.write",

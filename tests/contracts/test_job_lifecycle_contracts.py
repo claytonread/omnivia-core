@@ -445,6 +445,13 @@ def test_no_job_resume_operation_or_dto_is_published() -> None:
     assert not {name for name in published if "Resume" in name or "RESUME" in name.upper()} - {
         "JOB_RECOVERY_DISPOSITION_RESUME_SCHEDULED",
         "JOB_RECOVERY_AVAILABILITY_RESUMABLE",
+        # Not a job resume, and not reachable from one. This names why a *Workflow
+        # Run's journal* forbids resuming -- quarantined on an unanswered integrity
+        # finding, or past a recorded retention boundary -- which is a statement about
+        # verifiable history, made on a record the job family neither owns nor reads.
+        # `job.retry` remains the single recovery operation on the job wire.
+        "WorkflowResumeDiagnostic",
+        "WORKFLOW_RESUME_DIAGNOSTICS",
     }
     assert "job.resume" not in sem_jobs.JOB_LIFECYCLE_OPERATIONS
     assert "job.resume" not in sem_jobs.JOB_LIFECYCLE_OPERATION_POSTURES

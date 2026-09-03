@@ -747,9 +747,11 @@ def _grant_facts(grant: MutationGrant) -> tuple[Any, ...]:
 # --- S0-04: all nine mutating operations declare a purpose --------------------
 
 
-def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
-    """Exactly the ten, explicitly, with a mismatch failing closed for each of them."""
+def test_v06_5_s0_every_mutation_purpose_is_declared(owned: m1.Owned) -> None:
+    """Exactly the twelve, explicitly, with a mismatch failing closed for each of them."""
     assert set(MUTATION_PURPOSES) == {
+        "workflow.start",
+        "workflow.control",
         "workspace.create",
         "memory.create",
         "import.start",
@@ -763,7 +765,7 @@ def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
     }
     # The same set, derived from the frozen catalogue rather than transcribed.
     assert set(MUTATION_PURPOSES) == MUTATING_OPERATIONS
-    assert len(MUTATION_PURPOSES) == 10
+    assert len(MUTATION_PURPOSES) == 12
     # And no read operation borrowed one.
     for name in APPLICATION_OPERATIONS - MUTATING_OPERATIONS:
         assert name not in MUTATION_PURPOSES
@@ -785,7 +787,10 @@ def test_v06_5_s0_all_nine_mutation_purposes_declared(owned: m1.Owned) -> None:
         )
     }
     assert len(governance) == 1
-    assert len(set(MUTATION_PURPOSES.values())) == 6
+    # Two more with the Workflow family: starting a Run and controlling one are
+    # separate authorities, so neither shares a purpose with the other or with the
+    # job family's own control.
+    assert len(set(MUTATION_PURPOSES.values())) == 8
 
     # Every operation is exercised: the declared purpose is what the grant carries, and
     # any other purpose the session may act for is refused.
@@ -949,7 +954,7 @@ def test_v06_5_s0_audit_and_idempotency_atomic(owned: m1.Owned) -> None:
 def test_v06_5_s2_settlement_context_precedes_governed_fk_without_partial_state(
     owned: m1.Owned,
 ) -> None:
-    """The callback sees its executor-owned audit, and its failure erases everything."""
+    """The callback sees its executor-owned settlement, and its failure erases everything."""
     context = authorize()
     before = counts(owned.connection)
 
@@ -959,9 +964,15 @@ def test_v06_5_s2_settlement_context_precedes_governed_fk_without_partial_state(
         assert connection.execute(
             "SELECT audit_ref, recorded_at_us FROM omnivia_application_audit_events"
         ).fetchone() == (settlement.audit_ref, settlement.settled_at_us)
+        # The claim precedes the callback for the same reason the audit does: a
+        # domain write may have an immediate foreign key or trigger against it.
+        # Migration 0018 refuses to admit a canonical Run whose `claim_id` names no
+        # claim, so a mutation that admits one could not run before this row exists.
+        # It records the *request*, which is fully known here; the outcome still
+        # follows the callback, because the answer is not.
         assert connection.execute(
-            "SELECT COUNT(*) FROM omnivia_idempotency_claims"
-        ).fetchone() == (0,)
+            "SELECT claim_id, audit_ref FROM omnivia_idempotency_claims"
+        ).fetchone() == (settlement.claim_id, settlement.audit_ref)
         assert connection.execute(
             f"SELECT COUNT(*) FROM {EXECUTIONS_TABLE}"
         ).fetchone() == (0,)
@@ -1532,7 +1543,7 @@ def test_v06_5_s0_registry_construction_is_test_injectable() -> None:
     assert len(shipped) == 6
     # None of the seventeen unserved operations, mutating or not.
     assert (APPLICATION_OPERATIONS - shipped) & default.operations == frozenset()
-    assert len(APPLICATION_OPERATIONS - shipped) == 17
+    assert len(APPLICATION_OPERATIONS - shipped) == 21
 
     def stub(_context: object) -> Mapping[str, Any]:
         return {}
@@ -1714,6 +1725,8 @@ def test_v06_5_s0_fresh_replay_grant_is_durably_consumed(owned: m1.Owned) -> Non
 def test_v06_5_s0_required_roles_are_exact_and_server_selected(owned: m1.Owned) -> None:
     """The role for a mutation is server policy, not an argument anyone supplies."""
     assert dict(MUTATION_ROLES) == {
+        "workflow.start": "workspace_contributor",
+        "workflow.control": "workspace_contributor",
         "workspace.create": "installation_administrator",
         "memory.create": "workspace_contributor",
         "import.start": "workspace_contributor",
