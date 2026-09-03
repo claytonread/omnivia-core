@@ -236,6 +236,7 @@ def dispatcher(
     *,
     tag: str = "t0693",
     releases: tuple[WorkflowRelease, ...] | None = None,
+    resolve_release: Callable[..., WorkflowRelease | None] | None = None,
     workspace_id: str = WORKSPACE_ID,
     principal: str = PRINCIPAL,
     wait_policy: Any = None,
@@ -250,7 +251,11 @@ def dispatcher(
         fallback=fallback(principal),
         clock=FakeClock(wall=WALL) if clock is None else clock,
         allocate_identifier=allocator(tag),
-        resolve_release=None if releases is None else resolver(*releases),
+        resolve_release=(
+            resolve_release
+            if resolve_release is not None
+            else (None if releases is None else resolver(*releases))
+        ),
         wait_policy=wait_policy,
     )
 
@@ -419,6 +424,48 @@ def test_repeating_one_start_replays_it_and_admits_no_second_run(
     assert again == first
     assert count(owned, RUNS) == 1
     assert count(owned, DURABLE_JOBS) == 1
+
+
+@pytest.mark.parametrize("authority", ("absent", "failing"), ids=("absent", "failing"))
+def test_a_retry_replays_a_committed_start_with_no_release_authority_left(
+    owned: m1.Owned, authority: str
+) -> None:
+    """A start that committed is answered from its stored outcome, resolver or not.
+
+    The dangerous shape is a caller whose first `workflow.start` committed a queued Run
+    and job but lost the response. If the release authority is consulted before the
+    mutation seam, that caller's retry -- same key, same request -- is refused with
+    `dependency_unavailable` (or crashes) once the authority is absent or down, which
+    hides the Run this workspace already admitted and invites a duplicate under a fresh
+    key. Resolution belongs inside the callback the seam runs only when it has no stored
+    answer, so a retry never asks the authority anything.
+    """
+    served = dispatcher(owned, releases=(release(),))
+    first = start(served)
+    assert isinstance(first, SuccessResponseEnvelope), _error(first)
+
+    def refuse(*, workflow_id: str, workflow_version: str) -> WorkflowRelease | None:
+        raise AssertionError("a replayed start must not resolve the release authority")
+
+    retried = dispatcher(
+        owned,
+        tag="retry",
+        resolve_release=None if authority == "absent" else refuse,
+    )
+    again = retried.dispatch(
+        request(
+            WORKFLOW_START_OPERATION,
+            {"workflow_id": WORKFLOW_ID, "workflow_version": WORKFLOW_VERSION},
+            request_id="req-start-1",
+            idempotency_key="idem-start-1",
+        )
+    )
+
+    assert isinstance(again, SuccessResponseEnvelope), _error(again)
+    assert again.result == first.result
+    assert again.metadata.audit_reference == first.metadata.audit_reference
+    assert again.metadata.job == first.metadata.job
+    assert count(owned, RUNS) == count(owned, PLANS) == count(owned, DURABLE_JOBS) == 1
 
 
 def test_a_second_idempotency_key_is_a_second_run(owned: m1.Owned) -> None:
@@ -1072,7 +1119,13 @@ def test_a_restarted_service_replays_the_start_and_admits_no_second_run(
 #: prose -- and the codes themselves are read out of the source below, so a branch added
 #: with an unpublished code fails without anyone maintaining a second list of codes.
 REACHABLE_REFUSERS: dict[str, tuple[str, ...]] = {
-    WORKFLOW_START_OPERATION: ("_authority", "_decode", "_grant", "workflow_start"),
+    WORKFLOW_START_OPERATION: (
+        "_authority",
+        "_decode",
+        "_grant",
+        "_release",
+        "workflow_start",
+    ),
     WORKFLOW_INSPECT_OPERATION: (
         "_authority",
         "_decode",

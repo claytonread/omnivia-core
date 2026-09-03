@@ -20,7 +20,8 @@ is an in-memory oracle that materialises a definition somebody already has, and
 So the release authority is a composition seam, exactly as the Chat family's own
 domain resolver is: :data:`WorkflowReleaseResolver` is supplied when the dispatcher
 is composed, and a build without one refuses `workflow.start` at the domain step --
-after the grant, before any write -- rather than being absent from the catalogue.
+after the grant, before any write this operation makes, and only for a request the
+mutation seam holds no stored answer for -- rather than being absent from the catalogue.
 That refusal is the honest answer for a build that cannot prove what a Run would be
 executing; inventing the material here would produce exactly the fabricated
 execution history the binding exists to prevent.
@@ -400,25 +401,6 @@ class WorkflowHandlers:
             context, WorkflowStartInput.from_wire
         )
         connection, identity, _guard = self._authority()
-        if self.resolve_release is None:
-            raise application_refusal(
-                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_RELEASE_AUTHORITY
-            )
-        release = self.resolve_release(
-            workflow_id=request.workflow_id, workflow_version=request.workflow_version
-        )
-        if release is None:
-            raise application_refusal(ERROR_CODE_NOT_FOUND, _MESSAGE_NO_RELEASE)
-        if (
-            release.plan.workflow_id != request.workflow_id
-            or release.plan.version != request.workflow_version
-        ):
-            # A resolver that answered with a different release than it was asked for
-            # would bind a Run to material the caller never named.
-            raise application_refusal(
-                ERROR_CODE_INTERNAL_NON_RECOVERABLE,
-                "the release authority answered with a different workflow version",
-            )
 
         # The Run's durable logical identity is the request's own idempotency key,
         # because migration 0018 requires them to be equal: its admission trigger
@@ -437,6 +419,7 @@ class WorkflowHandlers:
         def mutate(
             fenced: Any, settlement: MutationSettlementContext
         ) -> Mapping[str, Any]:
+            release = self._release(request)
             admitted = _start_workflow_run(
                 fenced,
                 settlement,
@@ -494,6 +477,43 @@ class WorkflowHandlers:
                 )
             ),
         )
+
+    def _release(self, request: WorkflowStartInput) -> WorkflowRelease:
+        """The exact released material this start binds a Run to, or a refusal.
+
+        Called from inside the mutation callback, and that placement is the point. The
+        seam reaches `mutate` only when it holds no stored answer for this request, so
+        a first call refuses exactly as it always did -- same codes, same messages,
+        and now inside the transaction, which rolls the audit and claim rows back with
+        everything else -- while a *retry* of a start that already committed is answered
+        from the stored outcome without consulting the authority at all. Resolving before
+        the seam meant a release authority that had since gone absent or gone down could
+        refuse a retry of a Run this workspace had already admitted, hiding the admitted
+        job from the caller and inviting a duplicate Run under a fresh key.
+
+        Authorization and the grant still precede this, because they precede
+        `execute_mutation` itself, and it still precedes every write this operation makes.
+        """
+        if self.resolve_release is None:
+            raise application_refusal(
+                ERROR_CODE_DEPENDENCY_UNAVAILABLE, _MESSAGE_NO_RELEASE_AUTHORITY
+            )
+        release = self.resolve_release(
+            workflow_id=request.workflow_id, workflow_version=request.workflow_version
+        )
+        if release is None:
+            raise application_refusal(ERROR_CODE_NOT_FOUND, _MESSAGE_NO_RELEASE)
+        if (
+            release.plan.workflow_id != request.workflow_id
+            or release.plan.version != request.workflow_version
+        ):
+            # A resolver that answered with a different release than it was asked for
+            # would bind a Run to material the caller never named.
+            raise application_refusal(
+                ERROR_CODE_INTERNAL_NON_RECOVERABLE,
+                "the release authority answered with a different workflow version",
+            )
+        return release
 
     def _run_job_id(self, connection: Any, workspace_id: str, run_id: str) -> str:
         """The durable job the named Run is carried by, read rather than assumed.
