@@ -9,8 +9,16 @@ description = "Operational OmniVia Core local service with fenced storage, durab
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
+# `cryptography` is here for exactly one thing: Ed25519 verification of a runtime
+# payload's detached release signature in
+# `omnivia_core_runtime.distribution.trusted_runtime`. The bound is the reviewed
+# closure in `scripts/mcp-wheelhouse-constraints.txt`, which already pins 50.0.0
+# and its own `cffi`/`pycparser` requirements, so the offline wheelhouse install
+# resolves it without reaching an index. Verifying a release signature is not
+# somewhere to hand-roll a curve.
 dependencies = [
     "omnivia-core>=0.1.0,<0.2.0",
+    "cryptography>=50.0.0,<51",
 ]
 
 [project.scripts]

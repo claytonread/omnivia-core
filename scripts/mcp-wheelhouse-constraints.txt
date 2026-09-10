@@ -8,7 +8,13 @@
 # in-tree, and the only versions `scripts/check-package-builds.sh` will accept.
 #
 # The closure is `omnivia-core-mcp`'s declared `mcp>=2,<3` and its transitive
-# requirements. The unmarked pins below are the common closure, resolved
+# requirements, together with `omnivia-core-runtime`'s declared
+# `cryptography>=50.0.0,<51` -- the Ed25519 verification of a runtime payload's
+# release signature. `cryptography`, `cffi` and `pycparser` were already in this
+# file as transitive requirements of `mcp`; the runtime now declares the first of
+# them directly, and `scripts/check-package-builds.sh` stages the closure from the
+# runtime wheel as well as the MCP one so the two cannot drift apart unnoticed.
+# The unmarked pins below are the common closure, resolved
 # identically on macOS/arm64 and Linux/x86_64 at these versions. Windows
 # resolves two additional packages the other platforms do not:
 #

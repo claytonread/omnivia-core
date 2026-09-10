@@ -1,0 +1,98 @@
+{
+  "bootstrap_contract_version": "1.0",
+  "case_id": "unknown-signing-key",
+  "case_version": "1.0",
+  "description": "A valid integrity digest with an unapproved issuer is refused.",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "runtime_untrusted"
+  },
+  "host_architecture": "arm64",
+  "host_operating_system": "macos",
+  "installation": {
+    "entries": [
+      {
+        "content_base64": "eyJwYXlsb2FkX2RpZ2VzdCI6IjQ5N2RkMGZlNDA2YTE2MzE3YmI3MzI1ODQzNzY1YTcxODc1NjBiMzczYTRhODU3MDI3ZDAxODQ4MmRiNDk5NGQiLCJyZWxhdGl2ZV9wYXRoIjoicnVudGltZXMvMC42LjUvNDk3ZGQwZmU0MDZhMTYzMTdiYjczMjU4NDM3NjVhNzE4NzU2MGIzNzNhNGE4NTcwMjdkMDE4NDgyZGI0OTk0ZCIsInJlbGVhc2VfdmVyc2lvbiI6IjAuNi41Iiwic2NoZW1hX3ZlcnNpb24iOjF9Cg==",
+        "kind": "file",
+        "mode": "0600",
+        "path": "active.json"
+      },
+      {
+        "kind": "directory",
+        "mode": "0700",
+        "path": "runtimes"
+      },
+      {
+        "kind": "directory",
+        "mode": "0700",
+        "path": "runtimes/0.6.5"
+      },
+      {
+        "content_base64": "IyEvYmluL3NoCiMgdGVzdC1vbmx5IG9tbml2aWEgMC42LjUgbWFjb3MgdGVzdC1vbmx5LXVuYXBwcm92ZWQK",
+        "kind": "file",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/bin/omnivia"
+      },
+      {
+        "content_base64": "IyEvYmluL3NoCiMgdGVzdC1vbmx5IG9tbml2aWEtY29yZS1zZXJ2aWNlIDAuNi41IG1hY29zIHRlc3Qtb25seS11bmFwcHJvdmVkCg==",
+        "kind": "file",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/bin/omnivia-core-service"
+      },
+      {
+        "content_base64": "dGVzdC1vbmx5IHBheWxvYWQgbWVtYmVyIDAuNi41IG1hY29zIHRlc3Qtb25seS11bmFwcHJvdmVkCg==",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/lib/omnivia/release.txt"
+      },
+      {
+        "content_base64": "eyJjb21wYXRpYmlsaXR5Ijp7Im1heGltdW1fYm9vdHN0cmFwX2NvbnRyYWN0IjoiMS4wIiwibWluaW11bV9ib290c3RyYXBfY29udHJhY3QiOiIxLjAifSwiZXhlY3V0YWJsZXMiOnsiY2xpIjp7InBhdGgiOiJiaW4vb21uaXZpYSIsInNoYTI1NiI6IjMwZjc5YmQ3MTM5YmExMWZiNmQ4ZTQ0MmIwM2Y2MGQ5MzVjMGVjYzcxODA1YjdiMDRkZTJmZTQ5Y2YwZGIwZDMifSwic2VydmljZSI6eyJwYXRoIjoiYmluL29tbml2aWEtY29yZS1zZXJ2aWNlIiwic2hhMjU2IjoiZWM4ODRmOGI3ZmQ4M2FlNzg5MGRiMmQzNDdlZWRiYzNhNGE0NWUzN2JkODRjNTNhOTViZDg2ZGUyZmYxYzM3NyJ9fSwiaW52ZW50b3J5IjpbeyJleGVjdXRhYmxlIjp0cnVlLCJwYXRoIjoiYmluL29tbml2aWEiLCJzaGEyNTYiOiIzMGY3OWJkNzEzOWJhMTFmYjZkOGU0NDJiMDNmNjBkOTM1YzBlY2M3MTgwNWI3YjA0ZGUyZmU0OWNmMGRiMGQzIiwic2l6ZSI6NjN9LHsiZXhlY3V0YWJsZSI6dHJ1ZSwicGF0aCI6ImJpbi9vbW5pdmlhLWNvcmUtc2VydmljZSIsInNoYTI1NiI6ImVjODg0ZjhiN2ZkODNhZTc4OTBkYjJkMzQ3ZWVkYmMzYTRhNDVlMzdiZDg0YzUzYTk1YmQ4NmRlMmZmMWMzNzciLCJzaXplIjo3Nn0seyJleGVjdXRhYmxlIjpmYWxzZSwicGF0aCI6ImxpYi9vbW5pdmlhL3JlbGVhc2UudHh0Iiwic2hhMjU2IjoiODhiNmJhN2RjNWJmODc0M2FiODhkMDU2NjVkMDcwNzgwMzMzMDdjZDIwMmFjZWVjNzAxZTc3NTJlODQxM2M1MyIsInNpemUiOjU4fV0sIm1hbmlmZXN0X3ZlcnNpb24iOiIxLjAiLCJwYXlsb2FkX2lkZW50aXR5Ijoic2hhMjU2OjQ5N2RkMGZlNDA2YTE2MzE3YmI3MzI1ODQzNzY1YTcxODc1NjBiMzczYTRhODU3MDI3ZDAxODQ4MmRiNDk5NGQiLCJwbGF0Zm9ybSI6eyJhcmNoIjoiYXJtNjQiLCJvcyI6Im1hY29zIn0sInJlbGVhc2VfdmVyc2lvbiI6IjAuNi41Iiwic2lnbmluZyI6eyJhbGdvcml0aG0iOiJlZDI1NTE5Iiwia2V5X2lkIjoidGVzdC1vbmx5LXVuYXBwcm92ZWQifX0K",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/omnivia-runtime-manifest.json"
+      },
+      {
+        "content_base64": "eyJhbGdvcml0aG0iOiJlZDI1NTE5Iiwia2V5X2lkIjoidGVzdC1vbmx5LXVuYXBwcm92ZWQiLCJwYXlsb2FkX2lkZW50aXR5Ijoic2hhMjU2OjQ5N2RkMGZlNDA2YTE2MzE3YmI3MzI1ODQzNzY1YTcxODc1NjBiMzczYTRhODU3MDI3ZDAxODQ4MmRiNDk5NGQiLCJzaWduYXR1cmUiOiJZaWgwM0tiUWFTSlkya05la2QrWnZYS1JYZiszS2JoNmhUdWY4S0dTWXZsZGJhb1M2N2l6NGlBVHRVRkNSVDRWVEdrejdxZUYzS1g0QmFDK3RBNVBCZz09Iiwic2lnbmF0dXJlX3ZlcnNpb24iOiIxLjAifQo=",
+        "kind": "file",
+        "mode": "0400",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/omnivia-runtime-manifest.sig.json"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/bin"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/lib"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d/lib/omnivia"
+      },
+      {
+        "kind": "directory",
+        "mode": "0500",
+        "path": "runtimes/0.6.5/497dd0fe406a16317bb7325843765a7187560b373a4a857027d018482db4994d"
+      }
+    ]
+  },
+  "minimum_release_version": null,
+  "requires": {
+    "posix_modes": false,
+    "symlinks": false
+  },
+  "trust_anchors": [
+    {
+      "algorithm": "ed25519",
+      "key_id": "test-only-release-2026a",
+      "not_after": "2027-01-01T00:00:00Z",
+      "not_before": "2026-01-01T00:00:00Z",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "retired_at": null
+    }
+  ],
+  "verification_time": "2026-09-10T12:00:00Z"
+}

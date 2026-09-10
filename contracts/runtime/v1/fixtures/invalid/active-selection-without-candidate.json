@@ -1,0 +1,43 @@
+{
+  "bootstrap_contract_version": "1.0",
+  "case_id": "active-selection-without-candidate",
+  "case_version": "1.0",
+  "description": "A selector naming an absent candidate is a bounded retry, not a reinstall.",
+  "expected": {
+    "outcome": "refused",
+    "refusal": "runtime_busy"
+  },
+  "host_architecture": "arm64",
+  "host_operating_system": "macos",
+  "installation": {
+    "entries": [
+      {
+        "content_base64": "eyJwYXlsb2FkX2RpZ2VzdCI6ImY4NDIyZDc5ZmZiNzhiMTQ3NGYzYmI1N2VlOWJmYzMxYjY1YzNhMjQ4ZDAxNWZiODk2NmE4NjE1MjNjNjFiZDAiLCJyZWxhdGl2ZV9wYXRoIjoicnVudGltZXMvMC42LjUvZjg0MjJkNzlmZmI3OGIxNDc0ZjNiYjU3ZWU5YmZjMzFiNjVjM2EyNDhkMDE1ZmI4OTY2YTg2MTUyM2M2MWJkMCIsInJlbGVhc2VfdmVyc2lvbiI6IjAuNi41Iiwic2NoZW1hX3ZlcnNpb24iOjF9Cg==",
+        "kind": "file",
+        "mode": "0600",
+        "path": "active.json"
+      },
+      {
+        "kind": "directory",
+        "mode": "0700",
+        "path": "runtimes"
+      }
+    ]
+  },
+  "minimum_release_version": null,
+  "requires": {
+    "posix_modes": false,
+    "symlinks": false
+  },
+  "trust_anchors": [
+    {
+      "algorithm": "ed25519",
+      "key_id": "test-only-release-2026a",
+      "not_after": "2027-01-01T00:00:00Z",
+      "not_before": "2026-01-01T00:00:00Z",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "retired_at": null
+    }
+  ],
+  "verification_time": "2026-09-10T12:00:00Z"
+}

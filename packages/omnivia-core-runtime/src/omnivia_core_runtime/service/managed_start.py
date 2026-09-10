@@ -277,7 +277,7 @@ def managed_start(
             ):
                 existing = decision.existing
                 assert existing is not None  # both outcomes carry one
-                answer = _dial_readiness(existing)
+                answer = _dial_readiness(existing, workspace_id=manifest.workspace_id)
                 if answer is not None and answer.get("ready"):
                     return ManagedStartResult(
                         status=ManagedStartStatus.ATTACHED,
@@ -297,6 +297,7 @@ def managed_start(
                     workspace_root=workspace_root,
                     installation_root=installation_root,
                     runtime_directory=runtime_directory,
+                    workspace_id=manifest.workspace_id,
                     endpoint_uri=endpoint_uri,
                     core_version=core_version,
                     log_path=(
@@ -329,6 +330,7 @@ def _spawn_and_wait(
     workspace_root: Path,
     installation_root: Path,
     runtime_directory: Path,
+    workspace_id: str,
     endpoint_uri: str,
     core_version: str,
     log_path: Path,
@@ -386,7 +388,7 @@ def _spawn_and_wait(
             )
         advertised = discover(runtime_directory)
         if advertised is not None:
-            answer = _dial_readiness(advertised)
+            answer = _dial_readiness(advertised, workspace_id=workspace_id)
             if answer is not None and answer.get("ready"):
                 return ManagedStartResult(
                     status=ManagedStartStatus.STARTED,
@@ -528,18 +530,32 @@ def _child_output(log_path: Path) -> str:
 
 def _dial_readiness(
     descriptor: ServiceEndpointDescriptor,
+    *,
+    workspace_id: str,
 ) -> dict[str, Any] | None:
-    """Ask the advertised service whether it is writable-ready, right now.
+    """Ask the advertised service whether it is writable-ready for `workspace_id`.
 
     R004-08 step 6: live readiness, not descriptor publication alone. The descriptor
     is written once and never rewritten, so its own `ready` field is a startup-time
     claim that survives the process. This answer is read from the running service's
     live lifecycle object, and a service that is gone answers nothing at all.
+
+    **`workspace_id` is the workspace the caller asked about, and it is not the
+    descriptor's.** This dial used to send `descriptor.workspace_id` -- the answering
+    service's own claim about itself -- so the check was self-consistent and proved
+    nothing: a service advertising in this workspace's runtime directory while
+    serving another one answered `ready` for the workspace it named, and the launcher
+    reported success. Sending the *expected* id makes the service decide, because its
+    grant is `frozenset({its own workspace})` and a request naming any other is
+    refused before a handler sees it. A mismatched descriptor is refused a step
+    earlier still, since it cannot be about this workspace whatever it answers.
     """
+    if descriptor.workspace_id != workspace_id:
+        return None
     endpoint = parse_endpoint(descriptor.endpoint_uri)
     if endpoint is None or endpoint.scheme is not LOCAL_SCHEME:
         return None
-    request = _readiness_request(descriptor.workspace_id)
+    request = _readiness_request(workspace_id)
     try:
         response = LocalSocketTransport(
             endpoint=endpoint, timeout=READINESS_CALL_TIMEOUT_SECONDS

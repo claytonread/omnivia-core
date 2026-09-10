@@ -37,6 +37,10 @@ PHASE2_WINDOWS_PIPE_TESTS = (
     "packages/omnivia-core-runtime/tests/phase3/protocol/"
     "test_windows_named_pipe.py"
 )
+PHASE2_RUNTIME_CONTRACT_TESTS = "tests/runtime_contract"
+PHASE2_TRUSTED_RUNTIME_TESTS = (
+    "packages/omnivia-core-runtime/tests/phase3/runtime/test_trusted_runtime.py"
+)
 BENCHMARK_TESTS = "benchmarks/tests"
 
 # The M2 defect, in the shape it actually shipped: not a module-level import
@@ -92,6 +96,8 @@ def phase2_root(tmp_path: Path) -> Path:
     # missing path rather than a tree to scan.
     _write(tmp_path / PHASE2_TESTS / "conftest.py", "")
     _write(tmp_path / PHASE2_WINDOWS_PIPE_TESTS, "")
+    _write(tmp_path / PHASE2_RUNTIME_CONTRACT_TESTS / "conftest.py", "")
+    _write(tmp_path / PHASE2_TRUSTED_RUNTIME_TESTS, "")
     return tmp_path
 
 
@@ -119,7 +125,12 @@ def test_the_real_workflows_parse_into_their_install_lists_and_test_paths() -> N
 
     phase2 = jobs[PHASE2_WORKFLOW]
     assert phase2.name == "phase2-platform"
-    assert phase2.test_paths == (PHASE2_TESTS, PHASE2_WINDOWS_PIPE_TESTS)
+    assert phase2.test_paths == (
+        PHASE2_TESTS,
+        PHASE2_WINDOWS_PIPE_TESTS,
+        PHASE2_RUNTIME_CONTRACT_TESTS,
+        PHASE2_TRUSTED_RUNTIME_TESTS,
+    )
     assert "packages/omnivia-core-runtime" in phase2.install_targets
     # Read out of the workflow rather than written down here. This used to assert
     # the client's *absence* -- the gap the check existed for. Packet section

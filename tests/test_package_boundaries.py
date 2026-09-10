@@ -416,10 +416,12 @@ def test_core_declares_no_runtime_dependencies_at_all() -> None:
 
 def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() -> None:
     """The wheel's packaged resource set is exact because the force-include maps exactly
-    the six canonical directories onto their importable resource paths: the two
+    the eight canonical directories onto their importable resource paths: the two
     Application Contract v1 directories (ADR-038), the two Host Contract v1
-    directories (DOC-004 section AA), and the two Chat Runtime Contract v1
-    directories (approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001).
+    directories (DOC-004 section AA), the two Chat Runtime Contract v1 directories
+    (approval GOV-CHAT-RUNTIME-CONTRACT-V1-APPROVAL-001), and the two trusted-runtime
+    v1 directories a consumer verifies a Core payload against without importing any
+    implementation.
     """
     manifest = boundaries.load_manifest(boundaries.CORE.manifest_path)
     force_include = manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
@@ -430,6 +432,12 @@ def test_core_wheel_force_includes_exactly_the_canonical_contract_resources() ->
         "contracts/host/v1/fixtures": "omnivia_core/host_contract/v1/resources/fixtures",
         "contracts/chat/v1/schemas": "omnivia_core/chat_contract/v1/resources/schemas",
         "contracts/chat/v1/fixtures": "omnivia_core/chat_contract/v1/resources/fixtures",
+        "contracts/runtime/v1/schemas": (
+            "omnivia_core/runtime_contract/v1/resources/schemas"
+        ),
+        "contracts/runtime/v1/fixtures": (
+            "omnivia_core/runtime_contract/v1/resources/fixtures"
+        ),
     }
     for source in force_include:
         directory = REPO_ROOT / source
@@ -463,6 +471,32 @@ def test_core_wheel_packages_the_approved_chat_contract_resource_count() -> None
     fixtures = REPO_ROOT / "contracts" / "chat" / "v1" / "fixtures"
     assert len(list(schemas.rglob("*.schema.json"))) == 13
     assert len(list(fixtures.rglob("*.json"))) == 170
+
+
+def test_core_wheel_packages_the_trusted_runtime_corpus_in_its_categories() -> None:
+    """One schema, and a corpus whose three category directories are the contract.
+
+    A case's category is not decoration: `valid` and `invalid` are what
+    `scripts/generate-runtime-contract.py` derives from each case's own expected
+    outcome, so a case that moved category without its expectation moving is a
+    generator drift the `--check` gate reports. `vectors` holds the one
+    canonicalisation and signature document, which is not a case and carries no
+    installation tree.
+    """
+    schemas = REPO_ROOT / "contracts" / "runtime" / "v1" / "schemas"
+    fixtures = REPO_ROOT / "contracts" / "runtime" / "v1" / "fixtures"
+    assert sorted(path.name for path in schemas.rglob("*.json")) == [
+        "trusted-runtime-v1.schema.json"
+    ]
+    assert sorted(path.name for path in fixtures.iterdir() if path.is_dir()) == [
+        "invalid",
+        "valid",
+        "vectors",
+    ]
+    assert sorted(path.name for path in (fixtures / "vectors").iterdir()) == [
+        "canonicalisation-and-signatures.json"
+    ]
+    assert len(list(fixtures.rglob("*.json"))) >= 20
 
 
 # --------------------------------------------------------------------------
