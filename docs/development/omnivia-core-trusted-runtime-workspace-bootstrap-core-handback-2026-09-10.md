@@ -2,8 +2,8 @@
 
 Date: 2026-09-10
 
-Status: Core contract checkpoint implemented; production release signing and
-candidate emission remain release-owned; Platform lane not started
+Status: Core contract, release payload emitter and signing lifecycle implemented;
+actual production key provisioning remains release-owned; Platform lane not started
 
 Answers: `docs/development/omnivia-core-trusted-runtime-workspace-bootstrap-platform-handoff-2026-09-10.md`
 sections 4, 5, 6, 7 and 11. That document's steps 1–7 are what this note hands
@@ -79,12 +79,15 @@ Both seeds are digests of published labels in
 no production role.**
 
 **No production release key exists yet, public or private, and none is held in
-this repository.** Choosing the production signing key, its storage, its rotation
-cadence and its revocation path is release ownership's decision and is open —
-see section 6. Platform's verifier must therefore take its anchors as an explicit
-configured input, exactly as `resolve_runtime` does: an anchor read from the
-installation being verified would let a payload nominate the key that approves
-it.
+this repository.** The mechanism and lifecycle decision are complete:
+`scripts/sign-runtime-payload.py` accepts only an external owner-only raw Ed25519
+seed file, emits the canonical manifest/signature pair, self-verifies it, and
+returns the public anchor. Release jobs materialize the private key from secret
+storage or an HSM-backed workflow; stable key IDs and overlapping validity
+windows provide rotation, and an updated anchor with `retired_at` provides
+emergency revocation. Platform takes the resulting public anchors as explicit
+packaging inputs. Provisioning the actual production key remains an external
+release-ownership action and cannot safely be fabricated in source control.
 
 ## 4. Versions Platform must pin
 
@@ -173,16 +176,13 @@ Stated plainly rather than left to be discovered against a green corpus:
    product policy that v1 neither verifies nor asserts. Handoff §4.2 permits this
    ("If product policy requires…"); if the product does require it, it is a
    second, separately reviewed control.
-2. **No production signing key, and therefore no rotation window yet.** The
-   mechanism is complete and tested — overlapping `not_before`/`not_after` plus
-   an optional `retired_at`, expressed entirely in anchors — but the key
-   lifecycle itself is an open release-ownership decision. Handoff §12 items 1–4
-   are closed except this one.
-3. **No packaging step that emits a manifest for a built candidate.** Nothing in
-   this repository yet produces `omnivia-runtime-manifest.json` for a real
-   release artifact; the only producers are the fixture generator and the test
-   helper. Handoff §10 step 6 ("build/package a real candidate") is release
-   engineering and is not done.
+2. **No source-controlled production signing key.** This is deliberate. The
+   signing command and rotation/revocation policy are complete, while the actual
+   production key is provisioned by release ownership outside the repository.
+3. **No payload assembler.** The signer accepts an already-prepared platform
+   runtime directory and turns it into a signed candidate. Building the native
+   executable pair and other payload files remains the platform packaging job;
+   signing does not silently decide how those binaries are assembled.
 4. **Immutability is defence in depth, not the trust root.** The installed
    payload is made non-writable and owner-only on POSIX and read-only on Windows,
    and the same user can undo all of it. What makes tampering unusable is that

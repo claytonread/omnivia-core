@@ -98,6 +98,32 @@ from labels in `scripts/generate-runtime-contract.py`. They have no production
 role. No release signing key, private or otherwise, is held in this repository;
 a release is signed off-repository and only its public half reaches an anchor.
 
+### Production signing and key lifecycle
+
+`scripts/sign-runtime-payload.py` is the release packaging boundary for a
+prepared runtime directory. It inventories the complete payload, emits the two
+canonical v1 metadata documents, signs with Ed25519, and verifies its own output
+with the reference verifier before it succeeds. The private key is accepted only
+as an explicit absolute path to a raw 32-byte seed; it is never accepted on argv
+as bytes, read from the repository, printed, or copied into the payload. On POSIX
+the materialized key file must be owner-only.
+
+Production release jobs must materialize that file from the release secret store
+or HSM-backed signing workflow for the duration of the job and remove it after
+the command exits. Production key IDs are stable release identities (for example,
+`omnivia-release-2026a`), not payload versions. Rotation publishes the incoming
+public anchor before its first signed release and overlaps the outgoing and
+incoming validity windows. Emergency revocation sets `retired_at` on the affected
+public anchor and distributes the updated Platform trust-anchor set; a verifier
+then refuses the key at and after that instant even if `not_after` is later.
+
+The command prints a JSON result containing the computed payload identity and the
+public trust anchor. That anchor is a release input for Platform packaging. The
+repository intentionally contains neither a production private key nor a
+fabricated production public anchor: provisioning the real release identity is
+an external release-ownership action, while the mechanism and lifecycle policy
+are fixed here.
+
 ### Fixed executable layout
 
 | Operating system | CLI | Service |
