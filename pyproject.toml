@@ -23,6 +23,12 @@ packages = ["src/omnivia_core"]
 # source tree. The Host Contract and Chat Runtime Contract fixtures keep their
 # governed category directories (valid, invalid, denial, degradation,
 # migration; valid, invalid, traces), which the force-include preserves.
+#
+# `contracts/runtime/v1/{schemas,fixtures}` is the same arrangement for the
+# trusted-runtime distribution contract: one schema plus the conformance corpus
+# (valid, invalid) and the canonicalisation/signature vectors, published so a
+# consumer can verify a Core runtime payload independently -- in another
+# language -- without importing any implementation of the verifier.
 [tool.hatch.build.targets.wheel.force-include]
 "contracts/application/v1/schemas" = "omnivia_core/contracts/v1/resources/schemas"
 "contracts/application/v1/fixtures" = "omnivia_core/contracts/v1/resources/fixtures"
@@ -30,6 +36,8 @@ packages = ["src/omnivia_core"]
 "contracts/host/v1/fixtures" = "omnivia_core/host_contract/v1/resources/fixtures"
 "contracts/chat/v1/schemas" = "omnivia_core/chat_contract/v1/resources/schemas"
 "contracts/chat/v1/fixtures" = "omnivia_core/chat_contract/v1/resources/fixtures"
+"contracts/runtime/v1/schemas" = "omnivia_core/runtime_contract/v1/resources/schemas"
+"contracts/runtime/v1/fixtures" = "omnivia_core/runtime_contract/v1/resources/fixtures"
 
 # Canonical collection scope. Every tree in this checkout that holds tests is
 # named here, so a bare `pytest -q` from the repository root is the whole suite

@@ -1,0 +1,110 @@
+{
+  "canonicalisation": [
+    {
+      "accepted": true,
+      "canonical": "{\"C\":3,\"a\":2,\"b\":1}",
+      "json": "{\"b\":1,\"a\":2,\"C\":3}",
+      "name": "sorted-object-names",
+      "sha256": "27e01c26743085bff8e4a98d76dca93ebdb6c805f8136fae1216ee257d33f5c5"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"outer\":{\"z\":[1,2,{\"x\":null,\"y\":true}]}}",
+      "json": "{\"outer\": {\"z\": [1, 2, {\"y\": true, \"x\": null}]}}",
+      "name": "nested-objects-and-arrays",
+      "sha256": "284ff2e333e561eb616a4dfc6842f8c064280aa24f1f7cf661ac203069ccb033"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"k\\u00e9y\":\"v\\u00e4lue\"}",
+      "json": "{\"k\\u00e9y\": \"v\\u00e4lue\"}",
+      "name": "non-ascii-is-escaped",
+      "sha256": "1d475e22ea1c3a20f8b39a3bcdcbca201a71af66a3bc971510320746185d703b"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":{},\"b\":[]}",
+      "json": "{\"a\": {}, \"b\": []}",
+      "name": "empty-containers",
+      "sha256": "aeeba1e56a144077f89e26c930dad7cf933e9383cfb8e33ddff618233b29be76"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":[3,1,2]}",
+      "json": "{\"a\": [3, 1, 2]}",
+      "name": "array-order-is-significant",
+      "sha256": "d934227f5a9f29b31bd6a8ceed3213dd498a07ce32bdfa9ae2488de0c0ab68f1"
+    },
+    {
+      "accepted": true,
+      "canonical": "{\"a\":-1,\"b\":0,\"c\":1}",
+      "json": "{\"a\": -1, \"b\": 0, \"c\": 1}",
+      "name": "negative-and-zero-integers",
+      "sha256": "4bcffd0601392e0b1b34c43cc6a58c6e4b5a4bf667ae3569a944fb903ae9f14c"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": 1, \"a\": 2}",
+      "name": "duplicate-object-name",
+      "reason": "duplicate object name"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": 1.5}",
+      "name": "floating-point-literal",
+      "reason": "floats are outside the canonical subset"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": 1.0}",
+      "name": "integral-float-literal",
+      "reason": "floats are outside the canonical subset"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": NaN}",
+      "name": "not-a-number",
+      "reason": "NaN is not JSON"
+    },
+    {
+      "accepted": false,
+      "json": "{\"a\": Infinity}",
+      "name": "infinity",
+      "reason": "Infinity is not JSON"
+    }
+  ],
+  "identity": [
+    {
+      "identity_claim_sha256": "f8422d79ffb78b1474f3bb57ee9bfc31b65c3a248d015fb8966a861523c61bd0",
+      "manifest_json": "{\"compatibility\":{\"maximum_bootstrap_contract\":\"1.0\",\"minimum_bootstrap_contract\":\"1.0\"},\"executables\":{\"cli\":{\"path\":\"bin/omnivia\",\"sha256\":\"b2db99b8ef215490ca78fc29a3847029bf9178616083ecb82a03876fdd310899\"},\"service\":{\"path\":\"bin/omnivia-core-service\",\"sha256\":\"ac2acb73aeda97a9d875ce54c52f30c6ab84854895c28e63ac829081724c9d04\"}},\"inventory\":[{\"executable\":true,\"path\":\"bin/omnivia\",\"sha256\":\"b2db99b8ef215490ca78fc29a3847029bf9178616083ecb82a03876fdd310899\",\"size\":66},{\"executable\":true,\"path\":\"bin/omnivia-core-service\",\"sha256\":\"ac2acb73aeda97a9d875ce54c52f30c6ab84854895c28e63ac829081724c9d04\",\"size\":79},{\"executable\":false,\"path\":\"lib/omnivia/release.txt\",\"sha256\":\"4cf53904633432ad2bb7e429f87c39afa7250c6462c7360e8e40cdae6b0e018a\",\"size\":61}],\"manifest_version\":\"1.0\",\"payload_identity\":\"sha256:f8422d79ffb78b1474f3bb57ee9bfc31b65c3a248d015fb8966a861523c61bd0\",\"platform\":{\"arch\":\"arm64\",\"os\":\"macos\"},\"release_version\":\"0.6.5\",\"signing\":{\"algorithm\":\"ed25519\",\"key_id\":\"test-only-release-2026a\"}}",
+      "name": "baseline-payload-manifest",
+      "payload_identity": "sha256:f8422d79ffb78b1474f3bb57ee9bfc31b65c3a248d015fb8966a861523c61bd0"
+    }
+  ],
+  "identity_domain": "omnivia.runtime-payload-identity.v1",
+  "signature_domain": "omnivia.runtime-payload-signature.v1",
+  "signatures": [
+    {
+      "name": "valid-baseline-signature",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "signature": "q/W1WfY8P2eH3KU9OdJmaf/Yh/gnvmzSC1bBFWX9t6RPJpygV6BoIntJ3w1L0B+prHzK/cCTIgOCnYqtZMeXDw==",
+      "signed_message_base64": "b21uaXZpYS5ydW50aW1lLXBheWxvYWQtc2lnbmF0dXJlLnYxAHsiY29tcGF0aWJpbGl0eSI6eyJtYXhpbXVtX2Jvb3RzdHJhcF9jb250cmFjdCI6IjEuMCIsIm1pbmltdW1fYm9vdHN0cmFwX2NvbnRyYWN0IjoiMS4wIn0sImV4ZWN1dGFibGVzIjp7ImNsaSI6eyJwYXRoIjoiYmluL29tbml2aWEiLCJzaGEyNTYiOiJiMmRiOTliOGVmMjE1NDkwY2E3OGZjMjlhMzg0NzAyOWJmOTE3ODYxNjA4M2VjYjgyYTAzODc2ZmRkMzEwODk5In0sInNlcnZpY2UiOnsicGF0aCI6ImJpbi9vbW5pdmlhLWNvcmUtc2VydmljZSIsInNoYTI1NiI6ImFjMmFjYjczYWVkYTk3YTlkODc1Y2U1NGM1MmYzMGM2YWI4NDg1NDg5NWMyOGU2M2FjODI5MDgxNzI0YzlkMDQifX0sImludmVudG9yeSI6W3siZXhlY3V0YWJsZSI6dHJ1ZSwicGF0aCI6ImJpbi9vbW5pdmlhIiwic2hhMjU2IjoiYjJkYjk5YjhlZjIxNTQ5MGNhNzhmYzI5YTM4NDcwMjliZjkxNzg2MTYwODNlY2I4MmEwMzg3NmZkZDMxMDg5OSIsInNpemUiOjY2fSx7ImV4ZWN1dGFibGUiOnRydWUsInBhdGgiOiJiaW4vb21uaXZpYS1jb3JlLXNlcnZpY2UiLCJzaGEyNTYiOiJhYzJhY2I3M2FlZGE5N2E5ZDg3NWNlNTRjNTJmMzBjNmFiODQ4NTQ4OTVjMjhlNjNhYzgyOTA4MTcyNGM5ZDA0Iiwic2l6ZSI6Nzl9LHsiZXhlY3V0YWJsZSI6ZmFsc2UsInBhdGgiOiJsaWIvb21uaXZpYS9yZWxlYXNlLnR4dCIsInNoYTI1NiI6IjRjZjUzOTA0NjMzNDMyYWQyYmI3ZTQyOWY4N2MzOWFmYTcyNTBjNjQ2MmM3MzYwZThlNDBjZGFlNmIwZTAxOGEiLCJzaXplIjo2MX1dLCJtYW5pZmVzdF92ZXJzaW9uIjoiMS4wIiwicGF5bG9hZF9pZGVudGl0eSI6InNoYTI1NjpmODQyMmQ3OWZmYjc4YjE0NzRmM2JiNTdlZTliZmMzMWI2NWMzYTI0OGQwMTVmYjg5NjZhODYxNTIzYzYxYmQwIiwicGxhdGZvcm0iOnsiYXJjaCI6ImFybTY0Iiwib3MiOiJtYWNvcyJ9LCJyZWxlYXNlX3ZlcnNpb24iOiIwLjYuNSIsInNpZ25pbmciOnsiYWxnb3JpdGhtIjoiZWQyNTUxOSIsImtleV9pZCI6InRlc3Qtb25seS1yZWxlYXNlLTIwMjZhIn19",
+      "valid": true
+    },
+    {
+      "name": "signature-over-another-manifest",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "signature": "yMqEMpM6dQyWqPxytc5VrW2AOrlJdaWxaZnoYE7Eed8x0NF7miRza01HrZvWYyPaeK81rD/EQvkA7Qo/YNVRDw==",
+      "signed_message_base64": "b21uaXZpYS5ydW50aW1lLXBheWxvYWQtc2lnbmF0dXJlLnYxAHsiY29tcGF0aWJpbGl0eSI6eyJtYXhpbXVtX2Jvb3RzdHJhcF9jb250cmFjdCI6IjEuMCIsIm1pbmltdW1fYm9vdHN0cmFwX2NvbnRyYWN0IjoiMS4wIn0sImV4ZWN1dGFibGVzIjp7ImNsaSI6eyJwYXRoIjoiYmluL29tbml2aWEiLCJzaGEyNTYiOiJiMmRiOTliOGVmMjE1NDkwY2E3OGZjMjlhMzg0NzAyOWJmOTE3ODYxNjA4M2VjYjgyYTAzODc2ZmRkMzEwODk5In0sInNlcnZpY2UiOnsicGF0aCI6ImJpbi9vbW5pdmlhLWNvcmUtc2VydmljZSIsInNoYTI1NiI6ImFjMmFjYjczYWVkYTk3YTlkODc1Y2U1NGM1MmYzMGM2YWI4NDg1NDg5NWMyOGU2M2FjODI5MDgxNzI0YzlkMDQifX0sImludmVudG9yeSI6W3siZXhlY3V0YWJsZSI6dHJ1ZSwicGF0aCI6ImJpbi9vbW5pdmlhIiwic2hhMjU2IjoiYjJkYjk5YjhlZjIxNTQ5MGNhNzhmYzI5YTM4NDcwMjliZjkxNzg2MTYwODNlY2I4MmEwMzg3NmZkZDMxMDg5OSIsInNpemUiOjY2fSx7ImV4ZWN1dGFibGUiOnRydWUsInBhdGgiOiJiaW4vb21uaXZpYS1jb3JlLXNlcnZpY2UiLCJzaGEyNTYiOiJhYzJhY2I3M2FlZGE5N2E5ZDg3NWNlNTRjNTJmMzBjNmFiODQ4NTQ4OTVjMjhlNjNhYzgyOTA4MTcyNGM5ZDA0Iiwic2l6ZSI6Nzl9LHsiZXhlY3V0YWJsZSI6ZmFsc2UsInBhdGgiOiJsaWIvb21uaXZpYS9yZWxlYXNlLnR4dCIsInNoYTI1NiI6IjRjZjUzOTA0NjMzNDMyYWQyYmI3ZTQyOWY4N2MzOWFmYTcyNTBjNjQ2MmM3MzYwZThlNDBjZGFlNmIwZTAxOGEiLCJzaXplIjo2MX1dLCJtYW5pZmVzdF92ZXJzaW9uIjoiMS4wIiwicGF5bG9hZF9pZGVudGl0eSI6InNoYTI1NjpmODQyMmQ3OWZmYjc4YjE0NzRmM2JiNTdlZTliZmMzMWI2NWMzYTI0OGQwMTVmYjg5NjZhODYxNTIzYzYxYmQwIiwicGxhdGZvcm0iOnsiYXJjaCI6ImFybTY0Iiwib3MiOiJtYWNvcyJ9LCJyZWxlYXNlX3ZlcnNpb24iOiIwLjYuNSIsInNpZ25pbmciOnsiYWxnb3JpdGhtIjoiZWQyNTUxOSIsImtleV9pZCI6InRlc3Qtb25seS1yZWxlYXNlLTIwMjZhIn19",
+      "valid": false
+    },
+    {
+      "name": "signature-by-an-unapproved-key",
+      "public_key": "45TtObJ05zYKRBt3T+XUxwYbt7j1E/ky6M7QuwJi3SY=",
+      "signature": "e77/Ez+VHLBBJoSdQAoG/dOBKP8rl45NxbIGRY4Mt6LuS7qCaLZ2e7j1HOz/KjJ+j1usMjYDKcZmUZhXmMcAAA==",
+      "signed_message_base64": "b21uaXZpYS5ydW50aW1lLXBheWxvYWQtc2lnbmF0dXJlLnYxAHsiY29tcGF0aWJpbGl0eSI6eyJtYXhpbXVtX2Jvb3RzdHJhcF9jb250cmFjdCI6IjEuMCIsIm1pbmltdW1fYm9vdHN0cmFwX2NvbnRyYWN0IjoiMS4wIn0sImV4ZWN1dGFibGVzIjp7ImNsaSI6eyJwYXRoIjoiYmluL29tbml2aWEiLCJzaGEyNTYiOiJiMmRiOTliOGVmMjE1NDkwY2E3OGZjMjlhMzg0NzAyOWJmOTE3ODYxNjA4M2VjYjgyYTAzODc2ZmRkMzEwODk5In0sInNlcnZpY2UiOnsicGF0aCI6ImJpbi9vbW5pdmlhLWNvcmUtc2VydmljZSIsInNoYTI1NiI6ImFjMmFjYjczYWVkYTk3YTlkODc1Y2U1NGM1MmYzMGM2YWI4NDg1NDg5NWMyOGU2M2FjODI5MDgxNzI0YzlkMDQifX0sImludmVudG9yeSI6W3siZXhlY3V0YWJsZSI6dHJ1ZSwicGF0aCI6ImJpbi9vbW5pdmlhIiwic2hhMjU2IjoiYjJkYjk5YjhlZjIxNTQ5MGNhNzhmYzI5YTM4NDcwMjliZjkxNzg2MTYwODNlY2I4MmEwMzg3NmZkZDMxMDg5OSIsInNpemUiOjY2fSx7ImV4ZWN1dGFibGUiOnRydWUsInBhdGgiOiJiaW4vb21uaXZpYS1jb3JlLXNlcnZpY2UiLCJzaGEyNTYiOiJhYzJhY2I3M2FlZGE5N2E5ZDg3NWNlNTRjNTJmMzBjNmFiODQ4NTQ4OTVjMjhlNjNhYzgyOTA4MTcyNGM5ZDA0Iiwic2l6ZSI6Nzl9LHsiZXhlY3V0YWJsZSI6ZmFsc2UsInBhdGgiOiJsaWIvb21uaXZpYS9yZWxlYXNlLnR4dCIsInNoYTI1NiI6IjRjZjUzOTA0NjMzNDMyYWQyYmI3ZTQyOWY4N2MzOWFmYTcyNTBjNjQ2MmM3MzYwZThlNDBjZGFlNmIwZTAxOGEiLCJzaXplIjo2MX1dLCJtYW5pZmVzdF92ZXJzaW9uIjoiMS4wIiwicGF5bG9hZF9pZGVudGl0eSI6InNoYTI1NjpmODQyMmQ3OWZmYjc4YjE0NzRmM2JiNTdlZTliZmMzMWI2NWMzYTI0OGQwMTVmYjg5NjZhODYxNTIzYzYxYmQwIiwicGxhdGZvcm0iOnsiYXJjaCI6ImFybTY0Iiwib3MiOiJtYWNvcyJ9LCJyZWxlYXNlX3ZlcnNpb24iOiIwLjYuNSIsInNpZ25pbmciOnsiYWxnb3JpdGhtIjoiZWQyNTUxOSIsImtleV9pZCI6InRlc3Qtb25seS1yZWxlYXNlLTIwMjZhIn19",
+      "valid": false
+    }
+  ],
+  "vectors_version": "1.0"
+}

@@ -1002,6 +1002,41 @@ def test_the_generated_mcp_schema_gate_runs_locally_and_on_the_gate() -> None:
     )
 
 
+RUNTIME_FIXTURE_GATE_STEP = "Check generated trusted-runtime fixtures"
+RUNTIME_FIXTURE_GENERATOR = "scripts/generate-runtime-contract.py"
+RUNTIME_FIXTURE_CORPUS = "contracts/runtime/v1/fixtures"
+
+
+def test_the_trusted_runtime_fixture_gate_runs_locally_and_on_the_gate() -> None:
+    """The derived conformance corpus has a drift check on the gate and in preflight.
+
+    Every SHA-256, payload identity and Ed25519 signature under
+    `contracts/runtime/v1/fixtures` is derived from the payload the generator builds.
+    An edit that changes a payload byte without regenerating leaves a fixture whose
+    digest no longer describes its content -- which does not fail, it silently stops
+    testing the case it is named for, and Platform's independent verifier then agrees
+    with Core about a corpus neither of them is checking.
+
+    `GATE_STEPS` is deliberately *not* where this is pinned: the workflow keeps this
+    step beside the Host Contract's own `--check`, which is likewise absent from that
+    tuple. So the workflow step, the preflight step and the two paths are pinned here.
+    """
+    assert (REPO_ROOT / RUNTIME_FIXTURE_GENERATOR).is_file()
+    assert (REPO_ROOT / RUNTIME_FIXTURE_CORPUS).is_dir()
+
+    step = _step(_steps(), RUNTIME_FIXTURE_GATE_STEP)
+    assert f"python {RUNTIME_FIXTURE_GENERATOR} --check" in _commands(step)
+
+    preflight = "\n".join(
+        line
+        for line in PREFLIGHT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    assert f"{RUNTIME_FIXTURE_GENERATOR} --check" in preflight, (
+        "preflight must run the same drift check the gate does"
+    )
+
+
 def _preflight_full_suite_command() -> str:
     """The `step "Run full repository test suite" ...` invocation, joined.
 
