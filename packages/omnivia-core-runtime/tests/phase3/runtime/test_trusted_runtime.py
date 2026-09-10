@@ -98,6 +98,44 @@ def test_a_parsed_document_is_bounded_utf8_and_free_of_duplicate_names() -> None
         parse_canonical_document(b"[1,2]", limit=64)
 
 
+#: Documents `json` refuses with an exception that is not this module's: an integer
+#: above the interpreter's 4300-digit string-conversion limit (`ValueError`), nesting
+#: deeper than the stack (`RecursionError`) and a plain syntax error
+#: (`json.JSONDecodeError`). Every one of them fits inside `MAX_MANIFEST_BYTES`, so
+#: the byte bound never reached them.
+_UNREADABLE_DOCUMENTS = (
+    b'{"a":' + b"1" * 4400 + b"}",
+    b'{"a":' + b"[" * 60_000 + b"]" * 60_000 + b"}",
+    b'{"a":',
+)
+
+
+def test_a_document_json_cannot_read_refuses_and_never_raises_through() -> None:
+    """The parse's own failures are answers here, not exceptions the caller sees."""
+    for raw in _UNREADABLE_DOCUMENTS:
+        assert len(raw) <= MAX_MANIFEST_BYTES
+        with pytest.raises(CanonicalJsonError):
+            parse_canonical_document(raw, limit=MAX_MANIFEST_BYTES)
+
+
+def test_an_unreadable_manifest_reaches_the_closed_refusal_vocabulary(
+    tmp_path: Path,
+) -> None:
+    """And end to end: each one used to leave `verify_payload` as itself.
+
+    A `RecursionError` out of a resolver is not one of the eight codes a consumer
+    branches on, so it was an unhandled crash on the launch path rather than
+    `runtime_metadata_invalid` and a repair.
+    """
+    payload = tmp_path / "payload"
+    write_payload(payload)
+    for raw in _UNREADABLE_DOCUMENTS:
+        (payload / RUNTIME_MANIFEST_NAME).write_bytes(raw)
+        with pytest.raises(RuntimeResolutionError) as raised:
+            _verify(payload, enforce_installation_policy=False)
+        assert raised.value.refusal is RuntimeRefusal.METADATA_INVALID
+
+
 def test_identity_excludes_itself_and_is_separated_from_the_signature_domain(
     tmp_path: Path,
 ) -> None:
@@ -428,6 +466,53 @@ def test_resolution_needs_an_absolute_root(tmp_path: Path) -> None:
             trust_anchors=[anchor()],
             verification_time=NOW,
         )
+
+
+def _refusal_for(root: Path) -> RuntimeRefusal:
+    with pytest.raises(RuntimeResolutionError) as raised:
+        resolve_runtime(
+            installation_root=root,
+            trust_anchors=[anchor()],
+            verification_time=NOW,
+        )
+    return raised.value.refusal
+
+
+def test_an_absent_installation_root_is_not_installed_rather_than_an_io_failure(
+    tmp_path: Path,
+) -> None:
+    """The first-run answer, and the one the root's own `lstat` used to swallow.
+
+    Nothing installed is the *normal* state before a first install, and it has a code
+    of its own that tells a consumer to install. `runtime_io_failure` told it to
+    retry a bounded read instead -- a retry that can only keep failing, because the
+    directory it names is not going to appear on its own.
+
+    A root that exists and is not a plain directory keeps refusing at the layout
+    boundary: "not installed" must not become the answer for a root somebody
+    replaced with a file or a link out of the installation.
+    """
+    assert _refusal_for(tmp_path / "absent") is RuntimeRefusal.NOT_INSTALLED
+
+    a_file = tmp_path / "a-file"
+    a_file.write_bytes(b"")
+    assert _refusal_for(a_file) is RuntimeRefusal.LAYOUT_INVALID
+
+
+@POSIX_ONLY
+def test_an_installation_root_the_host_will_not_stat_is_still_an_io_failure(
+    tmp_path: Path,
+) -> None:
+    """The other half: a genuine local read failure keeps its own code."""
+    if os.geteuid() == 0:
+        pytest.skip("root traverses a mode-000 directory, so the failure is unreachable")
+    closed = tmp_path / "closed"
+    (closed / "installation").mkdir(parents=True)
+    closed.chmod(0o000)
+    try:
+        assert _refusal_for(closed / "installation") is RuntimeRefusal.IO_FAILURE
+    finally:
+        closed.chmod(0o700)
 
 
 def test_an_unapproved_key_never_reaches_the_digest_stage(tmp_path: Path) -> None:

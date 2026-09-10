@@ -363,6 +363,35 @@ _SCHEMA_REJECTED_MEMBER_PATHS = (
     "a//b",
     "a/..",
 )
+#: Versions the published `semver` and `contractVersion` definitions reject. Both
+#: patterns spell their digits `[0-9]`, and the reference verifier used
+#: `str.isdigit()` -- which is true of the Arabic-Indic `٠`, the Devanagari `०` and
+#: the superscript `²`. So `٠.٦.٥` was a release version here and a schema violation
+#: there, `١.٠` was a bootstrap-contract bound the same way, and `1.2.²` was neither:
+#: `int()` raised a bare `ValueError` straight past the eight refusal codes.
+_SCHEMA_REJECTED_SEMVERS = (
+    "٠.٦.٥",
+    "0.6.٥",
+    "१.०.०",
+    "1.2.²",
+    "01.0.0",
+    "1.0",
+    "1.0.0.0",
+    "0.6. 5",
+    "v1.0.0",
+    "1.0.0-rc1",
+    "",
+)
+_SCHEMA_REJECTED_CONTRACT_VERSIONS = (
+    "١.٠",
+    "1.٠",
+    "1.²",
+    "01.0",
+    "1",
+    "1.0.0",
+    "1. 0",
+    "",
+)
 
 
 def _definition_validator(name: str) -> Draft202012Validator:
@@ -416,6 +445,42 @@ def test_no_key_id_the_schema_rejects_is_accepted_by_the_reference_verifier() ->
         with pytest.raises(RuntimeResolutionError) as raised:
             parse_manifest(_manifest_with(signing={"key_id": value, "algorithm": "ed25519"}))
         assert raised.value.refusal is RuntimeRefusal.METADATA_INVALID, value
+
+
+def test_no_version_the_schema_rejects_is_accepted_by_the_reference_verifier() -> None:
+    """`release_version` and both `compatibility` bounds, against their definitions."""
+    validator = _definition_validator("semver")
+    for value in _SCHEMA_REJECTED_SEMVERS:
+        assert sorted(validator.iter_errors(value)), value
+        with pytest.raises(RuntimeResolutionError) as raised:
+            parse_manifest(_manifest_with(release_version=value))
+        assert raised.value.refusal is RuntimeRefusal.METADATA_INVALID, value
+
+    validator = _definition_validator("contractVersion")
+    for value in _SCHEMA_REJECTED_CONTRACT_VERSIONS:
+        assert sorted(validator.iter_errors(value)), value
+        for bound in ("minimum_bootstrap_contract", "maximum_bootstrap_contract"):
+            window = {
+                "minimum_bootstrap_contract": "1.0",
+                "maximum_bootstrap_contract": "1.0",
+                bound: value,
+            }
+            with pytest.raises(RuntimeResolutionError) as raised:
+                parse_manifest(_manifest_with(compatibility=window))
+            assert raised.value.refusal is RuntimeRefusal.METADATA_INVALID, (bound, value)
+
+
+def test_a_version_component_no_integer_can_hold_refuses_rather_than_raising() -> None:
+    """The schema bounds no component, and CPython bounds `int(str)` at 4300 digits.
+
+    A 4400-digit major version is therefore a document the schema admits, no
+    implementation can order, and this one converted -- raising the same bare
+    `ValueError` an oversized JSON integer used to raise, and past the same eight
+    codes. Refusing it is fail-closed and stays inside the vocabulary.
+    """
+    with pytest.raises(RuntimeResolutionError) as raised:
+        parse_manifest(_manifest_with(release_version="1" * 4400 + ".0.0"))
+    assert raised.value.refusal is RuntimeRefusal.METADATA_INVALID
 
 
 def test_no_member_path_the_schema_rejects_is_accepted_by_the_reference_verifier() -> None:

@@ -179,6 +179,14 @@ _HEX64 = tuple("0123456789abcdef")
 #: disagreeing about the same bytes -- exactly what the corpus exists to prevent.
 _KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
+#: The published `semver` and `contractVersion` patterns, restated for the same
+#: reason. `str.isdigit()` stood here instead, and it is true of the Arabic-Indic
+#: ``٠`` and of the superscript ``²``: ``٠.٦.٥`` parsed as a release version the
+#: schema refuses, and ``1.2.²`` raised a bare `ValueError` out of the closed refusal
+#: vocabulary. ``[0-9]`` is the ASCII ten and nothing else.
+_SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+_CONTRACT_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+
 #: Excluded from a payload member path, together with every character below U+0020.
 #: The backslash and the colon are the ones with teeth -- ``C:`` and ``..\\`` are how a
 #: relative name stops being one on Windows -- and the rest are the reserved set the
@@ -330,6 +338,14 @@ def parse_canonical_document(raw: bytes, *, limit: int) -> dict[str, Any]:
     is a place where "the same document" means different things to different
     parsers, and one of which (the duplicate name) is a place where it means
     different things to the *same* parser depending on which value it kept.
+
+    The parse itself is guarded because `json` answers three of those with an
+    exception that is not this module's: a syntax error is a `json.JSONDecodeError`,
+    an integer above the interpreter's string-conversion limit is a bare
+    `ValueError`, and nesting deeper than the stack is a `RecursionError`. All three
+    are reachable from an untrusted document inside its byte bound, all three mean
+    the same thing here -- these bytes are not a document this contract can read --
+    and all three used to escape past the closed refusal vocabulary as themselves.
     """
     if len(raw) > limit:
         raise CanonicalJsonError("document exceeds its bound")
@@ -337,12 +353,19 @@ def parse_canonical_document(raw: bytes, *, limit: int) -> dict[str, Any]:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as failure:
         raise CanonicalJsonError("document is not UTF-8") from failure
-    document = json.loads(
-        text,
-        object_pairs_hook=_reject_duplicates,
-        parse_float=_reject_float,
-        parse_constant=_reject_constant,
-    )
+    try:
+        document = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicates,
+            parse_float=_reject_float,
+            parse_constant=_reject_constant,
+        )
+    except CanonicalJsonError:
+        # Already ours, from one of the three hooks above. Re-raised rather than
+        # rewritten so it keeps saying which restriction the document broke.
+        raise
+    except (ValueError, RecursionError) as failure:
+        raise CanonicalJsonError("document is not readable in the canonical subset") from failure
     if not isinstance(document, dict):
         raise CanonicalJsonError("document root is not an object")
     return document
@@ -516,30 +539,29 @@ def _key_id(value: Any) -> str:
     return value
 
 
-def _semver(value: Any) -> tuple[int, int, int]:
-    if not isinstance(value, str):
+def _version(value: Any, pattern: re.Pattern[str]) -> tuple[int, ...]:
+    """One dotted decimal version, spelled exactly as the published schema spells it.
+
+    Ordered as a tuple of integers, so the comparison is numeric rather than
+    lexical -- ``0.10.0`` is above ``0.9.0`` -- and the conversion is guarded because
+    the schema bounds no component: a component longer than the interpreter's
+    integer-string conversion limit is metadata nothing can represent, and refusing
+    it keeps that answer inside the closed vocabulary instead of raising through it.
+    """
+    if not isinstance(value, str) or (parsed := pattern.fullmatch(value)) is None:
         raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    parts = value.split(".")
-    if len(parts) != 3:
-        raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    for part in parts:
-        if not part.isdigit() or (part != "0" and part.startswith("0")):
-            raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    first, second, third = parts
-    return int(first), int(second), int(third)
+    try:
+        return tuple(int(part) for part in parsed.groups())
+    except ValueError as failure:
+        raise _refuse(RuntimeRefusal.METADATA_INVALID) from failure
 
 
-def _contract(value: Any) -> tuple[int, int]:
-    if not isinstance(value, str):
-        raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    parts = value.split(".")
-    if len(parts) != 2:
-        raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    for part in parts:
-        if not part.isdigit() or (part != "0" and part.startswith("0")):
-            raise _refuse(RuntimeRefusal.METADATA_INVALID)
-    first, second = parts
-    return int(first), int(second)
+def _semver(value: Any) -> tuple[int, ...]:
+    return _version(value, _SEMVER)
+
+
+def _contract(value: Any) -> tuple[int, ...]:
+    return _version(value, _CONTRACT_VERSION)
 
 
 def _member(value: Any) -> PurePosixPath:
@@ -1157,6 +1179,14 @@ def resolve_runtime(
     """
     if not installation_root.is_absolute():
         raise ValueError("installation_root must be absolute")
+    if _lstat_optional(installation_root) is None:
+        # An installation root that is not there is nothing installed. It used to
+        # reach `require_directory` and answer `runtime_io_failure`, which told a
+        # first-run consumer to retry a read that can only keep failing. A root that
+        # *is* there and is not a plain directory still refuses at the layout
+        # boundary below, and a root that cannot be stat'ed for any other reason is
+        # still the bounded `runtime_io_failure` `_lstat_optional` raises.
+        raise _refuse(RuntimeRefusal.NOT_INSTALLED)
     require_directory(installation_root)
 
     # An absent selector is `runtime_not_installed`; a symlinked one is refused at
