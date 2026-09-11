@@ -209,7 +209,9 @@ def test_v06_5_s5_architecture_gate_traceability_complete() -> None:
     assert len(gates) == 34
     assert tuple(gate["ordinal"] for gate in gates) == tuple(range(1, 35))
     assert len({gate["gate_id"] for gate in gates}) == 34
-    assert all(gate["state"] == "pending_candidate" for gate in gates)
+    # v1.1 lets a gate be accepted with named evidence; that ledger's own suite
+    # pins which ones. What S5 needs is that no other state exists.
+    assert {gate["state"] for gate in gates} <= {"pending_candidate", "accepted_passing"}
     assert all(
         set(gate["operation_traceability_refs"]) <= APPLICATION_OPERATIONS
         for gate in gates

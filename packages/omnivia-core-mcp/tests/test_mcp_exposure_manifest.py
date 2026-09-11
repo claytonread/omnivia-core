@@ -15,6 +15,7 @@ rather than as a rewrite is the difference between those two facts.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -51,6 +52,9 @@ EXPECTED_SURFACE = (
 # that says why it must not.
 FORBIDDEN = (
     "workspace.create",  # bootstrap / workspace initialisation
+    "chat.command",  # persistent mutation
+    "workflow.control",  # persistent mutation
+    "workflow.start",  # persistent mutation
     "memory.create",  # persistent mutation
     "candidate.approve",  # persistent mutation
     "candidate.reject",  # persistent mutation
@@ -96,8 +100,8 @@ def test_the_manifest_is_curated_not_the_whole_catalogue() -> None:
     catalogue = {entry.name for entry in OPERATION_CATALOGUE}
     assert exposed < catalogue, "the manifest must be a strict subset"
     assert len(catalogue) > len(exposed) + 1, (
-        "the catalogue is a capability list of twenty operations; a manifest that "
-        "had grown to nearly all of it would no longer be a curated surface"
+        "the catalogue is a capability list of twenty-seven operations; a manifest "
+        "that had grown to nearly all of it would no longer be a curated surface"
     )
 
 
@@ -115,6 +119,39 @@ def test_the_exposed_surface_is_exactly_the_reviewed_six_in_order() -> None:
         )
         == EXPECTED_SURFACE
     )
+
+
+OPERATION_TRACEABILITY = (
+    REPO_ROOT / "tests" / "fixtures" / "service_conformance" / "operation-traceability-v1.json"
+)
+
+
+def test_the_operation_traceability_mcp_mapping_is_this_manifest() -> None:
+    """The ledger's accepted MCP mapping is exactly this allow-list, nothing more.
+
+    The service-conformance suite checks the ledger against the catalogue but
+    may not import this package; this is the other half. Exposed operations and
+    tool names in manifest order, the manifest version, and every catalogue
+    operation outside the manifest recorded as an intentional omission.
+    """
+    mapping = json.loads(OPERATION_TRACEABILITY.read_text(encoding="utf-8"))[
+        "client_surfaces"
+    ]["mcp"]
+    assert mapping["mapping_state"] == "accepted"
+    assert mapping["mapping_source"]["manifest_version"] == manifest.MANIFEST_VERSION
+    assert mapping["mapping_source"]["symbol"] == "EXPOSURE_MANIFEST"
+    assert (REPO_ROOT / mapping["mapping_source"]["file"]).resolve() == (
+        Path(manifest.__file__).resolve()
+    )
+    assert [
+        (entry["operation"], entry["tool"]) for entry in mapping["exposed"]
+    ] == [(entry.operation, entry.tool_name) for entry in manifest.EXPOSURE_MANIFEST]
+    exposed = {entry.operation for entry in manifest.EXPOSURE_MANIFEST}
+    assert [entry["operation"] for entry in mapping["omitted"]] == [
+        entry.name for entry in OPERATION_CATALOGUE if entry.name not in exposed
+    ]
+    for entry in mapping["omitted"]:
+        assert manifest.exposed_by_tool_name(entry["operation"].replace(".", "_")) is None
 
 
 def test_the_manifest_version_names_this_surface() -> None:

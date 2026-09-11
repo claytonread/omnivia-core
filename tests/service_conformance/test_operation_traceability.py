@@ -8,12 +8,16 @@ provider-neutral service adapters -- ``in_process``, ``ipc``, ``http`` -- and
 states every one of their per-operation evidence states as pending rather than
 claiming a result.
 
-MCP and CLI are not service adapters here. Their command/tool mapping is not
-yet accepted, and the architecture and newer lane plan are not yet reconciled
-on MCP coverage/naming, so the fixture records them as a single top-level
-client-surface decision -- mapping and evidence both explicitly not decided --
-never as a per-operation applicability claim. This module proves that split
-holds and stays in step with the frozen twenty-seven-operation catalogue.
+MCP and CLI are not service adapters here. Each is a single top-level
+client-surface decision, never a per-operation applicability claim. Format
+``v1.1`` records the accepted MCP mapping: the six operations the curated MCP
+exposure manifest allow-lists, each with its tool name, and every other
+catalogue operation as an intentional omission with its reason. The CLI
+mapping is still not decided, and neither surface's evidence is evaluated
+here. This module proves that split holds and stays in step with the frozen
+twenty-seven-operation catalogue; ``packages/omnivia-core-mcp/tests`` pins the
+recorded mapping to ``omnivia_core_mcp.manifest`` itself, which this module
+may not import.
 
 Validator, test-suite and architecture-gate traceability, and live adapter
 evidence, are later work; this module proves the index's shape, not those.
@@ -55,7 +59,7 @@ FIXTURE_PATH = (
 )
 CORPUS_PATH = REPO_ROOT / "contracts" / "application" / "v1" / "fixtures" / ADAPTER_CONFORMANCE_CORPUS_FILE
 
-FIXTURE_FORMAT = "omnivia.operation-traceability.v1"
+FIXTURE_FORMAT = "omnivia.operation-traceability.v1.1"
 LIVE_EVIDENCE_STATE = "pending_candidate"
 #: Provider-neutral service adapters only. ``mcp`` and ``cli`` are client
 #: surfaces, not service adapters -- see ``CLIENT_SURFACE_NAMES`` below.
@@ -63,6 +67,23 @@ ADAPTER_CLASSES = ("in_process", "ipc", "http")
 CLIENT_SURFACE_NAMES = ("mcp", "cli")
 CLIENT_SURFACE_MAPPING_STATE = "pending_decision"
 CLIENT_SURFACE_EVIDENCE_STATE = "not_evaluated"
+MCP_MAPPING_STATE = "accepted"
+MCP_MAPPING_SOURCE = {
+    "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
+    "symbol": "EXPOSURE_MANIFEST",
+    "manifest_version": "1.1",
+}
+#: The reviewed MCP surface, as operation -> tool, in manifest order. Restated
+#: literally, like the MCP package's own review record, so a changed surface has
+#: to change this line too.
+MCP_EXPOSED = (
+    ("workspace.inspect", "workspace_inspect"),
+    ("evidence.search", "evidence_search"),
+    ("knowledge.search", "knowledge_search"),
+    ("memory.search", "memory_search"),
+    ("graph.traverse", "graph_traverse"),
+    ("context_pack.build", "context_pack_build"),
+)
 
 #: Module roots this foundation must never import. The Runtime, MCP and CLI
 #: packages already exist in this repo (``packages/omnivia-core-runtime``,
@@ -162,11 +183,11 @@ def test_every_operation_declares_exactly_the_three_service_adapter_classes(
 def test_no_operation_asserts_mcp_or_cli_applicability(
     name: str, entry: dict[str, Any]
 ) -> None:
-    """mcp/cli command-tool mapping is not yet accepted, so no operation may
+    """No operation may carry a per-operation mcp or cli entry that would read
 
-    carry a per-operation mcp or cli entry that would read as an applicability
-    claim -- that decision lives only in the single top-level ``client_surfaces``
-    block asserted below.
+    as a service-adapter evidence claim -- the client-surface decisions, the
+    accepted MCP mapping included, live only in the single top-level
+    ``client_surfaces`` block asserted below.
     """
     for surface in CLIENT_SURFACE_NAMES:
         assert surface not in entry["adapters"], f"{name}/{surface}"
@@ -178,7 +199,7 @@ def test_every_operation_reports_pending_candidate_for_every_service_adapter_cla
 ) -> None:
     """No live product adapter may be marked passing until a committed candidate
     is independently exercised, and this slice has no candidate at all -- so
-    every one of the 22 x 3 service-adapter evidence states must read exactly
+    every one of the 27 x 3 service-adapter evidence states must read exactly
     ``pending_candidate``, never a value that could be mistaken for a result.
     """
     for adapter_class in ADAPTER_CLASSES:
@@ -205,23 +226,88 @@ def test_the_fixture_declares_exactly_the_mcp_and_cli_client_surfaces() -> None:
     assert set(TRACEABILITY["client_surfaces"]) == set(CLIENT_SURFACE_NAMES)
 
 
-@pytest.mark.parametrize("surface", CLIENT_SURFACE_NAMES)
-def test_every_client_surface_decision_is_pending_and_unevaluated(surface: str) -> None:
-    """mcp/cli command-tool mapping is not yet accepted, and the architecture
-
-    and newer lane plan are not yet reconciled on MCP coverage/naming -- so
-    each client surface must state a mapping state of ``pending_decision``
-    and an evidence state of ``not_evaluated``, never a value that could be
-    mistaken for an accepted mapping or a live result.
+def test_the_cli_client_surface_decision_is_pending_and_unevaluated() -> None:
+    """The CLI command mapping is not yet accepted, so it states a mapping state
+    of ``pending_decision`` and an evidence state of ``not_evaluated``, never a
+    value that could be mistaken for an accepted mapping or a live result.
     """
-    decision = TRACEABILITY["client_surfaces"][surface]
+    decision = TRACEABILITY["client_surfaces"]["cli"]
     assert set(decision) == {"mapping_state", "evidence_state"}
     assert decision["mapping_state"] == CLIENT_SURFACE_MAPPING_STATE
     assert decision["evidence_state"] == CLIENT_SURFACE_EVIDENCE_STATE
 
 
+def test_the_mcp_client_surface_records_the_accepted_mapping_and_no_evidence() -> None:
+    decision = TRACEABILITY["client_surfaces"]["mcp"]
+    assert set(decision) == {
+        "mapping_state",
+        "mapping_source",
+        "exposed",
+        "omitted",
+        "evidence_state",
+    }
+    assert decision["mapping_state"] == MCP_MAPPING_STATE
+    assert decision["mapping_source"] == MCP_MAPPING_SOURCE
+    assert (REPO_ROOT / MCP_MAPPING_SOURCE["file"]).is_file()
+    # The mapping is decided; per-operation client-surface evidence is not.
+    assert decision["evidence_state"] == CLIENT_SURFACE_EVIDENCE_STATE
+    assert tuple(
+        (entry["operation"], entry["tool"]) for entry in decision["exposed"]
+    ) == MCP_EXPOSED
+    assert all(set(entry) == {"operation", "tool"} for entry in decision["exposed"])
+
+
+def test_the_mcp_mapping_partitions_the_catalogue_exactly() -> None:
+    """Every catalogue operation is either exposed or intentionally omitted, once.
+
+    Omissions are listed in catalogue order, so a newly registered operation
+    fails here until someone decides -- and records -- which side it is on.
+    """
+    decision = TRACEABILITY["client_surfaces"]["mcp"]
+    exposed = [entry["operation"] for entry in decision["exposed"]]
+    omitted = [entry["operation"] for entry in decision["omitted"]]
+    assert not set(exposed) & set(omitted)
+    assert sorted(exposed + omitted) == sorted(CATALOGUE_BY_NAME)
+    assert omitted == [name for name in CATALOGUE_BY_NAME if name not in exposed]
+    assert len(exposed) == 6
+    assert len(omitted) == 21
+
+
+def test_the_mcp_mapping_exposes_reads_only_and_states_each_omission_reason() -> None:
+    """Reasons are derived from the catalogue, not asserted beside it.
+
+    ``mutation`` is exactly an operation whose side effect is not ``none``;
+    ``read_not_allow_listed`` is a read the curated manifest deliberately does
+    not expose -- installation-scoped ``workspace.list`` among them.
+    """
+    decision = TRACEABILITY["client_surfaces"]["mcp"]
+    for entry in decision["exposed"]:
+        assert CATALOGUE_BY_NAME[entry["operation"]].scope.side_effect == "none"
+    for entry in decision["omitted"]:
+        assert set(entry) == {"operation", "reason"}
+        side_effect = CATALOGUE_BY_NAME[entry["operation"]].scope.side_effect
+        expected = "mutation" if side_effect != "none" else "read_not_allow_listed"
+        assert entry["reason"] == expected, entry["operation"]
+    reads_omitted = {
+        entry["operation"]
+        for entry in decision["omitted"]
+        if entry["reason"] == "read_not_allow_listed"
+    }
+    assert reads_omitted == {
+        "chat.events",
+        "chat.snapshot",
+        "job.events",
+        "job.get",
+        "memory.get",
+        "memory.list",
+        "workflow.inspect",
+        "workflow.review",
+        "workspace.list",
+    }
+
+
 # --------------------------------------------------------------------------
-# The referenced 78-case adapter-wire-conformance corpus
+# The referenced 86-case adapter-wire-conformance corpus
 # --------------------------------------------------------------------------
 
 

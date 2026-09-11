@@ -150,3 +150,53 @@ def test_a_stale_descriptor_never_authorizes_a_signal(home: Path) -> None:
     stopped = _cli(home, "stop")
     assert stopped.returncode == 1
     assert _document(stopped)["code"] == "stop_service_unreachable"
+
+
+def _descriptor(home: Path) -> dict[str, object]:
+    path = home / "installation-state" / "runtime" / WORKSPACE_ID / "service.json"
+    return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _lease_payload(home: Path) -> dict[str, object]:
+    path = home / "workspace" / "locks" / "storage.lock"
+    return dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_the_service_not_the_cli_owns_the_writable_workspace_lease(home: Path) -> None:
+    """Separate CLI status invocations leave the service the observed lease owner.
+
+    Every CLI call here is a separate real ``omnivia`` process that
+    ``subprocess.run`` has already waited for and reaped by the time its answer
+    is inspected -- "the CLI processes have exited" is true by construction
+    rather than asserted. The lifetime storage lock is what, with the sole
+    exclusive SQLite connection, constitutes storage ownership, and its own
+    advisory payload records the pid and service-instance id of whoever holds
+    it. After start, two separate ``status`` invocations leave the published
+    descriptor's instance and fencing generation, and that payload's parsed
+    contents, equal to what they were: the observed owner is still the service.
+    The claim is that semantic equality and observed ownership, not untouched
+    bytes; it matches the package README -- the CLI opens no database and takes
+    no lock to reach the service.
+    """
+    started = _cli(home, "start")
+    assert started.returncode == 0
+    pid = _service_pid(home)
+    assert pid is not None
+
+    before_descriptor = _descriptor(home)
+    assert before_descriptor["process"]["pid"] == pid
+    before_lease = _lease_payload(home)
+    assert before_lease["role"] == "lifetime_storage"
+    assert before_lease["pid"] == pid
+    assert before_lease["service_instance_id"] == before_descriptor["service_instance_id"]
+
+    for _ in range(2):
+        polled = _cli(home, "status")
+        assert polled.returncode == 0
+        assert _document(polled)["code"] == "status_running"
+
+    assert _service_pid(home) == pid
+    after_descriptor = _descriptor(home)
+    assert after_descriptor["service_instance_id"] == before_descriptor["service_instance_id"]
+    assert after_descriptor["fencing_generation"] == before_descriptor["fencing_generation"]
+    assert _lease_payload(home) == before_lease

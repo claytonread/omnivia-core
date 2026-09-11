@@ -1,5 +1,5 @@
 {
-  "format": "omnivia.architecture-gate-traceability.v1",
+  "format": "omnivia.architecture-gate-traceability.v1.1",
   "source": {
     "document": "omnivia-core-architecture-spec-v0.6-2026-07-29.md",
     "version": "0.6-draft",
@@ -8,9 +8,10 @@
     "gate_count": 34
   },
   "pending_state": "pending_candidate",
+  "accepted_state": "accepted_passing",
   "operation_traceability": {
     "file": "tests/fixtures/service_conformance/operation-traceability-v1.json",
-    "format": "omnivia.operation-traceability.v1"
+    "format": "omnivia.operation-traceability.v1.1"
   },
   "gates": [
     {
@@ -86,16 +87,23 @@
       "ordinal": 7,
       "acceptance_gate": "MCP operates independently of the desktop application;",
       "pending_test_id": "test_architecture_gate_mcp_desktop_independence",
-      "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "state": "accepted_passing",
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_mcp_desktop_independence"
+      ]
     },
     {
       "gate_id": "architecture-v0.6-s21-g08",
       "ordinal": 8,
       "acceptance_gate": "MCP network mode is authenticated and loopback-safe by default;",
       "pending_test_id": "test_architecture_gate_mcp_network_auth_loopback_default",
-      "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "state": "accepted_passing",
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_mcp_network_auth_loopback_default",
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_the_network_endpoint_must_be_loopback_cleartext_or_tls"
+      ]
     },
     {
       "gate_id": "architecture-v0.6-s21-g09",
@@ -187,15 +195,25 @@
       "acceptance_gate": "a clean installation can run Core and connect Claude through MCP without OmniVia Desktop;",
       "pending_test_id": "test_architecture_gate_clean_install_mcp_without_desktop",
       "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "operation_traceability_refs": [],
+      "evidence": [
+        "tests/package_qualification/test_standard_candidate_builder.py::test_architecture_gate_clean_install_mcp_without_desktop"
+      ],
+      "qualification": [
+        "scripts/build-standard-candidate.py"
+      ],
+      "pending_reason": "The candidate and simulated Claude-format host rows pass, but no real Claude Desktop or Claude Code client is launched, so the exact gate is not accepted."
     },
     {
       "gate_id": "architecture-v0.6-s21-g17",
       "ordinal": 17,
       "acceptance_gate": "the base MCP server has no dependency on OmniVia Dev;",
       "pending_test_id": "test_architecture_gate_base_mcp_no_dev_dependency",
-      "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "state": "accepted_passing",
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_base_mcp_no_dev_dependency"
+      ]
     },
     {
       "gate_id": "architecture-v0.6-s21-g18",
@@ -218,8 +236,11 @@
       "ordinal": 20,
       "acceptance_gate": "MCP managed-local and service-client modes return equivalent authorized results for the same workspace state;",
       "pending_test_id": "test_architecture_gate_mcp_mode_authorized_result_equivalence",
-      "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "state": "accepted_passing",
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_mcp_mode_authorized_result_equivalence"
+      ]
     },
     {
       "gate_id": "architecture-v0.6-s21-g21",
@@ -235,7 +256,13 @@
       "acceptance_gate": "MCP, CLI, Desktop and launchers never own the authoritative workspace service lease;",
       "pending_test_id": "test_architecture_gate_clients_never_own_workspace_lease",
       "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_clients_never_own_workspace_lease",
+        "packages/omnivia-core-cli/tests/test_lifecycle.py::test_the_service_not_the_cli_owns_the_writable_workspace_lease",
+        "packages/omnivia-core-runtime/tests/phase3/runtime/test_managed_start.py::test_the_service_not_the_launcher_owns_the_writable_workspace_lease"
+      ],
+      "pending_reason": "Attached stdio MCP, separate CLI status invocations, and managed-start launcher evidence show the service remains the observed lease owner. Desktop evidence is in omnivia-platform and is not accepted here. The MCP partial test does not cover MCP-managed service launch."
     },
     {
       "gate_id": "architecture-v0.6-s21-g23",
@@ -316,8 +343,11 @@
       "ordinal": 29,
       "acceptance_gate": "stdio MCP cannot enumerate ungranted workspaces;",
       "pending_test_id": "test_architecture_gate_stdio_mcp_workspace_grants",
-      "state": "pending_candidate",
-      "operation_traceability_refs": []
+      "state": "accepted_passing",
+      "operation_traceability_refs": [],
+      "evidence": [
+        "packages/omnivia-core-mcp/tests/test_mcp_architecture_gates.py::test_architecture_gate_stdio_mcp_workspace_grants"
+      ]
     },
     {
       "gate_id": "architecture-v0.6-s21-g30",
