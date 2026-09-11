@@ -1,5 +1,5 @@
 {
-  "format": "omnivia.operation-traceability.v1",
+  "format": "omnivia.operation-traceability.v1.1",
   "source_catalogue": {
     "format": "omnivia.operation-catalogue.v1",
     "operation_count": 27
@@ -16,7 +16,124 @@
   ],
   "client_surfaces": {
     "mcp": {
-      "mapping_state": "pending_decision",
+      "mapping_state": "accepted",
+      "mapping_source": {
+        "file": "packages/omnivia-core-mcp/src/omnivia_core_mcp/manifest.py",
+        "symbol": "EXPOSURE_MANIFEST",
+        "manifest_version": "1.1"
+      },
+      "exposed": [
+        {
+          "operation": "workspace.inspect",
+          "tool": "workspace_inspect"
+        },
+        {
+          "operation": "evidence.search",
+          "tool": "evidence_search"
+        },
+        {
+          "operation": "knowledge.search",
+          "tool": "knowledge_search"
+        },
+        {
+          "operation": "memory.search",
+          "tool": "memory_search"
+        },
+        {
+          "operation": "graph.traverse",
+          "tool": "graph_traverse"
+        },
+        {
+          "operation": "context_pack.build",
+          "tool": "context_pack_build"
+        }
+      ],
+      "omitted": [
+        {
+          "operation": "candidate.approve",
+          "reason": "mutation"
+        },
+        {
+          "operation": "candidate.reject",
+          "reason": "mutation"
+        },
+        {
+          "operation": "chat.command",
+          "reason": "mutation"
+        },
+        {
+          "operation": "chat.events",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "chat.snapshot",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "import.start",
+          "reason": "mutation"
+        },
+        {
+          "operation": "job.cancel",
+          "reason": "mutation"
+        },
+        {
+          "operation": "job.events",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "job.get",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "job.retry",
+          "reason": "mutation"
+        },
+        {
+          "operation": "knowledge.propose",
+          "reason": "mutation"
+        },
+        {
+          "operation": "memory.create",
+          "reason": "mutation"
+        },
+        {
+          "operation": "memory.get",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "memory.list",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "record.supersede",
+          "reason": "mutation"
+        },
+        {
+          "operation": "workflow.control",
+          "reason": "mutation"
+        },
+        {
+          "operation": "workflow.inspect",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "workflow.review",
+          "reason": "read_not_allow_listed"
+        },
+        {
+          "operation": "workflow.start",
+          "reason": "mutation"
+        },
+        {
+          "operation": "workspace.create",
+          "reason": "mutation"
+        },
+        {
+          "operation": "workspace.list",
+          "reason": "read_not_allow_listed"
+        }
+      ],
       "evidence_state": "not_evaluated"
     },
     "cli": {

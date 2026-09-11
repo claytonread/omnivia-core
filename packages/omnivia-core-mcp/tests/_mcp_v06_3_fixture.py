@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -58,7 +59,7 @@ from omnivia_core_runtime.ownership.identity import (
     ServiceInstanceIdentity,
     SystemClock,
 )
-from omnivia_core_runtime.ownership.lease import acquire_lease
+from omnivia_core_runtime.ownership.lease import LeaseRecord, acquire_lease, read_lease
 from omnivia_core_runtime.service.transport import endpoint_for_path
 from omnivia_core_runtime.storage.backup import InstallationLayout
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
@@ -66,6 +67,7 @@ from omnivia_core_runtime.storage.legacy import migrate_legacy_database
 from omnivia_core_runtime.storage.migrations import materialise_phase0_baseline
 from omnivia_core_runtime.workspace.layout import WorkspaceLayout
 
+from omnivia_core.contracts.v1 import ServiceEndpointDescriptor
 from omnivia_core.workspace.manifest import CoreCompatibility, WorkspaceManifest
 
 #: The workspace every MCP call in the suite is answered from.
@@ -856,6 +858,48 @@ class GovernedService:
     installation_state: Path
     process: subprocess.Popen[bytes]
     log: Path
+    database: Path
+    #: The authenticated loopback HTTP endpoint, when :func:`serving` was given
+    #: an `http_credential`. `None` otherwise.
+    http_endpoint: str | None = None
+
+    def descriptor(self) -> ServiceEndpointDescriptor:
+        """The descriptor the service currently publishes for its workspace."""
+        found = discover(
+            InstallationLayout(root=self.installation_state).runtime_for(
+                self.workspace_id
+            )
+        )
+        assert found is not None, f"no published descriptor: {self.diagnosis()}"
+        return found
+
+    def stop_and_read_lease(self) -> LeaseRecord:
+        """Stop the service, then read the lease row it leaves behind.
+
+        After, not during: the service holds the database in exclusive locking
+        mode for its whole life, so no other process can read the row while it
+        runs. What the stopped service leaves is still the whole ownership story
+        -- the holder's instance, process evidence and fencing generation, which
+        `acquire_lease` bumps on every acquisition.
+        """
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGTERM)
+            try:
+                self.process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                # A hung service must not outlive the test: kill and reap it, then
+                # fail with the original timeout rather than read a lease it never
+                # released cleanly.
+                self.process.kill()
+                self.process.wait(timeout=10)
+                raise
+        connection = open_database(self.database, OpenMode.READ_ONLY)
+        try:
+            lease = read_lease(connection)
+        finally:
+            connection.close()
+        assert lease is not None, f"no lease row: {self.diagnosis()}"
+        return lease
 
     def diagnosis(self) -> str:
         """What the service is doing now, and everything it has ever written.
@@ -876,8 +920,67 @@ class GovernedService:
         return f"the service is {state}; it wrote {said!r}"
 
 
+#: The read operations the HTTP embedder's session grants: the six the MCP
+#: exposure manifest allow-lists, stated here rather than imported so this file
+#: stays independent of the package under test.
+_HTTP_GRANTED_OPERATIONS = (
+    "workspace.inspect",
+    "evidence.search",
+    "knowledge.search",
+    "memory.search",
+    "graph.traverse",
+    "context_pack.build",
+)
+
+#: A test-only embedder of the service's own `main()`. `omnivia-core-service`
+#: supplies no credential resolver by design, so authenticated HTTP is reachable
+#: only through an embedder that injects one (see `service/main.py`'s `main`).
+#: This is the smallest such embedder: it accepts exactly one bearer secret,
+#: `argv[1]`, and resolves it to the same `local_owner_session` shape the local
+#: socket serves reads under, for the operations above. Everything else -- the
+#: workspace, the lease, the router and the listener -- is the production path.
+_HTTP_EMBEDDER = """
+import sys
+from pathlib import Path
+from omnivia_core_runtime.ownership.discovery import discover
+from omnivia_core_runtime.service.application import local_owner_session
+from omnivia_core_runtime.service.main import LOCAL_PRINCIPAL, main
+
+secret, runtime, workspace_id, operations, *argv = sys.argv[1:]
+
+def resolve(presented):
+    if presented != secret:
+        return None
+    descriptor = discover(Path(runtime))
+    if descriptor is None:
+        return None
+    return local_owner_session(
+        principal_id=LOCAL_PRINCIPAL,
+        installation_id=descriptor.installation_id,
+        workspace_id=workspace_id,
+        operations=frozenset(operations.split(",")),
+    )
+
+sys.exit(main(argv, resolve_credential=resolve))
+"""
+
+
+def _free_loopback_port() -> int:
+    """A port the kernel just handed out on 127.0.0.1, released for the service.
+
+    The service's own `HttpBind` accepts port 0 but publishes no HTTP URL, so a
+    caller that has to dial it must choose the port first.
+    """
+    # ponytail: another process can take the port between this release and the
+    # service's bind; the service then exits and `serving` fails with its log.
+    # Low-risk and test-only; a retry would mean relaunching on a fresh workspace.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 @contextmanager
-def serving() -> Iterator[GovernedService]:
+def serving(*, http_credential: str | None = None) -> Iterator[GovernedService]:
     """Seed a governed workspace, serve it, and tear both down.
 
     The service is the workspace's exclusive writer from here on, and it is the
@@ -885,6 +988,10 @@ def serving() -> Iterator[GovernedService]:
     nothing in this module answers a request, and no MCP-side double exists to.
     `serve` also builds and activates the `evidence.search` FTS projection before
     the endpoint binds, which is why seeding writes rows and not a projection.
+
+    With `http_credential`, the same process also serves authenticated HTTP on a
+    loopback port through :data:`_HTTP_EMBEDDER`, so one service -- one lease,
+    one workspace state -- answers both the local socket and HTTP.
     """
     root = Path(tempfile.mkdtemp(prefix="ovm-workspace-"))
     # Outside `tmp_path`: R004-15 caps a local endpoint at 86 encoded bytes and
@@ -892,6 +999,29 @@ def serving() -> Iterator[GovernedService]:
     socket_directory = Path(tempfile.mkdtemp(prefix="ovm-", dir=tempfile.gettempdir()))
     built = build(root)
     endpoint = endpoint_for_path(socket_directory / "s.sock")
+    service_argv = [
+        "--workspace",
+        str(built.workspace.root),
+        "--installation-state",
+        str(built.installation.root),
+        "--endpoint",
+        endpoint.url,
+    ]
+    http_endpoint = None
+    if http_credential is None:
+        command = [sys.executable, "-m", "omnivia_core_runtime.service.main"]
+    else:
+        http_endpoint = f"http://127.0.0.1:{_free_loopback_port()}"
+        service_argv += ["--http-endpoint", http_endpoint]
+        command = [
+            sys.executable,
+            "-c",
+            _HTTP_EMBEDDER,
+            http_credential,
+            str(built.installation.runtime_for(built.workspace_id)),
+            built.workspace_id,
+            ",".join(_HTTP_GRANTED_OPERATIONS),
+        ]
 
     # A file, not two pipes, and for the same two reasons `managed_start._spawn`
     # gives its own child one. Nothing here reads a pipe: the service outlives
@@ -908,26 +1038,18 @@ def serving() -> Iterator[GovernedService]:
     log_path = root / "service.log"
     with log_path.open("wb") as log:
         process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "omnivia_core_runtime.service.main",
-                "--workspace",
-                str(built.workspace.root),
-                "--installation-state",
-                str(built.installation.root),
-                "--endpoint",
-                endpoint.url,
-            ],
+            [*command, *service_argv],
             stdout=log,
             stderr=subprocess.STDOUT,
         )
     service = GovernedService(
-        endpoint.url,
-        built.workspace_id,
-        built.installation.root,
-        process,
-        log_path,
+        endpoint_uri=endpoint.url,
+        workspace_id=built.workspace_id,
+        installation_state=built.installation.root,
+        process=process,
+        log=log_path,
+        database=built.workspace.database_path,
+        http_endpoint=http_endpoint,
     )
     try:
         deadline = time.monotonic() + 60
