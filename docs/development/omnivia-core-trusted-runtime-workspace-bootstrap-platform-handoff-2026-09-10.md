@@ -33,6 +33,12 @@ source and focused integration evidence:
   g17, g20 and g29. Gate g16 remains pending because the candidate proof uses
   simulated Claude-format host rows rather than launching a real Claude client;
   g22 retains partial MCP, CLI and managed-start evidence but remains pending.
+- That six-tool result completes the approved MCP retrieval profile, not the
+  intended bidirectional standalone product. An MCP-only Claude or Codex host
+  cannot currently populate an empty Workspace, and `import.start` cannot solve
+  that alone because it accepts only an already-staged source. The corrective
+  authoring and ingestion requirements are specified in
+  `docs/development/omnivia-core-mcp-standalone-authoring-and-ingestion-requirements-2026-09-12.md`.
 - Platform has supporting structural evidence that Desktop quit retains no Core
   process or lease handle and issues no Core stop operation. This is not a
   packaged real-Core lifetime test, so it does not by itself accept g19 or g22.
@@ -40,7 +46,8 @@ source and focused integration evidence:
   canonical Application Contract conformance corpus as CLI and MCP.
 
 The remaining work is release/integration acceptance, not an unresolved Core
-bootstrap API:
+bootstrap API. The separately specified MCP authoring and ingestion work is a
+standalone-product requirement and is not part of this bootstrap handoff:
 
 1. release engineering must supply the production public trust-anchor document
    and keep the corresponding signing private key outside source and packages;
