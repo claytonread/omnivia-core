@@ -133,34 +133,44 @@ class Served:
     layout: WorkspaceLayout
 
 
-@pytest.fixture
-def owned(tmp_path: Path) -> Iterator[Served]:
-    """A workspace taken to the canonical schema through the real migrator."""
-    layout = WorkspaceLayout(root=tmp_path / "workspace")
-    layout.root.mkdir()
+def serve(
+    root: Path,
+    *,
+    workspace_id: str = WORKSPACE_ID,
+    service_instance: str = SERVICE_INSTANCE,
+) -> Served:
+    """One real workspace: migrated by the real migrator, leased, and guarded.
+
+    Separate from the fixture below, because a workspace is not always one per test.
+    The acceptance sibling submits the same source id to *two* separately owned
+    workspaces, and taking both from this construction is what makes them the same
+    kind of workspace rather than one real one and one approximation of it.
+    """
+    layout = WorkspaceLayout(root=root)
+    layout.root.mkdir(parents=True)
     layout.blobs_path.mkdir()
     materialise_phase0_baseline(layout.database_path)
     maintenance = open_database(layout.database_path, OpenMode.EXCLUSIVE_MAINTENANCE)
     try:
         state = bootstrap_generation_one(
             maintenance,
-            workspace_id=WORKSPACE_ID,
+            workspace_id=workspace_id,
             mode=OpenMode.EXCLUSIVE_MAINTENANCE,
             expect_phase0_baseline=True,
-            service_instance_id=SERVICE_INSTANCE,
+            service_instance_id=service_instance,
         )
         apply_pending_migrations(
             maintenance,
             mode=OpenMode.EXCLUSIVE_MAINTENANCE,
-            service_instance_id=SERVICE_INSTANCE,
+            service_instance_id=service_instance,
             fencing_generation=state.fencing_generation,
-            workspace_id=WORKSPACE_ID,
+            workspace_id=workspace_id,
         )
     finally:
         maintenance.close()
 
     identity = ServiceInstanceIdentity(
-        service_instance_id=SERVICE_INSTANCE,
+        service_instance_id=service_instance,
         installation_id=INSTALLATION_ID,
         process=ProcessEvidence(
             pid=4343, start_time="100", boot_id="boot-capture", os_principal="me"
@@ -171,7 +181,7 @@ def owned(tmp_path: Path) -> Iterator[Served]:
         connection,
         identity,
         clock=FakeClock(),
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         holds_storage_lock=True,
         lock_mechanism="flock",
     )
@@ -179,16 +189,23 @@ def owned(tmp_path: Path) -> Iterator[Served]:
         connection,
         identity,
         clock=FakeClock(),
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         fencing_generation=lease.fencing_generation,
     )
-    yield Served(
+    return Served(
         connection=connection,
         identity=identity,
         generation=lease.fencing_generation,
         layout=layout,
     )
-    connection.close()
+
+
+@pytest.fixture
+def owned(tmp_path: Path) -> Iterator[Served]:
+    """A workspace taken to the canonical schema through the real migrator."""
+    served = serve(tmp_path / "workspace")
+    yield served
+    served.connection.close()
 
 
 # --- the production application path -------------------------------------------
@@ -216,7 +233,11 @@ def router(owned: Served) -> ApplicationDispatcher:
 
 
 def build_dispatcher(
-    owned: Served, *, tag: str = "cap", principal: str = LOCAL_PRINCIPAL
+    owned: Served,
+    *,
+    tag: str = "cap",
+    principal: str = LOCAL_PRINCIPAL,
+    workspace_id: str = WORKSPACE_ID,
 ) -> ApplicationDispatcher:
     """Capture and search behind one router, composed as `service.main.serve` does it.
 
@@ -235,20 +256,20 @@ def build_dispatcher(
         session=local_owner_session(
             principal_id=principal,
             installation_id=INSTALLATION_ID,
-            workspace_id=WORKSPACE_ID,
+            workspace_id=workspace_id,
             operations=frozenset(
                 {WORKSPACE_INSPECT_OPERATION, EVIDENCE_SEARCH_OPERATION}
             ),
         ),
         binding=ServiceBinding(
-            installation_id=INSTALLATION_ID, workspace_id=WORKSPACE_ID
+            installation_id=INSTALLATION_ID, workspace_id=workspace_id
         ),
         supported_capabilities=server_capability_snapshot(reads_registry),
         transport=LOCAL_TRANSPORT_ADAPTER,
         probe=Dispatcher.for_service_operations(
             Grant(
                 principal=principal,
-                workspaces=frozenset({WORKSPACE_ID}),
+                workspaces=frozenset({workspace_id}),
                 operations=frozenset(SERVICE_OPERATIONS),
             ),
             owned,
@@ -260,14 +281,20 @@ def build_dispatcher(
         service=owned,
         principal_id=principal,
         installation_id=INSTALLATION_ID,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         fallback=reads,
         clock=FakeClock(),
         allocate_identifier=_allocator(tag),
     )
 
 
-def _metadata(entry: Any, *, request_id: str, key: str | None) -> RequestMetadata:
+def _metadata(
+    entry: Any,
+    *,
+    request_id: str,
+    key: str | None,
+    workspace_id: str = WORKSPACE_ID,
+) -> RequestMetadata:
     required = entry.required_capability
     return RequestMetadata(
         request_id=request_id,
@@ -275,7 +302,7 @@ def _metadata(entry: Any, *, request_id: str, key: str | None) -> RequestMetadat
         trace_id=f"trc-{request_id}",
         api_version=CONTRACT_VERSION,
         client=CLIENT,
-        workspace_id=WORKSPACE_ID,
+        workspace_id=workspace_id,
         scopes=tuple(entry.scope.required_scopes),
         purpose=JOB_FAMILY_PURPOSES.get(entry.name, KNOWLEDGE_RETRIEVAL_PURPOSE),
         required_capabilities=(
@@ -302,18 +329,33 @@ def submission(**overrides: Any) -> dict[str, Any]:
     return {name: value for name, value in payload.items() if value is not None}
 
 
-def capture_request(*, request_id: str, key: str, **overrides: Any) -> RequestEnvelope:
+def capture_request(
+    *,
+    request_id: str,
+    key: str,
+    workspace_id: str = WORKSPACE_ID,
+    **overrides: Any,
+) -> RequestEnvelope:
     return RequestEnvelope(
         operation=EVIDENCE_CAPTURE_OPERATION,
-        metadata=_metadata(CAPTURE_ENTRY, request_id=request_id, key=key),
+        metadata=_metadata(
+            CAPTURE_ENTRY, request_id=request_id, key=key, workspace_id=workspace_id
+        ),
         input=submission(**overrides),
     )
 
 
-def search_request(query: str, *, request_id: str = "req-search-1") -> RequestEnvelope:
+def search_request(
+    query: str,
+    *,
+    request_id: str = "req-search-1",
+    workspace_id: str = WORKSPACE_ID,
+) -> RequestEnvelope:
     return RequestEnvelope(
         operation=EVIDENCE_SEARCH_OPERATION,
-        metadata=_metadata(SEARCH_ENTRY, request_id=request_id, key=None),
+        metadata=_metadata(
+            SEARCH_ENTRY, request_id=request_id, key=None, workspace_id=workspace_id
+        ),
         input={"query": query},
     )
 
@@ -335,9 +377,13 @@ def captured(response: ResponseEnvelope) -> EvidenceCaptureResult:
     return result
 
 
-def found(router: ApplicationDispatcher, query: str) -> tuple[str, ...]:
+def found(
+    router: ApplicationDispatcher, query: str, *, workspace_id: str = WORKSPACE_ID
+) -> tuple[str, ...]:
     """The evidence ids `evidence.search` answers `query` with, through dispatch."""
-    response = answered(router.dispatch(search_request(query)))
+    response = answered(
+        router.dispatch(search_request(query, workspace_id=workspace_id))
+    )
     return tuple(
         item.evidence_id
         for item in EvidenceSearchResult.from_wire(response.result).evidence
