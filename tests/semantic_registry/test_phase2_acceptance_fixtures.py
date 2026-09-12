@@ -193,12 +193,22 @@ def test_indeterminate_error_codes_stable(cases_by_id: dict) -> None:
     expected_error_codes = {
         "case-temporal-boundary-absent": "TEMPORAL_START_INDETERMINATE",
         "case-temporal-boundary-unknown": "TEMPORAL_END_INDETERMINATE",
-        "case-temporal-timezone-less-text": "TEMPORAL_TIMEZONE_INDETERMINATE",
     }
     for case_id, expected_code in expected_error_codes.items():
         error = cases_by_id[case_id]["expected_error"]
         assert error["error_code"] == expected_code
         assert error["reason"].strip()
+
+
+def test_timezone_less_sub_day_resolution_is_stable(cases_by_id: dict) -> None:
+    result = cases_by_id["case-temporal-timezone-less-text"]["expected_result"]
+    assert result == {
+        "effective_from": "2024-05-17T00:00:00Z",
+        "canonical_precision": "day",
+        "preserved_source_text": "2024-05-17T09:30:00",
+        "source_timezone": None,
+        "reason": "timezone_less_sub_day_reduced_to_day",
+    }
 
 
 def test_dedup_within_workspace_suppression(cases_by_id: dict) -> None:

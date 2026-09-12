@@ -86,6 +86,7 @@ from omnivia_core.semantic_registry import (
     TemporalPrecision,
     TemporalProvenance,
     add_concept,
+    parse_source_time,
 )
 
 WORKSPACE_ID = "ws-p2-gov-0001"
@@ -392,6 +393,78 @@ def test_open_boundary_assertion_round_trip(owned: Owned) -> None:
     assert record.evidence == ()
 
 
+def test_assertion_source_temporal_metadata_round_trips(owned: Owned) -> None:
+    stated = assertion(
+        assertion_id="asn-stated",
+        valid_from=parse_source_time(
+            "2024-01-01T00:00:00Z", TemporalPrecision.SECOND
+        ),
+        valid_to_state=EndBoundaryState.STATED,
+        valid_to=parse_source_time(
+            "2024-12-31T23:59:59-05:00", TemporalPrecision.SECOND
+        ),
+        attested_from=parse_source_time(
+            "2024-01-02T09:00:00",
+            TemporalPrecision.MINUTE,
+            trusted_source_timezone="Australia/Sydney",
+            provenance=TemporalProvenance.EVIDENCE_ATTESTED,
+        ),
+    )
+    unknown = assertion(
+        assertion_id="asn-unknown",
+        valid_to_state=EndBoundaryState.UNKNOWN,
+        attested_from=parse_source_time(
+            "2024-01-01", TemporalPrecision.DAY,
+            provenance=TemporalProvenance.EVIDENCE_ATTESTED,
+        ),
+        attested_to=parse_source_time(
+            "2025-01-01T11:45:00",
+            TemporalPrecision.MINUTE,
+            provenance=TemporalProvenance.EVIDENCE_ATTESTED,
+        ),
+    )
+    with writer(owned) as write:
+        write.append_assertion(stated, [])
+        write.append_assertion(unknown, [])
+
+    stated_read = read_assertion(owned.connection, WORKSPACE_ID, "asn-stated")
+    unknown_read = read_assertion(owned.connection, WORKSPACE_ID, "asn-unknown")
+    assert stated_read is not None and stated_read.assertion == stated
+    assert unknown_read is not None and unknown_read.assertion == unknown
+    assert stated_read.assertion.valid_from is not None
+    assert stated_read.assertion.valid_from.source_timezone == "UTC"
+    assert stated_read.assertion.valid_to is not None
+    assert stated_read.assertion.valid_to.source_timezone == "-05:00"
+    assert stated_read.assertion.attested_from.source_timezone == "Australia/Sydney"
+    assert unknown_read.assertion.attested_to is not None
+    assert unknown_read.assertion.attested_to.precision is TemporalPrecision.DAY
+    assert unknown_read.assertion.attested_to.source_timezone is None
+    verify_governance_digests(owned.connection, WORKSPACE_ID)
+
+
+def test_sqlite_assertion_temporal_metadata_guard_rejects_oversize_text(
+    owned: Owned,
+) -> None:
+    value = assertion(
+        valid_from=parse_source_time(
+            "2024-05-17T09:30:00Z", TemporalPrecision.MINUTE
+        )
+    )
+    with writer(owned) as write:
+        write.append_assertion(value, [])
+    with authorised(owned.connection, ddl=True):
+        owned.connection.execute("DROP TRIGGER omnivia_guard_semantic_assertions_update")
+    with (
+        authorised(owned.connection, mutations=True),
+        pytest.raises(sqlite3.IntegrityError),
+    ):
+        owned.connection.execute(
+            "UPDATE omnivia_semantic_assertions "
+            "SET valid_from_original_text = ? WHERE workspace_id = ?",
+            ("x" * 2049, WORKSPACE_ID),
+        )
+
+
 # --- append-only supersession/retraction and bitemporal half-open query --------
 
 
@@ -681,6 +754,30 @@ def test_verify_governance_digests_detects_assertion_tampering(owned: Owned) -> 
     with authorised(owned.connection, mutations=True):
         owned.connection.execute(
             "UPDATE omnivia_semantic_assertions SET confidence_ppm = 100000 "
+            "WHERE workspace_id = ? AND assertion_id = ?",
+            (WORKSPACE_ID, "asn-1"),
+        )
+    owned.connection.commit()
+
+    with pytest.raises(StorageError, match="assertion digest verification failed"):
+        verify_governance_digests(owned.connection, WORKSPACE_ID)
+
+
+def test_governance_digest_detects_temporal_metadata_tampering(owned: Owned) -> None:
+    value = assertion(
+        valid_from=parse_source_time(
+            "2024-05-17T09:30:00Z", TemporalPrecision.MINUTE
+        )
+    )
+    with writer(owned) as write:
+        write.append_assertion(value, [])
+
+    with authorised(owned.connection, ddl=True):
+        owned.connection.execute("DROP TRIGGER omnivia_guard_semantic_assertions_update")
+    with authorised(owned.connection, mutations=True):
+        owned.connection.execute(
+            "UPDATE omnivia_semantic_assertions "
+            "SET valid_from_original_text = '2024-05-17T10:30:00Z' "
             "WHERE workspace_id = ? AND assertion_id = ?",
             (WORKSPACE_ID, "asn-1"),
         )

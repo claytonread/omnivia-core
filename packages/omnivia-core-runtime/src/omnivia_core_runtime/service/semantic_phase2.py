@@ -48,6 +48,12 @@ from omnivia_core_runtime.service.semantic_registry import (
     SemanticRegistryService,
 )
 from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.semantic_events import (
+    SEMANTIC_CANDIDATE_CREATED_V1,
+    SEMANTIC_CANDIDATE_RECONSIDERED_V1,
+    SEMANTIC_CANDIDATE_SUPPRESSED_V1,
+    SEMANTIC_OBSERVATION_RECORDED_V1,
+)
 from omnivia_core_runtime.storage.semantic_evidence import (
     read_evidence_item,
     read_observation_bundle,
@@ -72,10 +78,10 @@ from omnivia_core_runtime.storage.semantic_registry import (
 )
 
 RESPONSE_SCHEMA_VERSION: Final = "1.0.0"
-OBSERVATION_RECORDED_EVENT: Final = "semantic.observation.recorded.v1"
-CANDIDATE_CREATED_EVENT: Final = "semantic.candidate.created.v1"
-CANDIDATE_SUPPRESSED_EVENT: Final = "semantic.candidate.suppressed.v1"
-CANDIDATE_RECONSIDERED_EVENT: Final = "semantic.candidate.reconsidered.v1"
+OBSERVATION_RECORDED_EVENT: Final = SEMANTIC_OBSERVATION_RECORDED_V1
+CANDIDATE_CREATED_EVENT: Final = SEMANTIC_CANDIDATE_CREATED_V1
+CANDIDATE_SUPPRESSED_EVENT: Final = SEMANTIC_CANDIDATE_SUPPRESSED_V1
+CANDIDATE_RECONSIDERED_EVENT: Final = SEMANTIC_CANDIDATE_RECONSIDERED_V1
 _PHASE2_EVENT_ID_KEYS: Final = {
     OBSERVATION_RECORDED_EVENT: "observation_id",
     CANDIDATE_CREATED_EVENT: "candidate_id",
@@ -95,6 +101,21 @@ CANDIDATE_RECONSIDER: Final = "candidate.reconsider"
 CANDIDATE_CONVERT: Final = "candidate.convert"
 ASSERTION_HISTORY_READ: Final = "assertion.history.read"
 TEMPORAL_QUERY: Final = "temporal.query"
+
+#: Mutating methods on the in-process Phase 2 seam. Any future HTTP, MCP, CLI or
+#: other public adapter must enumerate its composition through the repository-wide
+#: governed caller-scoped idempotency seam before this inventory can become nonempty.
+PHASE2_MUTATING_SERVICE_OPERATIONS: Final = frozenset(
+    {
+        "register_evidence",
+        "create_observation",
+        "aggregate_candidate",
+        "reject_candidate",
+        "reconsider_candidate",
+        "convert_candidate",
+    }
+)
+PHASE2_EXTERNAL_MUTATION_ADAPTERS: Final[tuple[str, ...]] = ()
 
 SEMANTIC_NOT_FOUND: Final = "SEMANTIC_NOT_FOUND"
 SEMANTIC_PERMISSION_DENIED: Final = "SEMANTIC_PERMISSION_DENIED"
@@ -776,6 +797,8 @@ __all__ = [
     "OBSERVATION_CREATE_MANUAL",
     "OBSERVATION_CREATE_RULE",
     "OBSERVATION_RECORDED_EVENT",
+    "PHASE2_EXTERNAL_MUTATION_ADAPTERS",
+    "PHASE2_MUTATING_SERVICE_OPERATIONS",
     "TEMPORAL_QUERY",
     "AssertionHistoryView",
     "CandidateView",

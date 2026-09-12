@@ -717,7 +717,7 @@
         {
             "case_id": "case-temporal-timezone-less-text",
             "requirement": "b1-timezone-handling",
-            "description": "Timezone-less source text from a source with no recorded trusted timezone must fail closed rather than guess a timezone.",
+            "description": "Timezone-less sub-day source text is preserved verbatim while its structured valid-time value is reduced to day precision.",
             "input": {
                 "boundary_id": "temporal-timezone-0003",
                 "source_id": "src-unknown-tz-0001",
@@ -732,9 +732,12 @@
                     "state": "open"
                 }
             },
-            "expected_error": {
-                "error_code": "TEMPORAL_TIMEZONE_INDETERMINATE",
-                "reason": "timezone_less_text_without_trusted_source_default"
+            "expected_result": {
+                "effective_from": "2024-05-17T00:00:00Z",
+                "canonical_precision": "day",
+                "preserved_source_text": "2024-05-17T09:30:00",
+                "source_timezone": null,
+                "reason": "timezone_less_sub_day_reduced_to_day"
             }
         },
         {

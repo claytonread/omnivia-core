@@ -54,6 +54,7 @@ from omnivia_core.semantic_registry import (
     TemporalInstant,
     TemporalPrecision,
     TemporalProvenance,
+    parse_source_time,
 )
 
 WORKSPACE_ID = "ws-p2-repo-0001"
@@ -213,6 +214,94 @@ def test_register_and_read_preserves_every_evidence_field(owned: Owned) -> None:
 
     read = read_evidence_item(owned.connection, WORKSPACE_ID, "ev-1")
     assert read == item
+
+
+def test_source_temporal_metadata_round_trips_for_evidence_and_observation(
+    owned: Owned,
+) -> None:
+    evidence_time = parse_source_time(
+        "2023-11-13T09:30:00",
+        TemporalPrecision.MINUTE,
+        trusted_source_timezone="Australia/Sydney",
+        provenance=TemporalProvenance.EVIDENCE_ATTESTED,
+    )
+    observation_time = parse_source_time(
+        "2023-11-13T08:15:00+10:00",
+        TemporalPrecision.MINUTE,
+        provenance=TemporalProvenance.EVIDENCE_ATTESTED,
+    )
+    item = evidence_item(
+        classification=Classification.RESTRICTED,
+        source_time=evidence_time,
+    )
+    bundle = ObservationBundle(
+        observation=observation(
+            classification=Classification.RESTRICTED,
+            source_time=observation_time,
+        ),
+        evidence_links=(evidence_link(),),
+    )
+    with writer(owned) as write:
+        write.register_evidence(item)
+        write.append_observation(bundle)
+
+    stored_item = read_evidence_item(owned.connection, WORKSPACE_ID, "ev-1")
+    stored_bundle = read_observation_bundle(owned.connection, WORKSPACE_ID, "obs-1")
+    assert stored_item is not None
+    assert stored_item.source_time == evidence_time
+    assert stored_item.source_time is not None
+    assert stored_item.source_time.original_source_text == "2023-11-13T09:30:00"
+    assert stored_item.source_time.source_timezone == "Australia/Sydney"
+    assert stored_bundle is not None
+    assert stored_bundle.observation.source_time == observation_time
+    assert stored_bundle.observation.source_time is not None
+    assert stored_bundle.observation.source_time.source_timezone == "+10:00"
+    verify_evidence_observation_digests(owned.connection, WORKSPACE_ID)
+
+
+def test_sqlite_temporal_metadata_guards_lengths_and_null_combinations(
+    owned: Owned,
+) -> None:
+    item = evidence_item(
+        source_time=parse_source_time(
+            "2023-11-13T09:30:00Z", TemporalPrecision.MINUTE
+        )
+    )
+    with writer(owned) as write:
+        write.register_evidence(item)
+        write.append_observation(
+            ObservationBundle(
+                observation=observation(source_time=item.source_time),
+                evidence_links=(evidence_link(),),
+            )
+        )
+    with authorised(owned.connection, ddl=True):
+        owned.connection.execute(
+            "DROP TRIGGER omnivia_guard_semantic_evidence_items_update"
+        )
+        owned.connection.execute(
+            "DROP TRIGGER omnivia_guard_semantic_observations_update"
+        )
+    with authorised(owned.connection, mutations=True):
+        with pytest.raises(sqlite3.IntegrityError):
+            owned.connection.execute(
+                "UPDATE omnivia_semantic_evidence_items "
+                "SET source_time_original_text = ? WHERE workspace_id = ?",
+                ("x" * 2049, WORKSPACE_ID),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            owned.connection.execute(
+                "UPDATE omnivia_semantic_evidence_items "
+                "SET source_time_original_text = NULL, source_time_timezone = 'UTC' "
+                "WHERE workspace_id = ?",
+                (WORKSPACE_ID,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            owned.connection.execute(
+                "UPDATE omnivia_semantic_observations "
+                "SET source_time_timezone = ? WHERE workspace_id = ?",
+                ("x" * 256, WORKSPACE_ID),
+            )
 
 
 def test_register_and_read_preserves_a_missing_span_and_source_time(owned: Owned) -> None:
@@ -517,6 +606,33 @@ def test_verify_evidence_observation_digests_detects_evidence_tampering(
     with authorised(owned.connection, mutations=True):
         owned.connection.execute(
             "UPDATE omnivia_semantic_evidence_items SET mime_type = 'application/json' "
+            "WHERE workspace_id = ? AND evidence_id = ?",
+            (WORKSPACE_ID, "ev-1"),
+        )
+    owned.connection.commit()
+
+    with pytest.raises(StorageError, match="evidence digest verification failed"):
+        verify_evidence_observation_digests(owned.connection, WORKSPACE_ID)
+
+
+def test_digest_verification_detects_temporal_source_metadata_tampering(
+    owned: Owned,
+) -> None:
+    item = evidence_item(
+        source_time=parse_source_time(
+            "2023-11-13T09:30:00Z", TemporalPrecision.MINUTE
+        )
+    )
+    with writer(owned) as write:
+        write.register_evidence(item)
+    with authorised(owned.connection, ddl=True):
+        owned.connection.execute(
+            "DROP TRIGGER omnivia_guard_semantic_evidence_items_update"
+        )
+    with authorised(owned.connection, mutations=True):
+        owned.connection.execute(
+            "UPDATE omnivia_semantic_evidence_items "
+            "SET source_time_original_text = '2023-11-13T10:30:00Z' "
             "WHERE workspace_id = ? AND evidence_id = ?",
             (WORKSPACE_ID, "ev-1"),
         )

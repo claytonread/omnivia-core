@@ -56,22 +56,36 @@ def _to_us(instant: TemporalInstant) -> int:
     return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
 
 
-def _from_us(value: int, precision: str, provenance: str) -> TemporalInstant:
+def _from_us(
+    value: int,
+    precision: str,
+    provenance: str,
+    original_source_text: str | None = None,
+    source_timezone: str | None = None,
+) -> TemporalInstant:
     return TemporalInstant(
         value=_EPOCH + timedelta(microseconds=value),
         precision=TemporalPrecision(precision),
         provenance=TemporalProvenance(provenance),
+        original_source_text=original_source_text,
+        source_timezone=source_timezone,
     )
 
 
 def _optional_instant(
-    value: int | None, precision: str | None, provenance: str | None
+    value: int | None,
+    precision: str | None,
+    provenance: str | None,
+    original_source_text: str | None = None,
+    source_timezone: str | None = None,
 ) -> TemporalInstant | None:
     if value is None:
         return None
     if precision is None or provenance is None:  # schema corruption, not input error
         raise StorageError("stored temporal instant is missing precision or provenance")
-    return _from_us(value, precision, provenance)
+    return _from_us(
+        value, precision, provenance, original_source_text, source_timezone
+    )
 
 
 def _confidence_to_ppm(value: float) -> int:
@@ -122,7 +136,7 @@ def read_evidence_item(
         "SELECT source_id, content_ref, content_digest, integrity_digest, mime_type, "
         "classification, retention_class, captured_at_us, captured_at_precision, "
         "captured_at_provenance, source_time_us, source_time_precision, "
-        "source_time_provenance "
+        "source_time_provenance, source_time_original_text, source_time_timezone "
         "FROM omnivia_semantic_evidence_items "
         "WHERE workspace_id = ? AND evidence_id = ?",
         (workspace_id, evidence_id),
@@ -162,6 +176,8 @@ def read_evidence_item(
             None if row[10] is None else int(row[10]),
             None if row[11] is None else str(row[11]),
             None if row[12] is None else str(row[12]),
+            None if row[13] is None else str(row[13]),
+            None if row[14] is None else str(row[14]),
         ),
         span=span,
     )
@@ -214,7 +230,8 @@ def read_observation_bundle(
     row = connection.execute(
         "SELECT observation_kind, value_kind, original_form_ref, normalized_form, "
         "proposed_semantic_role, classification, generation, status, source_time_us, "
-        "source_time_precision, source_time_provenance, recorded_at_us, "
+        "source_time_precision, source_time_provenance, source_time_original_text, "
+        "source_time_timezone, recorded_at_us, "
         "recorded_at_precision, recorded_at_provenance, "
         "supersedes_observation_id, rule_version "
         "FROM omnivia_semantic_observations "
@@ -238,14 +255,16 @@ def read_observation_bundle(
             None if row[8] is None else int(row[8]),
             None if row[9] is None else str(row[9]),
             None if row[10] is None else str(row[10]),
+            None if row[11] is None else str(row[11]),
+            None if row[12] is None else str(row[12]),
         ),
         recorded_at=_from_us(
-            int(row[11]),
-            str(row[12]),
-            str(row[13]),
+            int(row[13]),
+            str(row[14]),
+            str(row[15]),
         ),
-        supersedes_observation_id=None if row[14] is None else str(row[14]),
-        rule_version=None if row[15] is None else str(row[15]),
+        supersedes_observation_id=None if row[16] is None else str(row[16]),
+        rule_version=None if row[17] is None else str(row[17]),
     )
     link_rows = connection.execute(
         "SELECT evidence_id, span_id, support_role, confidence_ppm "
@@ -348,8 +367,9 @@ class EvidenceObservationWriter:
             "(workspace_id,evidence_id,source_id,content_ref,content_digest,integrity_digest,"
             "mime_type,classification,retention_class,captured_at_us,"
             "captured_at_precision,captured_at_provenance,source_time_us,"
-            "source_time_precision,source_time_provenance,schema_version,record_digest) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "source_time_precision,source_time_provenance,source_time_original_text,"
+            "source_time_timezone,schema_version,record_digest) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
                 item.evidence_id,
@@ -366,6 +386,8 @@ class EvidenceObservationWriter:
                 None if source_time is None else _to_us(source_time),
                 None if source_time is None else source_time.precision.value,
                 None if source_time is None else source_time.provenance.value,
+                None if source_time is None else source_time.original_source_text,
+                None if source_time is None else source_time.source_timezone,
                 item.schema_version,
                 evidence_item_digest(item),
             ),
@@ -425,10 +447,11 @@ class EvidenceObservationWriter:
             "INSERT INTO omnivia_semantic_observations "
             "(workspace_id,observation_id,observation_kind,value_kind,original_form_ref,"
             "normalized_form,proposed_semantic_role,classification,generation,status,"
-            "source_time_us,source_time_precision,source_time_provenance,recorded_at_us,"
+            "source_time_us,source_time_precision,source_time_provenance,"
+            "source_time_original_text,source_time_timezone,recorded_at_us,"
             "recorded_at_precision,recorded_at_provenance,supersedes_observation_id,"
             "rule_version,normalization_version,schema_version,observation_digest) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
                 observation.observation_id,
@@ -443,6 +466,8 @@ class EvidenceObservationWriter:
                 None if source_time is None else _to_us(source_time),
                 None if source_time is None else source_time.precision.value,
                 None if source_time is None else source_time.provenance.value,
+                None if source_time is None else source_time.original_source_text,
+                None if source_time is None else source_time.source_timezone,
                 _to_us(observation.recorded_at),
                 observation.recorded_at.precision.value,
                 observation.recorded_at.provenance.value,

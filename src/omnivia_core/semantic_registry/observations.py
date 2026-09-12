@@ -27,7 +27,7 @@ from omnivia_core.semantic_registry.evidence import (
     effective_classification,
     evidence_link_payload,
 )
-from omnivia_core.semantic_registry.temporal import TemporalInstant
+from omnivia_core.semantic_registry.temporal import TemporalInstant, instant_payload
 
 OBSERVATION_SCHEMA_VERSION = "1.0.0"
 
@@ -324,11 +324,7 @@ def observation_equivalence_signature(
 
 
 def _instant_payload(instant: TemporalInstant) -> dict[str, Any]:
-    return {
-        "value": instant.value.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "precision": instant.precision.value,
-        "provenance": instant.provenance.value,
-    }
+    return instant_payload(instant)
 
 
 def observation_payload(observation: SemanticObservation) -> dict[str, Any]:

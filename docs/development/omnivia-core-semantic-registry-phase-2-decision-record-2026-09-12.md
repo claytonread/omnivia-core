@@ -6,7 +6,7 @@ Specification authority: `SPEC-CORE-SEM-001`, version 0.2, dated 2026-09-11
 Plan reference: `docs/development/omnivia-core-organisational-model-phase-1-closeout-and-phase-2-implementation-plan-2026-09-12.md` (section 4, Phase 2 authorisation gate)
 Fixture corpus reference: `tests/fixtures/semantic_registry/phase-2-acceptance-v1.json` (`semantic-registry-phase-2-acceptance-v1`, schema `1.0.0`)
 
-**Status: Implementation baseline; formal acceptance pending.**
+**Status: Resolutions R1–R3 implemented locally; formal acceptance pending.**
 
 This record freezes the implementation-level decisions required by the Phase 2
 authorisation gate for `WP-SEM-06`. It is a technical baseline for B2–B9
@@ -65,7 +65,7 @@ Rules:
 | Decision | Frozen value |
 |---|---|
 | Encoding | UTC, canonical precision vocabulary: `year`, `month`, `day`, `hour`, `minute`, `second` |
-| Timezone resolution order | (1) explicit offset in source text, (2) trusted recorded IANA source timezone, (3) fail closed — never guess |
+| Timezone resolution order | (1) explicit offset in source text, (2) trusted recorded UTC, numeric offset or IANA source timezone, (3) preserve timezone-less source text and reduce sub-day structured values to day precision — never guess |
 | `effective_from` | `valid_from` when stated, otherwise `attested_from`; absent both → fail closed (`TEMPORAL_START_INDETERMINATE`) |
 | `effective_to` | `valid_to` when end state is `stated`; `attested_to` when end state is `unknown`; `+Infinity` when end state is `open`; `unknown` with no `attested_to` → fail closed (`TEMPORAL_END_INDETERMINATE`) |
 | Interval shape | Half-open `[effective_from, effective_to)` |
@@ -143,7 +143,33 @@ Phase 2 exit criteria 1–6 (plan section 5, B9) are each already mapped to at
 least one case inside the corpus's `phase2_exit_criteria` block; no gap exists
 between this decision record and the existing fixture coverage.
 
-## 10. Pending acceptance gates
+## 10. Resolution amendment: events, temporal metadata and adapter idempotency
+
+The following decisions supersede the remaining implementation interpretations in
+the Phase 2 resolution handoff:
+
+1. PascalCase Section 19 event names are logical specification labels. Lowercase
+   dotted, explicitly versioned values are canonical on the wire. The exhaustive
+   mapping lives in `omnivia_core_runtime.storage.semantic_events`; current event
+   producers import their values from that registry. The former unversioned
+   publication producer now emits `semantic.version.published.v1`. No existing
+   immutable outbox row is rewritten.
+2. Migration `0029_semantic_temporal_source_metadata.sql` adds adjacent source-text
+   and trusted-timezone columns for evidence and observation source times and for
+   assertion valid/attested boundaries. Typed reads reconstruct complete
+   `TemporalInstant` values. Auxiliary fields participate in record digests only
+   when present, preserving historical digest bytes for records with null metadata,
+   and remain outside Semantic Model content digests and outbox payloads.
+3. Phase 2 mutation methods remain in-process only. The executable external-source
+   inventory is empty and tests scan the CLI, client, MCP and runtime service roots
+   for coupling. Any first external mutation adapter must compose through the
+   existing governed caller-scoped idempotency seam; a semantic-only idempotency
+   store remains prohibited.
+
+This amendment is implementation evidence. It does not grant architecture,
+security/privacy, product, hosted CI or merge approval.
+
+## 11. Pending acceptance gates
 
 The following are explicitly **not** resolved by this record and remain
 outstanding before Phase 2 can be formally accepted:
@@ -153,19 +179,13 @@ outstanding before Phase 2 can be formally accepted:
 - Product-owner approval of the bounded Phase 2 scope.
 - A green hosted `Core acceptance` run covering Phase 2 changes.
 - Merge approval into the accepted integration branch.
-- Implementation of B2–B9 (domain contracts, temporal contract, migration,
-  fenced repository, permission-checked commands, deterministic aggregation,
-  events/retention/recovery, and the Phase 2 acceptance handoff) — this record
-  freezes decisions the implementation must follow; it does not itself
-  demonstrate that the implementation satisfies them.
+- Review and acceptance of the local R1–R3 resolution patch on the final commit.
 
-## 11. Rollback posture
+## 12. Rollback posture
 
-- No schema has been migrated as part of this record; it is a documentation-only
-  artefact and requires no rollback of its own.
-- Once the Phase 2 migration (plan section 5, B4) lands, rollback is the
-  documented pre-Phase-2 schema state; the migration must be reversible without
-  loss of Phase 1 canonical data.
+- The resolution adds forward migration 0029. Existing migrations and immutable
+  rows are unchanged. Rollback is restoration of the verified pre-0029 database;
+  application code must not write source metadata until 0029 is present.
 - Any future change to the values frozen in sections 1–7 that alters storage
   identity, temporal meaning, retention, or access-control semantics requires a
   new decision record superseding this one, not an in-place edit — consistent

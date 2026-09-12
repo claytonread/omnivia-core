@@ -85,10 +85,13 @@ def read_assertion(
     row = connection.execute(
         "SELECT subject_id,predicate_element_id,model_version_id,object_kind,object_id,"
         "literal_json,confidence_ppm,classification,valid_from_us,valid_from_precision,"
-        "valid_from_provenance,valid_to_state,valid_to_us,valid_to_precision,"
-        "valid_to_provenance,attested_from_us,attested_from_precision,"
-        "attested_from_provenance,attested_to_us,attested_to_precision,"
-        "attested_to_provenance,recorded_at_us,recorded_at_precision,"
+        "valid_from_provenance,valid_from_original_text,valid_from_timezone,"
+        "valid_to_state,valid_to_us,valid_to_precision,valid_to_provenance,"
+        "valid_to_original_text,valid_to_timezone,attested_from_us,"
+        "attested_from_precision,attested_from_provenance,"
+        "attested_from_original_text,attested_from_timezone,attested_to_us,"
+        "attested_to_precision,attested_to_provenance,attested_to_original_text,"
+        "attested_to_timezone,recorded_at_us,recorded_at_precision,"
         "recorded_at_provenance,recorded_until_us,recorded_until_precision,"
         "recorded_until_provenance FROM omnivia_semantic_assertions "
         "WHERE workspace_id=? AND assertion_id=?",
@@ -111,24 +114,36 @@ def read_assertion(
             None if row[8] is None else int(row[8]),
             None if row[9] is None else str(row[9]),
             None if row[10] is None else str(row[10]),
+            None if row[11] is None else str(row[11]),
+            None if row[12] is None else str(row[12]),
         ),
-        valid_to_state=EndBoundaryState(str(row[11])),
+        valid_to_state=EndBoundaryState(str(row[13])),
         valid_to=_optional_instant(
-            None if row[12] is None else int(row[12]),
-            None if row[13] is None else str(row[13]),
-            None if row[14] is None else str(row[14]),
+            None if row[14] is None else int(row[14]),
+            None if row[15] is None else str(row[15]),
+            None if row[16] is None else str(row[16]),
+            None if row[17] is None else str(row[17]),
+            None if row[18] is None else str(row[18]),
         ),
-        attested_from=_from_us(int(row[15]), str(row[16]), str(row[17])),
+        attested_from=_from_us(
+            int(row[19]),
+            str(row[20]),
+            str(row[21]),
+            None if row[22] is None else str(row[22]),
+            None if row[23] is None else str(row[23]),
+        ),
         attested_to=_optional_instant(
-            None if row[18] is None else int(row[18]),
-            None if row[19] is None else str(row[19]),
-            None if row[20] is None else str(row[20]),
-        ),
-        recorded_at=_from_us(int(row[21]), str(row[22]), str(row[23])),
-        recorded_until=_optional_instant(
             None if row[24] is None else int(row[24]),
             None if row[25] is None else str(row[25]),
             None if row[26] is None else str(row[26]),
+            None if row[27] is None else str(row[27]),
+            None if row[28] is None else str(row[28]),
+        ),
+        recorded_at=_from_us(int(row[29]), str(row[30]), str(row[31])),
+        recorded_until=_optional_instant(
+            None if row[32] is None else int(row[32]),
+            None if row[33] is None else str(row[33]),
+            None if row[34] is None else str(row[34]),
         ),
     )
     evidence_rows = connection.execute(
@@ -397,13 +412,16 @@ class SemanticGovernanceWriter:
             "INSERT INTO omnivia_semantic_assertions "
             "(workspace_id,assertion_id,subject_id,predicate_element_id,model_version_id,"
             "object_kind,object_id,literal_json,confidence_ppm,classification,valid_from_us,"
-            "valid_from_precision,valid_from_provenance,valid_to_state,valid_to_us,"
-            "valid_to_precision,valid_to_provenance,attested_from_us,"
-            "attested_from_precision,attested_from_provenance,attested_to_us,"
-            "attested_to_precision,attested_to_provenance,recorded_at_us,"
+            "valid_from_precision,valid_from_provenance,valid_from_original_text,"
+            "valid_from_timezone,valid_to_state,valid_to_us,valid_to_precision,"
+            "valid_to_provenance,valid_to_original_text,valid_to_timezone,"
+            "attested_from_us,attested_from_precision,attested_from_provenance,"
+            "attested_from_original_text,attested_from_timezone,attested_to_us,"
+            "attested_to_precision,attested_to_provenance,attested_to_original_text,"
+            "attested_to_timezone,recorded_at_us,"
             "recorded_at_precision,recorded_at_provenance,recorded_until_us,"
             "recorded_until_precision,recorded_until_provenance,schema_version,"
-            "assertion_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "assertion_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 self._workspace_id,
                 assertion.assertion_id,
@@ -420,16 +438,24 @@ class SemanticGovernanceWriter:
                 None if valid_from is None else _to_us(valid_from),
                 None if valid_from is None else valid_from.precision.value,
                 None if valid_from is None else valid_from.provenance.value,
+                None if valid_from is None else valid_from.original_source_text,
+                None if valid_from is None else valid_from.source_timezone,
                 assertion.valid_to_state.value,
                 None if valid_to is None else _to_us(valid_to),
                 None if valid_to is None else valid_to.precision.value,
                 None if valid_to is None else valid_to.provenance.value,
+                None if valid_to is None else valid_to.original_source_text,
+                None if valid_to is None else valid_to.source_timezone,
                 _to_us(assertion.attested_from),
                 assertion.attested_from.precision.value,
                 assertion.attested_from.provenance.value,
+                assertion.attested_from.original_source_text,
+                assertion.attested_from.source_timezone,
                 None if attested_to is None else _to_us(attested_to),
                 None if attested_to is None else attested_to.precision.value,
                 None if attested_to is None else attested_to.provenance.value,
+                None if attested_to is None else attested_to.original_source_text,
+                None if attested_to is None else attested_to.source_timezone,
                 _to_us(assertion.recorded_at),
                 assertion.recorded_at.precision.value,
                 assertion.recorded_at.provenance.value,

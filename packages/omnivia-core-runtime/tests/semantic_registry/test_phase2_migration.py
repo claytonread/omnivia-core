@@ -354,7 +354,9 @@ def seed_model(holder: Owned) -> None:
         )
 
 
-def seed_evidence_chain(holder: Owned) -> None:
+def seed_evidence_chain(
+    holder: Owned, *, evidence_overrides: dict[str, object] | None = None
+) -> None:
     """A source, an evidence item and a span -- the parents most tables need."""
     with fenced_transaction(
         holder.connection,
@@ -363,28 +365,44 @@ def seed_evidence_chain(holder: Owned) -> None:
         fencing_generation=holder.generation,
     ):
         insert(holder.connection, "omnivia_semantic_evidence_sources", source_row())
-        insert(holder.connection, "omnivia_semantic_evidence_items", evidence_row())
+        insert(
+            holder.connection,
+            "omnivia_semantic_evidence_items",
+            evidence_row(**(evidence_overrides or {})),
+        )
         insert(holder.connection, "omnivia_semantic_evidence_spans", span_row())
 
 
-def seed_observation(holder: Owned) -> None:
+def seed_observation(
+    holder: Owned, *, observation_overrides: dict[str, object] | None = None
+) -> None:
     with fenced_transaction(
         holder.connection,
         holder.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=holder.generation,
     ):
-        insert(holder.connection, "omnivia_semantic_observations", observation_row())
+        insert(
+            holder.connection,
+            "omnivia_semantic_observations",
+            observation_row(**(observation_overrides or {})),
+        )
 
 
-def seed_assertion(holder: Owned) -> None:
+def seed_assertion(
+    holder: Owned, *, assertion_overrides: dict[str, object] | None = None
+) -> None:
     with fenced_transaction(
         holder.connection,
         holder.identity,
         workspace_id=WORKSPACE_ID,
         fencing_generation=holder.generation,
     ):
-        insert(holder.connection, "omnivia_semantic_assertions", assertion_row())
+        insert(
+            holder.connection,
+            "omnivia_semantic_assertions",
+            assertion_row(**(assertion_overrides or {})),
+        )
 
 
 def seed_candidate(holder: Owned) -> None:
@@ -873,10 +891,34 @@ def test_malformed_reconsideration_human_override_without_an_actor_is_refused(
 
 
 def test_backup_and_restore_preserves_phase2_rows(owned: Owned, tmp_path: Path) -> None:
-    seed_evidence_chain(owned)
-    seed_observation(owned)
+    seed_evidence_chain(
+        owned,
+        evidence_overrides={
+            "source_time_us": 1_700_000_000_000_000,
+            "source_time_precision": "minute",
+            "source_time_provenance": "evidence_attested",
+            "source_time_original_text": "2023-11-14T22:13:20Z",
+            "source_time_timezone": "UTC",
+        },
+    )
+    seed_observation(
+        owned,
+        observation_overrides={
+            "source_time_us": 1_700_000_000_000_000,
+            "source_time_precision": "minute",
+            "source_time_provenance": "evidence_attested",
+            "source_time_original_text": "2023-11-15T08:13:20+10:00",
+            "source_time_timezone": "+10:00",
+        },
+    )
     seed_model(owned)
-    seed_assertion(owned)
+    seed_assertion(
+        owned,
+        assertion_overrides={
+            "attested_from_original_text": "2023-11-15T09:13:20",
+            "attested_from_timezone": "Australia/Sydney",
+        },
+    )
     seed_candidate(owned)
     seed_suppression(owned)
     with fenced_transaction(

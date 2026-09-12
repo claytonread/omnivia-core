@@ -209,14 +209,14 @@ def test_interval_rejects_start_at_or_after_end() -> None:
 def test_parse_source_time_explicit_z() -> None:
     instant = parse_source_time("2024-05-17T09:30:00Z", TemporalPrecision.MINUTE)
     assert instant.value == datetime(2024, 5, 17, 9, 30, tzinfo=UTC)
-    assert instant.source_timezone is None
+    assert instant.source_timezone == "UTC"
     assert instant.original_source_text == "2024-05-17T09:30:00Z"
 
 
 def test_parse_source_time_explicit_offset() -> None:
     instant = parse_source_time("2024-05-17T09:30:00-05:00", TemporalPrecision.MINUTE)
     assert instant.value == datetime(2024, 5, 17, 14, 30, tzinfo=UTC)
-    assert instant.source_timezone is None
+    assert instant.source_timezone == "-05:00"
 
 
 def test_parse_source_time_trusted_iana_source_timezone() -> None:
@@ -240,10 +240,36 @@ def test_parse_source_time_invalid_timezone_name() -> None:
     assert excinfo.value.code is SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE
 
 
-def test_parse_source_time_timezone_less_without_trusted_zone_fails_closed() -> None:
-    with pytest.raises(TemporalValidationError) as excinfo:
-        parse_source_time("2024-05-17T09:30:00", TemporalPrecision.MINUTE)
-    assert excinfo.value.code is SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE
+def test_parse_source_time_timezone_less_sub_day_reduces_to_day() -> None:
+    instant = parse_source_time("2024-05-17T09:30:00", TemporalPrecision.MINUTE)
+    assert instant.value == datetime(2024, 5, 17, tzinfo=UTC)
+    assert instant.precision is TemporalPrecision.DAY
+    assert instant.original_source_text == "2024-05-17T09:30:00"
+    assert instant.source_timezone is None
+
+
+def test_parse_source_time_date_only_needs_no_timezone() -> None:
+    instant = parse_source_time("2024-05-17", TemporalPrecision.DAY)
+    assert instant.value == datetime(2024, 5, 17, tzinfo=UTC)
+    assert instant.precision is TemporalPrecision.DAY
+    assert instant.source_timezone is None
+
+
+@pytest.mark.parametrize(
+    ("trusted_timezone", "expected"),
+    [("+10:00", datetime(2024, 5, 16, 23, 30, tzinfo=UTC)),
+     ("-05:30", datetime(2024, 5, 17, 15, 0, tzinfo=UTC))],
+)
+def test_parse_source_time_accepts_trusted_numeric_offsets(
+    trusted_timezone: str, expected: datetime
+) -> None:
+    instant = parse_source_time(
+        "2024-05-17T09:30:00",
+        TemporalPrecision.MINUTE,
+        trusted_source_timezone=trusted_timezone,
+    )
+    assert instant.value == expected
+    assert instant.source_timezone == trusted_timezone
 
 
 def test_parse_source_time_invalid_calendar_input() -> None:
@@ -268,11 +294,31 @@ def test_parse_source_time_error_messages_never_echo_source_text(source_text: st
     assert source_text not in str(excinfo.value)
 
 
-def test_parse_source_time_timezone_less_error_does_not_echo_source_text() -> None:
-    source_text = "2024-05-17T09:30:00"
+def test_parse_source_time_error_does_not_echo_source_text() -> None:
+    source_text = "classified-not-a-date"
     with pytest.raises(TemporalValidationError) as excinfo:
-        parse_source_time(source_text, TemporalPrecision.MINUTE)
+        parse_source_time(source_text, TemporalPrecision.DAY)
     assert source_text not in str(excinfo.value)
+
+
+def test_temporal_source_metadata_limits_and_null_combinations() -> None:
+    base = {
+        "value": datetime(2024, 5, 17, tzinfo=UTC),
+        "precision": TemporalPrecision.DAY,
+        "provenance": TemporalProvenance.STATED,
+    }
+    with pytest.raises(TemporalValidationError):
+        TemporalInstant(**base, original_source_text="x" * 2049)
+    with pytest.raises(TemporalValidationError):
+        TemporalInstant(**base, original_source_text="")
+    with pytest.raises(TemporalValidationError):
+        TemporalInstant(**base, source_timezone="UTC")
+    with pytest.raises(TemporalValidationError):
+        TemporalInstant(
+            **base,
+            original_source_text="2024-05-17",
+            source_timezone="not a timezone",
+        )
 
 
 # --- resolve_effective_valid_interval (B3 precedence) ---------------------
@@ -600,17 +646,19 @@ def test_fixture_timezone_cases_resolve_as_expected(case_id: str) -> None:
         assert instant.source_timezone == expected["applied_timezone"]
 
 
-def test_fixture_timezone_less_text_case_fails_closed() -> None:
+def test_fixture_timezone_less_text_case_reduces_to_day() -> None:
     case = CASES["case-temporal-timezone-less-text"]
-    expected_code = ERROR_CODE_BY_NAME[case["expected_error"]["error_code"]]
+    expected = case["expected_result"]
     spec = case["input"]["valid_from"]
-    with pytest.raises(TemporalValidationError) as excinfo:
-        parse_source_time(
-            spec["source_text"],
-            TemporalPrecision(spec["precision"]),
-            case["input"]["trusted_source_timezone"],
-        )
-    assert excinfo.value.code is expected_code
+    instant = parse_source_time(
+        spec["source_text"],
+        TemporalPrecision(spec["precision"]),
+        case["input"]["trusted_source_timezone"],
+    )
+    assert instant.value.strftime("%Y-%m-%dT%H:%M:%SZ") == expected["effective_from"]
+    assert instant.precision.value == expected["canonical_precision"]
+    assert instant.original_source_text == expected["preserved_source_text"]
+    assert instant.source_timezone is None
 
 
 def test_fixture_historical_backfill_uses_authorised_source_time() -> None:

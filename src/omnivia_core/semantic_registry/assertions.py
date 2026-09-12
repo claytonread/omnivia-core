@@ -30,6 +30,7 @@ from omnivia_core.semantic_registry.temporal import (
     EffectiveValidInterval,
     EndBoundaryState,
     TemporalInstant,
+    instant_payload,
     resolve_effective_valid_interval,
 )
 
@@ -313,13 +314,7 @@ def assertion_effective_interval(assertion: KnowledgeAssertion) -> EffectiveVali
 
 
 def _instant_payload(instant: TemporalInstant | None) -> dict[str, Any] | None:
-    if instant is None:
-        return None
-    return {
-        "value": instant.value.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "precision": instant.precision.value,
-        "provenance": instant.provenance.value,
-    }
+    return None if instant is None else instant_payload(instant)
 
 
 def assertion_payload(assertion: KnowledgeAssertion) -> dict[str, Any]:

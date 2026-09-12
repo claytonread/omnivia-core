@@ -71,8 +71,10 @@ from omnivia_core.semantic_registry import (
     ObservationValueKind,
     ReconsiderationReason,
     SemanticObservation,
+    TemporalPrecision,
     TemporalProvenance,
     add_concept,
+    parse_source_time,
 )
 
 
@@ -150,6 +152,41 @@ def test_metadata_and_sensitive_content_permissions_are_independent(
         == b"protected"
     )
     assert resolved == ["blob://ev-1"]
+
+
+def test_authorised_metadata_api_round_trips_classified_source_time(
+    owned: Owned,
+) -> None:
+    register_evidence(owned)
+    base = read_evidence_item(owned.connection, WORKSPACE_ID, "ev-1")
+    assert base is not None
+    source_text = "2023-11-13T09:30:00+10:00"
+    item = replace(
+        base,
+        evidence_id="ev-temporal",
+        content_ref="blob://temporal",
+        content_digest="sha256:" + "c" * 64,
+        integrity_digest="sha256:" + "d" * 64,
+        classification=Classification.RESTRICTED,
+        span=None,
+        source_time=parse_source_time(source_text, TemporalPrecision.MINUTE),
+    )
+    checked, context = service(
+        owned, capabilities=(EVIDENCE_REGISTER, EVIDENCE_METADATA_READ)
+    )
+    checked.register_evidence(context, item, actor_id="principal-1")
+    metadata = checked.evidence_metadata(context, "ev-temporal")
+    assert metadata.classification is Classification.RESTRICTED
+    assert metadata.source_time == item.source_time
+    assert metadata.source_time is not None
+    assert metadata.source_time.original_source_text == source_text
+    assert metadata.source_time.source_timezone == "+10:00"
+
+    denied_service, denied_context = service(owned)
+    with pytest.raises(SemanticServiceError) as denied:
+        denied_service.evidence_metadata(denied_context, "ev-temporal")
+    assert denied.value.code == SEMANTIC_PERMISSION_DENIED
+    assert source_text not in str(denied.value)
 
 
 def test_write_authority_is_rechecked_inside_transaction_and_rolls_back(
@@ -284,6 +321,9 @@ def test_manual_and_rule_observation_capabilities_are_separate(owned: Owned) -> 
         classification=Classification.INTERNAL,
         generation=ObservationGeneration.MANUAL,
         recorded_at=instant(1),
+        source_time=parse_source_time(
+            "2023-11-13T09:30:00Z", TemporalPrecision.MINUTE
+        ),
     )
     manual = ObservationBundle(
         original,
@@ -307,6 +347,8 @@ def test_manual_and_rule_observation_capabilities_are_separate(owned: Owned) -> 
         "fencing_generation",
         "observation_id",
     }
+    assert original.source_time is not None
+    assert original.source_time.original_source_text not in str(events[0].payload)
     rule = replace(
         manual,
         observation=replace(

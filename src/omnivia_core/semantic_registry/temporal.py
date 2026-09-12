@@ -12,8 +12,9 @@ no error message echoes untrusted `source_text`.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24,6 +25,20 @@ from omnivia_core.semantic_registry.errors import (
 )
 
 TEMPORAL_CONTRACT_VERSION = "effective-valid-interval-v1"
+
+#: Bounds on the auxiliary source metadata an instant may carry. Both are
+#: counted in Unicode code points, which is what SQLite's `length()` counts for
+#: a TEXT value, so the typed boundary and the storage guard refuse the same
+#: inputs rather than two overlapping-but-different sets.
+MAX_ORIGINAL_SOURCE_TEXT_CHARS = 2048
+MAX_SOURCE_TIMEZONE_CHARS = 255
+
+#: `+HH`, `-HH:MM`, `+HHMM`. Anything else must name UTC or resolve through the
+#: IANA database, or be refused -- a timezone is never inferred from free text.
+_NUMERIC_UTC_OFFSET = re.compile(r"^[+-](?:[01][0-9]|2[0-3])(?::?[0-5][0-9])?$")
+
+#: Spellings of UTC itself that carry no regional rules and so need no lookup.
+_UTC_SPELLINGS = frozenset({"UTC", "utc", "Z", "z", "+00:00", "-00:00"})
 
 
 class TemporalPrecision(str, Enum):
@@ -51,6 +66,72 @@ class EndBoundaryState(str, Enum):
     STATED = "stated"
     UNKNOWN = "unknown"
     OPEN = "open"
+
+
+#: Precisions finer than a day. A timezone-less source string cannot be placed on
+#: the UTC line at any of them without guessing an offset, so its structured value
+#: is deliberately reduced to the source calendar day.
+_SUB_DAY_PRECISIONS = frozenset(
+    {TemporalPrecision.HOUR, TemporalPrecision.MINUTE, TemporalPrecision.SECOND}
+)
+
+
+def validate_source_timezone(value: str) -> None:
+    """Refuse anything that is not UTC, a numeric UTC offset, or an IANA zone.
+
+    A timezone is trusted metadata, not free text: it is either one of the three
+    forms that carry a defined offset rule or it does not go into the record.
+    The rejected value is never echoed -- it arrived with untrusted source data.
+    """
+    if not isinstance(value, str) or value == "":
+        raise TemporalValidationError(
+            SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE,
+            "source_timezone must be a non-empty string",
+        )
+    if len(value) > MAX_SOURCE_TIMEZONE_CHARS:
+        raise TemporalValidationError(
+            SemanticErrorCode.INVALID_FIELD,
+            f"source_timezone exceeds {MAX_SOURCE_TIMEZONE_CHARS} characters",
+        )
+    if value in _UTC_SPELLINGS or _NUMERIC_UTC_OFFSET.match(value):
+        return
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise TemporalValidationError(
+            SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE,
+            "source_timezone is not UTC, a numeric UTC offset or an IANA timezone",
+        ) from error
+
+
+def _timezone_from_metadata(value: str) -> timezone | ZoneInfo:
+    """Resolve already-validated timezone metadata without guessing."""
+    if value in _UTC_SPELLINGS:
+        return UTC
+    if _NUMERIC_UTC_OFFSET.fullmatch(value):
+        sign = -1 if value.startswith("-") else 1
+        digits = value[1:].replace(":", "")
+        hours = int(digits[:2])
+        minutes = int(digits[2:]) if len(digits) == 4 else 0
+        return timezone(sign * timedelta(hours=hours, minutes=minutes))
+    return ZoneInfo(value)
+
+
+def _explicit_timezone_metadata(source_text: str, parsed: datetime) -> str:
+    """Return the trusted wire metadata contributed by an explicit offset."""
+    if source_text.endswith(("Z", "z")):
+        return "UTC"
+    offset = parsed.utcoffset()
+    if offset is None:  # pragma: no cover - guarded by the caller
+        raise TemporalValidationError(
+            SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE,
+            "source timezone could not be resolved",
+        )
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
 
 
 def _truncate(value: datetime, precision: TemporalPrecision) -> datetime:
@@ -86,7 +167,16 @@ def canonical_utc(value: datetime, precision: TemporalPrecision) -> datetime:
 
 @dataclass(frozen=True)
 class TemporalInstant:
-    """One canonical UTC point in time at a declared precision and provenance."""
+    """One canonical UTC point in time at a declared precision and provenance.
+
+    `original_source_text` and `source_timezone` are auxiliary *source* metadata:
+    what the source actually said, and the timezone rule that was trusted to place
+    it on the UTC line. Both stay optional, because a system-created or manually
+    constructed instant is derived from no source string at all; `parse_source_time`
+    is the boundary that always records them. `source_timezone` is null whenever no
+    timezone was trusted -- it is never a guess, and never a restatement of `value`
+    already being UTC.
+    """
 
     value: datetime
     precision: TemporalPrecision
@@ -121,6 +211,30 @@ class TemporalInstant:
                 SemanticErrorCode.INVALID_FIELD,
                 "TemporalInstant.value must already be truncated to its precision",
             )
+        if self.original_source_text is not None:
+            if not isinstance(self.original_source_text, str):
+                raise TemporalValidationError(
+                    SemanticErrorCode.INVALID_FIELD,
+                    "TemporalInstant.original_source_text must be a string",
+                )
+            if len(self.original_source_text) > MAX_ORIGINAL_SOURCE_TEXT_CHARS:
+                raise TemporalValidationError(
+                    SemanticErrorCode.INVALID_FIELD,
+                    "TemporalInstant.original_source_text exceeds "
+                    f"{MAX_ORIGINAL_SOURCE_TEXT_CHARS} characters",
+                )
+            if self.original_source_text == "":
+                raise TemporalValidationError(
+                    SemanticErrorCode.INVALID_FIELD,
+                    "TemporalInstant.original_source_text must not be empty",
+                )
+        if self.source_timezone is not None:
+            if self.original_source_text is None:
+                raise TemporalValidationError(
+                    SemanticErrorCode.INVALID_FIELD,
+                    "TemporalInstant.source_timezone requires original_source_text",
+                )
+            validate_source_timezone(self.source_timezone)
 
 
 @dataclass(frozen=True)
@@ -162,9 +276,25 @@ def parse_source_time(
     """Parse ISO clock text into a canonical UTC `TemporalInstant`.
 
     Timezone resolution order (decision record section 4): (1) an explicit
-    offset/`Z` in `source_text`, (2) a recorded trusted IANA timezone, (3) fail
-    closed. `source_text` is preserved but never echoed in error messages.
+    offset/`Z` in `source_text`, (2) a recorded trusted timezone, (3) for a
+    timezone-less value, preserve the source calendar date while reducing any
+    requested sub-day precision to day. The reduced value is not a claim about the
+    discarded clock component. `source_text` is preserved but never echoed in
+    errors.
+
+    This is the source-derivation boundary, so the returned instant always carries
+    its `original_source_text`. Direct `TemporalInstant` construction does not.
     """
+    if not isinstance(source_text, str) or source_text == "":
+        raise TemporalValidationError(
+            SemanticErrorCode.MISSING_FIELD,
+            "source_text is required",
+        )
+    if len(source_text) > MAX_ORIGINAL_SOURCE_TEXT_CHARS:
+        raise TemporalValidationError(
+            SemanticErrorCode.INVALID_FIELD,
+            f"source_text exceeds {MAX_ORIGINAL_SOURCE_TEXT_CHARS} characters",
+        )
     try:
         parsed = datetime.fromisoformat(source_text)
     except ValueError as error:
@@ -174,22 +304,17 @@ def parse_source_time(
         ) from error
 
     if parsed.tzinfo is not None and parsed.utcoffset() is not None:
-        source_timezone = None
+        source_timezone = _explicit_timezone_metadata(source_text, parsed)
     elif trusted_source_timezone is not None:
-        try:
-            zone = ZoneInfo(trusted_source_timezone)
-        except ZoneInfoNotFoundError as error:
-            raise TemporalValidationError(
-                SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE,
-                "trusted_source_timezone is not a supported IANA timezone",
-            ) from error
+        validate_source_timezone(trusted_source_timezone)
+        zone = _timezone_from_metadata(trusted_source_timezone)
         parsed = parsed.replace(tzinfo=zone)
         source_timezone = trusted_source_timezone
     else:
-        raise TemporalValidationError(
-            SemanticErrorCode.TEMPORAL_TIMEZONE_INDETERMINATE,
-            "timezone-less source text requires a trusted source timezone",
-        )
+        parsed = parsed.replace(tzinfo=UTC)
+        source_timezone = None
+        if precision in _SUB_DAY_PRECISIONS:
+            precision = TemporalPrecision.DAY
 
     try:
         canonical = canonical_utc(parsed, precision)
@@ -281,6 +406,26 @@ def _rfc3339(instant: TemporalInstant) -> str:
     return instant.value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def instant_payload(instant: TemporalInstant) -> dict[str, Any]:
+    """The canonical digest-bearing content of one instant.
+
+    Auxiliary source metadata is bound into the digest only when it is present.
+    Omitting the keys -- rather than emitting explicit nulls -- is what keeps the
+    payload of an instant with no source metadata byte-identical to what it was
+    before those fields were persisted, so digests recorded then still verify.
+    """
+    payload: dict[str, Any] = {
+        "value": _rfc3339(instant),
+        "precision": instant.precision.value,
+        "provenance": instant.provenance.value,
+    }
+    if instant.original_source_text is not None:
+        payload["original_source_text"] = instant.original_source_text
+    if instant.source_timezone is not None:
+        payload["source_timezone"] = instant.source_timezone
+    return payload
+
+
 def effective_interval_projection(interval: EffectiveValidInterval) -> dict[str, Any]:
     """A canonical, JSON-safe projection of `interval` for cross-surface parity."""
     return {
@@ -309,6 +454,8 @@ def effective_interval_projection(interval: EffectiveValidInterval) -> dict[str,
 
 
 __all__ = [
+    "MAX_ORIGINAL_SOURCE_TEXT_CHARS",
+    "MAX_SOURCE_TIMEZONE_CHARS",
     "TEMPORAL_CONTRACT_VERSION",
     "EffectiveValidInterval",
     "EndBoundaryState",
@@ -317,7 +464,9 @@ __all__ = [
     "TemporalProvenance",
     "canonical_utc",
     "effective_interval_projection",
+    "instant_payload",
     "parse_source_time",
     "resolve_effective_valid_interval",
     "select_record_time",
+    "validate_source_timezone",
 ]

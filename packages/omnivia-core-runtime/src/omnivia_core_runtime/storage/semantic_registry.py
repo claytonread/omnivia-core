@@ -67,10 +67,10 @@ from omnivia_core.semantic_registry import (
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import ServiceInstanceIdentity
 from omnivia_core_runtime.storage.connection import StorageError
+from omnivia_core_runtime.storage.semantic_events import SEMANTIC_VERSION_PUBLISHED_V1
 
-#: The event an activated publication puts on the outbox. 0026 bounds
-#: `event_kind` to a lowercase dotted name.
-PUBLICATION_EVENT_KIND = "semantic.version.published"
+#: The versioned wire event an activated publication puts on the outbox.
+PUBLICATION_EVENT_KIND = SEMANTIC_VERSION_PUBLISHED_V1
 
 #: What an activation's audit event records. The Phase 1 registry is called
 #: in-process with no request envelope, so the activation's own `audit_ref`

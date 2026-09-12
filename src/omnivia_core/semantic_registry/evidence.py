@@ -18,7 +18,7 @@ from omnivia_core.semantic_registry.errors import (
     SemanticErrorCode,
     require,
 )
-from omnivia_core.semantic_registry.temporal import TemporalInstant
+from omnivia_core.semantic_registry.temporal import TemporalInstant, instant_payload
 
 EVIDENCE_SCHEMA_VERSION = "1.0.0"
 
@@ -357,11 +357,7 @@ def effective_classification(
 
 
 def _instant_payload(instant: TemporalInstant) -> dict[str, Any]:
-    return {
-        "value": instant.value.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "precision": instant.precision.value,
-        "provenance": instant.provenance.value,
-    }
+    return instant_payload(instant)
 
 
 def evidence_item_payload(item: EvidenceItem) -> dict[str, Any]:
