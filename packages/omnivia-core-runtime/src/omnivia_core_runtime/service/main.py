@@ -75,6 +75,9 @@ from omnivia_core_runtime.service.managed_start import (
     managed_start,
     render_result,
 )
+from omnivia_core_runtime.service.mcp_control import (
+    AuthenticatedApplicationDispatch,
+)
 from omnivia_core_runtime.service.operations import (
     SERVICE_OPERATIONS,
     server_capability_snapshot,
@@ -809,7 +812,20 @@ def main(
         # the probe router and the application dispatcher rather than growing its own:
         # there is one object, and neither transport knows the other exists.
         router = _router_for(started, application)
-        server = LocalSocketServer(router=router, endpoint=endpoint)
+        # The two seams the local control wrapper needs, and nothing more. Both are
+        # the installation authority coordinator, which answers from its own store
+        # when this process owns the catalogue and forwards to whoever does when it
+        # does not -- so a follower workspace service administers and authenticates
+        # through the authoritative live process rather than opening its database.
+        # HTTP is deliberately not given either: this slice adds no HTTP behaviour.
+        server = LocalSocketServer(
+            router=router,
+            authenticated=AuthenticatedApplicationDispatch(
+                seam=installation_authority, dispatcher=application
+            ),
+            mcp_administration=installation_authority,
+            endpoint=endpoint,
+        )
         server.start()
         started.lifecycle.resources.push("socket_server", server.stop)
         if http_bind is not None:
