@@ -500,6 +500,7 @@ def test_windows_restrict_to_owner_fails_closed_when_a_native_call_raises(
 def test_restrict_to_owner_is_a_no_op_success_off_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(owner_private, "_IS_WINDOWS", False)
     monkeypatch.setattr(
         owner_private,
         "_windows_restrict_to_owner",
