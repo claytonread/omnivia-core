@@ -44,6 +44,7 @@ from omnivia_core_runtime.service.workspace_init import (
     initialise_allocated_workspace,
     initialise_workspace,
 )
+from omnivia_core_runtime.storage import backup
 from omnivia_core_runtime.storage.connection import OpenMode, open_database
 from omnivia_core_runtime.storage.migrations import (
     applied_migrations,
@@ -559,9 +560,10 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     An installation-state root that is a regular file reaches it by a route with no
     mocking in it: `_unrecognised_installation_state` returns early because
     `root.is_dir()` is false, and `InstallationLayout.create` then raises
-    `NotADirectoryError` with a whole workspace already on disk. The claim is
-    therefore about the three refusals that decide *whether this workspace is ours
-    to touch*, and this test is what keeps that qualification honest.
+    `FileExistsError` trying to establish the root itself, with a whole workspace
+    already on disk. The claim is therefore about the three refusals that decide
+    *whether this workspace is ours to touch*, and this test is what keeps that
+    qualification honest.
     """
     (tmp_path / "installation-state").write_text("not a directory", encoding="utf-8")
 
@@ -574,6 +576,35 @@ def test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so(
     assert layout.manifest_path.is_file()
     assert layout.database_path.is_file()
     assert layout.blobs_path.is_dir()
+
+
+def test_a_root_this_call_cannot_restrict_is_the_same_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sibling of the test above: a fresh root, but not an owner-private one.
+
+    `InstallationLayout.create` establishes the installation-state root's
+    owner-only Windows ACL the instant it creates it -- see
+    `packages/omnivia-core-runtime/tests/phase2/test_backup.py` for that
+    mechanism in isolation -- and fails closed exactly like every other
+    creation step this sequence guards when it cannot. Forcing that one step
+    to fail here proves it is bounded the same way: `WRITE_FAILURE`, with a
+    whole workspace already on disk and nothing installation-side beyond the
+    bare, unrestricted root itself.
+    """
+    monkeypatch.setattr(backup, "_restrict_root_to_owner", lambda _path: False)
+
+    result = _init(tmp_path)
+
+    assert result.status is WorkspaceInitStatus.REFUSED
+    assert result.refusal is WorkspaceInitRefusal.WRITE_FAILURE
+    layout = WorkspaceLayout(root=tmp_path / "workspace")
+    assert layout.manifest_path.is_file()
+    assert layout.database_path.is_file()
+    assert layout.blobs_path.is_dir()
+    installation = tmp_path / "installation-state"
+    assert installation.is_dir()
+    assert list(installation.iterdir()) == []
 
 
 def test_a_busy_workspace_is_refused_before_any_directory_is_created(

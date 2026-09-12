@@ -12,7 +12,10 @@ backup; it is a file that might be one.
 
 from __future__ import annotations
 
+import os
+import re
 import sqlite3
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,9 +46,94 @@ CATALOGUE_DIR = "catalogue"
 INSTALLATION_DATABASE = "installation.sqlite"
 INSTALLATION_LOCK = "installation.lock"
 
+_IS_WINDOWS = os.name == "nt"
+
+#: `whoami /user` reports the SID in this form, mixed into a CSV row. The same
+#: closed grammar `omnivia_core_client.owner_private` and this package's own
+#: `ownership/discovery.py` parse it with.
+_SID_RE = re.compile(r"S-1-[0-9-]+")
+
+#: Full control for the owner alone, inherited by anything created beneath the
+#: root -- the closest Windows has to leaving a POSIX `mkdir`'s mode untouched.
+_WINDOWS_ROOT_RIGHTS = "(OI)(CI)F"
+
 
 class BackupError(StorageError):
     """A backup could not be created or could not be verified."""
+
+
+def _system32(program: str) -> str:
+    """An absolute path to a Windows system tool, never resolved through PATH."""
+    return str(Path(os.environ.get("SystemRoot", "C:\\Windows"), "System32", program))
+
+
+def _windows_restrict_root(path: Path) -> bool:
+    """The Windows mechanism for :func:`_restrict_root_to_owner`, unconditionally.
+
+    `icacls`, not `ctypes`, and the same three-invocation sequence
+    `omnivia_core_client.owner_private` and this package's own
+    `ownership/discovery.py` use, repeated here rather than imported: this
+    package declares a dependency on `omnivia-core` alone, and
+    `omnivia-core-client` is a sibling distribution, not one of them --
+    reaching into it is exactly the edge `scripts/check-package-boundaries.py`
+    exists to keep closed. `/setowner` first, because ownership comes from the
+    token rather than the DACL; `/reset` drops explicit entries `/inheritance:r`
+    does not touch; `/inheritance:r` with `/grant:r` drops the inherited entries
+    too and leaves one allow ACE naming this process's own SID, read from
+    `whoami /user`'s closed CSV grammar. Every step runs in order and the first
+    failure ends the sequence.
+    """
+    try:
+        identity = subprocess.run(
+            [_system32("whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        found = _SID_RE.search(identity.stdout) if identity.returncode == 0 else None
+        if found is None:
+            return False
+        sid = found.group()
+        for arguments in (
+            ("/setowner", f"*{sid}"),
+            ("/reset",),
+            ("/inheritance:r", "/grant:r", f"*{sid}:{_WINDOWS_ROOT_RIGHTS}"),
+        ):
+            completed = subprocess.run(
+                [_system32("icacls.exe"), str(path), *arguments, "/q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return False
+    except Exception:  # noqa: BLE001 -- platform writer must fail closed.
+        return False
+    return True
+
+
+def _restrict_root_to_owner(path: Path) -> bool:
+    """Reduce a freshly created installation-state root to an owner-only DACL.
+
+    A no-op success off Windows: the mode this process's umask already gave
+    `mkdir` is the whole of the proof there. On Windows a brand new directory
+    inherits whatever DACL its parent's inheritance supplies -- routinely
+    SYSTEM or the local administrators, on a hosted runner's temp tree -- and
+    every store under `runtime/` proves this exact root out with the parent
+    policy (owned by this user, writable by nobody else) before it creates
+    anything beneath it. Left alone, that first proof is what
+    `omnivia_core_client.installed_credentials` fails on, before it ever
+    reaches the `runtime/` component publication already restricts.
+
+    Fails closed, including when the native tool itself does not complete: an
+    installation root this call could not restrict is never treated as
+    restricted merely because nothing has proved otherwise yet.
+    """
+    if not _IS_WINDOWS:
+        return True
+    return _windows_restrict_root(path)
 
 
 @dataclass(frozen=True)
@@ -89,12 +177,43 @@ class InstallationLayout:
         return self.catalogue / INSTALLATION_LOCK
 
     def create(self, workspace_id: str) -> None:
+        self._ensure_root()
         for path in (
             self.root / BACKUPS_DIR / workspace_id,
             self.attempts_for(workspace_id),
             self.runtime_for(workspace_id),
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+    def _ensure_root(self) -> None:
+        """Bring the installation-state root into being, owner-private from the
+        instant this call is the one that creates it.
+
+        A root this call *finds* already there is left exactly as it is: it may
+        be the caller's own pre-existing directory, and every store that walks
+        beneath it proves the parent policy out on every use regardless of who
+        made it. A root this call *creates* has no owner yet, and the mode this
+        gives `mkdir` is not a promise Windows keeps -- a freshly created
+        directory there inherits whatever DACL its parent's inheritance
+        supplies, which a hosted runner's temp tree can make writable by SYSTEM
+        or the local administrators alongside this user. Restricting it here,
+        before a single child exists, establishes the invariant
+        `InstalledCredentialStore` and `InstalledConfigStore` require of this
+        exact root rather than leaving them to discover it missing.
+
+        `exist_ok=False` (the default) is the mechanism: a `FileExistsError`
+        from this exact call is the only way to learn the root was already
+        there rather than just created, since asking first and creating second
+        would leave a window in which a concurrent creator's answer is stale.
+        """
+        try:
+            self.root.mkdir(parents=True)
+        except OSError:
+            if not self.root.is_dir():
+                raise
+            return
+        if not _restrict_root_to_owner(self.root):
+            raise BackupError(f"could not restrict {self.root} to its owner")
 
 
 @dataclass(frozen=True)

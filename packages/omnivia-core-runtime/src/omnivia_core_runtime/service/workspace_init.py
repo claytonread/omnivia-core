@@ -730,7 +730,8 @@ def _bootstrap(
     installation-state root that is a regular file reaches it with a whole workspace
     already on disk, by a route with nothing injected in it:
     `_unrecognised_installation_state` returns early because `root.is_dir()` is
-    false, and `InstallationLayout.create` then raises `NotADirectoryError`.
+    false, and `InstallationLayout.create` then raises `FileExistsError` trying to
+    establish the root itself.
     `test_a_write_failure_is_not_bounded_by_the_reordering_and_says_so` holds that
     open. Ordering is what makes the three refusals above cost nothing; it is not a
     transaction, and no ordering turns a failing `mkdir` into one.
