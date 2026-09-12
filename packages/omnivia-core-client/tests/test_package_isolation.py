@@ -41,6 +41,7 @@ ALLOWED_IMPORTS = frozenset(
         "ipaddress",
         "json",
         "math",
+        "msvcrt",
         "omnivia_core",
         "omnivia_core_client",
         "os",
@@ -163,8 +164,11 @@ def test_the_package_has_the_modules_this_packet_defines() -> None:
         "errors.py",
         "framing.py",
         "http_transport.py",
+        "installed_credentials.py",
+        "local_control.py",
         "local_ipc.py",
         "managed_local.py",
+        "owner_private.py",
         "service_client.py",
         "transport.py",
         "windows_pipe.py",
@@ -194,11 +198,17 @@ def test_only_the_local_ipc_module_opens_a_socket() -> None:
 
 
 def test_only_the_windows_pipe_module_reaches_for_ctypes() -> None:
-    """Native pipe access is confined to the one Windows transport module."""
+    """Native access is confined to the modules that must make a Win32 call.
+
+    ``owner_private.py`` joined this list when the owner-and-DACL proof moved out
+    of the MCP adapter: proving that an open handle names a file no other
+    principal may reach has no portable form, and the alternative to one copy
+    here was one copy in every package that reads a protected file.
+    """
     importers = sorted(
         path.name for path in MODULES if "ctypes" in _imported_roots(path)
     )
-    assert importers == ["discovery.py", "windows_pipe.py"]
+    assert importers == ["discovery.py", "owner_private.py", "windows_pipe.py"]
 
 
 @pytest.mark.parametrize("module_name", HTTP_ONLY_IMPORTS)
@@ -260,12 +270,24 @@ def test_the_high_level_client_only_composes_what_this_package_already_has() -> 
 def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
     """Process ownership is one named client module, never an adapter leak.
 
-    ``tempfile`` is pinned here with the rest rather than admitted package-wide:
-    it is on the allowlist only because the launcher's stdout is captured to a
-    file this process reads a bounded prefix of, and a temporary file appearing
-    in ``discovery.py`` or ``framing.py`` would be a protocol foundation that had
-    started writing to disk.
+    ``tempfile`` is pinned here rather than admitted package-wide: it is on the
+    allowlist only because the launcher's stdout is captured to a file this
+    process reads a bounded prefix of, and because the credential store and the
+    shared owner-private writer both create their replacement file with
+    ``mkstemp`` -- which is the point, since ``mkstemp`` is what creates
+    owner-private with ``O_EXCL`` in one call. A temporary file appearing in
+    ``discovery.py`` or ``framing.py`` would still be a protocol foundation that
+    had started writing to disk.
+
+    ``hashlib`` is shared with the store for the same kind of reason: the store
+    derives a filename from a credential reference by digesting it, which is what
+    keeps a valid reference from spelling a reserved device name or colliding
+    with another on a case-insensitive filesystem.
     """
+    shared = {
+        "hashlib": {"installed_credentials.py"},
+        "tempfile": {"installed_credentials.py", "owner_private.py"},
+    }
     for imported in (
         "hashlib",
         "platform",
@@ -278,7 +300,8 @@ def test_only_managed_local_may_locate_start_or_stop_a_process() -> None:
         importers = sorted(
             path.name for path in MODULES if imported in _imported_roots(path)
         )
-        assert importers == ["managed_local.py"], imported
+        expected = sorted({"managed_local.py"} | shared.get(imported, set()))
+        assert importers == expected, imported
 
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_IMPORTS)

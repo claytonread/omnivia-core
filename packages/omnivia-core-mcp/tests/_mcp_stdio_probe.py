@@ -21,6 +21,19 @@ handler, so the test can prove that stray output cannot reach the protocol
 stream. It wraps `server._call_tool` rather than replacing it -- the
 contamination is a side effect on the way to the same dispatch every other run
 uses.
+
+`--authoring` injects :func:`_admit_authoring`, and it is the one thing in this
+file that stands in for something: the protected authoring-admission seam, which
+production now supplies from the installed setup -- `server._installed_admission`
+asks the service with the dedicated bearer, and
+`test_mcp_standalone_authoring_acceptance` runs that whole path live. The stand-in
+stays because it lets the wider surface be exercised against a configuration this
+suite wrote itself, without an installed setup. It is a flag rather than a
+configuration field on purpose -- the whole point of the seam is that nothing
+readable from the public `omnivia.mcp-config.v1` document can raise the profile,
+so a test that could enable authoring by editing that document would be testing
+the opposite of the rule. Without the flag, the same configuration serves the
+restricted six, which is what production does with it.
 """
 
 from __future__ import annotations
@@ -31,6 +44,7 @@ from pathlib import Path
 
 import anyio
 import mcp_types as types
+from omnivia_core_client import ServiceClient
 from omnivia_core_mcp import server
 from omnivia_core_mcp.configuration import read_configuration
 
@@ -52,10 +66,30 @@ def _contaminating_call_tool(
     return _DISPATCH(params, session=session)
 
 
+def _admit_authoring(
+    client: ServiceClient, principal_id: str, workspace_id: str
+) -> bool:
+    """Stand in for the protected record the installed setup path writes.
+
+    The real one -- `server._installed_admission` -- reads durable installation
+    state a human owner or administrator authorised, through this already
+    connected, already authenticated client, which is why the seam is handed it,
+    and answers `False` the moment that authority is revoked. No such record
+    exists for the configuration this suite writes for itself, so this is a test
+    double and is reachable only through `--authoring` -- never from the
+    configuration file, which is the invariant it exists to leave intact.
+
+    What it does assert is the seam's own precondition: it is called with a
+    connected client already agreed to serve this workspace.
+    """
+    return client.descriptor.workspace_id == workspace_id and bool(principal_id)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--contaminate", action="store_true")
+    parser.add_argument("--authoring", action="store_true")
     arguments = parser.parse_args()
 
     if arguments.contaminate:
@@ -65,7 +99,10 @@ def main() -> None:
         sys.stderr.write("probe: starting with deliberate stdout contamination\n")
         server._call_tool = _contaminating_call_tool
 
-    session = server.connect(read_configuration(Path(arguments.config)))
+    session = server.connect(
+        read_configuration(Path(arguments.config)),
+        authoring_admission=_admit_authoring if arguments.authoring else None,
+    )
     anyio.run(lambda: server.serve(session=session))
 
 

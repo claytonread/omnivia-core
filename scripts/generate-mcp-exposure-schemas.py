@@ -20,13 +20,19 @@ reviewable diff rather than a runtime surprise.
 
 **What is deliberately not generated.** The exposure set. This script reads its
 operation names from :data:`EXPOSED_OPERATIONS` below -- a mirror of
-``omnivia_core_mcp.manifest.EXPOSURE_MANIFEST``, held to it by
-``test_the_generator_projects_exactly_the_exposed_operations`` -- and never from
-the catalogue. Deriving it from the catalogue would make registering a Core
+``omnivia_core_mcp.manifest.AUTHORING_MANIFEST``, the widest profile, held to it
+by ``test_the_generator_projects_exactly_the_exposed_operations`` -- and never
+from the catalogue. Deriving it from the catalogue would make registering a Core
 operation enough to advertise it to a model, which is the one thing the curated
 manifest exists to prevent. What *is* read from the catalogue is each operation's
 schema references, so a contract renamed upstream fails here rather than
 projecting a stale shape.
+
+:data:`WRAPPER_REFS` is the one advertised schema no operation names: the
+request envelope's ``IdempotencyKey``, which the manifest composes into each
+mutation tool's closed ``{input, idempotency_key}`` wrapper. Projected here for
+the same reason as everything else -- so the advertised pattern and bounds are
+the canonical contract's and not a transcription of it.
 
 Refusals, all of them loud:
 
@@ -69,9 +75,12 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from omnivia_core.contracts.v1 import get_operation_metadata  # noqa: E402
 
-#: The operations the curated MCP exposure manifest advertises, in its order.
-#: A mirror, not a source: the manifest is the allow-list, and the test named in
-#: this module's docstring fails if the two ever disagree.
+#: The operations the curated MCP exposure manifest advertises, in the order of
+#: its widest profile. A mirror, not a source: the manifest is the allow-list,
+#: and the test named in this module's docstring fails if the two ever disagree.
+#:
+#: The widest profile rather than the running one, because the generated module
+#: is committed once and serves whichever profile a given installation selects.
 EXPOSED_OPERATIONS: tuple[str, ...] = (
     "workspace.inspect",
     "evidence.search",
@@ -79,7 +88,22 @@ EXPOSED_OPERATIONS: tuple[str, ...] = (
     "memory.search",
     "graph.traverse",
     "context_pack.build",
+    "memory.create",
+    "evidence.capture",
+    "import.start",
+    "job.get",
+    "job.events",
 )
+
+#: Advertised schemas that belong to no operation. One entry: the canonical
+#: idempotency key the mutation wrapper requires. Mirrored by
+#: ``omnivia_core_mcp.manifest.IDEMPOTENCY_KEY_SCHEMA_REF`` and held to it by the
+#: same test, because this script must not import the MCP package.
+IDEMPOTENCY_KEY_REF = (
+    "https://contracts.omnivia.dev/application/v1/common.schema.json"
+    "#/$defs/IdempotencyKey"
+)
+WRAPPER_REFS: tuple[str, ...] = (IDEMPOTENCY_KEY_REF,)
 
 #: The only ref form this generator resolves. Anything else -- a relative ref, a
 #: pointer that is not a ``$defs`` member, a host that is not the Application
@@ -175,9 +199,9 @@ def resolve(documents: dict[str, dict[str, Any]], ref: str) -> tuple[str, str, A
 def rewrite(node: Any, mapping: dict[str, str]) -> Any:
     """A deep copy of `node` with every canonical ref rewritten to a local one.
 
-    Copying rather than mutating: the loaded documents are shared across the
-    twelve projections, and a rewrite in place would leave the second projection
-    reading refs the first had already localised.
+    Copying rather than mutating: the loaded documents are shared across every
+    projection, and a rewrite in place would leave the second projection reading
+    refs the first had already localised.
     """
     if isinstance(node, dict):
         rewritten: dict[str, Any] = {}
@@ -264,7 +288,7 @@ def project(documents: dict[str, dict[str, Any]], root_ref: str) -> dict[str, An
 def projections() -> dict[str, dict[str, Any]]:
     """Every advertised schema, keyed by the canonical ref the catalogue names."""
     documents = load_documents()
-    refs: list[str] = []
+    refs: list[str] = list(WRAPPER_REFS)
     for operation in EXPOSED_OPERATIONS:
         entry = get_operation_metadata(operation)
         refs.extend((entry.input_schema_ref, entry.result_schema_ref))

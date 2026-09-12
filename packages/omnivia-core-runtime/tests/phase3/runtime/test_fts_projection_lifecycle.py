@@ -61,11 +61,19 @@ RESOLUTION_US = m2.BASE_US + 10_000_000
 #: place. `evd-tie-a` and `evd-tie-b` carry it the same number of times in surfaces of
 #: identical length, so bm25 scores them to the last bit identically and the recency
 #: tie-breaker is what separates them; `evd-tie-b` is the later of the two.
-EXTRA_ARTIFACTS: tuple[tuple[str, str, str, int], ...] = (
-    ("evd-alpha-1", "doc-alpha-1", "archive://alpha/alpha/alpha.md", m2.BASE_US + 10),
-    ("evd-gamma-1", "doc-gamma-1", "archive://gamma/one.md", m2.BASE_US + 20),
-    ("evd-tie-a", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 30),
-    ("evd-tie-b", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 40),
+#:
+#: The tie pair carries distinct `source_retrieved_at_us` values, and that is load-bearing
+#: in both directions. 0041's source-identity index is over
+#: `(workspace, kind, native id, locator, retrieved at)`, so two artifacts sharing the
+#: first four are two retrievals of one source and must differ in the fifth or the
+#: database refuses them. The *search surface* is `(kind, native id, locator)` and
+#: excludes the retrieval instant, so the two surfaces stay byte-identical and the bm25
+#: tie the assertions below need is preserved exactly.
+EXTRA_ARTIFACTS: tuple[tuple[str, str, str, int, int], ...] = (
+    ("evd-alpha-1", "doc-alpha-1", "archive://alpha/alpha/alpha.md", m2.BASE_US + 10, m2.BASE_US),
+    ("evd-gamma-1", "doc-gamma-1", "archive://gamma/one.md", m2.BASE_US + 20, m2.BASE_US),
+    ("evd-tie-a", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 30, m2.BASE_US + 1),
+    ("evd-tie-b", "doc-alpha-2", "archive://alpha/two.md", m2.BASE_US + 40, m2.BASE_US + 2),
 )
 
 #: Every phase `build_search_projection` runs, by the name it is reachable under. The
@@ -93,13 +101,14 @@ def owned(tmp_path: Path) -> Iterator[m2.Owned]:
     m2.bootstrap_and_migrate(path)
     holder = m2.take_ownership(path)
     m2.seed_chain(holder)
-    for evidence_id, native_id, locator, recorded_at in EXTRA_ARTIFACTS:
+    for evidence_id, native_id, locator, recorded_at, retrieved_at in EXTRA_ARTIFACTS:
         m2.write(
             holder,
             m2.EVIDENCE,
             evidence_id=evidence_id,
             source_native_id=native_id,
             source_locator=locator,
+            source_retrieved_at_us=retrieved_at,
             recorded_at_us=recorded_at,
         )
     yield holder

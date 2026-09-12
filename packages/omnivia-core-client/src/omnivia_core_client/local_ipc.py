@@ -291,15 +291,27 @@ class LocalIpcTransport:
 
     endpoint_uri: str
 
-    def _exchange(
+    def exchange(
         self,
         document: dict[str, object],
         *,
         deadline: Deadline,
-        cancellation: CancellationToken | None,
+        cancellation: CancellationToken | None = None,
         operation: str,
     ) -> dict[str, object]:
-        """One frame out, one frame back, on a connection used for nothing else."""
+        """One frame out, one frame back, on a connection used for nothing else.
+
+        Public because :mod:`omnivia_core_client.local_control` carries documents
+        that are neither an application envelope nor a probe, and a second dial
+        loop for them would be a second set of connect, deadline, boundary and
+        failure rules to keep in step with these. It is deliberately *only* the
+        exchange: what a document means, and what a reply must look like, stays
+        with whoever built it.
+
+        ``operation`` names the call for the precondition diagnostics alone. It
+        must never be a credential or anything derived from one; the two callers
+        in this package pass an operation name and a fixed control label.
+        """
         remaining = enforce_send_preconditions(
             deadline=deadline, cancellation=cancellation, operation=operation
         )
@@ -362,7 +374,7 @@ class LocalIpcTransport:
         a reply that is structurally JSON but semantically impossible must not
         reach a caller as if it were valid.
         """
-        document = self._exchange(
+        document = self.exchange(
             codec.encode_request(request),
             deadline=deadline,
             cancellation=cancellation,
@@ -386,7 +398,7 @@ class LocalIpcTransport:
         cancellation: CancellationToken | None = None,
     ) -> ServiceProbeResult:
         """Send one runtime probe and return the peer's probe result."""
-        document = self._exchange(
+        document = self.exchange(
             request.to_wire(),
             deadline=deadline,
             cancellation=cancellation,

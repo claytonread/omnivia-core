@@ -146,12 +146,12 @@ from omnivia_core.contracts.v1.generated import (
 )
 from omnivia_core_runtime.ownership.fencing import fenced_transaction
 from omnivia_core_runtime.ownership.identity import Clock, ServiceInstanceIdentity
-from omnivia_core_runtime.service.source_capture import (
-    MAX_SOURCE_BYTES,
-    SourceCaptureRefused,
+from omnivia_core_runtime.service.source_capture import MAX_SOURCE_BYTES
+from omnivia_core_runtime.storage import connectors as connector_state
+from omnivia_core_runtime.workspace.blob_publication import (
+    BlobPublicationRefused,
     publish_blob,
 )
-from omnivia_core_runtime.storage import connectors as connector_state
 
 #: The durable job type a run carries. Fixed, because it is the only job kind
 #: `omnivia_evidence_artifacts.import_run_id` accepts, which is what binds the
@@ -1671,7 +1671,7 @@ class IngestionCoordinator:
                 )
             try:
                 publish_blob(self.blobs_root, change.checksum, content)
-            except (SourceCaptureRefused, OSError) as error:
+            except (BlobPublicationRefused, OSError) as error:
                 failure = _refusal(
                     "blob_publication_failed",
                     _message(str(error), "the blob could not be published"),

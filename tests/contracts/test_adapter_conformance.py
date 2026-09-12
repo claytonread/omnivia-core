@@ -104,7 +104,7 @@ def _corpus_document() -> dict[str, Any]:
 def test_the_corpus_loads_and_is_internally_coherent(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
-    assert len(corpus) == 86
+    assert len(corpus) == 89
     assert len(validate_case_collection(corpus)) == len(corpus)
     assert all(case.operation in CATALOGUE for case in corpus)
 
@@ -116,7 +116,7 @@ def test_the_corpus_declares_its_format() -> None:
 def test_the_amended_corpus_has_the_accepted_byte_identity() -> None:
     corpus_path = CANONICAL_FIXTURES_DIR / ADAPTER_CONFORMANCE_CORPUS_FILE
     assert hashlib.sha256(corpus_path.read_bytes()).hexdigest() == (
-        "1f5050e1c4a1b26faf4432de2e5b2e6ba336efbabbda7df1296f65523475a532"
+        "247041ed4a4590ba3b1f5fc8282359e22c13fe6ea9aa6428d2e4a080164b84b4"
     )
 
 
@@ -237,7 +237,7 @@ def test_every_mutation_has_a_replay_and_a_conflict_case(
     corpus: tuple[AdapterConformanceCase, ...],
 ) -> None:
     mutations = {n for n, e in CATALOGUE.items() if e.scope.side_effect != "none"}
-    assert len(mutations) == 12
+    assert len(mutations) == 13
     assert {c.operation for c in corpus if c.idempotency == "replay"} == mutations
     assert {c.operation for c in corpus if c.idempotency == "idempotency_conflict"} == mutations
 
