@@ -52,7 +52,6 @@ import hashlib
 import json
 import os
 import socket
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,12 +68,6 @@ pytestmark = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
     reason="the local IPC transport dials AF_UNIX; Windows pipes are a successor",
 )
-
-#: The installed CLI's own entry point, reached through this interpreter so the
-#: worktree's distributions are the ones under test. A string rather than an
-#: import: this module must not import the runtime or the CLI, which
-#: `test_only_the_fixture_reaches_the_runtime` holds it to.
-_CLI_ENTRY = "from omnivia_core_cli.main import main; raise SystemExit(main())"
 
 #: The MCP revision this journey is evidence about, stated in the request rather
 #: than left to the SDK's current preference.
@@ -155,26 +148,16 @@ def _configure(installation_state: Path, workspace_id: str) -> Path:
     nothing else, because an `env` member would be where a bearer could appear in
     a document a host copies into its own configuration.
     """
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            _CLI_ENTRY,
-            "--installation-state",
-            str(installation_state),
-            "mcp",
-            "configure",
-            "--host",
-            fixture.MCP_HOST,
-            "--workspace",
-            workspace_id,
-            "--profile",
-            fixture.AUTHORING_PROFILE,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=_CLI_TIMEOUT_SECONDS,
-        check=False,
+    completed = fixture.installed_cli(
+        installation_state,
+        "mcp",
+        "configure",
+        "--host",
+        fixture.MCP_HOST,
+        "--workspace",
+        workspace_id,
+        "--profile",
+        fixture.AUTHORING_PROFILE,
     )
     assert completed.returncode == 0, "the installed configure command refused"
     ((name, entry),) = json.loads(completed.stdout)["mcpServers"].items()
@@ -197,23 +180,13 @@ def _health(installation_state: Path, workspace_id: str) -> dict[str, Any]:
     its call site, which is what stops a service the probe started for itself
     from standing in for the one the journey used.
     """
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            _CLI_ENTRY,
-            "--installation-state",
-            str(installation_state),
-            "--workspace-id",
-            workspace_id,
-            "service",
-            "health",
-            "--json",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=_CLI_TIMEOUT_SECONDS,
-        check=False,
+    completed = fixture.installed_cli(
+        installation_state,
+        "--workspace-id",
+        workspace_id,
+        "service",
+        "health",
+        "--json",
     )
     assert completed.returncode == 0, "the health probe could not reach the service"
     probed: dict[str, Any] = json.loads(completed.stdout)
@@ -492,6 +465,13 @@ def test_the_standalone_authoring_journey_runs_on_an_empty_workspace() -> None:
     )
     assert provenance["identity"]["layer"] == "l1", "a proposal landed outside l1"
     assert provenance["identity"]["governance_state"] == "proposed", "it was governed"
+    # The citation is the canonical source tuple and nothing else. The evidence
+    # identifier is the one value this journey never sent, so a private
+    # `evidence_id` shortcut into the record would appear here as the only place
+    # it could have come from.
+    assert captured["evidence_id"] not in json.dumps(record), (
+        "the record carries an evidence identifier nothing cited"
+    )
 
     assert _answer(observed, "default_memory")["records"] == [], (
         "a proposal reached the default memory view"
